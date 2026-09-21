@@ -1,11 +1,14 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 export declare class HistoryManager {
+    private readonly filesystem;
+    private readonly home;
     private entries;
-    private vfs;
-    constructor(vfs: VFS);
-    load(): void;
-    save(): void;
-    add(line: string): void;
+    private loaded;
+    constructor(filesystem: () => ExecutionFs, home: () => string);
+    load(): Promise<void>;
+    private readHistory;
+    save(): Promise<void>;
+    add(line: string): Promise<void>;
     /**
      * Expand history references:
      * !! -> last command

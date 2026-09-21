@@ -16,6 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
@@ -54,7 +55,7 @@ const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {})
 // and boots from the path, so the manager needs a real disk.
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(sessionVfs);
+manager.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
 /** The generated worker source the facet actually booted from. */
 const residentWorkerSource = () => world.boots.at(-1).config.modules['worker.js'];
 const cellText = (content) => content instanceof Uint8Array

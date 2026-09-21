@@ -75,13 +75,13 @@ function createTunnelImpl(kernel?: Kernel): Command {
 		let ws: WebSocket | null = null;
 		let reconnecting = false;
 
-		function log(message: string) {
+		async function log(message: string) {
 			if (verbose) {
 				await ctx.stdout.write(`[tunnel] ${message}\n`);
 			}
 		}
 
-		function logActivePorts() {
+		async function logActivePorts() {
 			const ports = Array.from(kernel!.portRegistry.keys()).sort((a, b) => a - b);
 
 			if (ports.length === 0) {
@@ -207,13 +207,13 @@ function createTunnelImpl(kernel?: Kernel): Command {
 			}
 		}
 
-		function connect() {
+		async function connect() {
 			if (reconnecting || ctx.signal.aborted) return;
 
 			await ctx.stdout.write(`Connecting to tunnel server at ${server}...\n`);
 			ws = new WebSocketConstructor(server);
 
-			ws.addEventListener('open', () => {
+			ws.addEventListener('open', async () => {
 				reconnecting = false;
 				await ctx.stdout.write(`Connected to tunnel server\n`);
 				const httpUrl = server.replace('ws://', 'http://').replace('wss://', 'https://');
@@ -226,14 +226,14 @@ function createTunnelImpl(kernel?: Kernel): Command {
 				logActivePorts();
 			});
 
-			ws.addEventListener('message', (event) => {
+			ws.addEventListener('message', async (event) => {
 				const data = typeof event.data === 'string'
 					? Buffer.from(event.data)
 					: event.data;
-				handleMessage(data);
+				(await handleMessage(data));
 			});
 
-			ws.addEventListener('close', () => {
+			ws.addEventListener('close', async () => {
 				if (!ctx.signal.aborted) {
 					await ctx.stdout.write('Disconnected from tunnel server\n');
 					await ctx.stdout.write('Reconnecting in 5 seconds...\n');
@@ -245,7 +245,7 @@ function createTunnelImpl(kernel?: Kernel): Command {
 				}
 			});
 
-			ws.addEventListener('error', (event) => {
+			ws.addEventListener('error', async (event) => {
 				const errorMessage = event instanceof ErrorEvent ? event.message : 'Connection error';
 				await ctx.stderr.write(`tunnel: WebSocket error: ${errorMessage}\n`);
 			});

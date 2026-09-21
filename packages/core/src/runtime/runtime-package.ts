@@ -25,7 +25,20 @@
  */
 
 import { sha256Hex } from '../_shared/crypto.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { Awaitable } from './os-contracts.js';
+
+export interface RuntimePackageFs {
+  exists(path: string): Awaitable<boolean>;
+  readFile(path: string): Awaitable<Uint8Array>;
+  readFileString(path: string): Awaitable<string>;
+  writeFile(path: string, data: string | Uint8Array): Awaitable<void>;
+  mkdir(path: string, options?: { recursive?: boolean }): Awaitable<void>;
+  readdir(path: string): Awaitable<{ name: string; type: string }[]>;
+  unlink(path: string): Awaitable<void>;
+  rmdir(path: string): Awaitable<void>;
+}
+
+type CredentialedVfs = RuntimePackageFs;
 import type { RuntimePackageAbi } from './os-contracts.js';
 import {
   installRoot,
@@ -208,15 +221,15 @@ export async function seedRuntimePackage(
   const root = installRoot(homeDir, manifest.name, manifest.version);
   const marker = `${root}/manifest.json`;
 
-  if (!options?.force && vfs.exists(marker)) {
+  if (!options?.force && (await vfs.exists(marker))) {
     if (await runtimeManifestIntact(vfs, root, manifest)) {
       return { name: manifest.name, version: manifest.version, root, written: false };
     }
   }
   // Marker first: whatever happens below, a tree without manifest.json was
   // never a completed install. Everything else stays where it is.
-  if (vfs.exists(marker)) vfs.unlink(marker);
-  if (!vfs.exists(root)) vfs.mkdir(root, { recursive: true });
+  if ((await vfs.exists(marker))) (await vfs.unlink(marker));
+  if (!(await vfs.exists(root))) (await vfs.mkdir(root, { recursive: true }));
 
   // Parent dirs ahead of the workers so none of them race mkdir.
   const parents = new Set<string>();
@@ -225,7 +238,7 @@ export async function seedRuntimePackage(
     if (slash > 0) parents.add(`${root}/${file.path}`.slice(0, slash));
   }
   for (const parent of parents) {
-    if (!vfs.exists(parent)) vfs.mkdir(parent, { recursive: true });
+    if (!(await vfs.exists(parent))) (await vfs.mkdir(parent, { recursive: true }));
   }
 
   // Three in flight, as the R2 installer ran: blob reads dominate wall-clock
@@ -243,7 +256,7 @@ export async function seedRuntimePackage(
       if (i >= files.length) return;
       const file = files[i];
       try {
-        vfs.writeFile(`${root}/${file.path}`, await verifiedBlob(manifest, runtimePackage, file));
+        (await vfs.writeFile(`${root}/${file.path}`, await verifiedBlob(manifest, runtimePackage, file)));
         completed++;
         options?.onProgress?.(
           `[${manifest.name}] fetched ${file.path} (${(file.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${files.length}`,
@@ -257,7 +270,7 @@ export async function seedRuntimePackage(
   await Promise.all(workers);
   if (failure !== null) throw failure;
 
-  vfs.writeFile(marker, JSON.stringify(manifest, null, 2));
+  (await vfs.writeFile(marker, JSON.stringify(manifest, null, 2)));
   return { name: manifest.name, version: manifest.version, root, written: true };
 }
 
@@ -271,7 +284,7 @@ async function runtimeManifestIntact(
   manifest: RuntimeManifest,
 ): Promise<boolean> {
   try {
-    const onDisk = parseRuntimeManifest(JSON.parse(vfs.readFileString(`${root}/manifest.json`)));
+    const onDisk = parseRuntimeManifest(JSON.parse((await vfs.readFileString(`${root}/manifest.json`))));
     if (JSON.stringify(onDisk) !== JSON.stringify(manifest)) return false;
     return await runtimePayloadIntact(vfs, root, onDisk);
   } catch {

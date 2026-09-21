@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from '../types.js';
-import { resolve, basename } from '../../utils/path.js';
+import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { VFSError } from '../../kernel/vfs/index.js';
 
@@ -50,7 +50,12 @@ const command: Command = async (ctx) => {
     const target = destIsDir ? resolve(dest, basename(src)) : dest;
     if (flags['no-clobber'] && (await ctx.vfs.exists(target))) continue;
     try {
-      await ctx.vfs.rename(src, target);
+      try { await ctx.vfs.rename(src, target); }
+      catch (error) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EXDEV')) throw error;
+        await copyAcrossMounts(ctx, src, target);
+        await ctx.vfs.remove(src, { recursive: true });
+      }
       if (flags.verbose) await ctx.stdout.write(`renamed '${source}' -> '${rawDest}'\n`);
     } catch (e) {
       if (e instanceof VFSError) {
@@ -74,3 +79,40 @@ async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> 
 }
 
 export default command;
+
+async function copyAcrossMounts(ctx: CommandContext, source: string, target: string): Promise<void> {
+  const stat = await ctx.vfs.lstat(source);
+  const exists = await ctx.vfs.exists(target);
+  if (exists) {
+    const destination = await ctx.vfs.lstat(target);
+    if (stat.ino !== undefined && stat.dev !== undefined && stat.ino === destination.ino && stat.dev === destination.dev) {
+      throw new VFSError('EINVAL', 'source and destination are the same file');
+    }
+    if (stat.type === 'directory' && (destination.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
+      throw new VFSError('ENOTEMPTY', target);
+    }
+  }
+  if (stat.type === 'directory') {
+    if (!exists) await ctx.vfs.mkdir(target, { mode: stat.mode | 0o700 });
+    for (const entry of await ctx.vfs.readdir(source)) {
+      await copyAcrossMounts(ctx, resolve(source, entry.name), resolve(target, entry.name));
+    }
+  } else if (stat.type === 'symlink') {
+    await ensureParentDir(ctx, target);
+    const link = await ctx.vfs.readlink(source);
+    if (exists) await ctx.vfs.unlink(target);
+    await ctx.vfs.symlink(link, target);
+    return;
+  } else {
+    await ensureParentDir(ctx, target);
+    await ctx.vfs.copyFile(source, target);
+  }
+  await ctx.vfs.chmod(target, stat.mode);
+  await ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime);
+}
+
+/** A leaf copied across mounts arrives before the destination holds its parent. */
+async function ensureParentDir(ctx: CommandContext, target: string): Promise<void> {
+  const parent = dirname(target);
+  if (!(await ctx.vfs.exists(parent))) await ctx.vfs.mkdir(parent, { recursive: true });
+}

@@ -17,7 +17,6 @@ try {
   registerShellEntrypointCommands(
     box.commands.registry,
     { execute: (command, options) => box.shell.execute(command, options) },
-    box.kernel.vfs,
   );
 
   const commandContext = { pid: 41, cred: CRED_KERNEL };

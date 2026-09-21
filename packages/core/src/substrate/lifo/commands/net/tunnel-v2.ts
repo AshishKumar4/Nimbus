@@ -86,7 +86,7 @@ With --port 5173:
 
 		const { server, port: defaultPort, verbose } = options as TunnelOptions;
 
-		function log(message: string) {
+		async function log(message: string) {
 			if (verbose) {
 				await ctx.stdout.write(`[tunnel] ${message}\n`);
 			}

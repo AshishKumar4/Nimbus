@@ -49,7 +49,7 @@
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type NimbusFilesystemAuthority } from './os-contracts.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
 export declare function formatWasmRunnerWasiInfo(): string;
@@ -60,7 +60,7 @@ export declare function formatWasmRunnerWasiInfo(): string;
  * integration). Returns a fn that matches the runtime-registry's contract.
  */
 export declare function makeWasmRunner(deps: {
-    vfs: SqliteVFS;
+    filesystem: NimbusFilesystemAuthority;
     facets: FacetHost;
     processes: SessionProcessSupervisor;
 }): (_code: string, opts: RuntimeRunOpts) => Promise<RuntimeRunResult>;
@@ -73,7 +73,7 @@ export declare function makeWasmRunner(deps: {
  * to drift from the shim it describes.
  */
 export declare function wasmRunnerSpec(deps: {
-    vfs: SqliteVFS;
+    filesystem: NimbusFilesystemAuthority;
     facets: FacetHost;
     processes: SessionProcessSupervisor;
 }): RuntimeSpec;

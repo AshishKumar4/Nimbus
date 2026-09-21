@@ -40,7 +40,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireResult, VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireResult, VfsListPage, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
@@ -181,11 +181,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * Read a file as raw bytes. Used by the git network facet for binary
    * object/pack files where the text readFile would corrupt content.
    */
-  async readFileBytes(path: string): Promise<Uint8Array | null> {
+  async readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null> {
     return this._call(this._fsOp('readFileBytes', [path]));
   }
 
-  async writeFile(path: string, content: string | Uint8Array): Promise<number> {
+  async writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number> {
     // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
     // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
     // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
@@ -194,8 +194,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('writeFile', [path, content]));
   }
 
-  async stat(path: string): Promise<any> {
-    return this._call(this._fsOp('stat', [path]));
+  async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {
+    return this._call(this._fsOp('stat', [path, options]));
   }
 
   async lstat(path: string): Promise<any> {
@@ -206,20 +206,20 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('hasLegacySymlinkUnder', [path]));
   }
 
-  async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
+  async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<void> {
     return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
   }
 
-  async chmod(path: string, mode: number): Promise<void> {
+  async chmod(path: RuntimeFsPath, mode: number): Promise<void> {
     return this._call(this._fsOp('chmod', [path, mode]));
   }
 
-  async access(path: string, mode: number): Promise<void> {
+  async access(path: RuntimeFsPath, mode: number): Promise<void> {
     return this._call(this._fsOp('access', [path, mode]));
   }
 
   async chown(
-    path: string,
+    path: RuntimeFsPath,
     uid: number,
     gid: number,
     options?: { followSymlinks?: boolean },
@@ -231,7 +231,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('setUmask', [mask]));
   }
 
-  async readdir(path: string): Promise<{ name: string; type: string }[]> {
+  async readdir(path: RuntimeFsPath): Promise<{ name: string; type: string }[]> {
     return this._call(this._fsOp('readdir', [path]));
   }
 
@@ -239,27 +239,27 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('exists', [path]));
   }
 
-  async mkdir(path: string): Promise<void> {
-    return this._call(this._fsOp('mkdir', [path]));
+  async mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void> {
+    return this._call(this._fsOp('mkdir', [path, options]));
   }
 
-  async rmdir(path: string): Promise<void> {
+  async rmdir(path: RuntimeFsPath): Promise<void> {
     return this._call(this._fsOp('rmdir', [path]));
   }
 
-  async rename(from: string, to: string): Promise<void> {
+  async rename(from: RuntimeFsPath, to: RuntimeFsPath): Promise<void> {
     return this._call(this._fsOp('rename', [from, to]));
   }
 
-  async unlink(path: string): Promise<void> {
+  async unlink(path: RuntimeFsPath): Promise<void> {
     return this._call(this._fsOp('unlink', [path]));
   }
 
-  async readlink(path: string): Promise<string | null> {
+  async readlink(path: RuntimeFsPath): Promise<string | null> {
     return this._call(this._fsOp('readlink', [path]));
   }
 
-  async symlink(target: string, path: string): Promise<void> {
+  async symlink(target: string, path: RuntimeFsPath): Promise<void> {
     return this._call(this._fsOp('symlink', [target, path]));
   }
 
@@ -327,7 +327,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('wsClose', [id, code, reason]));
   }
 
-  async fsOpen(path: string, flags: any): Promise<any> {
+  async fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
     return this._call(this._fsOp('fsOpen', [path, flags]));
   }
 
@@ -337,6 +337,52 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
     return this._call(this._fsOp('fsWrite', [handleId, offset, bytes]));
+  }
+
+  async fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>> {
+    return this._call(this._fsOp('fsFstat', args));
+  }
+  async fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>> {
+    return this._call(this._fsOp('fsDup', args));
+  }
+  async fsSeek(...args: Parameters<RuntimeFsBridge['seek']>): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>> {
+    return this._call(this._fsOp('fsSeek', args));
+  }
+  async fsSetStatus(...args: Parameters<RuntimeFsBridge['setStatus']>): Promise<Awaited<ReturnType<RuntimeFsBridge['setStatus']>>> {
+    return this._call(this._fsOp('fsSetStatus', args));
+  }
+  async fsReaddirHandle(...args: Parameters<RuntimeFsBridge['readdirHandle']>): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>> {
+    return this._call(this._fsOp('fsReaddirHandle', args));
+  }
+  async fsFtruncate(...args: Parameters<RuntimeFsBridge['ftruncate']>): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>> {
+    return this._call(this._fsOp('fsFtruncate', args));
+  }
+  async fsFchmod(...args: Parameters<RuntimeFsBridge['fchmod']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchmod']>>> {
+    return this._call(this._fsOp('fsFchmod', args));
+  }
+  async fsFchown(...args: Parameters<RuntimeFsBridge['fchown']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchown']>>> {
+    return this._call(this._fsOp('fsFchown', args));
+  }
+  async fsFutimes(...args: Parameters<RuntimeFsBridge['futimes']>): Promise<Awaited<ReturnType<RuntimeFsBridge['futimes']>>> {
+    return this._call(this._fsOp('fsFutimes', args));
+  }
+  async fsSync(...args: Parameters<RuntimeFsBridge['fsync']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fsync']>>> {
+    return this._call(this._fsOp('fsSync', args));
+  }
+  async fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>> {
+    return this._call(this._fsOp('fsRealpath', args));
+  }
+  async fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>> {
+    return this._call(this._fsOp('fsRemove', args));
+  }
+  async fsCopyFile(...args: Parameters<RuntimeFsBridge['copyFile']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>> {
+    return this._call(this._fsOp('fsCopyFile', args));
+  }
+  async fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>> {
+    return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
+  }
+  async fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>> {
+    return this._call(this._fsOp('fsReleaseExclusiveMutation', args));
   }
 
   async fsClose(handleId: number): Promise<void> {

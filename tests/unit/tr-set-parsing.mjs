@@ -47,7 +47,6 @@ registerUnixCommands(box.commands.registry, rawVfs);
 registerShellEntrypointCommands(
   box.commands.registry,
   { execute: (cmd, options) => box.shell.execute(cmd, options) },
-  box.kernel.vfs,
 );
 
 const failures = [];

@@ -142,25 +142,25 @@ export interface RuntimeOpenFlags {
   directory?: boolean;
   truncate?: boolean;
   followSymlinks?: boolean;
+  /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
+  mode?: number;
   expectedRevision?: number;
 }
 
 export interface RuntimeFileHandle {
   id: number;
   path: string;
-  flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision'>> & {
+  flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode'>> & {
     expectedRevision?: number;
   };
   position: number;
-  /** Inode the handle opened; staleness is checked against its revision. */
-  baseIno: number;
-  /** Content revision of baseIno at the last handle operation. */
-  baseRevision: number;
   closed: boolean;
 }
 
 export type Awaitable<T> = T | Promise<T>;
-export type RuntimeFsPath = string | { readonly directory: number; readonly path: string };
+export type RuntimeFsPath = string
+  | { readonly directory: number; readonly path: string; readonly beneath?: boolean }
+  | { readonly root: string; readonly path: string; readonly beneath: true };
 
 export interface RuntimeReadOptions {
   followSymlinks?: boolean;

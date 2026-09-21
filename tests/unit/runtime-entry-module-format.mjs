@@ -57,13 +57,14 @@ function makeHandler(files) {
       registry: { resolve: () => undefined },
     },
   );
-  return { handler, transforms, ran: () => ranWith };
+  return { handler, fs, transforms, ran: () => ranWith };
 }
 
 async function runScript(files, scriptPath) {
   const built = makeHandler(files);
   const stderr = [];
   const exitCode = await built.handler({
+    vfs: built.fs,
     args: [scriptPath],
     cwd: '/home/user',
     env: {},

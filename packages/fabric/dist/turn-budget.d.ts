@@ -114,7 +114,7 @@ export interface PacedWorkHost {
      * reason. Without it the pump degrades to a same-context timer — see
      * {@link PacedWork.nextTurn}.
      */
-    requestTurn?: (notBefore?: number) => void;
+    requestTurn?: (notBefore?: number) => void | Promise<void>;
 }
 /**
  * The granting side of {@link TurnScheduler}: parks suspended launches
@@ -134,6 +134,7 @@ export declare class PacedWork implements TurnScheduler {
      * from its inputs is the same idempotent work again.
      */
     private waiters;
+    private closed;
     /**
      * `ctx` keys the cold-start queue the pump drains first on every turn it
      * grants — see {@link pump}.
@@ -159,6 +160,9 @@ export declare class PacedWork implements TurnScheduler {
      * the runtime may tear the context down mid-chunk.
      */
     pump(): Promise<void>;
+    private requestTurn;
+    /** Reject parked work before the owner drains launch cleanup and cancels its alarm. */
+    close(reason?: Error): void;
     /** Whether any launch is suspended waiting for a turn. */
     get hasPending(): boolean;
 }

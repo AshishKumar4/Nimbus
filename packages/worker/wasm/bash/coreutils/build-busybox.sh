@@ -61,10 +61,10 @@ if [ ! -f .config ]; then
   done < "$HERE/busybox-wasi.config"
   # allnoconfig's SH_IS_ASH default would drag the ash shell (fork-based) in.
   sed -i 's/^CONFIG_SH_IS_ASH=y/# CONFIG_SH_IS_ASH is not set/; s/^CONFIG_SHELL_ASH=y/# CONFIG_SHELL_ASH is not set/; s/^# CONFIG_SH_IS_NONE is not set/CONFIG_SH_IS_NONE=y/' .config
-  yes "" | make -s oldconfig >/dev/null
+  { yes "" || true; } | make -s oldconfig >/dev/null
   # x86 SHA assembly cannot target wasm.
   sed -i 's/^CONFIG_SHA1_HWACCEL=y/# CONFIG_SHA1_HWACCEL is not set/; s/^CONFIG_SHA256_HWACCEL=y/# CONFIG_SHA256_HWACCEL is not set/' .config
-  yes "" | make -s oldconfig >/dev/null
+  { yes "" || true; } | make -s oldconfig >/dev/null
 fi
 
 # Compile everything (the kbuild link step needs --start-group, which
@@ -85,7 +85,7 @@ done
 "$CC_BASE" -O2 -o busybox.wasm applets/applets.o "$HERE/wasi-shim.o" \
   -Wl,-u,__main_argc_argv -Wl,--strip-debug \
   -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat \
-  -Wl,--wrap=chmod -Wl,--wrap=fchmod \
+  -Wl,--wrap=chmod -Wl,--wrap=fchmod -Wl,--wrap=__main_argc_argv \
   */lib.a */*/lib.a libbb/lib.a \
   -lsetjmp -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman
 
@@ -98,12 +98,24 @@ node - "$HERE/busybox.wasm" <<'EOF' 2>&1 1>/dev/null | grep -vE 'ExperimentalWar
 const { readFile } = require('node:fs/promises');
 const { WASI } = require('node:wasi');
 (async () => {
-  const wasi = new WASI({ version: 'preview1', args: ['busybox', '--list'], returnOnExit: true });
+  const wasi = new WASI({ version: 'preview1', args: ['busybox', '--list'], preopens: { '/': '/' }, returnOnExit: true });
   const mod = await WebAssembly.compile(await readFile(process.argv[2]));
-  const inst = await WebAssembly.instantiate(mod, { ...wasi.getImportObject(), nimbus_proc: { chmod: () => 0 } });
+  let inst;
+  inst = await WebAssembly.instantiate(mod, { ...wasi.getImportObject(), nimbus_proc: {
+    startup_cwd(p, cap) { if (cap) new Uint8Array(inst.exports.memory.buffer).set([47, 0], p); return 1; },
+    identity: (field) => field === 2 ? 1 : 0,
+    stat_metadata(fd, p, n, follow, out) {
+      const fs = require('node:fs');
+      const path = new TextDecoder().decode(new Uint8Array(inst.exports.memory.buffer, p, n));
+      const st = p ? (follow ? fs.statSync(path) : fs.lstatSync(path)) : fs.fstatSync(fd);
+      const dv = new DataView(inst.exports.memory.buffer);
+      [st.mode, st.uid, st.gid].forEach((v, i) => dv.setUint32(out + i * 4, v, true)); return 0;
+    },
+    chmod: () => 63, fchmod: () => 63, chown: () => 63,
+  } });
   wasi.start(inst);
 })();
 EOF
 
 echo "Built: $HERE/busybox.wasm ($(wc -c <"$HERE/busybox.wasm") bytes), $(wc -l <"$HERE/busybox.applets") applets"
-echo "Imports: 29 wasi_snapshot_preview1 + nimbus_proc.chmod"
+

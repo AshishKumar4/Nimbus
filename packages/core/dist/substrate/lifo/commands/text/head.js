@@ -11,7 +11,7 @@ const command = async (ctx) => {
         if (arg === '-n' || arg === '-c') {
             const count = parseCount(ctx.args[++i]);
             if (count === null) {
-                ctx.stderr.write(`head: invalid count\n`);
+                await ctx.stderr.write(`head: invalid count\n`);
                 return 1;
             }
             if (arg === '-c')
@@ -22,7 +22,7 @@ const command = async (ctx) => {
         else if (/^-[nc]\d/.test(arg)) {
             const count = parseCount(arg.slice(2));
             if (count === null) {
-                ctx.stderr.write(`head: invalid count\n`);
+                await ctx.stderr.write(`head: invalid count\n`);
                 return 1;
             }
             if (arg[1] === 'c')
@@ -39,11 +39,11 @@ const command = async (ctx) => {
     }
     if (files.length === 0) {
         if (!ctx.stdin) {
-            ctx.stderr.write('head: missing file operand\n');
+            await ctx.stderr.write('head: missing file operand\n');
             return 1;
         }
         if (bytes === undefined) {
-            ctx.stdout.write(headLines(await ctx.stdin.readAll(), lines));
+            await ctx.stdout.write(headLines(await ctx.stdin.readAll(), lines));
             return 0;
         }
         // -c counts bytes, so pull bounded chunks rather than draining the
@@ -57,10 +57,10 @@ const command = async (ctx) => {
                 break;
             const raw = typeof chunk === 'string' ? encode(chunk) : chunk;
             const encoded = raw.subarray(0, want);
-            writer.write(encoded);
+            await writer.write(encoded);
             copied += encoded.length;
         }
-        writer.end();
+        await writer.end();
         return 0;
     }
     let exitCode = 0;
@@ -69,14 +69,14 @@ const command = async (ctx) => {
         const path = resolve(ctx.cwd, file);
         try {
             if (files.length > 1)
-                ctx.stdout.write(`==> ${file} <==\n`);
+                await ctx.stdout.write(`==> ${file} <==\n`);
             if (writer === null) {
-                ctx.stdout.write(headLines(ctx.vfs.readFileString(path), lines));
+                await ctx.stdout.write(headLines((await ctx.vfs.readFileString(path)), lines));
             }
             else {
                 // Bounded read: works on regular files and on endless character
                 // devices alike, since neither is ever materialised whole.
-                streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+                await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
                     length: bytes,
                     signal: ctx.signal,
                 });
@@ -84,7 +84,7 @@ const command = async (ctx) => {
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`head: ${file}: ${e.message}\n`);
+                await ctx.stderr.write(`head: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }
             else {
@@ -92,7 +92,7 @@ const command = async (ctx) => {
             }
         }
     }
-    writer?.end();
+    await writer?.end();
     return exitCode;
 };
 function headLines(text, count) {

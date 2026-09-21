@@ -140,17 +140,17 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
     const manifest = parseRuntimeManifest(runtimePackage.manifest);
     const root = installRoot(homeDir, manifest.name, manifest.version);
     const marker = `${root}/manifest.json`;
-    if (!options?.force && vfs.exists(marker)) {
+    if (!options?.force && (await vfs.exists(marker))) {
         if (await runtimeManifestIntact(vfs, root, manifest)) {
             return { name: manifest.name, version: manifest.version, root, written: false };
         }
     }
     // Marker first: whatever happens below, a tree without manifest.json was
     // never a completed install. Everything else stays where it is.
-    if (vfs.exists(marker))
-        vfs.unlink(marker);
-    if (!vfs.exists(root))
-        vfs.mkdir(root, { recursive: true });
+    if ((await vfs.exists(marker)))
+        (await vfs.unlink(marker));
+    if (!(await vfs.exists(root)))
+        (await vfs.mkdir(root, { recursive: true }));
     // Parent dirs ahead of the workers so none of them race mkdir.
     const parents = new Set();
     for (const file of manifest.files) {
@@ -159,8 +159,8 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
             parents.add(`${root}/${file.path}`.slice(0, slash));
     }
     for (const parent of parents) {
-        if (!vfs.exists(parent))
-            vfs.mkdir(parent, { recursive: true });
+        if (!(await vfs.exists(parent)))
+            (await vfs.mkdir(parent, { recursive: true }));
     }
     // Three in flight, as the R2 installer ran: blob reads dominate wall-clock
     // and bounded overlap beats head-of-line batches. A failure stops the
@@ -178,7 +178,7 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
                 return;
             const file = files[i];
             try {
-                vfs.writeFile(`${root}/${file.path}`, await verifiedBlob(manifest, runtimePackage, file));
+                (await vfs.writeFile(`${root}/${file.path}`, await verifiedBlob(manifest, runtimePackage, file)));
                 completed++;
                 options?.onProgress?.(`[${manifest.name}] fetched ${file.path} (${(file.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${files.length}`);
             }
@@ -191,7 +191,7 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
     await Promise.all(workers);
     if (failure !== null)
         throw failure;
-    vfs.writeFile(marker, JSON.stringify(manifest, null, 2));
+    (await vfs.writeFile(marker, JSON.stringify(manifest, null, 2)));
     return { name: manifest.name, version: manifest.version, root, written: true };
 }
 /** The on-disk manifest parses to exactly this manifest and every payload
@@ -200,7 +200,7 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
  *  by anything else with filesystem access. */
 async function runtimeManifestIntact(vfs, root, manifest) {
     try {
-        const onDisk = parseRuntimeManifest(JSON.parse(vfs.readFileString(`${root}/manifest.json`)));
+        const onDisk = parseRuntimeManifest(JSON.parse((await vfs.readFileString(`${root}/manifest.json`))));
         if (JSON.stringify(onDisk) !== JSON.stringify(manifest))
             return false;
         return await runtimePayloadIntact(vfs, root, onDisk);

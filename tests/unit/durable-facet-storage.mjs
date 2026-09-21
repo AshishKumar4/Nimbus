@@ -36,6 +36,7 @@ import {
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -66,7 +67,8 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   const portRegistry = new PortRegistry();
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
   const disk = createSqliteVfsTestHarness();
-  fm.setVfs(new SqliteVFS(disk.sql, disk.ctx));
+  const managerVfs = new SqliteVFS(disk.sql, disk.ctx);
+  fm.setVfs(managerVfs, new SqliteFilesystemAuthority(managerVfs));
   return { boots, world, ctx, fm, portRegistry, storage };
 }
 

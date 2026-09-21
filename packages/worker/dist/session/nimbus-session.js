@@ -2,6 +2,7 @@ import * as runtimeServices from '../hosted/services.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -431,7 +432,8 @@ export class NimbusSession extends CloudflareDurableObject {
             ctx,
             env,
             notify: (line) => this._notifySession(line),
-            requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
+            requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+            filesystem: () => this.getFilesystemAuthority(),
         });
         // In `wrangler dev`, the outer Worker and this DO share a single
         // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -665,6 +667,13 @@ export class NimbusSession extends CloudflareDurableObject {
      * Lazy: sqliteFs exists only after ensureSqliteFs().
      */
     _supervisorOps = null;
+    filesystemAuthority = null;
+    getFilesystemAuthority() {
+        this.ensureSqliteFs();
+        if (!this.sqliteFs)
+            throw new Error('Filesystem is not initialized');
+        return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+    }
     supervisorOps() {
         if (!this._supervisorOps)
             this._supervisorOps = buildSessionSupervisorOps(this);
@@ -691,20 +700,8 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcStat(path, pid, cred) { return _rpc._rpcStat(this, path, pid, cred); }
     async _rpcLstat(path, pid, cred) { return _rpc._rpcLstat(this, path, pid, cred); }
-    async _rpcHasLegacySymlinkUnder(path, pid) {
-        return _rpc._rpcHasLegacySymlinkUnder(this, path, pid);
-    }
-    async _rpcUtimes(path, atimeMs, mtimeMs, pid) {
-        return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs, pid);
-    }
     async _rpcChmod(path, mode, pid, cred) {
         return _rpc._rpcChmod(this, path, mode, pid, cred);
-    }
-    async _rpcAccess(path, mode, pid) {
-        return _rpc._rpcAccess(this, path, mode, pid);
-    }
-    async _rpcChown(path, uid, gid, pid, options) {
-        return _rpc._rpcChown(this, path, uid, gid, pid, options);
     }
     async _rpcSetUmask(mask, pid) {
         return _rpc._rpcSetUmask(this, mask, pid);
@@ -712,11 +709,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReaddir(path, pid, cred) { return _rpc._rpcReaddir(this, path, pid, cred); }
     async _rpcExists(path, pid, cred) { return _rpc._rpcExists(this, path, pid, cred); }
     async _rpcMkdir(path, pid, cred) { return _rpc._rpcMkdir(this, path, pid, cred); }
-    async _rpcRmdir(path, pid) { return _rpc._rpcRmdir(this, path, pid); }
     async _rpcRename(from, to, pid, cred) { return _rpc._rpcRename(this, from, to, pid, cred); }
-    async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
-    async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
-    async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
     async _rpcFsAcquire(epoch, cursor, pid) {
         return _rpc._rpcFsAcquire(this, epoch, cursor, pid);
     }
@@ -735,7 +728,6 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcWsClose(id, code, reason, pid) {
         return _rpc._rpcWsClose(this, id, code, reason, pid);
     }
-    async _rpcFsOpen(path, flags, pid) { return _rpc._rpcFsOpen(this, path, flags, pid); }
     async _rpcFsRead(handleId, offset, length, pid) {
         return _rpc._rpcFsRead(this, handleId, offset, length, pid);
     }
@@ -745,9 +737,6 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsClose(handleId, pid) { return _rpc._rpcFsClose(this, handleId, pid); }
     async _rpcFsReadRange(path, offset, length, pid, cred) {
         return _rpc._rpcFsReadRange(this, path, offset, length, pid, cred);
-    }
-    async _rpcFsReadRangeUncached(path, offset, length, pid) {
-        return _rpc._rpcFsReadRangeUncached(this, path, offset, length, pid);
     }
     async _rpcFsReadBatch(requests, pid) {
         return _rpc._rpcFsReadBatch(this, requests, pid);
@@ -761,13 +750,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsAppendAck(writerId, moduleId, operationId, pid) {
         return _rpc._rpcFsAppendAck(this, writerId, moduleId, operationId, pid);
     }
-    async _rpcFsTruncate(path, size, pid) { return _rpc._rpcFsTruncate(this, path, size, pid); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
-    async _rpcUnlink(path, pid) { return _rpc._rpcUnlink(this, path, pid); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
-    async _rpcWriteBatchStream(stream, mutationOwner, pid) {
-        return _rpc._rpcWriteBatchStream(this, stream, mutationOwner, pid);
-    }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
@@ -778,7 +762,7 @@ export class NimbusSession extends CloudflareDurableObject {
     _emitShellExecDone(pid, cmd, code, durationMs) { return _rpc._emitShellExecDone(this, pid, cmd, code, durationMs); }
     _reportExternalExit(pid, code, reason) { return _rpc._reportExternalExit(this, pid, code, reason); }
     // Misc supervisor RPC
-    async _rpcPrefetch(cwd, entryCode) { return _rpc._rpcPrefetch(this, cwd, entryCode); }
+    async _rpcPrefetch(cwd, entryCode) { return (await _rpc._rpcPrefetch(this, cwd, entryCode)); }
     async _rpcRegisterPort(pid, port) { return _rpc._rpcRegisterPort(this, pid, port); }
     async _rpcUnregisterPort(port) { return _rpc._rpcUnregisterPort(this, port); }
     async _rpcRouteLoopback(port, request) { return _rpc._rpcRouteLoopback(this, port, request); }
@@ -835,7 +819,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcInstallRuntime(spec, options) { return _programmatic.rpcInstallRuntime(this, spec, options); }
     async _rpcEnsureRuntimes(specs, options) { return _programmatic.rpcEnsureRuntimes(this, specs, options); }
-    async _rpcListRuntimes() { return _programmatic.rpcListRuntimes(this); }
+    async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this)); }
     async _rpcListProcesses() { return _programmatic.rpcListProcesses(this); }
     async _rpcKillProcess(pid) { return _programmatic.rpcKillProcess(this, pid); }
     async _rpcWriteProcessInput(pid, data) { return _programmatic.rpcWriteProcessInput(this, pid, data); }

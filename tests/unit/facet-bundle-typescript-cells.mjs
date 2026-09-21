@@ -39,6 +39,8 @@ import {
 } from '../../packages/worker/src/facets/manager.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   epoch = 'fake-vfs-epoch';
   revision() { return 0; }
   constructor(files) {

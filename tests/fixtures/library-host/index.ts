@@ -48,6 +48,13 @@ const ExecRequest = z.object({
   }).optional(),
 });
 let isolateId = '';
+const AppRequest = z.object({ owner: z.string().min(1), port: z.number().int().positive() });
+const FixtureWorker = 'import { DurableObject } from "cloudflare:workers";\n' +
+  'export class NimbusProcess extends DurableObject {\n' +
+  '  marker = "";\n' +
+  '  async startProcess(args) { this.marker = args.marker; return { marker: this.marker }; }\n' +
+  '  async handleHttpRequest(req) { return Response.json({marker: this.marker, path: new URL(req.url).pathname}); }\n' +
+  '}';
 
 export class EmbeddedWorkspace extends DurableObject<Env> {
   private runtime: Promise<HostedRuntime> | null = null;
@@ -88,9 +95,21 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       workspace,
       ctx: this.ctx,
       env: this.env,
+      resolveWorkerLaunch: async (recipe) => {
+        const key = 'fixture:resolver:' + recipe.owner;
+        const state = await this.ctx.storage.get<{ mode: 'resolve' | 'null' | 'reject'; calls: number }>(key)
+          ?? { mode: 'resolve', calls: 0 };
+        await this.ctx.storage.put(key, { ...state, calls: state.calls + 1 });
+        if (state.mode === 'null') return null;
+        if (state.mode === 'reject') throw new Error('fixture resolver rejected');
+        return { env: null, globalOutbound: undefined, modules: { 'runner.js': FixtureWorker }, startArgs: { marker: 'recovered' } };
+      },
       ports: new PortRegistry(),
       lifecycle: {
-        waitUntil: (task) => this.ctx.waitUntil(task),
+        waitUntil: (task) => this.ctx.waitUntil(task.catch(async (error: unknown) => {
+          const errors = await this.ctx.storage.get<string[]>('fixture:lifecycle-errors') ?? [];
+          await this.ctx.storage.put('fixture:lifecycle-errors', [...errors, String(error)]);
+        })),
         schedule: (reason, at) => this.schedule(reason, at),
         cancel: (reason) => this.cancel(reason),
       },
@@ -98,6 +117,13 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
   }
 
   private async schedule(reason: ScheduledTask['reason'], at: number): Promise<void> {
+    if (reason !== 'host') {
+      const fail = await this.ctx.storage.get<string>('fixture:fail-schedule');
+      if (fail === reason) {
+        await this.ctx.storage.delete('fixture:fail-schedule');
+        throw new Error('fixture schedule rejected: ' + reason);
+      }
+    }
     await this.ctx.storage.transaction(async (txn) => {
       const tasks = await txn.get<ScheduledTask[]>(TASKS_KEY) ?? [];
       const next = [...tasks.filter((task) => task.reason !== reason), { reason, at }];
@@ -112,6 +138,7 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       const next = tasks.filter((task) => task.reason !== reason);
       await txn.put(TASKS_KEY, next);
       if (next.length > 0) await txn.setAlarm(Math.min(...next.map((task) => task.at)));
+      else await txn.deleteAlarm();
     });
   }
 
@@ -140,6 +167,7 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       alarm: await this.ctx.storage.getAlarm(),
       isolateId,
       generation: generation(this.ctx),
+      lifecycleErrors: await this.ctx.storage.get<string[]>('fixture:lifecycle-errors') ?? [],
     };
   }
 
@@ -166,7 +194,41 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       await this.ctx.storage.sync();
       this.ctx.abort('library-host acceptance: reopen storage');
     }
+    if (path === '/lifecycle/fail' && request.method === 'POST') {
+      const { reason } = z.object({ reason: z.enum(['resident-launch', 'log-flush', 'log-janitor']) }).parse(await request.json());
+      await this.ctx.storage.put('fixture:fail-schedule', reason);
+      return Response.json({ armed: true });
+    }
+    if (path === '/apps/resolver' && request.method === 'POST') {
+      const { owner, mode } = z.object({ owner: z.string(), mode: z.enum(['resolve', 'null', 'reject']) }).parse(await request.json());
+      await this.ctx.storage.put('fixture:resolver:' + owner, { mode, calls: 0 });
+      return Response.json({ saved: true });
+    }
+    if (path === '/apps/resolver') {
+      return Response.json(await this.ctx.storage.get('fixture:resolver:' + new URL(request.url).searchParams.get('owner')) ?? { calls: 0 });
+    }
     const runtime = await this.open();
+    if (path === '/apps/reserve' && request.method === 'POST') {
+      const input = z.object({ owner: z.string(), preferredPort: z.number().int().optional(), name: z.string().optional() }).parse(await request.json());
+      return Response.json(await runtime.ensureDurableApp(input));
+    }
+    if (path === '/apps/unexpose' && request.method === 'POST') {
+      const { port } = z.object({ port: z.number().int() }).parse(await request.json());
+      return Response.json(await runtime.unexposePort(port));
+    }
+    if (path === '/apps/remove' && request.method === 'POST') {
+      const { owner } = z.object({ owner: z.string() }).parse(await request.json());
+      return Response.json(await runtime.removeDurableApp(owner));
+    }
+    if (path === '/apps/spawn' && request.method === 'POST') {
+      const { owner, port } = AppRequest.parse(await request.json());
+      const { pid, boot } = await runtime.spawnWorker(FixtureWorker, 'fixture app', '/home/user', {
+        port, mainModule: 'runner.js', startArgs: { marker: 'first' }, durable: { owner },
+      });
+      return Response.json({ pid, boot });
+    }
+    const portRoute = /^\/ports\/(\d+)\/([^/]+)(\/.*)?$/.exec(path);
+    if (portRoute) return runtime.routeCapabilityPort(Number(portRoute[1]), portRoute[2]!, request, portRoute[3] ?? '/');
     if (path === '/state') {
       return Response.json({
         ...await this.hostState(),

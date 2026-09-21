@@ -4,6 +4,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 
 const h = createSqliteVfsTestHarness();
@@ -139,6 +140,43 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   // And the scope gate itself: nothing else goes through this view.
   assert.throws(() => proc.writeStream(new ReadableStream()), { code: 'EBADF' });
   h2.db.close();
+}
+
+// A kernel mount is reached only through a confined path: neither `..` nor an
+// absolute path inside a capability can step out of its root sideways.
+{
+  const h3 = createSqliteVfsTestHarness();
+  const raw3 = new SqliteVFS(h3.sql, h3.ctx);
+  const kernel = new Kernel();
+  kernel.initFilesystem();
+  const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+  const root = raw3.as(CRED_KERNEL);
+  root.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+  root.chown('home/user', 1000, 1000);
+  root.chown('home/user/app', 1000, 1000);
+  const view = new SqliteFilesystemAuthority(raw3, kernel.vfs).bind({ pid: 9, cred: user });
+  assert.equal(view.stat('/dev/null')?.type, 'file');
+  assert.equal(view.readFile('/dev/null')?.byteLength, 0);
+  const devNull = view.open('/dev/null', { write: true });
+  assert.equal(view.write(devNull.id, null, bytes('discarded')), 9);
+  view.close(devNull.id);
+  assert.throws(() => view.stat({ root: 'home/user/app', path: '../../../dev/null', beneath: true }), { code: 'ENOTCAPABLE' });
+  assert.throws(() => view.stat({ root: 'home/user/app', path: '/dev/null', beneath: true }), { code: 'ENOTCAPABLE' });
+  const app = view.open('/home/user/app', { read: true, directory: true });
+  assert.throws(() => view.readFile({ directory: app.id, path: '../../../proc/version', beneath: true }), { code: 'ENOTCAPABLE' });
+  assert.throws(() => view.readFile({ directory: app.id, path: '/proc/version', beneath: true }), { code: 'ENOTCAPABLE' });
+  assert.throws(() => view.rename('/home/user/app', '/dev/app'), { code: 'EXDEV' });
+  view.close(app.id);
+
+  // A denied append writes no journal row before the refusal.
+  root.writeFile('home/user/private', 'x', { mode: 0o600 });
+  const writer3 = '33333333-3333-4333-8333-333333333333';
+  raw3.activateAppendWriter(9, writer3);
+  const journal = () => [...h3.sql.exec('SELECT COUNT(*) AS n FROM vfs_append_module_state_v2')][0].n;
+  const before = journal();
+  assert.throws(() => view.appendOnce('/home/user/private', 9, writer3, moduleId, 1, 'digest', bytes('no')), { code: 'EACCES' });
+  assert.equal(journal(), before);
+  h3.db.close();
 }
 
 console.log('filesystem authority: live descriptors, namespace isolation, scoped host leases, stream cancel and epoch/version races passed');

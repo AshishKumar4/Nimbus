@@ -37,7 +37,6 @@
  *     observable behaviour, not implementation shape.
  */
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
-import { CRED_KERNEL } from './os-contracts.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
@@ -51,14 +50,14 @@ const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/in
  * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
  * rather than trying to read the directory as source.
  */
-export function resolveRuntimeScriptPath(fs, cwd, target, opts) {
+export async function resolveRuntimeScriptPath(fs, cwd, target, opts) {
     const base = normalizeVfsPath(cwd || '/home/user');
     let resolved;
     if (target === '.' || target === './') {
         // `node .` / `bun .` — the package's declared entry point.
         let main = 'index.js';
         try {
-            const pkg = JSON.parse(fs.readFileString(`${base}/package.json`));
+            const pkg = JSON.parse(await fs.readFileString(`${base}/package.json`));
             main = (opts?.preferModuleField ? pkg.module : undefined) || pkg.main || 'index.js';
         }
         catch { /* no readable package.json — index.js */ }
@@ -67,10 +66,10 @@ export function resolveRuntimeScriptPath(fs, cwd, target, opts) {
     else {
         resolved = resolveVfsPath(target, base);
     }
-    if (fs.isFile(resolved))
+    if (await fs.isFile(resolved))
         return resolved;
     for (const candidate of SCRIPT_RESOLUTION_CANDIDATES) {
-        if (fs.isFile(resolved + candidate))
+        if (await fs.isFile(resolved + candidate))
             return resolved + candidate;
     }
     return null;
@@ -79,12 +78,11 @@ export function resolveRuntimeScriptPath(fs, cwd, target, opts) {
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
  *
- * Captures `vfs`, `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
+ * Captures `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
  * runtime-specific code lives in `spec`.
  */
 export function buildRuntimeHandler(spec, ctx0) {
-    const { vfs, getEsbuild, registry } = ctx0;
-    const fs = vfs.as(CRED_KERNEL);
+    const { getEsbuild, registry } = ctx0;
     /**
      * The standard invocation: flag span, --version/--help/-e, then the
      * script-path flow. Subcommand verbs are NOT considered here — the
@@ -92,6 +90,7 @@ export function buildRuntimeHandler(spec, ctx0) {
      * back in with a rewritten argv without re-triggering itself.
      */
     async function runtimeInvocation(ctx, args) {
+        const fs = ctx.vfs;
         const name = spec.name;
         const nimbusCtx = ctx;
         // A facet-hosted runtime streams its output to the session terminal over
@@ -201,14 +200,14 @@ export function buildRuntimeHandler(spec, ctx0) {
             return result.exitCode;
         }
         // Resolve against cwd: `.` → the package entry, then extension probing.
-        const resolvedPath = resolveRuntimeScriptPath(fs, ctx.cwd || '/home/user', scriptPath, {
+        const resolvedPath = (await resolveRuntimeScriptPath(fs, ctx.cwd || '/home/user', scriptPath, {
             // bun prefers .module over .main when both exist; node uses .main.
             preferModuleField: name === 'bun',
-        });
+        }));
         let code = null;
         if (resolvedPath !== null) {
             try {
-                code = fs.readFileString(resolvedPath);
+                code = (await fs.readFileString(resolvedPath));
             }
             catch { /* unreadable — reported below */ }
         }
@@ -250,7 +249,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // sub-module ESM files. esbuild's CJS output emits __require /
         // module.exports / exports.X so the facet's pre-compile loop
         // sees ordinary CJS source.
-        function nearestPackageTypeIsModule(absPath) {
+        async function nearestPackageTypeIsModule(absPath) {
             // Walk up dirs looking for the nearest package.json. First one
             // wins (Node spec); we do NOT consult ancestors past it.
             let dir = absPath.replace(/^\/+/, '');
@@ -260,9 +259,9 @@ export function buildRuntimeHandler(spec, ctx0) {
             while (dir && !visited.has(dir)) {
                 visited.add(dir);
                 const pj = dir + '/package.json';
-                if (fs.exists(pj)) {
+                if ((await fs.exists(pj))) {
                     try {
-                        const pkg = JSON.parse(fs.readFileString(pj));
+                        const pkg = JSON.parse((await fs.readFileString(pj)));
                         return pkg && pkg.type === 'module';
                     }
                     catch {
@@ -278,7 +277,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         }
         const scriptExt = vfsPathExtension(resolvedPath);
         const needsEsmTransform = scriptExt === '.mjs' ||
-            ((scriptExt === '.js' || scriptExt === '') && nearestPackageTypeIsModule(resolvedPath));
+            ((scriptExt === '.js' || scriptExt === '') && (await nearestPackageTypeIsModule(resolvedPath)));
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
         // AND for ESM entry scripts (primitive ESM-detect).
         if (scriptExt === '.ts' ||
@@ -360,8 +359,8 @@ export function buildRuntimeHandler(spec, ctx0) {
         // rewritten argv back to the standard flow — that is how
         // `bun run <file>` reaches the same execution path as `bun <file>`.
         if (spec.subcommands && args.length > 0 && spec.subcommands[args[0]]) {
-            return spec.subcommands[args[0]](ctx, registry, (rewritten) => runtimeInvocation(ctx, rewritten));
+            return spec.subcommands[args[0]](ctx, registry, async (rewritten) => (await runtimeInvocation(ctx, rewritten)));
         }
-        return runtimeInvocation(ctx, args);
+        return (await runtimeInvocation(ctx, args));
     };
 }

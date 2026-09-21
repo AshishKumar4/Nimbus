@@ -20,6 +20,8 @@ import assert from 'node:assert/strict';
 import { greedyAddMainEntries, speculativePackageDirs } from '../../packages/worker/src/facets/manager.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   epoch = 'fake'; revision() { return 0; }
   constructor(files) {
     this.files = new Map(Object.entries(files));
@@ -63,10 +65,10 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
 
 // ── 1. empty closure: the project's runtime deps only ───────────────────────
 {
-  assert.deepEqual(speculativePackageDirs(vfs, 'home/user/app', {}).map(name), ['got'], 'runtime dependencies only, no devDependencies, no second hop');
+  assert.deepEqual((await speculativePackageDirs(vfs, 'home/user/app', {})).map(name), ['got'], 'runtime dependencies only, no devDependencies, no second hop');
   const bundle = {};
   const budget = { totalBytes: 0, fileCount: 0 };
-  greedyAddMainEntries(vfs, '/home/user/app', bundle, budget);
+  (await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget));
   assert.deepEqual(Object.keys(bundle).sort(), [`${NM}/got/index.js`, `${NM}/got/package.json`]);
   console.log('  empty closure → the project\'s runtime deps');
 }
@@ -74,11 +76,11 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
 // ── 2. closure owning got: got's runtime deps, one hop ──────────────────────
 {
   const closure = { [`${NM}/got/index.js`]: files[`${NM}/got/index.js`] };
-  assert.deepEqual(speculativePackageDirs(vfs, 'home/user/app', closure).map(name), ['got', 'keyv', 'p-cancelable'],
+  assert.deepEqual((await speculativePackageDirs(vfs, 'home/user/app', closure)).map(name), ['got', 'keyv', 'p-cancelable'],
     'got and its direct runtime deps; json-buffer is a second hop, ava/typescript are dev, unrelated is unreachable');
   const bundle = { ...closure };
   const budget = { totalBytes: 0, fileCount: 1 };
-  greedyAddMainEntries(vfs, '/home/user/app', bundle, budget);
+  (await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget));
   assert.equal(bundle[`${NM}/keyv/index.js`] !== undefined, true);
   assert.equal(bundle[`${NM}/p-cancelable/index.js`] !== undefined, true);
   assert.equal(bundle[`${NM}/json-buffer/index.js`], undefined, 'no second hop');
@@ -96,7 +98,7 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
     ...pkg(`${NM}/b`, 'b-hoisted-other-version'),
   });
   const closure = { [`${NM}/a/index.js`]: 'x' };
-  assert.deepEqual(speculativePackageDirs(nested, 'home/user/app', closure), [`${NM}/a`, `${NM}/a/node_modules/b`], 'the nearest node_modules wins');
+  assert.deepEqual((await speculativePackageDirs(nested, 'home/user/app', closure)), [`${NM}/a`, `${NM}/a/node_modules/b`], 'the nearest node_modules wins');
   console.log('  nested node_modules resolve nearest-first');
 }
 

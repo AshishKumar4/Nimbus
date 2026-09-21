@@ -30,7 +30,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireResult, VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireResult, VfsListPage, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
@@ -67,29 +67,31 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
-    readFileBytes(path: string): Promise<Uint8Array | null>;
-    writeFile(path: string, content: string | Uint8Array): Promise<number>;
-    stat(path: string): Promise<any>;
+    readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null>;
+    writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number>;
+    stat(path: RuntimeFsPath, options?: {
+        followSymlinks?: boolean;
+    }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>>;
     lstat(path: string): Promise<any>;
     hasLegacySymlinkUnder(path: string): Promise<boolean>;
-    utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
-    chmod(path: string, mode: number): Promise<void>;
-    access(path: string, mode: number): Promise<void>;
-    chown(path: string, uid: number, gid: number, options?: {
+    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<void>;
+    chmod(path: RuntimeFsPath, mode: number): Promise<void>;
+    access(path: RuntimeFsPath, mode: number): Promise<void>;
+    chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
     }): Promise<void>;
     setUmask(mask: number): Promise<number>;
-    readdir(path: string): Promise<{
+    readdir(path: RuntimeFsPath): Promise<{
         name: string;
         type: string;
     }[]>;
     exists(path: string): Promise<boolean>;
-    mkdir(path: string): Promise<void>;
-    rmdir(path: string): Promise<void>;
-    rename(from: string, to: string): Promise<void>;
-    unlink(path: string): Promise<void>;
-    readlink(path: string): Promise<string | null>;
-    symlink(target: string, path: string): Promise<void>;
+    mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void>;
+    rmdir(path: RuntimeFsPath): Promise<void>;
+    rename(from: RuntimeFsPath, to: RuntimeFsPath): Promise<void>;
+    unlink(path: RuntimeFsPath): Promise<void>;
+    readlink(path: RuntimeFsPath): Promise<string | null>;
+    symlink(target: string, path: RuntimeFsPath): Promise<void>;
     /**
      * ACQUIRE: the paths mutated since the facet's cursor, plus a fresh
      * cursor. The facet drops those cells from its resident set before
@@ -136,9 +138,24 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     wsPoll(id: number, waitMs: number): Promise<unknown[]>;
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
-    fsOpen(path: string, flags: any): Promise<any>;
+    fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+    fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>>;
+    fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>>;
+    fsSeek(...args: Parameters<RuntimeFsBridge['seek']>): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>>;
+    fsSetStatus(...args: Parameters<RuntimeFsBridge['setStatus']>): Promise<Awaited<ReturnType<RuntimeFsBridge['setStatus']>>>;
+    fsReaddirHandle(...args: Parameters<RuntimeFsBridge['readdirHandle']>): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>>;
+    fsFtruncate(...args: Parameters<RuntimeFsBridge['ftruncate']>): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>>;
+    fsFchmod(...args: Parameters<RuntimeFsBridge['fchmod']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchmod']>>>;
+    fsFchown(...args: Parameters<RuntimeFsBridge['fchown']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchown']>>>;
+    fsFutimes(...args: Parameters<RuntimeFsBridge['futimes']>): Promise<Awaited<ReturnType<RuntimeFsBridge['futimes']>>>;
+    fsSync(...args: Parameters<RuntimeFsBridge['fsync']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fsync']>>>;
+    fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>>;
+    fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>>;
+    fsCopyFile(...args: Parameters<RuntimeFsBridge['copyFile']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>>;
+    fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>>;
+    fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>>;
     fsClose(handleId: number): Promise<void>;
     /**
      * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no

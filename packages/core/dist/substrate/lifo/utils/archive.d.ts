@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 export declare function crc32(data: Uint8Array): number;
 export declare function compressGzip(data: Uint8Array): Promise<Uint8Array>;
 export declare function decompressGzip(data: Uint8Array): Promise<Uint8Array>;
@@ -24,5 +24,5 @@ export declare function parseZip(data: Uint8Array): ZipEntry[];
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export declare function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEntry[];
+export declare function collectFiles(vfs: ExecutionFs, basePath: string, paths: string[]): Promise<TarEntry[]>;
 //# sourceMappingURL=archive.d.ts.map

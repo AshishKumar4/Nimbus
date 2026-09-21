@@ -23,15 +23,12 @@
 import type {
   Facet,
   FacetBindings,
-  FacetFilesystemOptions,
-  FacetFilesystemSeed,
   FacetFn,
   FacetHost,
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import { snapshotVfs } from './vfs-snapshot.js';
+import { manifestVfs } from './vfs-manifest.js';
 import { vfsSupervisor } from './vfs-supervisor.js';
 
 /** A submitted function after it has been re-created inside the facet's scope. */
@@ -73,25 +70,12 @@ function wasmCompiler(): WasmCompiler {
 }
 
 /**
- * The bound on a complete seed: a limit on this process's own heap.
- *
- * Deliberately far above `snapshotVfs`'s 32 MiB default, which is a TRANSPORT
- * limit — the ceiling on one workerd RPC payload. Nothing is transported here,
- * so keeping that number would refuse a program over a filesystem the host is
- * already holding. Exceeding this is still an error rather than a truncation:
- * a seed that silently omitted a file would make it absent to the guest.
- */
-const LOCAL_SEED_MAX_BYTES = 512 * 1024 * 1024;
-const LOCAL_SEED_MAX_FILES = 200_000;
-
-/**
  * Run facets in this isolate.
  *
  * `parking: 'none'` is the whole character of this host, and everything else
  * follows from it: the guest is entered on an ordinary stack, so no syscall may
- * suspend it, so {@link FacetHost.seedFilesystem} hands over the bytes rather
- * than a manifest to fetch them with, and the supervisor it mints serves only
- * the writes — which drain after the program returns, where a promise is free.
+ * suspend it, so the supervisor it mints is the authority's synchronous view
+ * and every syscall is answered on the guest's own stack.
  *
  * The one thing a substrate with its own isolates gives that this cannot:
  * {@link FacetSubmitOptions.timeoutMs} is not honoured. A guest spinning
@@ -102,32 +86,13 @@ export function localFacetHost(): FacetHost {
   return {
     parking: 'none',
     /**
-     * By value, and exhaustively: no skip list, because a directory hidden
-     * from the seed is a directory the guest cannot see at all — there is no
-     * second chance to fetch it. That completeness is what
-     * `snapshotVfs` records as `enumeratedRoots`, and it is what keeps CPython's
-     * thousands of startup probes for absent paths from each trying to suspend.
+     * A manifest walked exhaustively, so CPython's thousands of startup probes
+     * for absent paths are answered from it; everything it names is served by
+     * the authority's synchronous view, since a guest on an ordinary stack
+     * cannot park on a promise.
      */
-    seedFilesystem(
-      vfs: CredentialedVfs,
-      root: string,
-      options?: FacetFilesystemOptions,
-    ): FacetFilesystemSeed | { error: string } {
-      const seeded = snapshotVfs(vfs, root, {
-        extraRoots: options?.extraRoots,
-        skipSubdirs: [],
-        maxBytes: LOCAL_SEED_MAX_BYTES,
-        maxFiles: LOCAL_SEED_MAX_FILES,
-      });
-      if ('error' in seeded) return seeded;
-      // The seed is also the WHOLE of what this guest has, which is a stronger
-      // claim than the walk's: `snapshotVfs` reports the roots it listed
-      // exhaustively, and this says every path outside them is absent too. It
-      // is — a miss out there could only be answered by suspending the guest
-      // mid-syscall, which this host cannot do, so the alternative to "absent"
-      // is not "fetched" but a read the guest can never receive. Ruby's VM
-      // startup stats dozens of prefixes it was never given.
-      return { ...seeded, snapshot: { ...seeded.snapshot, enumeratedRoots: [''] } };
+    seedFilesystem(vfs, root, options) {
+      return manifestVfs(vfs, options.cred, root, options);
     },
     open: (spec) => new LocalFacet(spec),
   };

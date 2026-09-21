@@ -10,7 +10,7 @@ export class HistoryManager {
 
   constructor(private readonly filesystem: () => ExecutionFs, private readonly home: () => string) {}
 
-  load(): Promise<void> {
+  async load(): Promise<void> {
     return this.loaded ??= this.readHistory();
   }
 

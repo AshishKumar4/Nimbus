@@ -45,11 +45,11 @@ const command = async (ctx) => {
         }
     }
     if (selected.size === 0) {
-        ctx.stdout.write(INFO.sysname + '\n');
+        await ctx.stdout.write(INFO.sysname + '\n');
         return 0;
     }
     const order = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'].filter((f) => selected.has(f));
-    ctx.stdout.write(order.map((f) => FIELDS[f]).join(' ') + '\n');
+    await ctx.stdout.write(order.map((f) => FIELDS[f]).join(' ') + '\n');
     return 0;
 };
 export default command;

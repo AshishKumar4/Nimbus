@@ -1,7 +1,7 @@
 import type { VfsCred } from '../runtime/os-contracts.js';
 
 export interface UnixAccountReader {
-  readFileString(path: string): string;
+  readFileString(path: string): string | Promise<string>;
 }
 
 export interface UnixUser {
@@ -24,9 +24,9 @@ export function parseUnixId(value: string): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-function users(vfs: UnixAccountReader): UnixUser[] {
+async function users(vfs: UnixAccountReader): Promise<UnixUser[]> {
   const result: UnixUser[] = [];
-  for (const line of vfs.readFileString('/etc/passwd').split('\n')) {
+  for (const line of (await vfs.readFileString('/etc/passwd')).split('\n')) {
     if (!line || line.startsWith('#')) continue;
     const fields = line.split(':');
     if (fields.length < 7) continue;
@@ -44,9 +44,9 @@ function users(vfs: UnixAccountReader): UnixUser[] {
   return result;
 }
 
-function groups(vfs: UnixAccountReader): UnixGroup[] {
+async function groups(vfs: UnixAccountReader): Promise<UnixGroup[]> {
   const result: UnixGroup[] = [];
-  for (const line of vfs.readFileString('/etc/group').split('\n')) {
+  for (const line of (await vfs.readFileString('/etc/group')).split('\n')) {
     if (!line || line.startsWith('#')) continue;
     const fields = line.split(':');
     if (fields.length < 4) continue;
@@ -61,47 +61,47 @@ function groups(vfs: UnixAccountReader): UnixGroup[] {
   return result;
 }
 
-export function findUnixUser(vfs: UnixAccountReader, identity: string | number): UnixUser | null {
-  const entries = users(vfs);
+export async function findUnixUser(vfs: UnixAccountReader, identity: string | number): Promise<UnixUser | null> {
+  const entries = (await users(vfs));
   if (typeof identity === 'number') return entries.find((entry) => entry.uid === identity) ?? null;
   const numeric = parseUnixId(identity);
   return entries.find((entry) => entry.name === identity)
     ?? (numeric === null ? null : entries.find((entry) => entry.uid === numeric) ?? null);
 }
 
-export function findUnixGroupName(vfs: UnixAccountReader, gid: number): string | null {
-  return findUnixGroup(vfs, gid)?.name ?? null;
+export async function findUnixGroupName(vfs: UnixAccountReader, gid: number): Promise<string | null> {
+  return (await findUnixGroup(vfs, gid))?.name ?? null;
 }
 
-export function findUnixGroup(vfs: UnixAccountReader, identity: string | number): UnixGroup | null {
-  const entries = groups(vfs);
+export async function findUnixGroup(vfs: UnixAccountReader, identity: string | number): Promise<UnixGroup | null> {
+  const entries = (await groups(vfs));
   if (typeof identity === 'number') return entries.find((entry) => entry.gid === identity) ?? null;
   const numeric = parseUnixId(identity);
   return entries.find((entry) => entry.name === identity)
     ?? (numeric === null ? null : entries.find((entry) => entry.gid === numeric) ?? null);
 }
 
-export function findUnixUserName(vfs: UnixAccountReader, uid: number): string | null {
-  return findUnixUser(vfs, uid)?.name ?? null;
+export async function findUnixUserName(vfs: UnixAccountReader, uid: number): Promise<string | null> {
+  return (await findUnixUser(vfs, uid))?.name ?? null;
 }
 
-export function parseChownOwnership(
+export async function parseChownOwnership(
   vfs: UnixAccountReader,
   specification: string,
-): { uid: number | null; gid: number | null } {
+): Promise<{ uid: number | null; gid: number | null }> {
   const separator = specification.indexOf(':');
   const ownerToken = separator === -1 ? specification : specification.slice(0, separator);
   const groupToken = separator === -1 ? null : specification.slice(separator + 1);
   if (!ownerToken && !groupToken) throw new Error(`invalid spec: '${specification}'`);
 
   const numericUid = ownerToken ? parseUnixId(ownerToken) : null;
-  const owner = ownerToken && numericUid === null ? findUnixUser(vfs, ownerToken) : null;
+  const owner = ownerToken && numericUid === null ? (await findUnixUser(vfs, ownerToken)) : null;
   if (ownerToken && numericUid === null && !owner) throw new Error(`invalid user: '${ownerToken}'`);
 
   let gid: number | null = null;
   if (groupToken) {
     const numericGid = parseUnixId(groupToken);
-    const group = numericGid === null ? findUnixGroup(vfs, groupToken) : null;
+    const group = numericGid === null ? (await findUnixGroup(vfs, groupToken)) : null;
     if (numericGid === null && !group) throw new Error(`invalid group: '${groupToken}'`);
     gid = numericGid ?? group?.gid ?? null;
   } else if (separator !== -1 && owner) {
@@ -110,13 +110,13 @@ export function parseChownOwnership(
   return { uid: numericUid ?? owner?.uid ?? null, gid };
 }
 
-export function credForUnixUser(
+export async function credForUnixUser(
   vfs: UnixAccountReader,
   user: UnixUser,
   umask: number,
-): VfsCred {
+): Promise<VfsCred> {
   const gids = new Set<number>([user.gid]);
-  for (const group of groups(vfs)) {
+  for (const group of (await groups(vfs))) {
     if (group.members.includes(user.name)) gids.add(group.gid);
   }
   return {

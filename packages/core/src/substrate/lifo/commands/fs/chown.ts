@@ -17,23 +17,23 @@ const command: Command = async (ctx) => {
 
   let requested: { uid: number | null; gid: number | null };
   try {
-    requested = parseChownOwnership(vfs, positional[0]);
+    requested = (await parseChownOwnership(vfs, positional[0]));
   } catch (error) {
     await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 
-  const apply = (path: string): void => {
-    if (flags.recursive && vfs.stat(path).type === 'directory') {
-      for (const child of vfs.readdir(path)) apply(resolve(path, child.name));
+  const apply = async (path: string): Promise<void> => {
+    if (flags.recursive && (await vfs.stat(path)).type === 'directory') {
+      for (const child of (await vfs.readdir(path))) (await apply(resolve(path, child.name)));
     }
-    vfs.chown(path, requested.uid, requested.gid);
+    (await vfs.chown(path, requested.uid, requested.gid));
   };
 
   let exitCode = 0;
   for (const file of positional.slice(1)) {
     try {
-      apply(resolve(ctx.cwd, file));
+      (await apply(resolve(ctx.cwd, file)));
     } catch (error) {
       await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
       exitCode = 1;

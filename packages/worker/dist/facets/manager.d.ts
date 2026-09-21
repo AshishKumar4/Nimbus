@@ -17,7 +17,9 @@
  */
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
+import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
@@ -352,9 +354,9 @@ export declare function assertStagedBundleFitsRpcPayload(serialized: string, bun
 export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}, requiredPaths?: ReadonlySet<string>): {
+}, requiredPaths?: ReadonlySet<string>): Promise<{
     added: number;
-};
+}>;
 /**
  * The packages a computed `require(name)` inside the program can plausibly
  * name: the project root's own runtime `dependencies`, plus every package
@@ -372,7 +374,7 @@ export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, 
  * dependency of the package doing the requiring, so the bound is one hop
  * over `dependencies` only. Directories, sorted for a stable bundle.
  */
-export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): string[];
+export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
 /**
  * X.5-Z3: scan every JS source already in `bundle` for static
  * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
@@ -415,9 +417,9 @@ export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped
 export declare function addStaticReadFileAssets(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}): {
+}): Promise<{
     added: number;
-};
+}>;
 /**
  * X.5-U: scan every JS source already in `bundle` for static
  * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
@@ -468,9 +470,9 @@ export declare function addStaticReadFileAssets(vfs: CredentialedVfs, cwd: strin
 export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}): {
+}): Promise<{
     added: number;
-};
+}>;
 /**
  * G3 (runtime-pkg wave) — bin-target sibling oversample.
  *
@@ -502,10 +504,10 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVf
 export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: string | undefined, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}, bundleProfile: FacetBundleProfile): {
+}, bundleProfile: FacetBundleProfile): Promise<{
     added: number;
     wasmPaths: string[];
-};
+}>;
 /**
  * The wasm images a program's closure holds, by path and content digest.
  *
@@ -518,7 +520,7 @@ export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: s
  * map whether it read the bytes by path or carried them inline. A file that
  * cannot be read is left out; the seam's refusal names the module later.
  */
-export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'readFile'>, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): WasmImageRecord[];
+export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'readFile'>, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): Promise<WasmImageRecord[]>;
 /**
  * Stage the paths an earlier run of the same entry read synchronously and did
  * not have.
@@ -538,9 +540,9 @@ export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'rea
 export declare function addObservedReads(vfs: CredentialedVfs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}): {
+}): Promise<{
     added: number;
-};
+}>;
 /**
  * The set of bundle entries the facet's startup pre-compile loop turns into
  * functions, minus the ones already in the right format. Everything the loop
@@ -628,7 +630,7 @@ export interface FacetManagerHooks {
      * genuinely re-enters the object: a fresh turn is both a released thread and
      * a fresh CPU budget, and a launch needs each for a different reason.
      */
-    requestLaunchTurn?: (notBefore?: number) => void;
+    requestLaunchTurn?: (notBefore?: number) => void | Promise<void>;
     /**
      * Put a line in front of the user, whether or not a terminal is attached.
      *
@@ -827,6 +829,7 @@ export declare class FacetManager {
     private processes;
     private portRegistry;
     private vfs;
+    private filesystem;
     private hooks;
     /**
      * The resident-process scheduler (loaders/process-fabric.ts). Every
@@ -863,6 +866,8 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
+    private readonly launchTasks;
+    private launchesClosed;
     private _pairedServeFacet;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
@@ -939,7 +944,10 @@ export declare class FacetManager {
      * interleave their read and write and lose one another's fields.
      */
     private _amendRow;
-    setVfs(vfs: SqliteVFS): void;
+    /** The authority is the caller's: a session composes exactly one, and the
+     *  manager credentials its processes through that one rather than a second
+     *  authority over the same disk. */
+    setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority): void;
     /**
      * The env/ctx pair every loader-backed runtime builds its facet pools
      * from. A pool is constructed from exactly these two, so the manager
@@ -1213,6 +1221,8 @@ export declare class FacetManager {
      * `PacedWork.pump` for the ownership argument.
      */
     pumpResidentLaunches(): Promise<void>;
+    private trackLaunchTask;
+    closeLaunches(): Promise<void>;
     /** Whether any launch is suspended waiting for a turn. */
     get hasPendingLaunchTurns(): boolean;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -1288,6 +1298,7 @@ export declare class FacetManager {
      * the launch faster would have given it.
      */
     private _runResidentLaunch;
+    private _runResidentLaunchBody;
     private _residentLaunchBody;
     /**
      * The exit code of a launched process that has already ended, or null

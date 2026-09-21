@@ -128,6 +128,8 @@ const fakeEnv = {
 // ── 3. `nimbus install <alias>` installs the providing runtime ─────────
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   constructor() {
     this.files = new Map();
     this.dirs = new Set(['']);

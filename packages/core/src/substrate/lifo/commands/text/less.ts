@@ -125,7 +125,7 @@ function jumpToPrevMatch(s: State): void {
 
 // ─── Rendering ───
 
-function render(s: State, out: CommandOutputStream): void {
+async function render(s: State, out: CommandOutputStream): Promise<void> {
   const ch = contentHeight(s);
   let buf = HIDE_CURSOR;
 
@@ -162,7 +162,7 @@ function render(s: State, out: CommandOutputStream): void {
   }
   buf += RST + SHOW_CURSOR;
 
-  out.write(buf);
+  (await out.write(buf));
 }
 
 function highlightMatches(line: string, query: string): string {
@@ -305,7 +305,7 @@ const command: Command = async (ctx) => {
     };
 
     await ctx.stdout.write(CLEAR + HOME);
-    render(s, ctx.stdout);
+    (await render(s, ctx.stdout));
 
     while (true) {
       const data = await ctx.stdin?.read();
@@ -321,7 +321,7 @@ const command: Command = async (ctx) => {
       }
 
       if (shouldExit) break;
-      render(s, ctx.stdout);
+      (await render(s, ctx.stdout));
     }
 
     await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);

@@ -179,9 +179,10 @@ const CRED_OTHER = Object.freeze({
   await bridge.write(handle.id, 0, enc.encode('X'));
   assert.equal(dec.decode(await bridge.readFile('/x/file.txt')), 'X');
 
-  // A same-path external mutation between writes DOES stale the handle.
+  // A descriptor remains bound to its live inode after another writer updates it.
   await bridge.writeFile('/x/file.txt', 'external');
-  await assert.rejects(async () => bridge.write(handle.id, 0, enc.encode('!')), /ESTALE/);
+  await bridge.write(handle.id, 0, enc.encode('!'));
+  assert.equal(dec.decode(await bridge.readFile('/x/file.txt')), '!xternal');
   await bridge.close(handle.id);
 
   // open with truncate resets content via the boundary-chunk path.

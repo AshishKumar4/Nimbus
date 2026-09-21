@@ -1,15 +1,15 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { Command, CommandContext } from '../commands/types.js';
 
 const METADATA_FILE = '/usr/share/pkg/packages.json';
 const MODULES_DIR = '/usr/share/pkg/node_modules';
 
-export function loadInstalledPackages(vfs: VFS, registry: CommandRegistry): void {
+export async function loadInstalledPackages(vfs: VFS, registry: CommandRegistry): Promise<void> {
   let meta: { packages: Record<string, { name: string }> };
 
   try {
-    const content = vfs.readFileString(METADATA_FILE);
+    const content = (await vfs.readFileString(METADATA_FILE));
     meta = JSON.parse(content);
   } catch {
     return; // No packages installed
@@ -17,7 +17,7 @@ export function loadInstalledPackages(vfs: VFS, registry: CommandRegistry): void
 
   for (const name of Object.keys(meta.packages)) {
     const scriptPath = `${MODULES_DIR}/${name}/index.js`;
-    if (!vfs.exists(scriptPath)) continue;
+    if (!(await vfs.exists(scriptPath))) continue;
 
     // Register as a lazy command that invokes `node <script>`
     registry.registerLazy(name, () =>

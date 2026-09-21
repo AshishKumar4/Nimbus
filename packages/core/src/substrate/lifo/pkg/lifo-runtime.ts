@@ -1,3 +1,4 @@
+import { synchronousFilesystem } from '../node-compat/filesystem.js';
 /**
  * Lifo Runtime -- enhanced execution context for lifo-native packages.
  *
@@ -9,7 +10,7 @@
  */
 
 import type { Command, CommandContext } from '../commands/types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
@@ -144,7 +145,7 @@ export function createLifoCommand(
   vfs: VFS,
 ): Command {
   return async (ctx: CommandContext): Promise<number> => {
-    const source = vfs.readFileString(entryPath);
+    const source = (await vfs.readFileString(entryPath));
     const lifo = createLifoAPI(ctx);
 
     // ── ESM path: rewrite imports to CDN, load through a data URL ──
@@ -153,7 +154,7 @@ export function createLifoCommand(
     }
 
     // ── CJS path: wrap in new Function() ──
-    return executeCjsCommand(source, entryPath, vfs, ctx, lifo);
+    return executeCjsCommand(source, entryPath, ctx, lifo);
   };
 }
 
@@ -191,15 +192,15 @@ async function executeEsmCommand(
 function executeCjsCommand(
   source: string,
   entryPath: string,
-  vfs: VFS,
   ctx: CommandContext,
   lifo: LifoAPI,
 ): Promise<number> {
   const entryDir = dirname(entryPath);
+  const filesystem = synchronousFilesystem(ctx.vfs);
 
   // Build a node-compat context for require()
   const nodeCtx: NodeContext = {
-    vfs: ctx.vfs,
+    filesystem,
     cwd: ctx.cwd,
     env: ctx.env,
     stdout: ctx.stdout,
@@ -229,13 +230,13 @@ function executeCjsCommand(
       const absPath = resolve(entryDir, name);
       const candidates = [absPath, absPath + '.js', absPath + '.json'];
       for (const p of candidates) {
-        if (vfs.exists(p)) {
+        if (filesystem().exists(p)) {
           if (p.endsWith('.json')) {
-            const parsed = JSON.parse(vfs.readFileString(p));
+            const parsed = JSON.parse(filesystem().readFileString(p));
             moduleCache.set(name, parsed);
             return parsed;
           }
-          const childSrc = vfs.readFileString(p);
+          const childSrc = filesystem().readFileString(p);
           const childMod = executeModule(childSrc, p);
           moduleCache.set(name, childMod);
           return childMod;
@@ -243,8 +244,8 @@ function executeCjsCommand(
       }
       // Try directory with index.js
       const indexPath = join(absPath, 'index.js');
-      if (vfs.exists(indexPath)) {
-        const childSrc = vfs.readFileString(indexPath);
+      if (filesystem().exists(indexPath)) {
+        const childSrc = filesystem().readFileString(indexPath);
         const childMod = executeModule(childSrc, indexPath);
         moduleCache.set(name, childMod);
         return childMod;
@@ -257,11 +258,11 @@ function executeCjsCommand(
     if (resolved) {
       if (moduleCache.has(resolved)) return moduleCache.get(resolved);
       if (resolved.endsWith('.json')) {
-        const parsed = JSON.parse(vfs.readFileString(resolved));
+        const parsed = JSON.parse(filesystem().readFileString(resolved));
         moduleCache.set(resolved, parsed);
         return parsed;
       }
-      const childSrc = vfs.readFileString(resolved);
+      const childSrc = filesystem().readFileString(resolved);
       const childMod = executeModule(childSrc, resolved);
       moduleCache.set(resolved, childMod);
       return childMod;
@@ -293,7 +294,7 @@ function executeCjsCommand(
     let cur = fromDir;
     for (;;) {
       const candidate = join(cur, 'node_modules', pkgName);
-      if (vfs.exists(candidate)) {
+      if (filesystem().exists(candidate)) {
         return resolvePackageEntry(candidate, subpath);
       }
       const parent = dirname(cur);
@@ -304,7 +305,7 @@ function executeCjsCommand(
     // Global + legacy
     for (const base of ['/usr/lib/node_modules', '/usr/share/pkg/node_modules']) {
       const candidate = join(base, pkgName);
-      if (vfs.exists(candidate)) {
+      if (filesystem().exists(candidate)) {
         return resolvePackageEntry(candidate, subpath);
       }
     }
@@ -316,28 +317,28 @@ function executeCjsCommand(
     if (subpath) {
       const abs = resolve(pkgDir, subpath);
       for (const p of [abs, abs + '.js', abs + '.json']) {
-        if (vfs.exists(p)) return p;
+        if (filesystem().exists(p)) return p;
       }
       const idx = join(abs, 'index.js');
-      if (vfs.exists(idx)) return idx;
+      if (filesystem().exists(idx)) return idx;
       return null;
     }
 
     const pkgJsonPath = join(pkgDir, 'package.json');
-    if (vfs.exists(pkgJsonPath)) {
+    if (filesystem().exists(pkgJsonPath)) {
       try {
-        const pkg = JSON.parse(vfs.readFileString(pkgJsonPath));
+        const pkg = JSON.parse(filesystem().readFileString(pkgJsonPath));
         if (pkg.main) {
           const mainPath = resolve(pkgDir, pkg.main);
           for (const p of [mainPath, mainPath + '.js']) {
-            if (vfs.exists(p)) return p;
+            if (filesystem().exists(p)) return p;
           }
         }
       } catch { /* ignore */ }
     }
 
     const indexPath = join(pkgDir, 'index.js');
-    if (vfs.exists(indexPath)) return indexPath;
+    if (filesystem().exists(indexPath)) return indexPath;
     return null;
   }
 
@@ -361,21 +362,21 @@ function executeCjsCommand(
         const abs = resolve(modDir, n);
         const candidates = [abs, abs + '.js', abs + '.json'];
         for (const p of candidates) {
-          if (vfs.exists(p)) {
+          if (filesystem().exists(p)) {
             if (moduleCache.has(p)) return moduleCache.get(p);
             if (p.endsWith('.json')) {
-              const parsed = JSON.parse(vfs.readFileString(p));
+              const parsed = JSON.parse(filesystem().readFileString(p));
               moduleCache.set(p, parsed);
               return parsed;
             }
-            const src = vfs.readFileString(p);
+            const src = filesystem().readFileString(p);
             return executeModule(src, p);
           }
         }
         const idx = join(abs, 'index.js');
-        if (vfs.exists(idx)) {
+        if (filesystem().exists(idx)) {
           if (moduleCache.has(idx)) return moduleCache.get(idx);
-          const src = vfs.readFileString(idx);
+          const src = filesystem().readFileString(idx);
           return executeModule(src, idx);
         }
         throw new Error(`Cannot find module '${n}'`);
@@ -462,10 +463,10 @@ export interface LifoPackageJson {
 /**
  * Read a package.json and return the lifo manifest if present.
  */
-export function readLifoManifest(vfs: VFS, pkgDir: string): LifoPackageManifest | null {
+export async function readLifoManifest(vfs: VFS, pkgDir: string): Promise<LifoPackageManifest | null> {
   const pkgJsonPath = join(pkgDir, 'package.json');
   try {
-    const pkg: LifoPackageJson = JSON.parse(vfs.readFileString(pkgJsonPath));
+    const pkg: LifoPackageJson = JSON.parse((await vfs.readFileString(pkgJsonPath)));
     return pkg.lifo || null;
   } catch {
     return null;

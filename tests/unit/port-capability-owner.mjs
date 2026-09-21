@@ -7,6 +7,8 @@ import {
   readPortReservation,
   restorePortCapability,
   restoreReservedPortCapability,
+  routeCapabilityPort,
+  clearPortCapability,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
 
@@ -113,4 +115,14 @@ const CAP2 = 'b'.repeat(24);
   assert.equal(await restorePortCapability(ordinary, 20010), CAP2, 'the generic path still restores it');
 }
 
-console.log('port capability owner: stored-owner truth, persist preservation, reserved-path gating passed');
+const guarded = activate(20000, 5, 'guarded');
+let recoveries = 0;
+guarded.ensureDurableAppOnPort = async () => { recoveries++; return 'started'; };
+assert.equal((await routeCapabilityPort(guarded, 20000, CAP2, new Request('https://host/'), '/')).status, 404);
+assert.equal(recoveries, 0, 'a wrong capability must not initiate cold recovery');
+await restorePortCapability(guarded, 20000);
+await clearPortCapability(guarded, 20000);
+assert.equal((await routeCapabilityPort(guarded, 20000, CAP, new Request('https://host/'), '/')).status, 404);
+assert.equal(recoveries, 0, 'revoked capability must not recover even with a stale live registry');
+assert.equal((await readPortReservation(ctx, 20000)).owner, 'workspace/app-a/caller-a');
+console.log('port capability owner: owner preservation and pre-recovery capability denial passed');

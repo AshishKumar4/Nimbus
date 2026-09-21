@@ -30,7 +30,7 @@ const check = (name, ok, detail = '') => {
   // Inside the right-hand side of a pipeline, fd 0 IS the pipe's read end.
   // If the write succeeds, LEAK is injected into the pipe and `cat` prints it
   // alongside (or instead of) the real payload.
-  const r = runScript('echo REAL | { echo LEAK >&0 2>/dev/null; cat; }');
+  const r = (await runScript('echo REAL | { echo LEAK >&0 2>/dev/null; cat; }'));
   const out = r.stdout || '';
   check('writing to a pipe read end does not inject into the pipe',
     !out.includes('LEAK'), JSON.stringify({ stdout: r.stdout, stderr: r.stderr, state: r.state }));
@@ -40,7 +40,7 @@ const check = (name, ok, detail = '') => {
 
 // ── 2. A pipe's write end still works ───────────────────────────────────────
 {
-  const r = runScript('echo THROUGH | cat');
+  const r = (await runScript('echo THROUGH | cat'));
   check('a normal pipeline is unaffected',
     (r.stdout || '').includes('THROUGH'), JSON.stringify({ stdout: r.stdout, stderr: r.stderr }));
 }
@@ -55,16 +55,16 @@ const check = (name, ok, detail = '') => {
   //   fd 5+ -> "bash: redirection error: cannot duplicate fd: Bad file descriptor"
   // Identical before and after the fixes in this commit, so it is not a
   // regression from them. Using 3 here would assert a bug rather than a fix.
-  const r = runScript('exec 4> /tmp/out.txt; echo WRITTEN >&4; exec 4>&-; cat /tmp/out.txt',
-    { dirs: ['tmp'], modes: { tmp: 7 } });
+  const r = (await runScript('exec 4> /tmp/out.txt; echo WRITTEN >&4; exec 4>&-; cat /tmp/out.txt',
+    { dirs: ['tmp'], modes: { tmp: 7 } }));
   check('writing to an explicitly opened output fd still works',
     (r.stdout || '').includes('WRITTEN'), JSON.stringify({ stdout: r.stdout, stderr: r.stderr }));
 }
 
 // ── 4. Reading a file through an explicit fd still works ────────────────────
 {
-  const r = runScript('exec 4< /tmp/in.txt; cat <&4; exec 4<&-',
-    { files: { 'tmp/in.txt': 'SEEDED\n' }, dirs: ['tmp'], modes: { tmp: 7, 'tmp/in.txt': 6 } });
+  const r = (await runScript('exec 4< /tmp/in.txt; cat <&4; exec 4<&-',
+    { files: { 'tmp/in.txt': 'SEEDED\n' }, dirs: ['tmp'], modes: { tmp: 7, 'tmp/in.txt': 6 } }));
   check('reading through an explicitly opened input fd still works',
     (r.stdout || '').includes('SEEDED'), JSON.stringify({ stdout: r.stdout, stderr: r.stderr }));
 }
@@ -74,7 +74,7 @@ const check = (name, ok, detail = '') => {
   // fd_close now answers EBADF for an unknown descriptor, which is POSIX. The
   // risk of that change is a shell that closes speculatively, so assert the
   // shell survives it and keeps running rather than that it reports anything.
-  const r = runScript('exec 9>&- 2>/dev/null; echo STILL_RUNNING');
+  const r = (await runScript('exec 9>&- 2>/dev/null; echo STILL_RUNNING'));
   check('closing an unopened fd leaves the shell running',
     (r.stdout || '').includes('STILL_RUNNING'),
     JSON.stringify({ stdout: r.stdout, stderr: r.stderr, state: r.state }));

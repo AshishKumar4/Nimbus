@@ -82,7 +82,7 @@ const command: Command = async (ctx) => {
       }
 
       if (toStdout) {
-        writeBytes(ctx.stdout, entry.data);
+        (await writeBytes(ctx.stdout, entry.data));
         continue;
       }
 
@@ -104,9 +104,9 @@ const command: Command = async (ctx) => {
   return 0;
 };
 
-function writeBytes(stdout: { write(text: string): void; writeBytes?(bytes: Uint8Array): void }, bytes: Uint8Array): void {
-  if (stdout.writeBytes) stdout.writeBytes(bytes);
-  else stdout.write(new TextDecoder().decode(bytes));
+async function writeBytes(stdout: { write(text: string): void; writeBytes?(bytes: Uint8Array): void }, bytes: Uint8Array): Promise<void> {
+  if (stdout.writeBytes) (await stdout.writeBytes(bytes));
+  else (await stdout.write(new TextDecoder().decode(bytes)));
 }
 
 export default command;

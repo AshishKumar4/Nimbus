@@ -1,28 +1,41 @@
 /**
- * Describe a VFS subtree without copying it.
+ * Describe a filesystem subtree without copying it.
  *
- * Same walk as snapshotVfs, but it records each file's SIZE instead of its
- * bytes, so the result is a manifest the WASI layer treats as a cache index:
- * content is demand-loaded through the supervisor on first read, and a path
- * the manifest lacks is genuinely absent (the walk excludes nothing).
+ * Records each file's SIZE instead of its bytes, so the result is a manifest
+ * the WASI layer treats as a cache index: content is demand-loaded through the
+ * authority on first read, and a path the manifest lacks is genuinely absent
+ * (the walk excludes nothing, so every root is claimed as enumerated).
  *
- * That last property is why this cannot be a flag on snapshotVfs. snapshotVfs
- * skips node_modules/.cache/.npm/.nimbus and unreadable files, so its output
- * may not describe the subtree completely and must never claim to.
+ * Modes are the caller's effective bits, computed from the inode the authority
+ * reports and the credential the bridge is bound to. Traversal is enforced by
+ * the walk itself: a directory the credential cannot read is listed but never
+ * entered, so nothing below it reaches the manifest.
  */
-export function manifestVfs(vfs, vfsRoot, opts = {}) {
+export async function manifestVfs(fs, cred, vfsRoot, opts = {}) {
     const root = vfsRoot.replace(/^\/+/, '').replace(/\/+$/, '');
     const roots = Array.from(new Set([
         root,
         ...Array.from(opts.extraRoots ?? []).map((r) => r.replace(/^\/+/, '').replace(/\/+$/, '')),
-    ].filter((r) => r !== undefined)));
+    ]));
     const sizes = {};
     const modes = {};
+    const times = {};
+    const symlinks = {};
     const dirsSet = new Set();
     let totalBytes = 0;
     let fileCount = 0;
     const stack = [];
-    const addDirWithParents = (path, callerNamedRoot = false) => {
+    const record = (path, st) => {
+        const mode = effectiveMode(st.mode, st.uid, st.gid, cred);
+        modes[path] = mode;
+        times[path] = {
+            atime: nanoseconds(st.atime),
+            mtime: nanoseconds(st.mtime),
+            ctime: nanoseconds(st.ctime),
+        };
+        return mode;
+    };
+    const addDirWithParents = async (path, callerNamedRoot = false) => {
         const clean = path.replace(/^\/+/, '').replace(/\/+$/, '');
         if (!clean)
             return;
@@ -30,40 +43,45 @@ export function manifestVfs(vfs, vfsRoot, opts = {}) {
         for (let i = 1; i <= parts.length; i++) {
             const ancestor = parts.slice(0, i).join('/');
             dirsSet.add(ancestor);
-            if (modes[ancestor] === undefined) {
-                try {
-                    const st = vfs.stat(ancestor);
-                    modes[ancestor] = effectiveMode(st.mode, st.uid, st.gid, vfs.cred);
-                }
-                catch (error) {
-                    // Two different failures used to land here together, and only one of
-                    // them means "deny". An ancestor the caller may not read must stay
-                    // denied. But a root that does not exist YET — site-packages before
-                    // the first install — is a path the producer deliberately listed for
-                    // the guest to create, and leaving it modeless makes
-                    // __wasiEffectiveMode answer 0 for a path that `dirs` says exists:
-                    // deny everything, including traversal. The guest then cannot stat
-                    // its own target, os.path.isdir swallows the error and says False,
-                    // and makedirs(exist_ok=True) re-raises FileExistsError for a
-                    // directory it just created. It inherits its parent instead.
-                    // Only for a root the CALLER named. Those are paths a runtime has
-                    // declared it will use — site-packages, a gem home — and it may not
-                    // exist yet. Paths discovered by the walk are left alone: they came
-                    // from a readdir that already saw them, so a stat failure there is
-                    // genuinely unexpected and deny-by-default is right.
-                    if (!callerNamedRoot || hasErrorCode(error, 'EACCES'))
-                        continue;
-                    const parent = parts.slice(0, i - 1).join('/');
-                    modes[ancestor] = i === 1 ? 7 : (modes[parent] ?? 7);
-                }
+            if (modes[ancestor] !== undefined)
+                continue;
+            let st;
+            try {
+                st = await fs.stat(ancestor);
             }
+            catch (error) {
+                // An ancestor the caller may not traverse stays modeless: the guest
+                // is denied everything under it, which is what the authority said.
+                if (hasErrorCode(error, 'EACCES'))
+                    continue;
+                throw error;
+            }
+            if (st !== null) {
+                record(ancestor, st);
+                continue;
+            }
+            // A root that does not exist YET — site-packages before the first
+            // install — is a path the producer deliberately listed for the guest to
+            // create, and leaving it modeless makes __wasiEffectiveMode answer 0 for
+            // a path that `dirs` says exists: deny everything, including traversal.
+            // The guest then cannot stat its own target, os.path.isdir swallows the
+            // error and says False, and makedirs(exist_ok=True) re-raises
+            // FileExistsError for a directory it just created. It inherits its
+            // parent instead. Only for a root the CALLER named: paths discovered by
+            // the walk came from a readdir that already saw them, so a miss there is
+            // a race the caller must see.
+            if (!callerNamedRoot || i === 1)
+                continue;
+            const parentMode = modes[parts.slice(0, i - 1).join('/')];
+            if (parentMode !== undefined)
+                modes[ancestor] = parentMode;
         }
     };
     for (const start of roots) {
-        addDirWithParents(start, true);
+        await addDirWithParents(start, true);
+        let st;
         try {
-            if (!vfs.exists(start))
-                continue;
+            st = await fs.stat(start);
         }
         catch (error) {
             if (!hasErrorCode(error, 'EACCES'))
@@ -71,15 +89,18 @@ export function manifestVfs(vfs, vfsRoot, opts = {}) {
             modes[start] = 0;
             continue;
         }
-        const st = vfs.stat(start);
-        modes[start] = effectiveMode(st.mode, st.uid, st.gid, vfs.cred);
-        stack.push(start);
+        if (st === null)
+            continue;
+        if (st.type === 'directory')
+            stack.push(start);
     }
     while (stack.length > 0) {
         const dir = stack.pop();
+        if (dir === undefined)
+            break;
         let entries;
         try {
-            entries = vfs.readdir(dir);
+            entries = await fs.readdir(dir);
         }
         catch (error) {
             if (hasErrorCode(error, 'EACCES'))
@@ -88,27 +109,27 @@ export function manifestVfs(vfs, vfsRoot, opts = {}) {
         }
         for (const entry of entries) {
             const childPath = `${dir}/${entry.name}`;
-            let st;
-            try {
-                st = vfs.stat(childPath);
-            }
-            catch (error) {
+            const st = await fs.stat(childPath, { followSymlinks: false });
+            if (st === null)
                 return { error: `runtime filesystem manifest incomplete: stat ${childPath}` };
-            }
-            const mode = effectiveMode(st.mode, st.uid, st.gid, vfs.cred);
-            modes[childPath] = mode;
-            if (entry.type === 'directory') {
-                addDirWithParents(childPath);
+            record(childPath, st);
+            if (st.type === 'directory') {
+                dirsSet.add(childPath);
                 stack.push(childPath);
+                continue;
+            }
+            if (st.type === 'symlink') {
+                const target = await fs.readlink(childPath);
+                if (target === null)
+                    return { error: `runtime filesystem manifest incomplete: readlink ${childPath}` };
+                symlinks[childPath] = target;
                 continue;
             }
             // Size comes from the inode, so a manifest costs no reads at all — this
             // is the whole reason it has no byte cap and cannot fail a spawn.
-            const size = st.size;
-            sizes[childPath] = size;
-            totalBytes += size;
+            sizes[childPath] = st.size;
+            totalBytes += st.size;
             fileCount++;
-            addDirWithParents(dir);
         }
     }
     return {
@@ -120,12 +141,17 @@ export function manifestVfs(vfs, vfsRoot, opts = {}) {
             sizes,
             dirs: Array.from(dirsSet).sort(),
             modes,
+            times,
+            symlinks,
             enumeratedRoots: roots,
             revision: opts.revision,
         },
         files: fileCount,
         bytes: totalBytes,
     };
+}
+function nanoseconds(milliseconds) {
+    return String(BigInt(Math.trunc(milliseconds)) * 1000000n);
 }
 export function effectiveMode(mode, uid, gid, cred) {
     if (cred.uid === 0)

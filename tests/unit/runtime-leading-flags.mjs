@@ -3,13 +3,33 @@
 import assert from 'node:assert/strict';
 import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-function outputContext(args) {
+const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+
+// A session with a home but no installed runtime: the only thing a refusal can
+// come from is the missing blob the manifest names.
+function missingInstallAuthority() {
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const root = raw.as(CRED_KERNEL);
+  root.mkdir('home/user', { recursive: true, mode: 0o755 });
+  root.chown('home/user', USER.uid, USER.gid);
+  return new SqliteFilesystemAuthority(raw);
+}
+
+function outputContext(filesystem, args) {
   let stdout = '';
   let stderr = '';
   return {
     ctx: {
-      cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+      pid: 17,
+      vfs: new ExecutionFs(filesystem.bind({ pid: 17, cred: USER })),
+      cred: USER,
       args,
       cwd: '/home/user',
       env: {},
@@ -29,21 +49,16 @@ const unreachableFacets = {
   open() { throw new Error('the runtime is missing — nothing may be opened'); },
 };
 
-const missingRuntimeVfs = {
-  as() { return this; },
-  exists: () => false,
-  readdir: () => [],
-};
-
 {
   const manifest = {
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
-  const runRuby = makeRubyRunnerFactory({
+  const filesystem = missingInstallAuthority();
+  const runRuby = await makeRubyRunnerFactory({
     facets: unreachableFacets,
-    vfs: missingRuntimeVfs,
+    filesystem,
   })(manifest, '/runtime/ruby', 'ruby', undefined);
-  const invocation = outputContext(['script.rb', '--version']);
+  const invocation = outputContext(filesystem, ['script.rb', '--version']);
   assert.equal(await runRuby(invocation.ctx), 127);
   assert.doesNotMatch(invocation.output().stdout, /^ruby 3\.3\.3/);
   assert.match(invocation.output().stderr, /ruby\+stdlib\.wasm missing/);
@@ -57,11 +72,12 @@ const missingRuntimeVfs = {
       { path: 'share/clang/sysroot.tar' },
     ],
   };
+  const filesystem = missingInstallAuthority();
   const runClang = makeClangRunnerFactory({
     facets: unreachableFacets,
-    vfs: missingRuntimeVfs,
+    filesystem,
   })(manifest, '/runtime/clang', 'clang', undefined);
-  const invocation = outputContext(['main.c', '--version']);
+  const invocation = outputContext(filesystem, ['main.c', '--version']);
   assert.equal(await runClang(invocation.ctx), 127);
   assert.doesNotMatch(invocation.output().stdout, /^Nimbus wasm-clang/);
   assert.match(invocation.output().stderr, /sysroot\.tar missing/);

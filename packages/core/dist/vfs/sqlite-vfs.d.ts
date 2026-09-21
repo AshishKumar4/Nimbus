@@ -50,7 +50,27 @@ export interface ExclusiveMutationLease {
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
 }
+export interface VfsOpenDescription {
+    /** Inode number the description currently resolves; 0 is never issued. */
+    readonly ino: number;
+    path(): string;
+    stat(): VfsStat;
+    read(offset: number, length: number): Uint8Array;
+    write(offset: number, bytes: Uint8Array): number;
+    truncate(size: number): void;
+    readdir(): {
+        name: string;
+        type: VfsInodeKind;
+    }[];
+    chmod(mode: number): void;
+    chown(uid: number, gid: number): void;
+    utimes(atime: number, mtime: number): void;
+    close(): void;
+}
 export interface VfsStat {
+    dev: number;
+    ino: number;
+    nlink: number;
     type: VfsInodeKind;
     size: number;
     atime: number;
@@ -170,6 +190,7 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
 }
 export declare class SqliteVFS {
+    private readonly openNodes;
     private sql;
     private ctx;
     readonly events: VfsEventEmitter;
@@ -234,8 +255,35 @@ export declare class SqliteVFS {
     private _sqlWrites;
     private _batchWrites;
     private _batchWriteRows;
-    constructor(sql: SqlDatabase, ctx?: TransactionHost);
+    readonly namespace: string;
+    readonly deviceId: number;
+    constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string);
     private initSchema;
+    /**
+     * Allocate the next inode number. The counter row and the inode insert that
+     * consumes the value always share one transaction, so rollback discards the
+     * bump together with the publication it funded.
+     */
+    private nextIno;
+    /**
+     * Give every durable inode row a stable ino. Rows that already carry one
+     * keep it; rows published by the retired vfs_inode_identity side table
+     * inherit that ino so existing stat().ino values do not change across the
+     * upgrade; anything else takes its rowid, which matches what the shadow
+     * table would have allocated for it anyway. The allocator is then seeded
+     * past the largest ino in use.
+     */
+    private backfillInoColumn;
+    /**
+     * Fold legacy append-control tables into the namespace-scoped v2 schema.
+     * Three layouts exist: pre-namespace tables (rows get the empty namespace,
+     * which is what the rewrite effectively gave them since a namespace-less
+     * deployment had exactly one scope), hex-suffixed tables produced by the
+     * table-name rewrite (rows decode back to their real namespace), and the
+     * v2 tables themselves. Legacy tables are renamed to vfs_append_legacy_*
+     * rather than dropped so the data stays recoverable.
+     */
+    /** Decode a hex scope suffix back to its namespace; null when malformed. */
     private tableColumns;
     private migrateFromLegacy;
     private loadInodes;
@@ -260,6 +308,10 @@ export declare class SqliteVFS {
      *
      */
     private cacheInvalidateBatch;
+    openDescription(path: string, cred: VfsCred, rights: {
+        read: boolean;
+        write: boolean;
+    }): VfsOpenDescription;
     private now;
     private parentPath;
     /** The single content resolver for both legacy-null and generated inodes. */
@@ -848,6 +900,10 @@ export declare class SqliteVFSProvider {
     private resolve;
     readFile(sub: string): Uint8Array;
     readFileString(sub: string): string;
+    lstat(sub: string): VfsStat;
+    readlink(sub: string): string;
+    symlink(target: string, sub: string): void;
+    utimes(sub: string, atimeMs: number, mtimeMs: number): void;
     readRange(sub: string, offset: number, length: number): Uint8Array;
     writeFile(sub: string, content: string | Uint8Array): void;
     writeRange(sub: string, offset: number, bytes: Uint8Array): void;

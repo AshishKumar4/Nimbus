@@ -12,7 +12,7 @@
  */
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
-export type { SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from './runtime/os-contracts.js';
+export type { NimbusFilesystemAuthority, NimbusFilesystemBinding, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeReadOptions, RuntimeSynchronousFs, Awaitable, SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from './runtime/os-contracts.js';
 export { seedRuntimePackage } from './runtime/runtime-package.js';
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export type { RuntimeAvailability, RuntimePackage, RuntimeSource, SeededRuntime, } from './runtime/runtime-package.js';

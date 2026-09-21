@@ -34,7 +34,7 @@ return { __wasiInitFS, __wasiMakeImports };`)();
     modes: { '': 7, 'probe.bin': 7 },
   });
   const { wasiImport } = P.__wasiMakeImports({
-    argv: ['probe'], env: {}, abi, getMemory: () => memory,
+    argv: ['probe'], env: {}, abi, parking: 'none', getMemory: () => memory,
   });
   const dv = new DataView(memory.buffer);
   const u8 = new Uint8Array(memory.buffer);

@@ -21,64 +21,64 @@ export class SandboxFsImpl implements ISandboxFs {
 
   readFile(path: string): Promise<string>;
   readFile(path: string, encoding: null): Promise<Uint8Array>;
-  readFile(path: string, encoding?: null): Promise<string | Uint8Array> {
+  async readFile(path: string, encoding?: null): Promise<string | Uint8Array> {
     const abs = this.resolvePath(path);
     if (encoding === null) {
-      return Promise.resolve(this.vfs.readFile(abs));
+      return Promise.resolve((await this.vfs.readFile(abs)));
     }
-    return Promise.resolve(this.vfs.readFileString(abs));
+    return Promise.resolve((await this.vfs.readFileString(abs)));
   }
 
   async writeFile(path: string, content: string | Uint8Array): Promise<void> {
     const abs = this.resolvePath(path);
-    this.vfs.writeFile(abs, content);
+    (await this.vfs.writeFile(abs, content));
   }
 
   async readdir(path: string): Promise<Array<{ name: string; type: FileType }>> {
     const abs = this.resolvePath(path);
-    return this.vfs.readdir(abs);
+    return (await this.vfs.readdir(abs));
   }
 
   async stat(path: string): Promise<{ type: FileType; size: number; mtime: number }> {
     const abs = this.resolvePath(path);
-    const s = this.vfs.stat(abs);
+    const s = (await this.vfs.stat(abs));
     return { type: s.type, size: s.size, mtime: s.mtime };
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
     const abs = this.resolvePath(path);
-    this.vfs.mkdir(abs, options);
+    (await this.vfs.mkdir(abs, options));
   }
 
   async rm(path: string, options?: { recursive?: boolean }): Promise<void> {
     const abs = this.resolvePath(path);
-    const s = this.vfs.stat(abs);
+    const s = (await this.vfs.stat(abs));
     if (s.type === 'directory') {
       if (options?.recursive) {
-        this.vfs.rmdirRecursive(abs);
+        (await this.vfs.rmdirRecursive(abs));
       } else {
-        this.vfs.rmdir(abs);
+        (await this.vfs.rmdir(abs));
       }
     } else {
-      this.vfs.unlink(abs);
+      (await this.vfs.unlink(abs));
     }
   }
 
   async exists(path: string): Promise<boolean> {
     const abs = this.resolvePath(path);
-    return this.vfs.exists(abs);
+    return (await this.vfs.exists(abs));
   }
 
   async rename(oldPath: string, newPath: string): Promise<void> {
     const absOld = this.resolvePath(oldPath);
     const absNew = this.resolvePath(newPath);
-    this.vfs.rename(absOld, absNew);
+    (await this.vfs.rename(absOld, absNew));
   }
 
   async cp(src: string, dest: string): Promise<void> {
     const absSrc = this.resolvePath(src);
     const absDest = this.resolvePath(dest);
-    this.vfs.copyFile(absSrc, absDest);
+    (await this.vfs.copyFile(absSrc, absDest));
   }
 
   async writeFiles(files: Array<{ path: string; content: string | Uint8Array }>): Promise<void> {
@@ -93,10 +93,10 @@ export class SandboxFsImpl implements ISandboxFs {
   async exportSnapshot(): Promise<Uint8Array> {
     const entries: TarEntry[] = [];
 
-    const walk = (absPath: string): void => {
+    const walk = async (absPath: string): Promise<void> => {
       if (SandboxFsImpl.SKIP_DIRS.has(absPath)) return;
 
-      const stat = this.vfs.stat(absPath);
+      const stat = (await this.vfs.stat(absPath));
 
       if (stat.type === 'directory') {
         // Add directory entry (skip root itself)
@@ -110,15 +110,15 @@ export class SandboxFsImpl implements ISandboxFs {
           });
         }
 
-        const children = this.vfs.readdir(absPath);
+        const children = (await this.vfs.readdir(absPath));
         for (const child of children) {
           const childPath = absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`;
-          walk(childPath);
+          (await walk(childPath));
         }
       } else {
         entries.push({
           path: absPath,
-          data: this.vfs.readFile(absPath),
+          data: (await this.vfs.readFile(absPath)),
           type: 'file',
           mode: stat.mode,
           mtime: stat.mtime,
@@ -126,10 +126,10 @@ export class SandboxFsImpl implements ISandboxFs {
       }
     };
 
-    walk('/');
+    (await walk('/'));
 
     const tar = createTar(entries);
-    return compressGzip(tar);
+    return (await compressGzip(tar));
   }
 
   async importSnapshot(data: Uint8Array): Promise<void> {
@@ -142,8 +142,8 @@ export class SandboxFsImpl implements ISandboxFs {
 
     for (const entry of dirs) {
       const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-      if (!this.vfs.exists(path)) {
-        this.vfs.mkdir(path, { recursive: true });
+      if (!(await this.vfs.exists(path))) {
+        (await this.vfs.mkdir(path, { recursive: true }));
       }
     }
 
@@ -151,10 +151,10 @@ export class SandboxFsImpl implements ISandboxFs {
       const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
       // Ensure parent directory exists
       const parent = dirname(path);
-      if (parent !== '/' && !this.vfs.exists(parent)) {
-        this.vfs.mkdir(parent, { recursive: true });
+      if (parent !== '/' && !(await this.vfs.exists(parent))) {
+        (await this.vfs.mkdir(parent, { recursive: true }));
       }
-      this.vfs.writeFile(path, entry.data);
+      (await this.vfs.writeFile(path, entry.data));
     }
   }
 }

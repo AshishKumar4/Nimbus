@@ -1,4 +1,5 @@
 import type { SqliteVFS, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
 import {
@@ -34,16 +35,18 @@ function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
  * is not in every runtime this code ships to, so the combination is a small
  * linked controller instead.
  */
-function linkedSignal(signals: readonly (AbortSignal | undefined)[]): AbortSignal | undefined {
+function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: AbortSignal; dispose(): void } {
   const live = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-  if (live.length === 0) return undefined;
   const controller = new AbortController();
-  const fire = (): void => controller.abort();
+  const fire = (): void => controller.abort(live.find(signal => signal.aborted)?.reason);
   for (const signal of live) {
     if (signal.aborted) { fire(); break; }
     signal.addEventListener('abort', fire, { once: true });
   }
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    dispose: () => { for (const signal of live) signal.removeEventListener('abort', fire); },
+  };
 }
 
 /**
@@ -131,7 +134,6 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
     return this.target.write(handleId, offset, bytes);
   }
   close(handleId: number): void {
-    this.guard();
     return this.target.close(handleId);
   }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] {
@@ -180,7 +182,10 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
   }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
     this.guard();
-    return this.target.subscribe(path, listener);
+    const unsubscribe = this.target.subscribe(path, listener);
+    const dispose = () => { unsubscribe(); this.scope.subscriptions.delete(dispose); };
+    this.scope.subscriptions.add(dispose);
+    return dispose;
   }
   realpath(path: RuntimeFsPath): string {
     this.guard();
@@ -263,8 +268,8 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
     this.guard();
     // Closing the scope cancels the commit, so a released process cannot keep
     // publishing groups into a filesystem it no longer holds descriptors on.
-    const signal = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
-    return this.target.writeStream(stream, { ...options, signal });
+    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
   }
   acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
     this.guard();
@@ -282,8 +287,14 @@ export class SqliteFilesystemAuthority implements NimbusFilesystemAuthority {
   private readonly processes = new Map<number, SqliteDescriptorScope>();
   private readonly retired = new Set<number>();
 
-  constructor(private readonly vfs: SqliteVFS) {
+  /** The disk this authority credentials; a host composing over the same
+   *  session reads it here instead of tracking a second reference. */
+  constructor(readonly vfs: SqliteVFS, private kernel?: VFS) {
     this.namespace = vfs.namespace;
+  }
+
+  attachKernel(kernel: VFS): void {
+    this.kernel = kernel;
   }
 
   bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge {
@@ -322,12 +333,14 @@ export class SqliteFilesystemAuthority implements NimbusFilesystemAuthority {
       if (--opened.refs === 0) opened.node.close();
     }
     scope.handles.clear();
+    for (const dispose of scope.subscriptions) dispose();
+    scope.subscriptions.clear();
     scope.closed = true;
     scope.abort.abort();
   }
 
   private view(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const target = new SqliteRuntimeFsBridge(this.vfs.as(cred), this.vfs, scope);
+    const target = new SqliteRuntimeFsBridge(this.vfs.as(cred), this.vfs, scope, () => this.kernel?.as(cred));
     return new SqliteGuardedFsBridge(target, scope, signal, pid);
   }
 }

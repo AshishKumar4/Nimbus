@@ -2,6 +2,10 @@ import { INode, Stat, Dirent, VirtualProvider, MountProvider } from './types.js'
 import type { VFSWatchListener } from './types.js';
 import { ContentStore } from '../storage/ContentStore.js';
 import type { VfsCred } from '../../../../runtime/os-contracts.js';
+interface MountEntry {
+    path: string;
+    provider: VirtualProvider | MountProvider;
+}
 export declare class VFS {
     private root;
     /**
@@ -10,6 +14,8 @@ export declare class VFS {
      */
     private mounts;
     private emitter;
+    private readonly identities;
+    private readonly inodeSequence;
     onChange?: () => void;
     /** Content store for chunked large files. Optional -- without it all data stays inline. */
     readonly contentStore: ContentStore;
@@ -41,7 +47,11 @@ export declare class VFS {
      * the mount itself and is what "are these two paths on the same filesystem"
      * has to compare.
      */
-    private getProvider;
+    getProvider(path: string): {
+        entry: MountEntry;
+        provider: VirtualProvider | MountProvider;
+        subpath: string;
+    } | null;
     private createNode;
     private resolveNode;
     private resolveParent;
@@ -95,6 +105,12 @@ export declare class VFS {
     isFile(path: string): boolean;
     private probeType;
     access(path: string, mode: number): void;
+    inodeIdentity(path: string): number;
+    lstat(path: string): Stat;
+    readlink(path: string): string;
+    symlink(target: string, path: string): void;
+    realpath(path: string): string;
+    utimes(path: string, atimeMs: number, mtimeMs: number): void;
     stat(path: string): Stat;
     unlink(path: string): void;
     rename(oldPath: string, newPath: string): void;
@@ -125,4 +141,5 @@ export declare class VFS {
      */
     rmdirRecursive(path: string): void;
 }
+export {};
 //# sourceMappingURL=VFS.d.ts.map

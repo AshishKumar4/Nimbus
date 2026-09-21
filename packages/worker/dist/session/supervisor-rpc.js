@@ -151,8 +151,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // Uint8Array transparently; downstream _rpcWriteFile also accepts
         return this._call(this._fsOp('writeFile', [path, content]));
     }
-    async stat(path) {
-        return this._call(this._fsOp('stat', [path]));
+    async stat(path, options) {
+        return this._call(this._fsOp('stat', [path, options]));
     }
     async lstat(path) {
         return this._call(this._fsOp('lstat', [path]));
@@ -181,8 +181,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async exists(path) {
         return this._call(this._fsOp('exists', [path]));
     }
-    async mkdir(path) {
-        return this._call(this._fsOp('mkdir', [path]));
+    async mkdir(path, options) {
+        return this._call(this._fsOp('mkdir', [path, options]));
     }
     async rmdir(path) {
         return this._call(this._fsOp('rmdir', [path]));
@@ -264,6 +264,51 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async fsWrite(handleId, offset, bytes) {
         return this._call(this._fsOp('fsWrite', [handleId, offset, bytes]));
+    }
+    async fsFstat(...args) {
+        return this._call(this._fsOp('fsFstat', args));
+    }
+    async fsDup(...args) {
+        return this._call(this._fsOp('fsDup', args));
+    }
+    async fsSeek(...args) {
+        return this._call(this._fsOp('fsSeek', args));
+    }
+    async fsSetStatus(...args) {
+        return this._call(this._fsOp('fsSetStatus', args));
+    }
+    async fsReaddirHandle(...args) {
+        return this._call(this._fsOp('fsReaddirHandle', args));
+    }
+    async fsFtruncate(...args) {
+        return this._call(this._fsOp('fsFtruncate', args));
+    }
+    async fsFchmod(...args) {
+        return this._call(this._fsOp('fsFchmod', args));
+    }
+    async fsFchown(...args) {
+        return this._call(this._fsOp('fsFchown', args));
+    }
+    async fsFutimes(...args) {
+        return this._call(this._fsOp('fsFutimes', args));
+    }
+    async fsSync(...args) {
+        return this._call(this._fsOp('fsSync', args));
+    }
+    async fsRealpath(...args) {
+        return this._call(this._fsOp('fsRealpath', args));
+    }
+    async fsRemove(...args) {
+        return this._call(this._fsOp('fsRemove', args));
+    }
+    async fsCopyFile(...args) {
+        return this._call(this._fsOp('fsCopyFile', args));
+    }
+    async fsAcquireExclusiveMutation(...args) {
+        return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
+    }
+    async fsReleaseExclusiveMutation(...args) {
+        return this._call(this._fsOp('fsReleaseExclusiveMutation', args));
     }
     async fsClose(handleId) {
         return this._call(this._fsOp('fsClose', [handleId]));

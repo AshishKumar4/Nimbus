@@ -92,6 +92,9 @@ export const ErrorCode = {
   ENOTEMPTY: 'ENOTEMPTY',
   EINVAL: 'EINVAL',
   EXDEV: 'EXDEV',
+  EIO: 'EIO',
+  ENOTSUP: 'ENOTSUP',
+  ESTALE: 'ESTALE',
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -110,6 +113,8 @@ export interface VirtualProvider {
   writeFile?(subpath: string, content: string | Uint8Array): void;
   exists(subpath: string): boolean;
   stat(subpath: string): Stat;
+  lstat?(subpath: string): Stat;
+  readlink?(subpath: string): string;
   readdir(subpath: string): Dirent[];
   access?(subpath: string, mode: number): void;
   as?(cred: VfsCred): VirtualProvider;
@@ -132,6 +137,8 @@ export interface MountProvider extends VirtualProvider {
   /** Set permission bits. Providers without chmod reject it (read-only fs). */
   chmod?(subpath: string, mode: number): void;
   chown?(subpath: string, uid: number | null, gid: number | null): void;
+  symlink?(target: string, subpath: string): void;
+  utimes?(subpath: string, atimeMs: number, mtimeMs: number): void;
 }
 
 export class VFSError extends Error {

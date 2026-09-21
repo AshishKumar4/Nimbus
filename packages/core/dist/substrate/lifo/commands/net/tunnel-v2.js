@@ -31,7 +31,7 @@ export function createTunnelCommandV2(kernel) {
         const options = parseArgs(ctx.args);
         // Handle --help
         if ('help' in options && options.help) {
-            ctx.stdout.write(`Usage: tunnel [options]
+            await ctx.stdout.write(`Usage: tunnel [options]
 
 Expose Lifo HTTP servers through a WebSocket tunnel
 
@@ -63,49 +63,49 @@ With --port 5173:
             return 0;
         }
         const { server, port: defaultPort, verbose } = options;
-        function log(message) {
+        async function log(message) {
             if (verbose) {
-                ctx.stdout.write(`[tunnel] ${message}\n`);
+                await ctx.stdout.write(`[tunnel] ${message}\n`);
             }
         }
         // Check if tunnel already exists
         const existingTunnel = kernel.networkStack.getTunnel('wst0');
         if (existingTunnel) {
-            ctx.stderr.write('Tunnel already active. Use Ctrl+C to stop it first.\n');
+            await ctx.stderr.write('Tunnel already active. Use Ctrl+C to stop it first.\n');
             return 1;
         }
         // Create WebSocket tunnel
         const tunnelId = kernel.networkStack.getNextTunnelId();
         const tunnel = new WebSocketTunnel(tunnelId, server, kernel.networkStack, kernel.portRegistry, 'default', defaultPort);
-        ctx.stdout.write(`Connecting to tunnel server at ${server}...\n`);
+        await ctx.stdout.write(`Connecting to tunnel server at ${server}...\n`);
         log('Creating WebSocket tunnel');
         try {
             // Add tunnel to network stack
             kernel.networkStack.addTunnel('wst0', tunnel);
             // Bring tunnel up (connects WebSocket)
             await tunnel.up();
-            ctx.stdout.write(`✓ Connected to tunnel server\n`);
+            await ctx.stdout.write(`✓ Connected to tunnel server\n`);
             const httpUrl = server.replace('ws://', 'http://').replace('wss://', 'https://');
             if (defaultPort) {
-                ctx.stdout.write(`Tunnel ready — all traffic → port ${defaultPort}\n`);
-                ctx.stdout.write(`  Open: ${httpUrl}\n`);
+                await ctx.stdout.write(`Tunnel ready — all traffic → port ${defaultPort}\n`);
+                await ctx.stdout.write(`  Open: ${httpUrl}\n`);
             }
             else {
-                ctx.stdout.write(`Tunnel ready at ${httpUrl}\n`);
+                await ctx.stdout.write(`Tunnel ready at ${httpUrl}\n`);
                 // Show active ports
                 const ports = tunnel.getActivePorts();
                 if (ports.length === 0) {
-                    ctx.stdout.write('\nNo active servers to tunnel\n');
-                    ctx.stdout.write('Start a server first: node server.js\n');
+                    await ctx.stdout.write('\nNo active servers to tunnel\n');
+                    await ctx.stdout.write('Start a server first: node server.js\n');
                 }
                 else {
-                    ctx.stdout.write(`\nTunneling ${ports.length} server(s):\n`);
+                    await ctx.stdout.write(`\nTunneling ${ports.length} server(s):\n`);
                     for (const port of ports) {
-                        ctx.stdout.write(`  - Port ${port}: ${httpUrl}/${port}/\n`);
+                        await ctx.stdout.write(`  - Port ${port}: ${httpUrl}/${port}/\n`);
                     }
                 }
             }
-            ctx.stdout.write('\nPress Ctrl+C to stop tunnel\n\n');
+            await ctx.stdout.write('\nPress Ctrl+C to stop tunnel\n\n');
             log('Tunnel is active');
             // Monitor connection status
             const checkInterval = setInterval(() => {
@@ -118,15 +118,15 @@ With --port 5173:
             }, verbose ? 10000 : 60000);
             await waitForAbort(ctx.signal);
             clearInterval(checkInterval);
-            ctx.stdout.write('\nShutting down tunnel...\n');
+            await ctx.stdout.write('\nShutting down tunnel...\n');
             await tunnel.down();
             await kernel.networkStack.removeTunnel('wst0');
-            ctx.stdout.write('Tunnel closed\n');
+            await ctx.stdout.write('Tunnel closed\n');
             return 0;
         }
         catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            ctx.stderr.write(`tunnel: ${msg}\n`);
+            await ctx.stderr.write(`tunnel: ${msg}\n`);
             // Cleanup on error
             try {
                 await tunnel.down();

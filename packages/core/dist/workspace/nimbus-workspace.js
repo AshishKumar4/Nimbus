@@ -32,6 +32,8 @@ import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ExecutionFs } from '../shell/execution-fs.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
@@ -56,6 +58,8 @@ import { createSupervisorOpHandler } from './supervisor-op.js';
 export class NimbusWorkspace {
     sql;
     supervisorOps;
+    filesystem;
+    runtimeLease;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
      * kernel: a pid-less caller must not gain more authority than the shell it
@@ -83,9 +87,11 @@ export class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     shellProcessPid;
     commands;
-    constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps) {
+    constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease) {
         this.sql = sql;
         this.supervisorOps = supervisorOps;
+        this.filesystem = filesystem;
+        this.runtimeLease = runtimeLease;
         this.vfs = vfs;
         this.kernel = kernel;
         this.shell = shell;
@@ -98,7 +104,7 @@ export class NimbusWorkspace {
         // NOT the kernel VFS as it stands, which is kernel-credentialed because
         // the shell re-credentials per command; a host calling `.fs` has no
         // process behind it and must not inherit that.
-        this.fs = new SandboxFsImpl(kernel.vfs.as(CRED_SESSION_USER), () => shell.getCwd());
+        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd());
     }
     static async create(options) {
         if (options.fabric)
@@ -107,6 +113,9 @@ export class NimbusWorkspace {
         if (exports)
             adoptCtxExports(exports);
         const vfs = options.vfs ?? openFilesystem(options);
+        if (options.filesystemNamespace !== undefined && options.filesystemNamespace !== vfs.namespace) {
+            throw new Error('filesystemNamespace differs from the supplied filesystem namespace');
+        }
         const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
         seedBaseFilesystem(vfs, mounts);
         const kernel = new Kernel();
@@ -116,6 +125,12 @@ export class NimbusWorkspace {
         for (const mount of mounts) {
             kernel.vfs.mount(`/${mount}`, new SqliteVFSProvider(vfs, mount));
         }
+        const defaultAuthority = new SqliteFilesystemAuthority(vfs, kernel.vfs);
+        const filesystem = options.filesystem?.(defaultAuthority) ?? defaultAuthority;
+        if (filesystem instanceof SqliteFilesystemAuthority)
+            filesystem.attachKernel(kernel.vfs);
+        if (filesystem.namespace !== defaultAuthority.namespace)
+            throw new Error('Selected authority must preserve the workspace namespace');
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -143,7 +158,7 @@ export class NimbusWorkspace {
             shellProcessPid = shellProcess.pid;
             identity = workspaceShellIdentity(processes, shellProcess, () => shell);
         }
-        shell = new Shell(options.terminal ?? new HeadlessTerminal(), kernel.vfs, registry, env, kernel.processRegistry, identity);
+        shell = new Shell(options.terminal ?? new HeadlessTerminal(), filesystem, registry, env, kernel.processRegistry, identity);
         if (options.cwd)
             shell.setCwd(options.cwd);
         // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
@@ -158,83 +173,97 @@ export class NimbusWorkspace {
         registry.register('wget', createWgetCommand(kernel));
         const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
         const kernelFs = vfs.as(CRED_KERNEL);
-        const runtimes = new RuntimeManager({
-            vfs: kernelFs,
-            registry,
-            getHome,
-            source: options.runtimeSource
-                ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
-                : suppliedRuntimeSource(options.runtimes ?? []),
-        });
-        if (options.facets) {
-            await registerWasmRuntimes({
-                facets: options.facets,
-                vfs,
+        const runtimeLease = filesystem.openHost(CRED_KERNEL);
+        // Everything past the lease can throw — a runtime source that fails to
+        // list, a package that will not install. The workspace it would have
+        // belonged to is never constructed, so nobody is left to close() it.
+        try {
+            const runtimes = new RuntimeManager({
+                vfs: new ExecutionFs(runtimeLease.fs),
                 registry,
-                processes,
-                runtimes,
+                getHome,
+                source: options.runtimeSource
+                    ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
+                    : suppliedRuntimeSource(options.runtimes ?? []),
             });
-        }
-        if (options.runtimeInstall === 'on-demand') {
-            // Stubs only for bins nothing already answers: a coreutil never yields
-            // its name, and a rehydrated runtime is rebound below anyway.
-            const stubbed = new Set();
-            for (const runtimePackage of options.runtimes ?? []) {
-                for (const ep of runtimeEntrypoints(runtimePackage.manifest)) {
-                    if (stubbed.has(ep.binName) || registry.has(ep.binName))
-                        continue;
-                    runtimes.registerInstallStub(ep.binName);
-                    stubbed.add(ep.binName);
-                }
+            if (options.facets) {
+                await registerWasmRuntimes({
+                    facets: options.facets,
+                    vfs,
+                    filesystem,
+                    registry,
+                    processes,
+                    runtimes,
+                });
             }
-            // Beyond the supplied packages: a name the registry cannot answer is
-            // offered to the source — catalog reads only, no payload — and gets a
-            // stub when something could satisfy it. Registered last so every real
-            // command and the PATH resolver still win.
-            const baseResolve = registry.resolve.bind(registry);
-            registry.resolve = async (name) => {
-                const found = await baseResolve(name);
-                if (found)
-                    return found;
-                if (!name || name.includes('/'))
-                    return undefined;
-                try {
-                    if (!await runtimes.resolvable(name))
+            if (options.runtimeInstall === 'on-demand') {
+                // Stubs only for bins nothing already answers: a coreutil never yields
+                // its name, and a rehydrated runtime is rebound below anyway.
+                const stubbed = new Set();
+                for (const runtimePackage of options.runtimes ?? []) {
+                    for (const ep of runtimeEntrypoints(runtimePackage.manifest)) {
+                        if (stubbed.has(ep.binName) || registry.has(ep.binName))
+                            continue;
+                        runtimes.registerInstallStub(ep.binName);
+                        stubbed.add(ep.binName);
+                    }
+                }
+                // Beyond the supplied packages: a name the registry cannot answer is
+                // offered to the source — catalog reads only, no payload — and gets a
+                // stub when something could satisfy it. Registered last so every real
+                // command and the PATH resolver still win.
+                const baseResolve = registry.resolve.bind(registry);
+                registry.resolve = async (name) => {
+                    const found = await baseResolve(name);
+                    if (found)
+                        return found;
+                    if (!name || name.includes('/'))
                         return undefined;
-                }
-                catch {
-                    return undefined;
-                }
-                runtimes.registerInstallStub(name);
-                return baseResolve(name);
-            };
-        }
-        else {
-            // Before the runners are wired, because registration reads what the
-            // filesystem holds — the same order `nimbus install` observes, and the
-            // same order a Durable Object observes when it rehydrates after
-            // eviction. No runner factories yet means a filesystem-only install,
-            // exactly as before.
-            for (const runtimePackage of options.runtimes ?? []) {
-                await runtimes.installPackage(runtimePackage);
+                    try {
+                        if (!await runtimes.resolvable(name))
+                            return undefined;
+                    }
+                    catch {
+                        return undefined;
+                    }
+                    runtimes.registerInstallStub(name);
+                    return baseResolve(name);
+                };
             }
+            else {
+                // Before the runners are wired, because registration reads what the
+                // filesystem holds — the same order `nimbus install` observes, and the
+                // same order a Durable Object observes when it rehydrates after
+                // eviction. No runner factories yet means a filesystem-only install,
+                // exactly as before.
+                for (const runtimePackage of options.runtimes ?? []) {
+                    await runtimes.installPackage(runtimePackage);
+                }
+            }
+            await runtimes.rehydrate();
+            // The one `nimbus` verb: installs go through the manager, and a host with
+            // application verbs supplies them — a bare workspace reports that it has
+            // no session to address.
+            registry.register('nimbus', makeNimbusVerbHandler({
+                runtimes,
+                registry,
+                vfs: kernelFs,
+            }));
+            const supervisorOps = createSupervisorOpHandler({
+                vfs, filesystem,
+                processes,
+                output: options.processOutput,
+                extend: options.supervisorOps,
+            });
+            return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease);
         }
-        await runtimes.rehydrate();
-        // The one `nimbus` verb: installs go through the manager, and a host with
-        // application verbs supplies them — a bare workspace reports that it has
-        // no session to address.
-        registry.register('nimbus', makeNimbusVerbHandler({
-            runtimes,
-            registry,
-            vfs: kernelFs,
-        }));
-        const supervisorOps = createSupervisorOpHandler({
-            vfs,
-            processes,
-            output: options.processOutput,
-            extend: options.supervisorOps,
-        });
-        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, runtimes, shellProcessPid, supervisorOps);
+        catch (error) {
+            await runtimeLease.dispose();
+            throw error;
+        }
+    }
+    async close() {
+        await this.runtimeLease.dispose();
     }
     exec(command, options) {
         return this.commands.run(command, options);
@@ -294,7 +323,7 @@ export class NimbusWorkspace {
  * already done this, at the same seam, for the same reason.
  */
 function openFilesystem(options) {
-    const vfs = new SqliteVFS(options.sql, options.transactions);
+    const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
     vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
     return vfs;
 }
@@ -429,8 +458,7 @@ async function registerWasmRuntimes(deps) {
     // imports — so a host outside Cloudflare must be able to run a shell, bash
     // and python without that module ever entering its graph.
     let esbuild = null;
-    deps.registry.register('wasm-runner', buildRuntimeHandler(wasmRunnerSpec({ vfs: deps.vfs, facets: deps.facets, processes }), {
-        vfs: deps.vfs,
+    deps.registry.register('wasm-runner', buildRuntimeHandler(wasmRunnerSpec({ filesystem: deps.filesystem, facets: deps.facets, processes }), {
         getEsbuild: () => {
             if (!esbuild) {
                 esbuild = import('../runtime/esbuild-service.js')
@@ -441,16 +469,14 @@ async function registerWasmRuntimes(deps) {
         registry: deps.registry,
     }));
     const runners = {
-        'bash-runner': makeBashRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+        'bash-runner': makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
         // No `startResident`: a workspace owns no actor that could outlive the
         // call, so a program that keeps serving is refused by name rather than
         // run as a one-shot that dies with it. Same for ruby, where a script is
         // the shape that may bind a port.
-        'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
-        'ruby-runner': makeRubyRunnerFactory({
-            facets: deps.facets, vfs: deps.vfs, registry: deps.registry,
-        }),
-        'clang-runner': makeClangRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+        'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets }),
+        'ruby-runner': makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry }),
+        'clang-runner': makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);
@@ -466,6 +492,12 @@ async function registerWasmRuntimes(deps) {
  * collide with a host's own schema.
  */
 const WORKSPACE_TABLES = [
+    'vfs_append_receipts_v2',
+    'vfs_append_writer_state_v2',
+    'vfs_append_module_state_v2',
+    'vfs_append_pid_revocations_v2',
+    'vfs_append_acked_gaps_v2',
+    'vfs_ino_allocator',
     'inodes',
     'file_chunks',
     'content_lifecycle',

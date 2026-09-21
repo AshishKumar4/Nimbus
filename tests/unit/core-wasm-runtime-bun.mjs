@@ -84,11 +84,15 @@ function seedRuntime(vfs, runtime) {
   const fs = vfs.as(KERNEL);
   const root = installRoot(runtime);
   const files = [];
+  if (runtime.name === 'bash') {
+    const names = readFileSync(`${WASM_DIR}bash/coreutils/busybox.applets`, 'utf8').split('\n').filter(Boolean);
+    for (const name of names) runtime.files.push([`bin/${name}`, null, 'Nimbus WASI multicall entry\n']);
+  }
   for (const [path, disk, synthetic] of runtime.files) {
     const bytes = disk === null ? Buffer.from(synthetic, 'utf8') : readFileSync(disk);
     const target = `${root}/${path}`;
     fs.mkdir(target.replace(/\/[^/]+$/, ''), { recursive: true });
-    fs.writeFile(target, new Uint8Array(bytes));
+    fs.writeFile(target, new Uint8Array(bytes), { mode: path.startsWith('bin/') ? 0o755 : 0o644 });
     files.push({
       path,
       content: `blobs/${runtime.name}-${runtime.version}/${path}`,

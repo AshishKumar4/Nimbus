@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
+import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -71,6 +74,73 @@ try {
   assert.equal(invocations, 0);
 } finally {
   box.destroy();
+}
+
+// ── a descriptor `exec` keeps open is closed when it is repointed or closed ──
+// `exec 3>file` survives the command that opened it, so its bridge handle is
+// not the per-command flush's to close; repointing or closing fd 3 must.
+{
+  root.mkdir('work', { mode: 0o777 });
+  root.chown('work', USER.uid, USER.gid);
+  const authority = new SqliteFilesystemAuthority(rawVfs);
+  const opens = [];
+  const closes = [];
+  const counted = (view) => new Proxy(view, {
+    get(target, key) {
+      // No synchronous capability: redirections take the bridge handle path.
+      if (key === 'synchronous') return undefined;
+      const member = target[key];
+      if (typeof member !== 'function') return member;
+      return async (...args) => {
+        const result = await member.apply(target, args);
+        if (key === 'open') opens.push(result.id);
+        if (key === 'close') closes.push(args[0]);
+        return result;
+      };
+    },
+  });
+  const remote = {
+    namespace: authority.namespace,
+    bind: (binding) => counted(authority.bind(binding)),
+    openHost(cred, options) {
+      const lease = authority.openHost(cred, options);
+      return { fs: counted(lease.fs), dispose: () => lease.dispose() };
+    },
+    releaseProcess: (pid) => authority.releaseProcess(pid),
+  };
+  const asyncBox = await Sandbox.create({ persist: false });
+  const shell = new Shell(
+    new HeadlessTerminal(), remote, asyncBox.commands.registry,
+    { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.shell.getProcessRegistry(),
+    { pid: 91, cred: USER, setUmask() {}, runAs: async () => 126 },
+  );
+  try {
+    const result = await shell.execute(
+      'exec 3>/work/a; echo first >&3; exec 3>/work/b; echo second >&3; exec 3>&-',
+    );
+    assert.equal(result.exitCode, 0, `persistent fd script: ${result.stderr}`);
+    assert.equal(result.stderr, '');
+    assert.equal(opens.length, 2, 'each exec redirection opens one descriptor');
+    assert.deepEqual(closes.sort(), opens.sort(),
+      'the repointed and the closed descriptor each release their handle');
+    // Writes through fd 3 landed in the file each exec pointed it at.
+    assert.equal(root.readFileString('/work/a'), 'first\n');
+    assert.equal(root.readFileString('/work/b'), 'second\n');
+
+    // A handle two descriptors share outlives the first of them: closing fd 3
+    // must not pull the file out from under fd 4.
+    const shared = await shell.execute(
+      'exec 3>/work/c; exec 4>&3; exec 3>&-; echo via4 >&4; exec 4>&-',
+    );
+    assert.equal(shared.exitCode, 0, `shared fd script: ${shared.stderr}`);
+    assert.equal(shared.stderr, '');
+    assert.equal(root.readFileString('/work/c'), 'via4\n');
+    assert.equal(opens.length, 3, 'a dup opens no second descriptor');
+    assert.deepEqual(closes.sort(), opens.sort(), 'the shared handle closes once, with the last descriptor');
+    await authority.releaseProcess(91);
+  } finally {
+    asyncBox.destroy();
+  }
 }
 
 console.log('lifo shell redirection permissions: ok');

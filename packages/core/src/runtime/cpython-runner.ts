@@ -49,7 +49,7 @@
 
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
@@ -240,7 +240,6 @@ export type CPythonResidentStart = (spawn: {
 
 export function makeCPythonRunnerFactory(deps: {
   facets: FacetHost;
-  vfs: SqliteVFS;
   /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
   startResident?: CPythonResidentStart;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
@@ -256,12 +255,12 @@ export function makeCPythonRunnerFactory(deps: {
     const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
     const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
     let seedCache:
-      { cred: string; cwd: string; revision: number; result: ReturnType<FacetHost['seedFilesystem']> } | null = null;
+      { cred: string; cwd: string; revision: number; result: Awaited<ReturnType<FacetHost['seedFilesystem']>> } | null = null;
 
     return async function cpythonBinHandler(ctx: CommandContext): Promise<number> {
       const cred = requireVfsCred(ctx.cred, binName);
       const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-      const vfs = deps.vfs.as(cred);
+      const vfs = ctx.vfs;
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
 
@@ -298,18 +297,18 @@ export function makeCPythonRunnerFactory(deps: {
       // also right for `python -c` naming a module in a variable. Falling back
       // when the variant is absent keeps a session installed before the variant
       // shipped working, on the base interpreter, rather than failing to start.
-      const wantsSci = sessionUsesSciVariant(vfs)
-        && sciWasmVfs !== null && vfs.exists(sciWasmVfs);
+      const wantsSci = await sessionUsesSciVariant(vfs)
+        && sciWasmVfs !== null && (await vfs.exists(sciWasmVfs));
       const wasmVfs = wantsSci ? sciWasmVfs : baseWasmVfs;
-      const sciPackagesPath = wantsSci && sciPackagesVfs && vfs.exists(sciPackagesVfs)
+      const sciPackagesPath = wantsSci && sciPackagesVfs && (await vfs.exists(sciPackagesVfs))
         ? sciPackagesVfs
         : null;
 
-      if (!wasmVfs || !vfs.exists(wasmVfs)) {
+      if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
         ctx.stderr.write(`${binName}: python.wasm missing (re-run 'nimbus install python')\n`);
         return 127;
       }
-      if (!stdlibVfs || !vfs.exists(stdlibVfs)) {
+      if (!stdlibVfs || !(await vfs.exists(stdlibVfs))) {
         ctx.stderr.write(`${binName}: python313.zip missing (re-run 'nimbus install python')\n`);
         return 127;
       }
@@ -331,11 +330,11 @@ export function makeCPythonRunnerFactory(deps: {
       } else if (parsed.mode === 'script') {
         const absPath = resolveVfsPath(parsed.scriptPath, cwd);
         try {
-          if (!vfs.exists(absPath)) {
+          if (!(await vfs.exists(absPath))) {
             ctx.stderr.write(`${binName}: can't open file '${parsed.scriptPath}': [Errno 2] No such file or directory\n`);
             return 2;
           }
-          userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
+          userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
         } catch (e: unknown) {
           ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
           return 1;
@@ -397,9 +396,9 @@ export function makeCPythonRunnerFactory(deps: {
       // CERTIFICATE_VERIFY_FAILED with the bundle sitting right there.
       const cacertDir = cacertVfs ? cacertVfs.replace(/\/[^/]+$/, '') : null;
       const revision = Math.max(
-        vfs.revision(cwd),
-        vfs.revision(PYTHON_SITE_PACKAGES_ROOT),
-        vfs.revision(stdlibVfs),
+        (await vfs.revision(cwd)),
+        (await vfs.revision(PYTHON_SITE_PACKAGES_ROOT)),
+        (await vfs.revision(stdlibVfs)),
       );
       let fsSeed = seedCache && seedCache.cred === credKey
         && seedCache.cwd === cwd && seedCache.revision === revision
@@ -410,7 +409,8 @@ export function makeCPythonRunnerFactory(deps: {
         // against, or the bytes themselves. Which one it is follows from
         // whether the host can park a guest mid-syscall, and nothing here
         // depends on the answer.
-        fsSeed = deps.facets.seedFilesystem(vfs, cwd, {
+        fsSeed = await deps.facets.seedFilesystem(vfs.authority, cwd, {
+          cred,
           extraRoots: [PYTHON_SITE_PACKAGES_ROOT, stdlibDir, ...(cacertDir ? [cacertDir] : [])],
           revision,
         });
@@ -438,9 +438,9 @@ export function makeCPythonRunnerFactory(deps: {
         // Never absent. Without the capability the facet reads its seed and can
         // never write anything back — the program appears to run and its output
         // never reaches the session.
-        syscalls: { vfs, pid: ctx.pid },
+        syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
         preamble: buildCPythonPreamble(),
-        wasmModules: { 'python.wasm': toArrayBuffer(vfs.readFile(wasmVfs)) },
+        wasmModules: { 'python.wasm': toArrayBuffer((await vfs.readFile(wasmVfs))) },
       });
 
       const facetArgs = {

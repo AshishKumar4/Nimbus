@@ -21,7 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -38,7 +38,7 @@ export declare function checkedReadPayloadBytes(bytes: number): number;
  * `stat` here is a local SQLite lookup inside the DO — the same one
  * `_rpcReadFile` makes for the same reason — not a second round trip.
  */
-export declare function rangeReadBytes(fs: SqliteRuntimeFsBridge, path: string, offset: number, length: number): Promise<number>;
+export declare function rangeReadBytes(fs: RuntimeFsBridge, path: string, offset: number, length: number): Promise<number>;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
  * `files.readFile` — the read with the supervisor's allocation lease.
@@ -94,8 +94,6 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
 export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
 export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
-export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean>;
-export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void>;
 export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
 export declare function _rpcChown(self: RpcHost, path: string, uid: number, gid: number, pid?: number, options?: {
@@ -108,10 +106,7 @@ export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, c
 }[]>;
 export declare function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
 export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
-export declare function _rpcRmdir(self: RpcHost, path: string, pid?: number): Promise<void>;
 export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
-export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null>;
-export declare function _rpcSymlink(self: RpcHost, target: string, path: string, pid?: number): Promise<void>;
 export declare const FsReadRangeArgsSchema: z.ZodObject<{
     path: z.ZodString;
     offset: z.ZodNumber;
@@ -121,6 +116,8 @@ declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodObject<{
     path: z.ZodString;
     offset: z.ZodNumber;
     length: z.ZodNumber;
+    expectedEpoch: z.ZodOptional<z.ZodString>;
+    expectedRevision: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>>;
 /** One requested range in a batch read. `length` bounds what it may return. */
 export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
@@ -139,7 +136,6 @@ export type FsReadBatchEntry = {
     bytes?: undefined;
     error: FsReadBatchEntryError;
 };
-export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
 export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], pid?: number): Promise<{
     id: number;
     protocol: string;
@@ -165,21 +161,6 @@ export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, curso
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /**
- * The same read, through the same process credential and the same bridge, with
- * the LRU content cache bypassed.
- *
- * For a boot spec's by-path members and nothing else. Those are the largest
- * files a session holds — a ruby interpreter image is 34.3 MiB against a 32 MiB
- * cache — and a host reads each one once, in slices, to hand to a Worker Loader
- * module map. Serving them through the demand-paging path would evict the
- * user's entire hot working set and pin the blob in this DO's heap for the rest
- * of the session, which is the pathology `readFileUncached` was added to stop
- * when clang crashed the supervisor. A process hosted on this DO already reads
- * them uncached; one hosted elsewhere has to be able to say so too, or the
- * substrate that was supposed to relieve the coordinator damages it instead.
- */
-export declare function _rpcFsReadRangeUncached(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
-/**
  * Read many ranges in ONE round trip.
  *
  * Every entry is the same read `_rpcFsReadRange` performs, through the same
@@ -201,7 +182,6 @@ export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: 
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
-export declare function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void>;
 export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any>;
 export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
 export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;

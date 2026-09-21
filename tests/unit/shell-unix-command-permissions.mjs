@@ -5,13 +5,22 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = rawVfs.as(CRED_KERNEL);
+// The kernel owns the virtual mounts (/dev, /proc); the authority resolves a
+// caller's path against them before falling through to session storage.
+const kernel = new Kernel();
+kernel.initFilesystem();
+const authority = new SqliteFilesystemAuthority(rawVfs, kernel.vfs);
+const filesystemFor = cred => new ExecutionFs(authority.bind({ pid: cred.uid === 0 ? 72 : 71, cred }));
 
 root.mkdir('etc', { mode: 0o755 });
 root.writeFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n', { mode: 0o644 });
@@ -49,20 +58,20 @@ assert.equal(deniedRm.exitCode, 1);
 assert.match(deniedRm.stderr, /Permission denied/);
 assert.equal(root.readFileString('home/user/locked/keep'), 'keep', 'denied rm preserves the file');
 
-const xargsCat = await run('xargs', ['cat'], USER, rawVfs.as(USER), 'readable\n');
+const xargsCat = await run('xargs', ['cat'], USER, filesystemFor(USER), 'readable\n');
 assert.deepEqual(xargsCat, {
   exitCode: 0,
   stdout: 'VISIBLE\n',
   stderr: '',
 }, 'xargs preserves caller credentials when dispatching cat');
 
-const deniedXargsCat = await run('xargs', ['cat'], USER, rawVfs.as(USER), 'no-access\n');
+const deniedXargsCat = await run('xargs', ['cat'], USER, filesystemFor(USER), 'no-access\n');
 assert.equal(deniedXargsCat.exitCode, 1);
 assert.equal(deniedXargsCat.stdout, '');
 assert.match(deniedXargsCat.stderr, /Permission denied/);
 assert.doesNotMatch(deniedXargsCat.stderr, /TypeError|undefined is not an object/);
 
-const deniedXargsRm = await run('xargs', ['rm'], USER, rawVfs.as(USER), 'locked/keep\n');
+const deniedXargsRm = await run('xargs', ['rm'], USER, filesystemFor(USER), 'locked/keep\n');
 assert.equal(deniedXargsRm.exitCode, 1);
 assert.match(deniedXargsRm.stderr, /Permission denied/);
 assert.doesNotMatch(deniedXargsRm.stderr, /TypeError|undefined is not an object/);
@@ -73,17 +82,9 @@ assert.equal(elevatedCat.exitCode, 0);
 assert.equal(elevatedCat.stdout, 'TOPSECRET\n');
 assert.equal(elevatedCat.stderr, '');
 
-const userVfs = rawVfs.as(USER);
-// Stands in for a mount the caller VFS resolves but the closure-captured
-// SqliteVFS does not — /dev/null, a zero-length character device.
-const mountedVfs = {
-  ...userVfs,
-  stat: (path) => path === '/dev/null'
-    ? { type: 'file', size: 0, mode: 0o020666, atime: 0, ctime: 0, mtime: 0, uid: 0, gid: 0 }
-    : userVfs.stat(path),
-  readFile: (path) => path === '/dev/null' ? new Uint8Array() : userVfs.readFile(path),
-};
-assert.deepEqual(await run('cat', ['/dev/null'], USER, mountedVfs), {
+// A mount the caller VFS resolves but the closure-captured SqliteVFS does not
+// — /dev/null, a zero-length character device.
+assert.deepEqual(await run('cat', ['/dev/null'], USER), {
   exitCode: 0,
   stdout: '',
   stderr: '',
@@ -121,7 +122,7 @@ assert.doesNotMatch(missingIdentity.stderr, /TypeError|undefined is not an objec
 
 console.log('shell unix command permissions: ok');
 
-async function run(name, args, cred, invocationVfs = rawVfs.as(cred), stdin = '') {
+async function run(name, args, cred, invocationVfs = filesystemFor(cred), stdin = '') {
   const command = await registry.resolve(name);
   assert.ok(command, `${name} is registered`);
   let stdout = '';

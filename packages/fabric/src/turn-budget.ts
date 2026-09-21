@@ -142,7 +142,7 @@ export interface PacedWorkHost {
    * reason. Without it the pump degrades to a same-context timer — see
    * {@link PacedWork.nextTurn}.
    */
-  requestTurn?: (notBefore?: number) => void;
+  requestTurn?: (notBefore?: number) => void | Promise<void>;
 }
 
 /**
@@ -160,7 +160,8 @@ export class PacedWork implements TurnScheduler {
    * half-built work for pids that no longer exist, where re-driving a launch
    * from its inputs is the same idempotent work again.
    */
-  private waiters: Array<{ resume: () => void; chunkEnded: Promise<void>; notBefore: number }> = [];
+  private waiters: Array<{ resume: () => void; reject: (error: unknown) => void; chunkEnded: Promise<void>; notBefore: number }> = [];
+  private closed: Error | undefined;
 
   /**
    * `ctx` keys the cold-start queue the pump drains first on every turn it
@@ -182,10 +183,17 @@ export class PacedWork implements TurnScheduler {
    * responsiveness but keeps the behaviour.
    */
   nextTurn(chunkEnded: Promise<void>, notBefore = 0): Promise<void> {
-    return new Promise<void>((resume) => {
-      this.waiters.push({ resume, chunkEnded, notBefore });
+    if (this.closed) return Promise.reject(this.closed);
+    return new Promise<void>((resume, reject) => {
+      const waiter = { resume, reject, chunkEnded, notBefore };
+      this.waiters.push(waiter);
       if (this.host.requestTurn) {
-        this.host.requestTurn(notBefore);
+        void this.requestTurn(notBefore).catch((error: unknown) => {
+          const index = this.waiters.indexOf(waiter);
+          if (index < 0) return;
+          this.waiters.splice(index, 1);
+          waiter.reject(error);
+        });
         return;
       }
       setTimeout(() => { void this.pump(); }, Math.max(0, notBefore - Date.now()));
@@ -201,18 +209,39 @@ export class PacedWork implements TurnScheduler {
    * the runtime may tear the context down mid-chunk.
    */
   async pump(): Promise<void> {
-    // Deferred reconciliation runs first, before any waiter resumes. Where
-    // the resident-launch journal's recovery sits (`onColdStart`): the pump
-    // is what an alarm calls, and the first turn after a reset is the
-    // re-delivered alarm of a launch the reset interrupted.
+    if (this.closed) return;
     await runColdStart(this.ctx);
+    if (this.closed) return;
     const now = Date.now();
     const waiting = this.waiters.filter((waiter) => waiter.notBefore <= now);
     this.waiters = this.waiters.filter((waiter) => waiter.notBefore > now);
-    if (this.waiters.length > 0) this.host.requestTurn?.(Math.min(...this.waiters.map((waiter) => waiter.notBefore)));
-    if (waiting.length === 0) return;
+    const future = [...this.waiters];
+    const scheduled = future.length > 0
+      ? this.requestTurn(Math.min(...future.map((waiter) => waiter.notBefore))).catch((error: unknown) => {
+        for (const waiter of future) {
+          const index = this.waiters.indexOf(waiter);
+          if (index < 0) continue;
+          this.waiters.splice(index, 1);
+          waiter.reject(error);
+        }
+        throw error;
+      })
+      : Promise.resolve();
     for (const waiter of waiting) waiter.resume();
-    await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
+    const results = await Promise.allSettled([scheduled, ...waiting.map((waiter) => waiter.chunkEnded)]);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
+
+  private async requestTurn(notBefore: number): Promise<void> {
+    if (this.closed) throw this.closed;
+    await this.host.requestTurn?.(notBefore);
+  }
+
+  /** Reject parked work before the owner drains launch cleanup and cancels its alarm. */
+  close(reason = new Error('Launch scheduler is closed')): void {
+    this.closed ??= reason;
+    for (const waiter of this.waiters.splice(0)) waiter.reject(this.closed);
   }
 
   /** Whether any launch is suspended waiting for a turn. */

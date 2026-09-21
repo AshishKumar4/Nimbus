@@ -21,7 +21,7 @@
  */
 
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import { errorText } from '../_shared/error-text.js';
 import {
   listInstalledManifestsView,
@@ -221,7 +221,7 @@ export class RuntimeManager {
     for (const ep of entrypoints) {
       const factory = this.runnerFactories.get(ep.runner);
       if (!factory) continue;
-      this.registry.register(ep.binName, factory(manifest, seeded.root, ep.binName, ep.kind));
+      this.registry.register(ep.binName, await factory(manifest, seeded.root, ep.binName, ep.kind));
       bins.push(ep.binName);
     }
 
@@ -257,7 +257,7 @@ export class RuntimeManager {
       .filter(([key]) => key === nameKey || key.startsWith(`${nameKey}/`))
       .map(([, op]) => op.done);
     const removal: Promise<void> = Promise.allSettled(pending)
-      .then(() => this.remove(name, versionOverride, home));
+      .then(async () => (await this.remove(name, versionOverride, home)));
     const entry: OpEntry = { kind: 'remove', done: removal };
     this.inflight.set(nameKey, entry);
     try {
@@ -268,7 +268,7 @@ export class RuntimeManager {
   }
 
   private async remove(name: string, versionOverride: string | null, home: string): Promise<void> {
-    const matches = listInstalledManifestsView(this.vfs, home).filter((entry) =>
+    const matches = (await listInstalledManifestsView(this.vfs, home)).filter((entry) =>
       entry.manifest.name === name
       && (versionOverride === null || entry.manifest.version === versionOverride),
     );
@@ -276,7 +276,7 @@ export class RuntimeManager {
       for (const ep of runtimeEntrypoints(match.manifest)) {
         this.registry.unregister?.(ep.binName);
       }
-      if (this.vfs.exists(match.root)) this.vfs.removeRecursive(match.root);
+      if (await this.vfs.exists(match.root)) await this.vfs.remove(match.root, { recursive: true });
     }
 
     // Bins a surviving version of the same runtime also provides are rebound
@@ -295,7 +295,7 @@ export class RuntimeManager {
     // Empty `runtimes/<name>`/`runtimes` dirs go too.
     const base = `${home.replace(/^\/+/, '').replace(/\/+$/, '')}/.nimbus/runtimes`;
     for (const dir of [`${base}/${name}`, base]) {
-      if (this.vfs.exists(dir) && this.vfs.readdir(dir).length === 0) this.vfs.rmdir(dir);
+      if ((await this.vfs.exists(dir)) && (await this.vfs.readdir(dir)).length === 0) (await this.vfs.rmdir(dir));
     }
   }
 
@@ -332,8 +332,8 @@ export class RuntimeManager {
     return this.source.resolve(spec);
   }
 
-  list(): RuntimeSummary[] {
-    return listInstalledManifestsView(this.vfs, this.getHome()).map(({ root, manifest }) => ({
+  async list(): Promise<RuntimeSummary[]> {
+    return (await listInstalledManifestsView(this.vfs, this.getHome())).map(({ root, manifest }) => ({
       name: manifest.name,
       version: manifest.version,
       root,

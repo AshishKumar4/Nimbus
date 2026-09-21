@@ -1,6 +1,6 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
-import type { VFS } from '../../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../../shell/execution-fs.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
@@ -195,7 +195,7 @@ async function fetchPackageInfo(
 ): Promise<RegistryVersionInfo> {
 	// If version is a semver range, resolve it against all versions
 	if (version && isVersionRange(version)) {
-		return fetchWithRange(registry, name, version, signal);
+		return (await fetchWithRange(registry, name, version, signal));
 	}
 
 	// Exact version or dist-tag (or null → latest)
@@ -256,21 +256,21 @@ async function fetchAndStreamPackage(
 	}
 
 	if (!response.body) throw new Error(`Registry served no body for ${tarballUrl}`);
-	return writeTarballStream(response.body, targetDir, vfs);
+	return (await writeTarballStream(response.body, targetDir, vfs));
 }
 
-function readProjectPackageJson(vfs: VFS, cwd: string): PackageJson | null {
+async function readProjectPackageJson(vfs: VFS, cwd: string): Promise<PackageJson | null> {
 	const pkgPath = join(cwd, 'package.json');
 	try {
-		return JSON.parse(vfs.readFileString(pkgPath));
+		return JSON.parse((await vfs.readFileString(pkgPath)));
 	} catch {
 		return null;
 	}
 }
 
-function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson): void {
+async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson): Promise<void> {
 	const pkgPath = join(cwd, 'package.json');
-	vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+	(await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
 }
 
 export function getBinEntries(pkg: PackageJson): Record<string, string> {
@@ -284,13 +284,13 @@ export function getBinEntries(pkg: PackageJson): Record<string, string> {
 export function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void {
 	registry.registerLazy(binName, () =>
 		import('./node.js').then((mod) => ({
-			default: ((ctx: CommandContext) => {
+			default: (async (ctx: CommandContext) => {
 				// Use kernel's portRegistry if available, otherwise fall back to default
 				const nodeCommand = kernel ? mod.createNodeCommand(kernel) : mod.default;
-				return nodeCommand({
+				return (await nodeCommand({
 					...ctx,
 					args: [scriptPath, ...ctx.args],
-				});
+				}));
 			}) as Command,
 		})),
 	);
@@ -320,11 +320,11 @@ async function installSinglePackage(
 	const targetDir = join(targetBase, name);
 
 	// Skip if already installed
-	if (vfs.exists(join(targetDir, 'package.json'))) {
+	if ((await vfs.exists(join(targetDir, 'package.json')))) {
 		return 0;
 	}
 
-	stdout.write(`  ${name}${version ? '@' + version : ''}...\n`);
+	(await stdout.write(`  ${name}${version ? '@' + version : ''}...\n`));
 
 	const info = await fetchPackageInfo(npmRegistry, name, version, signal);
 
@@ -340,11 +340,11 @@ async function installSinglePackage(
 		for (const [binName, binPath] of Object.entries(binEntries)) {
 			const scriptPath = resolve(targetDir, binPath);
 			registerBinCommand(registry, binName, scriptPath, kernel);
-			try { vfs.mkdir(globalBinDir, { recursive: true }); } catch { /* exists */ }
-			vfs.writeFile(
+			try { (await vfs.mkdir(globalBinDir, { recursive: true })); } catch { /* exists */ }
+			(await vfs.writeFile(
 				join(globalBinDir, binName),
 				`#!/usr/bin/env node\nrequire('${scriptPath}');\n`,
-			);
+			));
 		}
 
 	}
@@ -358,7 +358,7 @@ async function installSinglePackage(
 					stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel,
 				);
 			} catch (e) {
-				stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`);
+				(await stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`));
 			}
 		}
 	}
@@ -400,7 +400,7 @@ async function npmInit(ctx: CommandContext): Promise<number> {
 		license: 'ISC',
 	};
 
-	writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg);
+	(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
 	await ctx.stdout.write(`Wrote to ${pkgPath}:\n\n`);
 	await ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
 	return 0;
@@ -447,7 +447,7 @@ async function npmInstall(
 	// so two terminals' installs can't interleave lines on one installer.
 	if (deps?.installer) {
 		const npmLog: NpmLogEmitter | null = invocation.loglevel
-			? (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
+			? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
 			: null;
 		try {
 			const result = await deps.installer.install({
@@ -458,7 +458,7 @@ async function npmInstall(
 				pid: ctx.pid,
 				production: invocation.production,
 				npmLog,
-				onProgress: (line) => await ctx.stdout.write(`[npm] ${line}\n`),
+				onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
 			});
 			await writeInstallSummary(ctx, result.installed, result.failed, {
 				totalFiles: result.totalFiles,
@@ -489,7 +489,7 @@ async function npmInstall(
 
 	if (packages.length === 0) {
 		// Install from package.json
-		const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
+		const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
 		if (!pkg) {
 			await ctx.stderr.write('npm ERR! no package.json found\n');
 			return 1;
@@ -531,7 +531,7 @@ async function npmInstall(
 
 				// Update package.json for local installs
 				if (!invocation.global) {
-					const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
+					const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
 					if (pkg) {
 						const installedPkgPath = join(targetBase, name, 'package.json');
 						let versionStr = 'latest';
@@ -547,7 +547,7 @@ async function npmInstall(
 							pkg.dependencies = pkg.dependencies || {};
 							pkg.dependencies[name] = versionStr;
 						}
-						writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg);
+						(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
 					}
 				}
 			} catch (e) {
@@ -628,11 +628,11 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 
 		// Update package.json for local uninstalls
 		if (!isGlobal) {
-			const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
+			const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
 			if (pkg) {
 				if (pkg.dependencies) delete pkg.dependencies[name];
 				if (pkg.devDependencies) delete pkg.devDependencies[name];
-				writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg);
+				(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
 			}
 		}
 
@@ -649,7 +649,7 @@ async function npmList(ctx: CommandContext): Promise<number> {
 	const modulesDir = isGlobal ? `${globalPrefix}/lib/node_modules` : join(ctx.cwd, 'node_modules');
 	const header = isGlobal
 		? `${globalPrefix}/lib`
-		: (readProjectPackageJson(ctx.vfs, ctx.cwd)?.name || ctx.cwd);
+		: ((await readProjectPackageJson(ctx.vfs, ctx.cwd))?.name || ctx.cwd);
 	await ctx.stdout.write(`${header}\n`);
 
 	if (!(await ctx.vfs.exists(modulesDir))) {
@@ -669,12 +669,12 @@ async function npmList(ctx: CommandContext): Promise<number> {
 				const scopeEntries = (await ctx.vfs.readdir(join(modulesDir, entry.name)));
 				for (const se of scopeEntries) {
 					if (se.type !== 'directory') continue;
-					const v = readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name));
+					const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name)));
 					packages.push({ name: `${entry.name}/${se.name}`, version: v });
 				}
 			} catch { /* ignore */ }
 		} else {
-			const v = readPkgVersion(ctx.vfs, join(modulesDir, entry.name));
+			const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name)));
 			packages.push({ name: entry.name, version: v });
 		}
 	}
@@ -692,9 +692,9 @@ async function npmList(ctx: CommandContext): Promise<number> {
 	return 0;
 }
 
-function readPkgVersion(vfs: VFS, pkgDir: string): string {
+async function readPkgVersion(vfs: VFS, pkgDir: string): Promise<string> {
 	try {
-		const pkg = JSON.parse(vfs.readFileString(join(pkgDir, 'package.json')));
+		const pkg = JSON.parse((await vfs.readFileString(join(pkgDir, 'package.json'))));
 		return pkg.version || '?';
 	} catch {
 		return '?';
@@ -705,7 +705,7 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 	const args = ctx.args.slice(1);
 	const scriptName = args[0];
 
-	const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
+	const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
 	if (!pkg) {
 		await ctx.stderr.write('npm ERR! no package.json found\n');
 		return 1;
@@ -741,7 +741,7 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 
 	// Register local bin scripts from node_modules so they're available in scripts
 	if (registry) {
-		registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel);
+		(await registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel));
 	}
 
 	// For simple scripts (single command, no shell operators), invoke directly
@@ -755,13 +755,13 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 			const cmdArgs = parts.slice(1);
 			const cmd = await registry.resolve(cmdName);
 			if (cmd) {
-				return cmd({ ...ctx, args: cmdArgs });
+				return (await cmd({ ...ctx, args: cmdArgs }));
 			}
 		}
 	}
 
 	if (shellExecute) {
-		return shellExecute(script, ctx);
+		return (await shellExecute(script, ctx));
 	}
 
 	// No shell access - print the command for the user
@@ -770,13 +770,13 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 }
 
 /** Scan node_modules for packages with bin entries and register them as commands */
-function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistry, kernel?: Kernel): number {
+async function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistry, kernel?: Kernel): Promise<number> {
 	const nmDir = join(cwd, 'node_modules');
-	if (!vfs.exists(nmDir)) return 0;
+	if (!(await vfs.exists(nmDir))) return 0;
 
 	let count = 0;
 	try {
-		const entries = vfs.readdir(nmDir);
+		const entries = (await vfs.readdir(nmDir));
 		for (const dirent of entries) {
 			const name = dirent.name;
 			if (name.startsWith('.')) continue;
@@ -785,13 +785,13 @@ function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistry, ker
 				// Scoped packages: read @scope/pkg
 				const scopeDir = join(nmDir, name);
 				try {
-					const scopeEntries = vfs.readdir(scopeDir);
+					const scopeEntries = (await vfs.readdir(scopeDir));
 					for (const scopeEntry of scopeEntries) {
-						count += registerPkgBins(vfs, join(scopeDir, scopeEntry.name), registry, kernel);
+						count += (await registerPkgBins(vfs, join(scopeDir, scopeEntry.name), registry, kernel));
 					}
 				} catch { /* ignore */ }
 			} else {
-				count += registerPkgBins(vfs, join(nmDir, name), registry, kernel);
+				count += (await registerPkgBins(vfs, join(nmDir, name), registry, kernel));
 			}
 		}
 	} catch { /* ignore */ }
@@ -806,12 +806,12 @@ function isNativeExecutableBin(binPath: string): boolean {
 	return ext === '.exe' || ext === '.node';
 }
 
-function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, kernel?: Kernel): number {
+async function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, kernel?: Kernel): Promise<number> {
 	const pkgJsonPath = join(pkgDir, 'package.json');
-	if (!vfs.exists(pkgJsonPath)) return 0;
+	if (!(await vfs.exists(pkgJsonPath))) return 0;
 	let count = 0;
 	try {
-		const pkg: PackageJson = JSON.parse(vfs.readFileString(pkgJsonPath));
+		const pkg: PackageJson = JSON.parse((await vfs.readFileString(pkgJsonPath)));
 		const bins = getBinEntries(pkg);
 		for (const [binName, binPath] of Object.entries(bins)) {
 			// Native-executable bins (.exe/.node) are not runnable here; skip
@@ -936,32 +936,32 @@ export function createNpmCommand(
 
 		switch (subcommand) {
 			case 'init':
-				return npmInit(ctx);
+				return (await npmInit(ctx));
 			case 'install':
 			case 'i':
 			case 'add':
-				return npmInstall(ctx, registry, kernel, deps);
+				return (await npmInstall(ctx, registry, kernel, deps));
 			case 'uninstall':
 			case 'remove':
 			case 'rm':
 			case 'un':
-				return npmUninstall(ctx, registry);
+				return (await npmUninstall(ctx, registry));
 			case 'list':
 			case 'ls':
-				return npmList(ctx);
+				return (await npmList(ctx));
 			case 'run':
 			case 'run-script':
-				return npmRun(ctx, shellExecute, registry, kernel);
+				return (await npmRun(ctx, shellExecute, registry, kernel));
 			case 'start':
-				return npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry);
+				return (await npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry));
 			case 'test':
-				return npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry);
+				return (await npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry));
 			case 'info':
 			case 'view':
 			case 'show':
-				return npmInfo(ctx);
+				return (await npmInfo(ctx));
 			case 'search':
-				return npmSearch(ctx);
+				return (await npmSearch(ctx));
 			case '-v':
 			case '--version':
 				await ctx.stdout.write(NPM_VERSION + '\n');
@@ -984,15 +984,15 @@ export function createNpmCommand(
 
 const NPX_CACHE = '/tmp/.npx-cache/node_modules';
 
-function findBinScript(
+async function findBinScript(
 	vfs: VFS,
 	pkgDir: string,
 	binName: string | null,
-): string | null {
+): Promise<string | null> {
 	const pkgJsonPath = join(pkgDir, 'package.json');
-	if (!vfs.exists(pkgJsonPath)) return null;
+	if (!(await vfs.exists(pkgJsonPath))) return null;
 	try {
-		const pkg: PackageJson = JSON.parse(vfs.readFileString(pkgJsonPath));
+		const pkg: PackageJson = JSON.parse((await vfs.readFileString(pkgJsonPath)));
 		const bins = getBinEntries(pkg);
 		if (Object.keys(bins).length === 0) return null;
 		// If a specific bin name is requested, look for it
@@ -1064,12 +1064,12 @@ export function createNpxCommand(
 
 		// 1. Check local node_modules
 		const localPkgDir = join(ctx.cwd, 'node_modules', parsedName);
-		let scriptPath = findBinScript(ctx.vfs, localPkgDir, binName);
+		let scriptPath = (await findBinScript(ctx.vfs, localPkgDir, binName));
 
 		// 2. Check global modules
 		if (!scriptPath) {
 			const globalModules = `${resolveNpmPrefixVfs(ctx.cwd, ctx.env, null)}/lib/node_modules`;
-			scriptPath = findBinScript(ctx.vfs, join(globalModules, parsedName), binName);
+			scriptPath = (await findBinScript(ctx.vfs, join(globalModules, parsedName), binName));
 		}
 
 		// 3. Install to cache
@@ -1088,7 +1088,7 @@ export function createNpxCommand(
 					return 1;
 				}
 			}
-			scriptPath = findBinScript(ctx.vfs, cacheDir, binName);
+			scriptPath = (await findBinScript(ctx.vfs, cacheDir, binName));
 		}
 
 		if (!scriptPath) {
@@ -1099,7 +1099,7 @@ export function createNpxCommand(
 		// 4. Execute via node (prefer direct invocation to avoid shell reentrance)
 		const nodeCmd = await registry.resolve('node');
 		if (nodeCmd) {
-			return nodeCmd({ ...ctx, args: [scriptPath, ...passthrough] });
+			return (await nodeCmd({ ...ctx, args: [scriptPath, ...passthrough] }));
 		}
 
 		// Fallback: shellExecute
@@ -1107,7 +1107,7 @@ export function createNpxCommand(
 			const cmd = ['node', scriptPath, ...passthrough]
 				.map((s) => (s.includes(' ') ? `"${s}"` : s))
 				.join(' ');
-			return shellExecute(cmd, ctx);
+			return (await shellExecute(cmd, ctx));
 		}
 
 		await ctx.stderr.write('npx: node command not available\n');

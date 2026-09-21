@@ -21,6 +21,7 @@ import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-import
 import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
+import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner } from './resident-identity.js';
@@ -1148,8 +1149,8 @@ async function facetVfsBundleSourceFor(vfsState, pacer) {
  * Throws on read errors (caller wraps in try/catch — matches the
  * pre-fix readFileString contract).
  */
-function _readBundleCell(vfs, path) {
-    const bytes = vfs.readFile(path);
+async function _readBundleCell(vfs, path) {
+    const bytes = await vfs.readFile(path);
     try {
         return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     }
@@ -1176,10 +1177,10 @@ function _bundleCellLength(cell) {
  * `perFileCeiling` is the pass's own cap (e.g. CWD_SNAPSHOT_MAX_FILE_BYTES,
  * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
  */
-function _bundleAdmits(vfs, path, budgetState, perFileCeiling) {
+async function _bundleAdmits(vfs, path, budgetState, perFileCeiling) {
     let size;
     try {
-        size = vfs.lstat(path).size;
+        size = (await vfs.lstat(path)).size;
     }
     catch {
         return false;
@@ -1650,9 +1651,9 @@ const MANIFEST_MAX_DEPTH = 12;
  * fs.readdirSync / fs.statSync honest regardless of which subset of
  * file CONTENT we ship.
  */
-function buildManifest(vfs, cwd, scriptPath) {
+async function buildManifest(vfs, cwd, scriptPath) {
     const manifest = {};
-    function walk(dirPath, depth = 0) {
+    async function walk(dirPath, depth = 0) {
         if (depth > MANIFEST_MAX_DEPTH)
             return;
         const stripped = dirPath.replace(/^\/+/, '');
@@ -1660,7 +1661,7 @@ function buildManifest(vfs, cwd, scriptPath) {
             return;
         let entries;
         try {
-            entries = vfs.readdir(stripped);
+            entries = (await vfs.readdir(stripped));
         }
         catch {
             return;
@@ -1669,7 +1670,7 @@ function buildManifest(vfs, cwd, scriptPath) {
         for (const entry of entries) {
             if (entry.type === 'directory') {
                 const childPath = stripped ? stripped + '/' + entry.name : entry.name;
-                walk(childPath, depth + 1);
+                (await walk(childPath, depth + 1));
             }
         }
     }
@@ -1690,13 +1691,13 @@ function buildManifest(vfs, cwd, scriptPath) {
     {
         const segments = cwdStripped ? cwdStripped.split('/') : [];
         for (let i = 0; i < segments.length; i++) {
-            walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH);
+            (await walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH));
         }
     }
-    walk(cwdStripped, 0);
+    (await walk(cwdStripped, 0));
     const nmDir = cwdStripped + '/node_modules';
-    if (vfs.exists(nmDir) && vfs.isDirectory(nmDir)) {
-        walk(nmDir, 0);
+    if ((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir))) {
+        (await walk(nmDir, 0));
     }
     // ── Bin-target package + hoisted dependency roots ─────────────────────
     //
@@ -1728,19 +1729,19 @@ function buildManifest(vfs, cwd, scriptPath) {
             const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
             if (pkgEnd <= segs.length) {
                 const pkgRoot = segs.slice(0, pkgEnd).join('/');
-                if (vfs.exists(pkgRoot) && vfs.isDirectory(pkgRoot)) {
-                    walk(pkgRoot, 0);
+                if ((await vfs.exists(pkgRoot)) && (await vfs.isDirectory(pkgRoot))) {
+                    (await walk(pkgRoot, 0));
                 }
             }
             const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
-            if (vfs.exists(nodeModulesRoot) && vfs.isDirectory(nodeModulesRoot)) {
-                walk(nodeModulesRoot, 0);
+            if ((await vfs.exists(nodeModulesRoot)) && (await vfs.isDirectory(nodeModulesRoot))) {
+                (await walk(nodeModulesRoot, 0));
             }
         }
     }
     return manifest;
 }
-function buildVfsMetadata(vfs, manifest, bundle) {
+async function buildVfsMetadata(vfs, manifest, bundle) {
     const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
     for (const [directory, children] of Object.entries(manifest)) {
         paths.add(directory);
@@ -1751,7 +1752,9 @@ function buildVfsMetadata(vfs, manifest, bundle) {
     const metadata = {};
     for (const path of paths) {
         try {
-            const stat = vfs.lstat(path);
+            const stat = await vfs.authority.stat(path, { followSymlinks: false });
+            if (!stat)
+                continue;
             metadata[path] = {
                 type: stat.type,
                 size: stat.size,
@@ -1767,12 +1770,12 @@ function buildVfsMetadata(vfs, manifest, bundle) {
     }
     return metadata;
 }
-function addUnreadableDenialCells(vfs, bundle, metadata) {
+async function addUnreadableDenialCells(vfs, bundle, metadata) {
     for (const [path, stat] of Object.entries(metadata)) {
         if (stat.type === 'directory' || path in bundle)
             continue;
         try {
-            vfs.access(path, 0o4);
+            (await vfs.access(path, 0o4));
         }
         catch (error) {
             if (typeof error === 'object'
@@ -1801,14 +1804,14 @@ function addUnreadableDenialCells(vfs, bundle, metadata) {
 // was a file-local helper. Adding the named export is a pure surface
 // addition — no callers other than buildPrefetchBundle (same file) and
 // the new probe.
-export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths = new Set()) {
+export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths = new Set()) {
     let added = 0;
     const cwdStripped = cwd.replace(/^\/+/, '');
     const nmDir = cwdStripped + '/node_modules';
-    if (!(vfs.exists(nmDir) && vfs.isDirectory(nmDir)))
+    if (!((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir))))
         return { added };
     const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
-    function addOne(path) {
+    async function addOne(path) {
         const stripped = path.replace(/^\/+/, '');
         if (stripped in bundle)
             return false;
@@ -1817,7 +1820,7 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!vfs.exists(stripped) || vfs.isDirectory(stripped))
+            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
                 return false;
             // This is a guess at what a program might require, and the same
             // per-file ceiling the entry-package walk applies bounds it: a
@@ -1827,7 +1830,7 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
             // supervisor's headroom — on every invocation that never reads it.
             // Anything the program really requires arrives through the closure,
             // which is uncapped.
-            if (!_bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))
+            if (!(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)))
                 return false;
             // A guess must not be a native binary. Nothing in a Workers isolate can
             // load a `.node` addon or a `.exe` — the ABI policy classifies them
@@ -1839,7 +1842,7 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
             if (stripped.endsWith('.node') || stripped.endsWith('.exe'))
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
-            const content = _readBundleCell(vfs, stripped);
+            const content = (await _readBundleCell(vfs, stripped));
             const cellLen = _bundleCellLength(content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return false;
@@ -1903,15 +1906,15 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
         }
         return !reached;
     }
-    function addPkgEntry(pkgDir) {
-        addOne(pkgDir + '/package.json');
+    async function addPkgEntry(pkgDir) {
+        (await addOne(pkgDir + '/package.json'));
         // A package the closure reached keeps exactly what it reached; only an
         // unreached one gets the guess below.
         if (!mainIsSpeculative(pkgDir))
             return;
         let meta;
         try {
-            meta = JSON.parse(vfs.readFileString(pkgDir + '/package.json'));
+            meta = JSON.parse((await vfs.readFileString(pkgDir + '/package.json')));
         }
         catch {
             meta = null;
@@ -1943,9 +1946,9 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
             let landed = false;
             const tries = /\.[a-z]+$/.test(norm) ? [base] : exts.map((e) => base + e);
             for (const candidate of tries) {
-                if (vfs.exists(candidate.replace(/^\/+/, '')) &&
-                    !vfs.isDirectory(candidate.replace(/^\/+/, ''))) {
-                    if (addOne(candidate)) {
+                if ((await vfs.exists(candidate.replace(/^\/+/, ''))) &&
+                    !(await vfs.isDirectory(candidate.replace(/^\/+/, '')))) {
+                    if ((await addOne(candidate))) {
                         landed = true;
                         break;
                     }
@@ -1963,7 +1966,7 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
                 // the greedy oversample is the safety net for their reachability.
                 const entryDir = base.replace(/\/[^/]+$/, '');
                 try {
-                    const sibs = vfs.readdir(entryDir);
+                    const sibs = (await vfs.readdir(entryDir));
                     for (const sib of sibs) {
                         if (sib.type !== 'file')
                             continue;
@@ -1983,7 +1986,7 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
                         const hasMixedCase = /[A-Z]/.test(seg) && /[a-z]/.test(seg);
                         if (!hasDigitOrDash && !hasMixedCase)
                             continue;
-                        addOne(entryDir + '/' + sib.name);
+                        (await addOne(entryDir + '/' + sib.name));
                     }
                     // Walk one level into `shared/` — unconditionally, since the
                     // pattern is well-known across unbuild/rolldown/rollup chunked
@@ -1991,13 +1994,13 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
                     // typical shared/ dir returns 1-5 files.
                     const sharedDir = entryDir + '/shared';
                     const sharedStripped = sharedDir.replace(/^\/+/, '');
-                    if (vfs.exists(sharedStripped) && vfs.isDirectory(sharedStripped)) {
-                        for (const sh of vfs.readdir(sharedDir)) {
+                    if ((await vfs.exists(sharedStripped)) && (await vfs.isDirectory(sharedStripped))) {
+                        for (const sh of (await vfs.readdir(sharedDir))) {
                             if (sh.type !== 'file')
                                 continue;
                             if (!/\.(cjs|mjs|js)$/.test(sh.name))
                                 continue;
-                            addOne(sharedDir + '/' + sh.name);
+                            (await addOne(sharedDir + '/' + sh.name));
                         }
                     }
                 }
@@ -2008,8 +2011,8 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
             }
         }
     }
-    for (const pkgDir of speculativePackageDirs(vfs, cwdStripped, bundle))
-        addPkgEntry(pkgDir);
+    for (const pkgDir of (await speculativePackageDirs(vfs, cwdStripped, bundle)))
+        (await addPkgEntry(pkgDir));
     return { added };
 }
 /**
@@ -2029,10 +2032,10 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPath
  * dependency of the package doing the requiring, so the bound is one hop
  * over `dependencies` only. Directories, sorted for a stable bundle.
  */
-export function speculativePackageDirs(vfs, cwdStripped, bundle) {
-    const runtimeDeps = (pkgJsonPath) => {
+export async function speculativePackageDirs(vfs, cwdStripped, bundle) {
+    const runtimeDeps = async (pkgJsonPath) => {
         try {
-            const meta = JSON.parse(vfs.readFileString(pkgJsonPath));
+            const meta = JSON.parse((await vfs.readFileString(pkgJsonPath)));
             const names = new Set();
             for (const field of ['dependencies', 'optionalDependencies']) {
                 const deps = meta?.[field];
@@ -2057,11 +2060,11 @@ export function speculativePackageDirs(vfs, cwdStripped, bundle) {
     };
     // Resolve a bare name the way require does from `fromDir`: the nearest
     // node_modules up the tree that has it.
-    const resolveDir = (name, fromDir) => {
+    const resolveDir = async (name, fromDir) => {
         let dir = fromDir;
         for (;;) {
             const candidate = dir + '/node_modules/' + name;
-            if (vfs.exists(candidate + '/package.json'))
+            if ((await vfs.exists(candidate + '/package.json')))
                 return candidate;
             const idx = dir.lastIndexOf('/');
             if (idx <= 0)
@@ -2070,14 +2073,14 @@ export function speculativePackageDirs(vfs, cwdStripped, bundle) {
         }
     };
     const reached = new Set();
-    const hop = (fromDir) => {
-        for (const name of runtimeDeps(fromDir + '/package.json')) {
-            const dir = resolveDir(name, fromDir);
+    const hop = async (fromDir) => {
+        for (const name of (await runtimeDeps(fromDir + '/package.json'))) {
+            const dir = (await resolveDir(name, fromDir));
             if (dir !== null)
                 reached.add(dir);
         }
     };
-    hop(cwdStripped);
+    (await hop(cwdStripped));
     const owners = new Set();
     for (const path of Object.keys(bundle)) {
         const owner = ownerOf(path);
@@ -2086,7 +2089,7 @@ export function speculativePackageDirs(vfs, cwdStripped, bundle) {
     }
     for (const owner of owners) {
         reached.add(owner);
-        hop(owner);
+        (await hop(owner));
     }
     return [...reached].sort();
 }
@@ -2129,7 +2132,7 @@ export function speculativePackageDirs(vfs, cwdStripped, bundle) {
  * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
  * `budgetState` counter.
  */
-export function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
+export async function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
     let added = 0;
     // Asset extensions covered. Conservative whitelist — txt/json are
     // also legit runtime-loaded assets (e.g. mime-db json, license.txt).
@@ -2147,7 +2150,7 @@ export function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
     // there's no `${` in the captured body (template-literal interpolation
     // is rejected).
     const RX = /(?:\bfs\s*\.)?readFileSync\s*\(\s*(?:[\w$.]+\s*\.\s*)?resolve\s*\(\s*__dirname\s*,\s*(['"`])([^'"`]+)\1\s*[\),]/g;
-    function addOneAsset(absPath) {
+    async function addOneAsset(absPath) {
         const stripped = absPath.replace(/^\/+/, '');
         if (stripped in bundle)
             return false;
@@ -2156,12 +2159,12 @@ export function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!vfs.exists(stripped) || vfs.isDirectory(stripped))
+            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
                 return false;
-            if (!_bundleAdmits(vfs, stripped, budgetState))
+            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
-            const content = _readBundleCell(vfs, stripped);
+            const content = (await _readBundleCell(vfs, stripped));
             const cellLen = _bundleCellLength(content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return false;
@@ -2231,7 +2234,7 @@ export function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
                 }
                 resolved = out.join('/');
             }
-            addOneAsset(resolved);
+            (await addOneAsset(resolved));
         }
     }
     return { added };
@@ -2283,7 +2286,7 @@ export function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
  * Errors are swallowed: missing assets, unreadable VFS, and
  * non-string readFile inputs are silent skips — matches Z3 posture.
  */
-export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState) {
+export async function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState) {
     let added = 0;
     // The heuristic gate. Filenames matching either branch are eligible.
     //   - Leading `.` covers `.ts-jest-digest`, `.cache-marker`, `.lintstagedrc`-ish
@@ -2322,7 +2325,7 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
         '\\s*__dirname\\s*,\\s*' +
         // literal: ' " ` (no ${ for backtick)
         '([\'"`])([^\'"`]+)\\1', 'g');
-    function addOneAsset(absPath) {
+    async function addOneAsset(absPath) {
         const stripped = absPath.replace(/^\/+/, '');
         if (stripped in bundle)
             return false;
@@ -2331,12 +2334,12 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!vfs.exists(stripped) || vfs.isDirectory(stripped))
+            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
                 return false;
-            if (!_bundleAdmits(vfs, stripped, budgetState))
+            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
-            const content = _readBundleCell(vfs, stripped);
+            const content = (await _readBundleCell(vfs, stripped));
             const cellLen = _bundleCellLength(content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return false;
@@ -2405,7 +2408,7 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
             const basename = slash >= 0 ? resolved.slice(slash + 1) : resolved;
             if (!FILENAME_GATE.test(basename))
                 continue;
-            addOneAsset(resolved);
+            (await addOneAsset(resolved));
         }
     }
     return { added };
@@ -2438,7 +2441,7 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
  * (user scripts, npx-cache files outside node_modules, eval) is
  * a no-op.
  */
-export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile) {
+export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile) {
     if (!scriptPath)
         return { added: 0, wasmPaths: [] };
     const stripped = scriptPath.replace(/^\/+/, '');
@@ -2492,7 +2495,7 @@ export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundl
         const dir = queue.shift();
         let entries;
         try {
-            entries = vfs.readdir(dir);
+            entries = (await vfs.readdir(dir));
         }
         catch {
             continue;
@@ -2522,7 +2525,7 @@ export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundl
                 continue;
             let size;
             try {
-                size = vfs.lstat(child).size;
+                size = (await vfs.lstat(child)).size;
             }
             catch {
                 continue;
@@ -2553,7 +2556,7 @@ export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundl
         // hardening-r5: preserve binary content as Uint8Array.
         let content;
         try {
-            content = _readBundleCell(vfs, candidate.path);
+            content = (await _readBundleCell(vfs, candidate.path));
         }
         catch {
             continue;
@@ -2582,7 +2585,7 @@ export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundl
  * map whether it read the bytes by path or carried them inline. A file that
  * cannot be read is left out; the seam's refusal names the module later.
  */
-export function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
+export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
     const byPath = new Map();
     for (const [path, cell] of Object.entries(bundle)) {
         if (!path.endsWith('.wasm') || !(cell instanceof Uint8Array))
@@ -2594,7 +2597,7 @@ export function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
             continue;
         let bytes;
         try {
-            bytes = vfs.readFile(path);
+            bytes = await vfs.readFile(path);
         }
         catch {
             continue;
@@ -2619,7 +2622,7 @@ export function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
  */
-export function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState) {
+export async function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState) {
     if (!observed || observed.size === 0)
         return { added: 0 };
     const candidates = [];
@@ -2628,7 +2631,7 @@ export function addObservedReads(vfs, observed, bundle, requiredPaths, budgetSta
             continue;
         let stat;
         try {
-            stat = vfs.lstat(path);
+            stat = (await vfs.lstat(path));
         }
         catch {
             continue;
@@ -2646,7 +2649,7 @@ export function addObservedReads(vfs, observed, bundle, requiredPaths, budgetSta
             continue;
         let content;
         try {
-            content = _readBundleCell(vfs, candidate.path);
+            content = (await _readBundleCell(vfs, candidate.path));
         }
         catch {
             continue;
@@ -2747,7 +2750,7 @@ function binPackageRootSegment(pkgRoot, path) {
 function binPackageRelativePath(pkgRoot, path) {
     return path.startsWith(pkgRoot + '/') ? path.slice(pkgRoot.length + 1) : path;
 }
-function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
+async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
     const root = (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
     const MAX_PROJECT_FILES = 512;
     const SKIP_DIRS = new Set(['node_modules', '.git', '.nimbus']);
@@ -2758,7 +2761,7 @@ function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
         const dir = queue.shift();
         let entries;
         try {
-            entries = vfs.readdir(dir);
+            entries = (await vfs.readdir(dir));
         }
         catch {
             continue;
@@ -2785,11 +2788,11 @@ function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             // Skip an oversized file before reading it: this walk guesses at what
             // the program might read, and one guess must not spend the budget (or
             // the supervisor's headroom) that every later invocation then carries.
-            if (!_bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES))
+            if (!(await _bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES)))
                 continue;
             let content;
             try {
-                content = _readBundleCell(vfs, child);
+                content = (await _readBundleCell(vfs, child));
             }
             catch {
                 continue;
@@ -2832,7 +2835,7 @@ function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
  * / openSync / readFile in source are scanned. Entry code is always
  * scanned (it's the user's intent).
  */
-function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
+async function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
     let added = 0;
     // Capture absolute-path string literals. The path may not contain
     // the quote char; the surrounding regex strips line/block comments
@@ -2841,7 +2844,7 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
     // excludes spaces, glob chars, template syntax — all dynamic.
     const RX = /(['"`])(\/[A-Za-z0-9._\-\/]{1,510})\1/g;
     const REJECT_PREFIX = /^\/(proc|sys|dev|lib|lib64|boot|root)(\/|$)/;
-    function tryAdd(absPath) {
+    async function tryAdd(absPath) {
         if (!absPath || absPath.length < 2 || absPath.length > 512)
             return;
         if (REJECT_PREFIX.test(absPath))
@@ -2854,12 +2857,12 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return;
         try {
-            if (!vfs.exists(stripped) || vfs.isDirectory(stripped))
+            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
                 return;
-            if (!_bundleAdmits(vfs, stripped, budgetState))
+            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return;
             // hardening-r5: preserve binary content as Uint8Array.
-            const content = _readBundleCell(vfs, stripped);
+            const content = (await _readBundleCell(vfs, stripped));
             const cellLen = _bundleCellLength(content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return;
@@ -2870,7 +2873,7 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
         }
         catch { /* swallow — file may be binary, race-deleted, etc. */ }
     }
-    function scanOne(src) {
+    async function scanOne(src) {
         if (!src)
             return;
         // Strip line + block comments so we don't match commented-out reads.
@@ -2883,11 +2886,11 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
             // forbids most). The check on the captured group is cheap.
             if (/[\?\*\[\]\{\}]/.test(literal))
                 continue;
-            tryAdd(literal);
+            (await tryAdd(literal));
         }
     }
     // Always scan entry code.
-    scanOne(entryCode);
+    (await scanOne(entryCode));
     // Optionally scan bundled JS sources too — useful for transitive cases
     // where a require'd module hardcodes an absolute path. Use the same
     // budget-state so we don't blow caps.
@@ -2903,7 +2906,7 @@ function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
         const cell = bundle[k];
         if (typeof cell !== 'string')
             continue;
-        scanOne(cell);
+        (await scanOne(cell));
     }
     return { added };
 }
@@ -3231,9 +3234,10 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
 async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform, maxBundleBytes = VFS_BUNDLE_MAX_BYTES) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
-    const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
+    const admitted = await vfs.authority.acquire(null, 0);
+    const cursor = { epoch: admitted.epoch, rev: admitted.rev };
     // 1. Static reachable-set walk from entry.
-    const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes);
+    const prefetch = (await prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes));
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
         // snapshot. Surface it as the process's own failure rather than a
@@ -3263,14 +3267,14 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //     admitted first, ahead of every guess, and they join the required set
     //     rather than the evictable one, because a file evicted here misses
     //     again on the next run and the loop never closes.
-    const observedAdd = addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState);
+    const observedAdd = (await addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState));
     void observedAdd;
     await paceAfterPass();
     // 2. Greedy oversample — every installed pkg's pkg.json + main.
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
     //    regex prefetch misses. Its budget is independent from the complete
     //    static require closure, which is correctness-critical.
-    const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths);
+    const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths));
     await paceAfterPass();
     // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
     //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
@@ -3281,7 +3285,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //      `default-stylesheet.css` (and similar runtime asset reads in
     //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
     //      at facet runtime even though the file is on VFS-disk + in
-    const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
+    const assetAdd = (await addStaticReadFileAssets(vfs, cwd, bundle, budgetState));
     void assetAdd;
     await paceAfterPass();
     // 2.27 X.5-U: dotfile + SWC-shape readFileSync sentinel prefetch.
@@ -3291,7 +3295,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //      pattern AND filenames outside the Z3 ASSET_EXT whitelist
     //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
     //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
-    const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
+    const dotAdd = (await addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState));
     void dotAdd;
     await paceAfterPass();
     // 2.30 G3 (runtime-pkg wave): bin-target sibling oversample. Pulls
@@ -3302,14 +3306,14 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //      catches custom extensions (.cow, .pem, .ttf, .wasm bundled
     //      as data, etc.) without needing a per-pkg whitelist.
     //      No-op when entry isn't inside node_modules.
-    const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
+    const binSiblingAdd = (await addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile));
     await paceAfterPass();
     // 2.34 project-data snapshot: sync Node fs cannot await the
     // supervisor. Include a bounded snapshot of the current working tree
     // for common relative project-file reads while skipping dependency
     // and Nimbus cache directories. Async fs still uses live supervisor
     // reads and child-process staleness fallback.
-    const cwdProjectAdd = addCwdProjectFiles(vfs, cwd, bundle, budgetState);
+    const cwdProjectAdd = (await addCwdProjectFiles(vfs, cwd, bundle, budgetState));
     void cwdProjectAdd;
     await paceAfterPass();
     // 2.35 shell compatibility: absolute-path readFileSync scanner.
@@ -3336,7 +3340,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //   - Byte/file budget guards identical to other passes.
     //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
     //     `/dev` — we don't have these mounts; they'd never resolve).
-    const absScanAdd = addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState);
+    const absScanAdd = (await addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState));
     void absScanAdd;
     await paceAfterPass();
     // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
@@ -3385,7 +3389,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    from content cap so fs.readdirSync remains honest even if the
     //    content for a given file was capped out.
     await paceAfterPass();
-    const manifest = buildManifest(vfs, cwd, scriptPath);
+    const manifest = (await buildManifest(vfs, cwd, scriptPath));
     await paceAfterPass();
     // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
     //    units) because that is what workerd charges against the per-module
@@ -3418,8 +3422,8 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         }
     }
     const fileCount = Object.keys(bundle).length;
-    const metadata = buildVfsMetadata(vfs, manifest, bundle);
-    addUnreadableDenialCells(vfs, bundle, metadata);
+    const metadata = (await buildVfsMetadata(vfs, manifest, bundle));
+    (await addUnreadableDenialCells(vfs, bundle, metadata));
     await paceAfterPass();
     // Denial cells land after the eviction pass, so account for them before
     // deciding where the bundle has to live.
@@ -3428,7 +3432,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
     // Suppress lint: `greedy.added` is observed only via diagnostics.
     void greedy;
-    const wasmImages = collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths);
+    const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
     return {
         bundle,
         manifest,
@@ -3471,6 +3475,7 @@ export class FacetManager {
     processes;
     portRegistry;
     vfs = null;
+    filesystem = null;
     hooks;
     /**
      * The resident-process scheduler (loaders/process-fabric.ts). Every
@@ -3507,6 +3512,8 @@ export class FacetManager {
      * journal recovery rides the first pump.
      */
     launchPump;
+    launchTasks = new Set();
+    launchesClosed = false;
     // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
     // spawn created as an OS-child of the attach TUI. When the attach process
     // exits (reported / killed), its serve facet is torn down with it.
@@ -3610,7 +3617,7 @@ export class FacetManager {
         // Rooted on waitUntil: the hook fires synchronously inside whatever turn
         // ended the process, and the delete must not be a floating promise there.
         this.processes.setOnTerminal((pid) => {
-            this.ctx.waitUntil(this._onResidentTerminal(pid));
+            this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
     }
     /**
@@ -3630,7 +3637,7 @@ export class FacetManager {
         const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
         const row = (await this.launchJournal.rows()).get(key);
         const crashed = entry?.state === 'exited' && (entry.exitCode ?? 0) !== 0;
-        if (row === undefined || row.restart !== 'on-failure' || !crashed) {
+        if (this.launchesClosed || row === undefined || row.restart !== 'on-failure' || !crashed) {
             await this.launchJournal.release(pid);
             return;
         }
@@ -3704,7 +3711,10 @@ export class FacetManager {
         });
         return next;
     }
-    setVfs(vfs) { this.vfs = vfs; }
+    /** The authority is the caller's: a session composes exactly one, and the
+     *  manager credentials its processes through that one rather than a second
+     *  authority over the same disk. */
+    setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; }
     /**
      * The env/ctx pair every loader-backed runtime builds its facet pools
      * from. A pool is constructed from exactly these two, so the manager
@@ -3804,15 +3814,17 @@ export class FacetManager {
      * be read is left out; the program's compile then meets the seam's own
      * refusal, which names the module.
      */
-    _wasmModulesByValue(entry, wasmImports) {
+    async _wasmModulesByValue(entry, wasmImports) {
         const modules = {};
         if (!this.vfs || wasmImports.length === 0)
             return modules;
-        const vfs = this.vfs.as(entry.cred);
+        if (!this.filesystem)
+            throw new Error('Process filesystem authority is not initialized');
+        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
         for (const image of wasmImports) {
             let bytes;
             try {
-                bytes = vfs.readFile(stripLeadingSlashes(image.vfsPath));
+                bytes = (await vfs.readFile(stripLeadingSlashes(image.vfsPath)));
             }
             catch {
                 continue;
@@ -3835,12 +3847,14 @@ export class FacetManager {
         if (!this.esbuild)
             this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
         this.imageStore.ensureDir();
-        const vfs = this.vfs.as(entry.cred);
+        if (!this.filesystem)
+            throw new Error('Process filesystem authority is not initialized');
+        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
         const { cred } = entry;
         const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
         const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
-        const revision = vfs.revision();
+        const revision = (await vfs.revision());
         // An entry built at an older revision can never be SERVED again — the
         // lookup below requires an exact match — so from the first write after it
         // was admitted it is retained garbage, held in the isolate that is
@@ -4255,7 +4269,7 @@ export class FacetManager {
                     // images ride by value: read here, inside the scope that holds
                     // the map, and compiled by the loader like the sqlite sidecar.
                     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-                    const wasmModules = this._wasmModulesByValue(entry, wasmImports);
+                    const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
                     const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims, wasmImports);
                     if (diagSink) {
                         diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
@@ -4420,7 +4434,7 @@ export class FacetManager {
         // other writes flush live through the SUPERVISOR RPC bridge.
         if (this.vfs)
             this.imageStore.ensureDir();
-        const processVfs = this.vfs?.as(entry.cred);
+        const processVfs = this.filesystem ? new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred })) : null;
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined, DEFAULT_FACET_BUNDLE_PROFILE, undefined, undefined, this.hooks.transformLargeEsm)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
@@ -4729,6 +4743,18 @@ export class FacetManager {
     pumpResidentLaunches() {
         return this.launchPump.pump();
     }
+    trackLaunchTask(task) {
+        this.launchTasks.add(task);
+        void task.then(() => this.launchTasks.delete(task), () => this.launchTasks.delete(task));
+        return task;
+    }
+    async closeLaunches() {
+        this.launchesClosed = true;
+        this.launchPump.close();
+        while (this.launchTasks.size > 0)
+            await Promise.allSettled([...this.launchTasks]);
+        await Promise.all(this.rowAmendments.values());
+    }
     /** Whether any launch is suspended waiting for a turn. */
     get hasPendingLaunchTurns() {
         return this.launchPump.hasPending;
@@ -4998,7 +5024,12 @@ export class FacetManager {
      * terminal WebSocket needs to survive a launch, and what no amount of making
      * the launch faster would have given it.
      */
-    async _runResidentLaunch(entry, code, command, opts, attempt) {
+    _runResidentLaunch(entry, code, command, opts, attempt) {
+        if (this.launchesClosed)
+            return Promise.reject(new Error('Launch scheduler is closed'));
+        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+    }
+    async _runResidentLaunchBody(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
         const pacer = this._launchPacer(entry.pid);
         // Journalled before the first byte of work. A launch that FAILS deletes

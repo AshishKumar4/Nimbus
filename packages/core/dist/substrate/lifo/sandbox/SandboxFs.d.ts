@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { SandboxFs as ISandboxFs } from './types.js';
 import type { FileType } from '../kernel/vfs/types.js';
 /**
@@ -8,7 +8,7 @@ import type { FileType } from '../kernel/vfs/types.js';
 export declare class SandboxFsImpl implements ISandboxFs {
     private vfs;
     private getCwd;
-    constructor(vfs: VFS, getCwd: () => string);
+    constructor(vfs: ExecutionFs, getCwd: () => string);
     private resolvePath;
     readFile(path: string): Promise<string>;
     readFile(path: string, encoding: null): Promise<Uint8Array>;

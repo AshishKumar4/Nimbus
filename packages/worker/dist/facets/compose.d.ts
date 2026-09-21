@@ -33,6 +33,7 @@
  *     for its recipes (see `WorkerRecipe.resident`).
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -63,6 +64,8 @@ export interface FacetManagerDeps {
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
     vfs: SqliteVFS;
+    /** The session's one authority — the manager never constructs a second. */
+    filesystem: NimbusFilesystemAuthority;
     /** A host's already-warm esbuild, shared so the wasm is initialized once. */
     esbuild?: EsbuildService;
     hooks: FacetManagerHostHooks;

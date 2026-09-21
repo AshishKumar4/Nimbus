@@ -1,5 +1,5 @@
 import type { WordPart } from './types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { ShellOptions } from './interpreter.js';
 export interface ExpandContext {
     env: Record<string, string>;
@@ -12,7 +12,7 @@ export interface ExpandContext {
     positionals?: readonly string[];
     lastExitCode: number;
     cwd: string;
-    vfs: VFS;
+    vfs: ExecutionFs;
     options: ShellOptions;
     executeCapture?: (input: string) => Promise<CapturedCommand>;
     /**

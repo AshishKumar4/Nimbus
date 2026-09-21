@@ -15,12 +15,13 @@ import * as runtimeServices from '../hosted/services.js';
  */
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
 import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -293,9 +294,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * Lazy: sqliteFs exists only after ensureSqliteFs().
      */
     private _supervisorOps;
+    private filesystemAuthority;
+    getFilesystemAuthority(): SqliteFilesystemAuthority;
     private supervisorOps;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */
-    supervisorBridge(pid?: number): SqliteRuntimeFsBridge;
+    supervisorBridge(pid?: number): RuntimeFsBridge;
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
@@ -306,13 +309,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
     _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
-    _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean>;
-    _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void>;
     _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
-    _rpcAccess(path: string, mode: number, pid?: number): Promise<void>;
-    _rpcChown(path: string, uid: number, gid: number, pid?: number, options?: {
-        followSymlinks?: boolean;
-    }): Promise<void>;
     _rpcSetUmask(mask: number, pid?: number): Promise<number>;
     _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{
         name: string;
@@ -320,35 +317,26 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     }[]>;
     _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
     _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void>;
-    _rpcRmdir(path: string, pid?: number): Promise<void>;
     _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
-    _rpcReadlink(path: string, pid?: number): Promise<string | null>;
-    _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
-    _rpcFsRevision(path?: string, pid?: number): Promise<number>;
     _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
     _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
     _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
     _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void>;
-    _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any>;
     _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsClose(handleId: number, pid?: number): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
-    _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
-    _rpcFsTruncate(path: string, size: number, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
-    _rpcUnlink(path: string, pid?: number): Promise<void>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;
     }>;
-    _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult>;
     _rpcPutRegistryEntries(entries: any[]): Promise<{
         written: number;
         failed: number;

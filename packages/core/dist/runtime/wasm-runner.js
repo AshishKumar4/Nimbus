@@ -47,6 +47,7 @@
  *     CSP rejects that path, and the facet host exists to make it moot.
  */
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { withHostFilesystem } from '../shell/execution-fs.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
@@ -146,7 +147,7 @@ function detectWasiAbi(bytes) {
  */
 export function makeWasmRunner(deps) {
     return async function runWasm(_code, opts) {
-        const vfs = deps.vfs.as(requireVfsCred(opts.cred, 'wasm-runner'));
+        const cred = requireVfsCred(opts.cred, 'wasm-runner');
         // opts.filename is the resolved .wasm path (absolute, /-prefixed
         // by the registry's bypassesScriptRead path).
         // opts.argv is:
@@ -154,16 +155,19 @@ export function makeWasmRunner(deps) {
         //   direct mode: [exportName, intArg1, intArg2, ...]
         const wasmPath = (opts.filename || '').replace(/^\/+/, '');
         const argv = opts.argv || [];
+        // The program is read as the invoking credential before a process exists
+        // for it, so a host lease carries the read rather than a process binding.
         let bytes;
         try {
-            if (!vfs.exists(wasmPath)) {
+            const program = await withHostFilesystem(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
+            if (program === null) {
                 return {
                     exitCode: 1,
                     stdout: '',
                     stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
                 };
             }
-            bytes = vfs.readFile(wasmPath);
+            bytes = program;
         }
         catch (e) {
             return {
@@ -535,10 +539,11 @@ export function makeWasmRunner(deps) {
         let wasiFs;
         let wasiFsBytes = 0;
         let wasiFsFiles = 0;
-        if (isWasi) {
+        const processFs = isWasi ? deps.filesystem.bind({ pid, cred }) : null;
+        if (processFs) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            const seed = deps.facets.seedFilesystem(vfs, cwd, { revision: vfs.revision(cwd) });
+            const seed = await deps.facets.seedFilesystem(processFs, cwd, { cred });
             if ('error' in seed) {
                 return {
                     exitCode: 1,
@@ -569,7 +574,7 @@ export function makeWasmRunner(deps) {
                 // filesystem with the live session VFS instead of a spawn-time copy.
                 // Direct (compute-only) mode has no filesystem at all, so it asks for
                 // no capability and the facet boots fast.
-                syscalls: isWasi ? { vfs, pid } : undefined,
+                syscalls: processFs ? { vfs: processFs, pid } : undefined,
                 // WASI mode: ship the WASI shim source as a facet preamble so
                 // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
                 // no preamble (saves a few KB per submit).

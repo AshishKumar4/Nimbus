@@ -10,9 +10,7 @@ export function loaderFacetHost(env, ctx) {
          * whatever the program opens through its supervisor. It has to be — the
          * whole seed crosses one RPC, and a session filesystem does not fit in one.
          */
-        seedFilesystem(vfs, root, options) {
-            return manifestVfs(vfs, root, options);
-        },
+        seedFilesystem(vfs, root, options) { return manifestVfs(vfs, options.cred, root, options); },
         open(spec) {
             return new IsolatePool(env, ctx, {
                 tag: spec.tag,

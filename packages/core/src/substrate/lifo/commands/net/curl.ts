@@ -102,7 +102,7 @@ class CurlHeaderSink {
   async open(): Promise<void> {
     if (this.target === null || this.target === '-') return;
     try {
-      this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), '');
+      (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), ''));
     } catch (error) {
       throw new CurlHeaderWriteError('create', this.target, error);
     }
@@ -118,7 +118,7 @@ class CurlHeaderSink {
         return;
       }
       this.contents.push(block);
-      this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join(''));
+      (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join('')));
     } catch (error) {
       throw new CurlHeaderWriteError('write', this.target, error);
     }

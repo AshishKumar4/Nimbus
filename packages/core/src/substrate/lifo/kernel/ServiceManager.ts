@@ -1,4 +1,5 @@
 import type { VFS } from './vfs/index.js';
+import { ExecutionFs } from '../../../shell/execution-fs.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandContext, CommandOutputStream } from '../commands/types.js';
 import { parseUnitFile } from './unit-parser.js';
@@ -124,7 +125,7 @@ export class ServiceManager {
       args: cmdArgs,
       env,
       cwd,
-      vfs: this.vfs,
+      vfs: new ExecutionFs(this.vfs),
       stdout: logStream,
       stderr: logStream,
       signal: abortController.signal,
@@ -207,7 +208,7 @@ export class ServiceManager {
             args: parts.slice(1),
             env: { ...this.defaultEnv },
             cwd: this.defaultEnv.HOME ?? '/',
-            vfs: this.vfs,
+            vfs: new ExecutionFs(this.vfs),
             stdout: noop,
             stderr: noop,
             signal: AbortSignal.timeout(5000),

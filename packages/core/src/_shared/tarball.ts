@@ -19,8 +19,8 @@ import {
 } from './tarball-stream.js';
 
 export interface TarballWriteTarget {
-  exists(path: string): boolean;
-  mkdir(path: string, options?: { recursive?: boolean }): void;
+  exists(path: string): boolean | Promise<boolean>;
+  mkdir(path: string, options?: { recursive?: boolean }): void | Promise<void>;
   writeFile(path: string, data: Uint8Array | string): unknown;
 }
 
@@ -47,10 +47,10 @@ export async function writeTarballStream(
   targetDir: string,
   vfs: TarballWriteTarget,
 ): Promise<TarballWriteResult> {
-  const ensureDir = (path: string): void => {
-    if (!vfs.exists(path)) vfs.mkdir(path, { recursive: true });
+  const ensureDir = async (path: string): Promise<void> => {
+    if (!await vfs.exists(path)) await vfs.mkdir(path, { recursive: true });
   };
-  ensureDir(targetDir);
+  await ensureDir(targetDir);
   let files = 0;
   let bytes = 0;
   let manifest: Uint8Array | null = null;
@@ -67,7 +67,7 @@ export async function writeTarballStream(
     }
     const fullPath = `${targetDir}/${entry.name}`;
     const cut = fullPath.lastIndexOf('/');
-    if (cut > 0) ensureDir(fullPath.slice(0, cut));
+    if (cut > 0) await ensureDir(fullPath.slice(0, cut));
     await vfs.writeFile(fullPath, entry.data);
     files++;
     bytes += entry.data.length;

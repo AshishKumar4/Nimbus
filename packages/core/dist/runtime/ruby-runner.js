@@ -42,6 +42,7 @@
  *     ruby-init-loadpath, rb-eval-string-protect, cabi_realloc,
  *     canonical_abi_drop_rb-abi-value, memory.
  */
+import { withHostFilesystem } from '../shell/execution-fs.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
@@ -59,17 +60,17 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
  */
 export function makeRubyRunnerFactory(deps) {
     const { registry } = deps;
-    return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
+    return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
             return entry ? `${installRoot}/${entry.path}` : null;
         };
         const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
         let fsSnapshotCache = null;
-        const registerGemBins = (vfs) => {
+        const registerGemBins = async (vfs) => {
             if (!registry)
                 return;
-            for (const bin of installedGemBins(vfs, defaultGemHome())) {
+            for (const bin of (await installedGemBins(vfs, defaultGemHome()))) {
                 if (RUBY_RUNTIME_BIN_NAMES.has(bin.name))
                     continue;
                 registry.register(bin.name, async (ctx) => {
@@ -86,13 +87,13 @@ export function makeRubyRunnerFactory(deps) {
         const rubyBinHandler = async function rubyBinHandler(ctx) {
             const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
             const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-            const vfs = deps.vfs.as(cred);
+            const vfs = ctx.vfs;
             const argv = ctx.args ?? [];
             const cwd = ctx.cwd || '/home/user';
             const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
             if (packageCommand.handled) {
                 if (packageCommand.exitCode === 0)
-                    registerGemBins(vfs);
+                    (await registerGemBins(vfs));
                 return packageCommand.exitCode;
             }
             const toolInvocation = buildRubyToolInvocation(binKind, binName, argv);
@@ -113,11 +114,11 @@ export function makeRubyRunnerFactory(deps) {
                 return 0;
             }
             // Resolve install bytes.
-            if (!wasmVfs || !vfs.exists(wasmVfs)) {
+            if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
                 ctx.stderr.write(`${binName}: ruby+stdlib.wasm missing (re-run 'nimbus install ruby')\n`);
                 return 127;
             }
-            const wasmBytes = vfs.readFile(wasmVfs);
+            const wasmBytes = (await vfs.readFile(wasmVfs));
             // Parse argv.
             const parsed = toolInvocation.mode === 'tool'
                 ? {
@@ -145,11 +146,11 @@ export function makeRubyRunnerFactory(deps) {
             else if (parsed.mode === 'script') {
                 const absPath = resolveVfsPath(parsed.scriptPath, cwd);
                 try {
-                    if (!vfs.exists(absPath)) {
+                    if (!(await vfs.exists(absPath))) {
                         ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
                         return 1;
                     }
-                    userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
+                    userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
                 }
                 catch (e) {
                     ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
@@ -170,7 +171,7 @@ export function makeRubyRunnerFactory(deps) {
                 userEnv.LANG = 'C.UTF-8';
             userEnv.GEM_HOME ||= '/' + defaultGemHome();
             userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-            userEnv.NIMBUS_GEM_LIBS = installedGemLibRoots(vfs, defaultGemHome()).join(':');
+            userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, defaultGemHome())).join(':');
             // Ruby looks for charset hints via these vars; set sensible
             // defaults so puts of non-ASCII strings doesn't trip on the
             // wasi default of "ASCII-8BIT".
@@ -178,7 +179,7 @@ export function makeRubyRunnerFactory(deps) {
                 userEnv.LC_ALL = 'C.UTF-8';
             // Per-subtree watermark over exactly what the snapshot covers (cwd +
             // gem home), so unrelated VFS writes don't evict the cache.
-            const revision = Math.max(vfs.revision(cwd), vfs.revision(defaultGemHome()));
+            const revision = Math.max((await vfs.revision(cwd)), (await vfs.revision(defaultGemHome())));
             let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
                 && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
                 ? fsSnapshotCache.result
@@ -188,7 +189,8 @@ export function makeRubyRunnerFactory(deps) {
                 // demand-loads through its supervisor, or the bytes themselves. Which
                 // one follows from whether that host can park a guest mid-syscall, and
                 // nothing here depends on the answer.
-                fsSnapshot = deps.facets.seedFilesystem(vfs, cwd, {
+                fsSnapshot = await deps.facets.seedFilesystem(vfs.authority, cwd, {
+                    cred,
                     extraRoots: [defaultGemHome()],
                     revision,
                 });
@@ -224,7 +226,7 @@ export function makeRubyRunnerFactory(deps) {
                 });
             }
             else {
-                result = await dispatchRubyFacet(deps.facets, vfs, facetArgs, ctx.pid);
+                result = await dispatchRubyFacet(deps.facets, ctx.vfs.authority, facetArgs, ctx.pid);
             }
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -236,7 +238,8 @@ export function makeRubyRunnerFactory(deps) {
             }
             return result.exitCode;
         };
-        registerGemBins(deps.vfs.as(CRED_KERNEL));
+        if (deps.registry)
+            await withHostFilesystem(deps.filesystem, CRED_KERNEL, registerGemBins);
         return rubyBinHandler;
     };
 }

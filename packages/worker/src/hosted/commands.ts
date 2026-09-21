@@ -5,6 +5,7 @@ import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
@@ -63,8 +64,8 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
 self._setCpRegistry(registry);
 
 registry.register('chsh', makeChshCommand({
-  isBashInstalled: (home) =>
-    listInstalledRuntimes(sqliteFs, home).some((runtime) => runtime.name === 'bash'),
+  isBashInstalled: async (home) =>
+    (await listInstalledRuntimes(sqliteFs, home)).some((runtime) => runtime.name === 'bash'),
 }));
 
 // ── Git integration (isomorphic-git) ──
@@ -90,7 +91,7 @@ workspace.runtimes.registerRunner(
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
     const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), vfs: sqliteFs })(
+    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -116,7 +117,7 @@ workspace.runtimes.registerRunner(
       const { runPythonRepl } = await import('../runtime/python-repl.js');
       return await runPythonRepl({
         facetMgr,
-        vfs: sqliteFs,
+        authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
         manifest,
@@ -136,7 +137,6 @@ workspace.runtimes.registerRunner(
     const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
-      vfs: sqliteFs,
       startResident: cpythonResidentStart(facetMgr),
     })(manifest, installRoot, binName, binKind)(ctx);
   },
@@ -158,7 +158,7 @@ workspace.runtimes.registerRunner(
       const { runRubyRepl } = await import('../runtime/ruby-repl.js');
       return await runRubyRepl({
         facetMgr,
-        vfs: sqliteFs,
+        authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
       });
@@ -166,12 +166,13 @@ workspace.runtimes.registerRunner(
     const { makeRubyRunnerFactory } = await import('@nimbus-sh/core/runtime/ruby-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
     const { rubyResidentStart } = await import('../runtime/ruby-resident.js');
-    return await makeRubyRunnerFactory({
+    const runner = await makeRubyRunnerFactory({
       facets: facetHostForManager(facetMgr),
-      vfs: sqliteFs,
+      filesystem: workspace.filesystem,
       registry,
       startResident: rubyResidentStart(facetMgr),
-    })(manifest, installRoot, binName, binKind)(ctx);
+    })(manifest, installRoot, binName, binKind);
+    return runner(ctx);
   },
 );
 // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet
@@ -189,11 +190,13 @@ workspace.runtimes.registerRunner(
       const { runBashRepl } = await import('../runtime/bash-repl.js');
       return await runBashRepl({
         facetMgr,
-        vfs: sqliteFs,
+        authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
         manifest,
         cred: ctx.cred,
+        pid: ctx.pid,
+        filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
         env: ctx.env,
         cwd: ctx.cwd || '/home/user',
         shell: shell ?? undefined,
@@ -201,7 +204,7 @@ workspace.runtimes.registerRunner(
     }
     const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), vfs: sqliteFs })(
+    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -238,26 +241,16 @@ workspace.runtimes.registerRunner(
         const stderr = { write: (s: string) => { stderrText.push(String(s)); } };
         const py = await registry.resolve('python');
         if (py) {
-          const pid = 'pid' in ctx ? ctx.pid : undefined;
-          const setUmask = 'setUmask' in ctx ? ctx.setUmask : undefined;
-          const runAs = 'runAs' in ctx ? ctx.runAs : undefined;
-          if (
-            typeof pid !== 'number'
-            || typeof setUmask !== 'function'
-            || typeof runAs !== 'function'
-            || kernel === null
-          ) {
-            throw new Error('python warm-up requires a process identity');
-          }
-          const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'python warm-up');
+          const pid = ctx.pid;
+          const cred = requireVfsCred(ctx.cred, 'python warm-up');
           const code = await py({
             ...ctx,
             args: ['-c', 'pass'],
             pid,
             cred,
-            setUmask: (mask: number) => setUmask(mask),
-            runAs: (targetCred, argv) => runAs(targetCred, argv),
-            vfs: kernel.vfs,
+            setUmask: (mask: number) => ctx.setUmask(mask),
+            runAs: (targetCred, argv) => ctx.runAs(targetCred, argv),
+            vfs: new ExecutionFs(workspace.filesystem.bind({ pid, cred })),
             signal: new AbortController().signal,
             stdout,
             stderr,
@@ -269,7 +262,7 @@ workspace.runtimes.registerRunner(
         const { warmPythonRepl } = await import('../runtime/python-repl.js');
         await warmPythonRepl({
           facetMgr,
-          vfs: sqliteFs,
+          authority: workspace.filesystem,
           installRoot: target.root,
           manifest: target.manifest,
         });
@@ -328,7 +321,6 @@ const nodeSpec: RuntimeSpec = {
 };
 {
   const oneShotNode = buildRuntimeHandler(nodeSpec, {
-    vfs: sqliteFs,
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
@@ -463,9 +455,9 @@ const bunSpec: RuntimeSpec = {
         }
       }
 
-      const resolved = resolveRuntimeScriptPath(kernelFs, cwd, target, {
+      const resolved = (await resolveRuntimeScriptPath(kernelFs, cwd, target, {
         preferModuleField: true,
-      });
+      }));
       if (resolved === null) {
         ctx.stderr.write(
           pathShaped
@@ -480,7 +472,6 @@ const bunSpec: RuntimeSpec = {
 };
 {
   const oneShotBun = buildRuntimeHandler(bunSpec, {
-    vfs: sqliteFs,
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
@@ -521,15 +512,11 @@ const bunSpec: RuntimeSpec = {
       const { wasmRunnerSpec } = await import('@nimbus-sh/core/runtime/wasm-runner.js');
       const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
       const wasmSpec: RuntimeSpec = wasmRunnerSpec({
-        // filesystem WASI: extended VFS surface for WASI file-IO. The
-        // wasm-runner snapshots a session subtree into the facet, flushes
-        // the diff back via this surface after _start returns.
-        vfs: sqliteFs,
+        filesystem: workspace.filesystem,
         facets: loaderFacetHost(self.env, self.ctx),
         processes: self.processes,
       });
       wasmHandler = buildRuntimeHandler(wasmSpec, {
-        vfs: sqliteFs,
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
@@ -1000,7 +987,7 @@ const shellEntrypointExecutor = {
       const terminal = new HeadlessTerminal();
       const childShell = new Shell(
         terminal,
-        kernel.vfs,
+        workspace.filesystem,
         registry,
         { ...env, ...(options?.env || {}) },
         processRegistry,
@@ -1025,7 +1012,7 @@ const shellEntrypointExecutor = {
     }
   },
 } satisfies ShellEntrypointExecutor;
-registerShellEntrypointCommands(registry, shellEntrypointExecutor, kernelFs);
+registerShellEntrypointCommands(registry, shellEntrypointExecutor);
 
 // Shell scripts that execute through the local shell still need the same
 // process-table and log-store contract as facet-backed processes.
@@ -1483,7 +1470,7 @@ registry.register('npx', async (ctx: any) => {
   const installer = self.npmInstaller!;
   const resolveResult = await resolveNpxBinary(
     installer,
-    sqliteFs!.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'npx')),
+    sqliteFs!.as(requireVfsCred(ctx.cred, 'npx')),
     ctx.cwd || '/home/user',
     npxArgs,
     (msg: string) => ctx.stdout.write(msg + '\n'),

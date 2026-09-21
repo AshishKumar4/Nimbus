@@ -5,9 +5,9 @@ const SHELL_ALIASES = {
     sh: ['sh', '/bin/sh', '/usr/bin/sh'],
     bash: ['bash', '/bin/bash', '/usr/bin/bash'],
 };
-export function registerShellEntrypointCommands(registry, shell, vfs) {
-    const sh = makeShellEntrypoint('sh', shell, vfs);
-    const bash = makeShellEntrypoint('bash', shell, vfs);
+export function registerShellEntrypointCommands(registry, shell) {
+    const sh = makeShellEntrypoint('sh', shell);
+    const bash = makeShellEntrypoint('bash', shell);
     for (const name of SHELL_ALIASES.sh) {
         if (!registry.has(name))
             registry.register(name, sh);
@@ -26,23 +26,23 @@ function usageText(shellName, topic) {
     return `usage: ${shellName} [-c command] [script]\n`
         + 'Executes commands through the Nimbus shell engine with VFS-backed stdin and scripts.\n';
 }
-function makeShellEntrypoint(shellName, shell, vfs) {
+function makeShellEntrypoint(shellName, shell) {
     return async (ctx) => {
         const program = await parseShellProgram(shellName, ctx, ctx.vfs);
         if ('error' in program) {
             if (program.error)
-                ctx.stderr.write(program.error + '\n');
+                (await ctx.stderr.write(program.error + '\n'));
             return program.exitCode;
         }
         if (program.kind === 'usage') {
-            ctx.stdout.write(usageText(shellName, program.topic));
+            (await ctx.stdout.write(usageText(shellName, program.topic)));
             return 0;
         }
         let forwardedStdout = '';
         let forwardedStderr = '';
         const inheritedStdin = await resolveInheritedStdin(shellName, program, ctx);
         if ('error' in inheritedStdin) {
-            ctx.stderr.write(inheritedStdin.error + '\n');
+            (await ctx.stderr.write(inheritedStdin.error + '\n'));
             return inheritedStdin.exitCode;
         }
         const result = await shell.execute(program.body, {
@@ -53,13 +53,13 @@ function makeShellEntrypoint(shellName, shell, vfs) {
             scriptMode: true,
             stdin: inheritedStdin.stdin,
             terminalStdin: ctx.terminalStdin,
-            onStdout: textSink((data) => {
+            onStdout: textSink(async (data) => {
                 forwardedStdout += data;
-                ctx.stdout.write(data);
+                (await ctx.stdout.write(data));
             }),
-            onStderr: textSink((data) => {
+            onStderr: textSink(async (data) => {
                 forwardedStderr += data;
-                ctx.stderr.write(data);
+                (await ctx.stderr.write(data));
             }),
             runExitTrap: true,
             terminalFds: {
@@ -72,7 +72,7 @@ function makeShellEntrypoint(shellName, shell, vfs) {
                 cred: ctx.cred,
                 setUmask: ctx.setUmask,
             },
-            runAs: (_parent, cred, argv) => ctx.runAs(cred, argv),
+            runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
         });
         writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
         writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
@@ -132,12 +132,12 @@ async function parseShellProgram(shellName, ctx, vfs) {
     }
     return { kind: 'stdin', body: stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
 }
-function loadScript(shellName, script, args, options, cwd, vfs) {
+async function loadScript(shellName, script, args, options, cwd, vfs) {
     const path = resolveVfsPath(script, cwd || '/home/user');
     try {
-        if (!vfs.exists(path))
+        if (!await vfs.exists(path))
             return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };
-        return { kind: 'script', path, body: vfs.readFileString(path), argv0: script, args, options };
+        return { kind: 'script', path, body: await vfs.readFileString(path), argv0: script, args, options };
     }
     catch (error) {
         if (hasErrorCode(error, 'EACCES') || hasErrorCode(error, 'EPERM')) {

@@ -288,12 +288,12 @@ export function parseZip(data) {
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export function collectFiles(vfs, basePath, paths) {
+export async function collectFiles(vfs, basePath, paths) {
     const entries = [];
     const relBase = basePath === '/' ? '/' : basePath + '/';
     const member = (absPath) => absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
-    function walk(absPath) {
-        const stat = vfs.stat(absPath);
+    async function walk(absPath) {
+        const stat = (await vfs.stat(absPath));
         if (stat.type === 'directory') {
             entries.push({
                 path: member(absPath),
@@ -302,15 +302,15 @@ export function collectFiles(vfs, basePath, paths) {
                 mode: stat.mode,
                 mtime: stat.mtime,
             });
-            const children = vfs.readdir(absPath);
+            const children = (await vfs.readdir(absPath));
             for (const child of children) {
-                walk(absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`);
+                (await walk(absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`));
             }
         }
         else {
             entries.push({
                 path: member(absPath),
-                data: vfs.readFile(absPath),
+                data: (await vfs.readFile(absPath)),
                 type: 'file',
                 mode: stat.mode,
                 mtime: stat.mtime,
@@ -318,6 +318,6 @@ export function collectFiles(vfs, basePath, paths) {
         }
     }
     for (const p of paths)
-        walk(resolve(basePath, p));
+        (await walk(resolve(basePath, p)));
     return entries;
 }

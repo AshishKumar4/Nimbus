@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
-import { SUPERVISOR_OP_ROUTES, SUPERVISOR_NATIVE_OPS } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { SUPERVISOR_OPS, SUPERVISOR_OP_ROUTES, SUPERVISOR_NATIVE_OPS } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -65,6 +65,11 @@ const target = '/home/user/file', symlinkPath = '/home/user/link2';
 const wPath = '/home/user/w', dirPath = '/home/user/dir', delPath = '/home/user/del';
 const linkPath = '/home/user/link';
 const chmodPath = '/home/user/chmod', utimesPath = '/home/user/utimes', truncPath = '/home/user/trunc';
+// The descriptor ops all act on one open file, plus a directory for
+// readdirHandle; remove/copy/mutation each get their own subject.
+const handlePath = '/home/user/handle', handleDir = '/home/user/hdir';
+const removePath = '/home/user/rm', copyPath = '/home/user/copy', mutationPath = '/home/user/mut';
+const handleContent = 'handle-bytes';
 const sessionFs = rawVfs.as(CRED_SESSION_USER);
 sessionFs.writeFile('home/user/ren', 'x');
 sessionFs.writeFile('home/user/del', 'x');
@@ -72,33 +77,44 @@ sessionFs.writeFile('home/user/chmod', 'x');
 sessionFs.writeFile('home/user/utimes', 'x');
 sessionFs.writeFile('home/user/trunc', 'truncate me');
 sessionFs.writeFile('home/user/file', 'seeded\n');
+sessionFs.writeFile('home/user/handle', handleContent);
+sessionFs.mkdir('home/user/hdir', { recursive: true });
+sessionFs.writeFile('home/user/hdir/child', 'c');
+sessionFs.mkdir('home/user/rm/inner', { recursive: true });
+sessionFs.writeFile('home/user/rm/inner/leaf', 'x');
 const bytes = new Uint8Array([1, 2, 3]), content = 'written';
 const atimeMs = 100, mtimeMs = 200, mode = 0o640, size = 3;
 const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
-const mask = 0o077;
+const mask = 0o077, rOk = 0o4, xOk = 0o1, seekTo = 2;
 const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 'after', limit = 32;
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
-const code = 0, reason = 'closed', flags = 'r', handleId = 4, offset = 0, length = 3;
+const code = 0, reason = 'closed', handleId = 4, offset = 0, length = 3;
 const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
 const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
 const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-builtin';
+// A fixture is the argument list its RPC is called with — or, for the ops
+// that act on a descriptor, a thunk the loop resolves once the op that mints
+// the handle has run. `fsOpen` is that op, and the canonical list orders it
+// ahead of every op that needs one.
+let fileHandle = null, mutationLease = null;
+const openHandle = (subject, openFlags) => ops.dispatch({ op: 'fsOpen', args: [subject, openFlags], pid });
 const INPUTS = {
   readFile: [path],
   readFileBytes: [path],
   writeFile: [wPath, content],
-  stat: [path],
+  stat: [path, options],
   lstat: [linkPath],
   hasLegacySymlinkUnder: [path],
   utimes: [utimesPath, atimeMs, mtimeMs],
   chmod: [chmodPath, mode],
-  access: [path, mode],
+  access: [path, rOk],
   chown: [path, uid, gid, options],
   setUmask: [mask],
   readdir: ['/home/user'],
   exists: [path],
-  mkdir: [dirPath],
+  mkdir: [dirPath, { recursive: true }],
   rmdir: [dirPath],
   rename: [from, to],
   unlink: [delPath],
@@ -111,7 +127,22 @@ const INPUTS = {
   wsPoll: [id, waitMs],
   wsSend: [id, text, bytes],
   wsClose: [id, code, reason],
-  fsOpen: [path, flags],
+  fsOpen: [handlePath, { read: true, write: true }],
+  fsFstat: () => [fileHandle.id],
+  fsDup: () => [fileHandle.id],
+  fsSeek: () => [fileHandle.id, seekTo, 'set'],
+  fsSetStatus: () => [fileHandle.id, { append: true }],
+  fsReaddirHandle: async () => [(await openHandle(handleDir, { read: true, directory: true })).id],
+  fsFtruncate: () => [fileHandle.id, size],
+  fsFchmod: () => [fileHandle.id, mode],
+  fsFchown: () => [fileHandle.id, uid, gid],
+  fsFutimes: () => [fileHandle.id, atimeMs, mtimeMs],
+  fsSync: () => [fileHandle.id],
+  fsRealpath: [linkPath],
+  fsRemove: [removePath, { recursive: true }],
+  fsCopyFile: [path, copyPath],
+  fsAcquireExclusiveMutation: [mutationPath],
+  fsReleaseExclusiveMutation: () => [mutationLease.owner],
   fsRead: [handleId, offset, length],
   fsWrite: [handleId, offset, bytes],
   fsClose: [handleId],
@@ -157,24 +188,19 @@ const INPUTS = {
 // every arg spec reads from.
 const PROPS = { pid, writerId, mutationOwner, stream };
 
-// Cases derive from the canonical table: the delegate is route.method, the
-// expected arguments are the mapped envelope slots — the only op whose input
-// isn't its envelope args is cpSpawn (the RPC rewrites parentPid).
-const cases = Object.entries(SUPERVISOR_OP_ROUTES).map(([op, route]) => {
-  const input = INPUTS[op];
-  // writeBatchStream's stream rides the envelope field, not args.
-  const envelopeArgs = op === 'writeBatchStream' ? [] : (input ?? []);
-  // cpSpawn rewrites parentPid before the envelope is built.
-  const sentArgs = op === 'cpSpawn' ? [{ ...req, parentPid: pid }] : envelopeArgs;
-  const expected = op === 'cpSpawn'
-    ? [{ ...req, parentPid: pid }]
-    : route.args.map((slot) => typeof slot === 'number' ? envelopeArgs[slot] : PROPS[slot]);
-  return [op, input, envelopeArgs, sentArgs, route.method, expected];
-});
+// Cases derive from the canonical op list: a routed op carries the route the
+// table names — its delegate and its expected arguments — and a native op
+// carries none, because the filesystem answers it.
+const cases = SUPERVISOR_OPS.map((op) => [op, Object.hasOwn(SUPERVISOR_OP_ROUTES, op) ? SUPERVISOR_OP_ROUTES[op] : undefined]);
 
 // Every fixture names a real op; every real op has a fixture.
-assert.deepEqual(Object.keys(INPUTS).sort(), Object.keys(SUPERVISOR_OP_ROUTES).sort(),
-  'INPUTS and the canonical table name the same ops');
+assert.deepEqual(Object.keys(INPUTS).sort(), [...SUPERVISOR_OPS].sort(),
+  'INPUTS and the canonical op list name the same ops');
+
+// The two tables partition that list: an op is served natively or routed to
+// an _rpc* method, never both and never neither.
+assert.deepEqual([...SUPERVISOR_NATIVE_OPS, ...Object.keys(SUPERVISOR_OP_ROUTES)].sort(), [...SUPERVISOR_OPS].sort(),
+  'the native table and the route table partition SUPERVISOR_OPS');
 
 // The session's supervisor handler, on the session's real filesystem. The
 // host delegates — _rpcStdout/_rpcStderr and every routed non-fs op — are
@@ -187,9 +213,9 @@ const host = {
   _rpcStdout(p, d) { delegateCalls.push(['_rpcStdout', p, d]); },
   _rpcStderr(p, d) { delegateCalls.push(['_rpcStderr', p, d]); },
 };
-for (const [op, , , , method, expected] of cases) {
-  if (!SUPERVISOR_NATIVE_OPS.has(op)) {
-    host[method] = (...args) => { delegateCalls.push([method, ...args]); return Promise.resolve({ value: 'answer' }); };
+for (const [, route] of cases) {
+  if (route) {
+    host[route.method] = (...args) => { delegateCalls.push([route.method, ...args]); return Promise.resolve({ value: 'answer' }); };
   }
 }
 const ops = buildSessionSupervisorOps(host);
@@ -211,6 +237,14 @@ supervisor.env = {
   },
 };
 
+// The ops a process is not allowed to perform at all: the refusal from the
+// real filesystem IS their behaviour, so they assert on the error.
+const NATIVE_REFUSED = {
+  // A descriptor chown is root-only in the VFS (sqlite-vfs.ts openNode.chown),
+  // even to the owner's own uid, which the path-based chown does allow.
+  fsFchown: /EPERM/,
+};
+
 // Native ops run the real implementation — what they return IS the
 // assertion; everything else is a captured delegate call.
 const nativeAssert = {
@@ -220,8 +254,22 @@ const nativeAssert = {
   stat: (r) => assert.equal(r.type, 'file', 'stat'),
   lstat: (r) => assert.equal(r.type, 'symlink', 'lstat'),
   hasLegacySymlinkUnder: (r) => assert.equal(r, false, 'hasLegacySymlinkUnder'),
-  utimes: async () => assert.equal((kernelVfs.stat('home/user/utimes')).mtime > 0, true, 'utimes applied'),
+  utimes: async () => {
+    const stat = kernelVfs.stat('home/user/utimes');
+    assert.equal(stat.atime, atimeMs, 'utimes applied atime');
+    assert.equal(stat.mtime, mtimeMs, 'utimes applied mtime');
+  },
   chmod: async () => assert.equal(kernelVfs.stat('home/user/chmod').mode & 0o777, mode, 'chmod applied'),
+  access: async (r) => {
+    assert.equal(r, undefined, 'access grants read on an owned file');
+    await assert.rejects(ops.dispatch({ op: 'access', args: [path, xOk], pid }), /EACCES/, 'access refuses execute');
+  },
+  chown: async (r) => {
+    assert.equal(r, undefined, "chown to the caller's own uid/gid is permitted");
+    const stat = kernelVfs.stat('home/user/file');
+    assert.deepEqual([stat.uid, stat.gid], [uid, gid], 'chown kept the owner');
+    await assert.rejects(ops.dispatch({ op: 'chown', args: [path, 0, 0], pid }), /EPERM/, 'chown to root is refused');
+  },
   exists: (r) => assert.equal(r, true, 'exists'),
   readdir: (r) => assert.ok(r.some((e) => e.name === 'file'), 'readdir sees the fixture'),
   rename: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/ren2')), 'x', 'rename moved'),
@@ -234,37 +282,111 @@ const nativeAssert = {
   fsReadRangeUncached: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRangeUncached'),
   fsRevision: (r) => assert.equal(typeof r, 'number', 'fsRevision'),
   fsTruncate: async () => assert.equal(kernelVfs.readFile('home/user/trunc').length, size, 'fsTruncate sized'),
+  // The descriptor ops, in the order the canonical list runs them: fsOpen
+  // mints the handle every one of them addresses.
+  fsOpen: (r) => {
+    fileHandle = r;
+    assert.equal(r.path, 'home/user/handle', 'fsOpen names the file it opened');
+    assert.deepEqual([r.flags.read, r.flags.write, r.closed], [true, true, false], 'fsOpen honoured the flags');
+  },
+  fsFstat: (r) => {
+    assert.equal(r.type, 'file', 'fsFstat');
+    assert.equal(r.size, handleContent.length, 'fsFstat sizes the open file');
+  },
+  fsDup: (r) => {
+    assert.notEqual(r.id, fileHandle.id, 'fsDup mints a second descriptor');
+    assert.equal(r.path, fileHandle.path, 'fsDup keeps the file');
+  },
+  fsSeek: (r) => assert.equal(r, seekTo, 'fsSeek returns the new position'),
+  fsSetStatus: async (r) => {
+    assert.equal(r, undefined, 'fsSetStatus');
+    const duplicate = await ops.dispatch({ op: 'fsDup', args: [fileHandle.id], pid });
+    assert.equal(duplicate.flags.append, true, 'fsSetStatus set append on the open descriptor');
+  },
+  fsReaddirHandle: (r) => assert.deepEqual(r.map((e) => e.name), ['child'], 'fsReaddirHandle lists the directory handle'),
+  fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/handle').size, size, 'fsFtruncate sized the open file'),
+  fsFchmod: () => assert.equal(kernelVfs.stat('home/user/handle').mode & 0o777, mode, 'fsFchmod applied'),
+  fsFutimes: () => {
+    const stat = kernelVfs.stat('home/user/handle');
+    assert.deepEqual([stat.atime, stat.mtime], [atimeMs, mtimeMs], 'fsFutimes applied');
+  },
+  fsSync: async (r) => {
+    assert.equal(r, undefined, 'fsSync');
+    await assert.rejects(ops.dispatch({ op: 'fsSync', args: [fileHandle.id + 9000], pid }), /EBADF/, 'fsSync rejects an unknown descriptor');
+  },
+  fsRealpath: (r) => assert.equal(r, path, 'fsRealpath resolves the symlink'),
+  fsRemove: () => assert.equal(kernelVfs.exists('home/user/rm'), false, 'fsRemove took the tree'),
+  fsCopyFile: () => assert.equal(dec.decode(kernelVfs.readFile('home/user/copy')), 'seeded\n', 'fsCopyFile copied the bytes'),
+  fsAcquireExclusiveMutation: async (r) => {
+    mutationLease = r;
+    assert.equal(r.root, 'home/user/mut', 'fsAcquireExclusiveMutation leases the root');
+    assert.equal(typeof r.owner, 'string', 'fsAcquireExclusiveMutation names an owner');
+    await assert.rejects(ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid }), /EBUSY/, 'the lease excludes a second holder');
+  },
+  fsReleaseExclusiveMutation: async (r) => {
+    assert.equal(r, undefined, 'fsReleaseExclusiveMutation');
+    // The lease is gone iff the same root can be leased again.
+    const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
+    assert.notEqual(relet.owner, mutationLease.owner, 'the released root leases again');
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
+  },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
   stdout: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStdout', pid, data], 'stdout delegate args'),
   stderr: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStderr', pid, data], 'stderr delegate args'),
 };
 
-for (const [op, input, envelopeArgs, sentArgs, delegate, expected] of cases) {
+// Every native op has an assertion of its own — a fixture that dispatched
+// and was never checked would be a case the table only looks covered by.
+assert.deepEqual([...Object.keys(nativeAssert), ...Object.keys(NATIVE_REFUSED)].sort(), [...SUPERVISOR_NATIVE_OPS].sort(),
+  'every native op is asserted against the real filesystem');
+
+for (const [op, route] of cases) {
+  const delegate = route?.method;
   let disposed = 0;
   const answer = op === 'routeLoopback' ? new Response('streamed body') : { value: 'answer' };
   answer[Symbol.dispose] = () => disposed++;
-  if (!SUPERVISOR_NATIVE_OPS.has(op)) {
+  if (route) {
     host[delegate] = (...args) => { delegateCalls.push([delegate, ...args]); return Promise.resolve(answer); };
   }
-  let result;
+  // A descriptor op's fixture reads what an earlier op returned, so it is
+  // resolved here rather than when the table was written.
+  const fixture = INPUTS[op];
+  const input = typeof fixture === 'function' ? await fixture() : fixture;
+  // writeBatchStream's stream rides the envelope field, not args.
+  const envelopeArgs = op === 'writeBatchStream' ? [] : input;
+  // cpSpawn rewrites parentPid before the envelope is built.
+  const sentArgs = op === 'cpSpawn' ? [{ ...req, parentPid: pid }] : envelopeArgs;
+  const expected = !route ? [] : op === 'cpSpawn'
+    ? [{ ...req, parentPid: pid }]
+    : route.args.map((slot) => typeof slot === 'number' ? envelopeArgs[slot] : PROPS[slot]);
+  let result, failure;
   const droveDirect = typeof supervisor[op] !== 'function';
-  if (!droveDirect) {
-    result = await supervisor[op](...input);
-    assert.equal(receivedEnvelope.op, op);
-    // The envelope's args must carry the RPC's inputs — the route's numeric
-    // slots are indexes into this array, so a dropped arg is a dropped arg.
-    assert.deepEqual(receivedEnvelope.args, sentArgs, `${op}: envelope args`);
-    if (op === 'writeBatchStream') assert.equal(receivedEnvelope.stream, stream);
-  } else {
-    // No session-side convenience method: peers dispatch these envelopes
-    // straight onto the host's composed dispatch method (hostOpDispatch).
-    // The routed half is what the table names — drive it directly. The
-    // caller owns the response — disposal happens in the RPC layer this
-    // path bypasses (callers dispose via disposeRpcResource).
-    result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, mutationOwner });
+  try {
+    if (!droveDirect) {
+      result = await supervisor[op](...input);
+      assert.equal(receivedEnvelope.op, op);
+      // The envelope's args must carry the RPC's inputs — the route's numeric
+      // slots are indexes into this array, so a dropped arg is a dropped arg.
+      assert.deepEqual(receivedEnvelope.args, sentArgs, `${op}: envelope args`);
+      if (op === 'writeBatchStream') assert.equal(receivedEnvelope.stream, stream);
+    } else {
+      // No session-side convenience method: peers dispatch these envelopes
+      // straight onto the host's composed dispatch method (hostOpDispatch).
+      // The routed half is what the table names — drive it directly. The
+      // caller owns the response — disposal happens in the RPC layer this
+      // path bypasses (callers dispose via disposeRpcResource).
+      result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, mutationOwner });
+    }
+  } catch (error) {
+    if (!Object.hasOwn(NATIVE_REFUSED, op)) throw error;
+    failure = error;
   }
-  if (SUPERVISOR_NATIVE_OPS.has(op)) {
-    await nativeAssert[op](result);
+  if (!route) {
+    if (Object.hasOwn(NATIVE_REFUSED, op)) {
+      assert.match(String(failure), NATIVE_REFUSED[op], `${op}: the filesystem refuses this process`);
+    } else {
+      await nativeAssert[op](result);
+    }
   } else {
     // Routed to the session's _rpc* surface — the captured call is the
     // contract the canonical table names, and the response is disposed once
@@ -291,4 +413,6 @@ await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';
 supervisor.env = {};
 await assert.rejects(supervisor.readFile('/a'), /not a Durable Object namespace/);
-console.log(`supervisor-host-dispatch: ${cases.length} routes preserve arguments, identity and response lifetimes`);
+const nativeCount = SUPERVISOR_NATIVE_OPS.size;
+console.log(`supervisor-host-dispatch: ${nativeCount} native ops answer from the real filesystem, `
+  + `${cases.length - nativeCount} routes preserve arguments, identity and response lifetimes`);

@@ -28,7 +28,7 @@ const command: Command = async (ctx) => {
       if (stat.size > 0) {
         // A regular file's size is its exact extent — copy precisely that, in
         // bounded steps, so a large file never becomes a large buffer.
-        await streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+        await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
           length: stat.size,
           signal: ctx.signal,
         });

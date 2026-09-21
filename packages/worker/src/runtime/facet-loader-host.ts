@@ -9,14 +9,7 @@
  * the session and never write to it. `reuse` is the pool's `cacheScope` under
  * the name the port gives it: who a warm facet may answer for.
  */
-import type {
-  Facet,
-  FacetFilesystemOptions,
-  FacetFilesystemSeed,
-  FacetHost,
-  FacetSpec,
-} from '@nimbus-sh/core/runtime/facet-host.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { Facet, FacetHost, FacetSpec } from '@nimbus-sh/core/runtime/facet-host.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -31,13 +24,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHos
      * whatever the program opens through its supervisor. It has to be — the
      * whole seed crosses one RPC, and a session filesystem does not fit in one.
      */
-    seedFilesystem(
-      vfs: CredentialedVfs,
-      root: string,
-      options?: FacetFilesystemOptions,
-    ): FacetFilesystemSeed | { error: string } {
-      return manifestVfs(vfs, root, options);
-    },
+    seedFilesystem(vfs, root, options) { return manifestVfs(vfs, options.cred, root, options); },
     open(spec: FacetSpec): Facet {
       return new IsolatePool(env, ctx, {
         tag: spec.tag,

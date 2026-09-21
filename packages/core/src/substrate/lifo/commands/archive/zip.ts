@@ -40,7 +40,7 @@ const command: Command = async (ctx) => {
   const archivePath = resolve(ctx.cwd, archiveFile);
 
   try {
-    const tarEntries = collectFiles(ctx.vfs, ctx.cwd, files);
+    const tarEntries = (await collectFiles(ctx.vfs, ctx.cwd, files));
 
     const zipEntries: ZipEntry[] = tarEntries.map((e) => ({
       path: flags.junk ? e.path.slice(e.path.lastIndexOf('/') + 1) : e.path,

@@ -1,8 +1,8 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 export interface NodeContext {
-    vfs: VFS;
+    filesystem: () => NodeFilesystem;
     cwd: string;
     env: Record<string, string>;
     stdout: CommandOutputStream;

@@ -221,6 +221,7 @@ export async function initSession(
       // have been called many requests ago; a second SqliteVFS over the
       // same rows would be a second cache serving stale reads.
       vfs: self.sqliteFs!,
+      filesystem: () => self.getFilesystemAuthority(),
       mounts: mountPoints,
       env: envOverlay,
       terminal: self.terminal,

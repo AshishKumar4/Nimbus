@@ -114,7 +114,7 @@ function host() {
 
 // ── manifestVfs must not emit a directory it gave no mode ──────────────────
 // It adds every extraRoot and its ancestors to `dirs` before checking whether
-// they exist, but records a mode only where vfs.stat answers. A root that does
+// they exist, but records a mode only where the bridge's stat answers. A root that does
 // not exist yet — site-packages before the first install — used to arrive
 // listed but modeless, and the consumer's deny-by-default (correctly) reads a
 // listed-but-modeless path as mode 0. Traversal then fails, os.path.isdir
@@ -126,24 +126,23 @@ function host() {
 // security property and must not be loosened to paper over a bad manifest.
 {
   const { manifestVfs } = await import('../../packages/core/src/runtime/vfs-manifest.ts');
-  const enoent = () => { const e = new Error('no such file'); e.code = 'ENOENT'; throw e; };
   const eacces = () => { const e = new Error('denied'); e.code = 'EACCES'; throw e; };
-  const present = new Map([
-    ['home', { mode: 0o755, uid: 1000, gid: 1000, type: 'dir' }],
-    ['home/user', { mode: 0o755, uid: 1000, gid: 1000, type: 'dir' }],
-  ]);
-  const vfs = {
-    cred: { uid: 1000, gid: 1000, groups: [] },
-    exists: (p) => present.has(p),
-    stat: (p) => {
-      if (present.has(p)) return present.get(p);
-      if (p.startsWith('home/user/secret')) return eacces();
-      return enoent();
+  const dir = { type: 'directory', mode: 0o755, uid: 1000, gid: 1000, size: 0, dev: 0, ino: 0, nlink: 1, atime: 0, mtime: 0, ctime: 0, revision: 1 };
+  const present = new Map([['home', dir], ['home/user', dir]]);
+  const cred = { uid: 1000, gid: 1000, groups: [], umask: 0o022 };
+  // A RuntimeFsBridge: stat answers null for a missing path and throws EACCES
+  // for a denied one; the walk never gets past readdir here.
+  const bridge = {
+    stat: async (p) => {
+      const found = present.get(p);
+      if (found !== undefined) return found;
+      if (p.startsWith('home/user/secret')) eacces();
+      return null;
     },
-    readdir: () => [],
-    revision: () => 1,
+    readdir: async () => [],
+    readlink: async () => null,
   };
-  const built = manifestVfs(vfs, 'home/user', {
+  const built = await manifestVfs(bridge, cred, 'home/user', {
     extraRoots: ['home/user/.pkgs/site-packages', 'home/user/secret/inner'],
   });
   assert.ok(!('error' in built), 'the walk should succeed');

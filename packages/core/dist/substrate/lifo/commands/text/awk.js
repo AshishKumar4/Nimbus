@@ -123,7 +123,7 @@ const command = async (ctx) => {
         }
     }
     if (!program) {
-        ctx.stderr.write('awk: missing program\n');
+        await ctx.stderr.write('awk: missing program\n');
         return 1;
     }
     let text = '';
@@ -132,7 +132,7 @@ const command = async (ctx) => {
             text = await ctx.stdin.readAll();
         }
         else {
-            ctx.stderr.write('awk: missing file operand\n');
+            await ctx.stderr.write('awk: missing file operand\n');
             return 1;
         }
     }
@@ -140,16 +140,16 @@ const command = async (ctx) => {
         for (const file of files) {
             const path = resolve(ctx.cwd, file);
             try {
-                ctx.vfs.stat(path);
+                (await ctx.vfs.stat(path));
                 if (isBinaryMime(getMimeType(path))) {
-                    ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
+                    await ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
                     continue;
                 }
-                text += ctx.vfs.readFileString(path);
+                text += (await ctx.vfs.readFileString(path));
             }
             catch (e) {
                 if (e instanceof VFSError) {
-                    ctx.stderr.write(`awk: ${file}: ${e.message}\n`);
+                    await ctx.stderr.write(`awk: ${file}: ${e.message}\n`);
                     return 1;
                 }
                 throw e;
@@ -164,7 +164,7 @@ const command = async (ctx) => {
         if (rule.pattern === 'BEGIN') {
             const result = executeAction(rule.action, [], '', 0, 0, fieldSepStr, vars);
             if (result)
-                ctx.stdout.write(result + '\n');
+                await ctx.stdout.write(result + '\n');
         }
     }
     // Process lines
@@ -183,7 +183,7 @@ const command = async (ctx) => {
             if (matches) {
                 const result = executeAction(rule.action, fields, line, nr, nf, fieldSepStr, vars);
                 if (result)
-                    ctx.stdout.write(result + '\n');
+                    await ctx.stdout.write(result + '\n');
             }
         }
     }
@@ -192,7 +192,7 @@ const command = async (ctx) => {
         if (rule.pattern === 'END') {
             const result = executeAction(rule.action, [], '', lines.length, 0, fieldSepStr, vars);
             if (result)
-                ctx.stdout.write(result + '\n');
+                await ctx.stdout.write(result + '\n');
         }
     }
     return 0;

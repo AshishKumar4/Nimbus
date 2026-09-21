@@ -22,8 +22,8 @@ import { createEsbuild } from './esbuild.js';
 import { assertEqualHolds } from './loose-equality.js';
 export function createModuleMap(ctx) {
     const map = {
-        fs: () => createFs(ctx.vfs, ctx.cwd),
-        'fs/promises': () => createFs(ctx.vfs, ctx.cwd).promises,
+        fs: () => createFs(ctx.filesystem(), ctx.cwd),
+        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd).promises,
         path: () => pathModule,
         os: () => createOs(ctx.env),
         process: () => createProcess({
@@ -68,7 +68,7 @@ export function createModuleMap(ctx) {
         readline: () => readlineModule,
         'readline/promises': () => readlineModule.promises,
         constants: () => {
-            const fs = createFs(ctx.vfs, ctx.cwd);
+            const fs = createFs(ctx.filesystem(), ctx.cwd);
             const os = createOs(ctx.env);
             return { ...os.constants, ...fs.constants };
         },
@@ -285,7 +285,7 @@ export function createModuleMap(ctx) {
     // module shim needs access to the map itself for createRequire
     map.module = () => createModuleShim(map);
     // npm package shims
-    map.rimraf = () => createRimraf(ctx.vfs, ctx.cwd);
+    map.rimraf = () => createRimraf(ctx.filesystem(), ctx.cwd);
     map.esbuild = () => createEsbuild();
     return map;
 }

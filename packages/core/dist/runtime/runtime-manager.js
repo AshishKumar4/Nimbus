@@ -151,7 +151,7 @@ export class RuntimeManager {
             const factory = this.runnerFactories.get(ep.runner);
             if (!factory)
                 continue;
-            this.registry.register(ep.binName, factory(manifest, seeded.root, ep.binName, ep.kind));
+            this.registry.register(ep.binName, await factory(manifest, seeded.root, ep.binName, ep.kind));
             bins.push(ep.binName);
         }
         if (options?.onProgress) {
@@ -185,7 +185,7 @@ export class RuntimeManager {
             .filter(([key]) => key === nameKey || key.startsWith(`${nameKey}/`))
             .map(([, op]) => op.done);
         const removal = Promise.allSettled(pending)
-            .then(() => this.remove(name, versionOverride, home));
+            .then(async () => (await this.remove(name, versionOverride, home)));
         const entry = { kind: 'remove', done: removal };
         this.inflight.set(nameKey, entry);
         try {
@@ -197,14 +197,14 @@ export class RuntimeManager {
         }
     }
     async remove(name, versionOverride, home) {
-        const matches = listInstalledManifestsView(this.vfs, home).filter((entry) => entry.manifest.name === name
+        const matches = (await listInstalledManifestsView(this.vfs, home)).filter((entry) => entry.manifest.name === name
             && (versionOverride === null || entry.manifest.version === versionOverride));
         for (const match of matches) {
             for (const ep of runtimeEntrypoints(match.manifest)) {
                 this.registry.unregister?.(ep.binName);
             }
-            if (this.vfs.exists(match.root))
-                this.vfs.removeRecursive(match.root);
+            if (await this.vfs.exists(match.root))
+                await this.vfs.remove(match.root, { recursive: true });
         }
         // Bins a surviving version of the same runtime also provides are rebound
         // — removing one of two installed versions must not unregister both.
@@ -216,8 +216,8 @@ export class RuntimeManager {
         // Empty `runtimes/<name>`/`runtimes` dirs go too.
         const base = `${home.replace(/^\/+/, '').replace(/\/+$/, '')}/.nimbus/runtimes`;
         for (const dir of [`${base}/${name}`, base]) {
-            if (this.vfs.exists(dir) && this.vfs.readdir(dir).length === 0)
-                this.vfs.rmdir(dir);
+            if ((await this.vfs.exists(dir)) && (await this.vfs.readdir(dir)).length === 0)
+                (await this.vfs.rmdir(dir));
         }
     }
     /**
@@ -252,8 +252,8 @@ export class RuntimeManager {
     resolvable(spec) {
         return this.source.resolve(spec);
     }
-    list() {
-        return listInstalledManifestsView(this.vfs, this.getHome()).map(({ root, manifest }) => ({
+    async list() {
+        return (await listInstalledManifestsView(this.vfs, this.getHome())).map(({ root, manifest }) => ({
             name: manifest.name,
             version: manifest.version,
             root,

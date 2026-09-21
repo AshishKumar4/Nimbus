@@ -12,8 +12,8 @@
  * realpath
  */
 
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs } from './execution-fs.js';
 import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
@@ -52,7 +52,7 @@ type ShellStdin = CommandInputStream & {
  * first and `isDirectory` to the second, which is why the paths that want
  * either one probe for it.
  */
-type CtxVfs = CredentialedVfs | VFS;
+type CtxVfs = ExecutionFs;
 
 /**
  * A stat as either layer reports it. The kernel's tree leaves out what a mount
@@ -78,8 +78,8 @@ type Ctx = {
    * `/dev/null` — and absent on textual ones, so a command with binary output
    * uses it when it is there and falls back to decoded text when it is not.
    */
-  stdout: { write(s: string): void; writeBytes?(bytes: Uint8Array): void };
-  stderr: { write(s: string): void };
+  stdout: { write(s: string): void | Promise<void>; writeBytes?(bytes: Uint8Array): void | Promise<void> };
+  stderr: { write(s: string): void | Promise<void> };
   cwd: string;
   env: Record<string, string>;
   /**
@@ -97,9 +97,7 @@ type Ctx = {
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
 
-type UnixVfs = CredentialedVfs & {
-  readonly symlinks: SymlinkRegistry;
-};
+type UnixVfs = ExecutionFs;
 
 /**
  * A command the registry resolved. A runtime that is known but not installed
@@ -140,21 +138,14 @@ function stdinText(ctx: Ctx): string | undefined {
   return typeof ctx.stdin === 'string' ? ctx.stdin : undefined;
 }
 
-function unixVfsFor(sqliteVfs: SqliteVFS, cred: VfsCred): UnixVfs {
-  return {
-    ...sqliteVfs.as(cred),
-    symlinks: getSymlinkRegistry(sqliteVfs),
-  };
-}
-
 function withInvocationVfs(
-  sqliteVfs: SqliteVFS,
+  _sqliteVfs: SqliteVFS,
   factory: (vfs: UnixVfs) => CmdFn,
 ): CmdFn {
-  return (ctx) => factory(unixVfsFor(
-    sqliteVfs,
-    requireVfsCred(ctx.cred, 'unix command dispatch'),
-  ))(ctx);
+  return async (ctx) => {
+    requireVfsCred(ctx.cred, 'unix command dispatch');
+    return (await factory(ctx.vfs)(ctx));
+  };
 }
 
 function fsErrorMessage(error: unknown): string {
@@ -185,17 +176,17 @@ function unixModeString(mode: number, isDir: boolean, isLink: boolean): string {
   return prefix + bits;
 }
 
-function unixUserLabel(vfs: UnixVfs, uid: number): string {
+async function unixUserLabel(vfs: UnixVfs, uid: number): Promise<string> {
   try {
-    return findUnixUserName(vfs, uid) ?? String(uid);
+    return (await findUnixUserName(vfs, uid)) ?? String(uid);
   } catch {
     return String(uid);
   }
 }
 
-function unixGroupLabel(vfs: UnixVfs, gid: number): string {
+async function unixGroupLabel(vfs: UnixVfs, gid: number): Promise<string> {
   try {
-    return findUnixGroupName(vfs, gid) ?? String(gid);
+    return (await findUnixGroupName(vfs, gid)) ?? String(gid);
   } catch {
     return String(gid);
   }
@@ -219,15 +210,14 @@ function resolvePath(cwd: string, p: string): string {
   return out.join('/');
 }
 
-function readSymlinkTarget(vfs: UnixVfs, path: string): string | null {
-  if (vfs.isSymlink(path)) return vfs.readlink(path);
-  return vfs.symlinks.readlink(path);
+async function readSymlinkTarget(vfs: UnixVfs, path: string): Promise<string | null> {
+  return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
 }
 
-function resolveSymlinkPath(vfs: UnixVfs, startPath: string): string | null {
+async function resolveSymlinkPath(vfs: UnixVfs, startPath: string): Promise<string | null> {
   let current = resolvePath('/', startPath);
   for (let hops = 0; hops < 40; hops++) {
-    const target = readSymlinkTarget(vfs, current);
+    const target = (await readSymlinkTarget(vfs, current));
     if (target === null) return current;
     current = target.startsWith('/')
       ? resolvePath('/', target)
@@ -342,17 +332,17 @@ const _CANONICAL_BIN_PATHS: Record<string, string> = {
   nimbus: '/usr/local/bin/nimbus',
 };
 
-function _pathLookup(
+async function _pathLookup(
   vfs: UnixVfs,
   name: string,
   envPath: string,
-): string | null {
+): Promise<string | null> {
   const paths = (envPath || '/usr/local/bin:/usr/bin:/bin').split(':');
   for (const dir of paths) {
     if (!dir) continue;
     const stripped = dir.replace(/^\/+/, '').replace(/\/+$/, '');
     const fp = stripped + '/' + name;
-    if (vfs.exists(fp) && !vfs.isDirectory(fp)) {
+    if ((await vfs.exists(fp)) && !(await vfs.isDirectory(fp))) {
       return '/' + fp;
     }
   }
@@ -386,7 +376,7 @@ async function _whichLookup(
   name: string,
   envPath: string,
 ): Promise<string | null> {
-  const diskPath = _pathLookup(vfs, name, envPath);
+  const diskPath = (await _pathLookup(vfs, name, envPath));
   if (diskPath) return diskPath;
   const canonicalPath = _CANONICAL_BIN_PATHS[name];
   if (!canonicalPath) return null;
@@ -416,7 +406,7 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       names.push(a);
     }
     if (names.length === 0) {
-      ctx.stderr.write('Usage: which [-as] command [command ...]\n');
+      (await ctx.stderr.write('Usage: which [-as] command [command ...]\n'));
       return 1;
     }
     let anyMissing = false;
@@ -428,12 +418,12 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       let found = false;
       if (path) {
-        if (!silent) ctx.stdout.write(path + '\n');
+        if (!silent) (await ctx.stdout.write(path + '\n'));
         found = true;
       }
       // 2. With -a, also report builtins (real GNU which behaviour).
       if (showAll && isBuiltin) {
-        if (!silent) ctx.stdout.write(`${name}: shell built-in command\n`);
+        if (!silent) (await ctx.stdout.write(`${name}: shell built-in command\n`));
         found = true;
       }
       // 3. Without -a, if no PATH match but is builtin: GNU which
@@ -444,7 +434,7 @@ function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
         continue;
       }
       if (!found) {
-        if (!silent) ctx.stderr.write(`which: no ${name} in (${ctx.env.PATH || '/usr/local/bin:/usr/bin:/bin'})\n`);
+        if (!silent) (await ctx.stderr.write(`which: no ${name} in (${ctx.env.PATH || '/usr/local/bin:/usr/bin:/bin'})\n`));
         anyMissing = true;
       }
     }
@@ -462,16 +452,16 @@ function mkWhereis(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     const names = ctx.args.filter(a => !a.startsWith('-'));
     if (names.length === 0) {
-      ctx.stderr.write('Usage: whereis name [name ...]\n');
+      (await ctx.stderr.write('Usage: whereis name [name ...]\n'));
       return 1;
     }
     for (const name of names) {
       const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
       if (path) {
-        ctx.stdout.write(`${name}: ${path}\n`);
+        (await ctx.stdout.write(`${name}: ${path}\n`));
       } else {
         // GNU whereis prints just "name:" when nothing found.
-        ctx.stdout.write(`${name}:\n`);
+        (await ctx.stdout.write(`${name}:\n`));
       }
     }
     return 0;
@@ -500,23 +490,23 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     else if (args[0] === '-V') { mode = '-V'; args.shift(); }
     if (args.length === 0) {
       if (mode === 'invoke') return 0;
-      ctx.stderr.write('command: missing operand\n');
+      (await ctx.stderr.write('command: missing operand\n'));
       return 1;
     }
     if (mode === '-v') {
       // Print path or builtin marker; exit 0 if found.
       const name = args[0];
       const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
-      if (path) { ctx.stdout.write(path + '\n'); return 0; }
-      if (await _registryResolved(registry, name)) { ctx.stdout.write(name + '\n'); return 0; }
+      if (path) { (await ctx.stdout.write(path + '\n')); return 0; }
+      if (await _registryResolved(registry, name)) { (await ctx.stdout.write(name + '\n')); return 0; }
       return 1;
     }
     if (mode === '-V') {
       const name = args[0];
       const path = await _whichLookup(vfs, registry, name, ctx.env.PATH || '');
-      if (path) { ctx.stdout.write(`${name} is ${path}\n`); return 0; }
-      if (await _registryResolved(registry, name)) { ctx.stdout.write(`${name} is a shell builtin\n`); return 0; }
-      ctx.stderr.write(`command: ${name}: not found\n`);
+      if (path) { (await ctx.stdout.write(`${name} is ${path}\n`)); return 0; }
+      if (await _registryResolved(registry, name)) { (await ctx.stdout.write(`${name} is a shell builtin\n`)); return 0; }
+      (await ctx.stderr.write(`command: ${name}: not found\n`));
       return 1;
     }
     // invoke mode: dispatch directly via registry. Bypasses aliases
@@ -525,14 +515,14 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     try {
       const resolved = asResolvedCommand(await registry.resolve(name));
       if (!resolved) {
-        ctx.stderr.write(`command: ${name}: not found\n`);
+        (await ctx.stderr.write(`command: ${name}: not found\n`));
         return 127;
       }
       const subCtx = { ...ctx, args: args.slice(1) };
       const code = await resolved(subCtx);
       return typeof code === 'number' ? code : 0;
     } catch (e) {
-      ctx.stderr.write(`command: ${name}: ${errorText(e)}\n`);
+      (await ctx.stderr.write(`command: ${name}: ${errorText(e)}\n`));
       return 1;
     }
   };
@@ -566,13 +556,13 @@ function mkType(_vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           ? asResolvedCommand(await registry.resolve(name))
           : null;
         if (resolved && !isRuntimeInstallHintHandler(resolved)) {
-          ctx.stdout.write(`${name} is a shell builtin\n`);
+          (await ctx.stdout.write(`${name} is a shell builtin\n`));
         } else {
-          ctx.stderr.write(`type: ${name}: not found\n`);
+          (await ctx.stderr.write(`type: ${name}: not found\n`));
           exit = 1;
         }
       } catch (_e) {
-        ctx.stderr.write(`type: ${name}: not found\n`);
+        (await ctx.stderr.write(`type: ${name}: not found\n`));
         exit = 1;
       }
     }
@@ -581,22 +571,22 @@ function mkType(_vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
 }
 
 function mkEnv(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     for (const [k, v] of Object.entries(ctx.env)) {
-      ctx.stdout.write(`${k}=${v}\n`);
+      (await ctx.stdout.write(`${k}=${v}\n`));
     }
     return 0;
   };
 }
 
 function mkExport(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     for (const arg of ctx.args) {
       const eqIdx = arg.indexOf('=');
       if (eqIdx > 0) {
         ctx.env[arg.substring(0, eqIdx)] = arg.substring(eqIdx + 1);
       } else if (ctx.env[arg] !== undefined) {
-        ctx.stdout.write(`export ${arg}="${ctx.env[arg]}"\n`);
+        (await ctx.stdout.write(`export ${arg}="${ctx.env[arg]}"\n`));
       }
     }
     return 0;
@@ -611,7 +601,7 @@ function mkUnset(): CmdFn {
 }
 
 function mkClear(): CmdFn {
-  return (ctx) => { ctx.stdout.write('\x1b[2J\x1b[H'); return 0; };
+  return async (ctx) => { (await ctx.stdout.write('\x1b[2J\x1b[H')); return 0; };
 }
 
 /**
@@ -640,25 +630,25 @@ function mkClear(): CmdFn {
  *   %n / %t            newline / tab
  */
 function mkDate(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const now = new Date();
     const useUtc = ctx.args.includes('-u') || ctx.args.includes('--utc');
     // Find the `+FMT` arg (if any). Real `date +FMT [args]` accepts
     // only one format; we honour the first.
     const fmtArg = ctx.args.find(a => a.startsWith('+'));
     if (fmtArg) {
-      ctx.stdout.write(strftime(now, fmtArg.slice(1), useUtc) + '\n');
+      (await ctx.stdout.write(strftime(now, fmtArg.slice(1), useUtc) + '\n'));
       return 0;
     }
     if (ctx.args.includes('-I') || ctx.args.includes('--iso-8601')) {
-      ctx.stdout.write(now.toISOString() + '\n');
+      (await ctx.stdout.write(now.toISOString() + '\n'));
       return 0;
     }
     if (useUtc) {
-      ctx.stdout.write(now.toUTCString() + '\n');
+      (await ctx.stdout.write(now.toUTCString() + '\n'));
       return 0;
     }
-    ctx.stdout.write(now.toString() + '\n');
+    (await ctx.stdout.write(now.toString() + '\n'));
     return 0;
   };
 }
@@ -761,27 +751,27 @@ function strftime(d: Date, fmt: string, utc: boolean): string {
 
 function mkUptime(): CmdFn {
   const start = Date.now();
-  return (ctx) => {
+  return async (ctx) => {
     const secs = Math.floor((Date.now() - start) / 1000);
     const h = Math.floor(secs / 3600);
     const m = Math.floor((secs % 3600) / 60);
-    ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${h}:${String(m).padStart(2, '0')}, 1 user\n`);
+    (await ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${h}:${String(m).padStart(2, '0')}, 1 user\n`));
     return 0;
   };
 }
 
 function mkTree(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args = ctx.args.filter(a => !a.startsWith('-') && (ctx.args.indexOf(a) !== ctx.args.indexOf('-L') + 1));
     const root = args[0] ? resolvePath(ctx.cwd, args[0]) : (ctx.cwd || '/home/user').replace(/^\/+/, '');
     const maxDepth = ctx.args.includes('-L') ? parseInt(ctx.args[ctx.args.indexOf('-L') + 1]) || 3 : 3;
     const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
     let dirs = 0, files = 0, total = 0;
     let truncated = false;
-    function walk(path: string, prefix: string, depth: number) {
+    async function walk(path: string, prefix: string, depth: number) {
       if (depth > maxDepth || truncated) return;
       try {
-        const entries = vfs.readdir(path).sort((a, b) => a.name.localeCompare(b.name));
+        const entries = (await vfs.readdir(path)).sort((a, b) => a.name.localeCompare(b.name));
         for (let i = 0; i < entries.length; i++) {
           if (total >= MAX_ENTRIES) { truncated = true; return; }
           total++;
@@ -789,19 +779,19 @@ function mkTree(vfs: UnixVfs): CmdFn {
           const isLast = i === entries.length - 1;
           const connector = isLast ? '└── ' : '├── ';
           const childPrefix = isLast ? '    ' : '│   ';
-          ctx.stdout.write(prefix + connector + e.name + '\n');
+          (await ctx.stdout.write(prefix + connector + e.name + '\n'));
           if (e.type === 'directory') {
             dirs++;
-            walk(path + '/' + e.name, prefix + childPrefix, depth + 1);
+            (await walk(path + '/' + e.name, prefix + childPrefix, depth + 1));
           } else { files++; }
         }
       } catch {}
     }
     const name = root.split('/').pop() || root;
-    ctx.stdout.write(name + '\n');
-    walk(root, '', 1);
-    if (truncated) ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`);
-    ctx.stdout.write(`\n${dirs} directories, ${files} files\n`);
+    (await ctx.stdout.write(name + '\n'));
+    (await walk(root, '', 1));
+    if (truncated) (await ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`));
+    (await ctx.stdout.write(`\n${dirs} directories, ${files} files\n`));
     return 0;
   };
 }
@@ -887,8 +877,8 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     let hasAction = false;
 
     // ── Emission ──────────────────────────────────────────────────────────
-    const emit = (entry: FindEntry, terminator: string): void => {
-      ctx.stdout.write(entry.display + terminator);
+    const emit = async (entry: FindEntry, terminator: string): Promise<void> => {
+      (await ctx.stdout.write(entry.display + terminator));
     };
 
     /** Run one command through the registry the session resolves through. */
@@ -898,7 +888,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       let target: ResolvedCommand | null;
       try { target = asResolvedCommand(await registry.resolve(name)); } catch { target = null; }
       if (!target) {
-        ctx.stderr.write(`find: ${name}: No such file or directory\n`);
+        (await ctx.stderr.write(`find: ${name}: No such file or directory\n`));
         return false;
       }
       try {
@@ -919,7 +909,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
         });
         return code === 0;
       } catch (e) {
-        ctx.stderr.write(`find: ${name}: ${errorText(e)}\n`);
+        (await ctx.stderr.write(`find: ${name}: ${errorText(e)}\n`));
         return false;
       }
     };
@@ -961,11 +951,11 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     const sizeInUnits = (bytes: number, unit: number): number =>
       unit === 1 ? bytes : Math.ceil(bytes / unit);
 
-    const statOf = (entry: FindEntry) => {
-      try { return vfs.stat(entry.vfsPath); } catch { return null; }
+    const statOf = async (entry: FindEntry) => {
+      try { return (await vfs.stat(entry.vfsPath)); } catch { return null; }
     };
 
-    function parsePrimary(): FindNode {
+    async function parsePrimary(): Promise<FindNode> {
       const tok = next();
       if (tok === undefined) throw new FindUsageError('missing expression');
 
@@ -1008,7 +998,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
             : m[3] === 'G' ? 1024 * 1024 * 1024
             : 512;
           return async (e) => {
-            const st = statOf(e);
+            const st = (await statOf(e));
             if (!st) return false;
             const units = sizeInUnits(st.size || 0, unit);
             return cmp === '+' ? units > count : cmp === '-' ? units < count : units === count;
@@ -1023,7 +1013,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           const threshold = parseInt(m[2], 10) * dayMs;
           const now = Date.now();
           return async (e) => {
-            const st = statOf(e);
+            const st = (await statOf(e));
             if (!st) return false;
             const age = now - (st.mtime || 0);
             return cmp === '+' ? age > threshold + dayMs
@@ -1035,31 +1025,31 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           const ref = value('-newer');
           let refMtime: number;
           try {
-            refMtime = vfs.stat(resolvePath(ctx.cwd, ref)).mtime;
+            refMtime = (await vfs.stat(resolvePath(ctx.cwd, ref))).mtime;
           } catch {
             throw new FindUsageError(`'${ref}': No such file or directory`);
           }
           return async (e) => {
-            const st = statOf(e);
+            const st = (await statOf(e));
             return !!st && (st.mtime || 0) > refMtime;
           };
         }
         case '-empty':
           return async (e) => {
             if (e.type === 'directory') {
-              try { return vfs.readdir(e.vfsPath).length === 0; } catch { return false; }
+              try { return (await vfs.readdir(e.vfsPath)).length === 0; } catch { return false; }
             }
-            const st = statOf(e);
+            const st = (await statOf(e));
             return !!st && (st.size || 0) === 0;
           };
 
         // ── Actions ──
         case '-print':
           hasAction = true;
-          return async (e) => { emit(e, '\n'); return true; };
+          return async (e) => { (await emit(e, '\n')); return true; };
         case '-print0':
           hasAction = true;
-          return async (e) => { emit(e, '\0'); return true; };
+          return async (e) => { (await emit(e, '\0')); return true; };
         case '-delete':
           hasAction = true;
           // GNU's -delete implies -depth: a directory is removable only once
@@ -1067,11 +1057,11 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           state.depthFirst = true;
           return async (e) => {
             try {
-              if (e.type === 'directory') vfs.rmdir(e.vfsPath);
-              else vfs.unlink(e.vfsPath);
+              if (e.type === 'directory') (await vfs.rmdir(e.vfsPath));
+              else (await vfs.unlink(e.vfsPath));
               return true;
             } catch (err) {
-              ctx.stderr.write(`find: cannot delete '${e.display}': ${errorText(err)}\n`);
+              (await ctx.stderr.write(`find: cannot delete '${e.display}': ${errorText(err)}\n`));
               return false;
             }
           };
@@ -1103,7 +1093,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
             throw new FindUsageError("missing argument to `-exec'");
           }
           if (terminator === ';') {
-            return async (e) => runExec(argv.map((a) => a.split('{}').join(e.display)));
+            return async (e) => (await runExec(argv.map((a) => a.split('{}').join(e.display))));
           }
           // `-exec … {} +`: every match joins one invocation, flushed after
           // the walk. The trailing {} is where the paths go.
@@ -1114,7 +1104,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
 
         // ── Grouping ──
         case '(': {
-          const inner = parseExpr();
+          const inner = (await parseExpr());
           if (next() !== ')') throw new FindUsageError("expected expression after `('");
           return inner;
         }
@@ -1122,34 +1112,34 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       throw new FindUsageError(`unknown predicate \`${tok}'`);
     }
 
-    function parseUnary(): FindNode {
+    async function parseUnary(): Promise<FindNode> {
       const tok = peek();
       if (tok === '!' || tok === '-not') {
         pos++;
-        const operand = parseUnary();
+        const operand = (await parseUnary());
         return async (e, st) => !(await operand(e, st));
       }
-      return parsePrimary();
+      return (await parsePrimary());
     }
 
-    function parseAnd(): FindNode {
-      let left = parseUnary();
+    async function parseAnd(): Promise<FindNode> {
+      let left = (await parseUnary());
       while (pos < args.length) {
         const tok = peek()!;
         if (tok === ')' || tok === '-o' || tok === '-or') break;
         if (tok === '-a' || tok === '-and') pos++;
-        const right = parseUnary();
+        const right = (await parseUnary());
         const l = left;
         left = async (e, st) => (await l(e, st)) && (await right(e, st));
       }
       return left;
     }
 
-    function parseExpr(): FindNode {
-      let left = parseAnd();
+    async function parseExpr(): Promise<FindNode> {
+      let left = (await parseAnd());
       while (peek() === '-o' || peek() === '-or') {
         pos++;
-        const right = parseAnd();
+        const right = (await parseAnd());
         const l = left;
         left = async (e, st) => (await l(e, st)) || (await right(e, st));
       }
@@ -1158,13 +1148,13 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
 
     let predicate: FindNode;
     try {
-      predicate = pos < args.length ? parseExpr() : TRUE;
+      predicate = pos < args.length ? (await parseExpr()) : TRUE;
       if (pos < args.length) {
         throw new FindUsageError(`paths must precede expression: \`${args[pos]}'`);
       }
     } catch (e) {
       if (e instanceof FindUsageError) {
-        ctx.stderr.write(`find: ${e.message}\n`);
+        (await ctx.stderr.write(`find: ${e.message}\n`));
         return 1;
       }
       throw e;
@@ -1176,7 +1166,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     if (!hasAction) {
       predicate = async (e, st) => {
         const matched = await test(e, st);
-        if (matched) emit(e, '\n');
+        if (matched) (await emit(e, '\n'));
         return matched;
       };
     }
@@ -1198,7 +1188,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       }
       if (entry.type === 'directory' && entry.depth < state.maxDepth) {
         let entries: { name: string; type: string }[] = [];
-        try { entries = vfs.readdir(entry.vfsPath); } catch { entries = []; }
+        try { entries = (await vfs.readdir(entry.vfsPath)); } catch { entries = []; }
         for (const child of entries) {
           if (state.quit) break;
           await walk({
@@ -1222,9 +1212,9 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       const vfsPath = resolvePath(ctx.cwd, startArg);
       let type: string;
       try {
-        type = vfs.stat(vfsPath).type;
+        type = (await vfs.stat(vfsPath)).type;
       } catch {
-        ctx.stderr.write(`find: '${startArg}': No such file or directory\n`);
+        (await ctx.stderr.write(`find: '${startArg}': No such file or directory\n`));
         status = 1;
         continue;
       }
@@ -1267,7 +1257,7 @@ type GrepArgv = string[] & { __fixedStrings?: boolean };
  * flag consistently.
  */
 function mkGrep(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args: GrepArgv = [...ctx.args];
     // Parse flags. Support combined `-rni` form (single dash + chars).
     let recursive = false, ignoreCase = false, lineNum = false;
@@ -1310,7 +1300,7 @@ function mkGrep(vfs: UnixVfs): CmdFn {
       }
       positional.push(a);
     }
-    if (positional.length < 1) { ctx.stderr.write('Usage: grep [-rnicvlqEFw] PATTERN [FILE...]\n'); return 1; }
+    if (positional.length < 1) { (await ctx.stderr.write('Usage: grep [-rnicvlqEFw] PATTERN [FILE...]\n')); return 1; }
     let pattern = positional[0];
     const targets = positional.slice(1);
     if (args.__fixedStrings) {
@@ -1320,11 +1310,11 @@ function mkGrep(vfs: UnixVfs): CmdFn {
     if (wordMatch) pattern = `\\b(?:${pattern})\\b`;
     const flags = ignoreCase ? 'i' : '';
     let re: RegExp;
-    try { re = new RegExp(pattern, flags); } catch { ctx.stderr.write(`grep: invalid regex: ${pattern}\n`); return 1; }
+    try { re = new RegExp(pattern, flags); } catch { (await ctx.stderr.write(`grep: invalid regex: ${pattern}\n`)); return 1; }
     let found = false;
     let failed = false;
 
-    function processLines(lines: string[], label: string): void {
+    async function processLines(lines: string[], label: string): Promise<void> {
       let count = 0;
       let matchedHere = false;
       for (let i = 0; i < lines.length; i++) {
@@ -1341,60 +1331,60 @@ function mkGrep(vfs: UnixVfs): CmdFn {
           if (quiet) return;
           if (filesOnly) {
             // -l: emit file label once, stop scanning.
-            ctx.stdout.write(label + '\n');
+            (await ctx.stdout.write(label + '\n'));
             return;
           }
           if (!countOnly) {
             const labelPrefix = (targets.length > 1 || recursive) && label ? label + ':' : '';
             const linePrefix = lineNum ? (i + 1) + ':' : '';
-            ctx.stdout.write(labelPrefix + linePrefix + line + '\n');
+            (await ctx.stdout.write(labelPrefix + linePrefix + line + '\n'));
           }
         }
       }
       if (countOnly && !quiet) {
         const labelPrefix = (targets.length > 1 || recursive) && label ? label + ':' : '';
-        ctx.stdout.write(labelPrefix + count + '\n');
+        (await ctx.stdout.write(labelPrefix + count + '\n'));
       }
       void matchedHere;
     }
 
-    function grepFile(path: string, label: string) {
+    async function grepFile(path: string, label: string) {
       try {
-        const content = vfs.readFileString(path);
-        processLines(content.split('\n'), label);
+        const content = (await vfs.readFileString(path));
+        (await processLines(content.split('\n'), label));
       } catch (error) {
-        ctx.stderr.write(`grep: ${label}: ${fsErrorMessage(error)}\n`);
+        (await ctx.stderr.write(`grep: ${label}: ${fsErrorMessage(error)}\n`));
         failed = true;
       }
     }
-    function walkDir(dir: string) {
+    async function walkDir(dir: string) {
       try {
-        for (const e of vfs.readdir(dir)) {
+        for (const e of (await vfs.readdir(dir))) {
           const fp = dir + '/' + e.name;
-          if (e.type === 'file') grepFile(fp, '/' + fp);
-          else if (e.type === 'directory') walkDir(fp);
+          if (e.type === 'file') (await grepFile(fp, '/' + fp));
+          else if (e.type === 'directory') (await walkDir(fp));
         }
       } catch {}
     }
     if (targets.length === 0 && recursive) {
-      walkDir((ctx.cwd || '/home/user').replace(/^\/+/, ''));
+      (await walkDir((ctx.cwd || '/home/user').replace(/^\/+/, '')));
     } else if (targets.length === 0) {
       // Read from stdin (if piped) — single virtual "file" with no label.
       const piped = stdinText(ctx);
       if (piped) {
-        processLines(piped.split('\n'), '');
+        (await processLines(piped.split('\n'), ''));
       }
     } else {
       for (const target of targets) {
         const fp = resolvePath(ctx.cwd, target);
         try {
-          if (vfs.exists(fp) && vfs.isDirectory(fp)) {
-            if (recursive) walkDir(fp);
+          if ((await vfs.exists(fp)) && (await vfs.isDirectory(fp))) {
+            if (recursive) (await walkDir(fp));
           } else {
-            grepFile(fp, target);
+            (await grepFile(fp, target));
           }
         } catch (error) {
-          ctx.stderr.write(`grep: ${target}: ${fsErrorMessage(error)}\n`);
+          (await ctx.stderr.write(`grep: ${target}: ${fsErrorMessage(error)}\n`));
           failed = true;
         }
       }
@@ -1423,10 +1413,10 @@ function mkGrep(vfs: UnixVfs): CmdFn {
 function mkHead(_vfs: UnixVfs): CmdFn {
   return async (ctx) => {
     const parsed = parseHeadArgs(ctx.args);
-    if (parsed.error) { ctx.stderr.write(`head: ${parsed.error}\n`); return 1; }
+    if (parsed.error) { (await ctx.stderr.write(`head: ${parsed.error}\n`)); return 1; }
     const { lines: n, bytes, files } = parsed;
 
-    if (bytes !== undefined) return headBytes(ctx, files, bytes);
+    if (bytes !== undefined) return (await headBytes(ctx, files, bytes));
 
     if (files.length === 0) {
       // Pipe / stdin case.
@@ -1457,12 +1447,12 @@ function mkHead(_vfs: UnixVfs): CmdFn {
         if (emitted < n && buffered.length > 0) {
           out.push(buffered);
         }
-        ctx.stdout.write(out.join('\n') + '\n');
+        (await ctx.stdout.write(out.join('\n') + '\n'));
         return 0;
       }
       // Legacy string-stdin path (kept for wrap's pre-coalesced case).
       if (typeof stdin === 'string') {
-        ctx.stdout.write(stdin.split('\n').slice(0, n).join('\n') + '\n');
+        (await ctx.stdout.write(stdin.split('\n').slice(0, n).join('\n') + '\n'));
         return 0;
       }
       return 0;
@@ -1471,10 +1461,10 @@ function mkHead(_vfs: UnixVfs): CmdFn {
     for (const [index, f] of files.entries()) {
       const path = absolutePath(ctx.cwd, f);
       try {
-        const content = readWholeFileString(ctx, path);
-        if (files.length > 1) ctx.stdout.write(`${index > 0 ? '\n' : ''}==> ${f} <==\n`);
-        ctx.stdout.write(content.split('\n').slice(0, n).join('\n') + '\n');
-      } catch (error) { ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`); return 1; }
+        const content = (await readWholeFileString(ctx, path));
+        if (files.length > 1) (await ctx.stdout.write(`${index > 0 ? '\n' : ''}==> ${f} <==\n`));
+        (await ctx.stdout.write(content.split('\n').slice(0, n).join('\n') + '\n'));
+      } catch (error) { (await ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`)); return 1; }
     }
     return 0;
   };
@@ -1574,13 +1564,13 @@ async function headBytes(ctx: Ctx, files: string[], limit: number): Promise<numb
   for (const f of files) {
     const path = absolutePath(ctx.cwd, f);
     try {
-      if (files.length > 1) ctx.stdout.write(`==> ${f} <==\n`);
-      streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+      if (files.length > 1) (await ctx.stdout.write(`==> ${f} <==\n`));
+      (await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
         length: limit,
         signal: ctx.signal,
-      });
+      }));
     } catch (error) {
-      ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`);
+      (await ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`));
       exit = 1;
     }
   }
@@ -1596,7 +1586,7 @@ async function headBytes(ctx: Ctx, files: string[], limit: number): Promise<numb
 async function streamStdinBytes(ctx: Ctx, writer: SinkWriter, limit: number): Promise<void> {
   const stdin: unknown = ctx.stdin;
   if (typeof stdin === 'string') {
-    writer.write(enc.encode(stdin).subarray(0, limit));
+    (await writer.write(enc.encode(stdin).subarray(0, limit)));
     return;
   }
   const reader = stdin as {
@@ -1620,7 +1610,7 @@ async function streamStdinBytes(ctx: Ctx, writer: SinkWriter, limit: number): Pr
     }
     if (chunk === null) break;
     const bytes = chunk.subarray(0, want);
-    writer.write(bytes);
+    (await writer.write(bytes));
     copied += bytes.length;
   }
 }
@@ -1630,11 +1620,11 @@ function absolutePath(cwd: string, target: string): string {
   return '/' + resolvePath(cwd, target);
 }
 
-function readWholeFileString(ctx: Ctx, path: string): string {
-  if (ctx.vfs.stat(path).type === 'directory') {
+async function readWholeFileString(ctx: Ctx, path: string): Promise<string> {
+  if ((await ctx.vfs.stat(path)).type === 'directory') {
     throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
   }
-  return dec.decode(ctx.vfs.readFile(path));
+  return dec.decode((await ctx.vfs.readFile(path)));
 }
 
 /**
@@ -1646,32 +1636,32 @@ function readWholeFileString(ctx: Ctx, path: string): string {
  * behind — `tail -n 1 file` printed a blank line instead of the last line.
  */
 function mkTail(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const parsed = parseTailArgs(ctx.args);
-    if (parsed.error) { ctx.stderr.write(`tail: ${parsed.error}\n`); return 1; }
+    if (parsed.error) { (await ctx.stderr.write(`tail: ${parsed.error}\n`)); return 1; }
     const { count, fromStart, files, verbose } = parsed;
 
-    const emit = (content: string): void => {
+    const emit = async (content: string): Promise<void> => {
       const lines = content.split('\n');
       if (lines[lines.length - 1] === '') lines.pop();
       const selected = fromStart ? lines.slice(Math.max(0, count - 1)) : lines.slice(-count);
-      if (selected.length > 0) ctx.stdout.write(selected.join('\n') + '\n');
+      if (selected.length > 0) (await ctx.stdout.write(selected.join('\n') + '\n'));
     };
 
     if (files.length === 0) {
       const piped = stdinText(ctx);
-      if (piped) emit(piped);
+      if (piped) (await emit(piped));
       return 0;
     }
     const label = verbose || files.length > 1;
     let exit = 0;
     for (const [index, f] of files.entries()) {
       try {
-        const content = readWholeFileString(ctx, absolutePath(ctx.cwd, f));
-        if (label) ctx.stdout.write(`${index > 0 ? '\n' : ''}==> ${f} <==\n`);
-        emit(content);
+        const content = (await readWholeFileString(ctx, absolutePath(ctx.cwd, f)));
+        if (label) (await ctx.stdout.write(`${index > 0 ? '\n' : ''}==> ${f} <==\n`));
+        (await emit(content));
       } catch (error) {
-        ctx.stderr.write(`tail: ${f}: ${fsErrorMessage(error)}\n`);
+        (await ctx.stderr.write(`tail: ${f}: ${fsErrorMessage(error)}\n`));
         exit = 1;
       }
     }
@@ -1745,10 +1735,10 @@ const WC_SPEC = {
 };
 
 function mkWc(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const { flags: parsed, positional, unknown } = parseArgs(ctx.args, WC_SPEC);
     if (unknown.length > 0) {
-      ctx.stderr.write(`wc: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`wc: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
       return 1;
     }
     const hasFlags = parsed.lines === true || parsed.words === true
@@ -1775,17 +1765,17 @@ function mkWc(vfs: UnixVfs): CmdFn {
       return counts;
     };
 
-    const emit = (counts: number[], width: number, label: string): void => {
-      ctx.stdout.write(
+    const emit = async (counts: number[], width: number, label: string): Promise<void> => {
+      (await ctx.stdout.write(
         counts.map((c) => String(c).padStart(width)).join(' ') + (label ? ' ' + label : '') + '\n',
-      );
+      ));
     };
 
     if (files.length === 0) {
       const bytes = enc.encode(stdinText(ctx) ?? '');
       // Nothing bounds a stream's counts ahead of time, so a multi-column
       // report over standard input uses the fixed width GNU falls back to.
-      emit(measure(bytes), columns === 1 ? 0 : 7, '');
+      (await emit(measure(bytes), columns === 1 ? 0 : 7, ''));
       return 0;
     }
 
@@ -1793,9 +1783,9 @@ function mkWc(vfs: UnixVfs): CmdFn {
     let exit = 0;
     for (const f of files) {
       try {
-        read.push({ label: f, bytes: vfs.readFile(resolvePath(ctx.cwd, f)) });
+        read.push({ label: f, bytes: (await vfs.readFile(resolvePath(ctx.cwd, f))) });
       } catch {
-        ctx.stderr.write(`wc: ${f}: No such file\n`);
+        (await ctx.stderr.write(`wc: ${f}: No such file\n`));
         exit = 1;
       }
     }
@@ -1810,9 +1800,9 @@ function mkWc(vfs: UnixVfs): CmdFn {
     for (const entry of read) {
       const counts = measure(entry.bytes);
       counts.forEach((count, i) => { totals[i] += count; });
-      emit(counts, width, entry.label);
+      (await emit(counts, width, entry.label));
     }
-    if (read.length > 1) emit(totals, width, 'total');
+    if (read.length > 1) (await emit(totals, width, 'total'));
     return exit;
   };
 }
@@ -1825,16 +1815,16 @@ const SORT_SPEC = {
 };
 
 function mkSort(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, SORT_SPEC);
     if (unknown.length > 0) {
-      ctx.stderr.write(`sort: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`sort: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
       return 1;
     }
     let input = stdinText(ctx) || '';
     if (positional.length > 0 && !input) {
-      try { input = vfs.readFileString(resolvePath(ctx.cwd, positional[0])); }
-      catch { ctx.stderr.write(`sort: ${positional[0]}: No such file\n`); return 1; }
+      try { input = (await vfs.readFileString(resolvePath(ctx.cwd, positional[0]))); }
+      catch { (await ctx.stderr.write(`sort: ${positional[0]}: No such file\n`)); return 1; }
     }
     const lines = input.split('\n');
     if (lines[lines.length - 1] === '') lines.pop();
@@ -1850,7 +1840,7 @@ function mkSort(vfs: UnixVfs): CmdFn {
     const result = flags.unique
       ? lines.filter((line, i) => i === 0 || compareSortKeys(lines[i - 1], line, numeric, fold) !== 0)
       : lines;
-    if (result.length > 0) ctx.stdout.write(result.join('\n') + '\n');
+    if (result.length > 0) (await ctx.stdout.write(result.join('\n') + '\n'));
     return 0;
   };
 }
@@ -1868,18 +1858,18 @@ const UNIQ_SPEC = {
 };
 
 function mkUniq(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, UNIQ_SPEC);
     if (unknown.length > 0) {
-      ctx.stderr.write(`uniq: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`uniq: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
       return 1;
     }
     // File operands were ignored outright, so `uniq file` read stdin and
     // printed nothing at all.
     let input = stdinText(ctx) || '';
     if (positional.length > 0 && positional[0] !== '-') {
-      try { input = vfs.readFileString(resolvePath(ctx.cwd, positional[0])); }
-      catch { ctx.stderr.write(`uniq: ${positional[0]}: No such file\n`); return 1; }
+      try { input = (await vfs.readFileString(resolvePath(ctx.cwd, positional[0]))); }
+      catch { (await ctx.stderr.write(`uniq: ${positional[0]}: No such file\n`)); return 1; }
     }
     const lines = input.split('\n');
     const countFlag = flags.count === true;
@@ -1907,20 +1897,20 @@ function mkUniq(vfs: UnixVfs): CmdFn {
     }
     if (prev !== null) flush(prev, count);
 
-    if (result.length > 0) ctx.stdout.write(result.join('\n') + '\n');
+    if (result.length > 0) (await ctx.stdout.write(result.join('\n') + '\n'));
     return 0;
   };
 }
 
 function mkSed(vfs: UnixVfs): CmdFn {
-  return (ctx) => runSed({
+  return async (ctx) => (await runSed({
     args: ctx.args,
     cwd: ctx.cwd,
     vfs,
     stdout: ctx.stdout,
     stderr: ctx.stderr,
     stdin: typeof ctx.stdin === 'string' ? stringInput(ctx.stdin) : undefined,
-  });
+  }));
 }
 
 function stringInput(text: string): { readAll(): Promise<string> } {
@@ -1975,7 +1965,7 @@ type AwkValue = string | number;
  * to stderr and exit 1 (no silent fail).
  */
 function mkAwk(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const allArgs = ctx.args;
     // Parse -F separator if present.
     let separator: string | RegExp = /\s+/;
@@ -2000,8 +1990,8 @@ function mkAwk(vfs: UnixVfs): CmdFn {
     const program = programArgs[0] || '';
     let input = stdinText(ctx) || '';
     if (fileArgs.length > 0 && !input) {
-      try { input = vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])); }
-      catch { ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`); return 1; }
+      try { input = (await vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0]))); }
+      catch { (await ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`)); return 1; }
     }
 
     // ── Parse program into blocks. ──
@@ -2045,14 +2035,14 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       if (src.startsWith('BEGIN', cursor)) {
         cursor += 5;
         skipWS();
-        if (src[cursor] !== '{') { ctx.stderr.write('awk: BEGIN without {\n'); return 1; }
+        if (src[cursor] !== '{') { (await ctx.stderr.write('awk: BEGIN without {\n')); return 1; }
         blocks.push({ kind: 'BEGIN', body: parseBraced() });
         continue;
       }
       if (src.startsWith('END', cursor)) {
         cursor += 3;
         skipWS();
-        if (src[cursor] !== '{') { ctx.stderr.write('awk: END without {\n'); return 1; }
+        if (src[cursor] !== '{') { (await ctx.stderr.write('awk: END without {\n')); return 1; }
         blocks.push({ kind: 'END', body: parseBraced() });
         continue;
       }
@@ -2071,7 +2061,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         if (cursor < src.length && src[cursor] === '{') body = parseBraced();
         let re: RegExp;
         try { re = new RegExp(patSrc); }
-        catch (e) { ctx.stderr.write(`awk: bad regex /${patSrc}/: ${errorText(e)}\n`); return 1; }
+        catch (e) { (await ctx.stderr.write(`awk: bad regex /${patSrc}/: ${errorText(e)}\n`)); return 1; }
         blocks.push({ kind: 'PATTERN', pattern: re, body });
         continue;
       }
@@ -2079,7 +2069,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         blocks.push({ kind: 'MAIN', body: parseBraced() });
         continue;
       }
-      ctx.stderr.write(`awk: parse error at "${src.slice(cursor, cursor + 20)}"\n`);
+      (await ctx.stderr.write(`awk: parse error at "${src.slice(cursor, cursor + 20)}"\n`));
       return 1;
     }
 
@@ -2337,15 +2327,15 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       if (t) stmts.push(t);
       return stmts;
     }
-    function execStmt(stmt: string, st: State): void {
+    async function execStmt(stmt: string, st: State): Promise<void> {
       // print [expr[, expr]*]
       if (stmt === 'print' || stmt.startsWith('print ') || stmt.startsWith('print\t')) {
         const rest = stmt.slice(5).trim();
-        if (!rest) { ctx.stdout.write(st.fields[0] + '\n'); st.printed = true; return; }
+        if (!rest) { (await ctx.stdout.write(st.fields[0] + '\n')); st.printed = true; return; }
         // Comma-separated exprs (space joiner). We must split at top-level commas only.
         const parts = splitTopLevel(rest, ',');
         const out = parts.map(p => stringify(evalExpr(p, st))).join(' ');
-        ctx.stdout.write(out + '\n');
+        (await ctx.stdout.write(out + '\n'));
         st.printed = true;
         return;
       }
@@ -2357,7 +2347,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         if (parts.length === 0) return;
         const fmt = evalExpr(parts[0], st);
         const fargs = parts.slice(1).map(p => evalExpr(p, st));
-        ctx.stdout.write(printfFormat(String(fmt), fargs));
+        (await ctx.stdout.write(printfFormat(String(fmt), fargs)));
         st.printed = true;
         return;
       }
@@ -2554,16 +2544,16 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       printed: false,
     };
 
-    function runBlock(block: Block): void {
+    async function runBlock(block: Block): Promise<void> {
       const stmts = splitStmts(block.body);
       for (const s of stmts) {
-        execStmt(s, state);
+        (await execStmt(s, state));
       }
     }
 
     try {
       // BEGIN blocks first.
-      for (const b of blocks) if (b.kind === 'BEGIN') runBlock(b);
+      for (const b of blocks) if (b.kind === 'BEGIN') (await runBlock(b));
       // Main loop over input lines.
       const lines = input.split('\n');
       // awk default: drop the final empty line if input ended with \n.
@@ -2579,17 +2569,17 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         for (const b of blocks) {
           if (b.kind === 'BEGIN' || b.kind === 'END') continue;
           if (b.kind === 'PATTERN') {
-            if (b.pattern!.test(line)) runBlock(b);
+            if (b.pattern!.test(line)) (await runBlock(b));
           } else {
             // MAIN block (no pattern) — always runs.
-            runBlock(b);
+            (await runBlock(b));
           }
         }
       }
       // END blocks last.
-      for (const b of blocks) if (b.kind === 'END') runBlock(b);
+      for (const b of blocks) if (b.kind === 'END') (await runBlock(b));
     } catch (e) {
-      ctx.stderr.write(`awk: ${errorText(e)}\n`);
+      (await ctx.stderr.write(`awk: ${errorText(e)}\n`));
       return 1;
     }
 
@@ -2670,7 +2660,7 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     } catch { target = null; }
     if (!target) {
       // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.
-      ctx.stderr.write(`xargs: ${cmdName}: command not found\n`);
+      (await ctx.stderr.write(`xargs: ${cmdName}: command not found\n`));
       return 127;
     }
 
@@ -2700,7 +2690,7 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           const code = await target(newCtx(subbed));
           if (typeof code === 'number' && code !== 0) exit = code;
         } catch (e) {
-          ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
+          (await ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`));
           exit = 1;
         }
       }
@@ -2713,7 +2703,7 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           const code = await target(newCtx([...cmdArgsInitial, ...batch]));
           if (typeof code === 'number' && code !== 0) exit = code;
         } catch (e) {
-          ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
+          (await ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`));
           exit = 1;
         }
         if (!Number.isFinite(batchSize)) break;  // single batch when no -n
@@ -2724,18 +2714,18 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
 }
 
 function mkTee(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const input = stdinText(ctx) || '';
     const append = ctx.args.includes('-a');
     const files = ctx.args.filter(a => !a.startsWith('-'));
-    ctx.stdout.write(input);
+    (await ctx.stdout.write(input));
     for (const f of files) {
       const fp = resolvePath(ctx.cwd, f);
-      if (append && vfs.exists(fp)) {
-        const existing = vfs.readFileString(fp);
-        vfs.writeFile(fp, existing + input);
+      if (append && (await vfs.exists(fp))) {
+        const existing = (await vfs.readFileString(fp));
+        (await vfs.writeFile(fp, existing + input));
       } else {
-        vfs.writeFile(fp, input);
+        (await vfs.writeFile(fp, input));
       }
     }
     return 0;
@@ -2749,7 +2739,7 @@ function mkTee(vfs: UnixVfs): CmdFn {
  * conformant short-flag stacking.
  */
 function mkDu(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     // Parse flags supporting stacked short flags like `-sh`, `-ah`.
     let showAll = false, human = false, sumOnly = false;
     const positional: string[] = [];
@@ -2772,49 +2762,49 @@ function mkDu(vfs: UnixVfs): CmdFn {
     const root = resolvePath(ctx.cwd, target);
     const fmt = (b: number) => human ? (b >= 1e6 ? (b / 1e6).toFixed(1) + 'M' : b >= 1e3 ? (b / 1e3).toFixed(1) + 'K' : b + 'B') : String(Math.ceil(b / 1024));
     let total = 0;
-    function walk(path: string): number {
+    async function walk(path: string): Promise<number> {
       let size = 0;
       try {
-        const entries = vfs.readdir(path);
+        const entries = (await vfs.readdir(path));
         for (const e of entries) {
           const fp = path + '/' + e.name;
           if (e.type === 'directory') {
-            const dirSize = walk(fp);
+            const dirSize = (await walk(fp));
             size += dirSize;
-            if (!sumOnly) ctx.stdout.write(`${fmt(dirSize)}\t/${fp}\n`);
+            if (!sumOnly) (await ctx.stdout.write(`${fmt(dirSize)}\t/${fp}\n`));
           } else {
             try {
-              const st = vfs.stat(fp);
+              const st = (await vfs.stat(fp));
               size += st.size;
-              if (showAll && !sumOnly) ctx.stdout.write(`${fmt(st.size)}\t/${fp}\n`);
+              if (showAll && !sumOnly) (await ctx.stdout.write(`${fmt(st.size)}\t/${fp}\n`));
             } catch {}
           }
         }
       } catch {}
       return size;
     }
-    total = walk(root);
-    if (sumOnly || !showAll) ctx.stdout.write(`${fmt(total)}\t/${root}\n`);
+    total = (await walk(root));
+    if (sumOnly || !showAll) (await ctx.stdout.write(`${fmt(total)}\t/${root}\n`));
     return 0;
   };
 }
 
 function mkDiff(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
-    if (ctx.args.length < 2) { ctx.stderr.write('Usage: diff FILE1 FILE2\n'); return 1; }
+  return async (ctx) => {
+    if (ctx.args.length < 2) { (await ctx.stderr.write('Usage: diff FILE1 FILE2\n')); return 1; }
     const f1 = resolvePath(ctx.cwd, ctx.args[0]);
     const f2 = resolvePath(ctx.cwd, ctx.args[1]);
     try {
-      const a = vfs.readFileString(f1).split('\n');
-      const b = vfs.readFileString(f2).split('\n');
+      const a = (await vfs.readFileString(f1)).split('\n');
+      const b = (await vfs.readFileString(f2)).split('\n');
       let hasDiff = false;
       const maxLen = Math.max(a.length, b.length);
       for (let i = 0; i < maxLen; i++) {
         if (a[i] !== b[i]) {
           hasDiff = true;
-          if (a[i] !== undefined && b[i] === undefined) ctx.stdout.write(`${i + 1}d${i}\n< ${a[i]}\n`);
-          else if (a[i] === undefined && b[i] !== undefined) ctx.stdout.write(`${i}a${i + 1}\n> ${b[i]}\n`);
-          else ctx.stdout.write(`${i + 1}c${i + 1}\n< ${a[i]}\n---\n> ${b[i]}\n`);
+          if (a[i] !== undefined && b[i] === undefined) (await ctx.stdout.write(`${i + 1}d${i}\n< ${a[i]}\n`));
+          else if (a[i] === undefined && b[i] !== undefined) (await ctx.stdout.write(`${i}a${i + 1}\n> ${b[i]}\n`));
+          else (await ctx.stdout.write(`${i + 1}c${i + 1}\n< ${a[i]}\n---\n> ${b[i]}\n`));
         }
       }
       return hasDiff ? 1 : 0;
@@ -2822,7 +2812,7 @@ function mkDiff(vfs: UnixVfs): CmdFn {
       // `diff` reports the thrown value's `message`, whatever it holds, rather
       // than the value: a throw carrying none has always printed `undefined`.
       const message = typeof e === 'object' && e !== null && 'message' in e ? e.message : undefined;
-      ctx.stderr.write(`diff: ${String(message)}\n`);
+      (await ctx.stderr.write(`diff: ${String(message)}\n`));
       return 2;
     }
   };
@@ -2889,7 +2879,7 @@ function expandBackslashEscapes(text: string): string {
  * matches the BUG-SWEEP-4 nimbusEcho impl: -n / -e / -E / combined.
  */
 function mkEcho(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args = ctx.args;
     let interpretEscapes = false;
     let suppressNewline = false;
@@ -2915,7 +2905,7 @@ function mkEcho(): CmdFn {
     if (interpretEscapes) {
       out = expandBackslashEscapes(out);
     }
-    ctx.stdout.write(suppressNewline ? out : out + '\n');
+    (await ctx.stdout.write(suppressNewline ? out : out + '\n'));
     return 0;
   };
 }
@@ -2929,8 +2919,8 @@ function mkEcho(): CmdFn {
  * so `ls -l` after `ln -s t.txt l.txt` showed ONLY `t.txt`.
  *
  * Post-fix:
- *   - `ls` lists VFS dir entries AND SymlinkRegistry entries whose link
- *     path lives in the queried directory.
+ *   - `ls` lists every entry the filesystem reports for the directory; a
+ *     host authority includes its legacy SymlinkRegistry entries there.
  *   - `ls -l` shows `lrwxrwxrwx  1 user user  N <mtime> <name> -> <target>`
  *     for symlinks (`N` = target string length, matches GNU coreutils).
  *   - Non-symlink rows go through the same formatter so columns line up.
@@ -2941,7 +2931,7 @@ function mkEcho(): CmdFn {
  * positional. Matches the shell `ls` flag surface so we don't regress.
  */
 function mkLs(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args = ctx.args;
     const flags = new Set(args
       .filter((arg) => arg.startsWith('-') && !arg.startsWith('--'))
@@ -2954,7 +2944,6 @@ function mkLs(vfs: UnixVfs): CmdFn {
     const positionals = args.filter(a => !a.startsWith('-'));
     const targets = positionals.length > 0 ? positionals : [ctx.cwd];
 
-    const reg = vfs.symlinks;
     const kvfs = ctx.vfs;
 
     function fmtTime(mtime: number): string {
@@ -2990,33 +2979,16 @@ function mkLs(vfs: UnixVfs): CmdFn {
 
     let exit = 0;
 
-    function listDir(dirPath: string): Entry[] {
+    async function listDir(dirPath: string): Promise<Entry[]> {
       const fp = resolvePath(ctx.cwd, dirPath);
       const out: Entry[] = [];
-      // Real entries via ctx.vfs.readdirStat (Kernel.VFS — handles
-      // mounts like /dev) with fallback to closure-captured SqliteVFS.
+      // One listing for every entry: ctx.vfs handles mounts like /dev, and a
+      // host authority reports legacy registry symlinks here too.
       let real: ListedEntry[] = [];
       try {
-        if (kvfs && 'readdirStat' in kvfs && typeof kvfs.readdirStat === 'function') {
-          real = kvfs.readdirStat(fp);
-        } else {
-          const names = vfs.readdir(fp);
-          real = names.map(n => {
-            const childPath = (fp === '/' ? '' : fp.replace(/^\/+/, '').replace(/\/+$/, ''))
-              + '/' + n.name;
-            try {
-              const s = vfs.stat(childPath);
-              return { name: n.name, type: n.type, size: s.size ?? 0,
-                       mtime: s.mtime ?? Date.now(), mode: s.mode ?? 0o644,
-                       uid: s.uid ?? ctx.cred.uid, gid: s.gid ?? ctx.cred.gid };
-            } catch {
-              return { name: n.name, type: n.type, size: 0, mtime: Date.now(), mode: 0o644,
-                       uid: ctx.cred.uid, gid: ctx.cred.gid };
-            }
-          });
-        }
+        real = await kvfs.readdirStat(fp);
       } catch (e) {
-        ctx.stderr.write(`ls: cannot access '${dirPath}': ${fsErrorMessage(e)}\n`);
+        (await ctx.stderr.write(`ls: cannot access '${dirPath}': ${fsErrorMessage(e)}\n`));
         exit = 2;
         return [];
       }
@@ -3036,32 +3008,9 @@ function mkLs(vfs: UnixVfs): CmdFn {
           uid: r.uid ?? ctx.cred.uid,
           gid: r.gid ?? ctx.cred.gid,
           ...(type === 'symlink'
-            ? { linkTarget: readSymlinkTarget(vfs, childPath) ?? undefined }
+            ? { linkTarget: (await readSymlinkTarget(vfs, childPath)) ?? undefined }
             : {}),
         });
-      }
-      // Inject symlink entries whose link path is in this directory.
-      const normDir = fp.replace(/^\/+/, '').replace(/\/+$/, '');
-      for (const { link, target } of reg.list()) {
-        const linkNorm = link.replace(/^\/+/, '').replace(/\/+$/, '');
-        const lastSlash = linkNorm.lastIndexOf('/');
-        const linkDir = lastSlash >= 0 ? linkNorm.substring(0, lastSlash) : '';
-        if (linkDir === normDir) {
-          const linkName = lastSlash >= 0 ? linkNorm.substring(lastSlash + 1) : linkNorm;
-          if (out.some(entry => entry.name === linkName)) continue;
-          // Filter dotfiles unless -a (consistent with real entries).
-          if (!flagAll && linkName.startsWith('.')) continue;
-          out.push({
-            name: linkName,
-            type: 'symlink',
-            size: target.length,
-            mtime: Date.now(),
-            mode: 0o777,
-            uid: ctx.cred.uid,
-            gid: ctx.cred.gid,
-            linkTarget: target,
-          });
-        }
       }
       // Filter dotfiles among real entries unless -a.
       const filtered = flagAll ? out : out.filter(e => !e.name.startsWith('.'));
@@ -3069,7 +3018,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       return filtered;
     }
 
-    function fmtRow(e: Entry, long: boolean): string {
+    async function fmtRow(e: Entry, long: boolean): Promise<string> {
       if (!long) return e.name;
       const isDir = e.type === 'directory';
       const isLink = e.type === 'symlink';
@@ -3077,8 +3026,8 @@ function mkLs(vfs: UnixVfs): CmdFn {
       const size = String(e.size).padStart(6, ' ');
       const time = fmtTime(e.mtime);
       const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
-      const user = flagNumeric ? String(e.uid) : unixUserLabel(vfs, e.uid);
-      const group = flagNumeric ? String(e.gid) : unixGroupLabel(vfs, e.gid);
+      const user = flagNumeric ? String(e.uid) : (await unixUserLabel(vfs, e.uid));
+      const group = flagNumeric ? String(e.gid) : (await unixGroupLabel(vfs, e.gid));
       return `${mode}  1 ${user} ${group} ${size} ${time} ${e.name}${arrow}`;
     }
 
@@ -3090,7 +3039,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       const fp = resolvePath(ctx.cwd, arg);
       // Symlink check: a symlink-arg is displayed as the link itself
       // (without -L which we don't implement).
-      const target = readSymlinkTarget(vfs, fp);
+      const target = (await readSymlinkTarget(vfs, fp));
       if (target !== null) {
         fileEntries.push({
           name: arg,
@@ -3105,7 +3054,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
         continue;
       }
       try {
-        const s: CtxStat = kvfs && typeof kvfs.stat === 'function' ? kvfs.stat(fp) : vfs.stat(fp);
+        const s: CtxStat = kvfs && typeof kvfs.stat === 'function' ? (await kvfs.stat(fp)) : (await vfs.stat(fp));
         if (s.type === 'directory' && !flagDirectory) {
           dirArgs.push(arg);
         } else {
@@ -3120,7 +3069,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
           });
         }
       } catch (e) {
-        ctx.stderr.write(`ls: cannot access '${arg}': ${errorText(e)}\n`);
+        (await ctx.stderr.write(`ls: cannot access '${arg}': ${errorText(e)}\n`));
         exit = 1;
       }
     }
@@ -3128,27 +3077,27 @@ function mkLs(vfs: UnixVfs): CmdFn {
     // Render file-args first.
     if (fileEntries.length > 0) {
       if (flagLong) {
-        for (const e of fileEntries) ctx.stdout.write(fmtRow(e, true) + '\n');
+        for (const e of fileEntries) (await ctx.stdout.write((await fmtRow(e, true)) + '\n'));
       } else if (flagOne) {
-        for (const e of fileEntries) ctx.stdout.write(e.name + '\n');
+        for (const e of fileEntries) (await ctx.stdout.write(e.name + '\n'));
       } else {
-        ctx.stdout.write(fileEntries.map(e => e.name).join('  ') + '\n');
+        (await ctx.stdout.write(fileEntries.map(e => e.name).join('  ') + '\n'));
       }
     }
     // Then dir-args (with header if multiple).
     for (let i = 0; i < dirArgs.length; i++) {
       const d = dirArgs[i];
       if (dirArgs.length > 1 || fileEntries.length > 0) {
-        if (fileEntries.length > 0 || i > 0) ctx.stdout.write('\n');
-        ctx.stdout.write(`${d}:\n`);
+        if (fileEntries.length > 0 || i > 0) (await ctx.stdout.write('\n'));
+        (await ctx.stdout.write(`${d}:\n`));
       }
-      const rows = listDir(d);
+      const rows = (await listDir(d));
       if (flagLong) {
-        for (const e of rows) ctx.stdout.write(fmtRow(e, true) + '\n');
+        for (const e of rows) (await ctx.stdout.write((await fmtRow(e, true)) + '\n'));
       } else if (flagOne) {
-        for (const e of rows) ctx.stdout.write(e.name + '\n');
+        for (const e of rows) (await ctx.stdout.write(e.name + '\n'));
       } else if (rows.length > 0) {
-        ctx.stdout.write(rows.map(e => e.name).join('  ') + '\n');
+        (await ctx.stdout.write(rows.map(e => e.name).join('  ') + '\n'));
       }
     }
     return exit;
@@ -3164,45 +3113,45 @@ function mkLs(vfs: UnixVfs): CmdFn {
  * emits 6 MB in 64 KiB steps rather than materialising each file whole.
  */
 function mkCat(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const files = ctx.args.filter(a => !a.startsWith('-'));
     if (files.length === 0) {
       const piped = stdinText(ctx);
-      if (piped) ctx.stdout.write(piped);
+      if (piped) (await ctx.stdout.write(piped));
       return 0;
     }
     // Resolve both native VFS symlinks and the legacy registry before reads.
     let exit = 0;
     const writer = new SinkWriter(ctx.stdout);
     for (const fOrig of files) {
-      const f = (() => {
+      const f = (await (async () => {
         const fp = resolvePath(ctx.cwd, fOrig);
-        const resolved = resolveSymlinkPath(vfs, fp);
+        const resolved = (await resolveSymlinkPath(vfs, fp));
         if (resolved === null) {
           // ELOOP: too many hops
-          ctx.stderr.write(`cat: ${fOrig}: Too many levels of symbolic links\n`);
+          (await ctx.stderr.write(`cat: ${fOrig}: Too many levels of symbolic links\n`));
           return null;
         }
         return resolved === fp ? fOrig : '/' + resolved;
-      })();
+      })());
       if (f === null) { exit = 1; continue; }
       try {
         const path = f.startsWith('/') ? f : `${ctx.cwd}/${f}`;
-        const stat = ctx.vfs.stat(path);
+        const stat = (await ctx.vfs.stat(path));
         if (stat.type === 'directory') throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
         if (stat.size > 0) {
           // A regular file's size is its exact extent — read precisely that.
-          streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+          (await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
             length: stat.size,
             signal: ctx.signal,
-          });
+          }));
         } else {
           // Size 0 covers empty files, /dev/null and synthesised /proc entries.
           // Endless character devices reject this unbounded read by design.
-          writer.write(ctx.vfs.readFile(path));
+          (await writer.write((await ctx.vfs.readFile(path))));
         }
       } catch (error) {
-        ctx.stderr.write(`cat: ${fOrig}: ${fsErrorMessage(error)}\n`);
+        (await ctx.stderr.write(`cat: ${fOrig}: ${fsErrorMessage(error)}\n`));
         exit = 1;
       }
     }
@@ -3212,69 +3161,22 @@ function mkCat(vfs: UnixVfs): CmdFn {
 }
 
 function mkRm(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
-    const args = ctx.args;
-    const recursive = args.some(a => a === '-r' || a === '-R' || a === '-rf' || a === '-Rf' || a === '-rR' || a === '--recursive' || (a.startsWith('-') && !a.startsWith('--') && (a.includes('r') || a.includes('R'))));
-    const force = args.some(a => a === '-f' || a === '--force' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
-    const targets = args.filter(a => !a.startsWith('-'));
-    if (targets.length === 0) {
-      if (force) return 0;  // POSIX: rm -f with no operands is silent success
-      ctx.stderr.write('rm: missing operand\n');
-      return 1;
+  return async ctx => {
+    const recursive = ctx.args.some(arg => /^-[^-]*[rR]/.test(arg) || arg === '--recursive');
+    const force = ctx.args.some(arg => /^-[^-]*f/.test(arg) || arg === '--force');
+    const targets = ctx.args.filter(arg => !arg.startsWith('-'));
+    if (!targets.length) { if (force) return 0; await ctx.stderr.write('rm: missing operand\n'); return 1; }
+    let code = 0;
+    for (const target of targets) {
+      try { await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force }); }
+      catch (error) { await ctx.stderr.write(`rm: ${target}: ${fsErrorMessage(error)}\n`); code = 1; }
     }
-    // SHELL-R6-5: SymlinkRegistry awareness. Real `rm` removes the
-    // LINK, not the target. Pre-fix this loop went straight to
-    // vfs.exists which is false for registry-only symlink entries
-    // (no real file), producing "No such file or directory" while
-    // `readlink` still reported the registry entry.
-    const reg = vfs.symlinks;
-    let exit = 0;
-    for (const t of targets) {
-      const fp = resolvePath(ctx.cwd, t);
-      // Symlink path FIRST. If `fp` is registered as a symlink we
-      // delete the registry entry and skip the vfs-level operations.
-      // Real `rm` never follows symlinks (it removes the link
-      // itself); recursive flag has no effect on the symlink itself
-      // either — it acts on the link node only.
-      if (reg.isSymlink(fp)) {
-        reg.delete(fp);
-        continue;
-      }
-      if (!vfs.exists(fp)) {
-        if (force) continue;  // silent success
-        ctx.stderr.write(`rm: cannot remove '${t}': No such file or directory\n`);
-        exit = 1;
-        continue;
-      }
-      try {
-        if (vfs.isDirectory(fp)) {
-          if (!recursive) {
-            ctx.stderr.write(`rm: cannot remove '${t}': Is a directory\n`);
-            exit = 1;
-            continue;
-          }
-          vfs.removeRecursive(fp);
-        } else {
-          vfs.unlink(fp);
-        }
-      } catch (e) {
-        // -f suppresses ENOENT only (file disappeared mid-loop); other
-        // errors (ENOTEMPTY because of a logic bug, ENOTDIR mismatches,
-        // permission errors) must still surface. Pre-fix the broad
-        // `if (force) continue` masked the readdir-iteration bug that
-        // left directories undeleted.
-        const msg = errorText(e);
-        if (force && /ENOENT/.test(msg)) continue;
-        ctx.stderr.write(`rm: cannot remove '${t}': ${fsErrorMessage(e)}\n`);
-        exit = 1;
-      }
-    }
-    return exit;
+    return code;
   };
 }
 
 function mkTouch(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const targetVfs = ctx.vfs ?? vfs;
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
       const fp = resolvePath(ctx.cwd, f);
@@ -3282,10 +3184,10 @@ function mkTouch(vfs: UnixVfs): CmdFn {
       const parts = fp.split('/');
       for (let i = 1; i < parts.length; i++) {
         const dir = parts.slice(0, i).join('/');
-        if (dir && !targetVfs.exists(dir)) targetVfs.mkdir(dir, { recursive: true });
+        if (dir && !(await targetVfs.exists(dir))) (await targetVfs.mkdir(dir, { recursive: true }));
       }
-      if (!targetVfs.exists(fp)) {
-        targetVfs.writeFile(fp, '');
+      if (!(await targetVfs.exists(fp))) {
+        (await targetVfs.writeFile(fp, ''));
         continue;
       }
       // Every view reaching here implements `isDirectory`: the lifo VFS gained
@@ -3293,11 +3195,11 @@ function mkTouch(vfs: UnixVfs): CmdFn {
       // existing file. The `stat` fallback this replaced narrowed to `never`
       // once the surface was typed — the type system reporting that the guard
       // it sat behind can no longer be false.
-      const isDirectory = targetVfs.isDirectory(fp);
+      const isDirectory = (await targetVfs.isDirectory(fp));
       if (!isDirectory) {
         // Update mtime by re-writing the same content
-        const content = targetVfs.readFile(fp);
-        targetVfs.writeFile(fp, content);
+        const content = (await targetVfs.readFile(fp));
+        (await targetVfs.writeFile(fp, content));
       }
     }
     return 0;
@@ -3469,7 +3371,7 @@ const STAT_USAGE = [
 ].join('\n');
 
 function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     let format: string | null = null;
     // `--printf` differs from `-c` only in not appending a newline.
     let formatAddsNewline = true;
@@ -3482,7 +3384,7 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       if (arg === '-c' || arg === '--format' || arg === '--printf') {
         const value = args[++i];
         if (value === undefined) {
-          ctx.stderr.write(`stat: option '${arg}' requires an argument\n`);
+          (await ctx.stderr.write(`stat: option '${arg}' requires an argument\n`));
           return 1;
         }
         format = value;
@@ -3499,22 +3401,22 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       } else if (arg.startsWith('--cached=')) {
         const mode = arg.slice('--cached='.length);
         if (mode !== 'always' && mode !== 'default' && mode !== 'never') {
-          ctx.stderr.write(`stat: invalid argument '${mode}' for '--cached'\n`);
+          (await ctx.stderr.write(`stat: invalid argument '${mode}' for '--cached'\n`));
           return 1;
         }
         // Attributes are read live from the VFS, which satisfies every mode.
       } else if (arg === '--help') {
-        ctx.stdout.write(STAT_USAGE);
+        (await ctx.stdout.write(STAT_USAGE));
         return 0;
       } else if (arg === '--version') {
-        ctx.stdout.write(`stat (nimbus coreutils) ${NIMBUS_VERSION}\n`);
+        (await ctx.stdout.write(`stat (nimbus coreutils) ${NIMBUS_VERSION}\n`));
         return 0;
       } else if (arg === '--') {
         files.push(...args.slice(i + 1));
         break;
       } else if (arg.startsWith('-') && arg !== '-') {
-        ctx.stderr.write(`stat: invalid option '${arg}'\n`);
-        ctx.stderr.write(STAT_USAGE);
+        (await ctx.stderr.write(`stat: invalid option '${arg}'\n`));
+        (await ctx.stderr.write(STAT_USAGE));
         return 1;
       } else {
         files.push(arg);
@@ -3522,12 +3424,12 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
     }
 
     if (files.length === 0) {
-      ctx.stderr.write('stat: missing operand\n');
+      (await ctx.stderr.write('stat: missing operand\n'));
       return 1;
     }
 
-    const write = (text: string) => {
-      ctx.stdout.write(formatAddsNewline ? text + '\n' : text);
+    const write = async (text: string) => {
+      (await ctx.stdout.write(formatAddsNewline ? text + '\n' : text));
     };
 
     if (fileSystemMode) {
@@ -3551,21 +3453,21 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
             (directive) => statFsDirective(directive, facts, displayPath),
           );
           if ('error' in expanded) {
-            ctx.stderr.write(expanded.error + '\n');
+            (await ctx.stderr.write(expanded.error + '\n'));
             return 1;
           }
-          write(expanded.text);
+          (await write(expanded.text));
           continue;
         }
-        ctx.stdout.write(`  File: "${displayPath}"\n`);
-        ctx.stdout.write(`    ID: 0        Namelen: ${STAT_NAME_MAX}     Type: nimbus-sqlite\n`);
-        ctx.stdout.write(
+        (await ctx.stdout.write(`  File: "${displayPath}"\n`));
+        (await ctx.stdout.write(`    ID: 0        Namelen: ${STAT_NAME_MAX}     Type: nimbus-sqlite\n`));
+        (await ctx.stdout.write(
           `Block size: ${facts.blockSize}       Fundamental block size: ${facts.blockSize}\n`,
-        );
-        ctx.stdout.write(
+        ));
+        (await ctx.stdout.write(
           `Blocks: Total: ${facts.totalBlocks}  Free: ${facts.freeBlocks}  Available: ${facts.freeBlocks}\n`,
-        );
-        ctx.stdout.write(`Inodes: Total: ${facts.totalInodes}  Free: ${facts.freeInodes}\n`);
+        ));
+        (await ctx.stdout.write(`Inodes: Total: ${facts.totalInodes}  Free: ${facts.freeInodes}\n`));
       }
       return 0;
     }
@@ -3580,7 +3482,7 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       // Try Kernel.VFS first (sees mounts).
       if (kvfs && typeof kvfs.stat === 'function') {
         try {
-          st = kvfs.stat(f.startsWith('/') ? f : ctx.cwd + '/' + f);
+          st = (await kvfs.stat(f.startsWith('/') ? f : ctx.cwd + '/' + f));
           displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
         } catch (_e) { /* fall through to SqliteVFS */ }
       }
@@ -3588,18 +3490,18 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       if (!st) {
         try {
           const fp = resolvePath(ctx.cwd, f);
-          st = vfs.stat(fp);
+          st = (await vfs.stat(fp));
           displayPath = '/' + fp;
         } catch (_e) {
-          ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`);
+          (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
           return 1;
         }
       }
       const uid = st.uid ?? ctx.cred.uid;
       const gid = st.gid ?? ctx.cred.gid;
       const labels = {
-        user: unixUserLabel(vfs, uid),
-        group: unixGroupLabel(vfs, gid),
+        user: (await unixUserLabel(vfs, uid)),
+        group: (await unixGroupLabel(vfs, gid)),
       };
       const facts: StatFacts = {
         size: st.size,
@@ -3617,17 +3519,17 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
           (directive) => statDirective(directive, facts, displayPath, labels),
         );
         if ('error' in expanded) {
-          ctx.stderr.write(expanded.error + '\n');
+          (await ctx.stderr.write(expanded.error + '\n'));
           return 1;
         }
-        write(expanded.text);
+        (await write(expanded.text));
         continue;
       }
-      ctx.stdout.write(`  File: ${displayPath}\n`);
+      (await ctx.stdout.write(`  File: ${displayPath}\n`));
       const kind = isCharacterDevice(st.mode) ? 'character special file' : st.type;
-      ctx.stdout.write(`  Size: ${st.size}\tType: ${kind}\n`);
-      ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`);
-      ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`);
+      (await ctx.stdout.write(`  Size: ${st.size}\tType: ${kind}\n`));
+      (await ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`));
+      (await ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`));
     }
     return 0;
   };
@@ -3646,24 +3548,24 @@ const BASE64_SPEC = {
  * by default, was not implemented at all, so `base64 -w 0` read `0` as a file.
  */
 function mkBase64(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, BASE64_SPEC);
     if (unknown.length > 0) {
-      ctx.stderr.write(`base64: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`base64: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
       return 1;
     }
     const wrapText = typeof flags.wrap === 'string' && flags.wrap !== '' ? flags.wrap : '76';
     const wrap = Number.parseInt(wrapText, 10);
     if (Number.isNaN(wrap) || wrap < 0) {
-      ctx.stderr.write(`base64: invalid wrap size: '${wrapText}'\n`);
+      (await ctx.stderr.write(`base64: invalid wrap size: '${wrapText}'\n`));
       return 1;
     }
 
     const file = positional[0];
     let bytes: Uint8Array;
     if (file !== undefined && file !== '-') {
-      try { bytes = vfs.readFile(resolvePath(ctx.cwd, file)); }
-      catch (error) { ctx.stderr.write(`base64: ${file}: ${fsErrorMessage(error)}\n`); return 1; }
+      try { bytes = (await vfs.readFile(resolvePath(ctx.cwd, file))); }
+      catch (error) { (await ctx.stderr.write(`base64: ${file}: ${fsErrorMessage(error)}\n`)); return 1; }
     } else {
       bytes = enc.encode(stdinText(ctx) ?? '');
     }
@@ -3674,9 +3576,9 @@ function mkBase64(vfs: UnixVfs): CmdFn {
       try {
         const binary = atob(source);
         decoded = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-      } catch { ctx.stderr.write('base64: invalid input\n'); return 1; }
-      if (ctx.stdout.writeBytes) ctx.stdout.writeBytes(decoded);
-      else ctx.stdout.write(dec.decode(decoded));
+      } catch { (await ctx.stderr.write('base64: invalid input\n')); return 1; }
+      if (ctx.stdout.writeBytes) (await ctx.stdout.writeBytes(decoded));
+      else (await ctx.stdout.write(dec.decode(decoded)));
       return 0;
     }
 
@@ -3687,68 +3589,68 @@ function mkBase64(vfs: UnixVfs): CmdFn {
     const lines = wrap > 0
       ? (encoded.match(new RegExp(`.{1,${wrap}}`, 'g')) ?? [encoded])
       : [encoded];
-    ctx.stdout.write(lines.join('\n') + '\n');
+    (await ctx.stdout.write(lines.join('\n') + '\n'));
     return 0;
   };
 }
 
 function mkSeq(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const nums = ctx.args.map(Number).filter(n => !isNaN(n));
     let start = 1, step = 1, end = 1;
     if (nums.length === 1) end = nums[0];
     else if (nums.length === 2) { start = nums[0]; end = nums[1]; }
     else if (nums.length >= 3) { start = nums[0]; step = nums[1]; end = nums[2]; }
-    for (let i = start; step > 0 ? i <= end : i >= end; i += step) ctx.stdout.write(i + '\n');
+    for (let i = start; step > 0 ? i <= end : i >= end; i += step) (await ctx.stdout.write(i + '\n'));
     return 0;
   };
 }
 
 function mkId(sqliteVfs: SqliteVFS): CmdFn {
-  return (ctx) => {
-    const vfs = sqliteVfs.as(ctx.cred);
-    const user = findUnixUserName(vfs, ctx.cred.uid) ?? String(ctx.cred.uid);
-    const group = findUnixGroupName(vfs, ctx.cred.gid) ?? String(ctx.cred.gid);
+  return async (ctx) => {
+    const vfs = ctx.vfs;
+    const user = (await findUnixUserName(vfs, ctx.cred.uid)) ?? String(ctx.cred.uid);
+    const group = (await findUnixGroupName(vfs, ctx.cred.gid)) ?? String(ctx.cred.gid);
     const groupIds = [...new Set([ctx.cred.gid, ...ctx.cred.groups])];
-    const groups = groupIds
-      .map((gid) => `${gid}(${findUnixGroupName(vfs, gid) ?? gid})`)
+    const groups = (await Promise.all(groupIds
+      .map(async (gid) => `${gid}(${(await findUnixGroupName(vfs, gid)) ?? gid})`)))
       .join(',');
-    ctx.stdout.write(`uid=${ctx.cred.uid}(${user}) gid=${ctx.cred.gid}(${group}) groups=${groups}\n`);
+    (await ctx.stdout.write(`uid=${ctx.cred.uid}(${user}) gid=${ctx.cred.gid}(${group}) groups=${groups}\n`));
     return 0;
   };
 }
 
 function mkChown(sqliteVfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const recursive = ctx.args.includes('-R') || ctx.args.includes('--recursive');
     const positional = ctx.args.filter((arg) => arg !== '-R' && arg !== '--recursive');
     if (positional.length < 2) {
-      ctx.stderr.write('chown: missing operand\n');
+      (await ctx.stderr.write('chown: missing operand\n'));
       return 1;
     }
 
-    const vfs = sqliteVfs.as(ctx.cred);
+    const vfs = ctx.vfs;
     let ownership: { uid: number | null; gid: number | null };
     try {
-      ownership = parseChownOwnership(vfs, positional[0]);
+      ownership = (await parseChownOwnership(vfs, positional[0]));
     } catch (error) {
-      ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
+      (await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`));
       return 1;
     }
 
     let exitCode = 0;
-    const apply = (path: string): void => {
-      if (recursive && vfs.stat(path).type === 'directory') {
-        for (const child of vfs.readdir(path)) apply(`${path}/${child.name}`);
+    const apply = async (path: string): Promise<void> => {
+      if (recursive && (await vfs.stat(path)).type === 'directory') {
+        for (const child of (await vfs.readdir(path))) (await apply(`${path}/${child.name}`));
       }
-      vfs.chown(path, ownership.uid, ownership.gid);
+      (await vfs.chown(path, ownership.uid, ownership.gid));
     };
 
     for (const file of positional.slice(1)) {
       try {
-        apply(resolvePath(ctx.cwd, file));
+        (await apply(resolvePath(ctx.cwd, file)));
       } catch (error) {
-        ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+        (await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`));
         exitCode = 1;
       }
     }
@@ -3757,18 +3659,18 @@ function mkChown(sqliteVfs: SqliteVFS): CmdFn {
 }
 
 function mkTest(sqliteVfs: SqliteVFS): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args = ctx.args.filter((arg) => arg !== ']');
     if (args.length === 0) return 1;
-    const vfs = sqliteVfs.as(ctx.cred);
+    const vfs = ctx.vfs;
     const path = resolvePath(ctx.cwd, args[1] ?? '');
     try {
-      if (args[0] === '-r') vfs.access(path, 0o4);
-      else if (args[0] === '-w') vfs.access(path, 0o2);
-      else if (args[0] === '-x') vfs.access(path, 0o1);
-      else if (args[0] === '-f') return vfs.stat(path).type === 'file' ? 0 : 1;
-      else if (args[0] === '-d') return vfs.stat(path).type === 'directory' ? 0 : 1;
-      else if (args[0] === '-e') vfs.stat(path);
+      if (args[0] === '-r') (await vfs.access(path, 0o4));
+      else if (args[0] === '-w') (await vfs.access(path, 0o2));
+      else if (args[0] === '-x') (await vfs.access(path, 0o1));
+      else if (args[0] === '-f') return (await vfs.stat(path)).type === 'file' ? 0 : 1;
+      else if (args[0] === '-d') return (await vfs.stat(path)).type === 'directory' ? 0 : 1;
+      else if (args[0] === '-e') (await vfs.stat(path));
       else if (args[0] === '-z') return (!args[1] || args[1] === '') ? 0 : 1;
       else if (args[0] === '-n') return args[1] ? 0 : 1;
       else if (args[1] === '=') return args[0] === args[2] ? 0 : 1;
@@ -3782,35 +3684,35 @@ function mkTest(sqliteVfs: SqliteVFS): CmdFn {
 }
 
 function mkHostname(): CmdFn {
-  return (ctx) => { ctx.stdout.write('nimbus\n'); return 0; };
+  return async (ctx) => { (await ctx.stdout.write('nimbus\n')); return 0; };
 }
 
 function mkBasename(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const p = ctx.args[0] || '';
     const suffix = ctx.args[1] || '';
     let base = p.split('/').pop() || '';
     if (suffix && base.endsWith(suffix)) base = base.slice(0, -suffix.length);
-    ctx.stdout.write(base + '\n');
+    (await ctx.stdout.write(base + '\n'));
     return 0;
   };
 }
 
 function mkDirname(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const p = ctx.args[0] || '';
     const dir = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '.';
-    ctx.stdout.write((dir || '/') + '\n');
+    (await ctx.stdout.write((dir || '/') + '\n'));
     return 0;
   };
 }
 
 function mkRealpath(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     for (const p of ctx.args) {
       const fp = resolvePath(ctx.cwd, p);
-      if (vfs.exists(fp)) ctx.stdout.write('/' + fp + '\n');
-      else { ctx.stderr.write(`realpath: ${p}: No such file\n`); return 1; }
+      if ((await vfs.exists(fp))) (await ctx.stdout.write('/' + fp + '\n'));
+      else { (await ctx.stderr.write(`realpath: ${p}: No such file\n`)); return 1; }
     }
     return 0;
   };
@@ -3830,7 +3732,7 @@ function mkRealpath(vfs: UnixVfs): CmdFn {
  * replicate that.
  */
 function mkPrintf(): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     if (ctx.args.length === 0) return 0;
     const rawFmt = ctx.args[0];
     const vals = ctx.args.slice(1);
@@ -3874,7 +3776,7 @@ function mkPrintf(): CmdFn {
         if (!applyFormat()) break;
       }
     }
-    ctx.stdout.write(out);
+    (await ctx.stdout.write(out));
     return 0;
   };
 }
@@ -4017,7 +3919,7 @@ function mkFalse(): CmdFn { return () => 1; }
  * (one-hop). -e variant (verify) deferred.
  */
 function mkReadlink(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     const args = [...ctx.args];
     let canonicalize = false;
     const targets: string[] = [];
@@ -4030,7 +3932,7 @@ function mkReadlink(vfs: UnixVfs): CmdFn {
       targets.push(a);
     }
     if (targets.length === 0) {
-      ctx.stderr.write('readlink: missing operand\n');
+      (await ctx.stderr.write('readlink: missing operand\n'));
       return 1;
     }
     let exit = 0;
@@ -4039,25 +3941,25 @@ function mkReadlink(vfs: UnixVfs): CmdFn {
       if (canonicalize) {
         // -f: follow chain; succeed even if target doesn't exist YET
         // (matches `readlink -f` which canonicalizes anyway).
-        const resolved = resolveSymlinkPath(vfs, fp);
+        const resolved = (await resolveSymlinkPath(vfs, fp));
         if (resolved !== null) {
-          ctx.stdout.write('/' + resolved + '\n');
+          (await ctx.stdout.write('/' + resolved + '\n'));
           continue;
         }
-        ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`);
+        (await ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`));
         exit = 1;
         continue;
       }
       // Default: one-hop. Print target verbatim (preserves relative/absolute).
-      const direct = readSymlinkTarget(vfs, fp);
+      const direct = (await readSymlinkTarget(vfs, fp));
       if (direct !== null) {
-        ctx.stdout.write(direct + '\n');
+        (await ctx.stdout.write(direct + '\n'));
         continue;
       }
       // Not a symlink. GNU readlink exits 1 silently for regular
       // files / dirs; emits stderr for missing.
-      if (!vfs.exists(fp)) {
-        ctx.stderr.write(`readlink: ${t}: No such file or directory\n`);
+      if (!(await vfs.exists(fp))) {
+        (await ctx.stderr.write(`readlink: ${t}: No such file or directory\n`));
       }
       exit = 1;
     }
@@ -4091,23 +3993,23 @@ function mkSha256sum(vfs: UnixVfs): CmdFn {
   return async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, SHA256SUM_SPEC);
     if (unknown.length > 0) {
-      ctx.stderr.write(`sha256sum: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`sha256sum: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
       return 1;
     }
 
-    if (flags.check) return verifySha256Sums(ctx, vfs, positional, digest, flags.status === true);
+    if (flags.check) return (await verifySha256Sums(ctx, vfs, positional, digest, flags.status === true));
 
     if (positional.length === 0 || (positional.length === 1 && positional[0] === '-')) {
-      ctx.stdout.write(`${await digest(enc.encode(stdinText(ctx) ?? ''))}  -\n`);
+      (await ctx.stdout.write(`${await digest(enc.encode(stdinText(ctx) ?? ''))}  -\n`));
       return 0;
     }
 
     let exit = 0;
     for (const f of positional) {
       try {
-        ctx.stdout.write(`${await digest(vfs.readFile(resolvePath(ctx.cwd, f)))}  ${f}\n`);
+        (await ctx.stdout.write(`${await digest((await vfs.readFile(resolvePath(ctx.cwd, f))))}  ${f}\n`));
       } catch {
-        ctx.stderr.write(`sha256sum: ${f}: No such file or directory\n`);
+        (await ctx.stderr.write(`sha256sum: ${f}: No such file or directory\n`));
         exit = 1;
       }
     }
@@ -4127,9 +4029,9 @@ async function verifySha256Sums(
   for (const list of lists) {
     let body: string;
     try {
-      body = vfs.readFileString(resolvePath(ctx.cwd, list));
+      body = (await vfs.readFileString(resolvePath(ctx.cwd, list)));
     } catch {
-      ctx.stderr.write(`sha256sum: ${list}: No such file or directory\n`);
+      (await ctx.stderr.write(`sha256sum: ${list}: No such file or directory\n`));
       exit = 1;
       continue;
     }
@@ -4139,16 +4041,16 @@ async function verifySha256Sums(
       const [, expected, name] = entry;
       let actual: string | null = null;
       try {
-        actual = await digest(vfs.readFile(resolvePath(ctx.cwd, name)));
+        actual = await digest((await vfs.readFile(resolvePath(ctx.cwd, name))));
       } catch { /* reported as FAILED open below */ }
       if (actual === null) {
-        ctx.stderr.write(`sha256sum: ${name}: No such file or directory\n`);
-        if (!quiet) ctx.stdout.write(`${name}: FAILED open or read\n`);
+        (await ctx.stderr.write(`sha256sum: ${name}: No such file or directory\n`));
+        if (!quiet) (await ctx.stdout.write(`${name}: FAILED open or read\n`));
         exit = 1;
       } else if (actual.toLowerCase() === expected.toLowerCase()) {
-        if (!quiet) ctx.stdout.write(`${name}: OK\n`);
+        if (!quiet) (await ctx.stdout.write(`${name}: OK\n`));
       } else {
-        if (!quiet) ctx.stdout.write(`${name}: FAILED\n`);
+        if (!quiet) (await ctx.stdout.write(`${name}: FAILED\n`));
         exit = 1;
       }
     }
@@ -4157,16 +4059,16 @@ async function verifySha256Sums(
 }
 
 function mkFile(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+  return async (ctx) => {
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
       const fp = resolvePath(ctx.cwd, f);
       try {
-        if (vfs.isDirectory(fp)) { ctx.stdout.write(`${f}: directory\n`); continue; }
+        if ((await vfs.isDirectory(fp))) { (await ctx.stdout.write(`${f}: directory\n`)); continue; }
         // BUG-SWEEP-3 (2026-05-11): scan raw bytes for NUL or non-text
         // bytes BEFORE attempting a UTF-8 decode. Pre-fix every binary
         // file was reported as "UTF-8 text" because readFileString
         // silently U+FFFD-substituted invalid sequences.
-        const bytes = vfs.readFile(fp);
+        const bytes = (await vfs.readFile(fp));
         let isBinary = false;
         const scanLimit = Math.min(bytes.length, 8192);
         for (let i = 0; i < scanLimit; i++) {
@@ -4179,29 +4081,29 @@ function mkFile(vfs: UnixVfs): CmdFn {
         if (isBinary) {
           // Magic-byte sniff for common formats.
           if (bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) {
-            ctx.stdout.write(`${f}: ELF executable\n`);
+            (await ctx.stdout.write(`${f}: ELF executable\n`));
           } else if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d) {
-            ctx.stdout.write(`${f}: WebAssembly (wasm) binary module\n`);
+            (await ctx.stdout.write(`${f}: WebAssembly (wasm) binary module\n`));
           } else if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
-            ctx.stdout.write(`${f}: PNG image data\n`);
+            (await ctx.stdout.write(`${f}: PNG image data\n`));
           } else if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-            ctx.stdout.write(`${f}: gzip compressed data\n`);
+            (await ctx.stdout.write(`${f}: gzip compressed data\n`));
           } else if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05)) {
-            ctx.stdout.write(`${f}: Zip archive data\n`);
+            (await ctx.stdout.write(`${f}: Zip archive data\n`));
           } else {
-            ctx.stdout.write(`${f}: data\n`);
+            (await ctx.stdout.write(`${f}: data\n`));
           }
           continue;
         }
         const content = new TextDecoder('utf-8').decode(bytes);
-        if (content.startsWith('<!DOCTYPE') || content.startsWith('<html')) ctx.stdout.write(`${f}: HTML document\n`);
-        else if (content.startsWith('{') || content.startsWith('[')) ctx.stdout.write(`${f}: JSON data\n`);
-        else if (content.startsWith('#!')) ctx.stdout.write(`${f}: script, ${content.split('\n')[0]}\n`);
-        else if (f.endsWith('.ts') || f.endsWith('.tsx')) ctx.stdout.write(`${f}: TypeScript source\n`);
-        else if (f.endsWith('.js') || f.endsWith('.mjs')) ctx.stdout.write(`${f}: JavaScript source\n`);
-        else if (f.endsWith('.css')) ctx.stdout.write(`${f}: CSS stylesheet\n`);
-        else ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`);
-      } catch { ctx.stderr.write(`file: ${f}: No such file\n`); return 1; }
+        if (content.startsWith('<!DOCTYPE') || content.startsWith('<html')) (await ctx.stdout.write(`${f}: HTML document\n`));
+        else if (content.startsWith('{') || content.startsWith('[')) (await ctx.stdout.write(`${f}: JSON data\n`));
+        else if (content.startsWith('#!')) (await ctx.stdout.write(`${f}: script, ${content.split('\n')[0]}\n`));
+        else if (f.endsWith('.ts') || f.endsWith('.tsx')) (await ctx.stdout.write(`${f}: TypeScript source\n`));
+        else if (f.endsWith('.js') || f.endsWith('.mjs')) (await ctx.stdout.write(`${f}: JavaScript source\n`));
+        else if (f.endsWith('.css')) (await ctx.stdout.write(`${f}: CSS stylesheet\n`));
+        else (await ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`));
+      } catch { (await ctx.stderr.write(`file: ${f}: No such file\n`)); return 1; }
     }
     return 0;
   };
@@ -4445,13 +4347,13 @@ class DumpByteSource {
         // host handed the command — so /dev and other mounts resolve while
         // an embedder's credentialed view keeps its authorization.
         this.currentPath = absolutePath(this.ctx.cwd, file);
-        this.ctx.vfs.readRange(this.currentPath, 0, 1);
+        (await this.ctx.vfs.readRange(this.currentPath, 0, 1));
         this.cursor = 0;
         this.haveOpen = true;
         this.opened++;
         return true;
       } catch (error) {
-        this.ctx.stderr.write(`${this.label}: ${file}: ${fsErrorMessage(error)}\n`);
+        (await this.ctx.stderr.write(`${this.label}: ${file}: ${fsErrorMessage(error)}\n`));
         this.failures++;
       }
     }
@@ -4505,7 +4407,7 @@ class DumpByteSource {
    * fills its 16-byte buffer, so this waits for the count it asked for.
    */
   async take(max: number): Promise<Uint8Array | null> {
-    return this.collect(max, false);
+    return (await this.collect(max, false));
   }
 
   /**
@@ -4515,7 +4417,7 @@ class DumpByteSource {
    * producer has not written yet.
    */
   async takeReady(max: number): Promise<Uint8Array | null> {
-    return this.collect(max, true);
+    return (await this.collect(max, true));
   }
 
   private async collect(max: number, ready: boolean): Promise<Uint8Array | null> {
@@ -4556,7 +4458,7 @@ class DumpByteSource {
       }
       // File operands keep filling: range reads are bulk and cost nothing
       // extra, and a block may span consecutive operands.
-      chunk = this.ctx.vfs.readRange(this.currentPath, this.cursor, want);
+      chunk = (await this.ctx.vfs.readRange(this.currentPath, this.cursor, want));
       if (chunk.length === 0) {
         this.closeCurrent();
         continue;
@@ -4584,7 +4486,7 @@ function mkOd(): CmdFn {
   return async (ctx) => {
     const parsed = parseOdArgs(ctx.args);
     if ('error' in parsed) {
-      ctx.stderr.write(`${parsed.error}\n`);
+      (await ctx.stderr.write(`${parsed.error}\n`));
       return 1;
     }
     const src = new DumpByteSource(ctx, 'od', parsed.files, parsed.limit);
@@ -4614,16 +4516,16 @@ function mkOd(): CmdFn {
         : [`${address}${lines[0]}`, ...lines.slice(1).map((line) => `${indent}${line}`)].join('\n');
       switch (dedup.classify(key, parsed.verbose)) {
         case 'print':
-          ctx.stdout.write(`${rendered}\n`);
+          (await ctx.stdout.write(`${rendered}\n`));
           break;
         case 'star':
-          ctx.stdout.write('*\n');
+          (await ctx.stdout.write('*\n'));
           break;
       }
     }
     if (parsed.radix !== 'n') {
       if (src.failedAll) return 1;
-      ctx.stdout.write(`${odAddress(parsed.radix, src.total, true)}\n`);
+      (await ctx.stdout.write(`${odAddress(parsed.radix, src.total, true)}\n`));
     }
     return src.failed ? 1 : 0;
   };
@@ -5055,7 +4957,7 @@ function mkHexdump(): CmdFn {
   return async (ctx) => {
     const parsed = parseHexdumpArgs(ctx.args);
     if ('error' in parsed) {
-      ctx.stderr.write(`${parsed.error}\n`);
+      (await ctx.stderr.write(`${parsed.error}\n`));
       return 1;
     }
     const src = new DumpByteSource(ctx, 'hexdump', parsed.files, parsed.length);
@@ -5090,13 +4992,13 @@ function mkHexdump(): CmdFn {
         const block = await hexdumpRenderBlock(parsed.pieces, pullUnit, offset);
         if (block === null) break;
         offset += block.consumed;
-        if (!lineStructured) { ctx.stdout.write(block.line); continue; }
+        if (!lineStructured) { (await ctx.stdout.write(block.line)); continue; }
         switch (dedup.classify(block.key, parsed.verbose)) {
-          case 'print': ctx.stdout.write(block.line); break;
-          case 'star': ctx.stdout.write('*\n'); break;
+          case 'print': (await ctx.stdout.write(block.line)); break;
+          case 'star': (await ctx.stdout.write('*\n')); break;
         }
       }
-      if (src.failedAll) ctx.stderr.write('hexdump: all input file arguments failed\n');
+      if (src.failedAll) (await ctx.stderr.write('hexdump: all input file arguments failed\n'));
       return src.failed ? 1 : 0;
     }
 
@@ -5108,16 +5010,16 @@ function mkHexdump(): CmdFn {
       const address = (src.total - row.length).toString(16).padStart(wide ? 8 : 7, '0');
       switch (dedup.classify(body, parsed.verbose)) {
         case 'print':
-          ctx.stdout.write(wide ? `${address}  ${body}|${bar}|\n` : `${address} ${body}\n`);
+          (await ctx.stdout.write(wide ? `${address}  ${body}|${bar}|\n` : `${address} ${body}\n`));
           break;
         case 'star':
-          ctx.stdout.write('*\n');
+          (await ctx.stdout.write('*\n'));
           break;
       }
     }
-    if (src.failedAll) ctx.stderr.write('hexdump: all input file arguments failed\n');
+    if (src.failedAll) (await ctx.stderr.write('hexdump: all input file arguments failed\n'));
     if (src.total > 0) {
-      ctx.stdout.write(`${src.total.toString(16).padStart(wide ? 8 : 7, '0')}\n`);
+      (await ctx.stdout.write(`${src.total.toString(16).padStart(wide ? 8 : 7, '0')}\n`));
     }
     return src.failed ? 1 : 0;
   };
@@ -5143,7 +5045,7 @@ function mkXxd(): CmdFn {
       if (arg === '-p') { plain = true; continue; }
       if (arg === '-' || !arg.startsWith('-')) {
         if (operands.length >= 2) {
-          ctx.stderr.write(`xxd: extra operand '${arg}'\n`);
+          (await ctx.stderr.write(`xxd: extra operand '${arg}'\n`));
           return 1;
         }
         operands.push(arg);
@@ -5153,13 +5055,13 @@ function mkXxd(): CmdFn {
         const value = arg === '-l' ? ctx.args[++i] : arg.slice(2);
         const parsed = value === undefined ? null : parseDumpCount(value);
         if (parsed === null || parsed < 0) {
-          ctx.stderr.write(`xxd: invalid length value '${value ?? ''}'\n`);
+          (await ctx.stderr.write(`xxd: invalid length value '${value ?? ''}'\n`));
           return 1;
         }
         limit = parsed;
         continue;
       }
-      ctx.stderr.write(`xxd: invalid option -- '${arg.replace(/^-+/, '')}'\n`);
+      (await ctx.stderr.write(`xxd: invalid option -- '${arg.replace(/^-+/, '')}'\n`));
       return 1;
     }
 
@@ -5181,12 +5083,12 @@ function mkXxd(): CmdFn {
     let pending: string[] = [];
     let pendingBytes = 0;
     let writeFailed = false;
-    const flush = () => {
+    const flush = async () => {
       if (pending.length === 0 || writeFailed || outAbs === null) return;
       try {
-        ctx.vfs.writeRange(outAbs, fileOffset, encode(pending.join('')));
+        (await ctx.vfs.writeRange(outAbs, fileOffset, encode(pending.join(''))));
       } catch (error) {
-        ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`);
+        (await ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`));
         writeFailed = true;
         return;
       }
@@ -5210,9 +5112,9 @@ function mkXxd(): CmdFn {
       // Input proved readable above, so truncating here cannot destroy data
       // on a failed dump.
       try {
-        ctx.vfs.writeFile(outAbs, '');
+        (await ctx.vfs.writeFile(outAbs, ''));
       } catch (error) {
-        ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`);
+        (await ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`));
         return 1;
       }
     }
@@ -5224,13 +5126,13 @@ function mkXxd(): CmdFn {
       if (outAbs !== null) {
         pending.push(text);
         pendingBytes += text.length;
-        if (pendingBytes >= 65536) flush();
+        if (pendingBytes >= 65536) (await flush());
       } else {
-        ctx.stdout.write(text);
+        (await ctx.stdout.write(text));
       }
       window = await src.take(rowSize);
     }
-    if (outAbs !== null) flush();
+    if (outAbs !== null) (await flush());
     return src.failed || writeFailed ? 1 : 0;
   }
 }
@@ -5249,10 +5151,10 @@ function wrapStreaming(fn: CmdFn): (ctx: Ctx) => Promise<number> {
         }
         // else: leave as pipe reader for the command to handle.
       }
-      const result = fn(ctx);
+      const result = (await fn(ctx));
       return await result;
     } catch (e) {
-      ctx.stderr.write(`${errorText(e)}\n`);
+      (await ctx.stderr.write(`${errorText(e)}\n`));
       return 1;
     }
   };
@@ -5300,10 +5202,10 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
           ctx.stdin = stdinObj.toString();
         }
       }
-      const result = fn(ctx);
+      const result = (await fn(ctx));
       return await result;
     } catch (e) {
-      ctx.stderr.write(`${errorText(e)}\n`);
+      (await ctx.stderr.write(`${errorText(e)}\n`));
       return 1;
     }
   };
@@ -5395,43 +5297,15 @@ export function registerUnixCommands(
    * goes through Kernel.VFS which doesn't yet know about the
    * registry; we patch cat directly here to dereference symlinks).
    */
-  registry.register('ln', wrap((ctx) => {
-    const vfs = unixVfsFor(sqliteVfs, ctx.cred);
-    const args = ctx.args;
-    const symbolic = args.some(a => a === '-s' || (a.startsWith('-') && !a.startsWith('--') && a.includes('s')));
-    const force = args.some(a => a === '-f' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
-    const positional = args.filter(a => !a.startsWith('-'));
-    if (positional.length < 2) {
-      ctx.stderr.write('ln: missing operand\n');
-      return 1;
-    }
-    const target = positional[0];  // what the link points TO
-    const linkPath = positional[1];  // the link file itself
-    const linkFp = resolvePath(ctx.cwd, linkPath);
-    if (symbolic) {
-      // Symbolic link via registry. Don't require target to exist.
-      const reg = vfs.symlinks;
-      // GNU `ln` without -f errors if link exists.
-      if (!force && (vfs.exists(linkFp) || reg.isSymlink(linkFp))) {
-        ctx.stderr.write(`ln: failed to create symbolic link '${linkPath}': File exists\n`);
-        return 1;
-      }
-      // Remove existing real-file at linkPath if -f and not a symlink.
-      if (force && vfs.exists(linkFp) && !reg.isSymlink(linkFp)) {
-        try { vfs.unlink(linkFp); } catch { /* fail-soft */ }
-      }
-      reg.set(linkFp, target);
-      return 0;
-    }
-    // Hard link mode (default): file-copy semantics (legacy behaviour).
-    const srcFp = resolvePath(ctx.cwd, target);
-    try {
-      const content = vfs.readFileString(srcFp);
-      vfs.writeFile(linkFp, content);
-    } catch (e) {
-      ctx.stderr.write(`ln: ${target}: ${errorText(e)}\n`);
-      return 1;
-    }
+  registry.register('ln', wrap(async ctx => {
+    const symbolic = ctx.args.some(arg => /^-[^-]*s/.test(arg));
+    const force = ctx.args.some(arg => /^-[^-]*f/.test(arg));
+    const operands = ctx.args.filter(arg => !arg.startsWith('-'));
+    if (operands.length !== 2) { await ctx.stderr.write('ln: expected target and link path\n'); return 1; }
+    if (!symbolic) { await ctx.stderr.write('ln: hard links are not supported\n'); return 1; }
+    const path = resolvePath(ctx.cwd, operands[1]);
+    if (force) await ctx.vfs.remove(path, { force: true });
+    await ctx.vfs.symlink(operands[0], path);
     return 0;
   }));
 

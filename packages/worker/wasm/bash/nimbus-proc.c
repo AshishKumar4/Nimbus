@@ -15,6 +15,9 @@
 #include <errno.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <wasi/api.h>
 
 #define IMPORT(name) __attribute__((import_module("nimbus_proc"), import_name(name)))
 
@@ -33,6 +36,17 @@ IMPORT("getpgid") extern int  __np_getpgid(int pid);
 IMPORT("getppid") extern int  __np_getppid(void);
 IMPORT("tcsetpgrp") extern int __np_tcsetpgrp(int fd, int pgid);
 IMPORT("tcgetpgrp") extern int __np_tcgetpgrp(int fd);
+IMPORT("startup_cwd") extern int __np_startup_cwd(char *buf, unsigned capacity);
+IMPORT("capture_cwd") extern int __np_capture_cwd(const char *buf, unsigned length);
+
+static int capture_cwd(void) {
+  char *cwd = getcwd(NULL, 0);
+  if (!cwd) return -1;
+  int err = __np_capture_cwd(cwd, strlen(cwd));
+  free(cwd);
+  if (err) { errno = err; return -1; }
+  return 0;
+}
 
 /* bash's main() is K&R 3-arg `main(argc, argv, env)`, but the wasi crt calls a
  * 2-arg `__main_argc_argv` (weak-aliased to main) — a wasm signature mismatch
@@ -40,10 +54,20 @@ IMPORT("tcgetpgrp") extern int __np_tcgetpgrp(int fd);
  * `environ` (which wasi-libc populates from environ_get). No bash source edit. */
 extern int main(int, char **, char **);
 extern char **environ;
-int __main_argc_argv(int argc, char **argv) { return main(argc, argv, environ); }
+int __main_argc_argv(int argc, char **argv) {
+  int length = __np_startup_cwd(NULL, 0);
+  if (length < 0) return 1;
+  char *cwd = malloc((size_t)length + 1);
+  if (!cwd) return 1;
+  int copied = __np_startup_cwd(cwd, (unsigned)length + 1);
+  int rc = copied < 0 ? -1 : chdir(cwd);
+  free(cwd);
+  if (rc || capture_cwd()) return 1;
+  return main(argc, argv, environ);
+}
 
-pid_t fork(void)  { int r = __np_fork();  if (r < 0) { errno = -r; return -1; } return r; }
-pid_t vfork(void) { int r = __np_vfork(); if (r < 0) { errno = -r; return -1; } return r; }
+pid_t fork(void)  { if (capture_cwd()) return -1; int r = __np_fork(); if (r < 0) { errno = -r; return -1; } return r; }
+pid_t vfork(void) { if (capture_cwd()) return -1; int r = __np_vfork(); if (r < 0) { errno = -r; return -1; } return r; }
 
 /* Flatten a NULL-terminated char*[] into a NUL-separated blob; return length. */
 static int flatten(char *const v[], char *buf, int cap) {
@@ -62,6 +86,7 @@ static char __np_argbuf[65536];
 static char __np_envbuf[65536];
 
 int execve(const char *path, char *const argv[], char *const envp[]) {
+  if (capture_cwd()) return -1;
   int al = flatten(argv, __np_argbuf, sizeof __np_argbuf);
   int el = flatten(envp, __np_envbuf, sizeof __np_envbuf);
   if (al < 0 || el < 0) { errno = E2BIG; return -1; }
@@ -109,7 +134,11 @@ int __wrap_dup(int o)         { int r = __np_dup(o);     if (r < 0) { errno = -r
 int __wrap_fcntl(int fd, int cmd, ...) {
   /* F_DUPFD (0) — bash saves/restores fds via fcntl; route to the fd table. */
   if (cmd == F_DUPFD) { int r = __np_dup(fd); if (r < 0) { errno = -r; return -1; } return r; }
-  return 0; /* F_GETFD/F_SETFD/F_GETFL/F_SETFL: no-op (flags tracked host-side) */
+  /* bash probes F_GETFD to learn whether `exec N>file` must save fd N first;
+   * a closed fd has to answer EBADF or bash dups a descriptor that is not there. */
+  __wasi_fdstat_t st;
+  if (__wasi_fd_fdstat_get(fd, &st) != 0) { errno = EBADF; return -1; }
+  return 0; /* F_GETFD/F_SETFD/F_GETFL/F_SETFL: flags are tracked host-side */
 }
 
 int   kill(pid_t pid, int sig)    { int r = __np_kill(pid, sig); if (r < 0) { errno = -r; return -1; } return 0; }

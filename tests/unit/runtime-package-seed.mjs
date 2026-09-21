@@ -79,7 +79,7 @@ const openVfs = () => {
 
   // The point of the shared layout: the reader that rehydrates a Durable
   // Object after eviction finds this exactly as it finds an R2 install.
-  const installed = listInstalledManifestsView(fs, HOME);
+  const installed = (await listInstalledManifestsView(fs, HOME));
   assert.equal(installed.length, 1);
   assert.equal(installed[0].root, seeded.root);
   assert.equal(installed[0].manifest.entrypoints[0].binName, 'toy');
@@ -113,7 +113,7 @@ const openVfs = () => {
   // And nothing claims the install completed, so the next attempt refetches
   // rather than reporting a runtime that is half there.
   assert.equal(fs.exists('home/user/.nimbus/runtimes/toy/1.0.0/manifest.json'), false);
-  assert.equal(listInstalledManifestsView(fs, HOME).length, 0);
+  assert.equal((await listInstalledManifestsView(fs, HOME)).length, 0);
   console.log('  ok  a blob that does not match its digest is refused, and leaves no install');
 }
 

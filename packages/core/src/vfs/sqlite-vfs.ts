@@ -277,7 +277,7 @@ const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
-const APPEND_NAMESPACE_MIGRATION = 'append_namespace_scopes_v1';
+
 /** Storage key of the shared scratch tree. `normalizeVfsPath` drops the slash. */
 const TMP_ROOT = 'tmp';
 export const VFS_APPEND_RECEIPT_LIMIT = 2048;
@@ -602,7 +602,7 @@ interface CacheEntry {
 // ── SqliteVFS ───────────────────────────────────────────────────────────────
 
 export class SqliteVFS {
-  private readonly openNodes = new Set<{ inode: INode; path: string | null }>();
+  private readonly openNodes = new Set<{ inode: INode; path: string | null; closed: boolean }>();
   private sql: SqlDatabase;
   private ctx: TransactionHost | undefined;
   public readonly events: VfsEventEmitter;
@@ -655,12 +655,6 @@ export class SqliteVFS {
   // so unrelated writes no longer invalidate them. In-memory only — the
   // clock resets with the DO lifetime, exactly like the caches keyed on it.
   private _pathRevisions = new Map<string, number>();
-  /**
-   * Per-inode content revisions: bumped when an inode row is (re)published,
-   * except by renames — moving a name is not a content mutation, so a handle
-   * that opened the inode may keep writing through it after a rename.
-   */
-  private _inoRevisions = new Map<number, number>();
   private transactionPublication: {
     paths: Set<string>;
     events: { type: VfsEventType; path: string; oldPath?: string }[];
@@ -843,7 +837,7 @@ export class SqliteVFS {
         digest TEXT NOT NULL,
         PRIMARY KEY (namespace, pid, writer_id, module_id, operation_id)
       )`);
-      this.migrateAppendNamespaceTables();
+      
 
 
       const contentMigrationApplied = [...this.sql.exec(
@@ -1026,30 +1020,11 @@ export class SqliteVFS {
    * past the largest ino in use.
    */
   private backfillInoColumn(): void {
-    if (this.tableExists('vfs_inode_identity')) {
-      this.sql.exec(
-        `UPDATE inodes SET ino = (
-           SELECT ino FROM vfs_inode_identity WHERE vfs_inode_identity.path = inodes.path
-         ) WHERE ino IS NULL AND EXISTS (
-           SELECT 1 FROM vfs_inode_identity WHERE vfs_inode_identity.path = inodes.path
-         )`,
-      );
-      this.sql.exec('DROP TABLE vfs_inode_identity');
-    }
     this.sql.exec('UPDATE inodes SET ino = rowid WHERE ino IS NULL');
-    this.sql.exec(
-      `UPDATE vfs_ino_allocator SET next = (
-         SELECT COALESCE(MAX(ino), 0) + 1 FROM inodes
-       ) WHERE slot = 1 AND next < (SELECT COALESCE(MAX(ino), 0) + 1 FROM inodes)`,
-    );
+    this.sql.exec(`UPDATE vfs_ino_allocator SET next = MAX(next, (SELECT COALESCE(MAX(ino), 0) + 1 FROM inodes)) WHERE slot = 1`);
   }
 
-  private tableExists(name: string): boolean {
-    return [...this.sql.exec(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
-      name,
-    )].length > 0;
-  }
+  
 
   /**
    * Fold legacy append-control tables into the namespace-scoped v2 schema.
@@ -1060,62 +1035,10 @@ export class SqliteVFS {
    * v2 tables themselves. Legacy tables are renamed to vfs_append_legacy_*
    * rather than dropped so the data stays recoverable.
    */
-  private migrateAppendNamespaceTables(): void {
-    const migrated = [...this.sql.exec(
-      'SELECT id FROM vfs_schema_migrations WHERE id = ?',
-      APPEND_NAMESPACE_MIGRATION,
-    )].length > 0;
-    if (migrated) return;
-    const legacyLayouts: { from: string; to: string; columns: string }[] = [
-      { from: 'receipts', to: 'receipts_v2', columns: 'pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at' },
-      { from: 'writer_state', to: 'writer_state_v2', columns: 'pid, writer_id, revoked, retired_at' },
-      { from: 'module_state', to: 'module_state_v2', columns: 'pid, writer_id, module_id, acked_through' },
-      { from: 'pid_revocations', to: 'pid_revocations_v2', columns: 'pid, retired_at' },
-      { from: 'acked_gaps', to: 'acked_gaps_v2', columns: 'pid, writer_id, module_id, operation_id, path, byte_length, digest' },
-    ];
-    const tables = new Set(
-      [...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'")].map((row) => String(row.name)),
-    );
-    const hexPrefix = /^vfs_append_([0-9a-f]+)_(receipts|writer_state|module_state|pid_revocations|acked_gaps)$/;
-    for (const layout of legacyLayouts) {
-      const sources: { table: string; namespace: string }[] = [];
-      const plain = `vfs_append_${layout.from}`;
-      if (tables.has(plain)) sources.push({ table: plain, namespace: '' });
-      for (const name of tables) {
-        const match = hexPrefix.exec(name);
-        if (!match || match[2] !== layout.from) continue;
-        const namespace = match[1] === undefined ? null : this.decodeAppendScope(match[1]);
-        if (namespace === null) continue;
-        sources.push({ table: name, namespace });
-      }
-      for (const source of sources) {
-        this.sql.exec(
-          `INSERT OR IGNORE INTO vfs_append_${layout.to}
-             (namespace, ${layout.columns})
-           SELECT ?, ${layout.columns} FROM ${source.table}`,
-          source.namespace,
-        );
-        this.sql.exec(`ALTER TABLE ${source.table} RENAME TO vfs_append_legacy_${source.table.slice('vfs_append_'.length)}`);
-      }
-    }
-    this.sql.exec(
-      'INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)',
-      APPEND_NAMESPACE_MIGRATION,
-      Date.now(),
-    );
-  }
+  
 
   /** Decode a hex scope suffix back to its namespace; null when malformed. */
-  private decodeAppendScope(hex: string): string | null {
-    if (hex.length === 0 || hex.length % 2 !== 0) return null;
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < bytes.length; i += 1) {
-      const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      if (!Number.isFinite(byte)) return null;
-      bytes[i] = byte;
-    }
-    return new TextDecoder().decode(bytes);
-  }
+  
 
 
   private tableColumns(table: string): Set<string> {
@@ -1472,11 +1395,10 @@ export class SqliteVFS {
     // Descriptions share the canonical inode object: a second descriptor
     // sees chmod/chown/utimes instantly, and unlink leaves every holder
     // pointing at the same retired inode rather than diverging copies.
-    const opened: { inode: INode; path: string | null } = { inode: resolved.inode, path: resolved.path };
+    const opened: { inode: INode; path: string | null; closed: boolean } = { inode: resolved.inode, path: resolved.path, closed: false };
     this.openNodes.add(opened);
-    let closed = false;
     const current = (): INode => {
-      if (closed) throw vfsError('EBADF', path);
+      if (opened.closed) throw vfsError('EBADF', path);
       return opened.inode;
     };
     const stat = (): VfsStat => {
@@ -1567,7 +1489,7 @@ export class SqliteVFS {
         if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
         else { current().atime = atime; current().mtime = mtime; }
       },
-      close: () => { if (!closed) { closed = true; this.openNodes.delete(opened); } },
+      close: () => { opened.closed = true; this.openNodes.delete(opened); },
     };
   }
 
@@ -1952,10 +1874,6 @@ export class SqliteVFS {
     return this._pathRevisions.get(p) ?? 0;
   }
 
-  /** Content revision of an inode; 0 for inodes never republished. */
-  inodeRevision(ino: number): number {
-    return this._inoRevisions.get(ino) ?? 0;
-  }
 
   /**
    * Advance the clock once, stamp every path + its ancestors, and record
@@ -2647,6 +2565,18 @@ export class SqliteVFS {
       throw vfsError('EINVAL', `append operation gap exceeds ${VFS_APPEND_RECEIPT_LIMIT}`);
     }
 
+    this.assertMutationsAllowed([normalized]);
+    const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
+    const effectivePath = resolved.path;
+    const inode = resolved.inode;
+    if (inode?.kind === 'directory') throw vfsError('EISDIR', effectivePath);
+    if (inode && inode.kind !== 'file') {
+      throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+    }
+    if (inode && !this.accessInode(inode, 0o2, cred)) throw vfsError('EACCES', effectivePath);
+    if (!inode) this.checkParentAccess(effectivePath, cred);
+    const offset = inode?.size ?? 0;
+
     const retainedCount = Number(
       ([...this.sql.exec(
         `SELECT
@@ -2676,14 +2606,6 @@ export class SqliteVFS {
       moduleState = { acked_through: 0 };
     }
 
-    const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
-    const effectivePath = resolved.path;
-    const inode = resolved.inode;
-    if (inode?.kind === 'directory') throw vfsError('EISDIR', effectivePath);
-    if (inode && inode.kind !== 'file') {
-      throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
-    }
-    const offset = inode?.size ?? 0;
     const recordReceipt = (): void => {
       this.sql.exec(
         `INSERT INTO vfs_append_receipts_v2
@@ -4481,6 +4403,7 @@ export class SqliteVFS {
       events: new Array<{ type: VfsEventType; path: string; oldPath?: string }>(),
     };
     const maintenancePending = this.maintenancePending;
+    const openBefore = new Map([...this.openNodes].map(opened => [opened, { path: opened.path, inode: opened.inode }]));
     this.transactionPublication = publication;
     let result: T;
     try {
@@ -4497,6 +4420,17 @@ export class SqliteVFS {
       this.maintenancePending = maintenancePending;
       try {
         this.loadInodes();
+        const byIdentity = new Map([...this.inodes.values()].map(inode => [inode.ino, inode]));
+        for (const opened of this.openNodes) {
+          const previous = openBefore.get(opened);
+          if (!previous) {
+            opened.closed = true;
+            this.openNodes.delete(opened);
+            continue;
+          }
+          opened.inode = byIdentity.get(previous.inode.ino) ?? previous.inode;
+          opened.path = previous.path;
+        }
       } catch (reloadError) {
         throw new AggregateError([error, reloadError], '[sqlite-vfs] transaction rollback reload failed', { cause: error });
       }
@@ -4532,7 +4466,7 @@ export class SqliteVFS {
     execution: TransactionExecution,
     onCommit?: () => void,
   ): void {
-    const renamedInos = new Set<number>();
+    const identities = new Map<StoredInodeEntry, number>();
     this.executeMeasuredTransaction(plan, execution, () => {
       for (const path of plan.deletedPaths) {
         this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
@@ -4561,9 +4495,8 @@ export class SqliteVFS {
           // existing row at this path keeps its number (write preserves
           // identity, unlink+recreate allocates fresh); anything else takes
           // the counter. The bump and the row share this transaction.
-          const renamed = inode.ino !== undefined;
-          inode.ino ??= this.inodes.get(inode.path)?.ino ?? this.nextIno();
-          if (renamed) renamedInos.add(inode.ino);
+          const ino = inode.ino ?? this.inodes.get(inode.path)?.ino ?? this.nextIno();
+          identities.set(inode, ino);
           values.push(
             inode.path,
             inode.parentPath,
@@ -4576,7 +4509,7 @@ export class SqliteVFS {
             inode.gid,
             inode.chunkCount,
             inode.contentId,
-            inode.ino,
+            ino,
           );
         }
         this.sql.exec(
@@ -4637,13 +4570,7 @@ export class SqliteVFS {
       }
       onCommit?.();
     });
-    // Content revisions bump only on commit, and only for inodes whose rows
-    // the plan actually republished — never for rename-moved inos.
-    for (const entry of plan.inodes) {
-      if (entry.ino !== undefined && !renamedInos.has(entry.ino)) {
-        this._inoRevisions.set(entry.ino, (this._inoRevisions.get(entry.ino) ?? 0) + 1);
-      }
-    }
+    for (const [inode, ino] of identities) inode.ino = ino;
     if (plan.gcContentIds.length > 0) this.maintenancePending = true;
   }
 
@@ -5621,6 +5548,10 @@ export class SqliteVFSProvider {
 
   readFile(sub: string): Uint8Array { return this.vfs.readFile(this.resolve(sub)); }
   readFileString(sub: string): string { return this.vfs.readFileString(this.resolve(sub)); }
+  lstat(sub: string): VfsStat { return this.vfs.lstat(this.resolve(sub)); }
+  readlink(sub: string): string { return this.vfs.readlink(this.resolve(sub)); }
+  symlink(target: string, sub: string): void { this.vfs.symlink(target, this.resolve(sub)); }
+  utimes(sub: string, atimeMs: number, mtimeMs: number): void { this.vfs.utimes(this.resolve(sub), atimeMs, mtimeMs); }
 
   readRange(sub: string, offset: number, length: number): Uint8Array {
     return this.vfs.readRange(this.resolve(sub), offset, length);

@@ -4,7 +4,7 @@
  * surface, so the same code serves process facets, the facet loopback stubs
  * and the SDK's direct `_rpc*` calls.
  *
- * - The native filesystem ops in core's `ops` table run in-process against
+ * - The native filesystem ops core's handler defines run in-process against
  *   the shared bridge store — the same cache `supervisorBridge` hands the
  *   handle-based and append RPC bodies.
  * - `readFile`, `readFileBytes`, `fsReadRange`, `fsReadRangeUncached` and
@@ -25,7 +25,7 @@ import {
   type SupervisorOpName,
   SUPERVISOR_OP_ROUTES,
 } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import type { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
+import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import {
@@ -45,14 +45,17 @@ export interface SessionSupervisorHost {
   ensureSqliteFs(): void;
   readonly sqliteFs: SqliteVFS | null;
   readonly processes: SessionProcessSupervisor;
+  readonly runtimeWorkspace?: { filesystem: NimbusFilesystemAuthority } | null;
+  getFilesystemAuthority?(): NimbusFilesystemAuthority;
   _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
 }
 export interface SessionSupervisorOps {
   readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
-  readonly bridge: (pid?: number) => SqliteRuntimeFsBridge;
+  readonly bridge: (pid?: number) => RuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
   readonly forget: (pid: number) => void;
+  readonly dispose: () => Promise<void>;
 }
 
 /** The stdout/stderr ops carry bytes; anything else is a caller bug, named. */
@@ -67,7 +70,9 @@ export function buildSessionSupervisorOps(
   methods?: SupervisorOpHost,
 ): SessionSupervisorOps {
   host.ensureSqliteFs();
-  store ??= createSupervisorBridgeStore({ vfs: host.sqliteFs!, processes: host.processes });
+  const vfs = host.sqliteFs;
+  if (!vfs) throw new Error('Supervisor filesystem is not initialized');
+  store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
   const extend: Partial<Record<SupervisorOpName, SupervisorOpHandler>> = {
     // The native ops whose session bodies carry accounting the bridge
     // alone doesn't know: a read lease sized to what the file can return.
@@ -86,7 +91,7 @@ export function buildSessionSupervisorOps(
       const fs = tools.bridge(envelope.pid, envelope.cred);
       const stat = await fs.stat(path);
       if (!stat) return null;
-      return withReadAllocation(stat.size, () => fs.readFile(path));
+      return withReadAllocation(stat.size, async () => fs.readFile(path));
     },
     fsReadRange: async (envelope, tools) => {
       const args = FsReadRangeArgsSchema.parse({
@@ -97,7 +102,7 @@ export function buildSessionSupervisorOps(
       const fs = tools.bridge(envelope.pid, envelope.cred);
       return withReadAllocation(
         await rangeReadBytes(fs, args.path, args.offset, args.length),
-        () => fs.readRange(args.path, args.offset, args.length),
+        async () => fs.readRange(args.path, args.offset, args.length),
       );
     },
     fsReadRangeUncached: async (envelope, tools) => {
@@ -109,7 +114,7 @@ export function buildSessionSupervisorOps(
       const fs = tools.bridge(envelope.pid, envelope.cred);
       return withReadAllocation(
         await rangeReadBytes(fs, args.path, args.offset, args.length),
-        () => fs.readRange(args.path, args.offset, args.length, { cached: false }),
+        async () => fs.readRange(args.path, args.offset, args.length, { cached: false }),
       );
     },
     // The write stream's decode-drain timestamp starts when the envelope
@@ -123,7 +128,7 @@ export function buildSessionSupervisorOps(
       if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
         throw new Error('filesystem RPC requires a valid process pid');
       }
-      return tools.vfs.as(tools.cred(pid, envelope.cred)).writeStream(envelope.stream, {
+      return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
         decodeDrainStartedAt: performance.now(),
         mutationOwner: envelope.mutationOwner,
       });
@@ -149,5 +154,5 @@ export function buildSessionSupervisorOps(
     bridge: store,
     extend,
   });
-  return { dispatch, bridge: store.bridge, forget: store.forget };
+  return { dispatch, bridge: store.bridge, forget: store.forget, dispose: store.dispose };
 }

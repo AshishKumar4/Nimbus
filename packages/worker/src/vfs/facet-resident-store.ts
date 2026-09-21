@@ -804,7 +804,7 @@ async function __residentEnumerate(supervisor) {
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
         throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
       }
-      entries.push({ path, size, rev });
+      entries.push({ path, size, rev, epoch: cursor.epoch });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, cursor, complete: true, reason: null };
@@ -853,6 +853,7 @@ async function __residentFetchFiles(supervisor, files) {
       ranges.push({
         path: file.path,
         rev: file.rev,
+        epoch: file.epoch,
         part,
         parts,
         offset,
@@ -883,7 +884,7 @@ async function __residentFetchFiles(supervisor, files) {
     let results;
     try {
       results = await supervisor.fsReadBatch(
-        batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length }))
+        batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }))
       );
     } catch {
       for (const r of batch) failedPaths.add(r.path);
@@ -905,6 +906,7 @@ async function __residentFetchFiles(supervisor, files) {
       }
       if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
       const chunk = __residentBytes(entry.bytes);
+      if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
       fetchedBytes += chunk.byteLength;
       __residentPutChunk(__residentSql, range.path, range.part, chunk);
       const seen = (landed.get(range.path) || 0) + 1;

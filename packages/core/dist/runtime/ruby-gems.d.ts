@@ -1,4 +1,4 @@
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 export interface RubyGemRequest {
     name: string;
     requirements: string[];
@@ -12,8 +12,8 @@ export interface InstalledRubyGemBin {
     path: string;
 }
 export declare function defaultGemHome(): string;
-export declare function installedGemLibRoots(vfs: CredentialedVfs, gemHome?: string): string[];
-export declare function installedGemBins(vfs: CredentialedVfs, gemHome?: string): InstalledRubyGemBin[];
+export declare function installedGemLibRoots(vfs: CredentialedVfs, gemHome?: string): Promise<string[]>;
+export declare function installedGemBins(vfs: CredentialedVfs, gemHome?: string): Promise<InstalledRubyGemBin[]>;
 export declare function installRubyGems(vfs: CredentialedVfs, requests: RubyGemRequest[], opts?: {
     gemHome?: string;
     includeDependencies?: boolean;

@@ -131,12 +131,12 @@ function completeCommand(word: string, ctx: CompletionContext): string[] {
   return unique.filter((name) => name.startsWith(word));
 }
 
-function completeFile(word: string, ctx: CompletionContext): Promise<string[]> {
-  return listEntries(word, ctx, false);
+async function completeFile(word: string, ctx: CompletionContext): Promise<string[]> {
+  return (await listEntries(word, ctx, false));
 }
 
-function completeDirectory(word: string, ctx: CompletionContext): Promise<string[]> {
-  return listEntries(word, ctx, true);
+async function completeDirectory(word: string, ctx: CompletionContext): Promise<string[]> {
+  return (await listEntries(word, ctx, true));
 }
 
 async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): Promise<string[]> {

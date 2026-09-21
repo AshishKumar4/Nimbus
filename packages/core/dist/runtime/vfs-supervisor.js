@@ -1,65 +1,115 @@
-/**
- * vfs-supervisor.ts — the session's syscall capability, served in place.
- *
- * The WASI layer treats its seed as a CACHE over the session filesystem and
- * reaches the real thing through a {@link WasiSupervisorStub}. In a Durable
- * Object that stub is an RPC handle minted for a pid, because the facet is a
- * different isolate; in the caller's own isolate the filesystem is right here
- * and the credential is already on the view.
- *
- * The methods are `async` because the shim's contract is, not because anything
- * here waits. That is what makes this usable on a host with no JSPI: every
- * mutation is queued and drained OUTSIDE the guest (`__wasiDrainPersist`, which
- * a runner awaits after the program returns), so a promise there costs nothing.
- * A READ is different — its promise would have to suspend the guest mid-syscall
- * — which is why a host without parking must seed the filesystem completely and
- * never reach the read paths at all. See FacetHost.parking.
- */
-/** Serve the WASI syscall surface directly from `vfs`, as its own credential. */
-export function vfsSupervisor(vfs) {
-    const key = (path) => path.replace(/^\/+/, '');
+/** Names on the existing supervisor RPC capability; this table owns no state. */
+export const FILESYSTEM_RPC_METHODS = {
+    stat: 'stat', readFile: 'readFileBytes', writeFile: 'writeFile', readRange: 'fsReadRange',
+    writeRange: 'fsWriteRange', truncate: 'fsTruncate', utimes: 'utimes', chmod: 'chmod',
+    access: 'access', chown: 'chown', open: 'fsOpen', read: 'fsRead', write: 'fsWrite',
+    close: 'fsClose', readdir: 'readdir', mkdir: 'mkdir', unlink: 'unlink', rmdir: 'rmdir',
+    rename: 'rename', readlink: 'readlink', symlink: 'symlink', fsync: 'fsSync', revision: 'fsRevision',
+    acquire: 'fsAcquire', list: 'fsList', realpath: 'fsRealpath', remove: 'fsRemove', copyFile: 'fsCopyFile',
+    fstat: 'fsFstat', dup: 'fsDup', seek: 'fsSeek', setStatus: 'fsSetStatus', readdirHandle: 'fsReaddirHandle',
+    ftruncate: 'fsFtruncate', fchmod: 'fsFchmod', fchown: 'fsFchown', futimes: 'fsFutimes',
+    appendOnce: 'fsAppend', acknowledgeAppend: 'fsAppendAck', writeBatch: 'writeBatch',
+    writeStream: 'writeBatchStream', acquireExclusiveMutation: 'fsAcquireExclusiveMutation',
+    releaseExclusiveMutation: 'fsReleaseExclusiveMutation',
+};
+/** Local facets retain the process-bound bridge and its synchronous capability. */
+export function vfsSupervisor(fs) {
     return {
-        async fsReadRange(vfsPath, offset, length) {
-            return vfs.readRange(key(vfsPath), offset, length);
-        },
-        async fsRevision(root) {
-            return vfs.revision(key(root));
-        },
-        async stat(vfsPath) {
-            const path = key(vfsPath);
-            if (!vfs.exists(path))
-                return null;
-            const stat = vfs.lstat(path);
-            return {
-                type: stat.type === 'directory' ? 'directory' : stat.type === 'symlink' ? 'symlink' : 'file',
-                size: stat.size,
-                mtime: stat.mtime,
-            };
-        },
-        async writeFile(vfsPath, bytes) {
-            const path = key(vfsPath);
-            const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-            if (parent && !vfs.exists(parent))
-                vfs.mkdir(parent, { recursive: true });
-            vfs.writeFile(path, bytes);
-        },
-        async unlink(vfsPath) {
-            vfs.unlink(key(vfsPath));
-        },
-        async mkdir(vfsPath) {
-            vfs.mkdir(key(vfsPath), { recursive: true });
-        },
-        async rmdir(vfsPath) {
-            vfs.rmdir(key(vfsPath));
-        },
-        async rename(from, to) {
-            vfs.rename(key(from), key(to));
-        },
-        async symlink(target, vfsPath) {
-            vfs.symlink(target, key(vfsPath));
-        },
-        async utimes(vfsPath, atimeMs, mtimeMs) {
-            vfs.utimes(key(vfsPath), atimeMs, mtimeMs);
-        },
+        synchronous: fs.synchronous,
+        stat: (...args) => fs.stat(...args),
+        readFileBytes: (...args) => fs.readFile(...args),
+        writeFile: (...args) => fs.writeFile(...args),
+        fsReadRange: (...args) => fs.readRange(...args),
+        fsWriteRange: (...args) => fs.writeRange(...args),
+        fsTruncate: (...args) => fs.truncate(...args),
+        utimes: (...args) => fs.utimes(...args),
+        chmod: (...args) => fs.chmod(...args),
+        access: (...args) => fs.access(...args),
+        chown: (...args) => fs.chown(...args),
+        fsOpen: (...args) => fs.open(...args),
+        fsRead: (...args) => fs.read(...args),
+        fsWrite: (...args) => fs.write(...args),
+        fsClose: (...args) => fs.close(...args),
+        readdir: (...args) => fs.readdir(...args),
+        mkdir: (...args) => fs.mkdir(...args),
+        unlink: (...args) => fs.unlink(...args),
+        rmdir: (...args) => fs.rmdir(...args),
+        rename: (...args) => fs.rename(...args),
+        readlink: (...args) => fs.readlink(...args),
+        symlink: (...args) => fs.symlink(...args),
+        fsSync: (...args) => fs.fsync(...args),
+        fsRevision: (...args) => fs.revision(...args),
+        fsAcquire: (...args) => fs.acquire(...args),
+        fsList: (...args) => fs.list(...args),
+        fsRealpath: (...args) => fs.realpath(...args),
+        fsRemove: (...args) => fs.remove(...args),
+        fsCopyFile: (...args) => fs.copyFile(...args),
+        fsFstat: (...args) => fs.fstat(...args),
+        fsDup: (...args) => fs.dup(...args),
+        fsSeek: (...args) => fs.seek(...args),
+        fsSetStatus: (...args) => fs.setStatus(...args),
+        fsReaddirHandle: (...args) => fs.readdirHandle(...args),
+        fsFtruncate: (...args) => fs.ftruncate(...args),
+        fsFchmod: (...args) => fs.fchmod(...args),
+        fsFchown: (...args) => fs.fchown(...args),
+        fsFutimes: (...args) => fs.futimes(...args),
+        fsAppend: (...args) => fs.appendOnce(...args),
+        fsAppendAck: (...args) => fs.acknowledgeAppend(...args),
+        writeBatch: (...args) => fs.writeBatch(...args),
+        writeBatchStream: (...args) => fs.writeStream(...args),
+        fsAcquireExclusiveMutation: (...args) => fs.acquireExclusiveMutation(...args),
+        fsReleaseExclusiveMutation: (...args) => fs.releaseExclusiveMutation(...args),
+    };
+}
+/** Remote facets use the same typed supervisor RPC methods. */
+export function supervisorFilesystem(supervisor) {
+    return {
+        // Passed through, never minted: a capability the binding does not carry is
+        // one an RPC hop cannot have, and a synthetic one would promise the caller
+        // an answer without a Promise that only a same-isolate authority can keep.
+        synchronous: supervisor.synchronous,
+        stat: (...args) => supervisor.stat(...args),
+        readFile: (...args) => supervisor.readFileBytes(...args),
+        writeFile: (...args) => supervisor.writeFile(...args),
+        readRange: (...args) => supervisor.fsReadRange(...args),
+        writeRange: (...args) => supervisor.fsWriteRange(...args),
+        truncate: (...args) => supervisor.fsTruncate(...args),
+        utimes: (...args) => supervisor.utimes(...args),
+        chmod: (...args) => supervisor.chmod(...args),
+        access: (...args) => supervisor.access(...args),
+        chown: (...args) => supervisor.chown(...args),
+        open: (...args) => supervisor.fsOpen(...args),
+        read: (...args) => supervisor.fsRead(...args),
+        write: (...args) => supervisor.fsWrite(...args),
+        close: (...args) => supervisor.fsClose(...args),
+        readdir: (...args) => supervisor.readdir(...args),
+        mkdir: (...args) => supervisor.mkdir(...args),
+        unlink: (...args) => supervisor.unlink(...args),
+        rmdir: (...args) => supervisor.rmdir(...args),
+        rename: (...args) => supervisor.rename(...args),
+        readlink: (...args) => supervisor.readlink(...args),
+        symlink: (...args) => supervisor.symlink(...args),
+        fsync: (...args) => supervisor.fsSync(...args),
+        revision: (...args) => supervisor.fsRevision(...args),
+        acquire: (...args) => supervisor.fsAcquire(...args),
+        list: (...args) => supervisor.fsList(...args),
+        realpath: (...args) => supervisor.fsRealpath(...args),
+        remove: (...args) => supervisor.fsRemove(...args),
+        copyFile: (...args) => supervisor.fsCopyFile(...args),
+        fstat: (...args) => supervisor.fsFstat(...args),
+        dup: (...args) => supervisor.fsDup(...args),
+        seek: (...args) => supervisor.fsSeek(...args),
+        setStatus: (...args) => supervisor.fsSetStatus(...args),
+        readdirHandle: (...args) => supervisor.fsReaddirHandle(...args),
+        ftruncate: (...args) => supervisor.fsFtruncate(...args),
+        fchmod: (...args) => supervisor.fsFchmod(...args),
+        fchown: (...args) => supervisor.fsFchown(...args),
+        futimes: (...args) => supervisor.fsFutimes(...args),
+        appendOnce: (...args) => supervisor.fsAppend(...args),
+        acknowledgeAppend: (...args) => supervisor.fsAppendAck(...args),
+        writeBatch: (...args) => supervisor.writeBatch(...args),
+        writeStream: (...args) => supervisor.writeBatchStream(...args),
+        acquireExclusiveMutation: (...args) => supervisor.fsAcquireExclusiveMutation(...args),
+        releaseExclusiveMutation: (...args) => supervisor.fsReleaseExclusiveMutation(...args),
     };
 }

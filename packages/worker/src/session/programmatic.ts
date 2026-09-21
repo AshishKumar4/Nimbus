@@ -51,7 +51,7 @@ export interface ProgrammaticShell {
  */
 type ProgrammaticShellParent = ProgrammaticShell & Pick<
   Shell,
-  'getVfs' | 'getRegistry' | 'getProcessRegistry' | 'getRunAsHost'
+  'getVfs' | 'getRegistry' | 'getProcessRegistry' | 'getRunAsHost' | 'filesystem'
 >;
 
 interface ProgrammaticShellExecuteOptions {
@@ -190,7 +190,7 @@ export function createProgrammaticShell(
   if (!parent) throw new Error('Nimbus shell did not initialize');
   const shell = new Shell(
     new HeadlessTerminal(),
-    parent.getVfs(),
+    parent.filesystem,
     parent.getRegistry(),
     { ...parent.getEnv(), ...state.env, $: String(pid) },
     parent.getProcessRegistry(),
@@ -726,7 +726,7 @@ export async function rpcEnsureRuntimes(
 export async function rpcListRuntimes(self: ProgrammaticHost) {
   await ensureProgrammaticReady(self);
   return {
-    installed: self.runtimeManager.list(),
+    installed: (await self.runtimeManager.list()),
     available: await self.runtimeManager.available(),
   };
 }

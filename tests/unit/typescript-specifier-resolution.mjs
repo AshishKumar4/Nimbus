@@ -36,6 +36,8 @@ import {
 } from '../../packages/worker/src/facets/manager.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   constructor(files = {}) {
     this.files = new Map(Object.entries(files));
     this.dirs = new Set();
@@ -53,13 +55,13 @@ class FakeVfs {
 }
 
 /** What the entry's specifiers resolved to — the entry itself is always shipped. */
-const bundleOf = (files, entryFile) =>
-  Object.keys(prefetchForRequire(
+const bundleOf = async (files, entryFile) =>
+  Object.keys((await prefetchForRequire(
     new FakeVfs(files),
     files[entryFile],
     entryFile.slice(0, entryFile.lastIndexOf('/')),
     entryFile,
-  ).bundle).filter((p) => p !== entryFile).sort();
+  )).bundle).filter((p) => p !== entryFile).sort();
 
 // ── The installer's own shape ─────────────────────────────────────────────
 {
@@ -68,7 +70,7 @@ const bundleOf = (files, entryFile) =>
     'app/src/program.ts': 'export const program = 1;\n',
   };
   assert.deepEqual(
-    bundleOf(files, 'app/bin/cli.ts'),
+    (await bundleOf(files, 'app/bin/cli.ts')),
     ['app/src/program.ts'],
     "a .js specifier from a .ts entry ships the .ts sibling",
   );
@@ -84,7 +86,7 @@ const bundleOf = (files, entryFile) =>
     'app/src/program.ts': 'export const program = 1;\n',
   };
   assert.deepEqual(
-    bundleOf(files, 'app/bin/cli.ts'),
+    (await bundleOf(files, 'app/bin/cli.ts')),
     ['app/src/program.js'],
     'the literal .js file still wins over its .ts sibling',
   );
@@ -100,7 +102,7 @@ const bundleOf = (files, entryFile) =>
     'app/other.ts': 'export const y = 2;\n',
   };
   assert.deepEqual(
-    bundleOf(files, 'app/index.js'),
+    (await bundleOf(files, 'app/index.js')),
     ['app/lib/index.js', 'app/other.js'],
     'node resolution is unchanged wherever it already resolves',
   );
@@ -114,7 +116,7 @@ const bundleOf = (files, entryFile) =>
     'app/mod/index.ts': 'export const m = 1;\n',
   };
   assert.deepEqual(
-    bundleOf(files, 'app/index.ts'),
+    (await bundleOf(files, 'app/index.ts')),
     ['app/helper.ts', 'app/mod/index.ts'],
     'extensionless specifiers reach .ts files and .ts directory indexes',
   );
@@ -128,14 +130,14 @@ const bundleOf = (files, entryFile) =>
     'app/index.ts': "import './a.mjs';\n",
     'app/a.mts': 'export const a = 1;\n',
   };
-  assert.deepEqual(bundleOf(files, 'app/index.ts'), ['app/a.mts'], '.mjs finds .mts');
+  assert.deepEqual((await bundleOf(files, 'app/index.ts')), ['app/a.mts'], '.mjs finds .mts');
 }
 {
   const files = {
     'app/index.ts': "require('./b.cjs');\n",
     'app/b.cts': 'export const b = 1;\n',
   };
-  assert.deepEqual(bundleOf(files, 'app/index.ts'), [], '.cjs does not find .cts, as in bun');
+  assert.deepEqual((await bundleOf(files, 'app/index.ts')), [], '.cjs does not find .cts, as in bun');
 }
 
 // ── The mapping itself, against the table measured from bun 1.3.1 ─────────

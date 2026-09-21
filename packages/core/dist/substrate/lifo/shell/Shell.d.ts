@@ -1,5 +1,5 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import { ExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandRunAsHost } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
@@ -17,8 +17,8 @@ export interface ExecuteOptions {
      * shell's own command output is text, encoded here at the producer's edge;
      * a text consumer decodes at its own edge with a streaming decoder.
      */
-    onStdout?: (data: Uint8Array) => void;
-    onStderr?: (data: Uint8Array) => void;
+    onStdout?: (data: Uint8Array) => void | Promise<void>;
+    onStderr?: (data: Uint8Array) => void | Promise<void>;
     stdin?: string;
     terminalStdin?: TerminalInputStream;
     signal?: AbortSignal;
@@ -44,8 +44,9 @@ export interface ShellCommandIdentity {
     runAs?: CommandRunAsHost;
 }
 export declare class Shell {
+    readonly filesystem: ShellFilesystem;
     private terminal;
-    private vfs;
+    private get vfs();
     private registry;
     cwd: string;
     env: Record<string, string>;
@@ -90,14 +91,14 @@ export declare class Shell {
      * as one keystroke rather than three.
      */
     typeAhead: string[];
-    constructor(terminal: ITerminal, vfs: VFS, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
+    constructor(terminal: ITerminal, filesystem: ShellFilesystem, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
     private registerBuiltins;
     getJobTable(): JobTable;
     getProcessRegistry(): ProcessRegistry;
     getCwd(): string;
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
-    getVfs(): VFS;
+    getVfs(): ExecutionFs;
     /** Transfer terminal I/O without replacing shell state or sourcing login files. */
     bindTerminal(terminal: ITerminal): void;
     takeQueuedInput(): string[];
@@ -133,7 +134,7 @@ export declare class Shell {
     start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
-    handleInput(data: string): void;
+    handleInput(data: string): Promise<void>;
     private handleTab;
     private handleStdinInput;
     private applyCompletion;
@@ -145,8 +146,8 @@ export declare class Shell {
      * delivered when that one settles, so a queued line is never fed into a
      * shell that is busy again.
      */
-    drainTypeAhead(): void;
-    drainPasteQueue(): void;
+    drainTypeAhead(): Promise<void>;
+    drainPasteQueue(): Promise<void>;
     private moveCursorLeft;
     private moveCursorRight;
     private moveCursorHome;

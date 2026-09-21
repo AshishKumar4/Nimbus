@@ -5,7 +5,7 @@
  * and the modern rimraf v4+ promise-based API, all backed by the VFS
  * fs shim's recursive rmdir.
  */
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem as VFS } from './filesystem.js';
 export interface RimrafOptions {
     glob?: boolean | object;
     maxRetries?: number;

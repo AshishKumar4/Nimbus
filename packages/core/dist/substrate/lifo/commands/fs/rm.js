@@ -1,6 +1,5 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
     Recursive: { type: 'boolean', short: 'R' },
@@ -11,36 +10,20 @@ const command = async (ctx) => {
     const recursive = (flags.recursive || flags.Recursive);
     const force = flags.force;
     if (positional.length === 0) {
-        ctx.stderr.write('rm: missing operand\n');
+        if (force)
+            return 0;
+        await ctx.stderr.write('rm: missing operand\n');
         return 1;
     }
     let exitCode = 0;
     for (const arg of positional) {
         const path = resolve(ctx.cwd, arg);
         try {
-            const stat = ctx.vfs.stat(path);
-            if (stat.type === 'directory') {
-                if (!recursive) {
-                    ctx.stderr.write(`rm: cannot remove '${arg}': Is a directory\n`);
-                    exitCode = 1;
-                    continue;
-                }
-                ctx.vfs.rmdirRecursive(path);
-            }
-            else {
-                ctx.vfs.unlink(path);
-            }
+            await ctx.vfs.remove(path, { recursive, force });
         }
-        catch (e) {
-            if (e instanceof VFSError) {
-                if (!force) {
-                    ctx.stderr.write(`rm: ${arg}: ${e.message}\n`);
-                    exitCode = 1;
-                }
-            }
-            else {
-                throw e;
-            }
+        catch (error) {
+            await ctx.stderr.write(`rm: ${arg}: ${error instanceof Error ? error.message : String(error)}\n`);
+            exitCode = 1;
         }
     }
     return exitCode;

@@ -532,15 +532,15 @@ async function expandBraced(inner: string, ctx: ExpandContext, quoted: boolean):
       const target = scalarOf(await resolveParameter(parameter, ctx), ctx);
       const indirect = parseParameterRef(target);
       if (indirect === null || indirect.rest !== '') return [valuePiece('', quoted)];
-      if (parameter.rest === '') return expandParameter(indirect, ctx, quoted);
-      return applyModifier(indirect, parameter.rest, ctx, quoted);
+      if (parameter.rest === '') return (await expandParameter(indirect, ctx, quoted));
+      return (await applyModifier(indirect, parameter.rest, ctx, quoted));
     }
   }
 
   const parameter = parseParameterRef(inner);
   if (parameter === null) return [valuePiece('', quoted)];
-  if (parameter.rest === '') return expandParameter(parameter, ctx, quoted);
-  return applyModifier(parameter, parameter.rest, ctx, quoted);
+  if (parameter.rest === '') return (await expandParameter(parameter, ctx, quoted));
+  return (await applyModifier(parameter, parameter.rest, ctx, quoted));
 }
 
 /**
@@ -567,12 +567,12 @@ async function applyModifier(
   const operator = colon ? rest[1] : rest[0];
 
   if (operator !== undefined && DEFAULT_OPERATORS.has(operator)) {
-    return applyDefault(ref, operator, colon, rest.slice(colon ? 2 : 1), ctx, quoted);
+    return (await applyDefault(ref, operator, colon, rest.slice(colon ? 2 : 1), ctx, quoted));
   }
-  if (colon) return applySlice(ref, rest.slice(1), ctx, quoted);
-  if (rest[0] === '#' || rest[0] === '%') return applyTrim(ref, rest, ctx, quoted);
-  if (rest[0] === '/') return applySubstitution(ref, rest.slice(1), ctx, quoted);
-  if (rest[0] === '^' || rest[0] === ',') return applyCase(ref, rest, ctx, quoted);
+  if (colon) return (await applySlice(ref, rest.slice(1), ctx, quoted));
+  if (rest[0] === '#' || rest[0] === '%') return (await applyTrim(ref, rest, ctx, quoted));
+  if (rest[0] === '/') return (await applySubstitution(ref, rest.slice(1), ctx, quoted));
+  if (rest[0] === '^' || rest[0] === ',') return (await applyCase(ref, rest, ctx, quoted));
   return [valuePiece('', quoted)];
 }
 
@@ -659,9 +659,9 @@ async function applyTrim(
   const operator = rest[0];
   const longest = rest[1] === operator;
   const pattern = await expandParameterWord(rest.slice(longest ? 2 : 1), ctx);
-  return mapParameter(ref, ctx, quoted, (value) => operator === '#'
+  return (await mapParameter(ref, ctx, quoted, (value) => operator === '#'
     ? trimPrefix(value, pattern, longest)
-    : trimSuffix(value, pattern, longest));
+    : trimSuffix(value, pattern, longest)));
 }
 
 function trimPrefix(value: string, pattern: string, longest: boolean): string {
@@ -700,12 +700,12 @@ async function applySubstitution(
   const pattern = await expandParameterWord(cut === -1 ? body : body.slice(0, cut), ctx);
   const replacement = cut === -1 ? '' : await expandParameterWord(body.slice(cut + 1), ctx);
 
-  return mapParameter(ref, ctx, quoted, (value) => {
+  return (await mapParameter(ref, ctx, quoted, (value) => {
     if (mode === 'all') return replaceAll(value, pattern, replacement);
     if (mode === 'first') return replaceFirst(value, pattern, replacement);
     if (mode === 'prefix') return replaceAnchored(value, pattern, replacement, 'prefix');
     return replaceAnchored(value, pattern, replacement, 'suffix');
-  });
+  }));
 }
 
 function unescapedSlash(text: string): number {
@@ -744,12 +744,12 @@ async function applyCase(
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
   const matches = (c: string): boolean => pattern === '' || globMatch(pattern, c);
 
-  return mapParameter(ref, ctx, quoted, (value) => {
+  return (await mapParameter(ref, ctx, quoted, (value) => {
     if (!every) {
       return value === '' || !matches(value[0]) ? value : convert(value[0]) + value.slice(1);
     }
     return [...value].map((c) => (matches(c) ? convert(c) : c)).join('');
-  });
+  }));
 }
 
 async function mapParameter(

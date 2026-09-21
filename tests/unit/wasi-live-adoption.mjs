@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
 // wasi-live-adoption — the live filesystem is actually adopted, and a reused
 // isolate never leaks one process's filesystem state into the next.
 //
@@ -33,7 +33,7 @@ function mockSupervisor(seed = {}) {
   const store = new Map();
   for (const [k, v] of Object.entries(seed)) store.set(k, enc.encode(v));
   const log = [];
-  return {
+  return descriptorSupervisor({
     store, log,
     async fsReadRange(p, offset, length) {
       log.push(['fsReadRange', p]);
@@ -45,6 +45,18 @@ function mockSupervisor(seed = {}) {
       log.push(['writeFile', p]);
       store.set(p, new Uint8Array(content));
     },
+    async fsWriteRange(p, offset, bytes) {
+      const old = store.get(p) ?? new Uint8Array();
+      const next = new Uint8Array(Math.max(old.length, offset + bytes.length));
+      next.set(old); next.set(bytes, offset); store.set(p, next);
+      log.push(['fsWriteRange', p]);
+      return bytes.length;
+    },
+    async fsTruncate(p, size) {
+      const next = new Uint8Array(size);
+      next.set((store.get(p) ?? new Uint8Array()).subarray(0, size));
+      store.set(p, next);
+    },
     async unlink(p) { log.push(['unlink', p]); store.delete(p); },
     async mkdir(p) { log.push(['mkdir', p]); },
     async rmdir(p) { log.push(['rmdir', p]); },
@@ -54,7 +66,7 @@ function mockSupervisor(seed = {}) {
       const bytes = store.get(p);
       return bytes ? { type: 'file', size: bytes.length, mtime: Date.now() } : null;
     },
-  };
+  });
 }
 
 function host() {

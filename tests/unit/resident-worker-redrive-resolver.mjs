@@ -26,6 +26,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -70,7 +71,7 @@ function createInstance(session, generation, label, { embedderModules }) {
       return { env: null, globalOutbound: undefined, modules: { 'worker.js': 'export default {} // fallback' } };
     },
   });
-  manager.setVfs(session.vfs);
+  manager.setVfs(session.vfs, new SqliteFilesystemAuthority(session.vfs));
   return { ctx, world, processes, manager, asked };
 }
 

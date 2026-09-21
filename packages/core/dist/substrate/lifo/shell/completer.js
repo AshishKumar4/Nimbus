@@ -1,5 +1,5 @@
 import { resolve } from '../utils/path.js';
-export function complete(ctx) {
+export async function complete(ctx) {
     const { line, cursorPos } = ctx;
     const beforeCursor = line.slice(0, cursorPos);
     // Find current word being typed
@@ -12,14 +12,14 @@ export function complete(ctx) {
             completions = completeCommand(word, ctx);
             break;
         case 'directory':
-            completions = completeDirectory(word, ctx);
+            completions = await completeDirectory(word, ctx);
             break;
         case 'variable':
             completions = completeVariable(word.slice(1), ctx); // strip $
             break;
         case 'file':
         default:
-            completions = completeFile(word, ctx);
+            completions = await completeFile(word, ctx);
             break;
     }
     const commonPrefix = findCommonPrefix(completions);
@@ -90,13 +90,13 @@ function completeCommand(word, ctx) {
         return unique;
     return unique.filter((name) => name.startsWith(word));
 }
-function completeFile(word, ctx) {
-    return listEntries(word, ctx, false);
+async function completeFile(word, ctx) {
+    return (await listEntries(word, ctx, false));
 }
-function completeDirectory(word, ctx) {
-    return listEntries(word, ctx, true);
+async function completeDirectory(word, ctx) {
+    return (await listEntries(word, ctx, true));
 }
-function listEntries(word, ctx, dirsOnly) {
+async function listEntries(word, ctx, dirsOnly) {
     // Handle tilde
     let expandedWord = word;
     let tildePrefix = '';
@@ -122,7 +122,7 @@ function listEntries(word, ctx, dirsOnly) {
         prefix = expandedWord;
     }
     try {
-        const entries = ctx.vfs.readdir(dir);
+        const entries = await ctx.vfs.readdir(dir);
         let filtered = entries.filter((e) => e.name.startsWith(prefix) && (prefix.startsWith('.') || !e.name.startsWith('.')));
         if (dirsOnly) {
             filtered = filtered.filter((e) => e.type === 'directory');

@@ -3,6 +3,7 @@ import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { SqliteFilesystemAuthority } from "@nimbus-sh/core/runtime/filesystem-authority.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { EsbuildService } from "@nimbus-sh/core/runtime/esbuild-service.js";
 import { CF_COMPAT_DATE } from "@nimbus-sh/core/constants.js";
@@ -64,16 +65,25 @@ export function ensureFacetManager(self, runtimeContext) {
         // first. Cheap and idempotent; every caller already stood it up or is
         // about to.
         self.ensureSqliteFs();
+        const filesystem = runtimeContext.filesystem();
+        // The manager reaches the disk behind the authority (boot images, the
+        // launch journal), so a host that credentials something other than this
+        // session's SQLite filesystem cannot compose one.
+        if (!(filesystem instanceof SqliteFilesystemAuthority)) {
+            throw new Error('Nimbus: the facet manager needs the session SqliteFilesystemAuthority, not a foreign filesystem authority');
+        }
         self.facetManagerComposed = composeFacetManager({
             ctx: runtimeContext.ctx,
             env: runtimeContext.env,
             processes: self.processes,
             portRegistry: self.portRegistry,
-            vfs: self.sqliteFs,
+            vfs: filesystem.vfs,
+            filesystem,
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
-                requestLaunchTurn: (notBefore) => { void runtimeContext.requestLaunchTurn(notBefore); },
+                requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
+                resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
                 notify: (line) => runtimeContext.notify(line),
                 onSpawn: (pid, command, longRunning) => {
                     const attachedTty = self.processes.get(pid)?.attachedTty === true;

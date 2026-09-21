@@ -104,14 +104,14 @@ const PAGES = {
 };
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
-        ctx.stderr.write('man: missing command name\n');
-        ctx.stderr.write('Usage: man [-k] COMMAND\n');
+        await ctx.stderr.write('man: missing command name\n');
+        await ctx.stderr.write('Usage: man [-k] COMMAND\n');
         return 1;
     }
     // Handle -k keyword search
     if (ctx.args[0] === '-k') {
         if (ctx.args.length < 2) {
-            ctx.stderr.write('man: -k requires a keyword\n');
+            await ctx.stderr.write('man: -k requires a keyword\n');
             return 1;
         }
         const keyword = ctx.args[1].toLowerCase();
@@ -120,12 +120,12 @@ const command = async (ctx) => {
             if (name.includes(keyword) ||
                 page.synopsis.toLowerCase().includes(keyword) ||
                 page.description.toLowerCase().includes(keyword)) {
-                ctx.stdout.write(`${name}(1) - ${page.description.split('.')[0]}\n`);
+                await ctx.stdout.write(`${name}(1) - ${page.description.split('.')[0]}\n`);
                 found = true;
             }
         }
         if (!found) {
-            ctx.stderr.write(`man: nothing appropriate for "${ctx.args[1]}"\n`);
+            await ctx.stderr.write(`man: nothing appropriate for "${ctx.args[1]}"\n`);
             return 1;
         }
         return 0;
@@ -133,12 +133,12 @@ const command = async (ctx) => {
     const name = ctx.args[0];
     const page = PAGES[name];
     if (!page) {
-        ctx.stderr.write(`man: no manual entry for ${name}\n`);
+        await ctx.stderr.write(`man: no manual entry for ${name}\n`);
         return 1;
     }
-    ctx.stdout.write(`NAME\n    ${name} - ${page.description.split('.')[0].toLowerCase()}\n\n`);
-    ctx.stdout.write(`SYNOPSIS\n    ${page.synopsis}\n\n`);
-    ctx.stdout.write(`DESCRIPTION\n    ${page.description}\n`);
+    await ctx.stdout.write(`NAME\n    ${name} - ${page.description.split('.')[0].toLowerCase()}\n\n`);
+    await ctx.stdout.write(`SYNOPSIS\n    ${page.synopsis}\n\n`);
+    await ctx.stdout.write(`DESCRIPTION\n    ${page.description}\n`);
     return 0;
 };
 export default command;

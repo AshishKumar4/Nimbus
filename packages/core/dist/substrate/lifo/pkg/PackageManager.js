@@ -6,30 +6,30 @@ export class PackageManager {
     constructor(vfs) {
         this.vfs = vfs;
     }
-    readMetadata() {
+    async readMetadata() {
         try {
-            const content = this.vfs.readFileString(METADATA_FILE);
+            const content = (await this.vfs.readFileString(METADATA_FILE));
             return JSON.parse(content);
         }
         catch {
             return { packages: {} };
         }
     }
-    writeMetadata(meta) {
-        this.vfs.writeFile(METADATA_FILE, JSON.stringify(meta, null, 2) + '\n');
+    async writeMetadata(meta) {
+        (await this.vfs.writeFile(METADATA_FILE, JSON.stringify(meta, null, 2) + '\n'));
     }
-    ensureDirs() {
+    async ensureDirs() {
         try {
-            this.vfs.mkdir(PKG_DIR, { recursive: true });
+            (await this.vfs.mkdir(PKG_DIR, { recursive: true }));
         }
         catch { /* exists */ }
         try {
-            this.vfs.mkdir(MODULES_DIR, { recursive: true });
+            (await this.vfs.mkdir(MODULES_DIR, { recursive: true }));
         }
         catch { /* exists */ }
     }
     async install(url, name) {
-        this.ensureDirs();
+        (await this.ensureDirs());
         // Fetch the package
         const response = await fetch(url);
         if (!response.ok) {
@@ -45,12 +45,12 @@ export class PackageManager {
         // Write package file
         const pkgDir = `${MODULES_DIR}/${name}`;
         try {
-            this.vfs.mkdir(pkgDir, { recursive: true });
+            (await this.vfs.mkdir(pkgDir, { recursive: true }));
         }
         catch { /* exists */ }
-        this.vfs.writeFile(`${pkgDir}/index.js`, source);
+        (await this.vfs.writeFile(`${pkgDir}/index.js`, source));
         // Update metadata
-        const meta = this.readMetadata();
+        const meta = (await this.readMetadata());
         const info = {
             name,
             url,
@@ -58,40 +58,40 @@ export class PackageManager {
             size: source.length,
         };
         meta.packages[name] = info;
-        this.writeMetadata(meta);
+        (await this.writeMetadata(meta));
         return info;
     }
-    remove(name) {
-        const meta = this.readMetadata();
+    async remove(name) {
+        const meta = (await this.readMetadata());
         if (!meta.packages[name])
             return false;
         // Remove files
         const pkgDir = `${MODULES_DIR}/${name}`;
         try {
-            this.vfs.rmdirRecursive(pkgDir);
+            (await this.vfs.rmdirRecursive(pkgDir));
         }
         catch {
             // Try just unlinking the index.js
             try {
-                this.vfs.unlink(`${pkgDir}/index.js`);
+                (await this.vfs.unlink(`${pkgDir}/index.js`));
             }
             catch { /* ignore */ }
             try {
-                this.vfs.rmdir(pkgDir);
+                (await this.vfs.rmdir(pkgDir));
             }
             catch { /* ignore */ }
         }
         // Update metadata
         delete meta.packages[name];
-        this.writeMetadata(meta);
+        (await this.writeMetadata(meta));
         return true;
     }
-    list() {
-        const meta = this.readMetadata();
+    async list() {
+        const meta = (await this.readMetadata());
         return Object.values(meta.packages);
     }
-    info(name) {
-        const meta = this.readMetadata();
+    async info(name) {
+        const meta = (await this.readMetadata());
         return meta.packages[name] || null;
     }
 }

@@ -1,6 +1,5 @@
 import type { Command, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 
 type SedVfs = {
@@ -440,6 +439,16 @@ class SedPass {
   }
 }
 
+/**
+ * Filesystem failures reach a command as an error carrying a code string —
+ * `VFSError` from the kernel VFS, a plain error from a host authority — so the
+ * code decides what sed reports and survives, never the error's class.
+ */
+function fsErrorMessage(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  return 'code' in error && typeof error.code === 'string' ? error.message : null;
+}
+
 export async function runSed(ctx: SedExecutionContext): Promise<number> {
   const options = parseSedArgs(ctx.args);
 
@@ -465,7 +474,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
     }
   }
 
-  const streamOut = (chunk: string) => ctx.stdout.write(chunk);
+  const streamOut = async (chunk: string) => (await ctx.stdout.write(chunk));
 
   try {
     if (options.files.length === 0) {
@@ -497,8 +506,9 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
             .runAll(pullFrom(iterateLogicalLines(content)));
           await ctx.vfs.writeFile(path, chunks.join(''));
         } catch (e) {
-          if (e instanceof VFSError) {
-            await ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
+          const message = fsErrorMessage(e);
+          if (message !== null) {
+            await ctx.stderr.write(`sed: ${file}: ${message}\n`);
             exitCode = 1;
           } else {
             throw e;
@@ -533,12 +543,12 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
           }
           lines = iterateLogicalLines(await ctx.vfs.readFileString(path));
         } catch (e) {
-          if (e instanceof VFSError) {
-            await ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
-            exitCode = 1;
-          } else {
-            throw e;
-          }
+          const message = fsErrorMessage(e);
+          if (message === null) throw e;
+          // An unreadable file fails the run but the remaining ones still feed
+          // the shared pass, so line numbers and `$` follow what was read.
+          await ctx.stderr.write(`sed: ${file}: ${message}\n`);
+          exitCode = 1;
         }
       }
     };
@@ -702,6 +712,6 @@ function expandReplacement(
   return result;
 }
 
-const command: Command = async (ctx) => runSed(ctx);
+const command: Command = async (ctx) => (await runSed(ctx));
 
 export default command;

@@ -48,7 +48,7 @@ export function createPkgCommand(registry: CommandRegistry): Command {
           await ctx.stderr.write('pkg: remove requires a package name\n');
           return 1;
         }
-        if (pm.remove(name)) {
+        if ((await pm.remove(name))) {
           await ctx.stdout.write(`Removed ${name}\n`);
         } else {
           await ctx.stderr.write(`pkg: package '${name}' not found\n`);
@@ -58,7 +58,7 @@ export function createPkgCommand(registry: CommandRegistry): Command {
       }
 
       case 'list': {
-        const packages = pm.list();
+        const packages = (await pm.list());
         if (packages.length === 0) {
           await ctx.stdout.write('No packages installed\n');
         } else {
@@ -76,7 +76,7 @@ export function createPkgCommand(registry: CommandRegistry): Command {
           await ctx.stderr.write('pkg: info requires a package name\n');
           return 1;
         }
-        const info = pm.info(name);
+        const info = (await pm.info(name));
         if (!info) {
           await ctx.stderr.write(`pkg: package '${name}' not found\n`);
           return 1;
@@ -101,11 +101,11 @@ function registerPkgCommand(registry: CommandRegistry, _ctx: CommandContext, nam
   const scriptPath = `/usr/share/pkg/node_modules/${name}/index.js`;
   registry.registerLazy(name, () =>
     import('./node.js').then((mod) => ({
-      default: ((cmdCtx: CommandContext) =>
-        mod.default({
+      default: (async (cmdCtx: CommandContext) =>
+        (await mod.default({
           ...cmdCtx,
           args: [scriptPath, ...cmdCtx.args],
-        })) as Command,
+        }))) as Command,
     })),
   );
 }

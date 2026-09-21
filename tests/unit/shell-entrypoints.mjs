@@ -49,7 +49,6 @@ function makeHarness(files = {}, existingCommands = new Map()) {
         return { exitCode: 7, stdout: 'executor stdout\n' };
       },
     },
-    vfs,
   );
   return { commands, calls };
 }

@@ -98,7 +98,7 @@ export class HeredocHandler {
     this.originalPrintPrompt = this.shell.printPrompt.bind(this.shell);
     this.originalHandleInput = this.shell.handleInput.bind(this.shell);
 
-    this.shell.handleInput = (data: string): void => {
+    this.shell.handleInput = async (data: string): Promise<void> => {
       if (this.active && data === '\x03') {
         this._cancel();
         this.terminal.write('^C\r\n');
@@ -130,10 +130,10 @@ export class HeredocHandler {
           }
           const isDelim = this._processLine(currentLine);
           if (isDelim && this.heredocInfo !== null) {
-            this._finishHeredoc();
+            (await this._finishHeredoc());
           } else if (!isDelim) {
             this.terminal.write('> ');
-            this._drainPasteQueue();
+            (await this._drainPasteQueue());
           }
         }
         return;
@@ -151,7 +151,7 @@ export class HeredocHandler {
         }
         const isDelim = this._processLine(currentLine);
         if (isDelim && this.heredocInfo !== null) {
-          this._finishHeredoc();
+          (await this._finishHeredoc());
         } else if (!isDelim) {
           this.terminal.write('> ');
         }
@@ -177,12 +177,12 @@ export class HeredocHandler {
         return;
       }
 
-      return this._executeOriginalLine(line);
+      return (await this._executeOriginalLine(line));
     };
 
-    this.shell.printPrompt = (): void => {
+    this.shell.printPrompt = async (): Promise<void> => {
       if (this.active) {
-        this._accumulateLine('');
+        (await this._accumulateLine(''));
         return;
       }
       this._printPrompt();

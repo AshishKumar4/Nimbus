@@ -16,12 +16,13 @@ import * as runtimeServices from '../hosted/services.js';
  */
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
+import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
@@ -534,7 +535,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       ctx,
       env,
       notify: (line) => this._notifySession(line),
-      requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
+      requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+      filesystem: () => this.getFilesystemAuthority(),
     });
     // In `wrangler dev`, the outer Worker and this DO share a single
     // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -772,6 +774,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * Lazy: sqliteFs exists only after ensureSqliteFs().
    */
   private _supervisorOps: SessionSupervisorOps | null = null;
+  private filesystemAuthority: SqliteFilesystemAuthority | null = null;
+
+  getFilesystemAuthority(): SqliteFilesystemAuthority {
+    this.ensureSqliteFs();
+    if (!this.sqliteFs) throw new Error('Filesystem is not initialized');
+    return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+  }
 
   private supervisorOps(): SessionSupervisorOps {
     if (!this._supervisorOps) this._supervisorOps = buildSessionSupervisorOps(this);
@@ -779,7 +788,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   /** The pid-keyed filesystem bridge behind the supervisor ops. */
-  supervisorBridge(pid?: number): SqliteRuntimeFsBridge {
+  supervisorBridge(pid?: number): RuntimeFsBridge {
     return this.supervisorOps().bridge(pid);
   }
 
@@ -802,26 +811,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcStat(this as any, path, pid, cred); }
   async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcLstat(this as any, path, pid, cred); }
-  async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
-    return _rpc._rpcHasLegacySymlinkUnder(this as any, path, pid);
-  }
-  async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void> {
-    return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs, pid);
-  }
   async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
     return _rpc._rpcChmod(this as any, path, mode, pid, cred);
-  }
-  async _rpcAccess(path: string, mode: number, pid?: number): Promise<void> {
-    return _rpc._rpcAccess(this as any, path, mode, pid);
-  }
-  async _rpcChown(
-    path: string,
-    uid: number,
-    gid: number,
-    pid?: number,
-    options?: { followSymlinks?: boolean },
-  ): Promise<void> {
-    return _rpc._rpcChown(this as any, path, uid, gid, pid, options);
   }
   async _rpcSetUmask(mask: number, pid?: number): Promise<number> {
     return _rpc._rpcSetUmask(this as any, mask, pid);
@@ -829,11 +820,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid, cred); }
   async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
   async _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid, cred); }
-  async _rpcRmdir(path: string, pid?: number): Promise<void> { return _rpc._rpcRmdir(this as any, path, pid); }
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
-  async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
-  async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
-  async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
   async _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult> {
     return _rpc._rpcFsAcquire(this as any, epoch, cursor, pid);
   }
@@ -852,7 +839,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void> {
     return _rpc._rpcWsClose(this as any, id, code, reason, pid);
   }
-  async _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags, pid); }
   async _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array> {
     return _rpc._rpcFsRead(this as any, handleId, offset, length, pid);
   }
@@ -862,9 +848,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcFsClose(handleId: number, pid?: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId, pid); }
   async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> {
     return _rpc._rpcFsReadRange(this as any, path, offset, length, pid, cred);
-  }
-  async _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
-    return _rpc._rpcFsReadRangeUncached(this as any, path, offset, length, pid);
   }
   async _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]> {
     return _rpc._rpcFsReadBatch(this as any, requests, pid);
@@ -890,13 +873,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   ): Promise<void> {
     return _rpc._rpcFsAppendAck(this as any, writerId, moduleId, operationId, pid);
   }
-  async _rpcFsTruncate(path: string, size: number, pid?: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size, pid); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
-  async _rpcUnlink(path: string, pid?: number): Promise<void> { return _rpc._rpcUnlink(this as any, path, pid); }
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
-  async _rpcWriteBatchStream(stream: ReadableStream<Uint8Array>, mutationOwner?: string, pid?: number): Promise<WriteBatchStreamResult> {
-    return _rpc._rpcWriteBatchStream(this as any, stream, mutationOwner, pid);
-  }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
@@ -909,7 +887,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   _reportExternalExit(pid: number, code: number, reason: string): void { return _rpc._reportExternalExit(this as any, pid, code, reason); }
 
   // Misc supervisor RPC
-  async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return _rpc._rpcPrefetch(this as any, cwd, entryCode); }
+  async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return (await _rpc._rpcPrefetch(this as any, cwd, entryCode)); }
   async _rpcRegisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcRegisterPort(this as any, pid, port); }
   async _rpcUnregisterPort(port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, port); }
   async _rpcRouteLoopback(port: number, request: Request): Promise<Response> { return _rpc._rpcRouteLoopback(this as any, port, request); }
@@ -981,7 +959,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcInstallRuntime(spec: string, options?: { force?: boolean }) { return _programmatic.rpcInstallRuntime(this as any, spec, options); }
   async _rpcEnsureRuntimes(specs: string[], options?: { force?: boolean }) { return _programmatic.rpcEnsureRuntimes(this as any, specs, options); }
-  async _rpcListRuntimes() { return _programmatic.rpcListRuntimes(this as any); }
+  async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this as any)); }
   async _rpcListProcesses() { return _programmatic.rpcListProcesses(this as any); }
   async _rpcKillProcess(pid: number) { return _programmatic.rpcKillProcess(this as any, pid); }
   async _rpcWriteProcessInput(pid: number, data: string) { return _programmatic.rpcWriteProcessInput(this as any, pid, data); }

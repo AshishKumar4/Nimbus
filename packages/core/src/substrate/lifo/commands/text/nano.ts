@@ -252,7 +252,7 @@ function ensureVisible(s: State): void {
 
 // ─── Rendering ───
 
-function render(s: State, out: CommandOutputStream): void {
+async function render(s: State, out: CommandOutputStream): Promise<void> {
   const contentH = s.rows - 3;
   let buf = HIDE_CURSOR;
 
@@ -303,7 +303,7 @@ function render(s: State, out: CommandOutputStream): void {
   }
 
   buf += SHOW_CURSOR;
-  out.write(buf);
+  (await out.write(buf));
 }
 
 function setStatus(s: State, msg: string): void {
@@ -463,7 +463,7 @@ const command: Command = async (ctx) => {
     };
 
     await ctx.stdout.write(CLEAR + HOME);
-    render(s, ctx.stdout);
+    (await render(s, ctx.stdout));
 
     while (true) {
       const data = await ctx.stdin?.read();
@@ -491,7 +491,7 @@ const command: Command = async (ctx) => {
       if (shouldExit) break;
 
       ensureVisible(s);
-      render(s, ctx.stdout);
+      (await render(s, ctx.stdout));
     }
 
     await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);

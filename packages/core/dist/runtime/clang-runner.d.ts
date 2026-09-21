@@ -26,13 +26,13 @@
  * catch-and-continue around loader failures.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
-/** Build the runner factory. Closes over the facet host + vfs. */
+import { type NimbusFilesystemAuthority } from './os-contracts.js';
+/** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export declare function makeClangRunnerFactory(deps: {
     facets: FacetHost;
-    vfs: SqliteVFS;
+    filesystem: NimbusFilesystemAuthority;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const CLANG_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=clang-runner.d.ts.map

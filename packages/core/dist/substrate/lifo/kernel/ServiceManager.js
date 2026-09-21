@@ -1,3 +1,4 @@
+import { ExecutionFs } from '../../../shell/execution-fs.js';
 import { parseUnitFile } from './unit-parser.js';
 const UNIT_DIR = '/etc/systemd/system';
 const WANTS_DIR = '/etc/systemd/system/multi-user.target.wants';
@@ -81,7 +82,7 @@ export class ServiceManager {
             args: cmdArgs,
             env,
             cwd,
-            vfs: this.vfs,
+            vfs: new ExecutionFs(this.vfs),
             stdout: logStream,
             stderr: logStream,
             signal: abortController.signal,
@@ -152,7 +153,7 @@ export class ServiceManager {
                         args: parts.slice(1),
                         env: { ...this.defaultEnv },
                         cwd: this.defaultEnv.HOME ?? '/',
-                        vfs: this.vfs,
+                        vfs: new ExecutionFs(this.vfs),
                         stdout: noop,
                         stderr: noop,
                         signal: AbortSignal.timeout(5000),

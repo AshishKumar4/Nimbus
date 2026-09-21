@@ -21,21 +21,22 @@
 #include "sys/statfs.h"
 #include "nimbus-wasi-compat.h"
 
-/* ── identity: single user "user", uid/gid 0 ── */
-uid_t getuid(void)  { return 0; }
-uid_t geteuid(void) { return 0; }
-gid_t getgid(void)  { return 0; }
-gid_t getegid(void) { return 0; }
-pid_t getpid(void)  { return 1; }
-pid_t getppid(void) { return 0; }
-mode_t umask(mode_t mask) { (void)mask; return 022; }
-int setuid(uid_t u) { (void)u; return 0; }
-int seteuid(uid_t u) { (void)u; return 0; }
-int setgid(gid_t g) { (void)g; return 0; }
-int setegid(gid_t g) { (void)g; return 0; }
-int getgroups(int size, gid_t list[]) { (void)size; (void)list; return 0; }
-int setgroups(size_t size, const gid_t *list) { (void)size; (void)list; return 0; }
-int initgroups(const char *user, gid_t group) { (void)user; (void)group; return 0; }
+#define IMPORT(name) __attribute__((import_module("nimbus_proc"), import_name(name)))
+IMPORT("identity") extern unsigned nimbus_identity(unsigned field);
+uid_t getuid(void)  { return nimbus_identity(0); }
+uid_t geteuid(void) { return getuid(); }
+gid_t getgid(void)  { return nimbus_identity(1); }
+gid_t getegid(void) { return getgid(); }
+pid_t getpid(void)  { return nimbus_identity(2); }
+pid_t getppid(void) { return nimbus_identity(3); }
+mode_t umask(mode_t mask) { return nimbus_identity(4 + ((mask & 0777) << 3)); }
+int setuid(uid_t u) { if (u == getuid()) return 0; errno = EPERM; return -1; }
+int seteuid(uid_t u) { return setuid(u); }
+int setgid(gid_t g) { if (g == getgid()) return 0; errno = EPERM; return -1; }
+int setegid(gid_t g) { return setgid(g); }
+int getgroups(int size, gid_t list[]) { if (!size) return 1; if (size < 1) { errno = EINVAL; return -1; } list[0] = getgid(); return 1; }
+int setgroups(size_t size, const gid_t *list) { (void)size; (void)list; errno = EPERM; return -1; }
+int initgroups(const char *user, gid_t group) { (void)user; (void)group; errno = EPERM; return -1; }
 
 static char pw_name[] = "user", pw_dir[] = "/home/user", pw_shell[] = "/bin/bash", pw_empty[] = "";
 static struct passwd the_user = { pw_name, pw_empty, 0, 0, pw_empty, pw_dir, pw_shell };
@@ -67,12 +68,12 @@ struct group *getgrent(void) { return 0; }
 void setgrent(void) {}
 void endgrent(void) {}
 
-/* ── ownership/permissions the VFS does not model: succeed ── */
-int chown(const char *path, uid_t o, gid_t g)  { (void)path; (void)o; (void)g; return 0; }
-int fchown(int fd, uid_t o, gid_t g)           { (void)fd; (void)o; (void)g; return 0; }
-int lchown(const char *path, uid_t o, gid_t g) { (void)path; (void)o; (void)g; return 0; }
-int fsync(int fd)     { (void)fd; return 0; }
-int fdatasync(int fd) { (void)fd; return 0; }
+IMPORT("chown") extern int nimbus_chown(int fd, const char *path, unsigned len, unsigned uid, unsigned gid, unsigned follow);
+static int syscall_result(int err) { if (err) { errno = err; return -1; } return 0; }
+int chown(const char *path, uid_t o, gid_t g) { return syscall_result(nimbus_chown(-1, path, strlen(path), o, g, 1)); }
+int fchown(int fd, uid_t o, gid_t g) { return syscall_result(nimbus_chown(fd, 0, 0, o, g, 1)); }
+int lchown(const char *path, uid_t o, gid_t g) { return syscall_result(nimbus_chown(-1, path, strlen(path), o, g, 0)); }
+/* fsync/fdatasync come from wasi-libc and reach fd_sync/fd_datasync. */
 
 /* ── processes/pipes: none inside an exec'd coreutil ── */
 pid_t fork(void)  { errno = ENOSYS; return -1; }
@@ -214,53 +215,49 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags, const struct sock
 }
 ssize_t recv(int fd, void *buf, size_t len, int flags) { (void)fd; (void)buf; (void)len; (void)flags; errno = ENOSYS; return -1; }
 
-/* ── stat facelift (linker --wrap=stat,lstat,fstat,fstatat) ──
- * WASI preview1 filestat carries no block count and no permission bits, so
- * wasi-libc leaves st_blocks 0 (du reports nothing) and st_mode bare
- * (ls -l shows "----------"). Synthesize blocks from the byte size and show
- * the Nimbus VFS default modes (644 files / 755 dirs). Real per-file modes
- * are enforced by the runtime's WASI layer, not readable through preview1. */
+/* Preview1 lacks uid/gid/mode. Read them from the same authority as filestat. */
+IMPORT("stat_metadata") extern int nimbus_stat_metadata(int fd, const char *path, unsigned len, unsigned follow, unsigned out[3]);
 int __real_stat(const char *path, struct stat *st);
 int __real_lstat(const char *path, struct stat *st);
 int __real_fstat(int fd, struct stat *st);
 int __real_fstatat(int fd, const char *path, struct stat *st, int flag);
-static void nimbus_stat_facelift(struct stat *st) {
-  st->st_blocks = (st->st_size + 511) / 512;
-  if (S_ISDIR(st->st_mode)) st->st_mode |= 0755;
-  else if (S_ISREG(st->st_mode) && (st->st_mode & 07777) == 0) st->st_mode |= 0644;
-}
-int __wrap_stat(const char *path, struct stat *st) {
-  int r = __real_stat(path, st);
-  if (r == 0) nimbus_stat_facelift(st);
-  return r;
-}
-int __wrap_lstat(const char *path, struct stat *st) {
-  int r = __real_lstat(path, st);
-  if (r == 0) nimbus_stat_facelift(st);
-  return r;
-}
-int __wrap_fstat(int fd, struct stat *st) {
-  int r = __real_fstat(fd, st);
-  if (r == 0) nimbus_stat_facelift(st);
-  return r;
-}
-int __wrap_fstatat(int fd, const char *path, struct stat *st, int flag) {
-  int r = __real_fstatat(fd, path, st, flag);
-  if (r == 0) nimbus_stat_facelift(st);
-  return r;
-}
-
-/* ── chmod: threaded to the Nimbus runtime (preview1 has no mode syscall).
- * The runtime updates its in-facet mode table and the post-exit VFS flush
- * applies the durable, S2a-checked chmod. Outside Nimbus (plain WASI hosts)
- * the import is absent and instantiation supplies nothing — the runtime
- * always provides it, and busybox is only ever exec'd inside the runtime.
- * Linker --wrap=chmod,fchmod displaces wasi-libc's ENOSYS stubs. */
-__attribute__((import_module("nimbus_proc"), import_name("chmod")))
-int nimbus_proc_chmod(const char *path, unsigned path_len, unsigned mode);
-int __wrap_chmod(const char *path, mode_t mode) {
-  int err = nimbus_proc_chmod(path, (unsigned)strlen(path), (unsigned)mode);
+static int stat_metadata(int fd, const char *path, unsigned follow, struct stat *st) {
+  unsigned out[3];
+  int err = nimbus_stat_metadata(fd == AT_FDCWD ? -1 : fd, path, path ? strlen(path) : 0, follow, out);
   if (err) { errno = err; return -1; }
+  st->st_mode = (st->st_mode & S_IFMT) | (out[0] & 07777);
+  st->st_uid = out[1]; st->st_gid = out[2];
+  st->st_blocks = (st->st_size + 511) / 512;
   return 0;
 }
-int __wrap_fchmod(int fd, mode_t mode) { (void)fd; (void)mode; errno = ENOSYS; return -1; }
+int __wrap_stat(const char *p, struct stat *s) { return __real_stat(p,s) ? -1 : stat_metadata(AT_FDCWD,p,1,s); }
+int __wrap_lstat(const char *p, struct stat *s) { return __real_lstat(p,s) ? -1 : stat_metadata(AT_FDCWD,p,0,s); }
+/* Only an authority handle has metadata; pipes and stdio answer EBADF, and for
+ * those preview1's own answer is already the whole truth. Failing here instead
+ * would break every applet that sizes its buffers by fstat(0)/fstat(1). */
+int __wrap_fstat(int fd, struct stat *s) {
+  if (__real_fstat(fd,s)) return -1;
+  if (stat_metadata(fd,0,1,s) == 0) return 0;
+  return errno == EBADF ? 0 : -1;
+}
+int __wrap_fstatat(int fd, const char *p, struct stat *s, int flag) { return __real_fstatat(fd,p,s,flag) ? -1 : stat_metadata(fd,p,!(flag & AT_SYMLINK_NOFOLLOW),s); }
+
+IMPORT("chmod") extern int nimbus_proc_chmod(const char *path, unsigned len, unsigned mode);
+IMPORT("fchmod") extern int nimbus_proc_fchmod(int fd, unsigned mode);
+int __wrap_chmod(const char *path, mode_t mode) { return syscall_result(nimbus_proc_chmod(path, strlen(path), mode)); }
+int __wrap_fchmod(int fd, mode_t mode) { return syscall_result(nimbus_proc_fchmod(fd, mode)); }
+
+/* Called after libc initialization, before applet main; PWD is not consulted. */
+IMPORT("startup_cwd") extern int nimbus_startup_cwd(char *buf, unsigned capacity);
+int __real___main_argc_argv(int argc, char **argv);
+int __wrap___main_argc_argv(int argc, char **argv) {
+  int length = nimbus_startup_cwd(0, 0);
+  if (length < 0) { errno = -length; perror("busybox startup cwd"); return 1; }
+  char *cwd = malloc((size_t)length + 1);
+  if (!cwd) { perror("busybox startup cwd"); return 1; }
+  int copied = nimbus_startup_cwd(cwd, (unsigned)length + 1);
+  int rc = copied < 0 ? (errno = -copied, -1) : chdir(cwd);
+  free(cwd);
+  if (rc) { perror("busybox startup cwd"); return 1; }
+  return __real___main_argc_argv(argc, argv);
+}

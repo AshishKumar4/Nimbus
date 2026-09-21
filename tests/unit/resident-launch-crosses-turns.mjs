@@ -28,6 +28,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -70,7 +71,7 @@ function makeManager(label, turns) {
   );
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  manager.setVfs(vfs);
+  manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   return { manager, world, vfs };
 }
 

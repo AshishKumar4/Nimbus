@@ -10,6 +10,16 @@ export declare class PipeChannel {
     private closed;
     private waiting;
     private decoder;
+    private queuedBytes;
+    private readonly capacity;
+    private drained;
+    private readerClosed;
+    private unlinkSignal;
+    constructor(signal?: AbortSignal);
+    private push;
+    private consume;
+    private wakeWriters;
+    cancel(): void;
     readonly writer: CommandOutputStream;
     readonly reader: CommandInputStream;
     /** Next queued chunk, a waiter's delivery, or null once closed and empty. */

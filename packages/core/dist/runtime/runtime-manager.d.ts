@@ -19,7 +19,7 @@
  * `install` reinstalls rather than answering a stale memo, and a failed
  * install is forgotten so the next attempt retries.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';
 export interface RuntimeManagerOptions {
@@ -105,7 +105,7 @@ export declare class RuntimeManager {
      *  whether an unregistered command name could be satisfied before
      *  registering a stub for it — catalog reads only, no payload write. */
     resolvable(spec: string): Promise<RuntimePackage | null>;
-    list(): RuntimeSummary[];
+    list(): Promise<RuntimeSummary[]>;
     available(): Promise<RuntimeAvailability[]>;
 }
 export {};

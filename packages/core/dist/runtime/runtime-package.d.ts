@@ -23,7 +23,23 @@
  * verifies them — these blobs are interpreters, so bytes that reach the
  * filesystem are bytes that execute.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { Awaitable } from './os-contracts.js';
+export interface RuntimePackageFs {
+    exists(path: string): Awaitable<boolean>;
+    readFile(path: string): Awaitable<Uint8Array>;
+    readFileString(path: string): Awaitable<string>;
+    writeFile(path: string, data: string | Uint8Array): Awaitable<void>;
+    mkdir(path: string, options?: {
+        recursive?: boolean;
+    }): Awaitable<void>;
+    readdir(path: string): Awaitable<{
+        name: string;
+        type: string;
+    }[]>;
+    unlink(path: string): Awaitable<void>;
+    rmdir(path: string): Awaitable<void>;
+}
+type CredentialedVfs = RuntimePackageFs;
 import type { RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestFile, type RuntimeManifest } from './runtime-manifest.js';
 /**
@@ -118,4 +134,5 @@ export declare function seedRuntimePackage(vfs: CredentialedVfs, homeDir: string
     /** One line per payload file, as it lands. */
     onProgress?: (line: string) => void;
 }): Promise<SeededRuntime>;
+export {};
 //# sourceMappingURL=runtime-package.d.ts.map

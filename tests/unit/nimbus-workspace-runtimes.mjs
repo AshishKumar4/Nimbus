@@ -134,7 +134,12 @@ const openWorkspace = (options = {}) => {
 
   const ws = await openWorkspace({
     processes,
-    identity: { pid: 4242 },
+    identity: {
+      pid: 4242,
+      cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+      setUmask() {},
+      async runAs() { return 126; },
+    },
   });
   assert.equal(ws.shellProcessPid, 4242);
   assert.equal(ws.processes, processes);

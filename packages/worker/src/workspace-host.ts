@@ -1,4 +1,5 @@
-export { composeFacetManager, type FacetManagerDeps, type ComposedFacetManager } from './facets/compose.js';
+export { composeFacetManager, type FacetManagerDeps, type FacetManagerHostHooks, type ComposedFacetManager } from './facets/compose.js';
+export type { WorkerRecipe, ResolvedWorkerLaunch } from './facets/manager.js';
 export { composeHostedRuntime, type HostedRuntime, type HostedRuntimeOptions, type HostedRuntimeLifecycle, type HostedRuntimeTask, type RuntimeFiles } from './hosted/runtime.js';
 export { runtimeCatalogSource } from './runtime/runtime-catalog.js';
 export { SupervisorRPC } from './session/supervisor-rpc.js';

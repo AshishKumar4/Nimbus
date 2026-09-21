@@ -29,6 +29,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { ESBUILD_TRANSFORM_WORKER_ID } from '../../packages/worker/src/facets/esbuild-transform.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
@@ -102,6 +103,7 @@ const settle = async (predicate, tries = 400) => {
     processes,
     portRegistry,
     vfs,
+    filesystem: new SqliteFilesystemAuthority(vfs),
     hooks: {
       onExternalExit: (pid, code, reason) => { events.push(['onExternalExit', pid, code, reason]); },
       notify: (line) => { events.push(['notify', line]); },
@@ -147,6 +149,10 @@ try {
     `export { NimbusSession } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/session/nimbus-session.ts';`,
     `export { composeFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/compose.ts';`,
     `export { ensureFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/hosted/services.ts';`,
+    // The bundle is a second copy of core: the authority the host hands
+    // `ensureFacetManager` has to be the class THIS graph knows, or its
+    // typed check sees a stranger.
+    `export { SqliteFilesystemAuthority } from '${new URL('../../', import.meta.url).pathname}packages/core/src/runtime/filesystem-authority.ts';`,
     `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
     '',
   ].join('\n'));
@@ -239,7 +245,8 @@ try {
     _scheduleLaunchTurn(notBefore) { sessionEvents.push(['turn', typeof notBefore]); return Promise.resolve(true); },
     _notifySession(line) { sessionEvents.push(['notify', line]); },
   };
-  bundle.ensureFacetManager(host, {ctx: host.ctx, env: host.env, notify: line => host._notifySession(line), requestLaunchTurn: notBefore => host._scheduleLaunchTurn(notBefore)});
+  const sessionAuthority = new bundle.SqliteFilesystemAuthority(vfs);
+  bundle.ensureFacetManager(host, {ctx: host.ctx, env: host.env, notify: line => host._notifySession(line), requestLaunchTurn: notBefore => host._scheduleLaunchTurn(notBefore), filesystem: () => sessionAuthority});
   const sessionManager = host.facetManagerComposed.manager;
   assert.ok(sessionManager, 'the session composed a manager');
   assert.equal(host.sqliteFs, vfs, 'over its filesystem, which it stood up first');
@@ -264,6 +271,7 @@ try {
     processes: embedderProcesses,
     portRegistry: new PortRegistry(),
     vfs,
+    filesystem: new bundle.SqliteFilesystemAuthority(vfs),
     hooks: {
       onExternalExit: (pid, code, reason) => { embedderEvents.push(['exit', pid, code, reason]); },
       requestLaunchTurn: (notBefore) => { embedderEvents.push(['turn', typeof notBefore]); },

@@ -52,56 +52,56 @@ const fs = makeFs({
 
 // ── the resolver, against behaviour measured from real bun ──────────────────
 
-const resolve = (target, opts) => resolveRuntimeScriptPath(fs, CWD, target, opts);
+const resolve = async (target, opts) => (await resolveRuntimeScriptPath(fs, CWD, target, opts));
 
-assert.equal(resolve('cli.ts'), 'home/user/example-app/cli.ts', 'a bare filename resolves verbatim');
-assert.equal(resolve('./cli.ts'), 'home/user/example-app/cli.ts', './ resolves against cwd');
+assert.equal((await resolve('cli.ts')), 'home/user/example-app/cli.ts', 'a bare filename resolves verbatim');
+assert.equal((await resolve('./cli.ts')), 'home/user/example-app/cli.ts', './ resolves against cwd');
 assert.equal(
-  resolve('nested/deep.ts'),
+  (await resolve('nested/deep.ts')),
   'home/user/example-app/nested/deep.ts',
   'a relative subpath resolves against cwd',
 );
 assert.equal(
-  resolve('/home/user/example-app/cli.ts'),
+  (await resolve('/home/user/example-app/cli.ts')),
   'home/user/example-app/cli.ts',
   'an absolute path resolves to the same canonical key as a relative one',
 );
 assert.equal(
-  resolve('../example-app/cli.ts'),
+  (await resolve('../example-app/cli.ts')),
   'home/user/example-app/cli.ts',
   '.. is collapsed rather than handed to the VFS literally',
 );
 
 // Extension probing: `bun run plain` finds plain.js.
-assert.equal(resolve('plain'), 'home/user/example-app/plain.js', 'a target without an extension is probed');
+assert.equal((await resolve('plain')), 'home/user/example-app/plain.js', 'a target without an extension is probed');
 
 // A directory is never source. Real bun runs tools/index.js for `bun run ./tools`;
 // resolving the directory to itself made readFileString throw and reported the
 // file as missing.
 assert.equal(
-  resolve('tools'),
+  (await resolve('tools')),
   'home/user/example-app/tools/index.js',
   'a directory resolves to its index, not to itself',
 );
-assert.equal(resolve('./tools'), 'home/user/example-app/tools/index.js', 'likewise path-shaped');
+assert.equal((await resolve('./tools')), 'home/user/example-app/tools/index.js', 'likewise path-shaped');
 
 // `.` is the package entry. bun prefers `module`, node takes `main`.
-assert.equal(resolve('.'), 'home/user/example-app/plain.js', 'node takes package.json main');
+assert.equal((await resolve('.')), 'home/user/example-app/plain.js', 'node takes package.json main');
 assert.equal(
-  resolve('.', { preferModuleField: true }),
+  (await resolve('.', { preferModuleField: true })),
   'home/user/example-app/cli.ts',
   'bun prefers package.json module over main',
 );
 
 // Nothing runnable is null — the caller decides which error that is, because
 // real bun says "Module not found" for a path and "Script not found" for a name.
-assert.equal(resolve('nosuch'), null, 'an unresolvable bare name is null');
-assert.equal(resolve('./nosuch.ts'), null, 'an unresolvable path is null');
+assert.equal((await resolve('nosuch')), null, 'an unresolvable bare name is null');
+assert.equal((await resolve('./nosuch.ts')), null, 'an unresolvable path is null');
 
 // A missing package.json must not throw — `bun run x` in a bare directory is
 // an ordinary miss, not a crash.
 assert.equal(
-  resolveRuntimeScriptPath(makeFs({}), '/home/user', '.', {}),
+  (await resolveRuntimeScriptPath(makeFs({}), '/home/user', '.', {})),
   null,
   'a cwd with no package.json resolves to null rather than throwing',
 );
@@ -116,7 +116,8 @@ function makeCtx(args) {
       args,
       cwd: CWD,
       env: {},
-      cred: undefined,
+      cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+      vfs: fs,
       stdout: { write: (d) => out.push(d) },
       stderr: { write: (d) => err.push(d) },
     },
@@ -145,7 +146,7 @@ const spec = {
         ctx.stdout.write('SCRIPT_BRANCH\n');
         return 0;
       }
-      const resolved = resolveRuntimeScriptPath(fs, ctx.cwd, target, { preferModuleField: true });
+      const resolved = (await resolveRuntimeScriptPath(fs, ctx.cwd, target, { preferModuleField: true }));
       if (resolved === null) {
         ctx.stderr.write(`error: Module not found "${target}"\n`);
         return 1;
@@ -211,6 +212,7 @@ const handler = buildRuntimeHandler(spec, {
     },
   );
   const { ctx } = makeCtx(['run']);
+  ctx.vfs = loopFs;
   assert.equal(await loopHandler(ctx), 0, 'delegation terminates');
   assert.ok(
     ran && ran.code.includes('FILE_NAMED_RUN'),

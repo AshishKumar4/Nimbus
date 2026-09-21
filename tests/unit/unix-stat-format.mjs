@@ -10,11 +10,14 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = vfs.as(CRED_KERNEL);
+const filesystem = new SqliteFilesystemAuthority(vfs).openHost(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true });
 kernel.mkdir('etc', { recursive: true });
 kernel.writeFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:user:/home/user:/bin/sh\n');
@@ -41,6 +44,7 @@ async function stat(args) {
     cwd: '/home/user',
     env: {},
     cred: CRED_KERNEL,
+    vfs: new ExecutionFs(filesystem.fs),
     stdout: { write: (d) => out.push(d) },
     stderr: { write: (d) => err.push(d) },
     signal: new AbortController().signal,

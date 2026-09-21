@@ -44,7 +44,7 @@ const command = async (ctx) => {
         }
     }
     if (!fieldSpec) {
-        ctx.stderr.write('cut: you must specify a list of fields\n');
+        await ctx.stderr.write('cut: you must specify a list of fields\n');
         return 1;
     }
     const fields = parseFieldSpec(fieldSpec);
@@ -58,7 +58,7 @@ const command = async (ctx) => {
             text = await ctx.stdin.readAll();
         }
         else {
-            ctx.stderr.write('cut: missing file operand\n');
+            await ctx.stderr.write('cut: missing file operand\n');
             return 1;
         }
     }
@@ -66,16 +66,16 @@ const command = async (ctx) => {
         for (const file of files) {
             const path = resolve(ctx.cwd, file);
             try {
-                ctx.vfs.stat(path);
+                (await ctx.vfs.stat(path));
                 if (isBinaryMime(getMimeType(path))) {
-                    ctx.stderr.write(`cut: ${file}: binary file, skipping\n`);
+                    await ctx.stderr.write(`cut: ${file}: binary file, skipping\n`);
                     continue;
                 }
-                text += ctx.vfs.readFileString(path);
+                text += (await ctx.vfs.readFileString(path));
             }
             catch (e) {
                 if (e instanceof VFSError) {
-                    ctx.stderr.write(`cut: ${file}: ${e.message}\n`);
+                    await ctx.stderr.write(`cut: ${file}: ${e.message}\n`);
                     return 1;
                 }
                 throw e;
@@ -84,7 +84,7 @@ const command = async (ctx) => {
     }
     const lines = text.replace(/\n$/, '').split('\n');
     for (const line of lines) {
-        ctx.stdout.write(cutLine(line) + '\n');
+        await ctx.stdout.write(cutLine(line) + '\n');
     }
     return 0;
 };

@@ -40,7 +40,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
   Math.random = () => 0.5;
   let out;
   try {
-    out = runScript('echo $SRANDOM; echo $SRANDOM; echo $SRANDOM').stdout.trim().split('\n');
+    out = (await runScript('echo $SRANDOM; echo $SRANDOM; echo $SRANDOM')).stdout.trim().split('\n');
   } finally {
     Math.random = realRandom;
   }
@@ -54,7 +54,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // A guest asking for MONOTONIC must not silently receive wall time, and an id
 // this layer cannot answer must say so rather than invent a reading.
 {
-  const r = runScript('probe clockid', { extraWasm });
+  const r = (await runScript('probe clockid', { extraWasm }));
   check('clock_time_get rejects an unknown clock id',
     r.stdout.includes('bad=28'),
     `expected EINVAL(28) for id 99, got ${JSON.stringify(r.stdout)}`);
@@ -63,7 +63,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
     JSON.stringify(r.stdout));
 }
 {
-  const r = runScript('probe clocktwice', { extraWasm });
+  const r = (await runScript('probe clocktwice', { extraWasm }));
   check('clock_time_get advances between calls',
     r.stdout.includes('advanced=1'), JSON.stringify(r.stdout));
 }
@@ -84,7 +84,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // The deadline arithmetic under test is the part that migration will keep.
 {
   const started = Date.now();
-  const r = runScript('sleep 1; echo done');
+  const r = (await runScript('sleep 1; echo done'));
   const elapsed = Date.now() - started;
   check('poll_oneoff honours a clock deadline where the clock advances',
     r.stdout === 'done\n' && elapsed >= 900,
@@ -96,9 +96,9 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // newer than anything else and every incremental build believed its targets
 // were up to date. -nt is the exact question make(1) asks.
 {
-  const r = runScript(
+  const r = (await runScript(
     'cd /tmp && echo a > src && sleep 1 && echo b > out && '
-    + 'if [ out -nt src ]; then echo NEWER; else echo NOT-NEWER; fi', tmp);
+    + 'if [ out -nt src ]; then echo NEWER; else echo NOT-NEWER; fi', tmp));
   check('a file written later reports a later mtime',
     r.stdout === 'NEWER\n',
     `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
@@ -108,9 +108,9 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // path_symlink returned ENOSYS and path_readlink returned EINVAL, so ln -s
 // failed outright ("ln: link.txt: Function not implemented").
 {
-  const r = runScript(
+  const r = (await runScript(
     'cd /tmp && echo payload > t.txt && ln -s t.txt link.txt && '
-    + 'readlink link.txt && cat link.txt', tmp);
+    + 'readlink link.txt && cat link.txt', tmp));
   check('a symlink can be created, read back, and followed',
     r.stdout === 't.txt\npayload\n',
     `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
@@ -118,16 +118,16 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 {
   // A link resolves through its own directory, and -L sees the link itself
   // rather than the target.
-  const r = runScript(
+  const r = (await runScript(
     'cd /tmp && mkdir -p d && echo deep > d/real && ln -s d/real ref && '
-    + 'cat ref && if [ -L ref ]; then echo IS-LINK; fi', tmp);
+    + 'cat ref && if [ -L ref ]; then echo IS-LINK; fi', tmp));
   check('a symlink is distinguishable from its target',
     r.stdout === 'deep\nIS-LINK\n',
     `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
 }
 {
   // A cycle must answer ELOOP rather than hang the scheduler.
-  const r = runScript('cd /tmp && ln -s a b && ln -s b a && cat a; echo "rc=$?"', tmp);
+  const r = (await runScript('cd /tmp && ln -s a b && ln -s b a && cat a; echo "rc=$?"', tmp));
   check('a symlink cycle terminates instead of hanging',
     r.state === 'exited' && r.stdout.includes('rc=1'),
     `state ${r.state} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
@@ -138,7 +138,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // several buffers lost everything past the first — silently, with a short
 // nread that looked like a legitimate partial read.
 {
-  const r = runScript('echo -n abcdef | probe readv', { extraWasm });
+  const r = (await runScript('echo -n abcdef | probe readv', { extraWasm }));
   check('fd_read scatters across every iovec',
     r.stdout === 'nread=6 iov0=ab iov1=cd iov2=ef\n',
     JSON.stringify(r.stdout));
@@ -148,7 +148,7 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 // An fd the table does not hold used to fall through to stdout, so a guest's
 // misdirected write appeared in the user's terminal and reported success.
 {
-  const r = runScript('probe badwrite', { extraWasm });
+  const r = (await runScript('probe badwrite', { extraWasm }));
   check('fd_write to an unopened fd returns EBADF',
     r.stdout.includes('errno=8'),
     `expected EBADF(8), got ${JSON.stringify(r.stdout)}`);
@@ -157,15 +157,76 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
     `payload surfaced on stdout: ${JSON.stringify(r.stdout)}`);
 }
 
+// ── an applet can fstat a descriptor with no authority handle ─────────────
+// The metadata overlay that supplies mode/uid/gid is only answerable for an
+// authority handle, and it was consulted unconditionally: every fstat of a
+// pipe or a stdio fd came back EBADF, so `ls -l` could not size its columns
+// and a filter could not learn its input was not a file.
+{
+  const r = (await runScript('cd /tmp && echo hi > f && ls -l /tmp', tmp));
+  check('ls -l lists a file instead of failing to stat its own output',
+    r.exitCode === 0 && / f$/m.test(r.stdout),
+    `code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+{
+  const r = (await runScript('printf x | wc -c', tmp));
+  check('a coreutil reading a pipe reports what it read',
+    r.stdout.trim() === '1',
+    `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
+// ── umask reaches file creation ───────────────────────────────────────────
+// preview1 carries no creation mode, so the authority applied the mask from
+// the credential bound at boot. `umask 077` moved the session's mask and
+// nothing else: every file was still created 0644.
+{
+  const r = (await runScript('cd /tmp && umask 077 && touch u && stat -c %a u', tmp));
+  check('a file created after umask 077 is 600',
+    r.stdout.trim() === '600',
+    `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
+// ── fd 3 belongs to the shell ─────────────────────────────────────────────
+// wasi-libc caches fd 3 as the preopen it resolves every relative path
+// against, and `exec 3>file` hands that number to bash. The capability now
+// moves out of the way and the dirfd follows it; before, the descriptor was
+// simply overwritten and every later lookup answered against a regular file
+// ("cat: command not found", then EBADF once PATH search was fixed).
+{
+  const r = (await runScript('exec 3>/tmp/f; echo hi >&3; exec 3>&-; cat /tmp/f', tmp));
+  check('a shell redirection onto fd 3 does not cost the session its root',
+    r.stdout === 'hi\n',
+    `code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
+// ── a dup that cannot succeed reports, and the shell survives ─────────────
+// dup/dup2 answer the nimbus_proc ABI, which reads a negative return as the
+// errno; a failure handed back positive is indistinguishable from a live
+// descriptor, and bash would go on writing to it.
+{
+  const r = (await runScript('exec 9>&8; echo "rc=$?"; echo still-here', tmp));
+  check('duplicating an unopened fd fails the redirection, not the shell',
+    r.state === 'exited' && r.stdout.includes('rc=1') && r.stdout.includes('still-here')
+      && r.stderr.includes('Bad file descriptor'),
+    `state ${r.state} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = (await runScript('exec 5>/tmp/five; echo five >&5; exec 5>&-; cat /tmp/five', tmp));
+  check('exec opens a previously closed fd number instead of saving it',
+    r.state === 'exited' && r.exitCode === 0 && r.stdout === 'five\n' && r.stderr === '',
+    `state ${r.state} code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
 // ── the real workload still runs ──────────────────────────────────────────
 // A stateful script over the paths these fixes touched: pipes, redirection,
 // a loop accumulating file state, command substitution, and exit status.
 {
-  const r = runScript(
+  const r = (await runScript(
     'cd /tmp && for i in 1 2 3; do echo "line$i" >> log; done && '
     + 'n=$(wc -l < log) && echo "count=$n" && '
     + 'grep -c line log && sort -r log | head -1 && '
-    + 'cp log copy && diff -q log copy && echo SAME', tmp);
+    + 'cp log copy && diff -q log copy && echo SAME', tmp));
   check('a stateful bash script runs end to end',
     r.state === 'exited' && r.exitCode === 0
       && r.stdout.includes('count=3') && r.stdout.includes('line3') && r.stdout.includes('SAME'),

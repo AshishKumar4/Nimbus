@@ -17,3 +17,38 @@ await delayed;
 assert.equal(resumed, true);
 assert.equal(pacer.hasPending, false);
 console.log('ok - restart backoff uses the existing pacer and respects earlier alarms');
+
+const rejected = new Error('host schedule refused');
+let failSchedule = true;
+const retryable = new PacedWork({}, {
+  requestTurn: async () => { if (failSchedule) throw rejected; },
+});
+await assert.rejects(retryable.nextTurn(Promise.resolve()), error => error === rejected);
+assert.equal(retryable.hasPending, false, 'failed initial scheduling removes its waiter');
+failSchedule = false;
+const retry = retryable.nextTurn(Promise.resolve());
+await retryable.pump();
+await retry;
+
+const futurePacer = new PacedWork({}, {
+  requestTurn: async () => { if (failSchedule) throw rejected; },
+});
+const future = futurePacer.nextTurn(Promise.resolve(), Date.now() + 60_000);
+const futureFailure = assert.rejects(future, error => error === rejected);
+let dueFinished = false;
+const dueWork = futurePacer.nextTurn(Promise.resolve()).then(() => { dueFinished = true; });
+await Promise.resolve();
+failSchedule = true;
+await assert.rejects(futurePacer.pump(), error => error === rejected);
+await Promise.all([futureFailure, dueWork]);
+assert.equal(dueFinished, true, 'failed future scheduling must not strand due work');
+assert.equal(futurePacer.hasPending, false);
+
+const closing = new PacedWork({}, { requestTurn: async () => {} });
+const parked = closing.nextTurn(Promise.resolve());
+const canceled = assert.rejects(parked, /closed/);
+closing.close();
+await canceled;
+await assert.rejects(closing.nextTurn(Promise.resolve()), /closed/);
+assert.equal(closing.hasPending, false);
+console.log('ok - async schedule failure propagates, explicit retry works, and close cancels parked work');

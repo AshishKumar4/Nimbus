@@ -31,6 +31,9 @@ export const ErrorCode = {
     ENOTEMPTY: 'ENOTEMPTY',
     EINVAL: 'EINVAL',
     EXDEV: 'EXDEV',
+    EIO: 'EIO',
+    ENOTSUP: 'ENOTSUP',
+    ESTALE: 'ESTALE',
 };
 export class VFSError extends Error {
     code;

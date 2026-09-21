@@ -1,31 +1,34 @@
 import { lex } from './lexer.js';
 import { TokenKind } from './types.js';
-const HISTORY_PATH = '/home/user/.bash_history';
 const MAX_HISTORY = 1000;
 export class HistoryManager {
+    filesystem;
+    home;
     entries = [];
-    vfs;
-    constructor(vfs) {
-        this.vfs = vfs;
+    loaded;
+    constructor(filesystem, home) {
+        this.filesystem = filesystem;
+        this.home = home;
     }
-    load() {
+    async load() {
+        return this.loaded ??= this.readHistory();
+    }
+    async readHistory() {
         try {
-            const content = this.vfs.readFileString(HISTORY_PATH);
+            const content = await this.filesystem().readFileString(`${this.home()}/.bash_history`);
             this.entries = content.split('\n').filter(Boolean);
         }
-        catch {
+        catch (error) {
+            if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'))
+                throw error;
             this.entries = [];
         }
     }
-    save() {
-        try {
-            this.vfs.writeFile(HISTORY_PATH, this.entries.join('\n') + '\n');
-        }
-        catch {
-            // Ignore write errors (directory may not exist)
-        }
+    async save() {
+        await this.filesystem().writeFile(`${this.home()}/.bash_history`, this.entries.join('\n') + '\n');
     }
-    add(line) {
+    async add(line) {
+        await this.load();
         const trimmed = line.trim();
         if (!trimmed)
             return;
@@ -38,7 +41,7 @@ export class HistoryManager {
         if (this.entries.length > MAX_HISTORY) {
             this.entries = this.entries.slice(-MAX_HISTORY);
         }
-        this.save();
+        await this.save();
     }
     /**
      * Expand history references:

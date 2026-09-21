@@ -1,6 +1,6 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
-import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 /**
  * Identity comes from the supervisor binding, never from facet arguments: a
@@ -23,9 +23,10 @@ export interface SupervisorOpEnvelope {
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
 export interface SupervisorOpDeps {
     readonly vfs: SqliteVFS;
+    readonly filesystem?: NimbusFilesystemAuthority;
     /** Absent a process table, operations use the unprivileged session user. */
     readonly processes?: SessionProcessSupervisor;
-    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
     /**
      * The host's `_rpc*` surface for ops beyond the native set — an in-process
      * workspace's dispatch record, or the session itself for
@@ -63,7 +64,9 @@ export interface SupervisorOpHost {
 }
 /**
  * The canonical supervisor op set — every operation the supervisor RPC
- * serves. Three consumers key on these names:
+ * serves, split between exactly two tables: an op is either native (the
+ * handler answers it from the bridge) or routed (SUPERVISOR_OP_ROUTES names
+ * the host `_rpc*` method), never both. Three consumers key on these names:
  *
  *   - `sessionSupervisorOp` (worker): the DO's host — `extend` overrides for
  *     hosted accounting plus the non-filesystem ops it answers itself.
@@ -71,12 +74,13 @@ export interface SupervisorOpHost {
  *     run against the VFS directly; every other op dispatches to
  *     `deps.host` through SUPERVISOR_OP_ROUTES, the embedder's `_rpc*`
  *     surface.
- *   - `supervisor-host-dispatch`: the test — derives every case's delegate
- *     and expected arguments from SUPERVISOR_OP_ROUTES, not a copied list.
+ *   - `supervisor-host-dispatch`: the test — drives a case per name here,
+ *     against the real filesystem for a native op and against a captured
+ *     delegate for a routed one.
  *
  * An op absent here is not served, on any host.
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsRevision", "fsList", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay"];
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsRevision", "fsList", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -85,19 +89,73 @@ export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
  * the default handler would have used instead of caching its own.
  */
 export interface SupervisorOpTools {
-    readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+    readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
     readonly vfs: SqliteVFS;
     readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
 }
-/** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
-export declare const SUPERVISOR_OP_ROUTES: Readonly<Record<SupervisorOpName, SupervisorOpRoute>>;
+/**
+ * The host-side argument plan per op — how an envelope becomes an _rpc*
+ * call. Exactly the ops {@link SUPERVISOR_NATIVE_OPS} does NOT name: a
+ * native op is answered by the bridge before the host is consulted, so a
+ * route for one could never fire.
+ */
+export declare const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, NativeOpName>, SupervisorOpRoute>>;
 /**
  * The ops `createSupervisorOpHandler` serves natively — one pid-keyed
- * filesystem bridge, plus the output stream. A session's `extend` overrides
- * never cover these by accident: `sessionSupervisorOps` builds its delegate
- * set from this name list, not a hand-copied table.
+ * filesystem bridge, plus the output stream. This table is the definition:
+ * {@link SUPERVISOR_NATIVE_OPS} is its key set and {@link SUPERVISOR_OP_ROUTES}
+ * covers exactly the ops it does not name, so no op is listed twice and a
+ * session's `extend` overrides can never cover one by accident.
  */
+declare const NATIVE_OPS: {
+    readFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<string | null>;
+    fsOpen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
+    fsFstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat>;
+    fsDup: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
+    fsSeek: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
+    fsSetStatus: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsReaddirHandle: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
+    fsFtruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsFchmod: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsFchown: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsFutimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsSync: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsRealpath: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string>;
+    fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<{
+        root: string;
+        owner: string;
+    }>;
+    fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
+    stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
+    lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
+    exists: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<boolean>;
+    readdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
+    readlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
+    fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
+    fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
+    fsRevision: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
+    hasLegacySymlinkUnder: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => boolean;
+    writeFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
+    mkdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    rmdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    unlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    rename: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    symlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    access: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    chown: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    chmod: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    utimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
+    stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
+};
+/** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */
+export type NativeOpName = keyof typeof NATIVE_OPS;
 export declare const SUPERVISOR_NATIVE_OPS: ReadonlySet<string>;
 /** The pid-keyed bridge cache behind the native filesystem ops. */
 export interface SupervisorOpBridgeStore {
@@ -108,16 +166,18 @@ export interface SupervisorOpBridgeStore {
      * swapped on every use, and two credentialed host calls interleaving
      * across an await would otherwise read as each other.
      */
-    readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+    readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
     /** Drop a pid's bridge — a process exit ends its credential's validity. */
-    readonly forget: (pid: number) => void;
+    readonly forget: (pid: number) => Promise<void>;
+    readonly dispose: () => Promise<void>;
 }
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
  * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
-export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps, 'vfs' | 'processes'>): SupervisorOpBridgeStore;
+export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>): SupervisorOpBridgeStore;
 /** One dispatch method lets any host serve its workspace to process facets. */
 export declare function createSupervisorOpHandler(deps: SupervisorOpDeps): (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+export {};
 //# sourceMappingURL=supervisor-op.d.ts.map

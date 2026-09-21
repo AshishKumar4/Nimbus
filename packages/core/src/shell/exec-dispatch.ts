@@ -110,7 +110,7 @@ export function installPathExecResolver(
     if (!kernelFs.exists(resolved)) return undefined;
     if (kernelFs.isDirectory(resolved)) {
       return async (ctx): Promise<number> => {
-        ctx.stderr.write(`${name}: Is a directory\n`);
+        (await ctx.stderr.write(`${name}: Is a directory\n`));
         return 126;
       };
     }
@@ -131,33 +131,33 @@ export function installPathExecResolver(
     const absPath = '/' + target;
     const authorize = (command: Command): Command => async (ctx): Promise<number> => {
       try {
-        ctx.vfs.access(accessPath, 0o1);
+        (await ctx.vfs.access(accessPath, 0o1));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.startsWith('ENOENT:')) {
-          ctx.stderr.write(`${name}: No such file or directory\n`);
+          (await ctx.stderr.write(`${name}: No such file or directory\n`));
           return 127;
         }
         if (message.startsWith('EACCES:') || message.startsWith('EPERM:')) {
-          ctx.stderr.write(`${name}: Permission denied\n`);
+          (await ctx.stderr.write(`${name}: Permission denied\n`));
           return 126;
         }
-        ctx.stderr.write(`${name}: ${message}\n`);
+        (await ctx.stderr.write(`${name}: ${message}\n`));
         return 126;
       }
-      return command(ctx);
+      return (await command(ctx));
     };
 
     const decision = decideExecDispatch(mode, head);
     switch (decision.kind) {
       case 'denied':
         return authorize(async (ctx): Promise<number> => {
-          ctx.stderr.write(`${name}: Permission denied\n`);
+          (await ctx.stderr.write(`${name}: Permission denied\n`));
           return 126;
         });
       case 'exec-format-error':
         return authorize(async (ctx): Promise<number> => {
-          ctx.stderr.write(`${name}: cannot execute binary file: exec format not supported on Nimbus (wasm32-wasi only)\n`);
+          (await ctx.stderr.write(`${name}: cannot execute binary file: exec format not supported on Nimbus (wasm32-wasi only)\n`));
           return 126;
         });
       case 'wasm': {
@@ -174,7 +174,7 @@ export function installPathExecResolver(
         return authorize(async (ctx): Promise<number> => {
           const depth = interpreterDepth(ctx);
           if (depth >= 4) {
-            ctx.stderr.write(`${name}: too many levels of interpreters\n`);
+            (await ctx.stderr.write(`${name}: too many levels of interpreters\n`));
             return 126;
           }
           let interpCmd = await registry.resolve(interp);
@@ -182,7 +182,7 @@ export function installPathExecResolver(
             interpCmd = await registry.resolve(basename(interp));
           }
           if (!interpCmd) {
-            ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`);
+            (await ctx.stderr.write(`${name}: ${interp}: bad interpreter: No such file or directory\n`));
             return 127;
           }
           return await interpCmd({

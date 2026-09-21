@@ -2,19 +2,18 @@ import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
-        ctx.stderr.write('realpath: missing operand\n');
+        await ctx.stderr.write('realpath: missing operand\n');
         return 1;
     }
     let exitCode = 0;
     for (const arg of ctx.args) {
         const path = resolve(ctx.cwd, arg);
         try {
-            ctx.vfs.stat(path);
-            ctx.stdout.write(path + '\n');
+            await ctx.stdout.write(await ctx.vfs.realpath(path) + '\n');
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`realpath: ${arg}: ${e.message}\n`);
+                await ctx.stderr.write(`realpath: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }
             else {

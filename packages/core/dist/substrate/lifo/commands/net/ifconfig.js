@@ -9,16 +9,16 @@ export function createIfconfigCommand(kernel) {
         if (args.length === 0) {
             const interfaces = kernel.networkStack.getAllInterfaces();
             if (interfaces.length === 0) {
-                ctx.stdout.write('No network interfaces\n');
+                await ctx.stdout.write('No network interfaces\n');
                 return 0;
             }
             for (let i = 0; i < interfaces.length; i++) {
-                ctx.stdout.write(interfaces[i].toString());
+                await ctx.stdout.write(interfaces[i].toString());
                 if (i < interfaces.length - 1) {
-                    ctx.stdout.write('\n\n');
+                    await ctx.stdout.write('\n\n');
                 }
                 else {
-                    ctx.stdout.write('\n');
+                    await ctx.stdout.write('\n');
                 }
             }
             return 0;
@@ -28,10 +28,10 @@ export function createIfconfigCommand(kernel) {
         // Just interface name: show that interface
         if (args.length === 1) {
             if (!iface) {
-                ctx.stderr.write(`ifconfig: ${ifaceName}: error fetching interface information: Device not found\n`);
+                await ctx.stderr.write(`ifconfig: ${ifaceName}: error fetching interface information: Device not found\n`);
                 return 1;
             }
-            ctx.stdout.write(iface.toString() + '\n');
+            await ctx.stdout.write(iface.toString() + '\n');
             return 0;
         }
         // Interface configuration commands
@@ -39,19 +39,19 @@ export function createIfconfigCommand(kernel) {
         switch (command) {
             case 'up':
                 if (!iface) {
-                    ctx.stderr.write(`ifconfig: ${ifaceName}: Device not found\n`);
+                    await ctx.stderr.write(`ifconfig: ${ifaceName}: Device not found\n`);
                     return 1;
                 }
                 iface.up();
-                ctx.stdout.write(`Interface ${ifaceName} is up\n`);
+                await ctx.stdout.write(`Interface ${ifaceName} is up\n`);
                 return 0;
             case 'down':
                 if (!iface) {
-                    ctx.stderr.write(`ifconfig: ${ifaceName}: Device not found\n`);
+                    await ctx.stderr.write(`ifconfig: ${ifaceName}: Device not found\n`);
                     return 1;
                 }
                 iface.down();
-                ctx.stdout.write(`Interface ${ifaceName} is down\n`);
+                await ctx.stdout.write(`Interface ${ifaceName} is down\n`);
                 return 0;
             default:
                 // Try to parse as IP address
@@ -65,11 +65,11 @@ export function createIfconfigCommand(kernel) {
                                 address: command,
                                 subnet: args[2] ? parseNetmask(args[2]) : '24',
                             });
-                            ctx.stdout.write(`Created interface ${ifaceName} with address ${command}\n`);
+                            await ctx.stdout.write(`Created interface ${ifaceName} with address ${command}\n`);
                             return 0;
                         }
                         catch (error) {
-                            ctx.stderr.write(`ifconfig: error creating interface: ${error instanceof Error ? error.message : String(error)}\n`);
+                            await ctx.stderr.write(`ifconfig: error creating interface: ${error instanceof Error ? error.message : String(error)}\n`);
                             return 1;
                         }
                     }
@@ -78,10 +78,10 @@ export function createIfconfigCommand(kernel) {
                         address: command,
                         subnet: args[2] ? parseNetmask(args[2]) : '24',
                     });
-                    ctx.stdout.write(`Added address ${command} to ${ifaceName}\n`);
+                    await ctx.stdout.write(`Added address ${command} to ${ifaceName}\n`);
                     return 0;
                 }
-                ctx.stderr.write(`ifconfig: unknown command: ${command}\n`);
+                await ctx.stderr.write(`ifconfig: unknown command: ${command}\n`);
                 return 1;
         }
     };

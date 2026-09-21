@@ -54,9 +54,13 @@ const factory = new Function(
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
   + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
 );
+const metadataDeletes = [];
+const metadata = new Proxy({ 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, {
+  deleteProperty(target, key) { metadataDeletes.push(key); return Reflect.deleteProperty(target, key); },
+});
 const out = factory(
   {},
-  { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
+  metadata,
   {}, { 'home/user': ['p'], 'home/user/p': [] }, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/s.mjs`, dir,
 );
@@ -141,7 +145,7 @@ assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored aga
   // Under /opt, which no ancestor in this facet manifest enumerates — so the
   // first read cannot be answered from knowledge and a repair is put in flight.
   const CFG = '/opt/tool-nodejs/config.json';
-  const before = { fills: stats.fills, invalidations: stats.invalidations, self: stats.selfWrites };
+  const before = { fills: stats.fills, invalidations: stats.invalidations, self: stats.selfWrites, metadataDeletes: metadataDeletes.length };
 
   // The refused read, which is what puts a repair in flight for this path.
   assert.throws(() => fs.readFileSync(CFG, 'utf8'), (error) => error.code === 'ENOENT');
@@ -166,9 +170,11 @@ assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored aga
     'the barrier must recognise the write as this facet own despite the repair',
   );
   assert.equal(
-    stats.invalidations, before.invalidations,
-    `nothing this facet authored was evicted (was ${stats.invalidations - before.invalidations})`,
+    stats.invalidations, before.invalidations + 1,
+    'only the newly announced, unstamped parent directory is invalidated',
   );
+  assert.equal(Object.hasOwn(metadata, 'opt'), false, 'the single invalidation removes the parent metadata');
+  assert.deepEqual(metadataDeletes.slice(before.metadataDeletes), ['opt'], 'no file metadata is invalidated');
   assert.equal(
     stats.fills, before.fills,
     `and nothing was refetched that never left (was ${stats.fills - before.fills})`,

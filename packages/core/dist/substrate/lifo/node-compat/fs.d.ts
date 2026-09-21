@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem as VFS } from './filesystem.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 interface Dirent {

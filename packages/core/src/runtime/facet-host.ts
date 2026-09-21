@@ -95,7 +95,7 @@ export interface FacetSpec {
 
 /** The session a facet's syscalls reach, and who they reach it as. */
 export interface FacetSyscalls {
-  readonly vfs: CredentialedVfs;
+  readonly vfs: import('./os-contracts.js').RuntimeFsBridge;
   readonly pid: number;
 }
 
@@ -111,6 +111,12 @@ export interface FacetFilesystemSeed {
 
 /** What a runner knows about the subtree its guest should see. */
 export interface FacetFilesystemOptions {
+  /**
+   * The credential the bridge is bound to. The manifest states each path's
+   * effective bits for this identity, so the guest's own permission checks
+   * agree with what the authority will answer.
+   */
+  cred: Readonly<import('./os-contracts.js').VfsCred>;
   /** Directories outside `root` the program must also reach. */
   extraRoots?: Iterable<string>;
   /**
@@ -172,20 +178,21 @@ export interface FacetHost {
    *   back to the session mid-instruction and the seed can be a manifest.
    * `none` — it cannot; V8 traps any call into a suspending import off a
    *   stack `WebAssembly.promising` did not enter. Every syscall must answer
-   *   synchronously, so the seed has to BE the filesystem.
+   *   synchronously, so the guest is wired to the authority's synchronous
+   *   view instead of a suspending one.
    */
   readonly parking: WasiParking;
   /**
    * Hand a facet the part of the session filesystem its program needs.
    *
-   * The host decides the strategy, because the strategy IS the consequence of
-   * {@link FacetHost.parking} and nothing about the program bears on it. A
-   * runner names the roots and gets a seed; it never learns which kind it got.
+   * A manifest, never a copy: the guest reads and writes through the same
+   * credential-bound authority the walk used, so what the seed carries is a
+   * cache index over the live filesystem, not a second filesystem.
    */
   seedFilesystem(
-    vfs: CredentialedVfs,
+    vfs: import('./os-contracts.js').RuntimeFsBridge,
     root: string,
-    options?: FacetFilesystemOptions,
-  ): FacetFilesystemSeed | { error: string };
+    options: FacetFilesystemOptions,
+  ): Promise<FacetFilesystemSeed | { error: string }>;
   open(spec: FacetSpec): Facet;
 }

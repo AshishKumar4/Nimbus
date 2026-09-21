@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { CommandRegistry } from '../commands/registry.js';
 export interface CompletionResult {
     replacementStart: number;
@@ -11,9 +11,9 @@ export interface CompletionContext {
     cursorPos: number;
     cwd: string;
     env: Record<string, string>;
-    vfs: VFS;
+    vfs: ExecutionFs;
     registry: CommandRegistry;
     builtinNames: string[];
 }
-export declare function complete(ctx: CompletionContext): CompletionResult;
+export declare function complete(ctx: CompletionContext): Promise<CompletionResult>;
 //# sourceMappingURL=completer.d.ts.map

@@ -230,6 +230,7 @@ const SPECS = {
     license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
+    auxiliary_bins: 'coreutils/busybox.applets',
     npm: {
       name: '@nimbus-sh/runtime-bash',
       summary: 'GNU bash 5.2.37 and BusyBox 1.37.0, cross-compiled to wasm32-wasi',
@@ -426,6 +427,15 @@ if (!spec) {
   console.error(`unknown spec: ${key}`);
   console.error(`known: ${Object.keys(SPECS).join(', ')}`);
   process.exit(2);
+}
+if (spec.auxiliary_bins) {
+  const list = new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url);
+  const names = readFileSync(list, 'utf8').split('\n').filter(Boolean);
+  spec.synthetic_files.NIMBUS_AUX_BIN = Buffer.from('Nimbus WASI multicall entry\n');
+  for (const name of names) {
+    if (name.includes('/') || name === '.' || name === '..') throw new Error(`Invalid multicall entry: ${name}`);
+    spec.files.push({ src: 'NIMBUS_AUX_BIN', vfs: `bin/${name}`, mode: 'exec' });
+  }
 }
 // Checked before anything is staged: which runtimes we publish to npm is a
 // decision, and a spec that has not made it should cost nothing to find out.

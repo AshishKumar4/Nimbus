@@ -100,8 +100,8 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
 }
 
 async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<Uint8Array | string | null> {
-  if (stdin.readBytes) return stdin.readBytes(want);
-  return stdin.read();
+  if (stdin.readBytes) return (await stdin.readBytes(want));
+  return (await stdin.read());
 }
 
 /**
@@ -169,7 +169,7 @@ async function openOutput(ctx: CommandContext, options: DdOptions): Promise<DdSi
 
 function streamSink(stream: CommandContext['stdout']): DdSink {
   const writer = new SinkWriter(stream);
-  return { write: (bytes) => writer.write(bytes), end: () => writer.end() };
+  return { write: async (bytes) => (await writer.write(bytes)), end: () => writer.end() };
 }
 
 async function writeStatus(ctx: CommandContext, options: DdOptions, copied: number): Promise<void> {

@@ -33,8 +33,8 @@ export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.ni
 const PYPI_API = 'https://pypi.org/pypi';
 
 interface PythonPipVfs {
-  exists(path: string): boolean;
-  readFile(path: string): Uint8Array;
+  exists(path: string): boolean | Promise<boolean>;
+  readFile(path: string): Uint8Array | Promise<Uint8Array>;
 }
 
 const IGNORED_PIP_INSTALL_FLAGS = new Set([
@@ -131,9 +131,9 @@ const SCI_VARIANT_DIST_INFO: readonly string[] = Object.freeze([
  * is right for `python -c` reading a module name out of a variable, which a
  * per-program classifier cannot be.
  */
-export function sessionUsesSciVariant(vfs: PythonPipVfs): boolean {
-  return SCI_VARIANT_DIST_INFO.some((dir) =>
-    vfs.exists(`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`));
+export async function sessionUsesSciVariant(vfs: PythonPipVfs): Promise<boolean> {
+  for (const dir of SCI_VARIANT_DIST_INFO) if (await vfs.exists(`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`)) return true;
+  return false;
 }
 
 const PypiFileSchema = z.object({
@@ -332,15 +332,15 @@ async function buildPipInstallPlan(
   const displayPackages: string[] = [];
   let includeDependencies = true;
 
-  const addRequirement = (requirement: Requirement, baseDir: string, source: string): string | null => {
+  const addRequirement = async (requirement: Requirement, baseDir: string, source: string): Promise<string | null> => {
     if (requirement.type === 'RequirementsFile') {
-      return addRequirementsFile(requirement.path, baseDir, vfs, roots, constraints, displayPackages, 0);
+      return (await addRequirementsFile(requirement.path, baseDir, vfs, roots, constraints, displayPackages, 0));
     }
     if (requirement.type === 'ConstraintsFile') {
-      return addConstraintsFile(requirement.path, baseDir, vfs, constraints, 0);
+      return (await addConstraintsFile(requirement.path, baseDir, vfs, constraints, 0));
     }
     if (requirement.type === 'ProjectURL') {
-      const local = localWheelArtifact(requirement.url, baseDir, vfs);
+      const local = (await localWheelArtifact(requirement.url, baseDir, vfs));
       if ('error' in local) return local.error;
       if (local.artifact) {
         localWheels.push({
@@ -363,26 +363,26 @@ async function buildPipInstallPlan(
     if (arg === '-r' || arg === '--requirement') {
       const reqPath = argv[i + 1];
       if (!reqPath) return failedPlan(`${arg}: missing requirements file`, 2);
-      const err = addRequirementsFile(reqPath, cwd, vfs, roots, constraints, displayPackages, 0);
+      const err = (await addRequirementsFile(reqPath, cwd, vfs, roots, constraints, displayPackages, 0));
       if (err) return failedPlan(err, 1);
       i++;
       continue;
     }
     if (arg.startsWith('--requirement=')) {
-      const err = addRequirementsFile(arg.slice('--requirement='.length), cwd, vfs, roots, constraints, displayPackages, 0);
+      const err = (await addRequirementsFile(arg.slice('--requirement='.length), cwd, vfs, roots, constraints, displayPackages, 0));
       if (err) return failedPlan(err, 1);
       continue;
     }
     if (arg === '-c' || arg === '--constraint') {
       const constraintPath = argv[i + 1];
       if (!constraintPath) return failedPlan(`${arg}: missing constraints file`, 2);
-      const err = addConstraintsFile(constraintPath, cwd, vfs, constraints, 0);
+      const err = (await addConstraintsFile(constraintPath, cwd, vfs, constraints, 0));
       if (err) return failedPlan(err, 1);
       i++;
       continue;
     }
     if (arg.startsWith('--constraint=')) {
-      const err = addConstraintsFile(arg.slice('--constraint='.length), cwd, vfs, constraints, 0);
+      const err = (await addConstraintsFile(arg.slice('--constraint='.length), cwd, vfs, constraints, 0));
       if (err) return failedPlan(err, 1);
       continue;
     }
@@ -399,7 +399,7 @@ async function buildPipInstallPlan(
     if (arg.startsWith('-')) {
       return failedPlan(`pip install option '${arg}' is not supported in Nimbus yet`, 2);
     }
-    const local = localWheelArtifact(arg, cwd, vfs);
+    const local = (await localWheelArtifact(arg, cwd, vfs));
     if ('error' in local) return failedPlan(local.error, 1);
     if (local.artifact) {
       localWheels.push(local.artifact);
@@ -413,7 +413,7 @@ async function buildPipInstallPlan(
       return failedPlan(e instanceof RequirementsSyntaxError ? e.message : `invalid requirement '${arg}'`, 1);
     }
     if (!parsed) continue;
-    const err = addRequirement(parsed, cwd, arg);
+    const err = (await addRequirement(parsed, cwd, arg));
     if (err) return failedPlan(err, 1);
   }
 
@@ -466,7 +466,7 @@ function failedPlan(error: string, exitCode: number): PipInstallPlan {
   };
 }
 
-function addRequirementsFile(
+async function addRequirementsFile(
   reqPath: string,
   baseDir: string,
   vfs: PythonPipVfs,
@@ -474,13 +474,13 @@ function addRequirementsFile(
   constraints: Map<string, string[]>,
   displayPackages: string[],
   depth: number,
-): string | null {
+): Promise<string | null> {
   if (depth > 8) return 'requirements nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  const probe = probeVfsPath(vfs, abs);
+  const probe = (await probeVfsPath(vfs, abs));
   if ('error' in probe) return `cannot read requirements file ${reqPath}: ${probe.error}`;
   if (!probe.exists) return `requirements file not found: ${reqPath}`;
-  const text = readVfsText(vfs, abs);
+  const text = (await readVfsText(vfs, abs));
   if ('error' in text) return `cannot read requirements file ${reqPath}: ${text.error}`;
 
   let parsed: Requirement[];
@@ -493,12 +493,12 @@ function addRequirementsFile(
   const nextBaseDir = parentVfsPath(abs);
   for (const requirement of parsed) {
     if (requirement.type === 'RequirementsFile') {
-      const err = addRequirementsFile(requirement.path, nextBaseDir, vfs, requirements, constraints, displayPackages, depth + 1);
+      const err = (await addRequirementsFile(requirement.path, nextBaseDir, vfs, requirements, constraints, displayPackages, depth + 1));
       if (err) return err;
       continue;
     }
     if (requirement.type === 'ConstraintsFile') {
-      const err = addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1);
+      const err = (await addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1));
       if (err) return err;
       continue;
     }
@@ -512,19 +512,19 @@ function addRequirementsFile(
   return null;
 }
 
-function addConstraintsFile(
+async function addConstraintsFile(
   reqPath: string,
   baseDir: string,
   vfs: PythonPipVfs,
   constraints: Map<string, string[]>,
   depth: number,
-): string | null {
+): Promise<string | null> {
   if (depth > 8) return 'constraints nesting exceeded 8 files';
   const abs = resolveVfsPath(reqPath, baseDir);
-  const probe = probeVfsPath(vfs, abs);
+  const probe = (await probeVfsPath(vfs, abs));
   if ('error' in probe) return `cannot read constraints file ${reqPath}: ${probe.error}`;
   if (!probe.exists) return `constraints file not found: ${reqPath}`;
-  const text = readVfsText(vfs, abs);
+  const text = (await readVfsText(vfs, abs));
   if ('error' in text) return `cannot read constraints file ${reqPath}: ${text.error}`;
 
   let parsed: Requirement[];
@@ -537,7 +537,7 @@ function addConstraintsFile(
   const nextBaseDir = parentVfsPath(abs);
   for (const requirement of parsed) {
     if (requirement.type === 'RequirementsFile' || requirement.type === 'ConstraintsFile') {
-      const err = addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1);
+      const err = (await addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1));
       if (err) return err;
       continue;
     }
@@ -549,17 +549,17 @@ function addConstraintsFile(
   return null;
 }
 
-function readVfsText(vfs: PythonPipVfs, path: string): { text: string } | { error: string } {
+async function readVfsText(vfs: PythonPipVfs, path: string): Promise<{ text: string } | { error: string }> {
   try {
-    return { text: new TextDecoder('utf-8').decode(vfs.readFile(path)) };
+    return { text: new TextDecoder('utf-8').decode((await vfs.readFile(path))) };
   } catch (e) {
     return { error: errorMessage(e) };
   }
 }
 
-function probeVfsPath(vfs: PythonPipVfs, path: string): { exists: boolean } | { error: string } {
+async function probeVfsPath(vfs: PythonPipVfs, path: string): Promise<{ exists: boolean } | { error: string }> {
   try {
-    return { exists: vfs.exists(path) };
+    return { exists: (await vfs.exists(path)) };
   } catch (e) {
     return { error: errorMessage(e) };
   }
@@ -868,11 +868,11 @@ function unquotePythonString(value: string): string {
   return value;
 }
 
-function localWheelArtifact(
+async function localWheelArtifact(
   rawSpec: string,
   baseDir: string,
   vfs: PythonPipVfs,
-): { artifact: LocalWheelArtifact | null } | { error: string } {
+): Promise<{ artifact: LocalWheelArtifact | null } | { error: string }> {
   const pathSpec = localWheelPathSpec(rawSpec);
   if ('error' in pathSpec) return pathSpec;
   const spec = pathSpec.path;
@@ -883,7 +883,7 @@ function localWheelArtifact(
   if (!looksLikePath) return { artifact: null };
 
   const abs = resolveVfsPath(spec, baseDir);
-  const probe = probeVfsPath(vfs, abs);
+  const probe = (await probeVfsPath(vfs, abs));
   if ('error' in probe) return { error: `cannot access local wheel ${rawSpec}: ${probe.error}` };
   if (!probe.exists) return { error: `local wheel not found: ${rawSpec}` };
   const fileName = abs.slice(abs.lastIndexOf('/') + 1);

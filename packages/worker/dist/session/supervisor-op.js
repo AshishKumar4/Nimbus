@@ -4,7 +4,7 @@
  * surface, so the same code serves process facets, the facet loopback stubs
  * and the SDK's direct `_rpc*` calls.
  *
- * - The native filesystem ops in core's `ops` table run in-process against
+ * - The native filesystem ops core's handler defines run in-process against
  *   the shared bridge store — the same cache `supervisorBridge` hands the
  *   handle-based and append RPC bodies.
  * - `readFile`, `readFileBytes`, `fsReadRange`, `fsReadRangeUncached` and
@@ -26,7 +26,10 @@ function outputBytesArg(value) {
 }
 export function buildSessionSupervisorOps(host, store, methods) {
     host.ensureSqliteFs();
-    store ??= createSupervisorBridgeStore({ vfs: host.sqliteFs, processes: host.processes });
+    const vfs = host.sqliteFs;
+    if (!vfs)
+        throw new Error('Supervisor filesystem is not initialized');
+    store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
     const extend = {
         // The native ops whose session bodies carry accounting the bridge
         // alone doesn't know: a read lease sized to what the file can return.
@@ -47,7 +50,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
             const stat = await fs.stat(path);
             if (!stat)
                 return null;
-            return withReadAllocation(stat.size, () => fs.readFile(path));
+            return withReadAllocation(stat.size, async () => fs.readFile(path));
         },
         fsReadRange: async (envelope, tools) => {
             const args = FsReadRangeArgsSchema.parse({
@@ -56,7 +59,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
                 length: envelope.args?.[2],
             });
             const fs = tools.bridge(envelope.pid, envelope.cred);
-            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
+            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), async () => fs.readRange(args.path, args.offset, args.length));
         },
         fsReadRangeUncached: async (envelope, tools) => {
             const args = FsReadRangeArgsSchema.parse({
@@ -65,7 +68,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
                 length: envelope.args?.[2],
             });
             const fs = tools.bridge(envelope.pid, envelope.cred);
-            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
+            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), async () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
         },
         // The write stream's decode-drain timestamp starts when the envelope
         // arrives, not when the DO first reads it — the same contract
@@ -79,7 +82,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
             if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
                 throw new Error('filesystem RPC requires a valid process pid');
             }
-            return tools.vfs.as(tools.cred(pid, envelope.cred)).writeStream(envelope.stream, {
+            return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
                 decodeDrainStartedAt: performance.now(),
                 mutationOwner: envelope.mutationOwner,
             });
@@ -106,5 +109,5 @@ export function buildSessionSupervisorOps(host, store, methods) {
         bridge: store,
         extend,
     });
-    return { dispatch, bridge: store.bridge, forget: store.forget };
+    return { dispatch, bridge: store.bridge, forget: store.forget, dispose: store.dispose };
 }

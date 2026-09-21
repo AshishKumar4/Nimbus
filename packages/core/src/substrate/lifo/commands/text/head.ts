@@ -60,7 +60,7 @@ const command: Command = async (ctx) => {
       } else {
         // Bounded read: works on regular files and on endless character
         // devices alike, since neither is ever materialised whole.
-        await streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+        await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
           length: bytes,
           signal: ctx.signal,
         });

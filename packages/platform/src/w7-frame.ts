@@ -220,7 +220,7 @@ export async function decodeWriteBatchStream(
   } catch {
     throw new Error('w7-frame: stream must be a byte-oriented ReadableStream');
   }
-  const buffer = new ExactByteReader(reader);
+  const buffer = new ExactByteReader(reader, options.signal);
   let handedOff = false;
   try {
     throwIfAborted(options.signal);
@@ -1006,7 +1006,20 @@ async function cancelReader(
 class ExactByteReader {
   private done = false;
 
-  constructor(private readonly reader: ReadableStreamBYOBReader) {}
+  constructor(private readonly reader: ReadableStreamBYOBReader, private readonly signal?: AbortSignal) {}
+
+  private async read<T>(read: () => Promise<T>, cancel: () => Promise<void>): Promise<T> {
+    throwIfAborted(this.signal);
+    const abort = () => { void cancel().catch(() => {}); };
+    this.signal?.addEventListener('abort', abort, { once: true });
+    try {
+      const result = await read();
+      throwIfAborted(this.signal);
+      return result;
+    } finally {
+      this.signal?.removeEventListener('abort', abort);
+    }
+  }
 
   async readExact(length: number, label: string): Promise<Uint8Array> {
     if (length === 0) return new Uint8Array(0);
@@ -1018,7 +1031,10 @@ class ExactByteReader {
           `w7-frame: stream ended ${offset} bytes into expected ${length}-byte ${label}`,
         );
       }
-      const next = await this.reader.read(new Uint8Array(length - offset));
+      const next = await this.read(
+        () => this.reader.read(new Uint8Array(length - offset)),
+        () => this.reader.cancel(this.signal?.reason),
+      );
       if (next.done) this.done = true;
       else if (next.value.byteLength > 0) {
         output.set(next.value, offset);
@@ -1033,7 +1049,7 @@ class ExactByteReader {
     this.reader.releaseLock();
     const reader = stream.getReader();
     try {
-      const next = await reader.read();
+      const next = await this.read(() => reader.read(), () => reader.cancel(this.signal?.reason));
       if (!next.done && next.value.byteLength > 0) {
         await reader.cancel(new Error('w7-frame: trailing bytes after batch-end'));
         throw new Error('w7-frame: trailing bytes after batch-end');

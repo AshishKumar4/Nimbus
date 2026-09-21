@@ -47,7 +47,6 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetHost } from './facet-host.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 /**
@@ -80,7 +79,6 @@ export type CPythonResidentStart = (spawn: {
 }) => Promise<CPythonFacetResult>;
 export declare function makeCPythonRunnerFactory(deps: {
     facets: FacetHost;
-    vfs: SqliteVFS;
     /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
     startResident?: CPythonResidentStart;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;

@@ -24,11 +24,11 @@ const PACKAGE_MANIFEST = 'package.json';
  * Filesystem failures reject.
  */
 export async function writeTarballStream(body, targetDir, vfs) {
-    const ensureDir = (path) => {
-        if (!vfs.exists(path))
-            vfs.mkdir(path, { recursive: true });
+    const ensureDir = async (path) => {
+        if (!await vfs.exists(path))
+            await vfs.mkdir(path, { recursive: true });
     };
-    ensureDir(targetDir);
+    await ensureDir(targetDir);
     let files = 0;
     let bytes = 0;
     let manifest = null;
@@ -44,7 +44,7 @@ export async function writeTarballStream(body, targetDir, vfs) {
         const fullPath = `${targetDir}/${entry.name}`;
         const cut = fullPath.lastIndexOf('/');
         if (cut > 0)
-            ensureDir(fullPath.slice(0, cut));
+            await ensureDir(fullPath.slice(0, cut));
         await vfs.writeFile(fullPath, entry.data);
         files++;
         bytes += entry.data.length;

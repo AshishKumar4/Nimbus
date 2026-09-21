@@ -157,7 +157,7 @@
       "name": "@nimbus-sh/react",
       "version": "0.1.6",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.6.0",
+        "@nimbus-sh/sdk": "^0.7.0",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
@@ -175,7 +175,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
-        "@nimbus-sh/worker": "^0.7.0",
+        "@nimbus-sh/worker": "^0.8.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
@@ -1849,10 +1849,6 @@
 
     "@mdx-js/mdx/estree-walker": ["estree-walker@3.0.3", "", { "dependencies": { "@types/estree": "^1.0.0" } }, "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g=="],
 
-    "@nimbus-sh/react/@nimbus-sh/sdk": ["@nimbus-sh/sdk@0.6.0", "", { "dependencies": { "@nimbus-sh/core": "^0.9.0", "zod": "^4.4.3" }, "peerDependencies": { "@nimbus-sh/worker": "^0.7.0" } }, "sha512-gRsun3z1lCZiH8c0a7nqGhREgehi1vysxfe4dmk164SuMd/DhTzYruNjzsPK40tM6+V3f0WhmiavpstBkeKkkQ=="],
-
-    "@nimbus-sh/sdk/@nimbus-sh/worker": ["@nimbus-sh/worker@0.7.0", "", { "dependencies": { "@ai-sdk/openai-compatible": "^2.0.41", "@nimbus-sh/core": "^0.9.0", "@nimbus-sh/fabric": "^0.5.0", "@nimbus-sh/platform": "^0.4.0", "@renovatebot/pep440": "^5.0.0", "ai": "^6.0.182", "clean-git-ref": "^2.0.1", "crc-32": "^1.2.2", "diff": "^5.1.0", "diff3": "0.0.3", "esbuild-wasm": "0.24.2", "ignore": "^5.1.4", "is-git-ref-name-valid": "^1.0.0", "isomorphic-git": "npm:@ashishkumar472/cf-git@1.0.5", "minimisted": "^2.0.1", "pako": "1.0.11", "pify": "^4.0.1", "pip-requirements-js": "^1.0.3", "readable-stream": "^3.4.0", "sha.js": "^2.4.12", "simple-get": "^4.0.1", "sql.js": "^1.14.1", "ws": "^8.20.0", "zod": "^4.4.3" } }, "sha512-srmO77P38sZhhj0zC/lx1/oXpk8ipDe/aaOv5onch5o1lhqaGGdGUjGUcFIE182BNkcmdnL7u3/sNBjtXrTq7A=="],
-
     "@puppeteer/browsers/yargs": ["yargs@17.7.2", "", { "dependencies": { "cliui": "^8.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "require-directory": "^2.1.1", "string-width": "^4.2.3", "y18n": "^5.0.5", "yargs-parser": "^21.1.1" } }, "sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w=="],
 
     "@rolldown/binding-wasm32-wasi/@emnapi/runtime": ["@emnapi/runtime@1.11.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-vgj7R3y3Wgx24IQaGPA/R6YFXLHVMOZ0uVEyIQPaWs+rd1AzfEMXlAC22FYwO1XkKR6NPsq7mUandH8oIRdZFw=="],
@@ -1948,12 +1944,6 @@
     "@babel/traverse/@babel/types/@babel/helper-string-parser": ["@babel/helper-string-parser@8.0.0", "", {}, "sha512-6mJgmFFFIIO82vvoLt9XtRC7/TkzXfts1t/SpRX4IHSzMgqoPYCWesVu1udUPUWioAE/2fcG6WuI8zrkE1gwrg=="],
 
     "@babel/traverse/@babel/types/@babel/helper-validator-identifier": ["@babel/helper-validator-identifier@8.0.4", "", {}, "sha512-4wFaiLd0bVo4cIoTXI3zKI038NIWE/cr3jvBjejOVYVxV/m8Ltav1USiGzG1fmS5J2RhgEOgXNNK46cRPnRsrg=="],
-
-    "@nimbus-sh/react/@nimbus-sh/sdk/@nimbus-sh/core": ["@nimbus-sh/core@0.9.0", "", { "dependencies": { "@nimbus-sh/platform": "^0.4.0", "@renovatebot/pep440": "^5.0.0", "acorn": "^8.15.0", "acorn-walk": "^8.3.5", "esbuild-wasm": "0.24.2", "magic-string": "^0.30.21", "pip-requirements-js": "^1.0.3", "zod": "^4.4.3" } }, "sha512-tRx30S7+bgSxT7Fa8W41aaQVJgd0N8iNwkXlNCpwgOr62SR0CZXnkwMyvjkGoApRy+hKn3+HcWUkLWQTzibtHg=="],
-
-    "@nimbus-sh/sdk/@nimbus-sh/worker/@nimbus-sh/core": ["@nimbus-sh/core@0.9.0", "", { "dependencies": { "@nimbus-sh/platform": "^0.4.0", "@renovatebot/pep440": "^5.0.0", "acorn": "^8.15.0", "acorn-walk": "^8.3.5", "esbuild-wasm": "0.24.2", "magic-string": "^0.30.21", "pip-requirements-js": "^1.0.3", "zod": "^4.4.3" } }, "sha512-tRx30S7+bgSxT7Fa8W41aaQVJgd0N8iNwkXlNCpwgOr62SR0CZXnkwMyvjkGoApRy+hKn3+HcWUkLWQTzibtHg=="],
-
-    "@nimbus-sh/sdk/@nimbus-sh/worker/@nimbus-sh/fabric": ["@nimbus-sh/fabric@0.5.0", "", { "dependencies": { "@nimbus-sh/core": "^0.9.0", "@nimbus-sh/platform": "^0.4.0", "zod": "^4.4.3" } }, "sha512-6v65VlNRTZYD13rdBl6Q0araIuaotuaglI0n5TOQau8P4w3Qn3WtSubyhrGcRLAEmGpEJ5YWLH8t8HBm1jPK0w=="],
 
     "@puppeteer/browsers/yargs/cliui": ["cliui@8.0.1", "", { "dependencies": { "string-width": "^4.2.0", "strip-ansi": "^6.0.1", "wrap-ansi": "^7.0.0" } }, "sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ=="],
 

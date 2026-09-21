@@ -1,5 +1,6 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import { withHostFilesystem, type ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import type { WasiFsSnapshot } from '@nimbus-sh/core/runtime/wasi-instance.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
@@ -26,7 +27,6 @@ import { z } from 'zod/v4';
  * deciding what counts as a result.
  */
 
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
@@ -35,7 +35,7 @@ import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
 import { buildCPythonPreamble } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
@@ -51,7 +51,8 @@ const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 
 export interface PythonReplDeps {
   facetMgr: FacetManager;
-  vfs: SqliteVFS;
+  /** Owns the installed interpreter blobs the prompt is booted from. */
+  authority: NimbusFilesystemAuthority;
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
   installRoot: string;
@@ -81,7 +82,7 @@ export interface PythonReplDeps {
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
-type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest' | 'pid'>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest' | 'pid'>;
 
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
@@ -235,9 +236,12 @@ class PythonReplAdapter implements ReplAdapter {
     finally { this.resetPool(); }
   }
   private async ensurePool(): Promise<void> {
-    const vfsForVariant = this.deps.vfs.as(CRED_KERNEL);
+    await withHostFilesystem(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
+  }
+
+  private async ensurePoolFrom(vfs: ExecutionFs): Promise<void> {
     const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-    const wantsSci = sessionUsesSciVariant(vfsForVariant) && vfsForVariant.exists(sciPath);
+    const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
     // A prompt that was open before `pip install numpy` is holding the
     // interpreter that does not have it. Dropping the pool rebuilds on the next
     // statement, which is the facet restart EXTENSIONS.md says this costs.
@@ -247,28 +251,27 @@ class PythonReplAdapter implements ReplAdapter {
     if (this.pool) return;
     this.poolUsesSci = wantsSci;
     const { installRoot, facetMgr } = this.deps;
-    const vfs = vfsForVariant;
     const wasmPath = wantsSci ? sciPath : `${installRoot}/${CPYTHON_WASM_REL}`;
     const stdlibPath = `${installRoot}/${CPYTHON_STDLIB_REL}`;
-    if (!vfs.exists(wasmPath)) {
+    if (!(await vfs.exists(wasmPath))) {
       throw new Error(`python.wasm missing at ${wasmPath} (run 'nimbus install python')`);
     }
-    if (!vfs.exists(stdlibPath)) {
+    if (!(await vfs.exists(stdlibPath))) {
       throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
     }
-    this.wasmBytes = toArrayBuffer(vfs.readFile(wasmPath));
+    this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
 
     // The install root is the Python prefix, so the manifest covers lib/ and
     // etc/ as they are — nothing is aliased into a path the supervisor could
     // not serve.
-    const built = manifestVfs(vfs, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
+    const built = await manifestVfs(vfs.authority, CRED_KERNEL, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
     if ('error' in built) throw new Error(built.error);
     // Same workaround as cpython-runner, and it belongs to the same open
     // defect: the guest cannot consume the stdlib as a manifest-only
     // demand-load, though the transport delivers it byte-identically. Seeding
     // it by value is what makes the interpreter start. Remove both together.
     const snapshot = built.snapshot;
-    const zipBytes = vfs.readFile(stdlibPath);
+    const zipBytes = await vfs.readFile(stdlibPath);
     let bin = '';
     const CH = 32768;
     for (let i = 0; i < zipBytes.length; i += CH) {
@@ -385,7 +388,7 @@ export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
 export async function warmPythonRepl(
-  deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>,
+  deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest'>,
 ): Promise<void> {
   const adapter = new PythonReplAdapter(deps);
   await adapter.push('');

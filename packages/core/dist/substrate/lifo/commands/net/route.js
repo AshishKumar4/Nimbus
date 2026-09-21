@@ -8,18 +8,18 @@ export function createRouteCommand(kernel) {
         // No arguments: show routing table
         if (args.length === 0 || args[0] === '-n') {
             const table = kernel.networkStack.getRoutingTableString();
-            ctx.stdout.write(table + '\n');
+            await ctx.stdout.write(table + '\n');
             return 0;
         }
         const command = args[0];
         switch (command) {
             case 'add':
-                return addRoute(ctx, args.slice(1), kernel.networkStack);
+                return await addRoute(ctx, args.slice(1), kernel.networkStack);
             case 'del':
             case 'delete':
-                return deleteRoute(ctx, args.slice(1), kernel.networkStack);
+                return await deleteRoute(ctx, args.slice(1), kernel.networkStack);
             default:
-                ctx.stderr.write('Usage: route [-n] [add|del] [destination] [gw gateway] [dev interface]\n');
+                await ctx.stderr.write('Usage: route [-n] [add|del] [destination] [gw gateway] [dev interface]\n');
                 return 1;
         }
     };
@@ -27,9 +27,9 @@ export function createRouteCommand(kernel) {
 /**
  * Add route to routing table
  */
-function addRoute(ctx, args, networkStack) {
+async function addRoute(ctx, args, networkStack) {
     if (args.length < 2) {
-        ctx.stderr.write('Usage: route add <destination> [gw <gateway>] dev <interface>\n');
+        await ctx.stderr.write('Usage: route add <destination> [gw <gateway>] dev <interface>\n');
         return 1;
     }
     let destination = args[0];
@@ -57,7 +57,7 @@ function addRoute(ctx, args, networkStack) {
         }
     }
     if (!iface) {
-        ctx.stderr.write('route: interface required (use "dev <interface>")\n');
+        await ctx.stderr.write('route: interface required (use "dev <interface>")\n');
         return 1;
     }
     // Handle special destinations
@@ -75,20 +75,20 @@ function addRoute(ctx, args, networkStack) {
             metric,
             namespace: 'default',
         });
-        ctx.stdout.write(`Route added: ${destination} via ${gateway || '*'} dev ${iface}\n`);
+        await ctx.stdout.write(`Route added: ${destination} via ${gateway || '*'} dev ${iface}\n`);
         return 0;
     }
     catch (error) {
-        ctx.stderr.write(`route: ${error instanceof Error ? error.message : String(error)}\n`);
+        await ctx.stderr.write(`route: ${error instanceof Error ? error.message : String(error)}\n`);
         return 1;
     }
 }
 /**
  * Delete route from routing table
  */
-function deleteRoute(ctx, args, networkStack) {
+async function deleteRoute(ctx, args, networkStack) {
     if (args.length < 2) {
-        ctx.stderr.write('Usage: route del <destination> dev <interface>\n');
+        await ctx.stderr.write('Usage: route del <destination> dev <interface>\n');
         return 1;
     }
     let destination = args[0];
@@ -106,7 +106,7 @@ function deleteRoute(ctx, args, networkStack) {
         }
     }
     if (!iface) {
-        ctx.stderr.write('route: interface required (use "dev <interface>")\n');
+        await ctx.stderr.write('route: interface required (use "dev <interface>")\n');
         return 1;
     }
     // Handle special destinations
@@ -118,11 +118,11 @@ function deleteRoute(ctx, args, networkStack) {
     }
     const removed = networkStack.removeRoute(destination, iface);
     if (removed) {
-        ctx.stdout.write(`Route deleted: ${destination} dev ${iface}\n`);
+        await ctx.stdout.write(`Route deleted: ${destination} dev ${iface}\n`);
         return 0;
     }
     else {
-        ctx.stderr.write(`route: no such route\n`);
+        await ctx.stderr.write(`route: no such route\n`);
         return 1;
     }
 }

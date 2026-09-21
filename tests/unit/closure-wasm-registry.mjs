@@ -20,6 +20,8 @@ import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-dig
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   epoch = 'fake-vfs-epoch';
   revision() { return 0; }
   constructor(files) {
@@ -105,7 +107,7 @@ console.log('  the closure walk records a staged image and an over-cap image, by
 {
   let reads = 0;
   const counting = { readFile: (p) => { reads++; return vfs.readFile(p); } };
-  const direct = collectClosureWasmImages(counting, { [`${PKG}/lib/small.wasm`]: small }, [`${PKG}/lib/small.wasm`, `${PKG}/esbuild.wasm`, `${PKG}/missing.wasm`]);
+  const direct = (await collectClosureWasmImages(counting, { [`${PKG}/lib/small.wasm`]: small }, [`${PKG}/lib/small.wasm`, `${PKG}/esbuild.wasm`, `${PKG}/missing.wasm`]));
   assert.equal(reads, 2, 'a staged cell is not read again; a missing file is skipped');
   assert.deepEqual(direct.map((i) => i.vfsPath).sort(), [`/${PKG}/esbuild.wasm`, `/${PKG}/lib/small.wasm`]);
 }

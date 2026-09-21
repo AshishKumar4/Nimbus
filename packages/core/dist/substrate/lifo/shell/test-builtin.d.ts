@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
@@ -7,10 +7,10 @@ import { type ExpandContext } from './expander.js';
  * Implementation of the `test` / `[` shell builtin.
  * Evaluates conditional expressions.
  */
-export declare function evaluateTest(args: string[], vfs: VFS, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
+export declare function evaluateTest(args: string[], vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
 /**
  * `[[ ... ]]`, whose operands are expanded only when the expression actually
  * reaches them: `[[ $# = 2 && $2 = x ]]` must not touch `$2` under `set -u`.
  */
-export declare function evaluateDoubleBracketWords(words: WordPart[][], expandCtx: ExpandContext, vfs: VFS, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
+export declare function evaluateDoubleBracketWords(words: WordPart[][], expandCtx: ExpandContext, vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
 //# sourceMappingURL=test-builtin.d.ts.map

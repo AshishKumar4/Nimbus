@@ -8,7 +8,7 @@ import { resolve } from '../utils/path.js';
 export async function evaluateTest(args, vfs, stderr, context) {
     // `[` requires a closing `]`
     const operands = args.length > 0 && args[args.length - 1] === ']' ? args.slice(0, -1) : args;
-    return evaluateTestExpression(literalOperands(operands), vfs, stderr, context, 'test');
+    return (await evaluateTestExpression(literalOperands(operands), vfs, stderr, context, 'test'));
 }
 /**
  * `[[ ... ]]`, whose operands are expanded only when the expression actually
@@ -33,7 +33,7 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
             return arg;
         },
     };
-    return evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket');
+    return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
 function literalOperands(args) {
     return {
@@ -60,13 +60,13 @@ async function evaluateTestExpression(operands, vfs, stderr, context, mode) {
     try {
         const result = await parseOr(operands, 0, vfs, context, mode, true);
         if (result.pos !== operands.length) {
-            stderr.write('test: too many arguments\n');
+            (await stderr.write('test: too many arguments\n'));
             return 2;
         }
         return result.value ? 0 : 1;
     }
     catch (e) {
-        stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`);
+        (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
         return 2;
     }
 }
@@ -126,7 +126,7 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
     // Unary file tests
     if (arg.startsWith('-') && arg.length === 2 && pos + 1 < ops.length && isFileTestFlag(arg[1])) {
         const fileResult = evaluate
-            ? evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd)
+            ? (await evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd))
             : false;
         return { value: fileResult, pos: pos + 2 };
     }
@@ -198,23 +198,23 @@ function hasPatternSyntax(value) {
  * about a path at the root, so `[ -f config.json ]` was false for a file
  * sitting right there — silently taking the wrong branch rather than failing.
  */
-function evaluateFileTest(flag, operand, vfs, cwd) {
+async function evaluateFileTest(flag, operand, vfs, cwd) {
     const path = cwd === undefined ? operand : resolve(cwd, operand);
     switch (flag) {
         case 'e':
-            return statOf(vfs, path) !== null;
+            return (await statOf(vfs, path)) !== null;
         case 'f':
-            return statOf(vfs, path)?.type === 'file';
+            return (await statOf(vfs, path))?.type === 'file';
         case 'd':
-            return statOf(vfs, path)?.type === 'directory';
+            return (await statOf(vfs, path))?.type === 'directory';
         case 's': {
-            const stat = statOf(vfs, path);
+            const stat = (await statOf(vfs, path));
             return stat !== null && stat.type === 'file' && stat.size > 0;
         }
         default: {
             const mode = flag === 'r' ? 0o4 : flag === 'w' ? 0o2 : 0o1;
             try {
-                vfs.access(path, mode);
+                (await vfs.access(path, mode));
                 return true;
             }
             catch {
@@ -223,9 +223,9 @@ function evaluateFileTest(flag, operand, vfs, cwd) {
         }
     }
 }
-function statOf(vfs, path) {
+async function statOf(vfs, path) {
     try {
-        return vfs.stat(path);
+        return (await vfs.stat(path));
     }
     catch {
         return null;

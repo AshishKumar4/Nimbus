@@ -83,30 +83,30 @@ export function installRoot(homeDir, name, version) {
 }
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export function listInstalledManifests(vfs, homeDir) {
-    return listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir);
+export async function listInstalledManifests(vfs, homeDir) {
+    return (await listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir));
 }
-export function listInstalledManifestsView(fs, homeDir) {
+export async function listInstalledManifestsView(fs, homeDir) {
     const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const runtimesRoot = `${home}/.nimbus/runtimes`;
     const out = [];
-    if (!fs.exists(runtimesRoot))
+    if (!await fs.exists(runtimesRoot))
         return out;
     // Each entry under runtimesRoot is a <name>; each entry under that
     // is a <version>; each <version> dir has a manifest.json.
-    for (const nameEntry of fs.readdir(runtimesRoot)) {
+    for (const nameEntry of await fs.readdir(runtimesRoot)) {
         if (nameEntry.type !== 'directory')
             continue;
         const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-        for (const verEntry of fs.readdir(nameDir)) {
+        for (const verEntry of await fs.readdir(nameDir)) {
             if (verEntry.type !== 'directory')
                 continue;
             const verDir = `${nameDir}/${verEntry.name}`;
             const manifestPath = `${verDir}/manifest.json`;
-            if (!fs.exists(manifestPath))
+            if (!await fs.exists(manifestPath))
                 continue;
             try {
-                const manifest = parseRuntimeManifest(JSON.parse(fs.readFileString(manifestPath)));
+                const manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
                 out.push({ root: verDir, manifest });
             }
             catch {
@@ -131,9 +131,9 @@ export async function runtimePayloadIntact(fs, root, manifest) {
     try {
         for (const file of manifest.files) {
             const target = `${root}/${file.path}`;
-            if (!fs.exists(target))
+            if (!await fs.exists(target))
                 return false;
-            if ((await sha256Hex(fs.readFile(target))) !== file.sha256)
+            if ((await sha256Hex(await fs.readFile(target))) !== file.sha256)
                 return false;
         }
         return true;
@@ -150,22 +150,22 @@ export async function runtimePayloadIntact(fs, root, manifest) {
  */
 export async function rehydrateInstalledRuntimesView(vfs, registry, homeDir, runnerFor) {
     const bins = [];
-    for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
+    for (const { root, manifest } of await listInstalledManifestsView(vfs, homeDir)) {
         if (!await runtimePayloadIntact(vfs, root, manifest))
             continue;
         for (const ep of runtimeEntrypoints(manifest)) {
             const factory = runnerFor(ep.runner);
             if (!factory)
                 continue; // runner not registered yet — skip
-            const handler = factory(manifest, root, ep.binName, ep.kind);
+            const handler = await factory(manifest, root, ep.binName, ep.kind);
             registry.register(ep.binName, handler);
             bins.push(ep.binName);
         }
     }
     return { count: bins.length, bins };
 }
-export function listInstalledRuntimes(vfs, homeDir) {
-    return listInstalledManifests(vfs, homeDir).map(({ root, manifest }) => ({
+export async function listInstalledRuntimes(vfs, homeDir) {
+    return (await listInstalledManifests(vfs, homeDir)).map(({ root, manifest }) => ({
         name: manifest.name,
         version: manifest.version,
         root,

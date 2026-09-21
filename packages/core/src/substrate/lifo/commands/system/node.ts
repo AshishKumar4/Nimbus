@@ -1,3 +1,5 @@
+import { synchronousFilesystem, type NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { ExecutionFs } from '../../../../shell/execution-fs.js';
 import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
@@ -5,7 +7,6 @@ import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
 
@@ -69,29 +70,40 @@ function isEsmSource(source: string): boolean {
 }
 
 /** Determine if source should be treated as ESM based on filename, content, and package.json type */
-function shouldTreatAsEsm(source: string, filename: string, vfs?: { exists(p: string): boolean; readFileString(p: string): string }): boolean {
+type PackageType = 'module' | 'commonjs' | null;
+
+function declaredPackageType(packageJson: string): PackageType {
+	try {
+		const pkg: unknown = JSON.parse(packageJson);
+		const type = typeof pkg === 'object' && pkg !== null && 'type' in pkg ? pkg.type : undefined;
+		return type === 'module' || type === 'commonjs' ? type : null;
+	} catch { return null; }
+}
+
+/** Nearest package.json "type" walking up from a .js file (Node.js semantics), read synchronously inside `require`. */
+function packageType(filename: string, vfs: NodeFilesystem): PackageType {
+	for (let dir = dirname(filename); ; dir = dirname(dir)) {
+		const pkgPath = join(dir, 'package.json');
+		if (vfs.exists(pkgPath)) return declaredPackageType(vfs.readFileString(pkgPath));
+		if (dirname(dir) === dir) return null;
+	}
+}
+
+/** The same walk for the main script, through the shell's own view before any `require` runs. */
+async function mainPackageType(filename: string, vfs: ExecutionFs): Promise<PackageType> {
+	for (let dir = dirname(filename); ; dir = dirname(dir)) {
+		const pkgPath = join(dir, 'package.json');
+		if (await vfs.exists(pkgPath)) return declaredPackageType(await vfs.readFileString(pkgPath));
+		if (dirname(dir) === dir) return null;
+	}
+}
+
+function treatAsEsm(source: string, filename: string, declared: () => PackageType): boolean {
 	const ext = extname(filename);
 	if (ext === '.mjs') return true;
 	if (ext === '.cjs') return false;
-	// Check nearest package.json "type" field (Node.js semantics)
-	if (vfs && ext === '.js') {
-		let dir = dirname(filename);
-		for (; ;) {
-			const pkgPath = join(dir, 'package.json');
-			if (vfs.exists(pkgPath)) {
-				try {
-					const pkg = JSON.parse(vfs.readFileString(pkgPath));
-					if (pkg.type === 'module') return true;
-					if (pkg.type === 'commonjs') return false;
-				} catch { /* ignore */ }
-				break;
-			}
-			const parent = dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
-		}
-	}
-	return isEsmSource(source);
+	const type = ext === '.js' ? declared() : null;
+	return type === null ? isEsmSource(source) : type === 'module';
 }
 
 // Names that collide with the new Function() CJS wrapper parameters.
@@ -533,6 +545,17 @@ function transformEsmToCjs(source: string): string {
 	return result;
 }
 
+/** A failed script read carries an error code, not one error class. */
+function scriptReadDiagnostic(error: unknown): string | null {
+	if (!(error instanceof Error)) return null;
+	const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
+	if (code === null) return null;
+	if (code === 'ENOENT') return 'No such file or directory';
+	if (code === 'EACCES' || code === 'EPERM') return 'Permission denied';
+	if (code === 'EISDIR') return 'Is a directory';
+	return error.message;
+}
+
 function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualRequestHandler>): Command {
 	return async (ctx) => {
 		// Handle -v/--version
@@ -556,6 +579,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return 0;
 		}
 
+		const filesystem = synchronousFilesystem(ctx.vfs);
+
 		let source: string;
 		let filename: string;
 		let scriptArgs: string[];
@@ -573,10 +598,11 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// Run script file
 			const scriptPath = resolve(ctx.cwd, ctx.args[0]);
 			try {
-				source = ctx.vfs.readFileString(scriptPath);
+				source = await ctx.vfs.readFileString(scriptPath);
 			} catch (e) {
-				if (e instanceof VFSError) {
-					await ctx.stderr.write(`node: ${ctx.args[0]}: ${e.message}\n`);
+				const reason = scriptReadDiagnostic(e);
+				if (reason !== null) {
+					await ctx.stderr.write(`node: ${ctx.args[0]}: ${reason}\n`);
 					return 1;
 				}
 				throw e;
@@ -597,7 +623,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			: kernelOrPortRegistry?.portRegistry;
 
 		const nodeCtx: NodeContext = {
-			vfs: ctx.vfs,
+			filesystem,
 			cwd: ctx.cwd,
 			env: ctx.env,
 			stdout: ctx.stdout,
@@ -664,7 +690,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				if (resolved) {
 					const cached = moduleCache.get(resolved.path);
 					if (cached) return cached;
-					const modSource = ctx.vfs.readFileString(resolved.path);
+					const modSource = filesystem().readFileString(resolved.path);
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
 				throw new Error(`Cannot find module '${name}'`);
@@ -678,13 +704,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					if (cached) return cached;
 
 					if (resolved.path.endsWith('.json')) {
-						const content = ctx.vfs.readFileString(resolved.path);
+						const content = filesystem().readFileString(resolved.path);
 						const parsed = JSON.parse(content);
 						moduleCache.set(resolved.path, parsed);
 						return parsed;
 					}
 
-					const modSource = ctx.vfs.readFileString(resolved.path);
+					const modSource = filesystem().readFileString(resolved.path);
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
 
@@ -698,13 +724,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				if (cached) return cached;
 
 				if (nmResolved.path.endsWith('.json')) {
-					const content = ctx.vfs.readFileString(nmResolved.path);
+					const content = filesystem().readFileString(nmResolved.path);
 					const parsed = JSON.parse(content);
 					moduleCache.set(nmResolved.path, parsed);
 					return parsed;
 				}
 
-				const modSource = ctx.vfs.readFileString(nmResolved.path);
+				const modSource = filesystem().readFileString(nmResolved.path);
 				return executeModule(modSource, nmResolved.path, nmResolved.path);
 			}
 
@@ -729,28 +755,28 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			const absPath = resolve(fromDir, name);
 
 			// Try exact path
-			if (ctx.vfs.exists(absPath)) {
+			if (filesystem().exists(absPath)) {
 				try {
-					const stat = ctx.vfs.stat(absPath);
+					const stat = filesystem().stat(absPath);
 					if (stat.type === 'file') return { path: absPath };
 					// Directory -- try index.js
 					const indexPath = join(absPath, 'index.js');
-					if (ctx.vfs.exists(indexPath)) return { path: indexPath };
+					if (filesystem().exists(indexPath)) return { path: indexPath };
 				} catch { /* fall through */ }
 			}
 
 			// Try .js extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.js')) {
+			if (!extname(absPath) && filesystem().exists(absPath + '.js')) {
 				return { path: absPath + '.js' };
 			}
 
 			// Try .mjs extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.mjs')) {
+			if (!extname(absPath) && filesystem().exists(absPath + '.mjs')) {
 				return { path: absPath + '.mjs' };
 			}
 
 			// Try .json extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.json')) {
+			if (!extname(absPath) && filesystem().exists(absPath + '.json')) {
 				return { path: absPath + '.json' };
 			}
 
@@ -765,9 +791,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			let current = fromDir;
 			for (; ;) {
 				const pkgPath = join(current, 'package.json');
-				if (ctx.vfs.exists(pkgPath)) {
+				if (filesystem().exists(pkgPath)) {
 					try {
-						const pkg = JSON.parse(ctx.vfs.readFileString(pkgPath));
+						const pkg = JSON.parse(filesystem().readFileString(pkgPath));
 						if (pkg.imports && typeof pkg.imports === 'object') {
 							const importsMap = pkg.imports as Record<string, unknown>;
 							if (name in importsMap) {
@@ -813,7 +839,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			let current = fromDir;
 			for (; ;) {
 				const candidate = join(current, 'node_modules', packageName);
-				if (ctx.vfs.exists(candidate)) {
+				if (filesystem().exists(candidate)) {
 					const resolved = resolvePackageEntry(candidate, subpath);
 					if (resolved) return resolved;
 				}
@@ -824,14 +850,14 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 			// Global modules
 			const globalCandidate = join('/usr/lib/node_modules', packageName);
-			if (ctx.vfs.exists(globalCandidate)) {
+			if (filesystem().exists(globalCandidate)) {
 				const resolved = resolvePackageEntry(globalCandidate, subpath);
 				if (resolved) return resolved;
 			}
 
 			// Legacy location (pkg command)
 			const legacyCandidate = join('/usr/share/pkg/node_modules', packageName);
-			if (ctx.vfs.exists(legacyCandidate)) {
+			if (filesystem().exists(legacyCandidate)) {
 				const resolved = resolvePackageEntry(legacyCandidate, subpath);
 				if (resolved) return resolved;
 			}
@@ -861,8 +887,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		function resolvePackageEntry(pkgDir: string, subpath: string | null): { path: string } | null {
 			const pkgJsonPath = join(pkgDir, 'package.json');
 			let pkgJson: Record<string, unknown> | null = null;
-			if (ctx.vfs.exists(pkgJsonPath)) {
-				try { pkgJson = JSON.parse(ctx.vfs.readFileString(pkgJsonPath)); } catch { /* ignore */ }
+			if (filesystem().exists(pkgJsonPath)) {
+				try { pkgJson = JSON.parse(filesystem().readFileString(pkgJsonPath)); } catch { /* ignore */ }
 			}
 
 			// --- Subpath resolution (e.g. require('rollup/parseAst')) ---
@@ -928,7 +954,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 			// 3. Default to index.js
 			const indexPath = join(pkgDir, 'index.js');
-			if (ctx.vfs.exists(indexPath)) return { path: indexPath };
+			if (filesystem().exists(indexPath)) return { path: indexPath };
 
 			return null;
 		}
@@ -973,7 +999,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					if (resolved) {
 						const cached = moduleCache.get(resolved.path);
 						if (cached) return cached;
-						const childSource = ctx.vfs.readFileString(resolved.path);
+						const childSource = filesystem().readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
 					throw new Error(`Cannot find module '${name}'`);
@@ -986,13 +1012,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						if (cached) return cached;
 
 						if (resolved.path.endsWith('.json')) {
-							const content = ctx.vfs.readFileString(resolved.path);
+							const content = filesystem().readFileString(resolved.path);
 							const parsed = JSON.parse(content);
 							moduleCache.set(resolved.path, parsed);
 							return parsed;
 						}
 
-						const childSource = ctx.vfs.readFileString(resolved.path);
+						const childSource = filesystem().readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
 					throw new Error(`Cannot find module '${name}'`);
@@ -1005,13 +1031,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					if (cached) return cached;
 
 					if (nmResolved.path.endsWith('.json')) {
-						const content = ctx.vfs.readFileString(nmResolved.path);
+						const content = filesystem().readFileString(nmResolved.path);
 						const parsed = JSON.parse(content);
 						moduleCache.set(nmResolved.path, parsed);
 						return parsed;
 					}
 
-					const childSource = ctx.vfs.readFileString(nmResolved.path);
+					const childSource = filesystem().readFileString(nmResolved.path);
 					return executeModule(childSource, nmResolved.path, nmResolved.path);
 				}
 
@@ -1033,7 +1059,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			};
 
 			let cleanSource = stripShebang(modSource);
-			if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
+			if (treatAsEsm(cleanSource, modFilename, () => packageType(modFilename, filesystem()))) {
 				cleanSource = transformEsmToCjs(cleanSource);
 			}
 			const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanSource}\n})`;
@@ -1043,7 +1069,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				fn = new Function('return ' + wrapped)();
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
-				await ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
+				ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
 				// Binary search for exact error location, matching specific error
 				const lines = cleanSource.split('\n');
 				const targetErr = err.message;
@@ -1056,9 +1082,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						else lo = mid; // Different error (e.g. unclosed), keep going
 					}
 				}
-				await ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
+				ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
 				for (let li = Math.max(0, lo - 25); li < Math.min(lines.length, hi + 3); li++) {
-					await ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
+					ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
 				}
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
@@ -1130,7 +1156,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const global = { process, Buffer, console: nodeConsole };
 
 		let cleanMainSource = stripShebang(source);
-		const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);
+		const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
+		const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
 		if (isEsm) {
 			cleanMainSource = transformEsmToCjs(cleanMainSource);
 		}
@@ -1160,7 +1187,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const rejectionHandler = (event: PromiseRejectionEvent) => {
 			pendingRejection = event.reason;
 			event.preventDefault(); // prevent browser default logging
-			await ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
 		};
 		if (typeof globalThis.addEventListener === 'function') {
 			globalThis.addEventListener('unhandledrejection', rejectionHandler as EventListener);

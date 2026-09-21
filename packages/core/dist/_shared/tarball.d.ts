@@ -12,10 +12,10 @@
  * such as gem install, which must open an archive nested inside another one.
  */
 export interface TarballWriteTarget {
-    exists(path: string): boolean;
+    exists(path: string): boolean | Promise<boolean>;
     mkdir(path: string, options?: {
         recursive?: boolean;
-    }): void;
+    }): void | Promise<void>;
     writeFile(path: string, data: Uint8Array | string): unknown;
 }
 export interface TarballWriteResult {

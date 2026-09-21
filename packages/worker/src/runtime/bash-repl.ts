@@ -1,9 +1,9 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type VfsCred, type RuntimeFsBridge, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { createBashFacetSession, type BashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
@@ -16,11 +16,14 @@ import {
 
 export interface BashReplDeps {
   facetMgr: FacetManager;
-  vfs: SqliteVFS;
+  /** Owns the installed runtime blobs the session is instantiated from. */
+  authority: NimbusFilesystemAuthority;
   terminal: WebSocketTerminal;
   installRoot: string;
   manifest: RuntimeManifest;
   cred: VfsCred;
+  pid: number;
+  filesystem: RuntimeFsBridge;
   env: Record<string, string>;
   cwd: string;
   shell?: Pick<Shell, 'env' | 'cwd' | 'takeQueuedInput'>;
@@ -106,9 +109,12 @@ class BashReplAdapter implements ReplAdapter {
 
   private async ensureSession(signal: AbortSignal): Promise<ReplPushResult | null> {
     if (this.session) return null;
-    this.session = await createBashFacetSession({
+    this.session = await withHostFilesystem(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
       facets: facetHostForManager(this.deps.facetMgr),
-      vfs: this.deps.vfs.as(this.deps.cred),
+      artifacts,
+      filesystem: this.deps.filesystem,
+      pid: this.deps.pid,
+      cred: this.deps.cred,
       manifest: this.deps.manifest,
       installRoot: this.deps.installRoot,
       argv: ['bash', '--noediting', '-i'],
@@ -122,7 +128,7 @@ class BashReplAdapter implements ReplAdapter {
       stdinClosed: false,
       stdinTty: true,
       signal,
-    });
+    }));
 
     const initial = this.session.initial;
     if (initial.state !== 'need-input') return this.consumeSlice(initial, '');

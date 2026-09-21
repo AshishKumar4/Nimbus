@@ -87,7 +87,7 @@ const command: Command = async (ctx) => {
         return 1;
       }
 
-      const entries = collectFiles(ctx.vfs, targetDir, files);
+      const entries = (await collectFiles(ctx.vfs, targetDir, files));
       let data = createTar(entries);
 
       if (gzipFlag) {
