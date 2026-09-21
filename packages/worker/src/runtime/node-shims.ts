@@ -1907,12 +1907,15 @@ const __fsMod = (() => {
     const key = _strip(absPath);
     const held = !_residentStorePresent() && __nimbusBeginOwnMutation(key);
     let receipt;
-    try { receipt = await rpc(); }
+    let landed = false;
+    try { receipt = await rpc(); landed = true; }
     finally {
-      // The end runs even if applying the local effect throws: a lease left
-      // open pins its cell at Infinity, which is the one state in this
-      // protocol that can serve a stale byte forever.
-      try { if (receipt !== undefined && apply) apply(receipt); }
+      // The local effect follows the mutation landing, not the receipt: the
+      // receipt only settles the stamp, and a supervisor that answers
+      // without one still applied the bytes. The end runs even if applying
+      // throws: a lease left open pins its cell at Infinity, which is the one
+      // state in this protocol that can serve a stale byte forever.
+      try { if (landed && apply) apply(receipt); }
       finally { __nimbusEndOwnMutation(key, held, receipt); }
     }
     return receipt;
