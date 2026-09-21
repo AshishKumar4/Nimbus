@@ -1243,6 +1243,10 @@ const __fsMod = (() => {
       mtimeMs: _coerceTimeMs(mtime, syscall, p),
     };
     _localTimes[k] = time;
+    // A spawn-time stat record answers statSync ahead of _localTimes, so it
+    // must carry the new times too or the sync view keeps the old mtime.
+    const meta = _metadata(absPath);
+    if (meta) { meta.atime = time.atimeMs; meta.mtime = time.mtimeMs; }
     return time;
   }
 
@@ -1754,9 +1758,11 @@ const __fsMod = (() => {
    * keep today's local-only behaviour. Without a ledger the RPC is issued
    * directly, which is what the async forms did before they were queued.
    */
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after) {
+  // `method` names the supervisor RPC when it differs from the syscall the
+  // caller reports (lchown rides `chown`, rm rides `fsRemove`).
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method) {
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor[syscall] !== "function") return null;
+    if (!supervisor || typeof supervisor[method || syscall] !== "function") return null;
     const queued = _hasVfsMutationQueue();
     const before = queued && after ? after() : null;
     const run = async () => {
@@ -1784,18 +1790,29 @@ const __fsMod = (() => {
     __nimbusQueueVfsMutation(absPath, () => mutation.then(() => undefined, () => undefined), false);
   }
 
+  // Queue the parked write for `absPath`, if any, on the path's mutation
+  // tail. Registration is synchronous: a caller that queues its own mutation
+  // on the same tail right after this call is ordered behind the flush.
+  function _flushParkedWrite(absPath, supervisor) {
+    const k = _strip(absPath);
+    if (!__vfsWrites || !(k in __vfsWrites) || typeof supervisor.writeFile !== "function") {
+      return Promise.resolve(undefined);
+    }
+    return __nimbusFlushVfsWrite(
+      absPath,
+      (content, snapshot) => _fsRpc(
+        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
+        "write", absPath,
+        (result) => result,
+      ),
+    );
+  }
+
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     await _announceLocalDirs(absPath, supervisor);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await __nimbusFlushVfsWrite(
-        absPath,
-        (content, snapshot) => _fsRpc(
-          __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-          "write", absPath,
-          (result) => result,
-        ),
-      );
+      await _flushParkedWrite(absPath, supervisor);
       _markVfsStale();
     }
     // Pending sync chmod rides along with any flush of the same path
@@ -1896,16 +1913,26 @@ const __fsMod = (() => {
     return stat;
   }
 
-  function _direntObject(name, type) {
-    const isDir = type === "directory" || type === "dir";
-    const isSymlink = type === "symlink";
-    return {
-      name,
-      isFile: () => !isDir && !isSymlink,
-      isDirectory: () => isDir,
-      isSymbolicLink: () => isSymlink,
-    };
+  // The one Dirent shape: readdir({ withFileTypes }) sync and async, and
+  // every Dir.read(). `parentPath` is Node's field; `path` its deprecated
+  // alias that older callers still read.
+  class __Dirent {
+    constructor(name, type, parentPath) {
+      this.name = name;
+      this.parentPath = parentPath === undefined ? "" : String(parentPath);
+      this.path = this.parentPath;
+      this._isDir = type === "directory" || type === "dir";
+      this._isSymlink = type === "symlink";
+    }
+    isFile() { return !this._isDir && !this._isSymlink; }
+    isDirectory() { return this._isDir; }
+    isSymbolicLink() { return this._isSymlink; }
+    isBlockDevice() { return false; }
+    isCharacterDevice() { return false; }
+    isFIFO() { return false; }
+    isSocket() { return false; }
   }
+  function _direntObject(name, type, parentPath) { return new __Dirent(name, type, parentPath); }
 
   // Largest single ranged read issued against the supervisor. Every live
   // read path (read streams, whole-file async reads) is expressed as a
@@ -2169,7 +2196,7 @@ const __fsMod = (() => {
         }
         if (opts?.withFileTypes) {
           return entries
-            .map((entry) => _direntObject(entry.name, entry.type))
+            .map((entry) => _direntObject(entry.name, entry.type, absPath))
             .sort((a, b) => a.name.localeCompare(b.name));
         }
         return entries.map((entry) => entry.name).sort();
@@ -2312,9 +2339,9 @@ const __fsMod = (() => {
     _recordLocalTimes(absPath, atime, mtime, "lutimes", p);
   }
 
-  async function _utimesAsync(p, atime, mtime, opts) {
+  async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
     const followSymlinks = !(opts && opts.followSymlinks === false);
-    const syscall = followSymlinks ? "utimes" : "lutimes";
+    const syscall = syscallOverride || (followSymlinks ? "utimes" : "lutimes");
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     let localExists = false;
@@ -2325,11 +2352,16 @@ const __fsMod = (() => {
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
     if (supervisor && typeof supervisor.utimes === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      await _fsRpc(
+      // Ordered behind the path's pending mutations: an fd write queued a
+      // moment ago (modern-tar writes, then futimes, then closes) would
+      // otherwise land AFTER the timestamp and reset it to "now".
+      const rpc = () => _fsRpc(
         supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
         syscall, p,
         () => undefined,
       );
+      if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, rpc);
+      else await rpc();
       _markVfsStale();
       return;
     }
@@ -2384,6 +2416,36 @@ const __fsMod = (() => {
     if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
     _markVfsStale();
   }
+
+  // Sync ownership change: the stat record is updated locally at once and
+  // the authority RPC is queued behind the path's pending flush, the same
+  // parked model mkdirSync/unlinkSync use. Without an authority there is no
+  // owner table to change, so the answer is the same ENOSYS as the async form.
+  function _chownQueued(p, uid, gid, opts, syscall) {
+    const followSymlinks = !(opts && opts.followSymlinks === false);
+    const absPath = _resolve(p);
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.chown !== "function") {
+      if (!existsSync(p)) throw _fsErr("ENOENT", syscall, p);
+      throw _fsErr("ENOSYS", syscall, p);
+    }
+    const nextUid = _coerceId(uid, syscall, p);
+    const nextGid = _coerceId(gid, syscall, p);
+    const meta = _metadata(absPath);
+    if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
+    // The parked write must be registered on the tail BEFORE the chown is
+    // (a flush awaited from inside the queued step would queue behind it
+    // and wait on itself), so it is the synchronous-registering flush.
+    return _queueStructuralMutation(
+      absPath, syscall, p,
+      (s) => s.chown(absPath, nextUid, nextGid, followSymlinks ? undefined : { followSymlinks: false }),
+      () => _flushParkedWrite(absPath, supervisor),
+      "chown",
+    );
+  }
+  function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown")); }
+  function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown")); }
+  function lchmodSync(p, mode) { chmodSync(p, mode); }
 
   function _modeAllows(meta, want) {
     if (want === 0) return true;
@@ -2776,7 +2838,7 @@ const __fsMod = (() => {
           (!!__vfsDirs && fp in __vfsDirs) ||
           _metadata(fp)?.type === "directory" ||
           (!!__vfsBundle && __residentAnyUnder(fp + "/"));
-        return { name: n, isFile: () => !isDir, isDirectory: () => isDir, isSymbolicLink: () => false };
+        return _direntObject(n, isDir ? "directory" : "file", absPath);
       });
     }
     return arr;
@@ -2878,9 +2940,153 @@ const __fsMod = (() => {
   function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP)); }
 
   // ── copyFileSync ──
-  function copyFileSync(src, dest) {
-    writeFileSync(dest, readFileSync(src, "utf8"));
+  // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
+  // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
+  function copyFileSync(src, dest, mode) {
+    if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
+      throw _fsErr("EEXIST", "copyfile", dest);
+    }
+    writeFileSync(dest, readFileSync(src));
   }
+
+  // ── rmSync / rm ──
+  // The local tables are edited at once (the same retraction unlinkSync and
+  // rmdirSync perform, over the whole subtree when recursive) and ONE
+  // authority RPC — fsRemove, which the bridge serves as unlink or a bounded
+  // recursive removal — is queued behind every pending mutation beneath the
+  // path. ENOENT under `force` is the authority's to swallow; locally an
+  // unknown path may still exist live, so it is asked rather than answered.
+  function _rmQueued(p, opts, sync) {
+    const o = opts || {};
+    const absPath = _resolve(p);
+    const k = _strip(absPath);
+    const st = statSync(p, { throwIfNoEntry: false });
+    const supervisor = _supervisor();
+    const canRemove = !!supervisor && typeof supervisor.fsRemove === "function";
+    if (st === undefined) {
+      if (!canRemove) {
+        if (o.force) return null;
+        throw _fsErr("ENOENT", "rm", p);
+      }
+      // A path the sync view cannot map may still exist live (born after
+      // boot). The async form asks the authority, whose ENOENT is the real
+      // one; the sync form has no frame to receive that answer, so it gives
+      // statSync's own provisional not-found unless `force` makes the
+      // verdict irrelevant.
+      if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
+    }
+    if (st !== undefined && st.isDirectory() && !o.recursive) {
+      throw _fsErr("ERR_FS_EISDIR", "rm", p);
+    }
+    const prefix = k + "/";
+    // A parked write is content the authority may never have seen: the
+    // caller's file demonstrably existed here, so the removal succeeds, and
+    // the authority is told "if present" rather than made to fail on a file
+    // that was only ever local.
+    let parked = false;
+    if (__vfsBundle) {
+      if (k in __vfsBundle) delete __vfsBundle[k];
+      if (o.recursive) for (const bk of __residentUnder(prefix)) delete __vfsBundle[bk];
+    }
+    delete __vfsBundleRevisions[k];
+    if (__vfsWrites) {
+      for (const wk of Object.keys(__vfsWrites)) {
+        if (wk === k || (o.recursive && wk.startsWith(prefix))) { delete __vfsWrites[wk]; parked = true; }
+      }
+    }
+    if (__vfsDirs) {
+      for (const dk of Object.keys(__vfsDirs)) {
+        if (dk === k || (o.recursive && dk.startsWith(prefix))) delete __vfsDirs[dk];
+      }
+    }
+    if (o.recursive) _forgetSyncTree(k); else _forgetSyncPath(k);
+    if (!canRemove) {
+      // No fsRemove: a plain file still has the unlink RPC.
+      if (st !== undefined && !st.isDirectory()) {
+        return _queueStructuralMutation(absPath, "rm", p, (s) => s.unlink(absPath), undefined, "unlink");
+      }
+      return null;
+    }
+    return _queueStructuralMutation(
+      absPath, "rm", p,
+      (s) => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked }),
+      () => __nimbusAwaitSubtreeMutations(absPath),
+      "fsRemove",
+    );
+  }
+  function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true)); }
+  async function _rmAsync(p, opts) { await _rmQueued(p, opts, false); }
+
+  // ── cpSync ──
+  // A walk of the resident view; every file copy is a parked sync write that
+  // the existing write-back drains, and every directory a queued mkdir.
+  function cpSync(src, dest, opts) {
+    const o = opts || {};
+    const st = statSync(src, { throwIfNoEntry: false });
+    if (st === undefined) throw _fsErr("ENOENT", "cp", src);
+    if (typeof o.filter === "function" && !o.filter(String(src), String(dest))) return;
+    if (!st.isDirectory()) {
+      const destSt = statSync(dest, { throwIfNoEntry: false });
+      if (destSt !== undefined) {
+        if (destSt.isDirectory()) throw _fsErr("EISDIR", "cp", dest);
+        if (o.errorOnExist) throw _fsErr("ERR_FS_CP_EEXIST", "cp", dest);
+        if (o.force === false) return;
+      }
+      copyFileSync(src, dest);
+      return;
+    }
+    if (!o.recursive) throw _fsErr("ERR_FS_EISDIR", "cp", src);
+    mkdirSync(dest, { recursive: true });
+    for (const ent of readdirSync(src, { withFileTypes: true })) {
+      cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
+    }
+  }
+
+  // ── mkdtemp ──
+  // Node appends six characters from [a-zA-Z0-9]; a collision with a name
+  // the sync view already knows is retried rather than reused.
+  const _MKDTEMP_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  function _mkdtempName(prefix) {
+    for (let attempt = 0; attempt < 64; attempt++) {
+      let suffix = "";
+      for (let i = 0; i < 6; i++) suffix += _MKDTEMP_ALPHABET[Math.floor(Math.random() * _MKDTEMP_ALPHABET.length)];
+      const name = String(prefix) + suffix;
+      if (!existsSync(name)) return name;
+    }
+    throw _fsErr("EEXIST", "mkdtemp", String(prefix) + "XXXXXX");
+  }
+  function mkdtempSync(prefix) {
+    const name = _mkdtempName(prefix);
+    mkdirSync(name);
+    return name;
+  }
+  async function _mkdtempAsync(prefix) {
+    const name = _mkdtempName(prefix);
+    await _mkdirAsync(name);
+    return name;
+  }
+
+  // ── truncateSync ──
+  // The resident-view rule of ftruncateSync applied to a path: trim the
+  // resident cell and park it, refuse EAGAIN when the bytes are not here.
+  function truncateSync(p, len) {
+    const absPath = _resolve(p);
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st === undefined) throw _fsErr("ENOENT", "truncate", p);
+    if (st.isDirectory()) throw _fsErr("EISDIR", "truncate", p);
+    const size = Math.max(0, Math.trunc(Number(len) || 0));
+    _ensureWritable(absPath, "truncate", p);
+    const base = _residentWriteBase(absPath, p, "truncate");
+    const next = new Uint8Array(size);
+    next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
+    _parkWrite(_strip(absPath), next);
+    _markVfsStale();
+  }
+
+  // ── link / linkSync ──
+  // The VFS has no hard links and a copy would lie about sharing an inode,
+  // so both forms answer ENOSYS like fs.promises.link always has.
+  function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", newPath); }
 
   // ── realpathSync (X.5-T per X5Z5-plan §4.3 + X526b-retro §3.1) ──
   // Sync realpath stays local and identity-resolves. Async symlink
@@ -2955,6 +3161,38 @@ const __fsMod = (() => {
   // hibernation and partial reads/writes never move whole files. Unflushed
   // sync writes (__vfsWrites) take read precedence; the local sync view is
   // overlaid on writes so readFileSync stays coherent.
+  // The prior content a sync positional write or truncate lays its bytes
+  // over. Shared by the descriptor forms and truncateSync.
+  function _residentWriteBase(absPath, p, syscall) {
+    const cell = _writtenCell(absPath);
+    if (cell !== undefined) {
+      const denial = _denialCode(cell);
+      if (denial) throw _fsErr(denial, syscall, p);
+      _residencySatisfied(absPath);
+      return _asBytes(cell);
+    }
+    const asyncForm = "the async fs." + syscall + "/fs.promises form";
+    const st = statSync(p, { throwIfNoEntry: false });
+    // Non-resident and non-empty: writing onto a zero-filled base would
+    // silently destroy the bytes we cannot see. Refuse instead.
+    if (st !== undefined && st.size !== 0) throw _notResidentError(absPath, p, syscall, asyncForm);
+    // Absent or empty — an empty base IS the true prior content, but only
+    // where absence is knowledge. A path the view never mapped may hold bytes
+    // this process cannot see, and an O_APPEND descriptor onto a zero-filled
+    // base would overwrite the file with the fragment it meant to add.
+    if (st === undefined && !_absenceIsKnown(absPath)) throw _refuseUnmapped(absPath, p, syscall, asyncForm);
+    return new Uint8Array(0);
+  }
+
+  async function _fsyncAsync(absPath, p) {
+    const supervisor = _supervisor();
+    if (supervisor) {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _awaitStructuralOrder(absPath);
+    }
+    _markVfsStale();
+  }
+
   let __nextFileHandleFd = 3;
   const __fileHandles = new Map();
   class __FileHandle {
@@ -3094,24 +3332,7 @@ const __fsMod = (() => {
       if (bytes === undefined) throw this._notResident(syscall);
       return bytes;
     }
-    _writeBase(syscall) {
-      const bytes = this._residentBytes(syscall);
-      if (bytes !== undefined) return bytes;
-      const st = statSync(this._path, { throwIfNoEntry: false });
-      // Non-resident and non-empty: writing onto a zero-filled base would
-      // silently destroy the bytes we cannot see. Refuse instead.
-      if (st !== undefined && st.size !== 0) throw this._notResident(syscall);
-      // Absent or empty — an empty base IS the true prior content, but only
-      // where absence is knowledge. A path the view never mapped may hold bytes
-      // this process cannot see, and an O_APPEND descriptor onto a zero-filled
-      // base would overwrite the file with the fragment it meant to add.
-      if (st === undefined && !_absenceIsKnown(this._abs)) {
-        throw _refuseUnmapped(
-          this._abs, this._path, syscall, "the async fs." + syscall + "/fs.promises form",
-        );
-      }
-      return new Uint8Array(0);
-    }
+    _writeBase(syscall) { return _residentWriteBase(this._abs, this._path, syscall); }
     _commit(next) {
       _parkWrite(_strip(this._abs), next);
       _markVfsStale();
@@ -3161,9 +3382,38 @@ const __fsMod = (() => {
     }
     async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode); }
     async chown(uid, gid) { this._assertOpen("fchown"); await _chownAsync(this._path, uid, gid, undefined, "fchown"); }
-    async utimes(atime, mtime) { this._assertOpen("futimes"); await _utimesAsync(this._path, atime, mtime); }
-    async sync() {}
-    async datasync() {}
+    async utimes(atime, mtime) { this._assertOpen("futimes"); await _utimesAsync(this._path, atime, mtime, undefined, "futimes"); }
+    // Durability here means: every byte parked for this path has reached
+    // the authority and every mutation queued for it has landed. The bridge
+    // itself is synchronously durable, so no further RPC is owed.
+    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path); }
+    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path); }
+    // Scatter/gather over the ranged read/write: one sequential pass per
+    // buffer, stopping at the first short read, positions advanced by hand
+    // when an explicit one was given so the file position stays untouched.
+    async readv(buffers, position) {
+      this._assertOpen("read");
+      let bytesRead = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const r = await this.read(buffer, 0, buffer.byteLength, pos);
+        bytesRead += r.bytesRead;
+        if (pos !== null) pos += r.bytesRead;
+        if (r.bytesRead < buffer.byteLength) break;
+      }
+      return { bytesRead, buffers };
+    }
+    async writev(buffers, position) {
+      this._assertOpen("write");
+      let bytesWritten = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const r = await this.write(buffer, 0, buffer.byteLength, pos);
+        bytesWritten += r.bytesWritten;
+        if (pos !== null) pos += r.bytesWritten;
+      }
+      return { bytesWritten, buffers };
+    }
     async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); }
     [Symbol.asyncDispose]() { return this.close(); }
   }
@@ -3329,6 +3579,49 @@ const __fsMod = (() => {
   function fsyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fsync"); _markVfsStale(); }
   function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fdatasync"); _markVfsStale(); }
 
+  // Descriptor metadata, sync: the path forms on the handle's path, so the
+  // local overlay (times, modes, ownership) and the parked write-through are
+  // exactly what utimesSync/chmodSync/chownSync give.
+  function futimesSync(fd, atime, mtime) {
+    if (_isStdioFd(fd)) throw _fsErr("EINVAL", "futimes", fd);
+    const handle = _fdHandle(fd, "futimes");
+    _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path);
+  }
+  function fchmodSync(fd, mode) {
+    if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
+    const handle = _fdHandle(fd, "fchmod");
+    _localModes[_strip(handle._abs)] = _coerceMode(mode, "fchmod", handle._path);
+  }
+  function fchownSync(fd, uid, gid) {
+    if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
+    const handle = _fdHandle(fd, "fchown");
+    _detachStructuralMutation(_chownQueued(handle._path, uid, gid, undefined, "fchown"));
+  }
+
+  // Scatter/gather, sync: readSync/writeSync per buffer; stdio fds keep the
+  // stream behaviour those two already give them.
+  function readvSync(fd, buffers, position) {
+    let bytesRead = 0;
+    let pos = _isCurrentPos(position) ? null : Number(position);
+    for (const buffer of buffers) {
+      const n = readSync(fd, buffer, 0, buffer.byteLength, pos);
+      bytesRead += n;
+      if (pos !== null) pos += n;
+      if (n < buffer.byteLength) break;
+    }
+    return bytesRead;
+  }
+  function writevSync(fd, buffers, position) {
+    let bytesWritten = 0;
+    let pos = _isCurrentPos(position) ? null : Number(position);
+    for (const buffer of buffers) {
+      const n = writeSync(fd, buffer, 0, buffer.byteLength, pos);
+      bytesWritten += n;
+      if (pos !== null) pos += n;
+    }
+    return bytesWritten;
+  }
+
   // ── callback forms (live I/O — these CAN reach the supervisor) ──
   function open(path, flags, mode, cb) {
     if (typeof flags === "function") { cb = flags; flags = undefined; mode = undefined; }
@@ -3409,21 +3702,56 @@ const __fsMod = (() => {
     if (!handle) return;
     handle.truncate(len).then(() => cb(null)).catch((e) => cb(e));
   }
-  function fsync(fd, cb) {
+  // The async forms CAN wait for durability: the parked bytes are flushed
+  // and the path's queued mutations awaited before the callback fires.
+  function _fsyncCb(fd, syscall, cb) {
+    let handle = null;
     let err = null;
-    try { fsyncSync(fd); } catch (e) { err = e; }
+    try { if (!_isStdioFd(fd)) handle = _fdHandle(fd, syscall); } catch (e) { err = e; }
     // Without a callback there is nowhere to deliver the failure, so raise
     // it here rather than let an EBADF vanish.
-    if (typeof cb !== "function") { if (err) throw err; return; }
-    queueMicrotask(() => cb(err));
+    if (typeof cb !== "function") { if (err) throw err; _markVfsStale(); return; }
+    if (err || !handle) { _markVfsStale(); queueMicrotask(() => cb(err)); return; }
+    _fsyncAsync(handle._abs, handle._path).then(() => cb(null)).catch((e) => cb(e));
   }
-  function fdatasync(fd, cb) {
-    let err = null;
-    try { fdatasyncSync(fd); } catch (e) { err = e; }
-    // Without a callback there is nowhere to deliver the failure, so raise
-    // it here rather than let an EBADF vanish.
-    if (typeof cb !== "function") { if (err) throw err; return; }
-    queueMicrotask(() => cb(err));
+  function fsync(fd, cb) { _fsyncCb(fd, "fsync", cb); }
+  function fdatasync(fd, cb) { _fsyncCb(fd, "fdatasync", cb); }
+  function futimes(fd, atime, mtime, cb) {
+    if (_isStdioFd(fd)) { queueMicrotask(() => cb(_fsErr("EINVAL", "futimes", fd))); return; }
+    const handle = _fdFor(fd, "futimes", cb);
+    if (!handle) return;
+    handle.utimes(atime, mtime).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function readv(fd, buffers, position, cb) {
+    if (typeof position === "function") { cb = position; position = null; }
+    const run = async () => {
+      let bytesRead = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const n = await new Promise((res, rej) =>
+          read(fd, buffer, 0, buffer.byteLength, pos, (e, count) => (e ? rej(e) : res(count))));
+        bytesRead += n;
+        if (pos !== null) pos += n;
+        if (n < buffer.byteLength) break;
+      }
+      return bytesRead;
+    };
+    run().then((n) => cb(null, n, buffers)).catch((e) => cb(e));
+  }
+  function writev(fd, buffers, position, cb) {
+    if (typeof position === "function") { cb = position; position = null; }
+    const run = async () => {
+      let bytesWritten = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const n = await new Promise((res, rej) =>
+          write(fd, buffer, 0, buffer.byteLength, pos, (e, count) => (e ? rej(e) : res(count))));
+        bytesWritten += n;
+        if (pos !== null) pos += n;
+      }
+      return bytesWritten;
+    };
+    run().then((n) => cb(null, n, buffers)).catch((e) => cb(e));
   }
   function fchmod(fd, mode, cb) {
     const handle = _fdFor(fd, "fchmod", cb);
@@ -3435,6 +3763,135 @@ const __fsMod = (() => {
     if (!handle) return;
     handle.chown(uid, gid).then(() => cb(null)).catch((error) => cb(error));
   }
+
+  // ── Dir — fs.opendir / opendirSync / fs.promises.opendir ──
+  // The listing is taken whole at open (both readdir forms already return
+  // one) and handed out one Dirent per read(); closing a closed Dir is
+  // ERR_DIR_CLOSED as in Node.
+  class __Dir {
+    constructor(path, entries) {
+      this.path = path;
+      this._entries = entries;
+      this._at = 0;
+      this._closed = false;
+    }
+    _assertOpen() {
+      if (this._closed) {
+        const err = new Error("Directory handle was closed");
+        err.code = "ERR_DIR_CLOSED";
+        throw err;
+      }
+    }
+    readSync() {
+      this._assertOpen();
+      return this._at < this._entries.length ? this._entries[this._at++] : null;
+    }
+    read(cb) {
+      const result = new Promise((res, rej) => { try { res(this.readSync()); } catch (e) { rej(e); } });
+      if (typeof cb !== "function") return result;
+      result.then((entry) => cb(null, entry), (e) => cb(e));
+    }
+    closeSync() { this._assertOpen(); this._closed = true; }
+    close(cb) {
+      const result = new Promise((res, rej) => { try { this.closeSync(); res(); } catch (e) { rej(e); } });
+      if (typeof cb !== "function") return result;
+      result.then(() => cb(null), (e) => cb(e));
+    }
+    async *[Symbol.asyncIterator]() {
+      try {
+        for (;;) {
+          const entry = this.readSync();
+          if (entry === null) break;
+          yield entry;
+        }
+      } finally {
+        if (!this._closed) this._closed = true;
+      }
+    }
+    [Symbol.asyncDispose]() { return this._closed ? Promise.resolve() : this.close(); }
+    [Symbol.dispose]() { if (!this._closed) this.closeSync(); }
+  }
+  function opendirSync(p, opts) {
+    return new __Dir(String(p), readdirSync(p, { withFileTypes: true }));
+  }
+  async function _opendirAsync(p, opts) {
+    return new __Dir(String(p), await _readdirAsync(p, { withFileTypes: true }));
+  }
+  function opendir(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _opendirAsync(p, opts).then((dir) => cb(null, dir)).catch((e) => cb(e));
+  }
+
+  // ── statfs ──
+  // Honest constants for the VFS: the block size is the SQLite chunk unit's
+  // page size, and blocks is the configured VFS capacity in those blocks.
+  // The supervisor surface exposes no usage counter, so bfree/bavail report
+  // the whole capacity; the VFS has no inode table, so files/ffree are 0
+  // (unknown, not "none"). `type` is 0: this is no kernel filesystem and
+  // no magic number would be true of it.
+  const _STATFS_BSIZE = 4096;
+  const _STATFS_BLOCKS = Math.floor(10737418240 / 4096);
+  function _statfsObject(opts) {
+    const wrap = opts && opts.bigint ? BigInt : Number;
+    return {
+      type: wrap(0),
+      bsize: wrap(_STATFS_BSIZE),
+      blocks: wrap(_STATFS_BLOCKS),
+      bfree: wrap(_STATFS_BLOCKS),
+      bavail: wrap(_STATFS_BLOCKS),
+      files: wrap(0),
+      ffree: wrap(0),
+    };
+  }
+  function statfsSync(p, opts) {
+    if (statSync(p, { throwIfNoEntry: false }) === undefined) throw _fsErr("ENOENT", "statfs", p);
+    return _statfsObject(opts);
+  }
+  async function _statfsAsync(p, opts) {
+    await _statAsync(p);
+    return _statfsObject(opts);
+  }
+  function statfs(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _statfsAsync(p, opts).then((s) => cb(null, s)).catch((e) => cb(e));
+  }
+
+  // ── remaining callback forms of the path operations ──
+  function rm(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _rmAsync(p, opts).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function cp(src, dest, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    promises.cp(src, dest, opts).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function truncate(p, len, cb) {
+    if (typeof len === "function") { cb = len; len = 0; }
+    _truncateAsync(p, len || 0).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function copyFile(src, dest, mode, cb) {
+    if (typeof mode === "function") { cb = mode; mode = 0; }
+    promises.copyFile(src, dest, mode).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function mkdtemp(prefix, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _mkdtempAsync(prefix).then((name) => cb(null, name)).catch((e) => cb(e));
+  }
+  function link(existingPath, newPath, cb) { queueMicrotask(() => cb(_fsErr("ENOSYS", "link", newPath))); }
+  function symlink(target, path, type, cb) {
+    if (typeof type === "function") { cb = type; type = undefined; }
+    _symlinkAsync(target, path).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function readlink(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _readlinkAsync(p).then((target) => cb(null, target)).catch((e) => cb(e));
+  }
+  function realpath(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    promises.realpath(p, opts).then((r) => cb(null, r)).catch((e) => cb(e));
+  }
+  realpath.native = realpath;
+  function lchmod(p, mode, cb) { chmod(p, mode, cb); }
 
   // ── promises namespace (W3: full surface, VFS-backed) ──
   // We can't forward to workerd's node:fs/promises because that operates
@@ -3453,22 +3910,8 @@ const __fsMod = (() => {
     // W3 additions:
     appendFile: async (p, d, o) => { await _appendFileAsync(p, d, o); },
     lstat: (p) => new Promise((res, rej) => lstat(p, (e, s) => e ? rej(e) : res(s))),
-    rm: async (p, opts) => {
-      const o = opts || {};
-      const k = _strip(_resolve(p));
-      const prefix = k + "/";
-      if (o.recursive) {
-        if (__vfsBundle) {
-          if (k in __vfsBundle) delete __vfsBundle[k];
-          for (const bk of __residentUnder(prefix)) delete __vfsBundle[bk];
-        }
-        if (__vfsWrites) for (const wk of Object.keys(__vfsWrites)) if (wk === k || wk.startsWith(prefix)) delete __vfsWrites[wk];
-        if (__vfsDirs) for (const dk of Object.keys(__vfsDirs)) if (dk === k || dk.startsWith(prefix)) delete __vfsDirs[dk];
-        _forgetSyncTree(k);
-      } else {
-        try { await _unlinkAsync(p); } catch (e) { if (!o.force) throw e; }
-      }
-    },
+    // The same local retraction and queued authority removal rmSync does.
+    rm: async (p, opts) => { await _rmAsync(p, opts); },
     cp: async (src, dest, opts) => {
       const o = opts || {};
       const srcAbs = _resolve(src);
@@ -3504,7 +3947,12 @@ const __fsMod = (() => {
       };
       await walk("");
     },
-    copyFile: async (src, dest) => { await _writeFileAsync(dest, await _readFileAsync(src)); },
+    copyFile: async (src, dest, mode) => {
+      if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
+        throw _fsErr("EEXIST", "copyfile", dest);
+      }
+      await _writeFileAsync(dest, await _readFileAsync(src));
+    },
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
@@ -3518,12 +3966,10 @@ const __fsMod = (() => {
     symlink: async (target, path) => { await _symlinkAsync(target, path); },
     link: async () => { throw _fsErr("ENOSYS", "link", ""); },
     readlink: async (p) => _readlinkAsync(p),
-    mkdtemp: async (prefix) => {
-      const name = String(prefix) + Math.random().toString(36).slice(2, 10);
-      mkdirSync(name, { recursive: true });
-      return name;
-    },
+    mkdtemp: async (prefix) => _mkdtempAsync(prefix),
     open: async (path, flags, mode) => _openAsync(path, flags, mode),
+    opendir: async (p, opts) => _opendirAsync(p, opts),
+    statfs: async (p, opts) => _statfsAsync(p, opts),
     watch: async function* (filename, opts) {
       // Minimal async iter — polls _bundleLookup every 500ms and yields
       // a single `change` event when content differs. Adequate for
@@ -3660,10 +4106,15 @@ const __fsMod = (() => {
   const __fsExports = {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
-    realpathSync, utimesSync, lutimesSync, chmodSync, accessSync,
+    realpathSync, utimesSync, lutimesSync, chmodSync, lchmodSync, chownSync, lchownSync, accessSync,
+    rmSync, cpSync, mkdtempSync, truncateSync, linkSync, opendirSync, statfsSync,
     openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, fsyncSync, fdatasyncSync,
-    open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod,
-    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
+    futimesSync, fchmodSync, fchownSync, readvSync, writevSync,
+    open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
+    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, lchmod, chown, lchown, fchown, access,
+    rm, cp, truncate, copyFile, mkdtemp, link, symlink, readlink, realpath, opendir, statfs,
+    Dirent: __Dirent,
+    Dir: __Dir,
     promises, constants,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
     createWriteStream: (p, opts) => {

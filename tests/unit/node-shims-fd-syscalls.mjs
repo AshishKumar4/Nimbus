@@ -37,6 +37,9 @@ const supervisor = {
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
   fsTruncate: (p, s) => bridge.truncate(p, s),
+  chmod: (p, m) => bridge.chmod(p, m),
+  chown: (p, u, g, o) => bridge.chown(p, u, g, o),
+  fsRemove: (p, o) => bridge.remove(p, o),
 };
 
 const enc = new TextEncoder();
@@ -54,7 +57,7 @@ const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
-    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins };'
+    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins, drain: __nimbusDrainVfsMutations };'
 );
 const sandbox = factory(
   bundle, metadata, dirs, null, supervisor,
@@ -439,5 +442,216 @@ assert.equal(fs.readFileSync(tarPath, 'utf8'), 'abcd');
 assert.throws(() => fs.openSync(tarPath, C.O_RDONLY | C.O_DIRECTORY), (e) => e.code === 'ENOTDIR');
 const dirErr = await new Promise((res) => fs.open(tarPath, C.O_RDONLY | C.O_DIRECTORY, (e) => res(e)));
 assert.equal(dirErr.code, 'ENOTDIR');
+
+// ── the surface modern-tar (create-astro) and friends call after open ──
+for (const name of [
+  'futimes', 'futimesSync', 'fchmodSync', 'fchownSync', 'chownSync', 'lchownSync',
+  'readv', 'readvSync', 'writev', 'writevSync', 'opendir', 'opendirSync',
+  'rmSync', 'rm', 'cpSync', 'cp', 'truncateSync', 'truncate', 'mkdtempSync', 'mkdtemp',
+  'statfs', 'statfsSync', 'linkSync', 'link', 'copyFile', 'realpath', 'readlink', 'symlink',
+]) {
+  assert.equal(typeof fs[name], 'function', `fs.${name} must be a function`);
+}
+for (const name of ['opendir', 'statfs', 'rm', 'cp', 'mkdtemp']) {
+  assert.equal(typeof fs.promises[name], 'function', `fs.promises.${name} must be a function`);
+}
+
+// ── futimes on an open fd: the mtime is visible to fstat/stat, sync and live ──
+// modern-tar: open(flags) → write → futimes(fd, atime, mtime) → close, per
+// entry. The timestamp must survive the queued fd write that precedes it.
+const T_A = new Date('2020-01-02T03:04:05.000Z');
+const T_M = new Date('2021-06-07T08:09:10.000Z');
+const ffd = await new Promise((res, rej) =>
+  fs.open('/home/user/futimes.txt', 'w+', (e, d) => (e ? rej(e) : res(d))));
+await new Promise((res, rej) =>
+  fs.write(ffd, Buffer.from('stamped'), 0, 7, 0, (e) => (e ? rej(e) : res())));
+await new Promise((res, rej) => fs.futimes(ffd, T_A, T_M, (e) => (e ? rej(e) : res())));
+assert.equal(fs.fstatSync(ffd).mtime.getTime(), T_M.getTime(), 'fstatSync sees the futimes mtime');
+assert.equal(fs.fstatSync(ffd).atime.getTime(), T_A.getTime(), 'fstatSync sees the futimes atime');
+const liveStat = await fs.promises.stat('/home/user/futimes.txt');
+assert.equal(liveStat.mtime.getTime(), T_M.getTime(), 'the live VFS carries the futimes mtime');
+assert.equal((await bridge.stat('/home/user/futimes.txt')).mtime, T_M.getTime());
+await new Promise((res, rej) => fs.close(ffd, (e) => (e ? rej(e) : res())));
+assert.equal(dec.decode(await bridge.readFile('/home/user/futimes.txt')), 'stamped',
+  'the write before futimes is not lost');
+// Node's toUnixTimestamp forms: number seconds and numeric string.
+const nfd2 = fs.openSync('/home/user/futimes.txt', 'r+');
+fs.futimesSync(nfd2, 1_600_000_000, '1600000001');
+assert.equal(fs.fstatSync(nfd2).atime.getTime(), 1_600_000_000_000);
+assert.equal(fs.fstatSync(nfd2).mtime.getTime(), 1_600_000_001_000);
+fs.closeSync(nfd2);
+// EBADF via the callback, EBADF thrown from the sync form.
+const fuErr = await new Promise((res) => fs.futimes(9999, T_A, T_M, (e) => res(e)));
+assert.equal(fuErr.code, 'EBADF');
+assert.throws(() => fs.futimesSync(9999, T_A, T_M), (e) => e.code === 'EBADF');
+
+// ── FileHandle.utimes / sync / datasync ──
+const uh = await fs.promises.open('/home/user/handle-utimes.txt', 'w+');
+await uh.write('h');
+await uh.utimes(T_A, T_M);
+assert.equal((await uh.stat()).mtime.getTime(), T_M.getTime());
+await uh.sync();
+await uh.datasync();
+assert.equal((await bridge.stat('/home/user/handle-utimes.txt')).mtime, T_M.getTime());
+await uh.close();
+await assert.rejects(() => uh.utimes(T_A, T_M), (e) => e.code === 'EBADF');
+
+// ── fchmodSync: visible to fstat at once, written through on the next flush ──
+const cfd = fs.openSync('/home/user/fchmod.txt', 'w');
+fs.writeSync(cfd, 'mode');
+fs.fchmodSync(cfd, 0o600);
+assert.equal(fs.fstatSync(cfd).mode & 0o777, 0o600, 'fstatSync sees the new mode');
+fs.closeSync(cfd);
+await fs.promises.stat('/home/user/fchmod.txt'); // drains the parked write + mode
+assert.equal((await bridge.stat('/home/user/fchmod.txt')).mode & 0o777, 0o600, 'the live VFS has the mode');
+assert.throws(() => fs.fchmodSync(9999, 0o600), (e) => e.code === 'EBADF');
+
+// ── readv/writev round trip with two buffers ──
+const vfd = fs.openSync('/home/user/vec.bin', 'w+');
+assert.equal(fs.writevSync(vfd, [Buffer.from('abc'), Buffer.from('DEFG')]), 7);
+assert.equal(fs.readFileSync('/home/user/vec.bin', 'utf8'), 'abcDEFG');
+const r1 = Buffer.alloc(3), r2 = Buffer.alloc(4);
+assert.equal(fs.readvSync(vfd, [r1, r2], 0), 7);
+assert.equal(dec.decode(r1), 'abc');
+assert.equal(dec.decode(r2), 'DEFG');
+// Explicit position leaves the file position where it was (7, after writev).
+const short = Buffer.alloc(10);
+assert.equal(fs.readvSync(vfd, [short]), 0, 'the cursor is at EOF after the sequential writev');
+// Async forms, positional: written at 7, read back from 7.
+const wv = await new Promise((res, rej) =>
+  fs.writev(vfd, [Buffer.from('hi'), Buffer.from('!')], 7, (e, n, bufs) => (e ? rej(e) : res({ n, bufs }))));
+assert.equal(wv.n, 3);
+assert.equal(wv.bufs.length, 2);
+const rv1 = Buffer.alloc(2), rv2 = Buffer.alloc(1);
+const rv = await new Promise((res, rej) =>
+  fs.readv(vfd, [rv1, rv2], 7, (e, n, bufs) => (e ? rej(e) : res({ n, bufs }))));
+assert.equal(rv.n, 3);
+assert.equal(dec.decode(rv1) + dec.decode(rv2), 'hi!');
+fs.closeSync(vfd);
+assert.equal(dec.decode(await bridge.readFile('/home/user/vec.bin')), 'abcDEFGhi!');
+// FileHandle.readv / writev carry Node's result shapes.
+const vh = await fs.promises.open('/home/user/vec2.bin', 'w+');
+const wres = await vh.writev([Buffer.from('12'), Buffer.from('345')]);
+assert.deepEqual(Object.keys(wres).sort(), ['buffers', 'bytesWritten']);
+assert.equal(wres.bytesWritten, 5);
+const rb1 = Buffer.alloc(2), rb2 = Buffer.alloc(3);
+const rres = await vh.readv([rb1, rb2], 0);
+assert.equal(rres.bytesRead, 5);
+assert.equal(rres.buffers[1], rb2);
+assert.equal(dec.decode(rb1) + dec.decode(rb2), '12345');
+await vh.close();
+
+// ── opendir: async iteration yields Dirents with correct types ──
+fs.mkdirSync('/home/user/od/sub', { recursive: true });
+fs.writeFileSync('/home/user/od/a.txt', 'a');
+fs.writeFileSync('/home/user/od/sub/b.txt', 'b');
+const seenAsync = [];
+for await (const ent of await fs.promises.opendir('/home/user/od')) {
+  seenAsync.push([ent.name, ent.isFile(), ent.isDirectory()]);
+}
+seenAsync.sort();
+assert.deepEqual(seenAsync, [['a.txt', true, false], ['sub', false, true]]);
+assert.ok(seenAsync.length === 2);
+const cbDir = await new Promise((res, rej) => fs.opendir('/home/user/od', (e, d) => (e ? rej(e) : res(d))));
+const first = await cbDir.read();
+assert.ok(first instanceof fs.Dirent, 'Dir.read() hands out fs.Dirent instances');
+assert.equal(first.parentPath, '/home/user/od');
+await cbDir.close();
+await assert.rejects(() => cbDir.read(), (e) => e.code === 'ERR_DIR_CLOSED');
+const sdir = fs.opendirSync('/home/user/od');
+const names = [];
+for (let ent = sdir.readSync(); ent !== null; ent = sdir.readSync()) names.push(ent.name);
+assert.deepEqual(names.sort(), ['a.txt', 'sub']);
+sdir.closeSync();
+assert.throws(() => sdir.closeSync(), (e) => e.code === 'ERR_DIR_CLOSED');
+assert.ok(fs.readdirSync('/home/user/od', { withFileTypes: true })[0] instanceof fs.Dirent,
+  'readdirSync withFileTypes uses the same Dirent');
+
+// ── cpSync copies a tree; rmSync removes one ──
+fs.writeFileSync('/home/user/od/bin.dat', Buffer.from([0xff, 0x00, 0x80]));
+fs.cpSync('/home/user/od', '/home/user/od-copy', { recursive: true });
+assert.equal(fs.readFileSync('/home/user/od-copy/a.txt', 'utf8'), 'a');
+assert.equal(fs.readFileSync('/home/user/od-copy/sub/b.txt', 'utf8'), 'b');
+assert.deepEqual([...fs.readFileSync('/home/user/od-copy/bin.dat')], [0xff, 0x00, 0x80],
+  'cpSync copies bytes, not a utf8 round trip');
+assert.throws(() => fs.cpSync('/home/user/od', '/home/user/od-copy2'), (e) => e.code === 'ERR_FS_EISDIR');
+assert.throws(() => fs.cpSync('/home/user/nope-dir', '/home/user/x', { recursive: true }), (e) => e.code === 'ENOENT');
+// The copy is durable: any async op drains the parked writes.
+assert.equal(dec.decode(await fs.promises.readFile('/home/user/od-copy/sub/b.txt')), 'b');
+assert.equal(dec.decode(await bridge.readFile('/home/user/od-copy/sub/b.txt')), 'b');
+assert.equal((await bridge.stat('/home/user/od-copy/sub')).type, 'directory');
+
+assert.throws(() => fs.rmSync('/home/user/od-copy'), (e) => e.code === 'ERR_FS_EISDIR',
+  'rmSync on a directory without recursive is ERR_FS_EISDIR');
+fs.rmSync('/home/user/od-copy', { recursive: true });
+assert.equal(fs.existsSync('/home/user/od-copy'), false);
+assert.equal(fs.existsSync('/home/user/od-copy/sub/b.txt'), false);
+assert.throws(() => fs.readdirSync('/home/user/od-copy'), (e) => e.code === 'ENOENT' || e.code === 'EAGAIN');
+await sandbox.drain(); // every queued authority mutation has landed
+assert.equal(await bridge.stat('/home/user/od-copy'), null, 'the tree is gone from the live VFS');
+assert.equal(await bridge.stat('/home/user/od-copy/sub/b.txt'), null);
+assert.throws(() => fs.rmSync('/home/user/never-there'), (e) => e.code === 'ENOENT');
+fs.rmSync('/home/user/never-there', { force: true }); // force swallows ENOENT
+await fs.promises.rm('/home/user/od/bin.dat');
+assert.equal(await bridge.stat('/home/user/od/bin.dat'), null, 'fs.promises.rm reaches the live VFS');
+await fs.promises.rm('/home/user/od', { recursive: true, force: true });
+assert.equal(await bridge.stat('/home/user/od'), null, 'recursive fs.promises.rm reaches the live VFS');
+
+// ── truncateSync ──
+fs.writeFileSync('/home/user/ts.txt', '0123456789');
+fs.truncateSync('/home/user/ts.txt', 4);
+assert.equal(fs.readFileSync('/home/user/ts.txt', 'utf8'), '0123');
+fs.truncateSync('/home/user/ts.txt', 6);
+const tsGrown = fs.readFileSync('/home/user/ts.txt');
+assert.equal(tsGrown.length, 6);
+assert.equal(tsGrown[5], 0, 'growing truncate zero-fills');
+fs.truncateSync('/home/user/ts.txt');
+assert.equal(fs.readFileSync('/home/user/ts.txt').length, 0, 'len defaults to 0');
+assert.throws(() => fs.truncateSync('/home/user/nope.txt', 1), (e) => e.code === 'ENOENT');
+assert.throws(() => fs.truncateSync('/home/user', 1), (e) => e.code === 'EISDIR');
+assert.equal((await fs.promises.stat('/home/user/ts.txt')).size, 0, 'the parked truncate drains on the next async op');
+assert.equal((await bridge.readFile('/home/user/ts.txt')).byteLength, 0);
+await new Promise((res, rej) => fs.truncate('/home/user/futimes.txt', 3, (e) => (e ? rej(e) : res())));
+assert.equal(dec.decode(await bridge.readFile('/home/user/futimes.txt')), 'sta');
+
+// ── mkdtempSync creates a unique directory ──
+const td1 = fs.mkdtempSync('/home/user/tmp-');
+const td2 = fs.mkdtempSync('/home/user/tmp-');
+assert.notEqual(td1, td2);
+assert.match(td1, /^\/home\/user\/tmp-[A-Za-z0-9]{6}$/);
+assert.ok(fs.statSync(td1).isDirectory());
+assert.ok(fs.statSync(td2).isDirectory());
+const td3 = await fs.promises.mkdtemp('/home/user/tmp-');
+assert.equal((await bridge.stat(td3)).type, 'directory');
+assert.equal((await bridge.stat(td1)).type, 'directory', 'the sync mkdtemp reached the live VFS');
+
+// ── statfs returns the documented shape ──
+const sfs = fs.statfsSync('/home/user');
+assert.deepEqual(Object.keys(sfs).sort(), ['bavail', 'bfree', 'blocks', 'bsize', 'ffree', 'files', 'type']);
+assert.equal(sfs.bsize, 4096);
+assert.ok(sfs.blocks > 0 && sfs.bfree <= sfs.blocks && sfs.bavail <= sfs.bfree);
+for (const k of Object.keys(sfs)) assert.equal(typeof sfs[k], 'number');
+const sfsBig = fs.statfsSync('/home/user', { bigint: true });
+assert.equal(typeof sfsBig.blocks, 'bigint');
+const sfsAsync = await new Promise((res, rej) => fs.statfs('/home/user', (e, s) => (e ? rej(e) : res(s))));
+assert.deepEqual(sfsAsync, sfs);
+assert.deepEqual(await fs.promises.statfs('/home/user'), sfs);
+assert.throws(() => fs.statfsSync('/home/user/nope-dir'), (e) => e.code === 'ENOENT');
+
+// ── chownSync / lchownSync / fchownSync ──
+fs.writeFileSync('/home/user/own.txt', 'o');
+fs.chownSync('/home/user/own.txt', 1000, 1000);
+fs.lchownSync('/home/user/own.txt', 1000, 1000);
+const ofd2 = fs.openSync('/home/user/own.txt', 'r');
+fs.fchownSync(ofd2, 1000, 1000);
+fs.closeSync(ofd2);
+await fs.promises.stat('/home/user/own.txt');
+assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
+assert.throws(() => fs.chownSync('/home/user/own.txt', -1, 0), (e) => e.code === 'EINVAL');
+
+// ── link stays ENOSYS: the VFS has no hard links ──
+assert.throws(() => fs.linkSync('/home/user/own.txt', '/home/user/own.lnk'), (e) => e.code === 'ENOSYS');
+const linkErr = await new Promise((res) => fs.link('/home/user/own.txt', '/home/user/own.lnk', (e) => res(e)));
+assert.equal(linkErr.code, 'ENOSYS');
 
 console.log('node-shims fd syscalls: OK');
