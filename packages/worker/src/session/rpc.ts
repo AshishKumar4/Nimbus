@@ -165,7 +165,7 @@ export function checkedReadPayloadBytes(bytes: number): number {
  * `stat` here is a local SQLite lookup inside the DO — the same one
  * `_rpcReadFile` makes for the same reason — not a second round trip.
  */
-export async function rangeReadBytes(
+async function rangeReadBytes(
   fs: RuntimeFsBridge,
   path: string,
   offset: number,
@@ -378,12 +378,6 @@ export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: 
 }
 
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
-
-export const FsReadRangeArgsSchema = z.object({
-  path: z.string(),
-  offset: FsRangeOffsetSchema,
-  length: FsRangeOffsetSchema,
-});
 
 const FsReadBatchArgsSchema = z.array(z.object({
   path: z.string().min(1),
@@ -691,41 +685,6 @@ export async function _rpcFsAppendAck(
     args.moduleId,
     sequence,
   );
-}
-
-export async function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any> {
-    return self.supervisorBridge(pid).open(path, flags || {});
-}
-
-export async function _rpcFsRead(
-  self: RpcHost,
-  handleId: number,
-  offset: number | null,
-  length: number,
-  pid?: number,
-): Promise<Uint8Array> {
-    return withReadAllocation(
-      length,
-      () => self.supervisorBridge(pid).read(handleId, offset, length),
-    );
-}
-
-export async function _rpcFsWrite(
-  self: RpcHost,
-  handleId: number,
-  offset: number | null,
-  bytes: Uint8Array | ArrayBuffer | number[],
-  pid?: number,
-): Promise<number> {
-    let data: Uint8Array;
-    if (bytes instanceof Uint8Array) data = bytes;
-    else if (bytes instanceof ArrayBuffer) data = new Uint8Array(bytes);
-    else data = new Uint8Array(bytes || []);
-    return self.supervisorBridge(pid).write(handleId, offset, data);
-}
-
-export async function _rpcFsClose(self: RpcHost, handleId: number, pid?: number): Promise<void> {
-    await self.supervisorBridge(pid).close(handleId);
 }
 
   /**

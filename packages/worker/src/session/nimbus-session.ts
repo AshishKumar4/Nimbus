@@ -839,13 +839,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void> {
     return _rpc._rpcWsClose(this as any, id, code, reason, pid);
   }
-  async _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array> {
-    return _rpc._rpcFsRead(this as any, handleId, offset, length, pid);
-  }
-  async _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
-    return _rpc._rpcFsWrite(this as any, handleId, offset, bytes, pid);
-  }
-  async _rpcFsClose(handleId: number, pid?: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId, pid); }
   async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> {
     return _rpc._rpcFsReadRange(this as any, path, offset, length, pid, cred);
   }

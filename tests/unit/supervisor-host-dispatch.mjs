@@ -88,7 +88,7 @@ const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
 const mask = 0o077, rOk = 0o4, xOk = 0o1, seekTo = 2;
 const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 'after', limit = 32;
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
-const code = 0, reason = 'closed', handleId = 4, offset = 0, length = 3;
+const code = 0, reason = 'closed', offset = 0, length = 3;
 const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
 const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
@@ -143,9 +143,11 @@ const INPUTS = {
   fsCopyFile: [path, copyPath],
   fsAcquireExclusiveMutation: [mutationPath],
   fsReleaseExclusiveMutation: () => [mutationLease.owner],
-  fsRead: [handleId, offset, length],
-  fsWrite: [handleId, offset, bytes],
-  fsClose: [handleId],
+  fsRead: () => [fileHandle.id, offset, length],
+  fsWrite: () => [fileHandle.id, offset, bytes],
+  // Closes a handle of its own: the shared one stays open for the descriptor
+  // ops the canonical order runs after it.
+  fsClose: async () => [(await openHandle(handlePath, { read: true })).id],
   fsReadRange: [path, offset, length],
   fsReadRangeUncached: [path, offset, length],
   fsReadBatch: [requests],
@@ -296,6 +298,16 @@ const nativeAssert = {
   fsDup: (r) => {
     assert.notEqual(r.id, fileHandle.id, 'fsDup mints a second descriptor');
     assert.equal(r.path, fileHandle.path, 'fsDup keeps the file');
+  },
+  fsRead: (r) => assert.equal(dec.decode(r), handleContent.slice(offset, offset + length), 'fsRead returns the bytes at the offset'),
+  fsWrite: (r) => {
+    assert.equal(r, bytes.length, 'fsWrite returns the count written');
+    assert.deepEqual([...kernelVfs.readFile('home/user/handle').subarray(0, 3)], [...bytes], 'fsWrite landed through the descriptor');
+  },
+  fsClose: async (r) => {
+    assert.equal(r, undefined, 'fsClose');
+    const stat = await ops.dispatch({ op: 'fsFstat', args: [fileHandle.id], pid });
+    assert.equal(stat.type, 'file', 'closing one descriptor leaves the shared one open');
   },
   fsSeek: (r) => assert.equal(r, seekTo, 'fsSeek returns the new position'),
   fsSetStatus: async (r) => {

@@ -28,12 +28,7 @@ import {
 import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import {
-  FsReadRangeArgsSchema,
-  rangeReadBytes,
-  withReadAllocation,
-} from './rpc.js';
-import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { withReadAllocation } from './rpc.js';
 
 /**
  * The supervisor surface a session exposes to the handler: the `_rpc*`
@@ -74,49 +69,6 @@ export function buildSessionSupervisorOps(
   if (!vfs) throw new Error('Supervisor filesystem is not initialized');
   store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
   const extend: Partial<Record<SupervisorOpName, SupervisorOpHandler>> = {
-    // The native ops whose session bodies carry accounting the bridge
-    // alone doesn't know: a read lease sized to what the file can return.
-    readFile: async (envelope, tools) => {
-      const path = envelope.args?.[0] as string;
-      const fs = tools.bridge(envelope.pid, envelope.cred);
-      const stat = await fs.stat(path);
-      if (!stat) return null;
-      return withReadAllocation(stat.size, async () => {
-        const bytes = await fs.readFile(path);
-        return bytes ? dec.decode(bytes) : null;
-      });
-    },
-    readFileBytes: async (envelope, tools) => {
-      const path = envelope.args?.[0] as string;
-      const fs = tools.bridge(envelope.pid, envelope.cred);
-      const stat = await fs.stat(path);
-      if (!stat) return null;
-      return withReadAllocation(stat.size, async () => fs.readFile(path));
-    },
-    fsReadRange: async (envelope, tools) => {
-      const args = FsReadRangeArgsSchema.parse({
-        path: envelope.args?.[0],
-        offset: envelope.args?.[1],
-        length: envelope.args?.[2],
-      });
-      const fs = tools.bridge(envelope.pid, envelope.cred);
-      return withReadAllocation(
-        await rangeReadBytes(fs, args.path, args.offset, args.length),
-        async () => fs.readRange(args.path, args.offset, args.length),
-      );
-    },
-    fsReadRangeUncached: async (envelope, tools) => {
-      const args = FsReadRangeArgsSchema.parse({
-        path: envelope.args?.[0],
-        offset: envelope.args?.[1],
-        length: envelope.args?.[2],
-      });
-      const fs = tools.bridge(envelope.pid, envelope.cred);
-      return withReadAllocation(
-        await rangeReadBytes(fs, args.path, args.offset, args.length),
-        async () => fs.readRange(args.path, args.offset, args.length, { cached: false }),
-      );
-    },
     // The write stream's decode-drain timestamp starts when the envelope
     // arrives, not when the DO first reads it — the same contract
     // _rpcWriteBatchStream has always had.
@@ -152,6 +104,8 @@ export function buildSessionSupervisorOps(
       },
     ])),
     bridge: store,
+    // Every native read holds a lease for the payload it can answer with.
+    readLease: withReadAllocation,
     extend,
   });
   return { dispatch, bridge: store.bridge, forget: store.forget, dispose: store.dispose };
