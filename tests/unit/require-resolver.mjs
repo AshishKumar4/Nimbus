@@ -118,4 +118,48 @@ assert.equal(
   'nested package.json content not shipped — runtime resolution will ENOENT',
 );
 
+// A bare-spec subpath resolved through the package's own `exports` map must
+// ship that package.json too (regression: pi's chunk imports
+// `@earendil-works/chord/context`; chord's modules were staged but
+// chord/package.json was not, and the runtime resolver's sync read of it
+// failed with "read synchronously but never staged").
+const expVfs = new FakeVfs({
+  'home/user/app3.js': "require('dep/ctx');",
+  [`${nm}/dep/package.json`]: JSON.stringify({ name: 'dep', exports: { './ctx': './lib/ctx.js' } }),
+  [`${nm}/dep/lib/ctx.js`]: 'module.exports = { ctx: true };',
+});
+const expResult = (await prefetchForRequire(expVfs, "require('dep/ctx');", '/home/user', '/home/user/app3.js'));
+assert.equal(
+  expResult.bundle[`${nm}/dep/lib/ctx.js`],
+  'module.exports = { ctx: true };',
+  'exports-map subpath target not prefetched',
+);
+assert.equal(
+  expResult.bundle[`${nm}/dep/package.json`],
+  JSON.stringify({ name: 'dep', exports: { './ctx': './lib/ctx.js' } }),
+  'package.json consulted for exports-map subpath not shipped — runtime sync read will fail',
+);
+
+// Same contract when the exports target lands OUTSIDE the package dir (a
+// store-backed / realpath'd layout). Here the walker's enclosing-package
+// piggyback ships the manifest next to the resolved FILE, not the one it
+// WALKED — so the walked package.json only reaches the bundle through the
+// resolver's sink. This is the case that proves the sink call is load-bearing.
+const storeVfs = new FakeVfs({
+  'home/user/app4.js': "require('dep/ctx');",
+  [`${nm}/dep/package.json`]: JSON.stringify({ name: 'dep', exports: { './ctx': '../.store/dep/lib/ctx.js' } }),
+  [`${nm}/.store/dep/lib/ctx.js`]: 'module.exports = { ctx: true };',
+});
+const storeResult = (await prefetchForRequire(storeVfs, "require('dep/ctx');", '/home/user', '/home/user/app4.js'));
+assert.equal(
+  storeResult.bundle[`${nm}/.store/dep/lib/ctx.js`],
+  'module.exports = { ctx: true };',
+  'store-backed exports-map subpath target not prefetched',
+);
+assert.equal(
+  storeResult.bundle[`${nm}/dep/package.json`],
+  JSON.stringify({ name: 'dep', exports: { './ctx': '../.store/dep/lib/ctx.js' } }),
+  'walked package.json not shipped when exports target resolves outside the package dir',
+);
+
 console.log('require-resolver: ok');
