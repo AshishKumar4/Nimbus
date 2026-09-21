@@ -4136,6 +4136,27 @@ export class FacetManager {
    */
   private residencyProfiles = new Map<string, Set<string>>();
 
+  /**
+   * What the prefetch cache holds right now, for /api/_diag/memory: each
+   * entry's key, the revision it was built at, and its retained bytes, next
+   * to the filesystem's live revision and the residency profiles. A launch
+   * that rebuilds where a hit was expected is explained by exactly these:
+   * the revision moved, the key changed, or a miss profile dropped the entry.
+   */
+  prefetchCacheDiag(): {
+    revision: number | null;
+    entries: Array<{ key: string; revision: number; bytes: number }>;
+    residencyProfiles: Array<{ key: string; paths: string[] }>;
+  } {
+    return {
+      revision: this.vfs ? this.vfs.revision() : null,
+      entries: [...this.prefetchBundleCache].map(([key, entry]) => ({
+        key, revision: entry.revision, bytes: entry.bytes,
+      })),
+      residencyProfiles: [...this.residencyProfiles].map(([key, paths]) => ({ key, paths: [...paths] })),
+    };
+  }
+
   /** In-flight request-driven durable-app ensures, single-flight per port. */
   private ensureInflight = new Map<number, Promise<'started' | 'absent' | 'failed'>>();
   /** Per-pid chain of journal-row amendments; see `_amendRow`. */
