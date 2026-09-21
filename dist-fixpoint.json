@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c679e838bec84beed47496665fedef44942bdda319bb3638a386745d42356b2c",
+  "fingerprint": "ea2ada74ad29fef976aa70a21923899aecbe2a217085cc10480ee41f559fb3a1",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -219,8 +219,8 @@
     "packages/core/dist/runtime/runtime-package.d.ts.map": "9e43b599d93500a9f2a9c3e56d31659693d1f6f6a52032901103a700738ae8c3",
     "packages/core/dist/runtime/runtime-package.js": "884ea8671246e97f8158be124a93e2e59387d44e64060d18753b365134933361",
     "packages/core/dist/runtime/runtime-registry.d.ts": "b843d0aec54eeb0a5c2d8abb584173f9bbdd1606ab7343030307acedec8a1855",
-    "packages/core/dist/runtime/runtime-registry.d.ts.map": "a629853cdadfed14bcca73cb2ac6bba35d7a551b257b156cbf82966175c43076",
-    "packages/core/dist/runtime/runtime-registry.js": "d77c2711556f898d553ed435db885803e11431f021f0f2e5853f22e879e17673",
+    "packages/core/dist/runtime/runtime-registry.d.ts.map": "323692264fde6b7ec46616023a6e814a3e456b442bde15c9ef1b5c05a3a3f5e8",
+    "packages/core/dist/runtime/runtime-registry.js": "b240532740fcc019c38335ac48ad588fb2ae3f1aaee51a5e076234521ad88ec0",
     "packages/core/dist/runtime/session-process-supervisor.d.ts": "d68ec5f7d6334c342e1530a60f5f79307a3edd8b3b1302d8cd6d3a2e6f5176d6",
     "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "d5d2ce8ce773f3bde9310fb6df2c372b279dd3469323517eaaa87829fee7ebe9",
     "packages/core/dist/runtime/session-process-supervisor.js": "7ad0e7c878057d61999e6eaeee070ed78835317b71bbbf893b50faf1d57a581d",
@@ -946,7 +946,7 @@
     "packages/core/src/runtime/runtime-manager.ts": "45dc590cb733e4273df89ea8b0aff8c019c91b7498211fa3804687a485f8c723",
     "packages/core/src/runtime/runtime-manifest.ts": "e39d00e3bb1cf4f56a7fcf37cd80fd1ff042c78919168a5d7eaed6f750fcc46f",
     "packages/core/src/runtime/runtime-package.ts": "2d5b65672683ea3f0d0f29b53eb8de7fcbdb2689e8245534394890ad352838c1",
-    "packages/core/src/runtime/runtime-registry.ts": "822f536cf76e69c4ce9f2baf2405b3d2076735b6d6c6a4e54bbc5d460f9f5653",
+    "packages/core/src/runtime/runtime-registry.ts": "a90ac42ba01476347178135ee997fa57b8dad87db35b6bd1ac91fb0e26c5315e",
     "packages/core/src/runtime/session-process-supervisor.ts": "b832274d170cf6d5962f4aba609ff9f6a7508d1468717da3c66bcb10535f399c",
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "c3ce99b399af9de5bc44a4f1e53b543db6f346e7ce7ccc58176aeb9999589411",
     "packages/core/src/runtime/streams.ts": "e90175a35d58024738925e53b92867e47c00b118bd2592fa1b682ee9f3c6c425",

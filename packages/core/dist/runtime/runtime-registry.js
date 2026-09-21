@@ -112,7 +112,9 @@ export function buildRuntimeHandler(spec, ctx0) {
         // args array, breaking `node /path/to/tsc --version` (the user's
         // --version was misinterpreted as a node flag).
         let flagSpan = 0;
-        while (flagSpan < args.length && args[flagSpan].startsWith('-')) {
+        // A bare `-` is not a flag: it is the program itself, read from stdin
+        // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
+        while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
             flagSpan++;
             const prev = args[flagSpan - 1];
             // -e / --eval consumes one value; advance past it.
@@ -167,6 +169,32 @@ export function buildRuntimeHandler(spec, ctx0) {
         if (!scriptPath) {
             ctx.stderr.write(`${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`);
             return 1;
+        }
+        // ── `-`: the program is stdin ──
+        //
+        // Every runtime here reads it so (`node -`, `python -`, `ruby -`), and
+        // `process.argv[1]` stays `-` so the script's own arguments start at
+        // `process.argv[2]`, where a program written for real Node looks. The
+        // program's own stdin is what is left after the read: nothing.
+        if (scriptPath === '-') {
+            const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+            const result = await spec.run(code, {
+                cred: ctx.cred,
+                signal: ctx.signal,
+                argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
+                env: ctx.env,
+                cwd: ctx.cwd,
+                filename: '[stdin]',
+                dirname: ctx.cwd || '/home/user',
+                command: `${name} -`,
+                ...(captureOutput ? { captureOutput: true } : {}),
+                ...(bundleProfile ? { bundleProfile } : {}),
+            });
+            if (result.stdout)
+                ctx.stdout.write(result.stdout);
+            if (result.stderr)
+                ctx.stderr.write(result.stderr);
+            return result.exitCode;
         }
         // ── bypassesScriptRead branch (wasm-runner) ──
         //

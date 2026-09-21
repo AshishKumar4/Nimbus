@@ -25,6 +25,7 @@ const TRANSFORM_MARKER = '/* nimbus-test: transformed */';
 function makeHandler(files) {
   const transforms = [];
   let ranWith = null;
+  let ranOpts = null;
   const fs = {
     exists: (p) => Object.hasOwn(files, p),
     // Every fixture entry is a file; the bound VFS distinguishes the two so
@@ -41,8 +42,9 @@ function makeHandler(files) {
       version: 'v22.0.0',
       helpText: 'help',
       supportsBinSpawn: true,
-      async run(code) {
+      async run(code, opts) {
         ranWith = code;
+        ranOpts = opts;
         return { exitCode: 0, stdout: '', stderr: '' };
       },
     },
@@ -57,7 +59,7 @@ function makeHandler(files) {
       registry: { resolve: () => undefined },
     },
   );
-  return { handler, fs, transforms, ran: () => ranWith };
+  return { handler, fs, transforms, ran: () => ranWith, ranOpts: () => ranOpts };
 }
 
 async function runScript(files, scriptPath) {
@@ -195,6 +197,32 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   const r = await runScript({ 'home/user/main.ts': 'export const x: number = 1;\n' }, '/home/user/main.ts');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms[0].opts.loader, 'ts');
+}
+
+// ── `-` runs the program on stdin, with its arguments after argv[1] ──
+//
+// Pi's installer validates its managed install with
+// `node - "$package_json" "$package_lock" <<'NODE' ... NODE`. The flag span
+// used to swallow the bare `-` as a flag and run the next argument, a JSON
+// file, as the script: "SyntaxError: Unexpected token ':'".
+{
+  const built = makeHandler({ 'home/user/pkg.json': '{"version":"1"}' });
+  const stderr = [];
+  const exitCode = await built.handler({
+    vfs: built.fs,
+    args: ['-', '/home/user/pkg.json', 'x'],
+    cwd: '/home/user',
+    env: {},
+    cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    stdin: { async readAll() { return 'process.exit(process.argv.length)\n'; }, async read() { return null; } },
+    stdout: { write: () => {} },
+    stderr: { write: (v) => stderr.push(v) },
+  });
+  assert.equal(exitCode, 0, stderr.join(''));
+  assert.equal(built.ran(), 'process.exit(process.argv.length)\n', 'the program is what stdin held');
+  assert.deepEqual(built.ranOpts().argv, ['-', '/home/user/pkg.json', 'x'], 'argv[1] is `-`, the arguments follow it');
+  assert.equal(built.ranOpts().filename, '[stdin]');
+  assert.equal(built.transforms.length, 0, 'a stdin program is CommonJS as written');
 }
 
 console.log('runtime-entry-module-format: ok');
