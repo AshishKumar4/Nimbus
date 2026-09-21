@@ -38,17 +38,6 @@ export type SyscallResult = Errno | Promise<Errno>;
  * one `__wasiMakeImports` call.
  */
 export type WriteU32LE = (off: number, v: number) => void;
-/** Nanosecond timestamps tracked per path. */
-export interface FileTimes {
-    mtime: bigint;
-    atime: bigint;
-    ctime: bigint;
-}
-/** One entry of a directory listing, as fd_readdir emits it. */
-export interface DirEntry {
-    name: string;
-    type: number;
-}
 /**
  * The socket surface the shim uses, and the only thing it needs to know about a
  * peer. A `cloudflare:sockets` connection and a virtual-socket-kernel loopback
@@ -76,27 +65,6 @@ export interface PreopenFdEntry extends FdEntryCommon {
     kind: 'preopen';
     wasiPath: string;
     vfsPath: string;
-    /**
-     * fd_readdir treats a preopen exactly as it treats a 'dir' and caches the
-     * listing on the entry, so a preopen grows one on first readdir. Optional
-     * because __wasiInitFS does not seed it, unlike path_open's 'dir'.
-     */
-    readdirEntries?: DirEntry[] | null;
-}
-export interface FileFdEntry extends FdEntryCommon {
-    kind: 'file';
-    vfsPath: string;
-    offset: number;
-    oflags: number;
-    fdflags: number;
-}
-export interface DirFdEntry extends FdEntryCommon {
-    kind: 'dir';
-    vfsPath: string;
-    readdirEntries: DirEntry[] | null;
-    cookie: bigint;
-    oflags: number;
-    fdflags: number;
 }
 export interface SocketFdEntry extends FdEntryCommon {
     kind: 'socket';
@@ -116,48 +84,27 @@ export interface ListenerFdEntry extends FdEntryCommon {
     fdflags: number;
 }
 /**
- * A file descriptor, discriminated on `kind`. The union is what makes
- * "wrote to an fd that was not a file" unrepresentable: reaching `vfsPath`
- * requires having narrowed to a kind that has one.
+ * A file descriptor, discriminated on `kind`. Files and directories are the
+ * authority codec's kinds (wasi/filesystem.ts); this module owns the rest.
+ * The union is what makes "wrote to an fd that was not a file"
+ * unrepresentable: reaching a handle requires having narrowed to a kind that
+ * has one.
  */
-export type FdEntry = StdioFdEntry | PreopenFdEntry | FileFdEntry | DirFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd;
-/** The in-facet cache of the session VFS. */
+export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd | import('./filesystem.js').ResidentFd;
+/** The per-process filesystem view: the root the preopens are cut from and the resident cap. */
 export interface WasiFsState {
     root: string;
-    files: Map<string, Uint8Array>;
-    dirs: Set<string>;
-    times: Map<string, FileTimes>;
-    symlinks: Map<string, string>;
-    modes: Map<string, number>;
-    sizes: Map<string, number>;
-    /** Mirror of seeded/demand-loaded content, so the evictor can spot a clean file. */
-    origFiles: Map<string, Uint8Array>;
+    /** Largest regular file the authority codec answers from a resident copy. */
     residentFileCap: number;
-    enumeratedRoots: string[];
-    revision: number | null;
 }
-/** Per-path timestamps as they travel in a seed (decimal strings; BigInt is not JSON-safe). */
-export interface SeedTimes {
-    mtime?: string | number;
-    atime?: string | number;
-    ctime?: string | number;
-}
-/** The seed `__wasiInitFS` installs. Mirrors `WasiFsSnapshot` on the wire. */
+/** What `__wasiInitFS` installs. */
 export interface WasiInitOptions {
     root?: string;
     preopens?: Array<{
         wasiPath: string;
         vfsPath: string;
     }>;
-    files?: Record<string, string>;
-    dirs?: string[];
-    modes: Record<string, number>;
-    sizes?: Record<string, number>;
-    times?: Record<string, SeedTimes>;
-    symlinks?: Record<string, string>;
     residentFileCap?: number;
-    enumeratedRoots?: string[];
-    revision?: number | null;
 }
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
@@ -322,8 +269,6 @@ declare global {
     }
     var __nimbusWasiLastSocketError: string;
     var __wasiAdoptSupervisor: ((sup: WasiSupervisorStub | null) => void) | undefined;
-    var __wasiDrainPersist: (() => Promise<void>) | undefined;
-    var __wasiRevalidateFS: (() => Promise<string[]>) | undefined;
     var __nimbusVirtualSockets: VirtualSocketKernel | undefined;
 }
 export {};

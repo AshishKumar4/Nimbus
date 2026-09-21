@@ -12,7 +12,7 @@
  *
  * Constraints the build imposes on this file, all asserted by the bundler:
  *   - Every symbol a facet reaches (`__wasiInitFS`, `__wasiMakeImports`, `fdTable`,
- *     `__wasiRunStart`, `__wasiRunStartAsync`, `__wasiReadFilesB64`) must stay a
+ *     `__wasiRunStart`, `__wasiRunStartAsync`) must stay a
  *     TOP-LEVEL declaration. Callers append `export { … }` to the emitted string.
  *   - Nothing may be imported for its value. Type-only imports are erased and are
  *     the only kind permitted; a value import would become a bare identifier in a
@@ -21,10 +21,8 @@
  */
 import type { AcceptedVirtualConnection, VirtualSocketKernel } from '@nimbus-sh/core/runtime/virtual-socket-kernel.js';
 import type {
-  DirEntry,
   Errno,
   FdEntry,
-  FileTimes,
   ListenerFdEntry,
   ParkableImport,
   SyscallResult,
@@ -140,49 +138,29 @@ try {
 
 class __WasiExit { declare code: number; constructor(code: number) { this.code = code | 0; } }
 
-// ─── Virtual filesystem state ───────────────────────────────────────────
+// The device a pathless descriptor (stdio, a socket) reports in fd_filestat_get.
+// Above any device the authority can hand out, so a fd-numbered inode on it
+// never collides with a file's (dev, ino).
+const __WASI_STREAM_DEV = 1n << 32n;
+
+// ─── Filesystem state ───────────────────────────────────────────────────
 //
-// __wasiInitFS({ root, preopens, files, dirs, modes, times?, symlinks? }) —
-// install a per-call FS:
-//   root      string  — canonical session root, e.g. 'home/user/wasi-files'.
+// __wasiInitFS({ root, preopens, residentFileCap? }) installs a per-call
+// filesystem view:
+//   root      string  — canonical session root, e.g. 'home/user'.
 //   preopens  Array<{ wasiPath, vfsPath }> — fd>=3 preopens (in order).
-//   files     Record<vfsPath, base64 string> — initial file contents.
-//   dirs      Array<vfsPath> — initial directory list.
-//   modes     Record<vfsPath, effective rwx bits> — access already resolved
-//               for the invoking credential by the supervisor.
-//   times     Record<vfsPath, {mtime, atime, ctime}> | undefined
-//               — per-path nanosecond timestamps (WASI socket and polling support B1). Optional;
-//               paths without entries default to "now" at init time.
-//               Values are decimal strings to survive JSON.serialize
-//               (BigInt is not JSON-safe); converted to BigInt internally.
-//   symlinks  Record<vfsPath, targetPath> | undefined
-//               — WASI socket and polling support B3 in-memory symlink table. Optional; defaults
-//               to empty. Target paths are canonicalized at insertion.
 //
-// Mutations go back to the session VFS as they happen, through the supervisor
-// stub __wasiAdoptSupervisor installs. A sealed instance (no stub) keeps them
-// in memory and its caller names what it wants back via __wasiReadFilesB64.
+// There is no in-facet copy of the filesystem. Every file and directory
+// syscall is answered by the authority codec (wasi/filesystem.ts) through the
+// supervisor stub __wasiAdoptSupervisor installs, reading and writing the same
+// inodes the shell does. What this module keeps is the descriptor table's
+// non-file kinds: stdio, sockets, listeners and the preopen roots.
 //
-// An empty filesystem from the first instruction, replaced wholesale by
-// __wasiInitFS. It used to start null, which 113 syscall bodies then
-// dereferenced without checking — a fact only visible once a type checker read
-// them. Eight other places DID check, and answered null/0/false, so the same
-// pre-init read was a TypeError down one path and a plausible wrong answer down
-// another. wasm-runner worked around it by calling __wasiInitFS with an empty
-// seed purely so "__wasiFS isn't null when WASI fns are called".
-//
-// Starting empty makes the invariant structural instead of a caller's duty: a
-// syscall before init now answers ENOENT against an empty filesystem, which is
-// true, rather than trapping the guest or being individually guarded 113 times.
+// Starting empty rather than null keeps the invariant structural: a syscall
+// before init answers EBADF against an empty descriptor table, which is true,
+// rather than trapping the guest.
 function __wasiEmptyFS(): WasiFsState {
-  return {
-    root: '',
-    files: new Map(), dirs: new Set(), times: new Map(), symlinks: new Map(),
-    modes: new Map(), sizes: new Map(), origFiles: new Map(),
-    residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES,
-    enumeratedRoots: [],
-    revision: null,
-  };
+  return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES };
 }
 let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
@@ -199,187 +177,22 @@ let __wasiThreads: WasiThreadScheduler | null = null;
 
 // ── Live backing store ───────────────────────────────────────────────────
 //
-// The supervisor stub, when present, makes __wasiFS a CACHE of the session
-// VFS rather than a closed world. Absent (unit tests, pools that legitimately
-// run sealed) the seed is authoritative and every path below degrades to
-// pure in-memory behavior.
+// The supervisor stub. Every filesystem call the guest makes is answered by
+// the authority codec (wasi/filesystem.ts) through it; absent (unit tests,
+// compute-only instances) the guest has stdio, sockets and clocks but no
+// files, and a file syscall answers EBADF.
 let __wasiSup: WasiSupervisorStub | null = null;
-
-// FIFO of pending mutations. Writes land in the cache synchronously and are
-// mirrored here; the queue drains continuously so a process that never exits
-// still persists. Ordering is preserved because each op awaits its
-// predecessor — a rename must not overtake the write that created the file.
-interface PersistEntry { op: string }
-const __wasiPersistQ: {
-  pending: PersistEntry[];
-  tail: Promise<void>;
-  failures: string[];
-} = { pending: [], tail: Promise.resolve(), failures: [] };
 
 // Adopting is idempotent and never downgrades. A resident process re-enters
 // through routed fetch/handleHttpRequest hops that resolve the entrypoint
 // WITHOUT a supervisor in env; clearing the live stub on those hops would
-// strand the process holding a cache it can no longer write back.
+// strand the process.
 export function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void {
   if (sup) __wasiSup = sup;
 }
 
-/**
- * True when the seed deliberately shipped no content and is relying on a
- * supervisor to back it. Only manifestVfs stamps a revision, so this is
- * exactly "the producer expected this filesystem to be live" — as opposed to
- * a sealed instance, whose seed IS the whole filesystem by design.
- */
-function __wasiExpectsLiveBacking() {
-  return __wasiFS.revision !== null && __wasiFS.revision !== undefined;
-}
-
-/** Mirror one mutation to the session VFS. Cache is already updated. */
-function __wasiEnqueue(op: string, run: (sup: WasiSupervisorStub) => unknown): void {
-  if (!__wasiSup) {
-    // A sealed instance keeps its mutations in memory on purpose. One that was
-    // seeded as a CACHE and has no supervisor cannot: the write is already
-    // gone. Recording it makes the next drain throw, which is the whole reason
-    // the exit-time diff could be deleted — silence here would put the data
-    // loss back, just without the second implementation.
-    if (__wasiExpectsLiveBacking()) {
-      __wasiPersistQ.failures.push(op + ': no supervisor adopted for a live-backed filesystem');
-    }
-    return;
-  }
-  // Captured HERE rather than read when the continuation runs. __wasiInitFS
-  // nulls __wasiSup and resets the queue tail, but resetting the tail does not
-  // cancel continuations already chained to the old one — so a pooled isolate
-  // that re-inits with work in flight used to hand the previous program's op a
-  // null stub, lose that mutation, and then throw the resulting TypeError out
-  // of the NEXT program's drain. An op belongs to the process that queued it.
-  const sup = __wasiSup;
-  const entry = { op };
-  __wasiPersistQ.pending.push(entry);
-  __wasiPersistQ.tail = __wasiPersistQ.tail.then(async () => {
-    try {
-      await run(sup);
-    } catch (e) {
-      // A failed write-back is data loss and must be visible, not swallowed.
-      __wasiPersistQ.failures.push(op + ': ' + (((e as Error) && (e as Error).message) || String(e)));
-    } finally {
-      const i = __wasiPersistQ.pending.indexOf(entry);
-      if (i >= 0) __wasiPersistQ.pending.splice(i, 1);
-    }
-  });
-}
-
-// Paths with a write-back already queued. The queued op reads the cache when
-// it runs, so a burst of fd_writes to one file coalesces into one round trip
-// instead of one per write.
-const __wasiDirty = new Set<string>();
-
-// Paths a live stat has already reported absent. Cleared whenever anything is
-// created or the cache is revalidated, so a negative never outlives the fact.
-const __wasiNegative = new Set<string>();
-
-function __wasiPersistFile(vfsPath: string): void {
-  // No supervisor check here: __wasiEnqueue is the one place that decides what
-  // a missing one means. Marking the path dirty first also means a burst of
-  // writes to it reports at most once.
-  if (__wasiDirty.has(vfsPath)) return;
-  __wasiDirty.add(vfsPath);
-  // The bytes are read when the op RUNS, which is what coalesces a burst of
-  // fd_writes into one round trip. The filesystem they are read from is pinned
-  // here, though: reading the global instead meant a re-init between the queue
-  // and the drain looked up the path in the NEXT program's empty cache, found
-  // nothing, and returned successfully having written nothing at all.
-  const fs = __wasiFS;
-  __wasiEnqueue('writeFile ' + vfsPath, async (sup) => {
-    __wasiDirty.delete(vfsPath);
-    const bytes = fs && fs.files.get(vfsPath);
-    if (!bytes) return;
-    await sup.writeFile(vfsPath, bytes);
-  });
-}
-
-/**
- * Mirror an explicit utimensat. Deliberately NOT reached from the implicit
- * mtime bump every write does — writeFile already sets it, and a round trip
- * per fd_write would be one syscall's cost paid by all of them.
- */
-function __wasiPersistTimes(vfsPath: string): void {
-  const t = __wasiFS.times.get(vfsPath);
-  if (!t) return;
-  const atimeMs = Number(t.atime / 1000000n);
-  const mtimeMs = Number(t.mtime / 1000000n);
-  __wasiEnqueue('utimes ' + vfsPath, (sup) => sup.utimes(vfsPath, atimeMs, mtimeMs));
-}
-
-function __wasiPersistSymlink(target: string, vfsPath: string): void {
-  __wasiEnqueue('symlink ' + vfsPath, (sup) => sup.symlink(target, vfsPath));
-}
-
-/**
- * Drop cached content that matches what the supervisor already has, turning
- * those inodes back into manifest entries so the next read refetches. Content
- * with a write still queued is never dropped. Returns the paths evicted.
- *
- * This is what makes the cache a cache: memory pressure and staleness are both
- * answered by forgetting, never by serving something known to be old.
- */
-function __wasiEvictCleanContent(): string[] {
-  if (!__wasiFS || !__wasiSup) return [];
-  const evicted = [];
-  for (const [path, bytes] of [...__wasiFS.files]) {
-    if (__wasiDirty.has(path)) continue;
-    const orig = __wasiFS.origFiles.get(path);
-    if (!orig || orig.length !== bytes.length) continue;
-    let same = true;
-    for (let i = 0; i < orig.length; i++) { if (orig[i] !== bytes[i]) { same = false; break; } }
-    if (!same) continue;
-    __wasiFS.files.delete(path);
-    __wasiFS.sizes.set(path, bytes.length);
-    evicted.push(path);
-  }
-  return evicted;
-}
-
-/**
- * Re-sync the cache with the session VFS. A resident process (a server) must
- * see files that other processes created or changed after it spawned, so the
- * cached content is dropped and metadata re-read on next access.
- */
-export async function __wasiRevalidateFS(): Promise<string[]> {
-  if (!__wasiSup || !__wasiFS) return [];
-  await __wasiDrainPersist();
-  // One round trip decides it. An unchanged subtree means the cache is still
-  // exactly right, so a resident server parking between requests pays a single
-  // revision check rather than re-reading everything it had already loaded.
-  if (typeof __wasiSup.fsRevision === 'function') {
-    let revision: number | null;
-    try {
-      revision = await __wasiSup.fsRevision(__wasiFS.root);
-    } catch { revision = null; }
-    if (revision !== null && revision === __wasiFS.revision) return [];
-    __wasiFS.revision = revision;
-  }
-  __wasiNegative.clear();
-  return __wasiEvictCleanContent();
-}
-
-/**
- * Await every queued mutation. Callers drain before returning a result to the
- * supervisor and before any live read, so the supervisor's view always
- * includes this process's own writes.
- */
-export async function __wasiDrainPersist(): Promise<void> {
-  await __wasiPersistQ.tail;
-  if (__wasiPersistQ.failures.length > 0) {
-    const failures = __wasiPersistQ.failures.slice();
-    __wasiPersistQ.failures.length = 0;
-    throw new Error('wasi persist failed: ' + failures.join('; '));
-  }
-}
-
-// All paths are stored in canonical form: no leading '/', no '..', no
-// double slashes. The wasm program sees '/foo/bar.txt' (with leading
-// slash) but the VFS keys are 'home/user/.../foo/bar.txt'.
+// A guest-visible path in canonical form: no leading '/', no '..', no double
+// slashes. The socket path prefixes are matched against it.
 function __wasiCanonicalize(p: string): string {
   if (!p) return '';
   const parts = p.split('/');
@@ -392,118 +205,16 @@ function __wasiCanonicalize(p: string): string {
   return out.join('/');
 }
 
-// Wall-clock at init, used as the default mtime/atime/ctime for any path
-// that arrives without an explicit times entry. Captured once per call so
-// all "default-init" timestamps within a call share a value (mtime ==
-// atime == ctime), matching what a real cold-load would produce.
-// One device for this filesystem, and a stable distinct inode per path.
-//
-// A guest is entitled to treat (st_dev, st_ino) as an identity: LLVM's
-// FileManager keys its directory cache on exactly that pair, GNU make and
-// find -samefile compare it, and rsync uses it to detect hardlinks. Emitting
-// a constant zero collapses every inode into one — clang then searched a
-// single include directory and reported every system header missing. FNV-1a
-// over the canonical path is stable across calls within a run and across
-// processes seeded from the same tree, which is what those callers need.
-const __WASI_DEV = 1n;
-const __WASI_INO_MASK = 0xFFFFFFFFFFFFFFFFn;
 
-function __wasiInode(path: string): bigint {
-  let h = 14695981039346656037n;
-  const p = String(path === undefined || path === null ? '' : path);
-  for (let i = 0; i < p.length; i++) {
-    h = (h ^ BigInt(p.charCodeAt(i) & 0xff)) * 1099511628211n & __WASI_INO_MASK;
-  }
-  // 0 is the "no inode" value a caller may test for; never hand it out.
-  return h === 0n ? 1n : h;
-}
-
-function __wasiNowNs(): bigint {
-  // Date.now() is ms since epoch; multiply by 1e6 → ns.
-  return BigInt(Date.now()) * 1000000n;
-}
 export function __wasiInitFS(opts: WasiInitOptions): void {
-  // A fresh init is a fresh process: no supervisor adopted yet, and none of
-  // the previous tenant's queued writes, dirty paths or negative lookups may
-  // survive into it. Pools reuse an isolate across calls, so leaking any of
-  // this would let one program's state answer another program's syscalls.
+  // A fresh init is a fresh process: no supervisor adopted yet. Pools reuse an
+  // isolate across calls, so the previous tenant's stub must not answer the
+  // next program's syscalls.
   __wasiSup = null;
-  __wasiDirty.clear();
-  __wasiNegative.clear();
-  __wasiPersistQ.pending.length = 0;
-  __wasiPersistQ.failures.length = 0;
-  __wasiPersistQ.tail = Promise.resolve();
-  const files = new Map<string, Uint8Array>();   // canonicalVfsPath → Uint8Array
-  const dirs  = new Set<string>();   // canonicalVfsPath
-  // WASI socket and polling support B1: parallel timestamp + symlink maps.
-  const times    = new Map<string, FileTimes>();   // canonicalVfsPath → {mtime: BigInt, atime: BigInt, ctime: BigInt}
-  const symlinks = new Map<string, string>();   // canonicalVfsPath → targetPath (canonical)
-  const modes    = new Map<string, number>();   // canonicalVfsPath → effective rwx bits
-  // Mirror of the content the seed carried (and of anything demand-loaded),
-  // so the evictor can tell a cached-but-unchanged file from a dirty one.
-  const origFiles = new Map<string, Uint8Array>();
-  const nowNs = __wasiNowNs();
-  for (const [path, b64] of Object.entries(opts.files || {})) {
-    const canon = __wasiCanonicalize(path);
-    const bin = atob(b64);
-    const u8 = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    files.set(canon, u8);
-    origFiles.set(canon, u8.slice());  // copy so subsequent mutations detect change
-    // Default timestamps (overwritten below if opts.times has this path).
-    times.set(canon, { mtime: nowNs, atime: nowNs, ctime: nowNs });
-  }
-  for (const path of opts.dirs || []) {
-    const canon = __wasiCanonicalize(path);
-    dirs.add(canon);
-    if (!times.has(canon)) times.set(canon, { mtime: nowNs, atime: nowNs, ctime: nowNs });
-  }
-  for (const [path, mode] of Object.entries(opts.modes)) {
-    modes.set(__wasiCanonicalize(path), Number(mode) & 7);
-  }
-  // WASI socket and polling support B1: load explicit per-path timestamps if supervisor provided them.
-  // Values arrive as decimal strings (BigInt → JSON.stringify safe) or numbers.
-  for (const [path, t] of Object.entries(opts.times || {})) {
-    const canon = __wasiCanonicalize(path);
-    const cur = times.get(canon);
-    if (!cur) continue;  // path not yet in files/dirs; skip
-    const mtime = (t && t.mtime !== undefined) ? BigInt(t.mtime) : cur.mtime;
-    const atime = (t && t.atime !== undefined) ? BigInt(t.atime) : cur.atime;
-    const ctime = (t && t.ctime !== undefined) ? BigInt(t.ctime) : cur.ctime;
-    times.set(canon, { mtime, atime, ctime });
-  }
-  // WASI socket and polling support B3: load explicit symlinks if supervisor provided them.
-  for (const [path, target] of Object.entries(opts.symlinks || {})) {
-    const canon = __wasiCanonicalize(path);
-    symlinks.set(canon, String(target));
-  }
-  // Metadata-only entries: the manifest knows the file and its size, the seed
-  // did not carry its bytes. Content arrives on first read via the supervisor.
-  // A path here but absent from the files map is a cache miss, never ENOENT.
-  const sizes = new Map<string, number>();
-  for (const [path, size] of Object.entries(opts.sizes || {})) {
-    const canon = __wasiCanonicalize(path);
-    sizes.set(canon, Number(size));
-    if (!times.has(canon)) times.set(canon, { mtime: nowNs, atime: nowNs, ctime: nowNs });
-  }
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
-    files, dirs, times, symlinks, modes, sizes,
-    origFiles,
-    // Files at or above this size are never held whole; reads window through
-    // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
+    // Largest regular file the codec answers from a resident copy.
     residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
-    // Roots the seed claims to have listed COMPLETELY. Only a producer that
-    // walked a subtree without exclusions may claim one. Inside such a root a
-    // path the manifest lacks is genuinely absent, so the miss is answered
-    // here instead of costing a round trip — which is most of the traffic a
-    // language runtime generates ($LOAD_PATH / sys.path probing walks
-    // candidate names that mostly do not exist).
-    enumeratedRoots: (opts.enumeratedRoots || []).map(__wasiCanonicalize),
-    // Supervisor revision the seed was built against; a park re-checks it and
-    // only then drops cached content. Without this the cache could serve
-    // content another process has since changed.
-    revision: opts.revision ?? null,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   // Emptied rather than replaced: the authority codec and the socket helpers
@@ -520,10 +231,9 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
     const vfsPath = __wasiCanonicalize(po.vfsPath);
     fdTable.set(fd, { kind: 'preopen', wasiPath: po.wasiPath, vfsPath });
     __wasiPreopens.push({ fd, wasiPath: po.wasiPath, vfsPath });
-    if (!dirs.has(vfsPath)) dirs.add(vfsPath);
-    if (!times.has(vfsPath)) times.set(vfsPath, { mtime: nowNs, atime: nowNs, ctime: nowNs });
   }
 }
+
 
 // The guest-visible absolute path a path_* call names. wasi-libc resolves an
 // absolute path against its longest matching preopen and passes the REMAINDER
@@ -740,67 +450,20 @@ function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
   return fd;
 }
 
-// WASI socket and polling support B1+B2 helpers: update tracked timestamps for a path. Idempotent.
-// Caller passes nanosecond BigInt(s); pass null for fields to keep unchanged.
-function __wasiTouchTimes(canonPath: string, mtimeNs: bigint | null, atimeNs: bigint | null, ctimeNs: bigint | null): void {
-  const cur = __wasiFS.times.get(canonPath);
-  if (cur) {
-    if (mtimeNs !== null) cur.mtime = mtimeNs;
-    if (atimeNs !== null) cur.atime = atimeNs;
-    if (ctimeNs !== null) cur.ctime = ctimeNs;
-  } else {
-    const now = __wasiNowNs();
-    __wasiFS.times.set(canonPath, {
-      mtime: mtimeNs !== null ? mtimeNs : now,
-      atime: atimeNs !== null ? atimeNs : now,
-      ctime: ctimeNs !== null ? ctimeNs : now,
-    });
-  }
-}
-// Convenience: bump mtime + ctime to "now" on a write/create.
-function __wasiBumpMtime(canonPath: string): void {
-  const now = __wasiNowNs();
-  __wasiTouchTimes(canonPath, now, null, now);
-}
-
-/**
- * Read named files back out as base64.
- *
- * A process with a supervisor has already written everything through as it
- * happened and never calls this. A SEALED one — no supervisor, by design,
- * because it must not be able to reach the session VFS at all — has no other
- * channel, so its caller names the paths it wants and gets exactly those.
- * A path with no file is simply absent from the result.
- */
-export function __wasiReadFilesB64(paths: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const path of paths) {
-    const canon = __wasiCanonicalize(path);
-    const bytes = __wasiFS.files.get(canon);
-    if (!bytes) continue;
-    const CHUNK = 0x8000;
-    let s = '';
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      s += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)) as unknown as number[]);
-    }
-    out[path] = btoa(s);
-  }
-  return out;
-}
-
 // ─── fd table ──────────────────────────────────────────────────────────
 //
-// Entry shapes:
+// Entry shapes this module owns:
 //   { kind: 'stdin' | 'stdout' | 'stderr' }
 //   { kind: 'preopen', wasiPath, vfsPath, rights? }
-//   { kind: 'file',    vfsPath, offset, oflags, fdflags, rights? }
-//   { kind: 'dir',     vfsPath, readdirEntries: null | Array, cookie, rights? }
-//   { kind: 'socket',  socket, reader, writer, readBuf, ... }
+//   { kind: 'socket' | 'listener', socket, reader, writer, readBuf, ... }
+// and the authority codec's (wasi/filesystem.ts), which shares the table:
+//   { kind: 'authority', handle, type, rights, ... }   a live descriptor
+//   { kind: 'resident',  stat, bytes, position, ... }  a read-only copy
 //
 // WASI socket and polling support B6: 'rights' is an optional BigInt mask. When set, fd_fdstat_get
 // returns it (instead of the wide-open default). fd_fdstat_set_rights
-// writes to it. The mask is advisory in this shim (we don't enforce per-fn
-// rights checks in v1 — single-tenant facet, no untrusted callers).
+// writes to it. The mask is advisory for this module's own kinds; the codec
+// enforces rights on its descriptors.
 export const fdTable = new Map<number, FdEntry>();
 let nextFd = 3;
 // The only source of descriptor numbers. A second counter — one for files, one
@@ -808,134 +471,7 @@ let nextFd = 3;
 // destroys the earlier fd's entry.
 function __wasiAllocateFd(): number { return nextFd++; }
 
-// Resolve a WASI path against a preopen fd; returns the canonical VFS path
-// WITHOUT following symlinks. WASI socket and polling support kept this name compatible with all
-// existing call sites (~10 of them inside the imports object).
-//
-// wasi-path-fix: a single preopen { wasiPath: '/', vfsPath: 'home/user' }
-// exposes the user's home as the wasm-side root. wasi-libc strips '/'
-// from absolute paths and hands the rest to path_open. For "/tmp/x" the
-// stripped path "tmp/x" + vfsPath "home/user" yields "home/user/tmp/x"
-// (correct). For "/home/user/x" the stripped path "home/user/x" +
-// vfsPath "home/user" yields "home/user/home/user/x" — the file lands
-// at the wrong location. The user mental model is that "/home/user/x"
-// IS the user's file at home/user/x in the VFS.
-//
-// Fix: in __wasiResolvePath, when baseFd is a preopen AND the supplied
-// pathStr already starts with the preopen's vfsPath (followed by '/' or
-// end-of-string), strip the vfsPath prefix BEFORE prepending it. This
-// makes "/home/user/x" → wasi-libc strip → "home/user/x" → resolver
-// strip vfsPath → "x" → final canonical "home/user/x" ✓. Paths that
-// don't share the vfsPath prefix (like "tmp/x") follow the legacy path.
-//
-// Skip the strip when vfsPath is empty (no chroot mismatch possible).
-// Be careful with segment boundaries: vfsPath "home/user" must NOT
-// strip from path "home/userfoo/bar" (it's a different directory).
-function __wasiResolvePath(baseFd: number, pathStr: string): string | null {
-  const entry = fdTable.get(baseFd);
-  if (!entry) return null;
-  let baseVfs: string;
-  if (entry.kind === 'preopen' || entry.kind === 'dir') baseVfs = entry.vfsPath;
-  else return null;
-  // Strip leading './' or '/' segments (POSIX legacy from wasi-libc).
-  let trimmed = pathStr.replace(/^\.?\/+/, '').replace(/^\/+/, '');
-  // wasi-path-fix: chroot-collision strip. Only applies to preopens (not
-  // 'dir' fds — those are opened via path_open with already-resolved
-  // paths). Only when baseVfs is non-empty AND trimmed starts with
-  // baseVfs at a segment boundary.
-  if (entry.kind === 'preopen' && baseVfs.length > 0) {
-    if (trimmed === baseVfs) {
-      trimmed = '';
-    } else if (trimmed.length > baseVfs.length &&
-               trimmed.charCodeAt(baseVfs.length) === 47 /* '/' */ &&
-               trimmed.substring(0, baseVfs.length) === baseVfs) {
-      trimmed = trimmed.substring(baseVfs.length + 1);
-    }
-  }
-  return __wasiCanonicalize(baseVfs + '/' + trimmed);
-}
 
-// WASI socket and polling support B3: resolve a path WITH optional symlink-follow + POSIX loop
-// detection. Returns {path: canonical, isSymlink: bool, err?: errno}.
-// - If followFlag is true (default — matches LOOKUPFLAGS_SYMLINK_FOLLOW),
-//   walks the symlink chain up to __WASI_SYMLOOP_MAX depth. ELOOP if exceeded.
-// - If followFlag is false, returns the bare resolved path; if the path
-//   itself is in __wasiFS.symlinks, isSymlink=true so callers know to
-//   open it as a symlink fd rather than a regular file.
-// Errors return {path: '', isSymlink: false, err: __WASI_E...}.
-function __wasiResolvePathFull(baseFd: number, pathStr: string, followFlag: boolean): { path: string; isSymlink: boolean; err?: Errno } {
-  let p = __wasiResolvePath(baseFd, pathStr);
-  if (p === null) return { path: '', isSymlink: false, err: __WASI_EBADF };
-  if (!followFlag) {
-    return { path: p, isSymlink: __wasiFS.symlinks.has(p), err: __WASI_ESUCCESS };
-  }
-  // Follow symlinks with bounded loop counter.
-  let depth = 0;
-  while (__wasiFS.symlinks.has(p)) {
-    if (depth++ >= __WASI_SYMLOOP_MAX) {
-      return { path: p, isSymlink: true, err: __WASI_ELOOP };
-    }
-    const target = __wasiFS.symlinks.get(p) as string;
-    // Target may be relative or absolute. Absolute targets (leading '/')
-    // resolve against the same preopen root as the original path; relative
-    // targets resolve against the directory containing the symlink.
-    let next: string;
-    if (target.startsWith('/')) {
-      // Resolve against the preopen of baseFd.
-      const e = fdTable.get(baseFd);
-      const baseVfs = (e && (e.kind === 'preopen' || e.kind === 'dir')) ? e.vfsPath : '';
-      next = __wasiCanonicalize(baseVfs + '/' + target);
-    } else {
-      const lastSlash = p.lastIndexOf('/');
-      const parent = lastSlash >= 0 ? p.substring(0, lastSlash) : '';
-      next = __wasiCanonicalize(parent + '/' + target);
-    }
-    p = next;
-  }
-  return { path: p, isSymlink: false, err: __WASI_ESUCCESS };
-}
-
-function __wasiEffectiveMode(path: string): number {
-  const mode = __wasiFS.modes.get(path);
-  if (mode !== undefined) return mode;
-  return __wasiInodeExists(path) ? 0 : 7;
-}
-
-function __wasiInodeExists(path: string): boolean {
-  return (
-    __wasiFS.files.has(path) ||
-    __wasiFS.dirs.has(path) ||
-    __wasiFS.symlinks.has(path) ||
-    __wasiFS.modes.has(path)
-  );
-}
-
-function __wasiCheckTraversal(baseFd: number, resolved: string): Errno {
-  const entry = fdTable.get(baseFd);
-  if (!entry || (entry.kind !== 'preopen' && entry.kind !== 'dir')) return __WASI_EBADF;
-  const base = entry.vfsPath;
-  if (resolved === base) return __WASI_ESUCCESS;
-
-  const prefix = base ? base + '/' : '';
-  const relative = resolved.startsWith(prefix) ? resolved.substring(prefix.length) : resolved;
-  const parts = relative.split('/').filter(Boolean);
-  let ancestor = base;
-  for (let i = 0; i < parts.length; i++) {
-    if (!__wasiFS.dirs.has(ancestor)) {
-      return __wasiInodeExists(ancestor) ? __WASI_ENOTDIR : __WASI_ENOENT;
-    }
-    if ((__wasiEffectiveMode(ancestor) & 1) === 0) return __WASI_EACCES;
-    if (i === parts.length - 1) break;
-    ancestor = ancestor ? ancestor + '/' + parts[i] : parts[i];
-  }
-  return __WASI_ESUCCESS;
-}
-
-function __wasiCheckMode(path: string, requested: number): Errno {
-  return (__wasiEffectiveMode(path) & requested) === requested
-    ? __WASI_ESUCCESS
-    : __WASI_EACCES;
-}
 
 // ─── makeImports ────────────────────────────────────────────────────────
 
@@ -1035,34 +571,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     const bytes = u8().subarray(ptr, ptr + len);
     return utf8dec.decode(bytes);
   }
-  // The single filestat emitter for both ABIs. preview1 is 64 bytes with an
-  // eight-byte nlink at +24; preview0 is 56 with a four-byte nlink at +20, so
-  // every field from nlink onward shifts. A caller decoding the wrong layout
-  // reads st_size out of the nlink slot and sees 1 — silently, since the
-  // function signature is identical either way.
-  function writeFilestat(statPtr: number, path: string, ftype: number, size: bigint, t: FileTimes): Errno {
-    const dv = view();
-    writeU64LE(statPtr,     __WASI_DEV);
-    writeU64LE(statPtr + 8, __wasiInode(path));
-    dv.setUint8(statPtr + 16, ftype);
-    if (preview0) {
-      for (let i = 17; i < 20; i++) dv.setUint8(statPtr + i, 0);
-      dv.setUint32(statPtr + 20, 1, true);  // nlink u32
-      writeU64LE(statPtr + 24, size);
-      writeU64LE(statPtr + 32, t.atime);
-      writeU64LE(statPtr + 40, t.mtime);
-      writeU64LE(statPtr + 48, t.ctime);
-      return __WASI_ESUCCESS;
-    }
-    for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-    writeU64LE(statPtr + 24, 1n);           // nlink u64
-    writeU64LE(statPtr + 32, size);
-    writeU64LE(statPtr + 40, t.atime);
-    writeU64LE(statPtr + 48, t.mtime);
-    writeU64LE(statPtr + 56, t.ctime);
-    return __WASI_ESUCCESS;
-  }
-
   let stdoutBuf = '';
   let stderrBuf = '';
   // A sink and the readable buffer are mutually exclusive: with a sink the
@@ -1080,63 +588,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     }
   }
 
-  // ── Helpers operating on the VFS state ───────────────────────────────
-  function getFile(vfsPath: string): Uint8Array | null {
-    return __wasiFS.files.get(vfsPath) || null;
-  }
-  /** Known to exist — resident content or a manifest entry. */
-  function fileKnown(vfsPath: string): boolean {
-    return __wasiFS.files.has(vfsPath) || __wasiFS.sizes.has(vfsPath);
-  }
-  /** Size without forcing a load. */
-  function fileSize(vfsPath: string): number {
-    const resident = __wasiFS.files.get(vfsPath);
-    if (resident) return resident.length;
-    return __wasiFS.sizes.get(vfsPath) ?? 0;
-  }
-  /**
-   * Bytes for [offset, offset+length) of a file. Returns synchronously when
-   * the content is resident — JSPI passes a plain value through with no
-   * suspender, so sync-only guests are unaffected by the live path existing.
-   * Returns a Promise only on a genuine cache miss.
-   */
-  function readRange(vfsPath: string, offset: number, length: number): Uint8Array | Promise<Uint8Array> | null {
-    const resident = __wasiFS.files.get(vfsPath);
-    if (resident) {
-      const start = Math.min(offset, resident.length);
-      return resident.subarray(start, Math.min(resident.length, start + length));
-    }
-    const size = __wasiFS.sizes.get(vfsPath);
-    if (size === undefined) return new Uint8Array(0);
-    // A manifest entry says "this file exists and has N bytes"; the bytes live
-    // in the session VFS. With no supervisor there is no way to get them, and
-    // answering with zero bytes is not a degraded read — it is a DIFFERENT
-    // FILE, reported as a success. Ruby's require took that empty content,
-    // defined nothing, and failed later as an undefined constant with nothing
-    // pointing back here. Callers turn null into EIO.
-    if (!__wasiSup) return null;
-    // Queued writes must be visible to our own live read.
-    return (async () => {
-      await __wasiDrainPersist();
-      if (size <= __wasiFS.residentFileCap) {
-        const whole = await __wasiSup.fsReadRange(vfsPath, 0, size);
-        if (whole === null) throw new Error('ENOENT: ' + vfsPath);
-        const bytes = whole;
-        __wasiFS.files.set(vfsPath, bytes);
-        // The diff-back mirror must agree, or a demand-loaded file would be
-        // reported as newly written by every runner still using the diff.
-        __wasiFS.origFiles.set(vfsPath, bytes.slice());
-        const start = Math.min(offset, bytes.length);
-        return bytes.subarray(start, Math.min(bytes.length, start + length));
-      }
-      // Too large to hold: window straight through, nothing cached.
-      const want = Math.max(0, Math.min(length, size - offset));
-      if (want === 0) return new Uint8Array(0);
-      const win = await __wasiSup.fsReadRange(vfsPath, offset, want);
-      if (win === null) throw new Error('ENOENT: ' + vfsPath);
-      return win;
-    })();
-  }
   /** Scatter the given bytes across the iovec list; returns bytes consumed. */
   function scatterIovs(bytes: Uint8Array, iovsPtr: number, iovsLen: number, dv: DataView, memU8: Uint8Array): number {
     let done = 0;
@@ -1152,125 +603,11 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     }
     return done;
   }
-  /**
-   * Resolve a path the manifest does not know. Files created after this
-   * process spawned are invisible to a seed, so a miss asks the supervisor
-   * once and records the answer — including the negative, so a program that
-   * probes the same absent path in a loop pays a single round trip.
-   */
-  /** True when the seed listed this path's subtree exhaustively. */
-  function underEnumeratedRoot(vfsPath: string): boolean {
-    for (const root of __wasiFS.enumeratedRoots) {
-      if (root === '' || vfsPath === root || vfsPath.startsWith(root + '/')) return true;
-    }
-    return false;
-  }
-  function statLive(vfsPath: string): boolean | Promise<boolean> {
-    if (!__wasiSup || __wasiNegative.has(vfsPath)) return false;
-    // The manifest is authoritative inside a root it fully enumerated, so an
-    // absent path there is absent — no round trip. Revalidation at a park is
-    // what lets files created after spawn become visible.
-    if (underEnumeratedRoot(vfsPath)) return false;
-    return (async () => {
-      await __wasiDrainPersist();
-      const st = await __wasiSup.stat(vfsPath);
-      if (!st) { __wasiNegative.add(vfsPath); return false; }
-      ensureParentDirs(vfsPath);
-      if (st.type === 'directory') {
-        __wasiFS.dirs.add(vfsPath);
-        __wasiFS.modes.set(vfsPath, 7);
-      } else {
-        __wasiFS.sizes.set(vfsPath, Number(st.size ?? 0));
-        __wasiFS.modes.set(vfsPath, 6);
-      }
-      const ns = BigInt(st.mtime ?? Date.now()) * 1000000n;
-      __wasiFS.times.set(vfsPath, { mtime: ns, atime: ns, ctime: ns });
-      return true;
-    })();
-  }
   /** Total capacity of an iovec list. */
   function iovsCapacity(iovsPtr: number, iovsLen: number, dv: DataView): number {
     let total = 0;
     for (let i = 0; i < iovsLen; i++) total += dv.getUint32(iovsPtr + i * 8 + 4, true);
     return total;
-  }
-  function hasDir(vfsPath: string): boolean {
-    if (__wasiFS.dirs.has(vfsPath)) return true;
-    // Root preopens implicitly exist as dirs.
-    return false;
-  }
-  function setFile(vfsPath: string, bytes: Uint8Array): void {
-    __wasiFS.files.set(vfsPath, bytes);
-    __wasiFS.sizes.delete(vfsPath);
-    __wasiNegative.delete(vfsPath);
-    if (!__wasiFS.modes.has(vfsPath)) __wasiFS.modes.set(vfsPath, 6);
-    // WASI socket and polling support B1: bump mtime+ctime on every write. atime stays as-is
-    // (read paths bump atime explicitly via touchAccess()).
-    __wasiBumpMtime(vfsPath);
-    __wasiPersistFile(vfsPath);
-  }
-  function unsetFile(vfsPath: string): void {
-    __wasiFS.files.delete(vfsPath);
-    __wasiFS.sizes.delete(vfsPath);
-    __wasiFS.times.delete(vfsPath);
-    __wasiFS.modes.delete(vfsPath);
-    __wasiEnqueue('unlink ' + vfsPath, (sup) => sup.unlink(vfsPath));
-  }
-  function touchAccess(vfsPath: string): void {
-    // WASI socket and polling support B1: bump atime on a read. mtime/ctime unchanged.
-    const cur = __wasiFS.times.get(vfsPath);
-    if (cur) cur.atime = __wasiNowNs();
-  }
-  function ensureParentDirs(vfsPath: string): void {
-    // Ensure all ancestor dirs of vfsPath exist (they should, but mkdir -p
-    // semantics are handled in path_create_directory by callers).
-    const parts = vfsPath.split('/');
-    if (parts.length <= 1) return;
-    let p = '';
-    for (let i = 0; i < parts.length - 1; i++) {
-      p = p ? (p + '/' + parts[i]) : parts[i];
-      __wasiFS.dirs.add(p);
-      if (!__wasiFS.modes.has(p)) __wasiFS.modes.set(p, 7);
-      // WASI socket and polling support B1: ensure ancestor dirs have a times entry.
-      if (!__wasiFS.times.has(p)) {
-        const now = __wasiNowNs();
-        __wasiFS.times.set(p, { mtime: now, atime: now, ctime: now });
-      }
-    }
-  }
-  function readdirChildren(vfsPath: string): DirEntry[] {
-    const out: DirEntry[] = [];
-    const seen = new Set<string>();
-    const prefix = vfsPath === '' ? '' : vfsPath + '/';
-    // Files
-    for (const path of __wasiFS.files.keys()) {
-      if (path.startsWith(prefix)) {
-        const rest = path.substring(prefix.length);
-        if (rest && rest.indexOf('/') === -1) {
-          out.push({ name: rest, type: __WASI_FT_REGULAR_FILE });
-          seen.add(rest);
-        }
-      }
-    }
-    // Dirs
-    for (const path of __wasiFS.dirs) {
-      if (path !== vfsPath && path.startsWith(prefix)) {
-        const rest = path.substring(prefix.length);
-        if (rest && rest.indexOf('/') === -1) {
-          out.push({ name: rest, type: __WASI_FT_DIRECTORY });
-          seen.add(rest);
-        }
-      }
-    }
-    for (const path of __wasiFS.modes.keys()) {
-      if (path.startsWith(prefix)) {
-        const rest = path.substring(prefix.length);
-        if (rest && rest.indexOf('/') === -1 && !seen.has(rest)) {
-          out.push({ name: rest, type: __WASI_FT_REGULAR_FILE });
-        }
-      }
-    }
-    return out;
   }
 
   const imports: WasiImports = {
@@ -1347,25 +684,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (entry.kind === 'listener') {
         return __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8);
       }
-      if (entry.kind === 'dir' || entry.kind === 'preopen') return __WASI_EISDIR;
-      if (entry.kind !== 'file') return __WASI_EBADF;
-      if (!fileKnown(entry.vfsPath)) return __WASI_ENOENT;
-      const want = iovsCapacity(iovsPtr, iovsLen, view());
-      const take = Math.min(want, Math.max(0, fileSize(entry.vfsPath) - entry.offset));
-      if (take === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
-      const chunk = readRange(entry.vfsPath, entry.offset, take);
-      // Re-read memory views after a possible suspension: the guest may have
-      // grown its memory while we were parked, detaching the old buffer.
-      const deliver = (bytes: Uint8Array | null): Errno => {
-        // Null is "the content exists but is unreachable" — never zero bytes,
-        // which the guest cannot tell from an empty file.
-        if (bytes === null) return __WASI_EIO;
-        const n = scatterIovs(bytes, iovsPtr, iovsLen, view(), u8());
-        entry.offset += n;
-        writeU32LE(nreadPtr, n);
-        return __WASI_ESUCCESS;
-      };
-      return (chunk && typeof (chunk as Promise<Uint8Array>).then === 'function') ? (chunk as Promise<Uint8Array>).then(deliver) : deliver(chunk as Uint8Array | null);
+      if (entry.kind === 'preopen') return __WASI_EISDIR;
+      return __WASI_EBADF;
     },
 
     fd_write(fd, iovsPtr, iovsLen, nwrittenPtr) {
@@ -1375,6 +695,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (sockEntry && sockEntry.kind === 'socket') {
         return __rawSockSend(fd, iovsPtr, iovsLen, 0, nwrittenPtr);
       }
+      if (fd !== 1 && fd !== 2) return __WASI_EBADF;
       const dv = view();
       const memU8 = u8();
       // Gather all iov bytes
@@ -1395,71 +716,25 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         let off = 0;
         for (const p of parts) { combined.set(p, off); off += p.length; }
       }
-      if (fd === 1 || fd === 2) {
-        appendStream(fd === 1 ? 'stdout' : 'stderr', combined);
-        writeU32LE(nwrittenPtr, total);
-        return __WASI_ESUCCESS;
-      }
-      const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      const file = getFile(entry.vfsPath) || new Uint8Array(0);
-      // O_APPEND: each write atomically seeks to EOF, ignoring the current
-      // offset, then advances the offset past the written bytes (POSIX).
-      const appendMode = (entry.fdflags & __WASI_FDFLAGS_APPEND) !== 0;
-      const writeAt = appendMode ? file.length : entry.offset;
-      const newLen = Math.max(file.length, writeAt + total);
-      const next = new Uint8Array(newLen);
-      next.set(file, 0);
-      next.set(combined, writeAt);
-      setFile(entry.vfsPath, next);
-      entry.offset = writeAt + total;
+      appendStream(fd === 1 ? 'stdout' : 'stderr', combined);
       writeU32LE(nwrittenPtr, total);
       return __WASI_ESUCCESS;
     },
 
-    fd_seek(fd, offsetArg, whence, newOffsetPtr) {
-      // WASI/V8 passes i64 args as BigInt. core WASI mistakenly assumed
-      // (lo, hi) i32 pairs; that worked only because hello-world never
-      // exercised seek. filesystem WASI: accept BigInt directly.
-      if (fd === 0 || fd === 1 || fd === 2) {
-        // Seeking a pipe/tty is ESPIPE — lets guests detect non-seekable
-        // stdio (POSIX lseek on a pipe).
-        return __WASI_ESPIPE;
-      }
+    fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
+      // Seeking a pipe/tty is ESPIPE — lets guests detect non-seekable
+      // stdio (POSIX lseek on a pipe). A socket is a non-seekable stream too.
+      if (fd === 0 || fd === 1 || fd === 2) return __WASI_ESPIPE;
       const entry = fdTable.get(fd);
-      // A socket is a non-seekable stream, same as stdio: ESPIPE, not EBADF.
       if (entry && (entry.kind === 'socket' || entry.kind === 'listener')) return __WASI_ESPIPE;
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
-      const cur = BigInt(entry.offset);
-      // fileSize, not the resident buffer: a manifest entry is a file whose
-      // bytes have not been demand-loaded yet, and measuring it by what
-      // happens to be in memory calls it empty. SEEK_END then lands at 0, and
-      // every guest that sizes a file by seeking to its end — zipimport does
-      // exactly that before looking for the end-of-central-directory record —
-      // reads the head of the file and concludes it is not an archive.
-      const fileLen = BigInt(fileSize(entry.vfsPath));
-      let next: bigint;
-      if (whence === WHENCE_SET) next = delta;
-      else if (whence === WHENCE_CUR) next = cur + delta;
-      else if (whence === WHENCE_END) next = fileLen + delta;
-      else return __WASI_EINVAL;
-      if (next < 0n) return __WASI_EINVAL;
-      entry.offset = Number(next);
-      writeU64LE(newOffsetPtr, next);
-      return __WASI_ESUCCESS;
+      return __WASI_EBADF;
     },
 
-    fd_tell(fd, offsetPtr) {
-      if (fd === 0 || fd === 1 || fd === 2) {
-        // ftell on a pipe/tty is ESPIPE, same non-seekable rule as fd_seek.
-        return __WASI_ESPIPE;
-      }
+    fd_tell(fd, _offsetPtr) {
+      if (fd === 0 || fd === 1 || fd === 2) return __WASI_ESPIPE;
       const entry = fdTable.get(fd);
       if (entry && (entry.kind === 'socket' || entry.kind === 'listener')) return __WASI_ESPIPE;
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      writeU64LE(offsetPtr, BigInt(entry.offset));
-      return __WASI_ESUCCESS;
+      return __WASI_EBADF;
     },
 
     fd_fdstat_get(fd, statPtr) {
@@ -1469,10 +744,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       let ftype = __WASI_FT_UNKNOWN;
       if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
-      } else if (entry.kind === 'preopen' || entry.kind === 'dir') {
+      } else if (entry.kind === 'preopen') {
         ftype = __WASI_FT_DIRECTORY;
-      } else if (entry.kind === 'file') {
-        ftype = __WASI_FT_REGULAR_FILE;
       } else if (entry.kind === 'socket' || entry.kind === 'listener') {
         ftype = __WASI_FT_SOCKET_STREAM;  // WASI socket and polling support B7
       }
@@ -1496,7 +769,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (!entry) return __WASI_EBADF;
       // Sockets track the mask too: guests set O_NONBLOCK on a socket and
       // then read it back through fd_fdstat_get.
-      if (entry.kind === 'file' || entry.kind === 'socket' || entry.kind === 'listener') entry.fdflags = flags;
+      if (entry.kind === 'socket' || entry.kind === 'listener') entry.fdflags = flags;
       return __WASI_ESUCCESS;
     },
 
@@ -1547,9 +820,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       // WASI socket and polling support B7: synthetic /dev/tcp/<host>/<port> path — open a TCP
       // socket (remote via cloudflare:sockets, loopback via the virtual
       // socket kernel). Bash-like convention.
-      // Intercept BEFORE resolution because /dev/tcp/* doesn't exist in
-      // the in-memory FS — __wasiResolvePath would canonicalize it but
-      // not find any entry.
       const guestPath = __wasiGuestPath(baseFd, pathArg);
       if (guestPath.startsWith(WASI_TCP_PATH_PREFIX)) {
         return __wasiOpenTcpSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
@@ -1560,356 +830,40 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (guestPath.startsWith(WASI_LISTEN_PATH_PREFIX)) {
         return __wasiOpenListener(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
-      // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
-      // wasi-libc clears this bit for O_NOFOLLOW, so dirflags === 0 IS
-      // O_NOFOLLOW and must NOT be treated as follow.
-      const follow = (dirflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
-      const rp = __wasiResolvePathFull(baseFd, pathArg, follow);
-      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
-      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
-      const resolved = rp.path;
-      const traversal = __wasiCheckTraversal(baseFd, resolved);
-      if (traversal !== __WASI_ESUCCESS) return traversal;
-      const isCreate    = (oflags & __WASI_O_CREAT) !== 0;
-      const isDirectory = (oflags & __WASI_O_DIRECTORY) !== 0;
-      const isExcl      = (oflags & __WASI_O_EXCL) !== 0;
-      const isTrunc     = (oflags & __WASI_O_TRUNC) !== 0;
-
-      // O_NOFOLLOW (symlink_follow cleared) on a trailing symlink: POSIX
-      // open() fails with ELOOP rather than opening the link itself.
-      if (!follow && rp.isSymlink) {
-        return __WASI_ELOOP;
-      }
-
-      const fileExists = __wasiFS.files.has(resolved) || __wasiFS.sizes.has(resolved) || (
-        __wasiFS.modes.has(resolved) &&
-        !__wasiFS.dirs.has(resolved) &&
-        !__wasiFS.symlinks.has(resolved)
-      );
-      const dirExists  = __wasiFS.dirs.has(resolved);
-
-      if (isDirectory) {
-        if (!dirExists) return __WASI_ENOENT;
-        const access = __wasiCheckMode(resolved, 1);
-        if (access !== __WASI_ESUCCESS) return access;
-        const fd = __wasiAllocateFd();
-        fdTable.set(fd, { kind: 'dir', vfsPath: resolved, readdirEntries: null, cookie: 0n, oflags, fdflags });
-        writeU32LE(fdOutPtr, fd);
-        return __WASI_ESUCCESS;
-      }
-      if (dirExists) {
-        // Opening a directory without O_DIRECTORY: WASI returns EISDIR.
-        return __WASI_EISDIR;
-      }
-      if (!fileExists) {
-        if (!isCreate) return __WASI_ENOENT;
-        const parentSlash = resolved.lastIndexOf('/');
-        const parent = parentSlash < 0 ? '' : resolved.substring(0, parentSlash);
-        const access = __wasiCheckMode(parent, 3);
-        if (access !== __WASI_ESUCCESS) return access;
-        // create empty file
-        ensureParentDirs(resolved);
-        setFile(resolved, new Uint8Array(0));
-      } else if (isExcl) {
-        return __WASI_EEXIST;
-      } else if (isTrunc) {
-        const access = __wasiCheckMode(resolved, 2);
-        if (access !== __WASI_ESUCCESS) return access;
-        setFile(resolved, new Uint8Array(0));
-      }
-      const requested = typeof rightsBase === 'bigint' ? rightsBase : BigInt(rightsBase >>> 0);
-      let requiredMode = 0;
-      if ((requested & __WASI_RIGHT_FD_READ) !== 0n) requiredMode |= 4;
-      if ((requested & __WASI_RIGHT_FD_WRITE) !== 0n) requiredMode |= 2;
-      if (requiredMode !== 0) {
-        const access = __wasiCheckMode(resolved, requiredMode);
-        if (access !== __WASI_ESUCCESS) return access;
-      }
-      const fd = __wasiAllocateFd();
-      fdTable.set(fd, { kind: 'file', vfsPath: resolved, offset: 0, oflags, fdflags });
-      writeU32LE(fdOutPtr, fd);
-      return __WASI_ESUCCESS;
+      // Every other path is the authority codec's; without a supervisor there
+      // is no filesystem to open it on.
+      return __WASI_EBADF;
     },
 
     // ── path_create_directory ──
-    path_create_directory(baseFd, pathPtr, pathLen) {
-      const path = readPath(pathPtr, pathLen);
-      const resolved = __wasiResolvePath(baseFd, path);
-      if (resolved === null) return __WASI_EBADF;
-      if (__wasiFS.dirs.has(resolved)) return __WASI_EEXIST;
-      if (__wasiFS.files.has(resolved)) return __WASI_EEXIST;
-      ensureParentDirs(resolved);
-      __wasiFS.dirs.add(resolved);
-      __wasiFS.modes.set(resolved, 7);
-      __wasiNegative.delete(resolved);
-      // WASI socket and polling support B1: seed times for the new dir.
-      const now = __wasiNowNs();
-      __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
-      __wasiEnqueue('mkdir ' + resolved, (sup) => sup.mkdir(resolved));
-      return __WASI_ESUCCESS;
-    },
+    path_create_directory(_baseFd, _pathPtr, _pathLen) { return __WASI_EBADF; },
 
-    path_remove_directory(baseFd, pathPtr, pathLen) {
-      const path = readPath(pathPtr, pathLen);
-      const resolved = __wasiResolvePath(baseFd, path);
-      if (resolved === null) return __WASI_EBADF;
-      if (!__wasiFS.dirs.has(resolved)) return __WASI_ENOENT;
-      // Must be empty
-      const children = readdirChildren(resolved);
-      if (children.length > 0) return __WASI_ENOTEMPTY;
-      __wasiFS.dirs.delete(resolved);
-      __wasiFS.modes.delete(resolved);
-      __wasiEnqueue('rmdir ' + resolved, (sup) => sup.rmdir(resolved));
-      return __WASI_ESUCCESS;
-    },
+    path_remove_directory(_baseFd, _pathPtr, _pathLen) { return __WASI_EBADF; },
 
-    path_unlink_file(baseFd, pathPtr, pathLen) {
-      const path = readPath(pathPtr, pathLen);
-      const resolved = __wasiResolvePath(baseFd, path);
-      if (resolved === null) return __WASI_EBADF;
-      if (__wasiFS.dirs.has(resolved)) return __WASI_EISDIR;
-      // WASI socket and polling support B3: unlink also removes a symlink at this path. We
-      // operate on the unfollowed path (POSIX unlink semantics — removes
-      // the directory entry itself, not the symlink target).
-      if (__wasiFS.symlinks.has(resolved)) {
-        __wasiFS.symlinks.delete(resolved);
-        __wasiFS.times.delete(resolved);
-        __wasiFS.modes.delete(resolved);
-        return __WASI_ESUCCESS;
-      }
-      if (!fileKnown(resolved)) return __WASI_ENOENT;
-      unsetFile(resolved);
-      return __WASI_ESUCCESS;
-    },
+    path_unlink_file(_baseFd, _pathPtr, _pathLen) { return __WASI_EBADF; },
 
     // ── path_rename (atomic; overwrites destination) ──
-    path_rename(srcFd, srcPathPtr, srcPathLen, dstFd, dstPathPtr, dstPathLen) {
-      const srcPath = readPath(srcPathPtr, srcPathLen);
-      const dstPath = readPath(dstPathPtr, dstPathLen);
-      const src = __wasiResolvePath(srcFd, srcPath);
-      const dst = __wasiResolvePath(dstFd, dstPath);
-      if (src === null || dst === null) return __WASI_EBADF;
-      // rename operates on the entry itself (no symlink-follow on the final
-      // component, per POSIX). src may be a file, a directory, or a symlink.
-      const srcFile      = __wasiFS.files.get(src);
-      const srcIsDir     = __wasiFS.dirs.has(src);
-      const srcIsSymlink = __wasiFS.symlinks.has(src);
-      // A manifest-only file is a file: its bytes just are not resident yet.
-      const srcIsLazy    = srcFile === undefined && __wasiFS.sizes.has(src);
-      if (srcFile === undefined && !srcIsLazy && !srcIsDir && !srcIsSymlink) return __WASI_ENOENT;
-      if (src === dst) return __WASI_ESUCCESS;  // rename to itself is a no-op
-      // Move the path's timestamps with it, bumping ctime (metadata change).
-      const moveTimes = (from: string, to: string): void => {
-        const t = __wasiFS.times.get(from);
-        __wasiFS.times.delete(from);
-        const now = __wasiNowNs();
-        __wasiFS.times.set(to, t
-          ? { mtime: t.mtime, atime: t.atime, ctime: now }
-          : { mtime: now, atime: now, ctime: now });
-      };
-      const moveMode = (from: string, to: string): void => {
-        const mode = __wasiFS.modes.get(from);
-        __wasiFS.modes.delete(from);
-        if (mode !== undefined) __wasiFS.modes.set(to, mode);
-      };
-      // Pre-remove the destination of any kind (atomic overwrite).
-      __wasiFS.files.delete(dst);
-      __wasiFS.sizes.delete(dst);
-      __wasiFS.dirs.delete(dst);
-      __wasiFS.symlinks.delete(dst);
-      __wasiFS.times.delete(dst);
-      __wasiFS.modes.delete(dst);
-      if (srcIsLazy) {
-        __wasiFS.sizes.set(dst, __wasiFS.sizes.get(src) as number);
-        __wasiFS.sizes.delete(src);
-        moveTimes(src, dst);
-        moveMode(src, dst);
-      } else if (srcIsSymlink) {
-        __wasiFS.symlinks.set(dst, __wasiFS.symlinks.get(src) as string);
-        __wasiFS.symlinks.delete(src);
-        moveTimes(src, dst);
-        moveMode(src, dst);
-      } else if (srcFile !== undefined) {
-        __wasiFS.files.set(dst, srcFile);
-        __wasiFS.files.delete(src);
-        moveTimes(src, dst);
-        moveMode(src, dst);
-      } else {
-        __wasiFS.dirs.delete(src);
-        __wasiFS.dirs.add(dst);
-        moveTimes(src, dst);
-        moveMode(src, dst);
-        // Rebase every descendant key (files, dirs, symlinks) + its times.
-        const srcPrefix = src + '/';
-        const rebase = (key: string): string => dst + '/' + key.substring(srcPrefix.length);
-        for (const key of [...__wasiFS.files.keys()]) {
-          if (key.startsWith(srcPrefix)) {
-            const nk = rebase(key);
-            __wasiFS.files.set(nk, __wasiFS.files.get(key) as Uint8Array);
-            __wasiFS.files.delete(key);
-            moveTimes(key, nk);
-            moveMode(key, nk);
-          }
-        }
-        for (const key of [...__wasiFS.dirs]) {
-          if (key.startsWith(srcPrefix)) {
-            const nk = rebase(key);
-            __wasiFS.dirs.add(nk);
-            __wasiFS.dirs.delete(key);
-            moveTimes(key, nk);
-            moveMode(key, nk);
-          }
-        }
-        for (const key of [...__wasiFS.symlinks.keys()]) {
-          if (key.startsWith(srcPrefix)) {
-            const nk = rebase(key);
-            __wasiFS.symlinks.set(nk, __wasiFS.symlinks.get(key) as string);
-            __wasiFS.symlinks.delete(key);
-            moveTimes(key, nk);
-            moveMode(key, nk);
-          }
-        }
-        for (const key of [...__wasiFS.sizes.keys()]) {
-          if (key.startsWith(srcPrefix)) {
-            __wasiFS.sizes.set(rebase(key), __wasiFS.sizes.get(key) as number);
-            __wasiFS.sizes.delete(key);
-          }
-        }
-      }
-      // One op: the supervisor renames the whole subtree atomically, which a
-      // per-descendant replay could not.
-      __wasiEnqueue('rename ' + src + ' -> ' + dst, (sup) => sup.rename(src, dst));
-      return __WASI_ESUCCESS;
-    },
+    path_rename(_srcFd, _srcPathPtr, _srcPathLen, _dstFd, _dstPathPtr, _dstPathLen) { return __WASI_EBADF; },
 
     // ── path_filestat_get ──
-    path_filestat_get(baseFd, lookupflags, pathPtr, pathLen, statPtr) {
-      const path = readPath(pathPtr, pathLen);
-      // Follow symlinks only when SYMLINK_FOLLOW is set (stat); flags=0 is lstat.
-      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
-      const rp = __wasiResolvePathFull(baseFd, path, follow);
-      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
-      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
-      const resolved = rp.path;
-      const traversal = __wasiCheckTraversal(baseFd, resolved);
-      if (traversal !== __WASI_ESUCCESS) return traversal;
-      const classify = (): [number, bigint] | null => {
-        if (!follow && rp.isSymlink) {
-          return [__WASI_FT_SYMBOLIC_LINK,
-            BigInt(new TextEncoder().encode(__wasiFS.symlinks.get(resolved)).length)];
-        }
-        if (__wasiFS.files.has(resolved) || __wasiFS.sizes.has(resolved)) {
-          return [__WASI_FT_REGULAR_FILE, BigInt(fileSize(resolved))];
-        }
-        if (__wasiFS.dirs.has(resolved)) return [__WASI_FT_DIRECTORY, 0n];
-        if (__wasiFS.modes.has(resolved)) return [__WASI_FT_REGULAR_FILE, 0n];
-        return null;
-      };
-      let kind = classify();
-      if (!kind) {
-        const live = statLive(resolved);
-        if (live && typeof (live as Promise<boolean>).then === 'function') {
-          return (live as Promise<boolean>).then((found) => {
-            // classify() is re-run because the live stat is what populated the
-            // maps. It can still answer null: the stat and this callback are
-            // separated by a suspension, and anything that unlinks the path in
-            // between — another thread, another request on a resident server —
-            // leaves nothing to classify. Spreading that null threw "is not
-            // iterable" from inside a Suspending import, which reaches the
-            // guest as a trap carrying no errno. The path is gone, so ENOENT is
-            // the answer the guest can act on.
-            const settled = found ? classify() : null;
-            return settled ? emitStat(...settled) : __WASI_ENOENT;
-          });
-        }
-        return __WASI_ENOENT;
-      }
-      return emitStat(...kind);
-
-      // Hoisted: reached from both the resident and the post-live-stat path.
-      function emitStat(ftype: number, size: bigint): Errno {
-        // WASI socket and polling support B1: emit real timestamps.
-        const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
-        return writeFilestat(statPtr, resolved, ftype, size, t);
-      }
-    },
+    path_filestat_get(_baseFd, _lookupflags, _pathPtr, _pathLen, _statPtr) { return __WASI_EBADF; },
 
     // WASI socket and polling support B2: real path_filestat_set_times. Honors ATIM/ATIM_NOW/
     // MTIM/MTIM_NOW flags. Spec: atim_ns and mtim_ns are absolute
     // nanosecond timestamps; flags select which fields to update + whether
     // to clamp to "now". ENOENT if path doesn't exist.
-    path_filestat_set_times(baseFd, lookupflags, pathPtr, pathLen, atimArg, mtimArg, fstflags) {
-      const path = readPath(pathPtr, pathLen);
-      const follow = (lookupflags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
-      const rp = __wasiResolvePathFull(baseFd, path, follow);
-      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
-      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
-      const resolved = rp.path;
-      const isSymlinkOnly = !follow && rp.isSymlink;
-      if (!isSymlinkOnly && !__wasiFS.files.has(resolved) && !__wasiFS.dirs.has(resolved)) {
-        return __WASI_ENOENT;
-      }
-      // Decode flags. Mutually-exclusive pairs ATIM vs ATIM_NOW (similarly
-      // for MTIM) — caller error if both set; we accept and prefer _NOW.
-      const setAtim    = (fstflags & __WASI_FSTFLAGS_ATIM) !== 0;
-      const setAtimNow = (fstflags & __WASI_FSTFLAGS_ATIM_NOW) !== 0;
-      const setMtim    = (fstflags & __WASI_FSTFLAGS_MTIM) !== 0;
-      const setMtimNow = (fstflags & __WASI_FSTFLAGS_MTIM_NOW) !== 0;
-      if ((setAtim && setAtimNow) || (setMtim && setMtimNow)) return __WASI_EINVAL;
-      const now = __wasiNowNs();
-      const atimNs = setAtimNow ? now : (setAtim ? (typeof atimArg === 'bigint' ? atimArg : BigInt(atimArg)) : null);
-      const mtimNs = setMtimNow ? now : (setMtim ? (typeof mtimArg === 'bigint' ? mtimArg : BigInt(mtimArg)) : null);
-      __wasiTouchTimes(resolved, mtimNs, atimNs, now);
-      __wasiPersistTimes(resolved);
-      return __WASI_ESUCCESS;
-    },
+    path_filestat_set_times(_baseFd, _lookupflags, _pathPtr, _pathLen, _atimArg, _mtimArg, _fstflags) { return __WASI_EBADF; },
 
     // WASI socket and polling support B3: read the target string of a symlink. Spec:
     //   path_readlink(fd, path, path_len, buf, buf_len, *bufused)
     // Truncates to buf_len; writes actual bytes to *bufused.
-    path_readlink(baseFd, pathPtr, pathLen, bufPtr, bufLen, bufUsedPtr) {
-      const path = readPath(pathPtr, pathLen);
-      // readlink NEVER follows symlinks on the last component (POSIX).
-      const rp = __wasiResolvePathFull(baseFd, path, false);
-      if (rp.err === __WASI_EBADF) return __WASI_EBADF;
-      if (rp.err === __WASI_ELOOP) return __WASI_ELOOP;
-      const resolved = rp.path;
-      if (!__wasiFS.symlinks.has(resolved)) return __WASI_EINVAL;  // not a symlink
-      const target = __wasiFS.symlinks.get(resolved);
-      const enc = new TextEncoder();
-      const targetBytes = enc.encode(target);
-      const n = Math.min(targetBytes.length, bufLen);
-      u8().set(targetBytes.subarray(0, n), bufPtr);
-      writeU32LE(bufUsedPtr, n);
-      // POSIX: readlink doesn't update atime per most filesystems; but
-      // some (ext4 with strictatime) do. We follow Linux default: no
-      // atime bump on readlink.
-      return __WASI_ESUCCESS;
-    },
+    path_readlink(_baseFd, _pathPtr, _pathLen, _bufPtr, _bufLen, _bufUsedPtr) { return __WASI_EBADF; },
 
     // WASI socket and polling support B3: create a symlink. Spec:
     //   path_symlink(old_path, fd, new_path)
     // old_path is the symlink's TARGET (stored verbatim); fd+new_path
     // is the location where the symlink itself is created.
-    path_symlink(oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
-      const oldPath = readPath(oldPathPtr, oldPathLen);  // target string
-      const newPath = readPath(newPathPtr, newPathLen);
-      const resolved = __wasiResolvePath(newFd, newPath);
-      if (resolved === null) return __WASI_EBADF;
-      if (__wasiFS.files.has(resolved)) return __WASI_EEXIST;
-      if (__wasiFS.dirs.has(resolved)) return __WASI_EEXIST;
-      if (__wasiFS.symlinks.has(resolved)) return __WASI_EEXIST;
-      // Store the target verbatim — symlinks per POSIX are dumb strings;
-      // resolution happens at lookup time.
-      __wasiFS.symlinks.set(resolved, oldPath);
-      __wasiFS.modes.set(resolved, 7);
-      ensureParentDirs(resolved);
-      const now = __wasiNowNs();
-      __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
-      __wasiNegative.delete(resolved);
-      __wasiPersistSymlink(oldPath, resolved);
-      return __WASI_ESUCCESS;
-    },
+    path_symlink(_oldPathPtr, _oldPathLen, _newFd, _newPathPtr, _newPathLen) { return __WASI_EBADF; },
 
     // WASI socket and polling support B3: hardlink. Spec:
     //   path_link(old_fd, old_flags, old_path, new_fd, new_path)
@@ -1921,145 +875,49 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     // don't propagate. Matches link(2) at the WASI-layer (link itself
     // succeeds; concurrent-mutation semantics are filesystem-dependent
     // and our shim is a single-call sandbox).
-    path_link(oldFd, oldFlags, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
-      const oldPath = readPath(oldPathPtr, oldPathLen);
-      const newPath = readPath(newPathPtr, newPathLen);
-      const follow = (oldFlags & __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
-      const rpOld = __wasiResolvePathFull(oldFd, oldPath, follow);
-      if (rpOld.err === __WASI_EBADF) return __WASI_EBADF;
-      if (rpOld.err === __WASI_ELOOP) return __WASI_ELOOP;
-      const src = rpOld.path;
-      const dst = __wasiResolvePath(newFd, newPath);
-      if (dst === null) return __WASI_EBADF;
-      if (!__wasiFS.files.has(src)) return __WASI_ENOENT;
-      if (__wasiFS.files.has(dst) || __wasiFS.dirs.has(dst) || __wasiFS.symlinks.has(dst)) {
-        return __WASI_EEXIST;
-      }
-      __wasiFS.files.set(dst, __wasiFS.files.get(src) as Uint8Array);  // shared reference
-      __wasiFS.modes.set(dst, __wasiEffectiveMode(src));
-      ensureParentDirs(dst);
-      const now = __wasiNowNs();
-      __wasiFS.times.set(dst, { mtime: now, atime: now, ctime: now });
-      __wasiNegative.delete(dst);
-      // The session VFS has no hardlinks; the new name is persisted as its own
-      // file with the same bytes, which is what link(2) already degrades to
-      // here (fd_write REPLACES the buffer rather than mutating it in place).
-      __wasiPersistFile(dst);
-      return __WASI_ESUCCESS;
-    },
+    path_link(_oldFd, _oldFlags, _oldPathPtr, _oldPathLen, _newFd, _newPathPtr, _newPathLen) { return __WASI_EBADF; },
 
     // ── fd_filestat_get / fd_filestat_set_size ──
     fd_filestat_get(fd, statPtr) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
+      // Files and directories are the authority codec's. A descriptor with no
+      // path (stdio, a socket) is still its own object and must not share an
+      // inode with every other one, so it is named by its fd — on a device of
+      // its own, because (dev, ino) is the identity and the authority's
+      // devices already use the small numbers (the kernel namespace is 0,
+      // SQLite devices count from 1, and their inodes from 1 too).
       let ftype = __WASI_FT_UNKNOWN;
-      let size = 0n;
-      let timesPath = null;
-      if (entry.kind === 'file') {
-        ftype = __WASI_FT_REGULAR_FILE;
-        size = BigInt(fileSize(entry.vfsPath));
-        timesPath = entry.vfsPath;
-      } else if (entry.kind === 'dir' || entry.kind === 'preopen') {
-        ftype = __WASI_FT_DIRECTORY;
-        timesPath = entry.vfsPath;
-      } else if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
+      if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
       } else if (entry.kind === 'socket' || entry.kind === 'listener') {
         // Guests fstat a socket fd to learn it is not a regular file (Ruby's
         // IO layer keys buffering and seekability off exactly this).
         ftype = __WASI_FT_SOCKET_STREAM;
-      }
-      const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
-      // A path names the inode when there is one. An fd with no path — stdio,
-      // a socket — is still its own object and must not share an inode with
-      // every other one, so it is named by the fd instead.
-      return writeFilestat(statPtr, timesPath === null ? '\0fd/' + fd : timesPath, ftype, size, t);
-    },
-    fd_filestat_set_size(fd, size) {
-      const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      const cur = getFile(entry.vfsPath) || new Uint8Array(0);
-      const newSize = Number(size);
-      const next = new Uint8Array(newSize);
-      next.set(cur.subarray(0, Math.min(cur.length, newSize)), 0);
-      setFile(entry.vfsPath, next);
-      return __WASI_ESUCCESS;
-    },
-    // WASI socket and polling support B2: real fd_filestat_set_times.
-    fd_filestat_set_times(fd, atimArg, mtimArg, fstflags) {
-      const entry = fdTable.get(fd);
-      if (!entry) return __WASI_EBADF;
-      if (entry.kind !== 'file' && entry.kind !== 'dir' && entry.kind !== 'preopen') {
-        // stdio / socket fds: no-op success (POSIX touches /dev/stdin etc. silently).
+      } else return __WASI_EBADF;
+      const dv = view();
+      dv.setUint8(statPtr + 16, ftype);
+      writeU64LE(statPtr, __WASI_STREAM_DEV);
+      writeU64LE(statPtr + 8, BigInt(fd) + 1n);
+      if (preview0) {
+        for (let i = 17; i < 20; i++) dv.setUint8(statPtr + i, 0);
+        dv.setUint32(statPtr + 20, 1, true);  // nlink u32
+        for (let off = 24; off < 56; off += 8) writeU64LE(statPtr + off, 0n);
         return __WASI_ESUCCESS;
       }
-      const setAtim    = (fstflags & __WASI_FSTFLAGS_ATIM) !== 0;
-      const setAtimNow = (fstflags & __WASI_FSTFLAGS_ATIM_NOW) !== 0;
-      const setMtim    = (fstflags & __WASI_FSTFLAGS_MTIM) !== 0;
-      const setMtimNow = (fstflags & __WASI_FSTFLAGS_MTIM_NOW) !== 0;
-      if ((setAtim && setAtimNow) || (setMtim && setMtimNow)) return __WASI_EINVAL;
-      const now = __wasiNowNs();
-      const atimNs = setAtimNow ? now : (setAtim ? (typeof atimArg === 'bigint' ? atimArg : BigInt(atimArg)) : null);
-      const mtimNs = setMtimNow ? now : (setMtim ? (typeof mtimArg === 'bigint' ? mtimArg : BigInt(mtimArg)) : null);
-      __wasiTouchTimes(entry.vfsPath, mtimNs, atimNs, now);
-      __wasiPersistTimes(entry.vfsPath);
+      for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
+      writeU64LE(statPtr + 24, 1n);           // nlink u64
+      for (let off = 32; off < 64; off += 8) writeU64LE(statPtr + off, 0n);
       return __WASI_ESUCCESS;
     },
+    fd_filestat_set_size(_fd, _size) { return __WASI_EBADF; },
+    // WASI socket and polling support B2: real fd_filestat_set_times.
+    fd_filestat_set_times(_fd, _atimArg, _mtimArg, _fstflags) { return __WASI_EBADF; },
 
     // ── fd_pread / fd_pwrite (offset-explicit) ──
-    fd_pread(fd, iovsPtr, iovsLen, offsetArg, nreadPtr) {
-      const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      if (!fileKnown(entry.vfsPath)) return __WASI_ENOENT;
-      const offset = typeof offsetArg === 'bigint'
-        ? Number(offsetArg)
-        : (offsetArg >>> 0);
-      const want = iovsCapacity(iovsPtr, iovsLen, view());
-      const take = Math.min(want, Math.max(0, fileSize(entry.vfsPath) - offset));
-      if (take === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
-      const chunk = readRange(entry.vfsPath, offset, take);
-      const deliver = (bytes: Uint8Array | null): Errno => {
-        if (bytes === null) return __WASI_EIO;
-        writeU32LE(nreadPtr, scatterIovs(bytes, iovsPtr, iovsLen, view(), u8()));
-        return __WASI_ESUCCESS;
-      };
-      return (chunk && typeof (chunk as Promise<Uint8Array>).then === 'function') ? (chunk as Promise<Uint8Array>).then(deliver) : deliver(chunk as Uint8Array | null);
-    },
+    fd_pread(_fd, _iovsPtr, _iovsLen, _offsetArg, _nreadPtr) { return __WASI_EBADF; },
 
-    fd_pwrite(fd, iovsPtr, iovsLen, offsetArg, nwrittenPtr) {
-      const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      let offset = typeof offsetArg === 'bigint'
-        ? Number(offsetArg)
-        : (offsetArg >>> 0);
-      const dv = view();
-      const memU8 = u8();
-      let total = 0;
-      const parts = [];
-      for (let i = 0; i < iovsLen; i++) {
-        const iov = iovsPtr + i * 8;
-        const bufPtr = dv.getUint32(iov, true);
-        const bufLen = dv.getUint32(iov + 4, true);
-        if (bufLen > 0) parts.push(memU8.slice(bufPtr, bufPtr + bufLen));
-        total += bufLen;
-      }
-      let combined: Uint8Array;
-      if (parts.length === 0) combined = new Uint8Array(0);
-      else if (parts.length === 1) combined = parts[0];
-      else {
-        combined = new Uint8Array(total);
-        let off = 0;
-        for (const p of parts) { combined.set(p, off); off += p.length; }
-      }
-      const cur = getFile(entry.vfsPath) || new Uint8Array(0);
-      const newLen = Math.max(cur.length, offset + total);
-      const next = new Uint8Array(newLen);
-      next.set(cur, 0);
-      next.set(combined, offset);
-      setFile(entry.vfsPath, next);
-      writeU32LE(nwrittenPtr, total);
-      return __WASI_ESUCCESS;
-    },
+    fd_pwrite(_fd, _iovsPtr, _iovsLen, _offsetArg, _nwrittenPtr) { return __WASI_EBADF; },
 
     // ── fd_readdir ──
     //
@@ -2070,46 +928,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     //   d_type   u8  @ 20
     //   pad             21..23
     // followed by name bytes (variable).
-    fd_readdir(fd, bufPtr, bufLen, cookieArg, bufusedPtr) {
-      const entry = fdTable.get(fd);
-      if (!entry || (entry.kind !== 'dir' && entry.kind !== 'preopen')) return __WASI_EBADF;
-      const access = __wasiCheckMode(entry.vfsPath, 4);
-      if (access !== __WASI_ESUCCESS) return access;
-      if (!entry.readdirEntries) {
-        const kids = readdirChildren(entry.vfsPath);
-        entry.readdirEntries = [
-          { name: '.',  type: __WASI_FT_DIRECTORY },
-          { name: '..', type: __WASI_FT_DIRECTORY },
-          ...kids,
-        ];
-      }
-      let startCookie = typeof cookieArg === 'bigint'
-        ? Number(cookieArg)
-        : (cookieArg >>> 0);
-      let written = 0;
-      const dv = view();
-      const memU8 = u8();
-      for (let i = startCookie; i < entry.readdirEntries.length; i++) {
-        const e = entry.readdirEntries[i];
-        const nameBytes = utf8enc.encode(e.name);
-        const recordSize = 24 + nameBytes.length;
-        if (written + 24 > bufLen) break;
-        // d_next = i+1 (next cookie)
-        writeU64LE(bufPtr + written, BigInt(i + 1));
-        writeU64LE(bufPtr + written + 8, 0n);   // d_ino
-        dv.setUint32(bufPtr + written + 16, nameBytes.length, true);
-        dv.setUint8(bufPtr + written + 20, e.type);
-        for (let j = 21; j < 24; j++) dv.setUint8(bufPtr + written + j, 0);
-        written += 24;
-        // Write as much of the name as fits.
-        const nameRoom = Math.min(nameBytes.length, bufLen - written);
-        memU8.set(nameBytes.subarray(0, nameRoom), bufPtr + written);
-        written += nameRoom;
-        if (nameRoom < nameBytes.length) break;
-      }
-      writeU32LE(bufusedPtr, written);
-      return __WASI_ESUCCESS;
-    },
+    fd_readdir(_fd, _bufPtr, _bufLen, _cookieArg, _bufusedPtr) { return __WASI_EBADF; },
 
     fd_advise(_fd, _offset, _len, _advice) { return __WASI_ESUCCESS; },
     // WASI socket and polling support B4: real fd_allocate. Extends the file's byte buffer with
@@ -2117,19 +936,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     // semantics. ENOSPC is not reachable in our in-memory FS (the
     // 32 MiB snapshot cap is enforced at supervisor level; in-call we
     // just allocate the JS Uint8Array).
-    fd_allocate(fd, offsetArg, lenArg) {
-      const entry = fdTable.get(fd);
-      if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      const offset = typeof offsetArg === 'bigint' ? Number(offsetArg) : (offsetArg >>> 0);
-      const len    = typeof lenArg    === 'bigint' ? Number(lenArg)    : (lenArg    >>> 0);
-      const cur = getFile(entry.vfsPath) || new Uint8Array(0);
-      const needed = offset + len;
-      if (needed <= cur.length) return __WASI_ESUCCESS;  // already big enough
-      const next = new Uint8Array(needed);
-      next.set(cur, 0);  // [cur.length, needed) is implicitly zero-initialised
-      setFile(entry.vfsPath, next);
-      return __WASI_ESUCCESS;
-    },
+    fd_allocate(_fd, _offsetArg, _lenArg) { return __WASI_EBADF; },
     fd_datasync()   { return __WASI_ESUCCESS; },
     fd_sync()       { return __WASI_ESUCCESS; },
     // dup2(2), and the only way to reach it: preview1 has no dup. Renumbering
@@ -2328,19 +1135,15 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
           });
         }
         // Regular files, dirs, stdio: always ready (POSIX: regular files
-        // never block — read returns immediately even if at EOF). A file the
-        // authority owns is a regular file too; leaving 'authority' out made
+        // never block — read returns immediately even if at EOF). Files and
+        // directories are the authority's descriptors; leaving them out made
         // polling one EBADF, which a guest reads as "this fd is gone".
-        if (entry.kind === 'file' || entry.kind === 'dir' ||
-            entry.kind === 'preopen' || entry.kind === 'authority' ||
+        if (entry.kind === 'preopen' || entry.kind === 'authority' || entry.kind === 'resident' ||
             entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
           let nbytes = 0n;
-          if (entry.kind === 'file' && s.tag === __WASI_EVENTTYPE_FD_READ) {
-            const f = getFile(entry.vfsPath);
-            if (f) {
-              const remain = f.length - (entry.offset || 0);
-              nbytes = remain > 0 ? BigInt(remain) : 0n;
-            }
+          if (entry.kind === 'resident' && s.tag === __WASI_EVENTTYPE_FD_READ) {
+            const remain = entry.bytes.length - entry.position;
+            nbytes = remain > 0 ? BigInt(remain) : 0n;
           } else if (s.tag === __WASI_EVENTTYPE_FD_WRITE) {
             // Writable: report large available capacity. Most user code
             // only checks nbytes > 0.
@@ -2882,6 +1685,4 @@ export async function __wasiRunStartAsync(instance: WasiStartInstance, ctx?: unk
 // already follow) because a direct reference to a preamble-only symbol will
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
-globalThis.__wasiDrainPersist    = __wasiDrainPersist;
-globalThis.__wasiRevalidateFS    = __wasiRevalidateFS;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

@@ -45,7 +45,6 @@ function outputContext(filesystem, args) {
 // throws on use proves the refusal happened first.
 const unreachableFacets = {
   parking: 'none',
-  seedFilesystem() { throw new Error('the runtime is missing — nothing may be seeded'); },
   open() { throw new Error('the runtime is missing — nothing may be opened'); },
 };
 

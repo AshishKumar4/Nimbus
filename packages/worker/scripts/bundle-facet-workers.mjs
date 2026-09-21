@@ -126,10 +126,7 @@ const WASI_REQUIRED_TOP_LEVEL = [
   '__wasiMakeImports',
   '__wasiRunStart',
   '__wasiRunStartAsync',
-  '__wasiReadFilesB64',
   '__wasiAdoptSupervisor',
-  '__wasiDrainPersist',
-  '__wasiRevalidateFS',
   'fdTable',
 ];
 

@@ -1,26 +1,27 @@
 /**
  * clang-runner.ts — compile, link, and execute C programs for Nimbus WASI.
  *
- * Architecture (compile-link-run, two facet calls):
+ * Architecture (compile-link, two facet calls):
  *
- *   compile  : clang.wasm + sysroot subset for C includes + user .c
- *              → produces .o bytes (returned to supervisor).
- *   link     : lld.wasm + sysroot subset for link (crt1.o + libc.a)
- *              + .o from compile → produces .wasm executable.
- *   write    : final .wasm flushed to user VFS at the requested path.
+ *   compile  : clang.wasm over the session filesystem → writes each
+ *              translation unit's .o under a scratch directory in /tmp.
+ *   link     : wasm-ld.wasm over the same filesystem → writes the final
+ *              .wasm executable at the requested output path.
  *
- * The filesystem both halves see is the one WASI layer every other
- * non-node runtime uses (wasi-instance.ts), seeded and sealed.
+ * The filesystem both halves see is the session authority, reached through
+ * the same supervisor capability every other non-node runtime uses
+ * (wasi-instance.ts): the facet is opened with the caller's pid, so a
+ * source the caller cannot read stays unreadable and an output directory
+ * the caller cannot write stays unwritten. Nothing is copied in or out.
  *
- * Splitting compile and link into separate facet calls keeps each
- * call under the empirical payload ceiling. Each ships:
+ * The sysroot (headers, crt1.o, libc.a, compiler-rt) ships as one ustar
+ * archive in the installed runtime, `share/clang/sysroot.tar`, and is
+ * unpacked ONCE per session into `share/clang/sysroot/` beside it — a
+ * world-readable tree the toolchain is pointed at by absolute path. A missing or damaged archive is reported and the command exits;
+ * there is no header set to fall back on.
  *
- *   - compile: 31 MiB clang.wasm + ~1.3 MiB sysroot subset (C includes).
- *   - link   : 19 MiB lld.wasm + ~0.75 MiB libs + tiny .o.
- *
- * Sysroot subset extraction happens supervisor-side via a small ustar
- * parser. The full sysroot.tar is parsed once when the clang runtime
- * warms for a session; compile/link calls reuse the filtered subsets.
+ * Splitting compile and link into separate facet calls keeps each wasm
+ * image its own facet: 31 MiB clang.wasm, 19 MiB wasm-ld.wasm.
  *
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.

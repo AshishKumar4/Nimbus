@@ -18,7 +18,6 @@ const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 // throws on use proves the refusal came first.
 const unreachableFacets = {
   parking: 'none',
-  seedFilesystem() { throw new Error('a denied program must never be seeded'); },
   open() { throw new Error('a denied program must never open a facet'); },
 };
 

@@ -2,9 +2,9 @@
 // wasi/symlink-follow-open — WASI socket and polling support B3 — symlink follow on path_open.
 //
 // Spec: dirflags & LOOKUPFLAGS_SYMLINK_FOLLOW (bit 1) makes path_open
-// dereference symlinks transparently. The shim's __wasiResolvePathFull
-// walks the chain (bounded by SYMLOOP_MAX=40) and opens the final
-// non-symlink target.
+// dereference symlinks transparently. The authority codec hands the flag to
+// the filesystem, whose path resolution walks the chain (bounded by
+// SYMLOOP_MAX) and opens the final non-symlink target.
 //
 // Fixture: writes "real.txt" containing "OK\\n", creates symlink "lnk"
 // → "real.txt", opens "lnk" with follow=on, reads 3 bytes, echoes them

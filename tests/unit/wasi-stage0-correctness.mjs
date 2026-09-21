@@ -1,27 +1,19 @@
 #!/usr/bin/env bun
 // Stage-0 WASI shim correctness probes (WASI-PLAN §2.4). Drives the REAL
 // wasi-instance.ts preamble source — the same string injected into
-// wasm-runner / ruby-runner / opentui — proving preview1 semantics for the
-// six correctness bugs found by inspection:
+// wasm-runner / ruby-runner / opentui — over a real session filesystem
+// (lib/wasi-authority.mjs), proving preview1 semantics for the six
+// correctness bugs found by inspection:
 //   1. O_NOFOLLOW defeated  — path_open / path_filestat_get on a symlink
 //   2. O_APPEND ignored     — fd_write must append at EOF regardless of seek
 //   3. read(2)/write(2) on a socket fd  — route to sock_recv/sock_send
 //   4. path_rename drops symlinks       — a renamed symlink stays a symlink
 //   5. fd_seek/fd_tell on stdio         — ESPIPE, not success/0
 //   6. fd_read on a directory fd        — EISDIR, not EBADF
-//
-// The preamble is module-shaped (top-level await for cloudflare:sockets),
-// so it is evaluated as an ES module from a temp file, exactly like
-// opentui-wasm-smoke.mjs.
 
 import assert from 'node:assert/strict';
-import { writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
-import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
 
 // ── WASI errno / flag constants (preview1) ───────────────────────────────────
 const ESUCCESS = 0, EBADF = 8, EISDIR = 31, ELOOP = 32;
@@ -31,56 +23,16 @@ const O_DIRECTORY = 2;
 const FDFLAGS_APPEND = 1;
 const LOOKUP_FOLLOW = 1;
 
-// ── Load the real preamble as a module ───────────────────────────────────────
-// The socket probe needs to inject a fake socket fd, so the test exports
-// fdTable alongside the two public helpers.
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, fdTable };`;
-const preamblePath = path.join(os.tmpdir(), `wasi-s0-preamble-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let P;
-try {
-  P = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
-
+const P = await loadWasiPreamble();
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const b64 = (s) => btoa(s);
 
-// A fresh WASI host over a controlled VFS. Preopen fd 3 = the session root.
-function host(fs) {
-  const paths = new Set([
-    'home/user',
-    ...Object.keys(fs.files || {}),
-    ...(fs.dirs || []),
-    ...Object.keys(fs.symlinks || {}),
-  ]);
-  P.__wasiInitFS({
-    root: 'home/user',
-    preopens: [{ wasiPath: '/', vfsPath: 'home/user' }],
-    files: fs.files || {},
-    dirs: fs.dirs || [],
-    modes: Object.fromEntries([...paths].map((path) => [path, 0o7])),
-    symlinks: fs.symlinks || {},
-  });
-  const mem = new WebAssembly.Memory({ initial: 8 });
-  const wasi = makeImportsWithoutJSPI(P, { argv: ['prog'], env: {}, getMemory: () => mem });
-  const u8 = () => new Uint8Array(mem.buffer);
-  const dv = () => new DataView(mem.buffer);
-  // Bump allocator over the raw linear memory (well past page 0).
-  let bump = 4096;
-  const alloc = (n) => { const p = bump; bump += (n + 7) & ~7; return p; };
-  const putStr = (s) => { const b = enc.encode(s); const p = alloc(b.length); u8().set(b, p); return [p, b.length]; };
-  // Build a single-iovec array pointing at a scratch buffer of `len` bytes.
-  const iovec = (len) => {
-    const buf = alloc(len);
-    const iov = alloc(8);
-    dv().setUint32(iov, buf, true);
-    dv().setUint32(iov + 4, len, true);
-    return { iov, buf, len };
-  };
-  return { wasi: wasi.wasiImport, mem, u8, dv, alloc, putStr, iovec };
+// A fresh guest over a fresh session. Preopen fd 3 = /home/user.
+const sessions = [];
+function host(fs = {}, imports = {}) {
+  const session = makeSession(fs);
+  sessions.push(session);
+  return makeGuest(P, session, { root: 'home/user', preopens: [{ wasiPath: '/', vfsPath: 'home/user' }] }, imports);
 }
 
 let passed = 0;
@@ -92,23 +44,23 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
 {
   // 1a. path_open with O_NOFOLLOW (dirflags=0) on a trailing symlink → ELOOP.
   const h = host({
-    files: { 'home/user/real.txt': b64('hi') },
+    files: { 'home/user/real.txt': 'hi' },
     symlinks: { 'home/user/link.txt': 'real.txt' },
   });
   const [pp, pl] = h.putStr('link.txt');
   const fdOut = h.alloc(4);
-  const rc = h.wasi.path_open(3, /*dirflags*/0, pp, pl, /*oflags*/0, 0n, 0n, /*fdflags*/0, fdOut);
+  const rc = h.wasi.path_open(3, /*dirflags*/0, pp, pl, /*oflags*/0, -1n, -1n, /*fdflags*/0, fdOut);
   assert.equal(rc, ELOOP, 'path_open O_NOFOLLOW on symlink must return ELOOP');
   ok('1a path_open O_NOFOLLOW on symlink → ELOOP');
 
   // 1b. path_open WITH follow (dirflags=1) on the same symlink → opens target.
   const h2 = host({
-    files: { 'home/user/real.txt': b64('hi') },
+    files: { 'home/user/real.txt': 'hi' },
     symlinks: { 'home/user/link.txt': 'real.txt' },
   });
   const [pp2, pl2] = h2.putStr('link.txt');
   const fdOut2 = h2.alloc(4);
-  const rc2 = h2.wasi.path_open(3, LOOKUP_FOLLOW, pp2, pl2, 0, 0n, 0n, 0, fdOut2);
+  const rc2 = h2.wasi.path_open(3, LOOKUP_FOLLOW, pp2, pl2, 0, -1n, -1n, 0, fdOut2);
   assert.equal(rc2, ESUCCESS, 'follow open of symlink should succeed');
   const fd2 = h2.dv().getUint32(fdOut2, true);
   const { iov, buf } = h2.iovec(16);
@@ -120,7 +72,7 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
 
   // 1c. path_filestat_get with lookupflags=0 (lstat) on a symlink → SYMLINK type.
   const h3 = host({
-    files: { 'home/user/real.txt': b64('hi') },
+    files: { 'home/user/real.txt': 'hi' },
     symlinks: { 'home/user/link.txt': 'real.txt' },
   });
   const [pp3, pl3] = h3.putStr('link.txt');
@@ -131,7 +83,7 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
 
   // 1d. path_filestat_get WITH follow on the symlink → target type (regression guard).
   const h4 = host({
-    files: { 'home/user/real.txt': b64('hi') },
+    files: { 'home/user/real.txt': 'hi' },
     symlinks: { 'home/user/link.txt': 'real.txt' },
   });
   const [pp4, pl4] = h4.putStr('link.txt');
@@ -145,11 +97,11 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
 // Bug 2 — O_APPEND ignored by fd_write
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const h = host({ files: { 'home/user/log.txt': b64('AAA') } });
+  const h = host({ files: { 'home/user/log.txt': 'AAA' } });
   const [pp, pl] = h.putStr('log.txt');
   const fdOut = h.alloc(4);
   // open with APPEND fdflag set.
-  assert.equal(h.wasi.path_open(3, 0, pp, pl, 0, 0n, 0n, FDFLAGS_APPEND, fdOut), ESUCCESS);
+  assert.equal(h.wasi.path_open(3, 0, pp, pl, 0, -1n, -1n, FDFLAGS_APPEND, fdOut), ESUCCESS);
   const fd = h.dv().getUint32(fdOut, true);
   // Seek to the very start — an append write must ignore this.
   const off = h.alloc(8);
@@ -167,7 +119,7 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
   // Read the file back via a fresh fd.
   const [rp, rl] = h.putStr('log.txt');
   const fdOut2 = h.alloc(4);
-  assert.equal(h.wasi.path_open(3, 0, rp, rl, 0, 0n, 0n, 0, fdOut2), ESUCCESS);
+  assert.equal(h.wasi.path_open(3, 0, rp, rl, 0, -1n, -1n, 0, fdOut2), ESUCCESS);
   const rfd = h.dv().getUint32(fdOut2, true);
   const rd = h.iovec(32);
   const nread = h.alloc(4);
@@ -181,7 +133,8 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
 // Bug 3 — read(2)/write(2) on a socket fd
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const h = host({});
+  // A socket read parks, so this guest is the parkable kind.
+  const h = host({}, { parking: 'jspi' });
   const written = [];
   const readChunks = [enc.encode('hello')];
   let ri = 0;
@@ -271,7 +224,7 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
   const h = host({ dirs: ['home/user/sub'] });
   const [pp, pl] = h.putStr('sub');
   const fdOut = h.alloc(4);
-  assert.equal(h.wasi.path_open(3, LOOKUP_FOLLOW, pp, pl, O_DIRECTORY, 0n, 0n, 0, fdOut), ESUCCESS);
+  assert.equal(h.wasi.path_open(3, LOOKUP_FOLLOW, pp, pl, O_DIRECTORY, -1n, -1n, 0, fdOut), ESUCCESS);
   const dfd = h.dv().getUint32(fdOut, true);
   const rd = h.iovec(16);
   const nread = h.alloc(4);
@@ -281,4 +234,5 @@ function ok(name) { passed++; console.log(`  ok  ${name}`); }
   ok('6 fd_read on a directory fd → EISDIR');
 }
 
+for (const session of sessions) await session.dispose();
 console.log(`\nwasi-stage0-correctness: ${passed} checks passed`);

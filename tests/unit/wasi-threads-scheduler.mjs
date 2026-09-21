@@ -338,7 +338,7 @@ function mutex(p, addr) {
   const trace = [];
   let release;
   const supervisorAnswer = new Promise((resolve) => { release = resolve; });
-  P.__wasiInitFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
+  P.__wasiInitFS({ root: '', preopens: [] });
   // path_filestat_get is one of the imports withParkDeadline guards; handing it
   // a promise is what a supervisor round-trip does.
   const parked = p.sched.parkIo(supervisorAnswer);

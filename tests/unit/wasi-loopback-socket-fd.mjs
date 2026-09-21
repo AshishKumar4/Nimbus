@@ -25,11 +25,12 @@ import { pathToFileURL } from 'node:url';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { installVirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { makeSession } from './lib/wasi-authority.mjs';
 
 const ESUCCESS = 0, ENOSYS = 52, ESPIPE = 70;
 const FT_SOCKET_STREAM = 6;
 
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, fdTable };`;
+const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, fdTable };`;
 const preamblePath = path.join(os.tmpdir(), `wasi-loopback-fd-${process.pid}.mjs`);
 writeFileSync(preamblePath, preambleSrc);
 let P;
@@ -44,17 +45,19 @@ const decoder = new TextDecoder();
 
 /**
  * A WASI host over 64 KiB of memory with the '/' preopen every language
- * runtime installs, plus a kernel wired to `route`.
+ * runtime installs, a session filesystem behind it for the ordinary paths,
+ * plus a kernel wired to `route`.
  */
+const sessions = [];
 function host(route) {
   const memory = new WebAssembly.Memory({ initial: 4 });
   P.__wasiInitFS({
     root: '',
     preopens: [{ wasiPath: '/', vfsPath: '' }],
-    files: {},
-    dirs: ['tmp'],
-    modes: { '': 7, tmp: 7 },
   });
+  const session = makeSession();
+  sessions.push(session);
+  P.__wasiAdoptSupervisor(session.supervisor);
   const scope = { __nimbusVirtualSocketRouteLoopback: route };
   globalThis.__nimbusVirtualSockets = route ? installVirtualSocketKernel(scope) : undefined;
   const { wasiImport } = makeImportsWithoutJSPI(P, {
@@ -554,4 +557,5 @@ function parseWire(wire) {
   console.log('  ok  fd_renumber refuses to overwrite a preopen');
 }
 
+for (const session of sessions) await session.dispose();
 console.log('wasi-loopback-socket-fd: all cases passed');

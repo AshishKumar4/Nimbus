@@ -1,7 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import { withHostFilesystem, type ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
-import type { WasiFsSnapshot } from '@nimbus-sh/core/runtime/wasi-instance.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { z } from 'zod/v4';
@@ -144,7 +142,6 @@ class PythonReplAdapter implements ReplAdapter {
   private poolUsesSci = false;
   private deps: InterpreterDeps;
   private wasmBytes: ArrayBuffer | null = null;
-  private fsSnapshot: WasiFsSnapshot | null = null;
   private pythonHome = '/usr/local';
 
   ps1 = '>>> ';
@@ -226,7 +223,6 @@ class PythonReplAdapter implements ReplAdapter {
     const pool = this.pool;
     this.pool = null;
     this.wasmBytes = null;
-    this.fsSnapshot = null;
     pool?.dispose();
   }
   async interrupt(): Promise<void> {
@@ -261,24 +257,6 @@ class PythonReplAdapter implements ReplAdapter {
     }
     this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
 
-    // The install root is the Python prefix, so the manifest covers lib/ and
-    // etc/ as they are — nothing is aliased into a path the supervisor could
-    // not serve.
-    const built = await manifestVfs(vfs.authority, CRED_KERNEL, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
-    if ('error' in built) throw new Error(built.error);
-    // Same workaround as cpython-runner, and it belongs to the same open
-    // defect: the guest cannot consume the stdlib as a manifest-only
-    // demand-load, though the transport delivers it byte-identically. Seeding
-    // it by value is what makes the interpreter start. Remove both together.
-    const snapshot = built.snapshot;
-    const zipBytes = await vfs.readFile(stdlibPath);
-    let bin = '';
-    const CH = 32768;
-    for (let i = 0; i < zipBytes.length; i += CH) {
-      bin += String.fromCharCode.apply(null, Array.from(zipBytes.subarray(i, i + CH)));
-    }
-    snapshot.files[stdlibPath.replace(/^\/+/, '')] = btoa(bin);
-    this.fsSnapshot = snapshot;
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 
     const host = getFacetManagerLoaderHost(facetMgr);
@@ -309,7 +287,7 @@ class PythonReplAdapter implements ReplAdapter {
 
   private async submit(userCode: string, signal: AbortSignal): Promise<PythonReplFacetResult> {
     const pool = this.pool;
-    if (!pool || !this.fsSnapshot) throw new Error('Python REPL is not initialized');
+    if (!pool) throw new Error('Python REPL is not initialized');
     const response = await pool.submitRequest(
       pythonReplStepRequestFn,
       new Request('https://facet.internal/python-repl-step', {
@@ -321,7 +299,6 @@ class PythonReplAdapter implements ReplAdapter {
           userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
           progName: 'python',
           cwd: '/home/user',
-          fsSnapshot: this.fsSnapshot,
         }),
         signal,
       }),
@@ -361,7 +338,6 @@ async function pythonReplStepRequestFn(
     });
   }
   const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-  const drain = Reflect.get(globalThis, '__wasiDrainPersist');
   const supervisor = facetEnv && facetEnv.SUPERVISOR;
   // Published where the boot re-adopts it after the mount, because
   // __wasiInitFS clears the adoption on purpose. Omitting this here — while
@@ -369,12 +345,7 @@ async function pythonReplStepRequestFn(
   // filesystem it could read.
   if (supervisor) Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
   if (typeof adopt === 'function') Reflect.apply(adopt, undefined, [supervisor ?? null]);
-  try {
-    return Response.json(await run(args));
-  } finally {
-    // A line that wrote a file and then raised still wrote the file.
-    if (typeof drain === 'function') await drain();
-  }
+  return Response.json(await run(args));
 }
 
 export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {

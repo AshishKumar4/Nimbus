@@ -1,16 +1,9 @@
-import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 export function loaderFacetHost(env, ctx) {
     return {
         // workerd suspends a guest through JSPI, which is what lets a syscall reach
         // back to the session mid-instruction.
         parking: 'jspi',
-        /**
-         * A manifest, not a copy: sizes and modes, with the facet demand-loading
-         * whatever the program opens through its supervisor. It has to be — the
-         * whole seed crosses one RPC, and a session filesystem does not fit in one.
-         */
-        seedFilesystem(vfs, root, options) { return manifestVfs(vfs, options.cred, root, options); },
         open(spec) {
             return new IsolatePool(env, ctx, {
                 tag: spec.tag,

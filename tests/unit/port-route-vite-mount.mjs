@@ -168,7 +168,6 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     async hydrateSessionBasePath() {},
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs({ faults, extraFiles, reads }); },
     ensureBundlePool() { return this.bundlePool; },
-    seedFilesystem() {},
     restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
   };
   self.store = store;

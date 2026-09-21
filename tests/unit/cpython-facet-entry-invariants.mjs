@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // cpython-facet-entry-invariants — every facet entry that drives the CPython VM
-// carries the same four requirements, and they are DISCOVERED, not listed.
+// carries the same three requirements, and they are DISCOVERED, not listed.
 //
 // This migration rediscovered five requirements by hitting each one, all of
 // which ruby-runner already satisfied. The first version of this check listed
@@ -58,20 +58,22 @@ const REQUIREMENTS = [
     name: 'publishes the supervisor before adopting it',
     test: (body) => /Reflect\.set\(globalThis,\s*'__nimbusPySupervisor'/.test(body),
     // __wasiInitFS clears the adoption on purpose, and the boot re-adopts from
-    // globalThis afterwards. Adopting only here leaves a guest that reads the
-    // seeded filesystem and can never write to it.
-    why: 'the guest would read the filesystem and silently write nowhere',
+    // globalThis afterwards. Adopting only here leaves a guest with no
+    // filesystem at all once the boot has run initFS.
+    why: 'the boot would re-adopt nothing and every open would answer EBADF',
   },
   {
     name: 'adopts the supervisor',
     test: (body) => /adopt\?\.\(supervisor\)/.test(body)
       || /if \(typeof adopt === 'function'\) Reflect\.apply\(adopt, undefined, \[supervisor \?\? null\]\)/.test(body),
-    why: 'demand-loaded reads return EIO with no supervisor',
+    why: 'every file syscall answers EBADF with no supervisor',
   },
   {
-    name: 'drains queued writes in a finally',
-    test: (body) => /finally\s*\{[\s\S]{0,400}(?:drain\?\.\(\)|if \(typeof drain === 'function'\) await drain\(\))/.test(body),
-    why: 'a program that wrote a file and then raised would lose the write',
+    // Writes reach the authority as the syscall returns; a flush step would be
+    // flushing nothing, and a reader who finds one will assume a queue exists.
+    name: 'carries no persist queue',
+    test: (body) => !/__wasiDrainPersist|__wasiRevalidateFS/.test(body),
+    why: 'there is no queue to drain, so the call could only ever be a stale ritual',
   },
   {
     name: 'takes the facet env as its second parameter',

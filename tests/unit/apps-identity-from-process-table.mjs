@@ -166,7 +166,6 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     async ensureRuntimeReady() {},
     // No facet pool in this harness: cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return null; },
-    seedFilesystem() {},
     ensureFacetManager() {
       this.facetManagerComposed ??= composeFacetManager({
         ctx, env, processes, portRegistry, vfs,

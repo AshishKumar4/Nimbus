@@ -265,6 +265,11 @@ export class SqliteRuntimeFsBridge {
         const p = located.path;
         if (p === '')
             return this.openRoot(path, normalizedFlags);
+        // O_NOFOLLOW on a trailing symlink is ELOOP: there is no descriptor to
+        // open on the link itself, and what it points at is exactly what the
+        // caller declined to open.
+        if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p))
+            throw fsError('ELOOP', 'open', path);
         this.assertExpectedRevision(p, normalizedFlags.expectedRevision);
         const exists = this.vfs.exists(p);
         if (normalizedFlags.exclusive && normalizedFlags.create && exists)

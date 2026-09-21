@@ -322,31 +322,20 @@ export function makeWasmRunner(deps) {
                             'Pool preamble may have failed to load.',
                     };
                 }
-                // Install the seed manifest. fd 3 = the user's session root preopen.
-                // The shim's fd table is reset by initFS each call.
+                // Install the preopens. fd 3 = the user's session root preopen. The
+                // shim's fd table is reset by initFS each call.
                 if (args.wasiFs) {
-                    initFS({
-                        root: args.wasiFs.root,
-                        preopens: args.wasiFs.preopens,
-                        files: args.wasiFs.files,
-                        dirs: args.wasiFs.dirs,
-                        modes: args.wasiFs.modes,
-                        sizes: args.wasiFs.sizes,
-                        enumeratedRoots: args.wasiFs.enumeratedRoots,
-                        revision: args.wasiFs.revision,
-                    });
-                    // initFS resets the live state, so adoption has to follow it. From
-                    // here the seed is a cache: content it did not carry is fetched on
-                    // demand and writes go back as they happen.
+                    initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens });
+                    // initFS resets the live state, so adoption has to follow it. Every
+                    // file the guest touches is then read from and written to the
+                    // authority through the stub.
                     __wasiAdoptSupervisor(facetEnv && facetEnv.SUPERVISOR);
                 }
                 else {
-                    // Not for null-safety any more — the shim starts with an empty
-                    // filesystem. This stays because initFS is also what RESETS per-call
-                    // state: the fd table, the preopen list, the persist queue and the
-                    // negative-lookup cache. A pooled isolate that skipped it would hand
-                    // this program the previous one's descriptors.
-                    initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
+                    // initFS is what RESETS per-call state: the fd table and the preopen
+                    // list. A pooled isolate that skipped it would hand this program the
+                    // previous one's descriptors.
+                    initFS({ root: '', preopens: [] });
                 }
                 const memRef = { mem: null };
                 const abi = args.wasiAbi || 'preview1';
@@ -452,9 +441,6 @@ export function makeWasmRunner(deps) {
                     : runStartAsync
                         ? await runStartAsync(inst, { memory: memRef.mem })
                         : runStart(inst, { memory: memRef.mem });
-                // Writes reached the session VFS as they happened; this waits for the
-                // queue so the caller cannot observe a result before the data lands.
-                await __wasiDrainPersist();
                 return {
                     ok: r.exitCode === 0 && !r.error,
                     mode: 'wasi',
@@ -526,38 +512,20 @@ export function makeWasmRunner(deps) {
         const wasiEnv = isWasi
             ? { ...(opts.env || {}), ...WASM32_WASI_NIMBUS_ABI.env }
             : {};
-        // ── filesystem WASI: seed a manifest of the user's session VFS ──
+        // ── filesystem WASI: the user's cwd is the session-root preopen ──
         //
-        // The user's cwd at invocation time is the session-root preopen anchor.
-        // WASI programs see it as fd 3 mapped to '/'. The seed describes the
-        // subtree rather than copying it: content is demand-loaded through the
-        // supervisor on first read and writes go back as they happen, so a
-        // program that never exits still persists.
+        // WASI programs see it as fd 3 mapped to '/'. Nothing is walked or copied:
+        // every file the guest touches is read from and written to the authority
+        // through the supervisor, under this process's credential.
         //
         // For direct mode there's no FS exposure — wasm runs in pure
         // compute-only mode, no preopens.
         let wasiFs;
-        let wasiFsBytes = 0;
-        let wasiFsFiles = 0;
         const processFs = isWasi ? deps.filesystem.bind({ pid, cred }) : null;
         if (processFs) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
-            const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            const seed = await deps.facets.seedFilesystem(processFs, cwd, { cred });
-            if ('error' in seed) {
-                return {
-                    exitCode: 1,
-                    stdout: '',
-                    stderr: `wasm-runner: ${seed.error}\n`,
-                };
-            }
-            wasiFs = {
-                ...seed.snapshot,
-                // fd 3 → '/' mapping (covers the user's session subtree).
-                preopens: [{ wasiPath: '/', vfsPath: seed.snapshot.root }],
-            };
-            wasiFsBytes = seed.bytes;
-            wasiFsFiles = seed.files;
+            const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
+            wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }] };
         }
         let outcome;
         let facet = null;

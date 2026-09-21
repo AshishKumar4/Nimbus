@@ -27,18 +27,15 @@
 //      imports too. On an interpreter where that changed, numpy would not import
 //      at all.
 //
-// Like cpython-wasi-reactor.mjs, this seeds the filesystem BY VALUE and runs
-// without JSPI, so it says nothing about the demand-loading path a live session
-// uses. It runs against the real preamble from wasi-instance.ts.
+// Like cpython-wasi-reactor.mjs, this runs the real preamble from
+// wasi-instance.ts over a real session filesystem (lib/wasi-authority.mjs),
+// entered through WebAssembly.promising as a loader facet enters it.
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
-import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -54,39 +51,24 @@ if (!existsSync(WASM) || !existsSync(STDLIB) || !existsSync(SCI_PACKAGES)) {
   process.exit(0);
 }
 
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports };`;
-const preamblePath = path.join(os.tmpdir(), `cpython-sci-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let P;
-try {
-  P = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
+const P = await loadWasiPreamble();
+const session = makeSession({
+  dirs: ['usr/local/lib/python3.13/lib-dynload', 'work'],
+  files: {
+    'usr/local/lib/python313.zip': readFileSync(STDLIB),
+    'usr/local/lib/python3.13/os.py': '# stdlib marker; the real os is in the zip\n',
+    'usr/local/lib/sci-packages.zip': readFileSync(SCI_PACKAGES),
+  },
+});
 
-const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
-const files = {
-  'usr/local/lib/python313.zip': toB64(readFileSync(STDLIB)),
-  'usr/local/lib/python3.13/os.py': toB64(Buffer.from('# stdlib marker; the real os is in the zip\n')),
-  'usr/local/lib/sci-packages.zip': toB64(readFileSync(SCI_PACKAGES)),
-};
-const dirs = ['usr', 'usr/local', 'usr/local/lib', 'usr/local/lib/python3.13',
-  'usr/local/lib/python3.13/lib-dynload', 'work', 'tmp'];
-// Every path needs a mode, files included: the preamble denies path_open on
-// anything it has no rwx bits for, and a missing file mode shows up only as
-// "Failed to import encodings module".
-const modes = Object.fromEntries([...dirs, '', ...Object.keys(files)].map((k) => [k, 7]));
-P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], files, dirs, modes });
-
-const stdout = [];
-const stderr = [];
-const { wasiImport } = makeImportsWithoutJSPI(P, {
+let instance;
+const guest = makeGuest(P, session, {}, {
   argv: ['python'],
   env: { HOME: '/work', TMPDIR: '/tmp', PYTHONUNBUFFERED: '1' },
+  parking: 'jspi', suspending: true,
   getMemory: () => instance.exports.memory,
-  stdoutWrite: (s) => { stdout.push(s); },
-  stderrWrite: (s) => { stderr.push(s); },
 });
+const { wasi: wasiImport, stdout, stderr } = guest;
 
 const module_ = new WebAssembly.Module(readFileSync(WASM));
 assert.deepEqual(
@@ -95,11 +77,11 @@ assert.deepEqual(
   'python-sci.wasm must import nothing but preview1',
 );
 
-const instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport });
+instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport });
 const { memory, malloc, free, nimbus_py_init, nimbus_py_run } = instance.exports;
 
 const encoder = new TextEncoder();
-function withCString(text, fn) {
+async function withCString(text, fn) {
   const bytes = encoder.encode(text);
   const ptr = malloc(bytes.length + 1);
   assert.notEqual(ptr, 0, 'guest malloc failed');
@@ -107,20 +89,23 @@ function withCString(text, fn) {
   view.set(bytes);
   view[bytes.length] = 0;
   try {
-    return fn(ptr);
+    return await fn(ptr);
   } finally {
     free(ptr);
   }
 }
+// Every entry into the VM is promised: a Suspending import traps on a stack
+// promising did not enter, even when it returns a plain integer.
+const enter = (fn) => WebAssembly.promising(fn);
 const takeStdout = () => { const s = stdout.join(''); stdout.length = 0; return s; };
 // A failing extension takes the interpreter down with a wasm trap rather than a
 // Python traceback, so the trap is caught and reported with whatever the guest
 // managed to write first — that message is usually the whole diagnosis.
-function run(src, what) {
+async function run(src, what) {
   stderr.length = 0;
   let status;
   try {
-    status = withCString(src, (ptr) => nimbus_py_run(ptr));
+    status = await withCString(src, (ptr) => enter(nimbus_py_run)(ptr));
   } catch (err) {
     assert.fail(`${what} trapped: ${err.message}\nguest stderr: ${stderr.join('')}`);
   }
@@ -128,13 +113,13 @@ function run(src, what) {
   return takeStdout().trim();
 }
 
-instance.exports._initialize();
-assert.equal(withCString('/usr/local', (ptr) => nimbus_py_init(ptr)), 0,
+await enter(instance.exports._initialize)();
+assert.equal(await withCString('/usr/local', (ptr) => enter(nimbus_py_init)(ptr)), 0,
   `nimbus_py_init failed: ${stderr.join('')}`);
 console.log('  ok  the sci interpreter initialises');
 
 // ── The extensions are registered under the names their packages import ─────
-assert.equal(run(`
+assert.equal(await run(`
 import sys
 sys.path.insert(0, '/usr/local/lib/sci-packages.zip')
 missing = [m for m in ('numpy._core._multiarray_umath', 'numpy.linalg.lapack_lite',
@@ -145,7 +130,7 @@ print('missing:', missing or 'none')
 console.log('  ok  the compiled modules are registered under their dotted names');
 
 // ── numpy imports and computes ──────────────────────────────────────────────
-assert.equal(run(`
+assert.equal(await run(`
 import numpy as np
 print(np.__version__, int(np.arange(5).sum()), np.zeros(3).dtype,
       int((np.arange(6).reshape(2, 3) @ np.ones((3, 2))).sum()))
@@ -155,7 +140,7 @@ console.log('  ok  numpy imports and computes');
 // ── linalg, through the bundled reference LAPACK ────────────────────────────
 // Patch 0002 makes both linalg modules share one copy of it; before that the
 // duplicate Fortran symbols made the interpreter unlinkable.
-assert.equal(run(`
+assert.equal(await run(`
 import numpy as np
 a = np.array([[3.0, 1.0], [1.0, 2.0]])
 print(round(float(np.linalg.det(a)), 6),
@@ -166,7 +151,7 @@ print(round(float(np.linalg.det(a)), 6),
 console.log('  ok  linalg solves, inverts and finds eigenvalues');
 
 // ── fft, which is the C++ that has no unwinder ──────────────────────────────
-assert.equal(run(`
+assert.equal(await run(`
 import numpy as np
 print([round(float(v.real), 6) for v in np.fft.fft(np.array([1.0, 0.0, 0.0, 0.0]))],
       bool(np.allclose(np.fft.ifft(np.fft.fft(np.arange(8.0))), np.arange(8.0))))
@@ -179,7 +164,7 @@ console.log('  ok  pocketfft transforms and round-trips');
 // shares every symbol name with the Generator build, and binding one to the
 // other is a signature mismatch wasm-ld only warns about. Wrong numbers here
 // mean patch 0003's rename stopped covering something.
-assert.equal(run(`
+assert.equal(await run(`
 import numpy as np
 g = np.random.default_rng(12345)
 print([round(float(v), 6) for v in g.random(3)],
@@ -196,7 +181,7 @@ console.log('  ok  Generator and legacy RandomState both match native numpy');
 // The package's Python half is installed by pip, not shipped here, so the
 // builtin is reached through a stub parent — which is exactly how the real
 // markupsafe/__init__.py reaches it.
-assert.equal(run(`
+assert.equal(await run(`
 import sys, types
 parent = types.ModuleType('markupsafe')
 parent.__path__ = []
@@ -206,4 +191,5 @@ print(_escape_inner('<nimbus>'), _escape_inner('a & b'))
 `, 'markupsafe'), '&lt;nimbus&gt; a &amp; b');
 console.log('  ok  markupsafe._speedups escapes through the C path');
 
+await session.dispose();
 console.log('cpython-wasi-sci: all cases passed');

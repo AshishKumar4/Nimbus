@@ -1,19 +1,19 @@
 import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
-// Behavior test: the WASI filesystem is live-backed, not snapshot-backed.
+// Behavior test: the WASI filesystem IS the authority, with nothing in between.
 //
 // Drives the REAL wasi-instance.ts preamble with a mock SUPERVISOR stub and
 // asserts the contract every wasm runtime now gets:
-//   1. A file whose content was NOT shipped in the seed is served by a live
-//      chunked fsReadRange when the guest reads it (demand load).
-//   2. Guest writes reach the supervisor without the process exiting
-//      (write-through + drain) — the resident-server data-loss fix.
+//   1. A file's bytes come from the authority's descriptor reads, one RPC per
+//      guest read — there is no copy in the facet to serve them from.
+//   2. Guest writes are in the supervisor's store the moment fd_write returns,
+//      with the process still running — the resident-server data-loss fix.
 //   3. Structural ops (mkdir/unlink/rename/truncate/symlink) propagate.
-//   4. A live read of a path with queued writes drains those writes first
-//      (read-your-writes through the supervisor authority).
-//   5. Without a supervisor the seeded-snapshot behavior is unchanged.
+//   4. A read after a write sees the write (read-your-writes through the
+//      supervisor authority).
+//   5. Without a supervisor there is no filesystem: a file open is EBADF.
 //   6. Oversized files are served by windowed reads and never materialized.
-//   7. A metadata miss with a supervisor present goes live (stat) instead of
-//      returning a snapshot-frozen ENOENT.
+//   7. Metadata is the authority's: a file created after the process started
+//      is visible to stat and open.
 //
 // The imports are built through the preamble's no-JSPI branch (see
 // lib/wasi-imports.mjs) so they can be called from JS: same bodies, and
@@ -29,11 +29,11 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi
 import { installVirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
-const ESUCCESS = 0, EISDIR = 31, ENOENT = 44;
+const ESUCCESS = 0, EBADF = 8, EISDIR = 31;
 const EVENTTYPE_FD_READ = 1;
 
 const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}
-export { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiDrainPersist, __wasiRevalidateFS, fdTable };`;
+export { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, fdTable };`;
 const preamblePath = path.join(os.tmpdir(), `wasi-live-fs-${process.pid}.mjs`);
 writeFileSync(preamblePath, preambleSrc);
 let P;
@@ -45,7 +45,6 @@ try {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const b64 = (s) => btoa(s);
 
 /** Mock SupervisorRPC with an in-memory authoritative store + op log. */
 function mockSupervisor(seed = {}) {
@@ -167,26 +166,21 @@ function host(initOpts, supervisor) {
 const ROOT_INIT = (extra = {}) => ({
   root: '',
   preopens: [{ wasiPath: '/', vfsPath: '' }],
-  files: {},
-  dirs: ['home', 'home/user'],
-  modes: { '': 7, home: 7, 'home/user': 7 },
   ...extra,
 });
 
-// ── 1. Demand load: metadata-listed file with absent content ────────────────
+// ── 1. Content is the authority's: every read is a descriptor read ──────────
 {
   const sup = mockSupervisor({ 'home/user/data.txt': 'live-bytes-from-supervisor' });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/data.txt': 'live-bytes-from-supervisor'.length },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/data.txt': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const { errno, fd } = await h.open('home/user/data.txt');
-  assert.equal(errno, ESUCCESS, 'open of a content-absent manifest file succeeds');
+  assert.equal(errno, ESUCCESS, 'open of a file the authority holds succeeds');
   const r = await h.read(fd);
   assert.equal(r.errno, ESUCCESS);
   assert.equal(r.text, 'live-bytes-from-supervisor', 'content came from the live supervisor');
   assert.ok(sup.log.some(([op]) => op === 'fsReadRange'), 'a live fsReadRange was issued');
-  // Second read from offset 0 via a fresh fd is served from cache — no new RPC.
+  // A second read through a fresh fd is another descriptor read: nothing in
+  // the facet remembers the bytes.
   const before = sup.log.filter(([op]) => op === 'fsReadRange').length;
   const again = await h.open('home/user/data.txt');
   const r2 = await h.read(again.fd);
@@ -202,18 +196,14 @@ const ROOT_INIT = (extra = {}) => ({
   const { errno, fd } = await h.open('home/user/out.txt', { oflags: 1 /* O_CREAT */ });
   assert.equal(errno, ESUCCESS);
   assert.equal(await h.write(fd, 'written-while-running'), ESUCCESS);
-  await P.__wasiDrainPersist();
   assert.equal(dec.decode(sup.store.get('home/user/out.txt')), 'written-while-running',
-    'bytes are durable in the supervisor store while the process is still alive');
+    'bytes are in the supervisor store the moment the write returns, with the process still alive');
 }
 
 // ── 3. Structural ops propagate ─────────────────────────────────────────────
 {
   const sup = mockSupervisor({ 'home/user/a.txt': 'aaa' });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/a.txt': 3 },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/a.txt': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const w = h.wasiImport;
   const setPath = (s, at) => { const b = enc.encode(s); h.u8().set(b, at); return b.length; };
   // mkdir
@@ -226,7 +216,6 @@ const ROOT_INIT = (extra = {}) => ({
   // unlink b.txt
   len = setPath('home/user/b.txt', 0x100);
   assert.equal((await w.path_unlink_file(3, 0x100, len)), ESUCCESS);
-  await P.__wasiDrainPersist();
   const ops = sup.log.map(([op]) => op);
   assert.ok(ops.includes('mkdir'), 'mkdir reached the supervisor');
   assert.ok(ops.includes('rename'), 'rename reached the supervisor');
@@ -234,36 +223,31 @@ const ROOT_INIT = (extra = {}) => ({
   assert.ok(!sup.store.has('home/user/a.txt') && !sup.store.has('home/user/b.txt'));
 }
 
-// ── 4. Flush-before-read: queued writes are visible to a live read ──────────
+// ── 4. Read-your-writes: a write is visible to the next open ────────────────
 {
   const sup = mockSupervisor();
   const h = host(ROOT_INIT(), sup);
   const created = await h.open('home/user/pending.txt', { oflags: 1 });
   await h.write(created.fd, 'must-not-be-lost');
-  // Forget the resident copy the way a cache eviction would, then read live.
-  const evicted = P.__wasiEvictCleanContent ? P.__wasiEvictCleanContent() : null;
-  // Even without eviction, a live read of the same path must first drain the
-  // queue so the supervisor's answer includes our write.
   const { fd } = await h.open('home/user/pending.txt');
   const r = await h.read(fd);
   assert.equal(r.text, 'must-not-be-lost');
-  await P.__wasiDrainPersist();
   assert.equal(dec.decode(sup.store.get('home/user/pending.txt')), 'must-not-be-lost');
-  void evicted;
 }
 
-// ── 5. No supervisor: seeded snapshot behavior unchanged ────────────────────
+// ── 5. No supervisor: no filesystem ─────────────────────────────────────────
+// There is no copy of anything in the facet, so without an authority a file
+// syscall has nothing to answer from. EBADF, not a silently empty tree: an
+// absent path must not look like ENOENT when the real answer is "unknown".
 {
-  const h = host(ROOT_INIT({
-    files: { 'home/user/seeded.txt': b64('seeded') },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/seeded.txt': 6 },
-  }), null);
-  const ok = await h.open('home/user/seeded.txt');
-  assert.equal(ok.errno, ESUCCESS);
-  const r = await h.read(ok.fd);
-  assert.equal(r.text, 'seeded');
-  const missing = await h.open('home/user/absent.txt');
-  assert.equal(missing.errno, ENOENT, 'absent path is ENOENT without a supervisor');
+  const h = host(ROOT_INIT(), null);
+  const opened = await h.open('home/user/anything.txt');
+  assert.equal(opened.errno, EBADF, 'a file open without a supervisor is EBADF');
+  const created = await h.open('home/user/created.txt', { oflags: 1 /* O_CREAT */ });
+  assert.equal(created.errno, EBADF, 'and so is a create: nothing is held in memory on purpose');
+  const st = await h.stat('home/user/anything.txt');
+  assert.equal(st.errno, EBADF, 'stat has no authority to ask either');
+  assert.equal(P.fdTable.size, 4, 'stdio and the preopen are the whole descriptor table');
 }
 
 // ── 6. Oversized file: windowed reads, never materialized ───────────────────
@@ -271,8 +255,6 @@ const ROOT_INIT = (extra = {}) => ({
   const BIG = 'x'.repeat(70000); // spans two 64 KiB windows
   const sup = mockSupervisor({ 'home/user/big.bin': BIG });
   const h = host(ROOT_INIT({
-    sizes: { 'home/user/big.bin': BIG.length },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/big.bin': 6 },
     residentFileCap: 1024, // force the windowed path without a 16 MiB fixture
   }), sup);
   const { errno, fd } = await h.open('home/user/big.bin');
@@ -289,12 +271,13 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal(st.size, BIG.length);
 }
 
-// ── 7. Live metadata: a path missing from the manifest goes to stat ─────────
+// ── 7. Live metadata: a file created after spawn is visible ─────────────────
 {
-  const sup = mockSupervisor({ 'home/user/appeared.txt': 'created-after-spawn' });
+  const sup = mockSupervisor();
   const h = host(ROOT_INIT(), sup);
+  await sup.writeFile('home/user/appeared.txt', 'created-after-spawn');
   const st = await h.stat('home/user/appeared.txt');
-  assert.equal(st.errno, ESUCCESS, 'live stat found a file the manifest never listed');
+  assert.equal(st.errno, ESUCCESS, 'live stat found a file created after the process started');
   assert.equal(st.size, 'created-after-spawn'.length);
   const { errno, fd } = await h.open('home/user/appeared.txt');
   assert.equal(errno, ESUCCESS);
@@ -305,22 +288,20 @@ const ROOT_INIT = (extra = {}) => ({
 // ── 8. SEEK_END sizes a file that has not been demand-loaded yet ───────────
 // Sizing a file by seeking to its end is how zipimport finds the end-of-central-
 // directory record, and it is the FIRST thing it does — before any read has
-// pulled the bytes in. Measuring the file by what happened to be resident called
-// it empty, so the seek landed at 0, the following read returned the head of the
-// archive, and a zip on sys.path was "not a Zip file" on first touch.
+// pulled the bytes in. A seek that measured the file by what happened to be
+// in the facet called it empty, so the seek landed at 0, the following read
+// returned the head of the archive, and a zip on sys.path was "not a Zip
+// file" on first touch. The authority's stat is the only size there is.
 {
   const BODY = 'HEAD'.padEnd(500, '.') + 'TAILMARK';
   const sup = mockSupervisor({ 'home/user/archive.zip': BODY });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/archive.zip': BODY.length },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/archive.zip': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const { errno, fd } = await h.open('home/user/archive.zip');
   assert.equal(errno, ESUCCESS);
 
   assert.equal((await h.wasiImport.fd_seek(fd, 0n, 2 /* SEEK_END */, 0x600)), ESUCCESS);
   assert.equal(Number(h.view().getBigUint64(0x600, true)), BODY.length,
-    'SEEK_END reports the manifest size before any content has been loaded');
+    'SEEK_END reports the authority\'s size before any content has been read');
 
   assert.equal((await h.wasiImport.fd_seek(fd, -8n, 2, 0x600)), ESUCCESS);
   const tail = await h.read(fd, 8);
@@ -335,10 +316,7 @@ const ROOT_INIT = (extra = {}) => ({
   globalThis.__nimbusVirtualSockets = installVirtualSocketKernel({
     __nimbusVirtualSocketRouteLoopback: async () => new Response('served', { status: 200 }),
   });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/keep.txt': 'still-here'.length },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/keep.txt': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
 
   const file = await h.open('home/user/keep.txt');
   assert.equal(file.errno, ESUCCESS);
@@ -383,10 +361,7 @@ const ROOT_INIT = (extra = {}) => ({
 // file. Answering EBADF told the guest its descriptor had gone away.
 {
   const sup = mockSupervisor({ 'home/user/poll.txt': 'pollable' });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/poll.txt': 'pollable'.length },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/poll.txt': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const { errno, fd } = await h.open('home/user/poll.txt');
   assert.equal(errno, ESUCCESS);
 
@@ -407,10 +382,7 @@ const ROOT_INIT = (extra = {}) => ({
 // ── 11. fd_read on a directory fd is EISDIR ────────────────────────────────
 {
   const sup = mockSupervisor({ 'home/user/inside.txt': 'x' });
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/inside.txt': 1 },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/inside.txt': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const dir = await h.open('home/user', { oflags: 2 /* O_DIRECTORY */ });
   assert.equal(dir.errno, ESUCCESS, 'a directory opens with O_DIRECTORY');
   assert.equal(P.fdTable.get(dir.fd).kind, 'authority');
@@ -429,10 +401,7 @@ const ROOT_INIT = (extra = {}) => ({
   const base = sup.stat;
   sup.stat = async (p) => { const st = await base(p); return st && { ...st, revision: revisions.get(typeof p === 'string' ? p : p.path) ?? 1 }; };
   sup.readFileBytes = async (p) => { sup.log.push(['readFileBytes']); return sup.store.get(typeof p === 'string' ? p : p.path) ?? null; };
-  const h = host(ROOT_INIT({
-    sizes: { 'home/user/mod.py': 5 },
-    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/mod.py': 6 },
-  }), sup);
+  const h = host(ROOT_INIT(), sup);
   const ops = () => sup.log.map(([op]) => op);
   const readAll = async (fd) => { const r = await h.read(fd); assert.equal(r.errno, ESUCCESS); await h.wasiImport.fd_close(fd); return r.text; };
 

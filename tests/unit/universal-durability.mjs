@@ -458,7 +458,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const started = await rubyResidentStart(first.fm)({
     argv, command: 'ruby server.rb', cwd: '/home/user', wasmVfsPath: 'ruby.wasm',
     startArgs: { userCode: '# large boot input\n'.repeat(12000), rbArgv: ['server.rb'], progName: 'server.rb', cwd: '/home/user',
-      userEnv: { LABEL: 'original' }, fsSnapshot: { root: 'home/user', preopens: [], files: {}, dirs: [] } },
+      userEnv: { LABEL: 'original' } },
   });
   assert.ok(started.spawnedPid);
   const row = await rowFor(first.ctx, started.spawnedPid);

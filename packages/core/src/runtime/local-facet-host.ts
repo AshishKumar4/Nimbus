@@ -28,7 +28,6 @@ import type {
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
-import { manifestVfs } from './vfs-manifest.js';
 import { vfsSupervisor } from './vfs-supervisor.js';
 
 /** A submitted function after it has been re-created inside the facet's scope. */
@@ -84,16 +83,9 @@ function wasmCompiler(): WasmCompiler {
  */
 export function localFacetHost(): FacetHost {
   return {
+    // A guest on an ordinary stack cannot park on a promise, so every file
+    // syscall is answered by the authority's synchronous view.
     parking: 'none',
-    /**
-     * A manifest walked exhaustively, so CPython's thousands of startup probes
-     * for absent paths are answered from it; everything it names is served by
-     * the authority's synchronous view, since a guest on an ordinary stack
-     * cannot park on a promise.
-     */
-    seedFilesystem(vfs, root, options) {
-      return manifestVfs(vfs, options.cred, root, options);
-    },
     open: (spec) => new LocalFacet(spec),
   };
 }

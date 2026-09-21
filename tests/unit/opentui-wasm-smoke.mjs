@@ -69,12 +69,11 @@ try {
 } finally {
   rmSync(preamblePath, { force: true });
 }
+// A render backend touches no file: the preopen is there for wasi-libc's
+// bookkeeping and no supervisor is adopted.
 preamble.__wasiInitFS({
   root: 'wasi-root',
   preopens: [{ wasiPath: '/', vfsPath: 'wasi-root' }],
-  files: {},
-  dirs: [],
-  modes: { 'wasi-root': 0o7 },
 });
 
 let memory;

@@ -216,7 +216,6 @@ export function buildRubySocketProcessWorker(preamble) {
         '      userEnv: args.userEnv || {},',
         '      progName: args.progName || "ruby",',
         '      cwd: args.cwd || "/home/user",',
-        '      fsSnapshot: args.fsSnapshot,',
         '    };',
         '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
         '      globalThis.__nimbusRubyProcessResult = result;',
@@ -244,25 +243,15 @@ export function buildRubySocketProcessWorker(preamble) {
         'function __nimbusAdoptRubySupervisor(env) {',
         '  const supervisor = env && env.SUPERVISOR;',
         '  if (supervisor) globalThis.__nimbusRubySupervisor = supervisor;',
-        // The WASI filesystem takes the same stub. That is what turns the
-        // spawn-time seed into a cache over the session VFS, so a server that
-        // never exits still persists its writes instead of losing them entirely.
+        // The WASI filesystem takes the same stub: every file syscall the server
+        // makes reads and writes the session VFS directly, so a server that never
+        // exits has nothing to flush between requests.
         '  __wasiAdoptSupervisor(supervisor);',
-        '}',
-        // A resident process parks between requests, and parking is the only
-        // moment "durable while running" can be made true: by the time the caller
-        // holds a response, everything the request wrote has reached the VFS.
-        'async function __nimbusParkRuby(value) {',
-        // Revalidate drains first, then spends ONE round trip on the subtree
-        // revision. An unchanged subtree keeps the whole cache; a changed one
-        // drops the clean half so the next read sees another process's writes.
-        '  await __wasiRevalidateFS();',
-        '  return value;',
         '}',
         'export class NimbusProcess extends DurableObject {',
         '  async startProcess(args) {',
         '    __nimbusAdoptRubySupervisor(this.env);',
-        '    return __nimbusParkRuby(await __nimbusStartRubyProcess(args || {}));',
+        '    return __nimbusStartRubyProcess(args || {});',
         '  }',
         '  async fetch(request) {',
         '    __nimbusAdoptRubySupervisor(this.env);',
@@ -273,7 +262,7 @@ export function buildRubySocketProcessWorker(preamble) {
         '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
         '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
         '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
-        '    return __nimbusParkRuby(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
+        '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
         '  }',
         '}',
     ].join('\n');

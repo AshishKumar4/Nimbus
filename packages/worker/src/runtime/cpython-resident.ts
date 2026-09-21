@@ -45,14 +45,6 @@ export function buildCPythonSocketProcessWorker(preamble: string): string {
     '  if (supervisor) globalThis.__nimbusPySupervisor = supervisor;',
     '  __wasiAdoptSupervisor(supervisor);',
     '}',
-    // A resident process answers between requests, and that is the only moment
-    // "durable while running" can be made true: by the time the caller holds a
-    // response, everything the request wrote has reached the VFS.
-    'async function __nimbusParkPy(value) {',
-    '  await __wasiDrainPersist();',
-    '  await __wasiRevalidateFS();',
-    '  return value;',
-    '}',
     'async function __nimbusStartPyProcess(args) {',
     '  const result = await globalThis.__cpythonStartProcess(args || {});',
     '  const ports = await globalThis.__cpythonListeningPorts();',
@@ -66,7 +58,7 @@ export function buildCPythonSocketProcessWorker(preamble: string): string {
     'export class NimbusProcess extends DurableObject {',
     '  async startProcess(args) {',
     '    __nimbusAdoptPySupervisor(this.env);',
-    '    return __nimbusParkPy(await __nimbusStartPyProcess(args || {}));',
+    '    return __nimbusStartPyProcess(args || {});',
     '  }',
     '  async fetch(request) {',
     '    __nimbusAdoptPySupervisor(this.env);',
@@ -77,7 +69,7 @@ export function buildCPythonSocketProcessWorker(preamble: string): string {
     '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
     '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
     '    if (!port) return new Response("Nimbus Python process has no listening virtual socket", { status: 502 });',
-    '    return __nimbusParkPy(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
+    '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
     '  }',
     '}',
   ].join('\n');

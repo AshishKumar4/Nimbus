@@ -21,7 +21,6 @@
  */
 
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import type { WasiFsSnapshot } from './wasi-instance.js';
 import type { WasiParking } from './wasi/types.js';
 
 /**
@@ -99,34 +98,6 @@ export interface FacetSyscalls {
   readonly pid: number;
 }
 
-/**
- * A seeded WASI filesystem: what {@link FacetHost.seedFilesystem} produced, and
- * how much of the session it had to carry to produce it.
- */
-export interface FacetFilesystemSeed {
-  snapshot: WasiFsSnapshot;
-  files: number;
-  bytes: number;
-}
-
-/** What a runner knows about the subtree its guest should see. */
-export interface FacetFilesystemOptions {
-  /**
-   * The credential the bridge is bound to. The manifest states each path's
-   * effective bits for this identity, so the guest's own permission checks
-   * agree with what the authority will answer.
-   */
-  cred: Readonly<import('./os-contracts.js').VfsCred>;
-  /** Directories outside `root` the program must also reach. */
-  extraRoots?: Iterable<string>;
-  /**
-   * The session revision the seed describes, when the caller has computed one.
-   * A host that serves reads back stamps it, which is what marks the seed a
-   * CACHE rather than the whole world; one that cannot has no use for it.
-   */
-  revision?: number;
-}
-
 export interface FacetSubmitOptions {
   /**
    * Deadline for this call, honoured by hosts that can abandon a facet.
@@ -171,28 +142,16 @@ export interface FacetHost {
    * rather than smoothed over — the same posture as `ProcessImageDelivery` in
    * the process fabric. Everything else about running a wasm program is the
    * same code either way; this is not, and it decides two things at once:
-   * which import table the guest gets ({@link WasiParking}), and how much
-   * filesystem it must be handed before it starts.
+   * which import table the guest gets ({@link WasiParking}), and which view
+   * of the authority answers its file syscalls.
    *
    * `jspi` — the host can park the guest on a promise, so a syscall may go
-   *   back to the session mid-instruction and the seed can be a manifest.
+   *   back to the session mid-instruction over the supervisor RPC.
    * `none` — it cannot; V8 traps any call into a suspending import off a
    *   stack `WebAssembly.promising` did not enter. Every syscall must answer
    *   synchronously, so the guest is wired to the authority's synchronous
    *   view instead of a suspending one.
    */
   readonly parking: WasiParking;
-  /**
-   * Hand a facet the part of the session filesystem its program needs.
-   *
-   * A manifest, never a copy: the guest reads and writes through the same
-   * credential-bound authority the walk used, so what the seed carries is a
-   * cache index over the live filesystem, not a second filesystem.
-   */
-  seedFilesystem(
-    vfs: import('./os-contracts.js').RuntimeFsBridge,
-    root: string,
-    options: FacetFilesystemOptions,
-  ): Promise<FacetFilesystemSeed | { error: string }>;
   open(spec: FacetSpec): Facet;
 }

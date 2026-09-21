@@ -1,35 +1,38 @@
 /**
  * clang-runner.ts — compile, link, and execute C programs for Nimbus WASI.
  *
- * Architecture (compile-link-run, two facet calls):
+ * Architecture (compile-link, two facet calls):
  *
- *   compile  : clang.wasm + sysroot subset for C includes + user .c
- *              → produces .o bytes (returned to supervisor).
- *   link     : lld.wasm + sysroot subset for link (crt1.o + libc.a)
- *              + .o from compile → produces .wasm executable.
- *   write    : final .wasm flushed to user VFS at the requested path.
+ *   compile  : clang.wasm over the session filesystem → writes each
+ *              translation unit's .o under a scratch directory in /tmp.
+ *   link     : wasm-ld.wasm over the same filesystem → writes the final
+ *              .wasm executable at the requested output path.
  *
- * The filesystem both halves see is the one WASI layer every other
- * non-node runtime uses (wasi-instance.ts), seeded and sealed.
+ * The filesystem both halves see is the session authority, reached through
+ * the same supervisor capability every other non-node runtime uses
+ * (wasi-instance.ts): the facet is opened with the caller's pid, so a
+ * source the caller cannot read stays unreadable and an output directory
+ * the caller cannot write stays unwritten. Nothing is copied in or out.
  *
- * Splitting compile and link into separate facet calls keeps each
- * call under the empirical payload ceiling. Each ships:
+ * The sysroot (headers, crt1.o, libc.a, compiler-rt) ships as one ustar
+ * archive in the installed runtime, `share/clang/sysroot.tar`, and is
+ * unpacked ONCE per session into `share/clang/sysroot/` beside it — a
+ * world-readable tree the toolchain is pointed at by absolute path. A missing or damaged archive is reported and the command exits;
+ * there is no header set to fall back on.
  *
- *   - compile: 31 MiB clang.wasm + ~1.3 MiB sysroot subset (C includes).
- *   - link   : 19 MiB lld.wasm + ~0.75 MiB libs + tiny .o.
- *
- * Sysroot subset extraction happens supervisor-side via a small ustar
- * parser. The full sysroot.tar is parsed once when the clang runtime
- * warms for a session; compile/link calls reuse the filtered subsets.
+ * Splitting compile and link into separate facet calls keeps each wasm
+ * image its own facet: 31 MiB clang.wasm, 19 MiB wasm-ld.wasm.
  *
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
 import { withHostFilesystem } from '../shell/execution-fs.js';
 import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
+import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/platform/w7-frame.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
@@ -41,6 +44,8 @@ export function makeClangRunnerFactory(deps) {
         const clangVfsPath = findFile('bin/clang');
         const lldVfsPath = findFile('bin/wasm-ld');
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
+        // Guest-visible: the toolchain is handed this as an absolute path.
+        const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
         let runtimePromise = null;
         // Installed toolchain blobs are supervisor-owned artifacts, so they are read
         // through a kernel host lease that lives exactly as long as one invocation.
@@ -86,250 +91,216 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: direct wasm-ld invocation not yet wired (v1.2)\n`);
                 return 2;
             }
-            // Validate all user-supplied source inputs exist in the user's
-            // session VFS. Collect their bytes to seed the filesystem.
-            const userSourceFiles = {};
-            // Pre-built objects/archives the user passed (e.g. extra.o, libfoo.a)
-            // — shipped to the LINK step only (not compile).
-            const preBuiltLinkInputs = [];
+            // Every input must resolve AS THE CALLER before a facet is opened: the
+            // toolchain reads them through the same credential, but "No such file"
+            // from clang's driver is a poorer message than the one the shell gives,
+            // and a lookup the caller may not make must fail here, not in a guest.
+            // Guest paths are absolute — the toolchain runs with the session root
+            // as its only preopen and no notion of the shell's cwd.
             const sourceInputs = [];
+            // Pre-built objects/archives the user passed (e.g. extra.o, libfoo.a)
+            // — link inputs only.
+            const preBuiltLinkInputs = [];
             for (const input of parsed.inputPaths) {
-                const inputAbs = resolveVfsPath(input, cwd);
+                const inputVfs = resolveVfsPath(input, cwd);
                 try {
-                    if (!(await vfs.exists(inputAbs))) {
+                    if (!(await vfs.exists(inputVfs))) {
                         ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
                         return 1;
                     }
-                    userSourceFiles[input] = (await vfs.readFile(inputAbs));
                 }
                 catch (error) {
                     ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
                     return 1;
                 }
-                if (isSourceExt(input)) {
-                    sourceInputs.push(input);
-                }
-                else {
-                    // .o / .a — pass through to link as a pre-built input. The
-                    // path in the seeded filesystem is the user-supplied relative path.
-                    preBuiltLinkInputs.push(input);
-                }
+                if (isSourceExt(input))
+                    sourceInputs.push(`/${inputVfs}`);
+                else
+                    preBuiltLinkInputs.push(`/${inputVfs}`);
             }
             if (sourceInputs.length === 0 && preBuiltLinkInputs.length === 0) {
                 ctx.stderr.write(`${binName}: no compilable / linkable inputs\n`);
                 return 1;
             }
-            let runtime;
+            let toolchain;
             try {
                 if (!runtimePromise) {
-                    runtimePromise = createClangFacetRuntime(deps.facets, {
+                    runtimePromise = loadClangToolchain({
                         clangVfsPath,
                         lldVfsPath,
                         sysrootVfsPath,
+                        sysrootDir,
                         vfs: runtimeVfs,
                     });
                 }
-                runtime = await runtimePromise;
+                toolchain = await runtimePromise;
             }
             catch (e) {
                 runtimePromise = null;
                 ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorMessage(e)}\n`);
                 return 1;
             }
-            // Walk the user's cwd to gather headers (.h/.hpp/.hxx/.inc/...)
-            // and any sibling headers users typically expect to be visible
-            // to #include "..." resolution. Real clang/gcc auto-search the
-            // dir of the including source for quote-form includes; we ship
-            // those files at their relative-to-cwd paths so the seeded
-            // filesystem reproduces the user's working tree.
-            //
-            // Size-capped (4 MiB, 200 files, depth 8) so accidental
-            // huge-projects don't OOM the facet. Real C-tutorial projects
-            // are vastly under the cap.
-            const userIncludeBundle = (await collectIncludeBundle(vfs, cwd.replace(/^\/+/, '')));
-            // ── COMPILE PHASE ────────────────────────────────────────────
-            // Reuse the warm clang pool and ship only the C-include
-            // subset plus user source/header files for this invocation.
-            // Build -I flag list. We pass each user -I path verbatim AND add
-            // an implicit '.' (cwd) for quote-form lookup. wasm-clang's -cc1
-            // mode does NOT add cwd to the quote search list by default
-            // (the driver normally does that for "foo.h" includes), so we
-            // wire it ourselves. This is what makes
-            //   clang main.c   (main.c does #include "greet.h", greet.h
-            //                    next to main.c)
-            // succeed without an explicit -I from the user.
-            const userIncludeFlags = [];
-            for (const ip of parsed.includePaths) {
-                userIncludeFlags.push('-I', ip);
+            // Opened per invocation, not cached: the supervisor capability is bound
+            // to this process's pid when the facet opens, so one held across calls
+            // would hand every later caller the first caller's credential.
+            const openTarget = (primaryName, image) => ({
+                primaryName,
+                facet: deps.facets.open({
+                    tag: `clang-runner-${primaryName}`,
+                    concurrency: 1,
+                    syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+                    preamble: CLANG_RUNNER_PREAMBLE,
+                    wasmModules: { 'primary.wasm': image },
+                }),
+            });
+            // Intermediate objects live in a per-invocation scratch directory, as a
+            // real driver's do, so a multi-file build leaves no .o beside the
+            // sources. `-c` is the exception: its objects ARE the output.
+            const cwdGuest = `/${normalizeVfsPath(cwd)}`;
+            const scratchVfs = parsed.compileOnly ? null : `tmp/nimbus-clang-${ctx.pid}-${crypto.randomUUID().slice(0, 8)}`;
+            if (scratchVfs) {
+                try {
+                    await vfs.mkdir(scratchVfs, { recursive: true });
+                }
+                catch (error) {
+                    ctx.stderr.write(`${binName}: /${scratchVfs}: ${errorMessage(error)}\n`);
+                    return 1;
+                }
             }
-            userIncludeFlags.push('-I', '.');
-            // Compile each source to its own .o. Object file naming: replace
-            // the source extension with .o. Collisions across cwd subdirs
-            // (e.g. src/foo.c and lib/foo.c both → foo.o) are avoided by
-            // keeping the directory component (the seed preserves user layout).
-            const objPaths = [];
-            const objBytesMap = {};
-            for (const src of sourceInputs) {
-                const objPath = src.replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
-                // For C++ inputs use -x c++; default -x c.
-                const isCpp = /\.(cc|cpp|cxx|c\+\+|C)$/.test(src);
-                const compileArgv = [
-                    'clang', '-cc1', '-emit-obj',
-                    '-disable-free',
-                    '-isysroot', '/',
-                    '-internal-isystem', '/include/c++/v1',
-                    '-internal-isystem', '/include',
-                    '-internal-isystem', '/lib/clang/8.0.1/include',
-                    '-ferror-limit', '19',
-                    '-fmessage-length', '80',
-                    '-fcolor-diagnostics',
-                    '-O2',
-                    ...userIncludeFlags,
-                    '-o', objPath,
-                    '-x', isCpp ? 'c++' : 'c',
-                    src,
+            const compile = openTarget('clang', toolchain.clang);
+            const link = openTarget('wasm-ld', toolchain.lld);
+            try {
+                // ── COMPILE PHASE ────────────────────────────────────────────
+                // -I flags: each user -I path resolved against cwd, plus cwd itself
+                // for quote-form lookup. wasm-clang's -cc1 mode does NOT add the
+                // working directory to the quote search list (the driver normally
+                // does), so `clang main.c` with `#include "greet.h"` next to it
+                // needs it spelled out.
+                const userIncludeFlags = [];
+                for (const ip of parsed.includePaths) {
+                    userIncludeFlags.push('-I', `/${resolveVfsPath(ip, cwd)}`);
+                }
+                userIncludeFlags.push('-I', cwdGuest);
+                // Compile each source to its own .o. With -c the object lands in the
+                // working directory as a real driver's does (or at -o for a single
+                // input); otherwise it goes to the scratch directory, keyed by the
+                // source's full path so src/foo.c and lib/foo.c never collide.
+                const objPaths = [];
+                for (const src of sourceInputs) {
+                    const objName = src.slice(src.lastIndexOf('/') + 1).replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
+                    const objPath = scratchVfs
+                        ? `/${scratchVfs}/${src.replace(/^\/+/, '').replace(/\//g, '_').replace(/\.[^.]+$/, '.o')}`
+                        : sourceInputs.length === 1 && parsed.outputPath !== 'a.out'
+                            ? `/${resolveVfsPath(parsed.outputPath, cwd)}`
+                            : `${cwdGuest}/${objName}`;
+                    // For C++ inputs use -x c++; default -x c.
+                    const isCpp = /\.(cc|cpp|cxx|c\+\+|C)$/.test(src);
+                    const compileArgv = [
+                        'clang', '-cc1', '-emit-obj',
+                        '-disable-free',
+                        '-isysroot', sysrootDir,
+                        '-internal-isystem', `${sysrootDir}/include/c++/v1`,
+                        '-internal-isystem', `${sysrootDir}/include`,
+                        '-internal-isystem', `${sysrootDir}/lib/clang/8.0.1/include`,
+                        '-ferror-limit', '19',
+                        '-fmessage-length', '80',
+                        '-fcolor-diagnostics',
+                        '-O2',
+                        ...userIncludeFlags,
+                        '-o', objPath,
+                        '-x', isCpp ? 'c++' : 'c',
+                        src,
+                    ];
+                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv });
+                    if (compileResult.stdout)
+                        ctx.stdout.write(compileResult.stdout);
+                    if (compileResult.stderr)
+                        ctx.stderr.write(compileResult.stderr);
+                    if (compileResult.error) {
+                        ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
+                        return 1;
+                    }
+                    if (compileResult.exitCode !== 0)
+                        return compileResult.exitCode;
+                    if (!(await producedFile(vfs, objPath))) {
+                        ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
+                        return 1;
+                    }
+                    objPaths.push(objPath);
+                }
+                // -c (compile-only): the objects are already where they belong.
+                if (parsed.compileOnly)
+                    return 0;
+                // ── LINK PHASE ───────────────────────────────────────────────
+                const stackSize = 1024 * 1024;
+                const userLinkFlags = [];
+                for (const lp of parsed.libraryPaths) {
+                    userLinkFlags.push('-L', `/${resolveVfsPath(lp, cwd)}`);
+                }
+                const outputGuest = `/${resolveVfsPath(parsed.outputPath, cwd)}`;
+                const linkArgv = [
+                    'wasm-ld',
+                    '--no-threads',
+                    '--export-dynamic',
+                    '-z', `stack-size=${stackSize}`,
+                    `-L${sysrootDir}/lib/wasm32-wasi`,
+                    // Stream-C: modern wasi-libc references __muloti4 / __divti3
+                    // (128-bit math from utimensat's timespec arithmetic) — these
+                    // live in compiler-rt's libclang_rt.builtins-wasm32.a at the
+                    // clang resource dir. binji-2020's libc.a self-bundled them;
+                    // modern doesn't, so we link compiler-rt explicitly. wasm-ld
+                    // dead-strips unused builtins, so binji binaries are unaffected.
+                    `-L${sysrootDir}/lib/clang/8.0.1/lib/wasi`,
+                    ...userLinkFlags,
+                    `${sysrootDir}/lib/wasm32-wasi/crt1.o`,
+                    ...objPaths,
+                    ...preBuiltLinkInputs,
+                    '-lc',
+                    ...parsed.libraries.map((l) => '-l' + l),
+                    '-lclang_rt.builtins-wasm32',
+                    '-o', outputGuest,
                 ];
-                // Per compile we ship: the current source file + the user's
-                // header bundle. Multi-TU is handled at link time, not compile,
-                // so sibling sources stay out of the seed (smaller payload, no
-                // surface for unintended cross-TU textual inclusion via -I.).
-                const oneSourceFile = { [src]: userSourceFiles[src] };
-                const compileResult = await dispatchClangFacet(runtime.compile, {
-                    sysrootFiles: {
-                        ...runtime.compile.sysrootFiles,
-                        ...oneSourceFile,
-                        // User's headers from cwd tree (so quote-form #include
-                        // resolves; this is the primary clang-include-fix payload).
-                        ...userIncludeBundle,
-                    },
-                    argv: compileArgv,
-                    outputPaths: [objPath],
-                });
-                if (compileResult.stdout)
-                    ctx.stdout.write(compileResult.stdout);
-                if (compileResult.stderr)
-                    ctx.stderr.write(compileResult.stderr);
-                if (compileResult.error) {
-                    ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
+                const linkResult = await dispatchClangFacet(link, { argv: linkArgv });
+                if (linkResult.stdout)
+                    ctx.stdout.write(linkResult.stdout);
+                if (linkResult.stderr)
+                    ctx.stderr.write(linkResult.stderr);
+                if (linkResult.error) {
+                    ctx.stderr.write(`${binName}: ${linkResult.error}\n`);
                     return 1;
                 }
-                if (compileResult.exitCode !== 0) {
-                    return compileResult.exitCode;
-                }
-                const objBytes = compileResult.outputFiles[objPath];
-                if (!objBytes || objBytes.length === 0) {
-                    ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
+                if (linkResult.exitCode !== 0)
+                    return linkResult.exitCode;
+                if (!(await producedFile(vfs, outputGuest))) {
+                    ctx.stderr.write(`${binName}: link produced no ${parsed.outputPath} (internal error)\n`);
                     return 1;
                 }
-                objPaths.push(objPath);
-                objBytesMap[objPath] = objBytes;
-            }
-            // -c (compile-only): flush each .o to the user VFS, no link.
-            if (parsed.compileOnly) {
-                for (const objPath of objPaths) {
-                    const objVfsPath = resolveVfsPath(objPath, cwd);
-                    const parent = objVfsPath.replace(/\/[^/]+$/, '');
-                    if (parent && parent !== objVfsPath && !(await vfs.exists(parent))) {
-                        (await vfs.mkdir(parent, { recursive: true }));
-                    }
-                    (await vfs.writeFile(objVfsPath, objBytesMap[objPath]));
+                // Real linkers chmod their output executable (+x even after a
+                // prior chmod -x) — so `./a.out` runs with no manual chmod.
+                try {
+                    await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o755);
                 }
-                // Honor user's -o for single-input compile-only: rename the one
-                // .o to the requested output if -o was passed.
-                if (sourceInputs.length === 1 && parsed.outputPath !== 'a.out') {
-                    const fromVfs = resolveVfsPath(objPaths[0], cwd);
-                    const toVfs = resolveVfsPath(parsed.outputPath, cwd);
-                    if (fromVfs !== toVfs) {
-                        try {
-                            (await vfs.writeFile(toVfs, (await vfs.readFile(fromVfs))));
-                            (await vfs.unlink(fromVfs));
-                        }
-                        catch { /* best-effort */ }
-                    }
+                catch (error) {
+                    ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+                    return 1;
                 }
                 return 0;
             }
-            // Add pre-built .o / .a inputs (the user passed them on argv
-            // alongside .c sources, e.g. `clang main.c extra.o -o out`).
-            const preBuiltBytesMap = {};
-            for (const lp of preBuiltLinkInputs) {
-                preBuiltBytesMap[lp] = userSourceFiles[lp];
+            finally {
+                compile.facet.dispose();
+                link.facet.dispose();
+                if (scratchVfs)
+                    await vfs.remove(scratchVfs, { recursive: true, force: true });
             }
-            // ── LINK PHASE ───────────────────────────────────────────────
-            // Reuse the warm wasm-ld pool and ship only the link
-            // sysroot subset plus object/archive inputs for this invocation.
-            const stackSize = 1024 * 1024;
-            // User-supplied -L paths and -l libraries flow through. The user
-            // -L paths point at user-VFS dirs; we currently don't ship user
-            // libraries (they'd need their own collect step), so -l<name>
-            // works only against the sysroot's -L paths today. -L user-side
-            // would no-op silently in v1 — out of scope for this wave.
-            const userLinkFlags = [];
-            for (const lp of parsed.libraryPaths) {
-                userLinkFlags.push('-L', lp);
-            }
-            const linkArgv = [
-                'wasm-ld',
-                '--no-threads',
-                '--export-dynamic',
-                '-z', `stack-size=${stackSize}`,
-                '-L/lib/wasm32-wasi',
-                // Stream-C: modern wasi-libc references __muloti4 / __divti3
-                // (128-bit math from utimensat's timespec arithmetic) — these
-                // live in compiler-rt's libclang_rt.builtins-wasm32.a at the
-                // clang resource dir. binji-2020's libc.a self-bundled them;
-                // modern doesn't, so we link compiler-rt explicitly. wasm-ld
-                // dead-strips unused builtins, so binji binaries are unaffected.
-                '-L/lib/clang/8.0.1/lib/wasi',
-                ...userLinkFlags,
-                '/lib/wasm32-wasi/crt1.o',
-                ...objPaths,
-                ...preBuiltLinkInputs,
-                '-lc',
-                ...parsed.libraries.map((l) => '-l' + l),
-                '-lclang_rt.builtins-wasm32',
-                '-o', parsed.outputPath,
-            ];
-            const linkResult = await dispatchClangFacet(runtime.link, {
-                sysrootFiles: { ...runtime.link.sysrootFiles, ...objBytesMap, ...preBuiltBytesMap },
-                argv: linkArgv,
-                outputPaths: [parsed.outputPath],
-            });
-            if (linkResult.stdout)
-                ctx.stdout.write(linkResult.stdout);
-            if (linkResult.stderr)
-                ctx.stderr.write(linkResult.stderr);
-            if (linkResult.error) {
-                ctx.stderr.write(`${binName}: ${linkResult.error}\n`);
-                return 1;
-            }
-            if (linkResult.exitCode !== 0) {
-                return linkResult.exitCode;
-            }
-            const wasmBytes = linkResult.outputFiles[parsed.outputPath];
-            if (!wasmBytes || wasmBytes.length === 0) {
-                ctx.stderr.write(`${binName}: link produced no ${parsed.outputPath} (internal error)\n`);
-                return 1;
-            }
-            // ── FLUSH OUTPUT ─────────────────────────────────────────────
-            const outVfsPath = resolveVfsPath(parsed.outputPath, cwd);
-            try {
-                const parent = outVfsPath.replace(/\/[^/]+$/, '');
-                if (parent && parent !== outVfsPath && !(await vfs.exists(parent))) {
-                    (await vfs.mkdir(parent, { recursive: true }));
-                }
-                (await vfs.writeFile(outVfsPath, wasmBytes));
-                (await vfs.chmod(outVfsPath, 0o755));
-            }
-            catch (error) {
-                ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
-                return 1;
-            }
-            // Real linkers chmod their output executable (+x even after a
-            // prior chmod -x) — so `./a.out` runs with no manual chmod.
-            return 0;
         }
     };
+}
+/** A non-empty regular file at `guestPath`, as the caller sees it. */
+async function producedFile(vfs, guestPath) {
+    const path = guestPath.replace(/^\/+/, '');
+    if (!(await vfs.isFile(path)))
+        return false;
+    return (await vfs.stat(path)).size > 0;
 }
 /** Recognized C / C++ source extensions for input classification. */
 function isSourceExt(p) {
@@ -459,96 +430,6 @@ function parseUserArgv(argv) {
         outputPath, compileOnly, exitCode: 0,
     };
 }
-/**
- * Recognise headers / inline-include files. The compile facet ships
- * these alongside the .c sources so `#include "foo.h"` (quote-form)
- * resolves against the directory of the including source file — which
- * is how clang / gcc behave on real Unix.
- */
-function isHeaderExt(name) {
-    return /\.(h|hh|hpp|hxx|H|inc|ipp|tcc)$/.test(name);
-}
-/**
- * Walk a VFS directory recursively to collect headers + (optionally)
- * source files, with bounded depth and total size cap, returning a
- * map of root-relative-path → bytes.
- *
- * Layout convention: paths returned are RELATIVE TO `rootVfsPath`, so
- * a header at `home/user/sub/foo.h` (when rootVfsPath is `home/user`)
- * comes out as `sub/foo.h`. This matches the layout the user passes
- * on argv (e.g. `clang sub/lib.c -o out`, with `lib.c` including
- * `"helpers.h"` next to itself).
- *
- * `extra` extensions can be added (used to include `.c/.cpp/.o/.a` when
- * looking under -L / sibling source dirs). Empty by default.
- *
- * Anti-DoS:
- *   - MAX_FILES = 200 (covers realistic user projects without ballooning
- *     the facet payload).
- *   - MAX_BYTES = 4 MiB.
- *   - MAX_DEPTH = 8 (deep enough for typical "src/", "include/", "lib/" trees).
- *   - skipDirs prunes obvious non-source directories.
- */
-async function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
-    const extraExts = opts.extraExts ?? null;
-    const MAX_FILES = opts.maxFiles ?? 200;
-    const MAX_BYTES = opts.maxBytes ?? 4 * 1024 * 1024;
-    const MAX_DEPTH = opts.maxDepth ?? 8;
-    const out = {};
-    if (!await vfs.exists(rootVfsPath) || !await vfs.isDirectory(rootVfsPath))
-        return out;
-    // Directories pruned regardless of depth — these never contain user
-    // headers and would balloon the payload if traversed.
-    const skipDirs = new Set([
-        '.nimbus', 'node_modules', '.cache', '.npm', '.git',
-        'dist', 'build', '.next', '.nuxt', '.svelte-kit', 'coverage',
-    ]);
-    const root = rootVfsPath.replace(/^\/+/, '').replace(/\/+$/, '');
-    let totalBytes = 0;
-    let fileCount = 0;
-    const stack = [{ dir: root, depth: 0 }];
-    while (stack.length > 0) {
-        const { dir, depth } = stack.pop();
-        if (depth > MAX_DEPTH)
-            continue;
-        let entries;
-        try {
-            entries = await vfs.readdir(dir);
-        }
-        catch {
-            continue;
-        }
-        for (const e of entries) {
-            const childAbs = dir + '/' + e.name;
-            const rel = childAbs.startsWith(root + '/') ? childAbs.substring(root.length + 1) : childAbs;
-            if (e.type === 'directory') {
-                if (skipDirs.has(e.name))
-                    continue;
-                stack.push({ dir: childAbs, depth: depth + 1 });
-                continue;
-            }
-            const isHeader = isHeaderExt(e.name);
-            const isExtra = extraExts && extraExts.test(e.name);
-            if (!isHeader && !isExtra)
-                continue;
-            let bytes;
-            try {
-                bytes = await vfs.readFile(childAbs);
-            }
-            catch {
-                continue;
-            }
-            totalBytes += bytes.length;
-            fileCount++;
-            if (totalBytes > MAX_BYTES || fileCount > MAX_FILES) {
-                // Cap reached — stop walking but return what we have.
-                return out;
-            }
-            out[rel] = bytes;
-        }
-    }
-    return out;
-}
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -597,74 +478,101 @@ function parseUstar(tarBytes) {
     }
     return files;
 }
+// ── Sysroot unpack (supervisor-side) ─────────────────────────────────
+/** Where the unpacked sysroot lives, relative to the install root. */
+const SYSROOT_DIR_REL = 'share/clang/sysroot';
+/** Written last; names the archive it was unpacked from. */
+const SYSROOT_STAMP = '.nimbus-sysroot.json';
 /**
- * Filter the sysroot to just what the compile step needs:
- *   - include/ (minus include/c++/) — C system headers
- *   - lib/clang/8.0.1/include/ — clang intrinsic headers
- *
- * Excludes the C++ standard library headers (libc++/v1) which alone
- * are ~4 MiB and aren't needed for plain C compilation.
+ * What a C build needs from the archive. Their absence is the archive being
+ * the wrong one, and is reported as such rather than surfacing later as a
+ * missing header or an unresolved crt1.o.
  */
-function filterSysrootForCompile(all) {
-    const out = {};
-    for (const [path, bytes] of all.entries()) {
-        if (path.startsWith('include/c++/'))
-            continue;
-        if (path.startsWith('include/')) {
-            out[path] = bytes;
-            continue;
-        }
-        if (path.startsWith('lib/clang/')) {
-            out[path] = bytes;
-            continue;
-        }
+const SYSROOT_REQUIRED = [
+    'include/stdio.h',
+    'lib/clang/8.0.1/include/stddef.h',
+    'lib/wasm32-wasi/crt1.o',
+    'lib/wasm32-wasi/libc.a',
+    'lib/wasm32-wasi/libc.imports',
+    'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a',
+];
+/** One write wave: the W7 frame owns at most this many paths. */
+const SYSROOT_WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
+function parseSysrootStamp(text) {
+    try {
+        const value = JSON.parse(text);
+        if (typeof value !== 'object' || value === null)
+            return null;
+        const tarSize = Reflect.get(value, 'tarSize');
+        const files = Reflect.get(value, 'files');
+        if (typeof tarSize !== 'number' || typeof files !== 'number')
+            return null;
+        return { tarSize, files };
     }
-    return out;
+    catch {
+        return null;
+    }
 }
 /**
- * Filter the sysroot to just what the link step needs for a C program:
- *   - lib/wasm32-wasi/crt1.o — the entry-point start file
- *   - lib/wasm32-wasi/libc.a — libc archive (printf etc.)
- *   - lib/wasm32-wasi/libc.imports — WASI symbol allow-list. Without
- *     this, wasm-ld treats `__wasi_fd_close` etc. as undefined
- *     symbols (the symbols are SUPPOSED to be unresolved imports,
- *     not errors); the .imports file tells lld "these names are
- *     external WASI imports, not link errors."
- *   - lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a — compiler-rt
- *     builtins (e.g. __muloti4 for 128-bit math). Modern wasi-libc's
- *     utimensat.o references __muloti4; binji-2020 self-bundled it
- *     into libc.a, the modern build expects compiler-rt to provide.
- *     wasm-ld dead-strips, so trivial mains pay zero cost.
+ * Unpack `sysroot.tar` into `sysrootDir` unless the tree there was already
+ * unpacked from an archive of this size. The tree is world-readable, like
+ * the rest of the install root: every session user compiles against it.
  *
- * Excludes libc++/libc++abi (C++-only) and the WASI emulated-mman /
- * pthread / canvas variants we don't drive in v1.1.
+ * Waves of directories (shallowest first), then waves of files, each one
+ * W7 stream; the stamp goes last, so a tree without one is re-unpacked from
+ * scratch on the next invocation rather than trusted.
  */
-function filterSysrootForLink(all) {
-    const out = {};
-    for (const [path, bytes] of all.entries()) {
-        if (path === 'lib/wasm32-wasi/crt1.o') {
-            out[path] = bytes;
-            continue;
-        }
-        if (path === 'lib/wasm32-wasi/libc.a') {
-            out[path] = bytes;
-            continue;
-        }
-        if (path === 'lib/wasm32-wasi/libc.imports') {
-            out[path] = bytes;
-            continue;
-        }
-        if (path === 'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a') {
-            out[path] = bytes;
-            continue;
-        }
+async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
+    const dir = sysrootDir.replace(/^\/+/, '');
+    const stampPath = `${dir}/${SYSROOT_STAMP}`;
+    const tarSize = (await vfs.stat(tarVfsPath)).size;
+    if (await vfs.isFile(stampPath)) {
+        const stamp = parseSysrootStamp(await vfs.readFileString(stampPath));
+        if (stamp && stamp.tarSize === tarSize)
+            return;
     }
-    return out;
+    const entries = parseUstar(await vfs.readFileUncached(tarVfsPath));
+    for (const required of SYSROOT_REQUIRED) {
+        if (!entries.has(required))
+            throw new Error(`sysroot.tar is missing ${required}`);
+    }
+    await vfs.remove(dir, { recursive: true, force: true });
+    const mtime = Date.now();
+    const dirSet = new Set([dir]);
+    const files = [];
+    const chunksByPath = new Map();
+    for (const [rel, data] of entries) {
+        const path = `${dir}/${rel}`;
+        const slash = path.lastIndexOf('/');
+        for (let cut = slash; cut > dir.length; cut = path.lastIndexOf('/', cut - 1))
+            dirSet.add(path.slice(0, cut));
+        const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
+        files.push({ path, parentPath: path.slice(0, slash), isDir: false, size: data.length, mtime, mode: 0o644, chunkCount });
+        const chunks = [];
+        for (let i = 0; i < chunkCount; i++) {
+            chunks.push({ path, chunkId: i, data: data.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE) });
+        }
+        chunksByPath.set(path, chunks);
+    }
+    const directories = Array.from(dirSet)
+        .sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))
+        .map((path) => ({
+        path, parentPath: path.slice(0, path.lastIndexOf('/')), isDir: true, size: 0, mtime, mode: 0o755, chunkCount: 0,
+    }));
+    const write = async (inodes) => {
+        const chunks = inodes.flatMap((inode) => chunksByPath.get(inode.path) ?? []);
+        const result = await vfs.authority.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+        if (!result.ok)
+            throw new Error(`sysroot unpack failed at ${inodes[0].path}: ${result.error.message}`);
+    };
+    for (let i = 0; i < directories.length; i += SYSROOT_WAVE_PATHS)
+        await write(directories.slice(i, i + SYSROOT_WAVE_PATHS));
+    for (let i = 0; i < files.length; i += SYSROOT_WAVE_PATHS)
+        await write(files.slice(i, i + SYSROOT_WAVE_PATHS));
+    const stamp = { tarSize, files: files.length };
+    await vfs.writeFile(stampPath, JSON.stringify(stamp));
 }
-async function createClangFacetRuntime(facets, args) {
-    if (!args.clangVfsPath || !args.lldVfsPath || !args.sysrootVfsPath) {
-        throw new Error('installed clang manifest is missing required files');
-    }
+async function loadClangToolchain(args) {
     // Hand the file's own backing buffer to the loader when the Uint8Array
     // spans it exactly (the uncached reads below always allocate a fresh
     // whole buffer) — avoids a second 31 MiB copy of clang.wasm in the DO
@@ -678,46 +586,18 @@ async function createClangFacetRuntime(facets, args) {
     // and pin ~32 MiB of clang chunks resident in the DO heap for the whole
     // session — a primary cause of supervisor-DO memory pressure that tips
     // heavy sessions into an OOM reset mid-compile.
-    const clangBytes = (await args.vfs.readFileUncached(args.clangVfsPath));
-    const lldBytes = (await args.vfs.readFileUncached(args.lldVfsPath));
-    const sysroot = parseUstar((await args.vfs.readFileUncached(args.sysrootVfsPath)));
-    const makeTarget = (primaryName, primaryBytes, sysrootFiles) => ({
-        primaryName,
-        sysrootFiles,
-        facet: facets.open({
-            tag: `clang-runner-${primaryName}`,
-            concurrency: 1,
-            // No `syscalls`: the toolchain is sealed. It sees the sysroot subset and
-            // the translation unit it was handed, and the outputs are read back out
-            // of that filesystem — a compile cannot reach the session at all.
-            //
-            // Which is also why one warm facet may serve every tenant: with nothing
-            // of the session in it and nothing kept between calls, `clang main.c` is
-            // the same compile whoever asks.
-            reuse: 'global',
-            preamble: CLANG_RUNNER_PREAMBLE,
-            wasmModules: { 'primary.wasm': toAB(primaryBytes) },
-        }),
-    });
-    return {
-        compile: makeTarget('clang', clangBytes, filterSysrootForCompile(sysroot)),
-        link: makeTarget('wasm-ld', lldBytes, filterSysrootForLink(sysroot)),
-    };
+    await ensureSysrootUnpacked(args.vfs, args.sysrootVfsPath, args.sysrootDir);
+    const clangBytes = await args.vfs.readFileUncached(args.clangVfsPath);
+    const lldBytes = await args.vfs.readFileUncached(args.lldVfsPath);
+    return { clang: toAB(clangBytes), lld: toAB(lldBytes) };
 }
 async function dispatchClangFacet(target, args) {
-    // Encode sysroot files as base64 for facet transport. We do this on
-    // the supervisor to keep the facet preamble small and CPU-light.
-    const filesB64 = {};
-    for (const [path, bytes] of Object.entries(args.sysrootFiles)) {
-        filesB64[path] = uint8ToBase64(bytes);
-    }
-    const facetFn = async function clangFacetCall(inArgs) {
+    const facetFn = async function clangFacetCall(inArgs, facetEnv) {
         const wasm = Reflect.get(globalThis, '__NIMBUS_WASM');
         const primaryMod = wasm?.['primary.wasm'];
         if (!primaryMod) {
             return {
                 exitCode: 127, stdout: '', stderr: '',
-                outputFiles: {},
                 error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
             };
         }
@@ -725,41 +605,27 @@ async function dispatchClangFacet(target, args) {
         if (typeof fn !== 'function') {
             return {
                 exitCode: 127, stdout: '', stderr: '',
-                outputFiles: {},
                 error: 'clang-runner preamble missing: __clangRun not in scope',
             };
         }
         return await fn({
             primaryName: inArgs.primaryName,
             argv: inArgs.argv,
-            filesB64: inArgs.filesB64,
-            outputPaths: inArgs.outputPaths,
             primaryMod,
+            supervisor: facetEnv?.SUPERVISOR,
         });
     };
     try {
         const result = await target.facet.submit(facetFn, {
             primaryName: target.primaryName,
             argv: args.argv,
-            filesB64,
-            outputPaths: args.outputPaths,
         }, {
             timeoutMs: 300_000,
         });
-        // Decode outputFiles from base64 → Uint8Array.
-        const outputFiles = {};
-        for (const [path, b64] of Object.entries(result.outputFiles || {})) {
-            const bin = atob(b64);
-            const u8 = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++)
-                u8[i] = bin.charCodeAt(i);
-            outputFiles[path] = u8;
-        }
         return {
             exitCode: result.exitCode,
             stdout: result.stdout || '',
             stderr: result.stderr || '',
-            outputFiles,
             error: result.error,
         };
     }
@@ -768,19 +634,9 @@ async function dispatchClangFacet(target, args) {
             exitCode: 1,
             stdout: '',
             stderr: '',
-            outputFiles: {},
             error: `clang-runner dispatch failed: ${errorMessage(e)}`,
         };
     }
-}
-function uint8ToBase64(u8) {
-    // Chunked to avoid String.fromCharCode call-stack limits on big arrays.
-    const CHUNK = 0x8000;
-    let s = '';
-    for (let i = 0; i < u8.length; i += CHUNK) {
-        s += String.fromCharCode.apply(null, Array.from(u8.subarray(i, Math.min(i + CHUNK, u8.length))));
-    }
-    return btoa(s);
 }
 // ── Facet preamble ───────────────────────────────────────────────────
 const CLANG_RUNNER_PREAMBLE_TAIL = `
@@ -789,45 +645,26 @@ const CLANG_RUNNER_PREAMBLE_TAIL = `
 // The toolchain is a plain wasi_unstable (preview0) guest: clang.wasm
 // declares 27 imports and wasm-ld 25, every one of them in that namespace
 // and every one of them implemented by the WASI layer above. Its filesystem
-// is that layer's, seeded with the sysroot subset and the translation unit
-// and sealed — no supervisor is bound, so a compile cannot reach or disturb
-// the session VFS, and the named outputs are read back out at the end.
+// is the session's, reached through the supervisor the facet was opened
+// with: sources, the unpacked sysroot and the output path are all absolute
+// paths in that tree, and what the toolchain writes is in the session the
+// moment the syscall returns.
 
 globalThis.__clangRun = async function __clangRun(args) {
   const stdout = [];
   const stderr = [];
 
-  // Everything the seed carries is readable; directories are traversable.
-  // The layer denies by default for a mapped inode with no mode, and the
-  // producer here is a tar, which has no cred to project.
-  const modes = {};
-  const dirs = new Set();
-  for (const path of Object.keys(args.filesB64 || {})) {
-    const canon = path.replace(/^\\/+/, '');
-    modes[canon] = 6;
-    const parts = canon.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const dir = parts.slice(0, i).join('/');
-      dirs.add(dir);
-      modes[dir] = 7;
-    }
-  }
-  modes[''] = 7;
-
+  // The session root at '/', as every other runtime mounts it. This
+  // toolchain's wasi-libc predates cwd support and resolves a path only
+  // against a preopen it matches, so every path the runner passes — sources,
+  // sysroot, outputs — is absolute; a bare relative one would not resolve.
   __wasiInitFS({
     root: '',
-    // One preopen with the EMPTY name. That is what makes a bare relative
-    // input resolve: this toolchain's wasi-libc predates cwd support, so a
-    // relative path is matched only against a zero-length preopen name, and
-    // an absolute one ('-isysroot /' puts the sysroot at /include) against
-    // the same entry with the leading slash stripped. Naming it '/' serves
-    // the absolute paths and silently loses every relative one — the input
-    // file then fails to open with no path_open ever reaching this layer.
-    preopens: [{ wasiPath: '', vfsPath: '' }],
-    files: args.filesB64 || {},
-    dirs: Array.from(dirs).filter(Boolean),
-    modes,
+    preopens: [{ wasiPath: '/', vfsPath: '' }],
   });
+  // AFTER initFS, never before: initFS drops the adopted supervisor so a
+  // pooled isolate cannot serve the previous tenant's filesystem.
+  __wasiAdoptSupervisor(args.supervisor || null);
 
   let memory = null;
   const wasi = __wasiMakeImports({
@@ -847,7 +684,7 @@ globalThis.__clangRun = async function __clangRun(args) {
     instance = (r instanceof WebAssembly.Instance ? r : r.instance);
   } catch (e) {
     return {
-      exitCode: 1, stdout: stdout.join(''), stderr: stderr.join(''), outputFiles: {},
+      exitCode: 1, stdout: stdout.join(''), stderr: stderr.join(''),
       error: 'primary (' + args.primaryName + ') instantiate failed: ' + (e && e.message),
     };
   }
@@ -862,7 +699,6 @@ globalThis.__clangRun = async function __clangRun(args) {
     exitCode: run.exitCode,
     stdout: stdout.join(''),
     stderr: stderr.join(''),
-    outputFiles: __wasiReadFilesB64(args.outputPaths || []),
   };
 };
 

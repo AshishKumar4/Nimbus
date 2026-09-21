@@ -22,14 +22,10 @@
  *   fd_prestat_get / fd_prestat_dir_name (real preopens, not EBADF)
  *
  * Socket, polling, and metadata additions:
- *   - per-file mtime/atime/ctime tracking + in-memory symlink table
- *       (additive — files Map shape unchanged; parallel times/symlinks Maps)
- *   - fd_filestat_set_times / path_filestat_set_times — implementations that
- *       write mtime/atime; honor ATIM_NOW / MTIM_NOW flags via clock_realtime
- *   - path_symlink / path_readlink / path_link. Symlink
- *       resolution via __wasiResolvePathFull(baseFd, path, followFlag)
- *       with POSIX-style 40-deep loop detection (returns ELOOP).
- *   - fd_allocate extends bytes to offset+len and zero-fills.
+ *   - fd_filestat_set_times / path_filestat_set_times, path_symlink /
+ *       path_readlink / path_link and fd_allocate are answered by the
+ *       authority codec (wasi/filesystem.ts): times, symlink resolution and
+ *       loop detection are the filesystem's, not this layer's.
  *   - proc_raise(sig) throws __WasiExit(128 + sig) per POSIX shell convention
  *       (SIGABRT=6 -> 134, SIGTERM=15 -> 143).
  *   - fd_fdstat_set_rights tracks per-fd rights mask;
@@ -67,36 +63,24 @@
  * Architecture (filesystem WASI strategy)
  * ──────────────────────────────
  *
- * Strategy: live VFS, seeded cache. The session VFS (supervisor DO) is the
- * single source of truth. The facet holds a CACHE of it:
+ * Strategy: live VFS, no cache. The session VFS (supervisor DO) is the
+ * single source of truth and the facet holds none of it:
  *
- *   - `__wasiInitFS(seed)` installs a metadata manifest (dirs, modes, sizes,
- *     times, symlinks) plus optional file content. Content the seed did not
- *     carry is listed in `sizes` and demand-loaded through the SUPERVISOR
- *     binding (`fsReadRange`, 64 KiB chunks) on first read — a seed miss is
- *     a cache miss, never a correctness failure.
- *   - Writes apply to the cache synchronously and enqueue write-through ops
- *     (writeFile / fsWriteRange / unlink / mkdir / rename / …) on a FIFO
- *     persist queue that drains continuously. Callers await
- *     `__wasiDrainPersist()` before returning a result and at every resident
- *     park, so a server's writes are durable while it runs — there is no
- *     flush-on-exit and no diff-back.
- *   - Any live read (content fetch, stat miss, readdir refresh) first drains
- *     the queue, so the supervisor's answer always includes this process's
- *     own writes.
- *   - A metadata miss with a supervisor present goes to a live `stat` before
- *     reporting ENOENT, so files created after spawn are visible.
+ *   - `__wasiInitFS({ root, preopens })` installs the descriptor table's
+ *     baseline: stdio and the preopen roots. It carries no content.
+ *   - `__wasiAdoptSupervisor(stub)` binds the authority. Every file and
+ *     directory syscall is answered by the codec in wasi/filesystem.ts
+ *     through that stub, reading and writing the same inodes the shell does,
+ *     so a write is durable the moment the syscall returns — there is no
+ *     persist queue, no flush-on-exit and no diff-back.
+ *   - Without a supervisor the guest has stdio, sockets and clocks and no
+ *     files: a file syscall answers EBADF.
  *
- * Seeds are validated supervisor-side by the per-subtree VFS revision
- * (runners rebuild the seed when the revision moved), so a served seed is
- * never stale. Without a supervisor binding the seed is authoritative and
- * behavior degrades to the closed-world snapshot semantics unit tests use.
- *
- * Blocking discipline: file/stdio ops that can be answered from the cache
- * return a plain errno number (JSPI passes it through with no suspender, so
- * sync callers — ruby _initialize, opentui render — are unaffected). Ops
- * that need the supervisor return a Promise which the Suspending wrapper
- * parks the guest on; the guest must run under WebAssembly.promising.
+ * Blocking discipline: stdio and socket ops answer a plain errno number
+ * (JSPI passes it through with no suspender). File ops on a `jspi` host
+ * return a Promise the Suspending wrapper parks the guest on, so the guest
+ * must run under WebAssembly.promising; on a `none` host they are answered
+ * by the authority's synchronous view.
  *
  * Errno values (subset)
  * ─────────────────────
@@ -124,7 +108,7 @@ import { WASI_THREADS_PREAMBLE_SRC } from './wasi-threads.js';
 /**
  * Source string injected as the loader-pool `preamble`. The facet's
  * module init evaluates this verbatim so the WASI helpers (`__wasiInitFS`,
- * `__wasiMakeImports`, `__wasiRunStart`, `__wasiReadFilesB64`) are in scope
+ * `__wasiMakeImports`, `__wasiRunStart`, `__wasiAdoptSupervisor`) are in scope
  * when the user fn runs. Self-contained — no closure captures, no imports.
  *
  * The wasi-threads scheduler is appended rather than inlined: it is one
@@ -156,50 +140,18 @@ export const WASI_ABI_NAMESPACE: Readonly<Record<WasiAbi, string>> = Object.free
   preview0: 'wasi_unstable',
 });
 
+/**
+ * The filesystem view a runner hands a facet: where its preopens are cut from.
+ * There is no content here; every file the guest touches is read from and
+ * written to the authority through the supervisor.
+ */
 export interface WasiFsSnapshot {
-  /** Canonical VFS root (no leading slash). E.g. `home/user/wasi-files`. */
+  /** Canonical VFS root (no leading slash). E.g. `home/user`. */
   root: string;
-  /** Canonical VFS roots covered by this snapshot. Defaults to `[root]`. */
-  roots?: string[];
   /** Preopen list (order matters; preopens are assigned to fd 3, 4, …). */
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
-  /** vfsPath → base64-encoded content. Empty if a fresh file. */
-  files: Record<string, string>;
-  /** Initial directory list (vfsPaths). */
-  dirs: string[];
-  /**
-   * vfsPath → size for files the manifest knows but whose bytes were not
-   * seeded. First read demand-loads them through the supervisor. A seed that
-   * lists a file here instead of in `files` trades one round trip on first
-   * access for not shipping bytes the process may never open.
-   */
-  sizes?: Record<string, number>;
-  /**
-   * Files at or above this many bytes are never held resident; reads window
-   * through the supervisor instead. Defaults to 8 MiB.
-   */
+  /** Largest regular file the codec answers from a resident copy. Defaults to 8 MiB. */
   residentFileCap?: number;
-  /**
-   * Roots this seed listed COMPLETELY. Only a producer that walked the subtree
-   * with no exclusions may claim one: inside a claimed root an unlisted path
-   * is treated as genuinely absent and answered without a round trip.
-   */
-  enumeratedRoots?: string[];
-  /** Supervisor VFS revision the seed was built against (see fsRevision). */
-  revision?: number;
-  /** Effective read/write/execute bits for the invoking process, keyed by vfsPath. */
-  modes: Record<string, number>;
-  /**
-   * WASI socket and polling support B1: per-path nanosecond timestamps. Values are decimal strings
-   * (JSON.stringify-safe; BigInt would throw). Optional — omitted paths
-   * default to wall-clock-now at init time.
-   */
-  times?: Record<string, { mtime: string; atime: string; ctime: string }>;
-  /**
-   * WASI socket and polling support B3: initial symlink table. `vfsPath → targetPath`. Target is
-   * stored verbatim per POSIX (resolution at lookup time).
-   */
-  symlinks?: Record<string, string>;
 }
 
 

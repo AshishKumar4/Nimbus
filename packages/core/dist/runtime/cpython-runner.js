@@ -5,17 +5,15 @@
  * This replaces the Pyodide runner, and the reason is not the interpreter: it
  * is the filesystem. Pyodide is CPython built with Emscripten, so it brings its
  * own MEMFS, and every invocation had to copy the session's files in and diff
- * them back out through vfs-snapshot.ts. That made Python the last runtime with
- * a private, parallel filesystem. This build talks to runtime/wasi/preamble.ts
- * like clang, bash and ruby do — `open()` in Python is the same syscall as
- * `open()` in C — so there is nothing to copy and nothing to diff.
+ * them back out. That made Python the last runtime with a private, parallel
+ * filesystem. This build talks to runtime/wasi/preamble.ts like clang, bash
+ * and ruby do — `open()` in Python is the same syscall as `open()` in C — and
+ * every one of those syscalls is answered by the session authority through
+ * the supervisor, so there is nothing to copy and nothing to diff.
  *
  * What follows from that:
- *   - manifestVfs, not snapshotVfs: the facet is given sizes and modes and
- *     demand-loads the handful of files the program actually opens.
- *   - supervisorPid, not omitSupervisor: a pool without a supervisor can read
- *     the seeded manifest and can never write anything back. It looks like it
- *     works.
+ *   - supervisorPid, not omitSupervisor: a pool without a supervisor has no
+ *     filesystem at all, and the interpreter cannot even find its stdlib.
  *   - No Python-level socket shim. CPython's _socket is real here, over
  *     nimbus-net.c and the host's synthetic paths, so loopback is ordinary
  *     socket code rather than a monkey-patch.
@@ -28,12 +26,8 @@
  *   1. Every entry into the VM goes through WebAssembly.promising, not only the
  *      calls known to park — a Suspending import traps on an unpromised stack
  *      even when it returns a plain integer.
- *   2. The supervisor is adopted AFTER __wasiInitFS, which clears it on purpose,
- *      and the facet drains queued writes in a `finally`.
- *   3. modes are seeded `{ '': 7, tmp: 7, home: 7 }` ahead of the manifest,
- *      because manifestVfs's walk skips the empty root — without it the preopen
- *      at '/' is mode 0 and every traversal under it is EACCES.
- *   4. The loader pool is built per invocation, never cached: supervisorPid is
+ *   2. The supervisor is adopted AFTER __wasiInitFS, which clears it on purpose.
+ *   3. The loader pool is built per invocation, never cached: supervisorPid is
  *      baked into the SUPERVISOR binding at construction, so a held pool hands
  *      every later caller the first caller's write credential.
  *
@@ -41,8 +35,8 @@
  * supervisor stub is PUBLISHED on globalThis and only then adopted, because
  * __wasiInitFS clears the adoption on purpose and the boot re-adopts it from
  * there afterwards. Adopting once at the entry and deleting the Reflect.set
- * leaves a guest that reads the seeded filesystem and silently writes nowhere —
- * every write queued, none landed, no error anywhere. Ruby carries the same
+ * leaves a guest with no filesystem at all: every open answers EBADF and the
+ * interpreter cannot find its own stdlib. Ruby carries the same
  * pair for the same reason. The drain in the `finally` is the other half: a
  * program that wrote a file and then raised still wrote the file.
  */
@@ -164,21 +158,13 @@ async function cpythonRunFacetFn(args, facetEnv) {
         };
     }
     const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
-    const drain = Reflect.get(globalThis, '__wasiDrainPersist');
     const supervisor = facetEnv && facetEnv.SUPERVISOR;
     // Published where the boot re-adopts it after the mount: adopting only here
     // would be undone by __wasiInitFS, which clears it on purpose.
     if (supervisor)
         Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
     adopt?.(supervisor);
-    try {
-        return await run(args);
-    }
-    finally {
-        // In `finally`, not on the success path: a program that wrote a file and
-        // then raised still wrote the file, and those bytes are the user's.
-        await drain?.();
-    }
+    return run(args);
 }
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
@@ -190,10 +176,8 @@ export function makeCPythonRunnerFactory(deps) {
         const sciWasmVfs = findFile(CPYTHON_SCI_WASM_REL);
         const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
         const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
-        let seedCache = null;
         return async function cpythonBinHandler(ctx) {
             const cred = requireVfsCred(ctx.cred, binName);
-            const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
             const vfs = ctx.vfs;
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
@@ -314,40 +298,6 @@ export function makeCPythonRunnerFactory(deps) {
             // about a missing bundle.
             if (!userEnv.SSL_CERT_FILE && cacertVfs)
                 userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
-            // A manifest, not a copy: sizes and modes only, with the facet demand-
-            // loading whatever the program opens. The stdlib zip is covered by it
-            // like any other file, which is the whole point of not having a private
-            // filesystem any more.
-            const stdlibDir = stdlibVfs.replace(/\/[^/]+$/, '');
-            // Every runtime file the interpreter is told about has to be a root of
-            // its own. The trust store was reachable only while the cwd happened to
-            // be an ancestor of the install — from ~ the walk swept the whole runtime
-            // tree in — so `cd` into any subdirectory and SSL_CERT_FILE pointed at a
-            // path the facet could not see, and every pip install failed
-            // CERTIFICATE_VERIFY_FAILED with the bundle sitting right there.
-            const cacertDir = cacertVfs ? cacertVfs.replace(/\/[^/]+$/, '') : null;
-            const revision = Math.max((await vfs.revision(cwd)), (await vfs.revision(PYTHON_SITE_PACKAGES_ROOT)), (await vfs.revision(stdlibVfs)));
-            let fsSeed = seedCache && seedCache.cred === credKey
-                && seedCache.cwd === cwd && seedCache.revision === revision
-                ? seedCache.result
-                : null;
-            if (!fsSeed) {
-                // The host decides what "seed" means: a manifest the facet demand-loads
-                // against, or the bytes themselves. Which one it is follows from
-                // whether the host can park a guest mid-syscall, and nothing here
-                // depends on the answer.
-                fsSeed = await deps.facets.seedFilesystem(vfs.authority, cwd, {
-                    cred,
-                    extraRoots: [PYTHON_SITE_PACKAGES_ROOT, stdlibDir, ...(cacertDir ? [cacertDir] : [])],
-                    revision,
-                });
-                seedCache = { cred: credKey, cwd, revision, result: fsSeed };
-            }
-            if ('error' in fsSeed) {
-                ctx.stderr.write(`${binName}: ${fsSeed.error}\n`);
-                return 1;
-            }
-            const snapshot = fsSeed.snapshot;
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's write credential.
@@ -374,7 +324,6 @@ export function makeCPythonRunnerFactory(deps) {
                 cwd,
                 pythonHome: `/${installRoot.replace(/^\/+/, '')}`,
                 supervisorPid: ctx.pid,
-                fsSnapshot: snapshot,
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it

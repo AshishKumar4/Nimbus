@@ -13,55 +13,35 @@
 // differ, the same path is stable across calls, and no inode is zero.
 
 import assert from 'node:assert';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
-import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const P = await loadWasiPreamble();
+const sessions = [];
 
-async function layer({ abi }) {
-  const P = await new AsyncFunction(`${WASI_INSTANCE_PREAMBLE_SRC}
-return { __wasiInitFS, __wasiMakeImports };`)();
-  const memory = new WebAssembly.Memory({ initial: 16 });
-  P.__wasiInitFS({
-    root: '',
-    // The empty preopen name is what a pre-cwd wasi-libc matches a relative
-    // path against; naming it '/' serves absolute paths only.
-    preopens: [{ wasiPath: '', vfsPath: '' }],
-    files: { 'a/one.txt': btoa('one'), 'b/two.txt': btoa('two') },
-    dirs: ['a', 'b'],
-    modes: { '': 7, a: 7, b: 7, 'a/one.txt': 6, 'b/two.txt': 6 },
-  });
-  const { wasiImport } = makeImportsWithoutJSPI(P, {
-    argv: ['probe'], env: {}, abi, getMemory: () => memory,
-  });
-  const dv = new DataView(memory.buffer);
-  const u8 = new Uint8Array(memory.buffer);
-  const PATH = 4096;
-  const STAT = 8192;
+function layer({ abi }) {
+  const session = makeSession({ dirs: ['a', 'b'], files: { 'a/one.txt': 'one', 'b/two.txt': 'two' } });
+  sessions.push(session);
+  // The empty preopen name is what a pre-cwd wasi-libc matches a relative
+  // path against; naming it '/' serves absolute paths only.
+  const guest = makeGuest(P, session, { preopens: [{ wasiPath: '', vfsPath: '' }] }, { abi });
   return {
     /** path_filestat_get, decoded the way a guest reads it. */
     stat(path) {
-      const bytes = new TextEncoder().encode(path);
-      u8.set(bytes, PATH);
-      const rc = wasiImport.path_filestat_get(3, 1, PATH, bytes.length, STAT);
-      assert.equal(rc, 0, `path_filestat_get(${path}) => ${rc}`);
-      return {
-        dev: dv.getBigUint64(STAT, true),
-        ino: dv.getBigUint64(STAT + 8, true),
-        filetype: dv.getUint8(STAT + 16),
-      };
+      const st = guest.stat(path);
+      assert.equal(st.errno, 0, `path_filestat_get(${path}) => ${st.errno}`);
+      return { dev: st.dev, ino: st.ino, filetype: st.filetype };
     },
     /** fd_filestat_get, for the fds that have no path at all. */
     fstat(fd) {
-      const rc = wasiImport.fd_filestat_get(fd, STAT);
-      assert.equal(rc, 0, `fd_filestat_get(${fd}) => ${rc}`);
-      return { ino: dv.getBigUint64(STAT + 8, true), filetype: dv.getUint8(STAT + 16) };
+      const st = guest.fstat(fd);
+      assert.equal(st.errno, 0, `fd_filestat_get(${fd}) => ${st.errno}`);
+      return { dev: st.dev, ino: st.ino, filetype: st.filetype };
     },
   };
 }
 
 for (const abi of ['preview1', 'preview0']) {
-  const fs = await layer({ abi });
+  const fs = layer({ abi });
 
   const dirA = fs.stat('a');
   const dirB = fs.stat('b');
@@ -93,10 +73,18 @@ for (const abi of ['preview1', 'preview0']) {
   assert.ok(fs.stat('a/one.txt').ino, `${abi}: relative path resolves`);
 
   // An fd with no path is still its own object. stdin/stdout/stderr are three
-  // objects, not one, and none of them is the preopen.
-  const fds = [0, 1, 2, 3].map((fd) => fs.fstat(fd).ino);
-  assert.equal(new Set(fds).size, 4, `${abi}: pathless fds need distinct inodes`);
-  for (const ino of fds) assert.notEqual(ino, 0n, `${abi}: fd inode must never be 0`);
+  // objects, not one, none of them is the preopen, and none of them is a
+  // file: a pathless descriptor's (dev, ino) is on a device of its own, so
+  // the small fd-derived inode it carries never names /home by accident.
+  const fds = [0, 1, 2, 3].map((fd) => fs.fstat(fd));
+  const identity = (s) => `${s.dev}:${s.ino}`;
+  assert.equal(new Set(fds.map(identity)).size, 4, `${abi}: pathless fds need distinct identities`);
+  for (const s of fds) assert.notEqual(s.ino, 0n, `${abi}: fd inode must never be 0`);
+  for (const s of fds.slice(0, 3)) {
+    assert.notEqual(s.dev, all[0].dev, `${abi}: stdio is not on the filesystem's device`);
+    for (const file of all) assert.notEqual(identity(s), identity(file), `${abi}: a stdio fd must not alias a file`);
+  }
 }
 
+for (const session of sessions) await session.dispose();
 console.log('wasi-inode-identity: inodes are distinct, stable and non-zero in both ABIs');

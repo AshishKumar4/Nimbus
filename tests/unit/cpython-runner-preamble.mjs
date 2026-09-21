@@ -11,8 +11,8 @@
 // Two orderings inside the tail are load-bearing and are asserted here rather
 // than left to review:
 //   - __wasiInitFS runs BEFORE the supervisor is adopted, because initFS
-//     deliberately clears it. The other order leaves a guest that reads a
-//     filesystem it can never write back to, which looks like success.
+//     deliberately clears it. The other order leaves a guest with no
+//     filesystem at all: every open answers EBADF.
 //   - a fresh WebAssembly.Instance per call, so one `python -c` never sees the
 //     previous caller's __main__.
 
@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 
 import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { buildCPythonSocketProcessWorker } from '../../packages/worker/src/runtime/cpython-resident.ts';
+import { makeSession } from './lib/wasi-authority.mjs';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -46,7 +47,7 @@ const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySup
 assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   'the supervisor must be adopted after __wasiInitFS, which clears it');
 
-// ── The five invariants this runtime rediscovered by hitting them ──────────
+// ── The four invariants this runtime rediscovered by hitting them ──────────
 // Every one of these was already true of ruby-runner, and every one cost a
 // debugging cycle here. A header comment only helps a reader who knows to look;
 // these assertions fail for the next person instead. They read emitted text
@@ -69,21 +70,23 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   assert.ok(initFsAt > 0 && adoptAt > initFsAt,
     'the supervisor must be adopted after __wasiInitFS, which clears it');
 
-  // 3. The root, /tmp and /home are seeded ahead of the manifest: manifestVfs's
-  //    walk skips the empty root, so without this '/' is mode 0 and every
-  //    traversal under it is EACCES.
-  assert.ok(/modes:\s*\{\s*'':\s*7,\s*tmp:\s*7,\s*home:\s*7,\s*\.\.\./.test(preamble),
-    'modes must seed the root, tmp and home before spreading the manifest');
+  // 3. The interpreter sees the whole session at '/': there is nothing to
+  //    seed, and a preamble that still carried a seed would be carrying a
+  //    filesystem nobody reads.
+  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\]\s*\}\)/.test(preamble),
+    'the boot must init the session root as the only preopen, and nothing else');
+  assert.ok(!/fsSnapshot|__wasiDrainPersist|__wasiRevalidateFS/.test(preamble),
+    'the boot must not carry a seed or a persist queue');
 
   // 4. A spawned process needs the module published where the preamble looks.
   assert.ok(socketWorker.includes("globalThis.__NIMBUS_WASM['python.wasm']"),
     'the socket worker must publish python.wasm to __NIMBUS_WASM');
 
-  // Supervisor publish/adopt/drain are asserted over EVERY facet entry by
+  // Supervisor publish/adopt are asserted over EVERY facet entry by
   // cpython-facet-entry-invariants.mjs, which discovers them rather than
   // listing files — repeating them here would be a second list to rot.
   //
-  // 5. The pool is built per invocation: supervisorPid is baked into the
+  // The pool is built per invocation: supervisorPid is baked into the
   //    SUPERVISOR binding at construction, so a held pool hands every later
   //    caller the first caller's write credential.
   const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../../core/src/runtime/cpython-runner.ts'), 'utf8');
@@ -106,28 +109,22 @@ const run = globalThis.__cpythonRun;
 assert.equal(typeof run, 'function', 'the preamble must install __cpythonRun');
 console.log('  ok  the composed preamble installs __cpythonRun');
 
-const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
-const snapshot = {
-  root: '',
+// The session the interpreter runs in, adopted the way cpythonRunFacetFn
+// adopts it: published on globalThis, where the boot re-adopts it after
+// __wasiInitFS has cleared the previous adoption.
+const session = makeSession({
+  dirs: ['opt/py/lib/python3.13/lib-dynload'],
   files: {
-    'opt/py/lib/python313.zip': toB64(readFileSync(STDLIB)),
-    'opt/py/lib/python3.13/os.py': toB64(Buffer.from('# stdlib marker\n')),
+    'opt/py/lib/python313.zip': readFileSync(STDLIB),
+    'opt/py/lib/python3.13/os.py': '# stdlib marker\n',
   },
-  dirs: ['opt', 'opt/py', 'opt/py/lib', 'opt/py/lib/python3.13',
-         'opt/py/lib/python3.13/lib-dynload', 'home', 'home/user'],
-  modes: {
-    '': 7, opt: 7, 'opt/py': 7, 'opt/py/lib': 7,
-    'opt/py/lib/python3.13': 7, 'opt/py/lib/python3.13/lib-dynload': 7,
-    home: 7, 'home/user': 7,
-    'opt/py/lib/python313.zip': 7, 'opt/py/lib/python3.13/os.py': 7,
-  },
-};
+});
+globalThis.__nimbusPySupervisor = session.supervisor;
 const base = {
   pythonHome: '/opt/py',
   userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
   progName: 'python',
   cwd: '/home/user',
-  fsSnapshot: snapshot,
 };
 
 // A one-shot invocation, exactly as cpythonRunFacetFn calls it.
@@ -159,4 +156,11 @@ assert.equal(boom.stdout.trim(), 'before', 'stdout written before the failure mu
 assert.match(boom.stderr, /ValueError: deliberate/);
 console.log('  ok  a failing program keeps its stdout and reports why on stderr');
 
+// What the program writes is in the session when the call returns.
+const wrote = await run({ ...base, pyArgv: ['-c'], userCode: "open('/home/user/out.txt', 'w').write('from python')" });
+assert.equal(wrote.exitCode, 0, wrote.stderr);
+assert.equal(session.user.readFileString('home/user/out.txt'), 'from python');
+console.log('  ok  a write is in the session filesystem when __cpythonRun returns');
+
+await session.dispose();
 console.log('cpython-runner-preamble: all cases passed');

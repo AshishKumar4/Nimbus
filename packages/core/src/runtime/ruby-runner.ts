@@ -24,9 +24,10 @@
  *
  * Two things follow from that being a port rather than a Durable Object, and
  * they are the whole of what is host-specific here:
- *   - the seed is whatever `seedFilesystem` returned — a manifest the facet
- *     demand-loads against where a guest can be parked mid-syscall, the bytes
- *     themselves where it cannot. Nothing below branches on which it got.
+ *   - the filesystem is the session authority reached through the supervisor
+ *     stub: over a suspending import where a guest can be parked
+ *     mid-syscall, over the authority's synchronous view where it cannot.
+ *     Nothing below branches on which it got.
  *   - a program that keeps serving needs an actor to hold it, which is
  *     {@link RubyResidentStart}: supplied on Cloudflare, absent elsewhere, and
  *     where it is absent such a program is refused by name.
@@ -97,8 +98,6 @@ export function makeRubyRunnerFactory(deps: {
       return entry ? `${installRoot}/${entry.path}` : null;
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
-    let fsSnapshotCache:
-      { cred: string; cwd: string; revision: number; result: Awaited<ReturnType<FacetHost['seedFilesystem']>> } | null = null;
 
     const registerGemBins = async (vfs: CredentialedVfs): Promise<void> => {
       if (!registry) return;
@@ -118,7 +117,6 @@ export function makeRubyRunnerFactory(deps: {
 
     const rubyBinHandler = async function rubyBinHandler(ctx: CommandContext): Promise<number> {
       const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
-      const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
       const vfs = ctx.vfs;
       const argv = ctx.args ?? [];
       const cwd = ctx.cwd || '/home/user';
@@ -212,30 +210,6 @@ export function makeRubyRunnerFactory(deps: {
       // wasi default of "ASCII-8BIT".
       if (!userEnv.LC_ALL) userEnv.LC_ALL = 'C.UTF-8';
 
-      // Per-subtree watermark over exactly what the snapshot covers (cwd +
-      // gem home), so unrelated VFS writes don't evict the cache.
-      const revision = Math.max((await vfs.revision(cwd)), (await vfs.revision(defaultGemHome())));
-      let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
-        && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
-        ? fsSnapshotCache.result
-        : null;
-      if (!fsSnapshot) {
-        // The host decides what a seed IS: a manifest whose entries the facet
-        // demand-loads through its supervisor, or the bytes themselves. Which
-        // one follows from whether that host can park a guest mid-syscall, and
-        // nothing here depends on the answer.
-        fsSnapshot = await deps.facets.seedFilesystem(vfs.authority, cwd, {
-          cred,
-          extraRoots: [defaultGemHome()],
-          revision,
-        });
-        fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
-      }
-      if ('error' in fsSnapshot) {
-        ctx.stderr.write(`${binName}: ${fsSnapshot.error}\n`);
-        return 1;
-      }
-
       const facetArgs = {
         wasmBytes,
         wasmVfsPath: wasmVfs,
@@ -244,7 +218,6 @@ export function makeRubyRunnerFactory(deps: {
         userEnv,
         progName,
         cwd,
-        fsSnapshot: fsSnapshot.snapshot,
       };
 
       let result: RubyFacetResult;
@@ -591,7 +564,6 @@ interface RubyFacetArgs {
   userEnv: Record<string, string>;
   progName: string;
   cwd: string;
-  fsSnapshot: WasiFsSnapshot;
 }
 
 /** What one invocation hands the VM. Identical for both process shapes. */
@@ -601,7 +573,6 @@ export interface RubyFacetCallArgs {
   userEnv: Record<string, string>;
   progName: string;
   cwd: string;
-  fsSnapshot: WasiFsSnapshot;
 }
 
 export interface RubyFacetResult {
@@ -659,7 +630,6 @@ function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
     userEnv: args.userEnv,
     progName: args.progName,
     cwd: args.cwd,
-    fsSnapshot: args.fsSnapshot,
   };
 }
 
@@ -697,27 +667,18 @@ async function dispatchRubyFacet(
     }
     const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
       ((s: unknown) => void) | undefined;
-    const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
-      (() => Promise<void>) | undefined;
     const supervisor = facetEnv && facetEnv.SUPERVISOR;
     // Published where __rubyRun re-adopts it after the mount; adopting only
     // here would be undone by __wasiInitFS.
     if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
-    try {
-      return await fn({
-        userCode: inArgs.userCode,
-        rbArgv: inArgs.rbArgv,
-        userEnv: inArgs.userEnv,
-        progName: inArgs.progName,
-        cwd: inArgs.cwd,
-        fsSnapshot: inArgs.fsSnapshot,
-      });
-    } finally {
-      // Even on a raised Ruby exception the writes that already happened are
-      // the user's data, so the drain is in `finally`, not the success path.
-      await drain?.();
-    }
+    return fn({
+      userCode: inArgs.userCode,
+      rbArgv: inArgs.rbArgv,
+      userEnv: inArgs.userEnv,
+      progName: inArgs.progName,
+      cwd: inArgs.cwd,
+    });
   };
 
   try {
@@ -811,22 +772,9 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 // built, and the scope is the only thing that knows.
 const __nimbusRubyParking = typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
 
-function __nimbusInstallRubyFsSnapshot(snapshot) {
-  const dirs = new Set(['tmp', 'home']);
-  const files = {};
-  // Null-safe like every other field here: a REPL eval calls __rubyRun with
-  // no snapshot at all and must get the bootstrap defaults, not a TypeError.
-  const modes = { '': 7, tmp: 7, home: 7, ...(snapshot && snapshot.modes) };
-  for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
-  for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
-    files[String(path).replace(/^\\/+/, '')] = b64;
-  }
-  // Metadata-only entries: the manifest carries each file's size and content
-  // arrives on first read. Canonicalized exactly like the content entries.
-  const sizes = {};
-  for (const [path, size] of Object.entries((snapshot && snapshot.sizes) || {})) {
-    sizes[String(path).replace(/^\\/+/, '')] = size;
-  }
+function __nimbusInstallRubyFs() {
+  // The VM sees the whole session tree at '/'; /tmp and /home are preopened
+  // as well because ruby.wasm's stdlib resolves them by preopen name.
   __wasiInitFS({
     root: '',
     preopens: [
@@ -834,14 +782,6 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
       { wasiPath: '/tmp',  vfsPath: 'tmp' },
       { wasiPath: '/home', vfsPath: 'home' },
     ],
-    files,
-    sizes,
-    dirs: Array.from(dirs).filter(Boolean),
-    modes,
-    // Forwarded, never invented here: only the producer knows whether it
-    // walked those roots completely.
-    enumeratedRoots: (snapshot && snapshot.enumeratedRoots) || [],
-    revision: snapshot && snapshot.revision,
   });
 }
 
@@ -898,8 +838,8 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   const wasi = __wasiMakeImports({
     argv: ['ruby'],
     env: { HOME: '/home/ruby', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' },
-    // Stated, not defaulted. A host that cannot park a guest hands over the
-    // whole filesystem instead of a manifest, so nothing here needs to block —
+    // Stated, not defaulted. A host that cannot park a guest answers every
+    // syscall from the authority's synchronous view, so nothing here blocks —
     // and saying so is what makes a syscall that blocks anyway fail loudly
     // instead of returning a Promise where the guest expects an errno.
     parking: __nimbusRubyParking,
@@ -1258,13 +1198,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   }
 
   try {
-    __nimbusInstallRubyFsSnapshot(args.fsSnapshot);
+    __nimbusInstallRubyFs();
     // AFTER the mount, never before. __wasiInitFS deliberately drops the
     // supervisor so a pooled isolate cannot serve the previous tenant's
     // filesystem, which means adopting first — as both ruby entry points do,
     // since they must adopt before they know whether a mount is coming —
-    // leaves the seed with no backing store for the whole script load.
-    // Every require then read a manifest entry with nothing behind it.
+    // leaves the guest with no filesystem for the whole script load: every
+    // require answers EBADF.
     __wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor);
   } catch (e) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');

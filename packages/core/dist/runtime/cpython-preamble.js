@@ -44,25 +44,12 @@ function __nimbusPyModule() {
   return mod;
 }
 
-// Bring up one interpreter over the seeded filesystem and return the handles
-// the rest of this file drives it with.
+// Bring up one interpreter over the authority filesystem and return the
+// handles the rest of this file drives it with.
 async function __nimbusPyBoot(args) {
-  const snapshot = args.fsSnapshot || { files: {}, dirs: [], modes: {}, root: '' };
-  __wasiInitFS({
-    root: snapshot.root || '',
-    preopens: [{ wasiPath: '/', vfsPath: '' }],
-    files: snapshot.files || {},
-    dirs: snapshot.dirs || [],
-    // The root, /tmp and /home are seeded rather than taken from the manifest:
-    // manifestVfs's walk skips the empty root, so without this the preopen at
-    // '/' has effective mode 0 and EVERY traversal through it is EACCES —
-    // which surfaces as "Failed to import encodings module" with nothing
-    // pointing at a permission. Same baseline ruby-runner seeds, same reason.
-    modes: { '': 7, tmp: 7, home: 7, ...(snapshot.modes || {}) },
-    times: snapshot.times,
-    symlinks: snapshot.symlinks,
-    sizes: snapshot.sizes,
-  });
+  // The interpreter sees the whole session tree at '/': its stdlib, site
+  // packages and the user's cwd are absolute paths under it.
+  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
   // AFTER initFS, never before. See constraint (2). The stub is read back off
   // globalThis rather than passed in, because the facet entry point published
   // it there before initFS wiped the adoption.
@@ -105,18 +92,19 @@ async function __nimbusPyBoot(args) {
     (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
   if (initRc !== 0) {
     // Do the bytes arrive intact? The interpreter, the stdlib and this preamble
-    // are all proven by tests/unit/cpython-wasi-reactor.mjs, which seeds the
-    // stdlib BY VALUE. The only thing a live session changes is the transport:
-    // manifest entry + supervisor RPC. So hash what the transport actually
-    // delivers rather than guessing at a size limit.
+    // are all proven by tests/unit/cpython-live-authority.mjs over a local
+    // authority. The only thing a live session changes is the transport: the
+    // supervisor RPC. So hash what the transport actually delivers rather
+    // than guessing at a size limit.
     let transport = 'not-attempted';
     try {
       const zipPath = (args.pythonHome || '').replace(/^\/+/, '') + '/lib/python313.zip';
-      const want = __wasiFS.sizes.get(zipPath);
       const sup = globalThis.__nimbusPySupervisor;
-      if (!sup || typeof sup.fsReadRange !== 'function') {
+      if (!sup || typeof sup.fsReadRange !== 'function' || typeof sup.stat !== 'function') {
         transport = 'no-supervisor';
       } else {
+        const st = await sup.stat(zipPath);
+        const want = st ? st.size : 0;
         const got = await sup.fsReadRange(zipPath, 0, want);
         const bytes = got instanceof Uint8Array ? got : new Uint8Array(got);
         const digest = await crypto.subtle.digest('SHA-256', bytes);

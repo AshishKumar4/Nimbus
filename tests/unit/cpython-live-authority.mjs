@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// CPython booting the way a live session boots it: the stdlib is a manifest
-// entry served through the filesystem authority, never a by-value seed.
+// CPython booting the way a live session boots it: the stdlib is a file in
+// the session, served through the filesystem authority on every read.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
@@ -11,7 +11,6 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../packages/core/src/runtime/vfs-supervisor.ts';
-import { manifestVfs } from '../../packages/core/src/runtime/vfs-manifest.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
@@ -42,14 +41,8 @@ function seed(root) {
   root.writeFile(`${home}/lib/python3.13/os.py`, '# stdlib marker; the real os is in the zip\n', { mode: 0o644 });
 }
 
-async function boot({ label, supervisor, bridge, parking, enter, makeImports }) {
-  const manifest = await manifestVfs(bridge, user, 'home/user', { extraRoots: [`${home}/lib`] });
-  assert.ok('snapshot' in manifest, JSON.stringify(manifest));
-  P.__wasiInitFS({
-    ...manifest.snapshot,
-    preopens: [{ wasiPath: '/', vfsPath: '' }],
-    modes: { '': 7, tmp: 7, home: 7, ...manifest.snapshot.modes },
-  });
+async function boot({ label, supervisor, parking, enter, makeImports }) {
+  P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
   P.__wasiAdoptSupervisor(supervisor);
   const stderr = [];
   const { wasiImport } = makeImports({
@@ -83,7 +76,7 @@ async function boot({ label, supervisor, bridge, parking, enter, makeImports }) 
   const authority = new SqliteFilesystemAuthority(raw);
   const bridge = authority.bind({ pid: 11, cred: user });
   try {
-    await boot({ label: 'local', supervisor: vfsSupervisor(bridge), bridge, parking: 'none', enter: (fn) => fn, makeImports: (options) => makeImportsWithoutJSPI(P, options) });
+    await boot({ label: 'local', supervisor: vfsSupervisor(bridge), parking: 'none', enter: (fn) => fn, makeImports: (options) => makeImportsWithoutJSPI(P, options) });
     assert.equal(raw.as(CRED_KERNEL).readFileString('home/user/local.txt'), '{"n": 42}');
   } finally {
     await authority.releaseProcess(11);
@@ -118,7 +111,7 @@ if (typeof WebAssembly.promising === 'function') {
     })());
   }
   try {
-    await boot({ label: 'rpc', supervisor, bridge: store.bridge(pid), parking: 'jspi', enter: (fn) => WebAssembly.promising(fn), makeImports: (options) => P.__wasiMakeImports(options) });
+    await boot({ label: 'rpc', supervisor, parking: 'jspi', enter: (fn) => WebAssembly.promising(fn), makeImports: (options) => P.__wasiMakeImports(options) });
     assert.equal(raw.as(CRED_KERNEL).readFileString('home/user/rpc.txt'), '{"n": 42}');
   } finally {
     await store.dispose();
@@ -126,4 +119,4 @@ if (typeof WebAssembly.promising === 'function') {
     harness.db.close();
   }
 }
-console.log('cpython-live-authority: the interpreter boots from a manifest and reads and writes through the authority, locally and over supervisor RPC');
+console.log('cpython-live-authority: the interpreter boots from and reads and writes through the authority, locally and over supervisor RPC');

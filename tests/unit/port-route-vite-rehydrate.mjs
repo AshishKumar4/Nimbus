@@ -104,7 +104,6 @@ function makeWokenSession(storage = {}) {
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(); },
     // No facet pool in this harness: cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return null; },
-    seedFilesystem() {},
     restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
   };
   self.store = store;
