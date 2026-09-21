@@ -53,7 +53,14 @@ const FixtureWorker = 'import { DurableObject } from "cloudflare:workers";\n' +
   'export class NimbusProcess extends DurableObject {\n' +
   '  marker = "";\n' +
   '  async startProcess(args) { this.marker = args.marker; return { marker: this.marker }; }\n' +
-  '  async handleHttpRequest(req) { return Response.json({marker: this.marker, path: new URL(req.url).pathname}); }\n' +
+  // `/hello` answers from bytes and `/stream` from a ReadableStream: the two
+  // body kinds a port hop relays, both asserted by the lifecycle probe.
+  '  async handleHttpRequest(req) {\n' +
+  '    const path = new URL(req.url).pathname;\n' +
+  '    const body = new TextEncoder().encode(JSON.stringify({marker: this.marker, path}));\n' +
+  '    if (path === "/stream") return new Response(new ReadableStream({ start(c) { c.enqueue(body); c.close(); } }), { headers: { "content-type": "application/json" } });\n' +
+  '    return Response.json({marker: this.marker, path});\n' +
+  '  }\n' +
   '}';
 
 export class EmbeddedWorkspace extends DurableObject<Env> {
@@ -187,7 +194,10 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       return Response.json(await this.hostState());
     }
     if (path === '/close' && request.method === 'POST') {
+      // A closed runtime has released its filesystem lease; the next request
+      // composes a fresh one over the same storage, as an embedder would.
       if (this.runtime) await (await this.runtime).close();
+      this.runtime = null;
       return Response.json(await this.hostState());
     }
     if (path === '/evict' && request.method === 'POST') {
@@ -233,7 +243,7 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       return Response.json({
         ...await this.hostState(),
         files: runtime.workspace.stats(),
-        installed: runtime.workspace.runtimes.list(),
+        installed: await runtime.workspace.runtimes.list(),
         processes: await runtime.listProcesses(),
         ports: await runtime.listPorts(),
         terminalAttachmentsPreserved: this.ctx.getWebSockets('fixture-shell').every((ws) =>

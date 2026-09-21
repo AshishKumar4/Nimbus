@@ -30,7 +30,7 @@ async function reserve(workspace, owner, port) {
 async function spawn(workspace, owner, port) {
   return json(workspace, '/apps/spawn', 'POST', { owner, port });
 }
-const route = app => `/ports/${app.port}/${app.capability}/hello`;
+const route = (app, path = '/hello') => `/ports/${app.port}/${app.capability}${path}`;
 
 try {
   const workspace = name();
@@ -40,6 +40,7 @@ try {
   const first = await spawn(workspace, 'application', app.port);
   assert.equal(first.boot.marker, 'first');
   assert.deepEqual(await json(workspace, route(app)), { marker: 'first', path: '/hello' });
+  assert.deepEqual(await json(workspace, route(app, '/stream')), { marker: 'first', path: '/stream' }, 'a streamed body crosses the port hop');
   const generation = (await json(workspace, '/state')).generation;
   await evict(workspace);
   const recovered = await Promise.all([json(workspace, route(app)), json(workspace, route(app))]);
@@ -52,9 +53,10 @@ try {
   await evict(workspace);
   assert.equal((await raw(workspace, route(app))).status, 404, 'revoked URL cannot cold boot');
   assert.equal((await json(workspace, '/apps/resolver?owner=application')).calls, 1);
-  const renewed = await reserve(workspace, 'application', 20702);
-  assert.equal(renewed.port, app.port, 'unexpose retains ownership despite a different preferred port');
-  assert.notEqual(renewed.capability, app.capability);
+  // Ownership survives unexpose; the capability it answered with does not.
+  const renewed = await json(workspace, '/apps/reserve', 'POST', { owner: 'application' });
+  assert.equal(renewed.port, app.port, 'unexpose retains ownership of the port');
+  assert.notEqual(renewed.capability, app.capability, 'a revoked capability is not handed out again');
   assert.deepEqual(await json(workspace, '/apps/remove', 'POST', { owner: 'application' }), {
     owner: 'application', removed: true, port: app.port,
   });
@@ -92,7 +94,9 @@ try {
   for (const reason of ['log-flush', 'log-janitor']) {
     const logs = name();
     await json(logs, '/lifecycle/fail', 'POST', { reason });
-    await json(logs, '/exec', 'POST', { command: 'printf lifecycle-log' });
+    // Log flushing is scheduled by a background process's relayed output; a
+    // foreground exec streams to its caller and keeps no process log.
+    await json(logs, '/start', 'POST', { command: 'node -e "console.log(\'lifecycle-log\')"' });
     const deadline = Date.now() + 10_000;
     let state;
     do {
@@ -101,7 +105,7 @@ try {
       await new Promise(resolve => setTimeout(resolve, 25));
     } while (Date.now() < deadline);
     assert.ok(state.lifecycleErrors.some(error => error.includes(reason)), `${reason} rejection was not observed`);
-    await json(logs, '/exec', 'POST', { command: 'printf retry-log' });
+    await json(logs, '/start', 'POST', { command: 'node -e "console.log(\'retry-log\')"' });
     await json(logs, '/host-alarm', 'POST');
     const closed = await json(logs, '/close', 'POST');
     assert.deepEqual(closed.hostRows, [{ id: 'keep', value: 'host-owned' }]);
