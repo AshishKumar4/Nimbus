@@ -1,7 +1,6 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SandboxFsImpl } from '@nimbus-sh/core/substrate/lifo/sandbox/SandboxFs.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
-import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { SUPERVISOR_OP_ROUTES } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { installLogPersistence } from '../session/hibernation.js';
@@ -49,8 +48,6 @@ class RuntimeOwner {
     flushScheduled = false;
     janitorScheduled = false;
     recoveryNotice = false;
-    scheduling = new Set();
-    fileLeases = new Map();
     services;
     constructor(options) {
         this.options = options;
@@ -71,8 +68,7 @@ class RuntimeOwner {
             env: options.env,
             notify: (line) => this._notifySession(line),
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
-            resolveWorkerLaunch: options.resolveWorkerLaunch,
-            filesystem: () => options.workspace.filesystem,
+            ...(options.hooks?.resolveWorkerLaunch !== undefined ? { resolveWorkerLaunch: options.hooks.resolveWorkerLaunch } : {}),
         });
         options.workspace.shell.bindTerminal(this.terminal);
         installLogPersistence(this, options.ctx, () => this.scheduleLogs());
@@ -127,25 +123,9 @@ class RuntimeOwner {
             throw new Error('Nimbus runtime cannot replace the workspace registry');
     }
     _notifySession(line) { this.terminal.write(`${line}\r\n`); }
-    _scheduleLaunchTurn(notBefore = Date.now()) {
-        const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
-        this.options.lifecycle.waitUntil(pending);
-        return pending;
-    }
-    schedule(reason, at) {
-        if (this._w1SessionDestroyed)
-            return Promise.reject(new Error('Nimbus runtime is closed'));
-        // Registered before the deferred call runs, so close() waits for a turn
-        // issued in the same tick; the second closed check keeps that turn from
-        // arming an alarm the shutdown has already decided against.
-        const pending = Promise.resolve().then(() => {
-            if (this._w1SessionDestroyed)
-                return;
-            return this.options.lifecycle.schedule(reason, at);
-        });
-        this.scheduling.add(pending);
-        void pending.then(() => this.scheduling.delete(pending), () => this.scheduling.delete(pending));
-        return pending;
+    async _scheduleLaunchTurn(notBefore = Date.now()) {
+        await this.options.lifecycle.schedule('resident-launch', Math.max(Date.now(), notBefore));
+        return true;
     }
     _reportExternalExit(pid, code, reason) { return rpc._reportExternalExit(this, pid, code, reason); }
     _emitExitDump(pid, code) { return rpc._emitExitDump(this, pid, code); }
@@ -153,11 +133,7 @@ class RuntimeOwner {
     _rpcStdout(pid, data) { return rpc._rpcStdout(this, pid, data); }
     _rpcStderr(pid, data) { return rpc._rpcStderr(this, pid, data); }
     supervisorOps() {
-        this.supervisor ??= buildSessionSupervisorOps(this, createSupervisorBridgeStore({
-            vfs: this.options.workspace.vfs,
-            filesystem: this.options.workspace.filesystem,
-            processes: this.processes,
-        }), Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
+        this.supervisor ??= buildSessionSupervisorOps(this, undefined, Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
             const handler = Reflect.get(rpc, method);
             if (typeof handler !== 'function')
                 throw new Error(`Missing Nimbus supervisor implementation: ${method}`);
@@ -176,17 +152,11 @@ class RuntimeOwner {
             return;
         if (!this.flushScheduled) {
             this.flushScheduled = true;
-            this.options.lifecycle.waitUntil(this.schedule('log-flush', Date.now() + 250).catch((error) => {
-                this.flushScheduled = false;
-                throw error;
-            }));
+            this.options.lifecycle.waitUntil(this.options.lifecycle.schedule('log-flush', Date.now() + 250));
         }
         if (!this.janitorScheduled) {
             this.janitorScheduled = true;
-            this.options.lifecycle.waitUntil(this.schedule('log-janitor', Date.now() + 60_000).catch((error) => {
-                this.janitorScheduled = false;
-                throw error;
-            }));
+            this.options.lifecycle.waitUntil(this.options.lifecycle.schedule('log-janitor', Date.now() + 60_000));
         }
     }
     async onScheduled(task) {
@@ -237,22 +207,6 @@ class RuntimeOwner {
         this.terminal.detach();
         this.processes.flushLogs();
     }
-    files(cred) {
-        this.assertOpen();
-        const workspace = this.options.workspace;
-        const identity = requireVfsCred(cred, 'runtime files');
-        // One host lease per credential, not per `.as()` call: the descriptor
-        // scope behind a lease lives until close(), so re-deriving a view for an
-        // identity the runtime already opened must reuse that scope.
-        const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
-        let lease = this.fileLeases.get(key);
-        if (!lease) {
-            lease = workspace.filesystem.openHost(identity);
-            this.fileLeases.set(key, lease);
-        }
-        const view = new SandboxFsImpl(new ExecutionFs(lease.fs), () => workspace.shell.getCwd());
-        return Object.assign(view, { as: (next) => this.files(next) });
-    }
     close() {
         this.closing ??= Promise.resolve().then(async () => {
             const failures = [];
@@ -284,13 +238,6 @@ class RuntimeOwner {
             for (const ws of this.ctx.getWebSockets('process-logs')) {
                 await clean(() => ws.close(1000, 'runtime closed'));
             }
-            await clean(() => this.facetManager?.closeLaunches());
-            await Promise.allSettled(this.scheduling);
-            await clean(() => this.supervisor?.dispose());
-            for (const lease of this.fileLeases.values())
-                await clean(() => lease.dispose());
-            this.fileLeases.clear();
-            await clean(() => this.options.workspace.close());
             for (const task of HostedTask.options)
                 await clean(() => this.options.lifecycle.cancel(task));
             if (failures.length > 0)
@@ -299,14 +246,19 @@ class RuntimeOwner {
         return this.closing;
     }
 }
+function runtimeFiles(workspace, cred) {
+    const view = new SandboxFsImpl(workspace.kernel.vfs.as(cred), () => workspace.shell.getCwd());
+    return Object.assign(view, { as: (next) => runtimeFiles(workspace, requireVfsCred(next, 'runtime files')) });
+}
 export async function composeHostedRuntime(options) {
     const owner = new RuntimeOwner(options);
     await owner.ensureRuntimeReady();
     return {
         workspace: options.workspace,
         terminal: owner.terminal,
-        files: owner.files(owner.processes.cred(owner.shellProcessPid)),
+        files: runtimeFiles(options.workspace, owner.processes.cred(owner.shellProcessPid)),
         runtimes: owner.runtimeManager,
+        facets: () => owner.ensureFacetManager(),
         ready: operations.ensureProgrammaticReady.bind(null, owner),
         exec: operations.rpcExec.bind(null, owner),
         runCode: operations.rpcRunCode.bind(null, owner),
@@ -320,9 +272,6 @@ export async function composeHostedRuntime(options) {
         processLogs: (pid, options) => operations.rpcProcessLogs(owner, pid, options),
         listPorts: operations.rpcListPorts.bind(null, owner),
         listApps: operations.rpcListApps.bind(null, owner),
-        ensureDurableApp: operations.rpcEnsureDurableApp.bind(null, owner),
-        unexposePort: operations.rpcUnexposePort.bind(null, owner),
-        removeDurableApp: operations.rpcRemoveDurableApp.bind(null, owner),
         exposeApp: operations.rpcExposeApp.bind(null, owner),
         removeApp: operations.rpcRemoveApp.bind(null, owner),
         rotateLink: operations.rpcRotateLink.bind(null, owner),
@@ -330,10 +279,7 @@ export async function composeHostedRuntime(options) {
         ensureRuntimes: operations.rpcEnsureRuntimes.bind(null, owner),
         listRuntimes: operations.rpcListRuntimes.bind(null, owner),
         spawnWorker: operations.rpcSpawnWorker.bind(null, owner),
-        routeCapabilityPort: async (...args) => {
-            await operations.ensureProgrammaticReady(owner);
-            return owner.ensureFacetManager().apps.routeCapabilityPort(...args);
-        },
+        routeCapabilityPort: operations.rpcRouteCapabilityPort.bind(null, owner),
         supervisorOp: (envelope) => owner.supervisorOp(envelope),
         onScheduled: (task) => owner.onScheduled(task),
         attachTerminal: (ws) => owner.attachTerminal(ws),

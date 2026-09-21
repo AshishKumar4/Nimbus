@@ -85,6 +85,7 @@ export function ensureFacetManager(self, runtimeContext) {
                 requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
                 resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
                 notify: (line) => runtimeContext.notify(line),
+                ...(runtimeContext.resolveWorkerLaunch !== undefined ? { resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch } : {}),
                 onSpawn: (pid, command, longRunning) => {
                     const attachedTty = self.processes.get(pid)?.attachedTty === true;
                     if (longRunning) {

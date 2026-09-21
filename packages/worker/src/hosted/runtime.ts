@@ -339,6 +339,7 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
     terminal: owner.terminal,
     files: owner.files(owner.processes.cred(owner.shellProcessPid)),
     runtimes: owner.runtimeManager,
+    facets: () => owner.ensureFacetManager(),
     ready: operations.ensureProgrammaticReady.bind(null, owner),
     exec: operations.rpcExec.bind(null, owner),
     runCode: operations.rpcRunCode.bind(null, owner),

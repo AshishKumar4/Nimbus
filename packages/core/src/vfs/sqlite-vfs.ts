@@ -994,11 +994,13 @@ export class SqliteVFS {
         this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_file_content');
         this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_kind_content');
       }
-      this.sql.exec(
-        "INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)",
-        CONTENT_SCHEMA_MIGRATION,
-        Date.now(),
-      );
+      if (!contentMigrationApplied) {
+        this.sql.exec(
+          "INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)",
+          CONTENT_SCHEMA_MIGRATION,
+          Date.now(),
+        );
+      }
     });
 
     this.migrateFromLegacy();
