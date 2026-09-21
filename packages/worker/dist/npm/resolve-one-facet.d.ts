@@ -80,6 +80,8 @@ export interface ResolveOneSpec {
     fetchTimeoutMs: number;
     /** Retries for transient failures. Default 3. */
     retries: number;
+    /** Registry origin the packument is read from (the install's `NPM_REGISTRY`). */
+    registry: string;
 }
 export interface ResolveOneResult {
     /** Resolved package, or null if a registry policy filtered it out. */
@@ -201,6 +203,7 @@ export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
         getPackument: (name: string, options: {
             retries: number;
             timeoutMs: number;
+            registry: string;
         }) => Promise<{
             json: string | null;
             source: "r2-cache" | "network";

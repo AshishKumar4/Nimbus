@@ -38,7 +38,7 @@ import {
   type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
-import { packumentUrl } from './r2-cache.js';
+import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
@@ -237,6 +237,7 @@ export class NpmInstaller {
       pid?: number;              // invoking process pid — authorizes batch-facet writes
       npmLog?: NpmLogEmitter;    // npm-protocol log sink (see --loglevel)
       onProgress?: (msg: string) => void;  // per-invocation progress — overrides the ctor sink
+      registry?: string;         // the command's NPM_REGISTRY; default registry.npmjs.org
     },
   ): Promise<NpmInstallResult> {
     const start = Date.now();
@@ -269,10 +270,12 @@ export class NpmInstaller {
       production?: boolean;
       pid?: number;
       npmLog?: NpmLogEmitter;
+      registry?: string;
     } | undefined,
     log: (msg: string) => void,
     start: number,
   ): Promise<NpmInstallResult> {
+    const registry = npmRegistryOrigin(opts?.registry);
     const phases: Record<string, number> = {};
     const installed: string[] = [];
     const failed: string[] = [];
@@ -326,7 +329,7 @@ export class NpmInstaller {
       phaseStart = Date.now();
       setInstallPhase('resolve');
       log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-      const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised });
+      const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry });
       resolved = tree.resolved;
       nested = tree.nested;
       phases['resolve'] = Date.now() - phaseStart;
@@ -650,9 +653,10 @@ export class NpmInstaller {
   private async resolveTreeViaFanout(
     specs: Record<string, string>,
     log: (msg: string) => void,
-    opts: { optionalRoots?: ReadonlySet<string>; devOnly?: ReadonlySet<string>; advised?: Set<string> } = {},
+    opts: { optionalRoots?: ReadonlySet<string>; devOnly?: ReadonlySet<string>; advised?: Set<string>; registry?: string } = {},
   ): Promise<ResolvedTree> {
     const t0 = Date.now();
+    const registry = npmRegistryOrigin(opts.registry);
     const optionalRoots = opts.optionalRoots ?? new Set<string>();
     const devOnly = opts.devOnly ?? new Set<string>();
     // Policy advisories already announced — one `note:` line per name
@@ -822,6 +826,7 @@ export class NpmInstaller {
           isOptional: optionalNames.has(name),
           fetchTimeoutMs: 15_000,
           retries: 3,
+          registry,
         };
         return { key: placement, args: taskSpec };
       });
@@ -873,9 +878,9 @@ export class NpmInstaller {
         // One `npm http` line per packument, reporting the tier that actually
         // served it. A skipped task issued no request, so it gets no line.
         if (res.packumentSource === 'network') {
-          this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName), res.packumentElapsedMs));
+          this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName, registry), res.packumentElapsedMs));
         } else if (res.packumentSource !== 'skipped') {
-          this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName)));
+          this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName, registry)));
         }
         totalPackumentBytes += res.packumentBytesDecoded;
         if (res.packumentSource === 'r2-cache') r2Wins++;

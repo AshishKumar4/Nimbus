@@ -34,6 +34,8 @@ export interface NpmInstallPort {
         globalPrefix?: string;
         /** The running command's pid — authorizes the host's batch writes. */
         pid: number;
+        /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
+        registry: string;
         production?: boolean;
         npmLog?: NpmLogEmitter | null;
         onProgress?: (line: string) => void;

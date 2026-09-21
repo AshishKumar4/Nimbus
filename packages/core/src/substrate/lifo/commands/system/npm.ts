@@ -55,6 +55,8 @@ export interface NpmInstallPort {
     globalPrefix?: string;
     /** The running command's pid — authorizes the host's batch writes. */
     pid: number;
+    /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
+    registry: string;
     production?: boolean;
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
@@ -456,6 +458,7 @@ async function npmInstall(
 				global: invocation.global,
 				globalPrefix: invocation.global ? globalPrefix : undefined,
 				pid: ctx.pid,
+				registry: npmRegistry,
 				production: invocation.production,
 				npmLog,
 				onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),

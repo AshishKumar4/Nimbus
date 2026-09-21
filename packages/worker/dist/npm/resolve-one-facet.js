@@ -282,6 +282,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const result = await __nimbusUseRpcResult(env.SUPERVISOR.getPackument(effName, {
             retries: Math.max(0, spec.retries ?? 3),
             timeoutMs: spec.fetchTimeoutMs ?? 15_000,
+            registry: spec.registry,
         }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
         packumentElapsedMs = Date.now() - packumentStart;
         // Splice the supervisor's per-tier events into our accumulator.

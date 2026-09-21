@@ -98,16 +98,36 @@ export const R2_CACHE_PREFIX = 'v2';
  *  No data migration; existing R2 packument entries' customMetadata
  *  .expiresAt stamps remain valid against either TTL. */
 export const PACKUMENT_TTL_MS = 60 * 60_000;
-/** npm registry origin. The only host the packument cache is filled from. */
-const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+/** The registry an install reads from when its env names none (`NPM_REGISTRY`). */
+export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+/**
+ * The registry origin an install uses: the command's `NPM_REGISTRY` when
+ * set, else the default — the same rule core's in-process `npm` applies.
+ * A trailing slash is dropped so `${origin}/${name}` composes either way.
+ */
+export function npmRegistryOrigin(configured) {
+    const trimmed = configured?.trim();
+    return (trimmed ? trimmed : NPM_REGISTRY_ORIGIN).replace(/\/+$/, '');
+}
 /** Jittered backoff between packument fetch attempts. */
 const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];
 /** The registry URL a packument is read from — also what `npm http` lines report. */
-export function packumentUrl(name) {
+export function packumentUrl(name, registry = NPM_REGISTRY_ORIGIN) {
     const safeName = name.startsWith('@')
         ? '@' + encodeURIComponent(name.slice(1))
         : encodeURIComponent(name);
-    return `${NPM_REGISTRY_ORIGIN}/${safeName}`;
+    return `${registry}/${safeName}`;
+}
+/**
+ * The cache path segment for a packument: `<name>.json` for the default
+ * registry (the keys warm caches already hold), and `<origin>/<name>.json`
+ * for any other, so a private registry never reads or fills the entries
+ * registry.npmjs.org served.
+ */
+function packumentCachePath(name, registry) {
+    return registry === NPM_REGISTRY_ORIGIN
+        ? `${name}.json`
+        : `${encodeURIComponent(registry)}/${name}.json`;
 }
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
@@ -136,8 +156,8 @@ const L2_KEY_HOST = 'https://nimbus-cache.invalid';
  * encodeURIComponent on the name so '@scope/pkg' becomes a single path
  * segment (R2 keys allow any UTF-8, but URL paths need encoding).
  */
-export function packumentL2Url(name) {
-    return `${L2_KEY_HOST}/${R2_CACHE_PREFIX}/pc/${encodeURIComponent(name)}.json`;
+export function packumentL2Url(name, registry = NPM_REGISTRY_ORIGIN) {
+    return `${L2_KEY_HOST}/${R2_CACHE_PREFIX}/pc/${encodeURIComponent(packumentCachePath(name, registry))}`;
 }
 /** L2 cache-key URL for a tarball content address. Hex + the SRI algo
  *  name are already URL-safe, so the R2 key doubles as the URL path. */
@@ -253,8 +273,8 @@ export function tarballKey(address) {
     return `${R2_CACHE_PREFIX}/t/${address.algo}/${address.hex}.tgz`;
 }
 /** Compose the R2 object key for a packument. */
-export function packumentKey(name) {
-    return `${R2_CACHE_PREFIX}/pc/${name}.json`;
+export function packumentKey(name, registry = NPM_REGISTRY_ORIGIN) {
+    return `${R2_CACHE_PREFIX}/pc/${packumentCachePath(name, registry)}`;
 }
 /**
  * R2-backed npm cache client. Wraps two R2 bindings (tarballs + packuments)
@@ -437,9 +457,9 @@ export class R2CacheClient {
      * write back to L2 with a 5-min `Cache-Control: max-age=300`
      * (matching the existing R2 customMetadata.expiresAt semantic).
      */
-    async getPackument(name) {
+    async getPackument(name, registry = NPM_REGISTRY_ORIGIN) {
         // ── L2 fast path (per-colo) ───────────────────────────────────
-        const l2Key = new Request(packumentL2Url(name));
+        const l2Key = new Request(packumentL2Url(name, registry));
         const l2Hit = await l2Get(l2Key);
         if (l2Hit) {
             this._l2HitsPackument++;
@@ -475,7 +495,7 @@ export class R2CacheClient {
             return null;
         }
         this._l3GetsPackument++;
-        const obj = await this.packumentBucket.get(packumentKey(name));
+        const obj = await this.packumentBucket.get(packumentKey(name, registry));
         if (!obj) {
             this._recordMiss('L3', 'packument');
             return null;
@@ -528,16 +548,19 @@ export class R2CacheClient {
      * attacker would be choosing the address too. Here, the only bytes
      * that reach `pc/<name>.json` are the ones registry.npmjs.org served
      * for that exact name, one line below the fetch that produced them.
+     * Another registry (`options.registry`) fills and reads only its own
+     * namespace of the cache, so it can neither poison nor borrow those.
      *
      * `status` is set when the registry answered 4xx (no such package);
      * `failure` when every attempt failed. Both leave `json` null.
      */
     async readThroughPackument(name, options) {
-        const cached = await this.getPackument(name);
+        const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
+        const cached = await this.getPackument(name, registry);
         if (cached && !cached.expired && cached.json) {
             return { json: cached.json, source: 'r2-cache' };
         }
-        const url = packumentUrl(name);
+        const url = packumentUrl(name, registry);
         const retries = Math.max(0, options?.retries ?? 3);
         const timeoutMs = options?.timeoutMs ?? 15_000;
         let lastErr;
@@ -566,7 +589,7 @@ export class R2CacheClient {
                     this._recordHit('L4', 'packument', json.length);
                     // Best-effort fill, awaited so a follow-up read in the same
                     // install sees it.
-                    await this.putPackument(name, json);
+                    await this.putPackument(name, json, registry);
                     return { json, source: 'network' };
                 }
                 if (resp.status >= 400 && resp.status < 500) {
@@ -605,12 +628,12 @@ export class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    async putPackument(name, json) {
+    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN) {
         if (!this.packumentBucket)
             return false;
         const expiresAt = Date.now() + PACKUMENT_TTL_MS;
         try {
-            await this.packumentBucket.put(packumentKey(name), json, {
+            await this.packumentBucket.put(packumentKey(name, registry), json, {
                 httpMetadata: { contentType: 'application/json' },
                 customMetadata: { expiresAt: String(expiresAt) },
             });

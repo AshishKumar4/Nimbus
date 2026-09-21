@@ -108,6 +108,8 @@ export interface ResolveOneSpec {
   fetchTimeoutMs: number;
   /** Retries for transient failures. Default 3. */
   retries: number;
+  /** Registry origin the packument is read from (the install's `NPM_REGISTRY`). */
+  registry: string;
 }
 
 export interface ResolveOneResult {
@@ -238,7 +240,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
        */
       getPackument: (
         name: string,
-        options: { retries: number; timeoutMs: number },
+        options: { retries: number; timeoutMs: number; registry: string },
       ) => Promise<{
         json: string | null;
         source: 'r2-cache' | 'network';
@@ -422,6 +424,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       env.SUPERVISOR.getPackument(effName, {
         retries: Math.max(0, spec.retries ?? 3),
         timeoutMs: spec.fetchTimeoutMs ?? 15_000,
+        registry: spec.registry,
       }),
       (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }),
     );

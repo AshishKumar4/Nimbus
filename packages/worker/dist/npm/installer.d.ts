@@ -91,6 +91,7 @@ export declare class NpmInstaller {
         pid?: number;
         npmLog?: NpmLogEmitter;
         onProgress?: (msg: string) => void;
+        registry?: string;
     }): Promise<NpmInstallResult>;
     private _installInner;
     /**

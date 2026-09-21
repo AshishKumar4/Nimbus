@@ -821,7 +821,7 @@ export async function registerHostedCommands(self, workspace) {
         await self.ensureNpmInstaller((msg) => {
             ctx.stdout.write('[npm] ' + msg + '\n');
         });
-        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid });
+        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid, registry: ctx.env?.NPM_REGISTRY });
         if (result.failed.length > 0) {
             ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
         }

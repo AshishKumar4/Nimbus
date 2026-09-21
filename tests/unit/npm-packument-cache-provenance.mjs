@@ -131,7 +131,32 @@ function recordingFetch(responder) {
   assert.equal(bucket.store.size, 0, 'a failed fetch must not be cached');
 }
 
-// ── 4. The resolve facet holds no cache-write capability and never
+// ── 4. Another registry (NPM_REGISTRY) reads from that origin and keeps its
+//       own cache namespace: it never serves, nor fills, the npmjs entries ──
+{
+  const bucket = fakeBucket();
+  const npmjs = packumentJson('react', '19.0.0', 'https://registry.npmjs.org/react/-/react-19.0.0.tgz');
+  await new R2CacheClient(null, bucket).putPackument('react', npmjs);
+
+  const mirror = 'http://npm-registry.invalid';
+  const mirrored = packumentJson('react', '19.0.0', `${mirror}/react/-/react-19.0.0.tgz`);
+  const calls = recordingFetch(() => new Response(mirrored, { status: 200 }));
+  const fromMirror = await new R2CacheClient(null, bucket).readThroughPackument('react', { registry: mirror });
+
+  assert.equal(fromMirror.json, mirrored, 'a warm npmjs entry is not an answer for another registry');
+  assert.equal(fromMirror.source, 'network');
+  assert.deepEqual(calls.map((c) => c.url), [`${mirror}/react`]);
+  assert.equal(bucket.store.get(packumentKey('react')).json, npmjs, 'the npmjs entry is untouched');
+  assert.equal(bucket.store.get(packumentKey('react', mirror)).json, mirrored);
+  assert.notEqual(packumentKey('react', mirror), packumentKey('react'));
+  assert.equal(packumentKey('react', 'https://registry.npmjs.org'), packumentKey('react'), 'the default origin keeps its key');
+
+  const cached = await new R2CacheClient(null, bucket).readThroughPackument('react', { registry: mirror });
+  assert.equal(cached.source, 'r2-cache');
+  assert.equal(cached.json, mirrored);
+}
+
+// ── 5. The resolve facet holds no cache-write capability and never
 //       reaches the network itself ────────────────────────────────────
 {
   const body = packumentJson('react', '19.0.0', 'https://registry.npmjs.org/react/-/react-19.0.0.tgz');
@@ -144,6 +169,7 @@ function recordingFetch(responder) {
       assert.equal(name, 'react');
       assert.equal(typeof options.retries, 'number');
       assert.equal(typeof options.timeoutMs, 'number');
+      assert.equal(options.registry, 'http://npm-registry.invalid', 'the facet asks for the install\'s registry');
       return { json: body, source: 'r2-cache', events: [{ kind: 'hit', tier: 'L3', cacheKind: 'packument', bytes: body.length }] };
     },
   }, {
@@ -155,7 +181,7 @@ function recordingFetch(responder) {
   globalThis.fetch = async () => { throw new Error('the resolve facet must not perform network I/O'); };
 
   const result = await resolveOnePackumentInFacet(
-    { name: 'react', range: '19.0.0', cachedEntries: [], isOptional: false, fetchTimeoutMs: 15_000, retries: 3 },
+    { name: 'react', range: '19.0.0', cachedEntries: [], isOptional: false, fetchTimeoutMs: 15_000, retries: 3, registry: 'http://npm-registry.invalid' },
     { SUPERVISOR: supervisor },
   );
 

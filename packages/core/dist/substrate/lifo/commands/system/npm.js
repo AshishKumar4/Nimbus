@@ -322,6 +322,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
                 global: invocation.global,
                 globalPrefix: invocation.global ? globalPrefix : undefined,
                 pid: ctx.pid,
+                registry: npmRegistry,
                 production: invocation.production,
                 npmLog,
                 onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),

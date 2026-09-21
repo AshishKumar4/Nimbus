@@ -117,8 +117,16 @@ export declare const R2_CACHE_PREFIX = "v2";
  *  No data migration; existing R2 packument entries' customMetadata
  *  .expiresAt stamps remain valid against either TTL. */
 export declare const PACKUMENT_TTL_MS: number;
+/** The registry an install reads from when its env names none (`NPM_REGISTRY`). */
+export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
+/**
+ * The registry origin an install uses: the command's `NPM_REGISTRY` when
+ * set, else the default — the same rule core's in-process `npm` applies.
+ * A trailing slash is dropped so `${origin}/${name}` composes either way.
+ */
+export declare function npmRegistryOrigin(configured: string | undefined): string;
 /** The registry URL a packument is read from — also what `npm http` lines report. */
-export declare function packumentUrl(name: string): string;
+export declare function packumentUrl(name: string, registry?: string): string;
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
  *  framing + the call's own arg bytes. Tarballs above this size skip
@@ -171,7 +179,7 @@ type R2BucketLike = {
  * encodeURIComponent on the name so '@scope/pkg' becomes a single path
  * segment (R2 keys allow any UTF-8, but URL paths need encoding).
  */
-export declare function packumentL2Url(name: string): string;
+export declare function packumentL2Url(name: string, registry?: string): string;
 /** L2 cache-key URL for a tarball content address. Hex + the SRI algo
  *  name are already URL-safe, so the R2 key doubles as the URL path. */
 export declare function tarballL2Url(address: TarballAddress): string;
@@ -211,7 +219,7 @@ export declare function parseTarballAddress(integrity: string): TarballAddress |
  */
 export declare function tarballKey(address: TarballAddress): string;
 /** Compose the R2 object key for a packument. */
-export declare function packumentKey(name: string): string;
+export declare function packumentKey(name: string, registry?: string): string;
 /**
  * Per-instance counters surfaced for tests / probes. Read via
  * `R2CacheClient.stats()`. Track at the FUNCTION boundary level so a
@@ -308,7 +316,7 @@ export declare class R2CacheClient {
      * write back to L2 with a 5-min `Cache-Control: max-age=300`
      * (matching the existing R2 customMetadata.expiresAt semantic).
      */
-    getPackument(name: string): Promise<CachedPackument | null>;
+    getPackument(name: string, registry?: string): Promise<CachedPackument | null>;
     /**
      * Resolve a packument through the whole stack: cache read, and on a
      * miss (or an expired entry) the registry fetch plus the cache fill.
@@ -323,6 +331,8 @@ export declare class R2CacheClient {
      * attacker would be choosing the address too. Here, the only bytes
      * that reach `pc/<name>.json` are the ones registry.npmjs.org served
      * for that exact name, one line below the fetch that produced them.
+     * Another registry (`options.registry`) fills and reads only its own
+     * namespace of the cache, so it can neither poison nor borrow those.
      *
      * `status` is set when the registry answered 4xx (no such package);
      * `failure` when every attempt failed. Both leave `json` null.
@@ -330,6 +340,7 @@ export declare class R2CacheClient {
     readThroughPackument(name: string, options?: {
         retries?: number;
         timeoutMs?: number;
+        registry?: string;
     }): Promise<PackumentReadThrough>;
     /**
      * Write a packument JSON to R2 with a TTL stamp in customMetadata.
@@ -342,7 +353,7 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

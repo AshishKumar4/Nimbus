@@ -32,6 +32,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         packages: spec.packages.length > 0 ? [...spec.packages] : undefined,
         production: spec.production,
         pid: spec.pid,
+        registry: spec.registry,
         npmLog: spec.npmLog ?? undefined,
         onProgress: spec.onProgress,
       });

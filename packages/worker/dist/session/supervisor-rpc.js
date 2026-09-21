@@ -534,7 +534,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * it, so a caller-supplied `put` would be a cross-tenant
      * code-execution primitive for anyone holding a supervisor stub. No
      * such RPC exists: the only bytes that reach `pc/<name>.json` are the
-     * ones registry.npmjs.org served for that exact name.
+     * ones registry.npmjs.org served for that exact name; another registry
+     * (`options.registry`, the install's `NPM_REGISTRY`) has its own keys.
      */
     async getPackument(name, options) {
         const r2 = this._r2();
