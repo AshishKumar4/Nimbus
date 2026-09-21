@@ -137,11 +137,33 @@ try {
     term.close();
     assert.equal(await term.readBytes(4096), null);
   }
+
+  // `wait $!` answers with the job's exit status, zero included. A resolver
+  // that unwrapped the job promise made a successful job read as "no such
+  // job" (127), which the Pi installer's background preflight check turned
+  // into an offer to install Node.
+  // The `[n] pid (background)` notice on stderr is the job control's, not
+  // wait's; only stdout carries the status under test.
+  await assertRunStdout('wait on a successful background job answers 0',
+    'true & p=$!; wait "$p"; echo RC:$?', 'RC:0\n');
+  await assertRunStdout('wait on a failed background job answers its status',
+    'g() { return 7; }; g & p=$!; wait "$p"; echo RC:$?', 'RC:7\n');
+  await assertRunStdout('wait on a successful background function answers 0',
+    'f() { return 0; }; f & p=$!; if wait "$p"; then echo CHECK:0; else echo CHECK:$?; fi', 'CHECK:0\n');
+  await assertRun('wait on an unknown id is 127 and says so',
+    'wait 424242; echo RC:$?',
+    { stdout: 'RC:127\n', stderr: 'wait: 424242: no such process\n', exitCode: 0 });
 } finally {
   box.destroy();
 }
 
 console.log('lifo-shell-primitives: ok');
+
+async function assertRunStdout(name, command, stdout) {
+  const result = await box.commands.run(command, { timeout: 60_000 });
+  assert.equal(result.exitCode, 0, `${name}: exitCode`);
+  assert.equal(result.stdout, stdout, `${name}: stdout`);
+}
 
 async function assertRun(name, command, expected) {
   const result = await box.commands.run(command, { timeout: 60_000 });

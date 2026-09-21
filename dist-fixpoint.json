@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "081112a2a5bc0c7687759dea62802d16ac68d62436fd5bc0d70b08c34fc630b0",
+  "fingerprint": "c679e838bec84beed47496665fedef44942bdda319bb3638a386745d42356b2c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -795,8 +795,8 @@
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.d.ts.map": "154f857965669111fac7507a443afef132c144a4c08ebd21daa1db569210472f",
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.js": "357213f135d22dd97abd72d1289a0a4421641e43a71e13fb7846f0f0e0885044",
     "packages/core/dist/substrate/lifo/shell/Shell.d.ts": "2850f86e8aabc9a157bd00510ce9280d7779d474d18dd4c2593f007a2b6244be",
-    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "2c657792a37c563f154b2e2c777fc8e5450f815c3c170f323b923ce511a76252",
-    "packages/core/dist/substrate/lifo/shell/Shell.js": "0b0967422e6dde7f04b397c82c80ad004d6a8af8f54371e618b9baca8ac04c40",
+    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "7e2101fd077fdb65c1086e34458811adacae9ddf4ca394c76882cec857aeba1f",
+    "packages/core/dist/substrate/lifo/shell/Shell.js": "47219a5de8045256a75bc9c54e3f5692835cc08fa5e1c693fb849906a59ab69c",
     "packages/core/dist/substrate/lifo/shell/completer.d.ts": "91bfeb4dac16423e32f723bcf73ab38ab5d496e0f2cbbc8ffeb8e3b39155bf65",
     "packages/core/dist/substrate/lifo/shell/completer.d.ts.map": "b390080a46fe8f19fcf32540903a82bc37354672487269610a12f2b1dd565a27",
     "packages/core/dist/substrate/lifo/shell/completer.js": "a584dddb0b7621df529a368089a32e6ba81adeefc40bd28cc741eb3d1d7c6073",
@@ -1139,7 +1139,7 @@
     "packages/core/src/substrate/lifo/sandbox/index.ts": "50ca405a1a970af8ae663ec22aa3434bf17c5ecfcf007385525b2621c22c27f3",
     "packages/core/src/substrate/lifo/sandbox/types.ts": "1ceeee0b386cf6732e031676b79ef20a66cd5464e99ac3b92dd62e072b55cfb9",
     "packages/core/src/substrate/lifo/shell/ProcessRegistry.ts": "7b8f7766a8aaffaf297cd31253d1e994610c0ddecf3200c1219ad020015b209a",
-    "packages/core/src/substrate/lifo/shell/Shell.ts": "b389ce844e2048a7691b338250ce5532b142a7f698da4770b8513221596a28f1",
+    "packages/core/src/substrate/lifo/shell/Shell.ts": "a95c5f1f77f602200006bea89b30cdd395a9904b80510e57d78cb9269b1a2175",
     "packages/core/src/substrate/lifo/shell/completer.ts": "36bb62552309a1a8d59f1da73f1de5a11d16bed1eadc3909ccac1c997f168325",
     "packages/core/src/substrate/lifo/shell/default-shell.ts": "cdc234f74e154889ba261a311fac3b561349b7909c327b7a75903c4e07032ffc",
     "packages/core/src/substrate/lifo/shell/expander.ts": "0ce223adf51627994a7e56cefd19857482e3c1eba676ca62e055030eb6057b33",

@@ -1269,19 +1269,25 @@ export class Shell {
             }
             targets.push({ value: parsed.value, byJob: parsed.byJob });
         }
+        // A target is either a waitable or absent; the two are kept apart from
+        // the exit status itself, which is what `wait $!` answers with and is
+        // zero for the common case. An async resolver that returned the job's
+        // promise had it unwrapped into that status, and a successful job read
+        // as "no such job" (127) — the Pi installer runs its preflight checks
+        // as a background job and treats that 127 as a failed check.
         const waitables = targets.length === 0
             ? this.jobTable.list()
                 .filter((job) => job.status === 'running')
-                .map((job) => job.promise)
-            : await Promise.all(targets.map(async (target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
+                .map((job) => ({ promise: job.promise }))
+            : await Promise.all(targets.map((target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
         let last = 0;
         for (const waitable of waitables) {
-            if (!waitable) {
+            if (waitable === null) {
                 last = 127;
                 continue;
             }
             try {
-                const result = await waitable;
+                const result = await waitable.promise;
                 last = typeof result === 'number' ? result : 0;
             }
             catch {
@@ -1297,14 +1303,14 @@ export class Shell {
                 (await stderr.write(`wait: %${value}: no such job\n`));
                 return null;
             }
-            return job.promise;
+            return { promise: job.promise };
         }
         const proc = this.processRegistry.get(value);
         if (proc)
-            return proc.promise;
+            return { promise: proc.promise };
         const job = this.jobTable.get(value);
         if (job)
-            return job.promise;
+            return { promise: job.promise };
         (await stderr.write(`wait: ${value}: no such process\n`));
         return null;
     }
