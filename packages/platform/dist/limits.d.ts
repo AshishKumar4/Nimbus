@@ -70,6 +70,15 @@ export declare const SQLITE_MAX_ROW_BYTES = 2000000;
  */
 export declare const BLOCK_CONCURRENCY_CANCEL_MS = 30000;
 /**
+ * Cadence of the alarm that keeps a session Durable Object in memory while
+ * a resident process runs. The platform evicts an object after roughly ten
+ * seconds with no in-flight event; a pending promise (`ctx.waitUntil`) is
+ * not one, and facets die with their parent. Measured 2026-09-21 on local
+ * workerd and on Cloudflare: a quiet resident process survived 8 s of
+ * silence and was re-driven under a new pid namespace after 12 s.
+ */
+export declare const RESIDENT_KEEPALIVE_MS = 5000;
+/**
  * Bytes one hibernatable WebSocket attachment may serialize to. Verified in
  * workerd source at the pinned version (v1.20260603.1,
  * src/workerd/api/web-socket.h: `MAX_ATTACHMENT_SIZE = 1024 * 16`). The

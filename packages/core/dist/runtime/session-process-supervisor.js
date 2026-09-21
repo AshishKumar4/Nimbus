@@ -145,6 +145,10 @@ export class SessionProcessSupervisor {
     get stats() {
         return this.table.stats;
     }
+    /** See ProcessTable.residentRunning — running long-running process count. */
+    get residentRunning() {
+        return this.table.residentRunning;
+    }
     /** See ProcessTable.setPidBase — generation-unique pid allocation. */
     setPidBase(base) {
         this.table.setPidBase(base);

@@ -18,6 +18,8 @@
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
  *     setAlarm for post-hibernation drain.
+ *   - ensureResidentKeepalive(host, ctx) — arm the keep-alive alarm that
+ *     holds this object in memory while a resident process runs.
  *   - dispatchAlarm(host) — alarm() handler body: the fabric's generic
  *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
@@ -25,7 +27,7 @@
  * The timer multiplexer itself (reason map, schedule, the per-instance
  * chain) is fabric machinery — `@nimbus-sh/fabric/timers.js`; this module
  * registers the session's reasons ('w9-flush' | 'log-janitor' |
- * 'resident-launch') on top of it.
+ * 'resident-launch' | 'resident-keepalive') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -56,6 +58,8 @@ export interface HibHost extends TimerHost {
     _w9FlushTimer: any;
     /** W1: log-janitor alarm believed armed for this instance (cheap guard). */
     _w1JanitorArmed: boolean;
+    /** W1: resident keep-alive alarm believed armed for this instance. */
+    _w1KeepaliveArmed: boolean;
     /** W1: destroyed-session tombstone — never re-arm alarms while set. */
     _w1SessionDestroyed: boolean;
 }
@@ -103,6 +107,23 @@ export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWir
  */
 export declare function clearDestroyedTombstone(host: HibHost, ctx: any): void;
 export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
+/**
+ * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
+ * of a LONG-RUNNING process only.
+ *
+ * A resident process lives in a facet, and a facet dies with its parent; the
+ * platform evicts an idle object after roughly ten seconds, and a pending
+ * `ctx.waitUntil` is not the in-flight event that counts (see
+ * RESIDENT_KEEPALIVE_MS). A quiet process sends no RPC, so without this the
+ * session idles out and the launch journal re-drives the process under a new
+ * pid namespace, dropping its attached terminal and its port. The alarm is
+ * the event; its dispatch is the whole payload.
+ *
+ * Idempotent per instance via `_w1KeepaliveArmed`; dispatchAlarm clears the
+ * flag when the last resident process is gone, so the next resident spawn
+ * re-arms the cycle.
+ */
+export declare function ensureResidentKeepalive(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void;
 /**
@@ -111,7 +132,7 @@ export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ct
  * reasons so a rollback from a future deploy that added new reasons doesn't
  * leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive';
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
@@ -126,6 +147,8 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  *   - `'resident-launch'` → pumpResidentLaunches()
  *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
  *     for next 60s cycle while the session still has anything to sweep.
+ *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
+ *     while a resident process is running, so the object stays in memory.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled

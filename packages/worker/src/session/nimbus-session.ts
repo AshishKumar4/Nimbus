@@ -121,7 +121,7 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 // sibling modules (-hib, -diag, -ws). The class file itself no longer
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
-import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
+import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
@@ -426,6 +426,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    *  prevented hibernation per CF DO docs). The alarm itself lives in
    *  DO storage at key `w1_next_alarm_reasons`. */
   _w1JanitorArmed: boolean = false;
+  /** W1: idempotency flag for the resident keep-alive alarm cycle — the
+   *  recurring event that holds this object in memory for as long as a
+   *  resident process runs (hibernation.ts ensureResidentKeepalive). */
+  _w1KeepaliveArmed: boolean = false;
   /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
    *  While set, log activity never re-arms the janitor alarm cycle. */
   _w1SessionDestroyed: boolean = false;
@@ -536,6 +540,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       env,
       notify: (line) => this._notifySession(line),
       requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+      armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
       filesystem: () => this.getFilesystemAuthority(),
     });
     // In `wrangler dev`, the outer Worker and this DO share a single
