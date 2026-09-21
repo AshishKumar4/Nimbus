@@ -56,7 +56,7 @@ export class EsbuildBundlePool {
             throw new Error('EsbuildBundlePool: env.ASSETS binding missing — the esbuild wasm asset cannot be fetched');
         }
         const env = this.env;
-        const [{ IsolatePool }, { PRE_BUNDLE_PREAMBLE }, { fetchEsbuildWasmBytes }] = await Promise.all([
+        const [{ IsolatePool }, { preBundlePreamble }, { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes }] = await Promise.all([
             import('@nimbus-sh/fabric/isolate-pool.js'),
             import('../loaders/pre-bundle-preamble.js'),
             import('../runtime/esbuild-wasm-bytes.js'),
@@ -76,7 +76,7 @@ export class EsbuildBundlePool {
         const setupAllocation = await acquireResidentSupervisorAllocation(maxRetainedWasmBytes);
         let retained = false;
         try {
-            const wasmBytes = await fetchEsbuildWasmBytes(env);
+            const [wasmBytes, jsFnBody] = await Promise.all([fetchEsbuildWasmBytes(env), fetchEsbuildJsFnBody(env)]);
             if (wasmBytes.byteLength > maxRetainedWasmBytes) {
                 throw new RangeError(`esbuild wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`);
             }
@@ -89,7 +89,7 @@ export class EsbuildBundlePool {
                 timeoutMs: 60_000,
                 retries: 0,
                 tag: 'esbuild-bundle',
-                preamble: PRE_BUNDLE_PREAMBLE,
+                preamble: preBundlePreamble(jsFnBody),
                 wasmModules: { 'esbuild.wasm': wasmBytes },
             });
             retained = true;

@@ -56,7 +56,7 @@ import {
   esbuildTransformWorkerCode,
   type EsbuildTransformFacetRpc,
 } from './esbuild-transform.js';
-import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 
 export type {
   FacetManagerHooks,
@@ -267,9 +267,14 @@ function isolatedEsmTransform(
     if (!assets || typeof assets.fetch !== 'function') {
       throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
     }
-    const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () =>
-      esbuildTransformWorkerCode(await fetchEsbuildWasmBytes({ ASSETS: assets })),
-    );
+    const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => {
+      const assetsEnv = { ASSETS: assets };
+      const [wasmBytes, jsFnBody] = await Promise.all([
+        fetchEsbuildWasmBytes(assetsEnv),
+        fetchEsbuildJsFnBody(assetsEnv),
+      ]);
+      return esbuildTransformWorkerCode(wasmBytes, jsFnBody);
+    });
     const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
     const facet = ctx.facets.get<EsbuildTransformFacetRpc>(
       `esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`,

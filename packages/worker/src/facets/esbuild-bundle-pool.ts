@@ -2,7 +2,7 @@
  * EsbuildBundlePool — the session's single esbuild facet pool.
  *
  * Install-time pre-bundling and on-demand /@modules/ bundling dispatch the
- * same worker (PRE_BUNDLE_PREAMBLE + esbuild.wasm, one slot). When each
+ * same worker (the pre-bundle preamble + esbuild.wasm, one slot). When each
  * pipeline built its own IsolatePool the supervisor retained two copies of
  * the ~12 MiB wasm bytes and warmed two loader slots per session, and the
  * two pools never queued behind each other. One pool, owned by the session,
@@ -83,7 +83,7 @@ export class EsbuildBundlePool implements BundlePoolProvider {
       throw new Error('EsbuildBundlePool: env.ASSETS binding missing — the esbuild wasm asset cannot be fetched');
     }
     const env = this.env;
-    const [{ IsolatePool }, { PRE_BUNDLE_PREAMBLE }, { fetchEsbuildWasmBytes }] = await Promise.all([
+    const [{ IsolatePool }, { preBundlePreamble }, { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes }] = await Promise.all([
       import('@nimbus-sh/fabric/isolate-pool.js'),
       import('../loaders/pre-bundle-preamble.js'),
       import('../runtime/esbuild-wasm-bytes.js'),
@@ -104,7 +104,7 @@ export class EsbuildBundlePool implements BundlePoolProvider {
     const setupAllocation = await acquireResidentSupervisorAllocation(maxRetainedWasmBytes);
     let retained = false;
     try {
-      const wasmBytes = await fetchEsbuildWasmBytes(env);
+      const [wasmBytes, jsFnBody] = await Promise.all([fetchEsbuildWasmBytes(env), fetchEsbuildJsFnBody(env)]);
       if (wasmBytes.byteLength > maxRetainedWasmBytes) {
         throw new RangeError(
           `esbuild wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`,
@@ -119,7 +119,7 @@ export class EsbuildBundlePool implements BundlePoolProvider {
         timeoutMs: 60_000,
         retries: 0,
         tag: 'esbuild-bundle',
-        preamble: PRE_BUNDLE_PREAMBLE,
+        preamble: preBundlePreamble(jsFnBody),
         wasmModules: { 'esbuild.wasm': wasmBytes },
       });
       retained = true;

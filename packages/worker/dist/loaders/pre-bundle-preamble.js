@@ -10,7 +10,10 @@
  * Specifically prebundleOne references:
  *   - ESBUILD_WASM_JS_FN_BODY — function-body string (~117 KiB) that,
  *                               when run via new Function(...)(), returns
- *                               the esbuild namespace. SMALL — kept inline.
+ *                               the esbuild namespace. Staged beside the
+ *                               wasm and fetched by the supervisor at
+ *                               pool construction (fetchEsbuildJsFnBody),
+ *                               then spliced in here.
  *   - resolvePackageEntry     — the npm-resolver helper used by the
  *                               bare-specifier resolver
  *
@@ -32,7 +35,7 @@
  * fine — esbuild boot is the dominant cost and re-paying it once on a
  * deploy is acceptable.
  */
-import { ESBUILD_WASM_JS_FN_BODY, ESBUILD_WASM_VERSION, } from '../esbuild-wasm-bundle.generated.js';
+import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 // NOTE: wasm BYTES deliberately NOT in this preamble. They live in
 // env.ASSETS at /_assets/esbuild-<version>.wasm and are fetched by
@@ -69,16 +72,17 @@ const RESOLVER_HELPERS_SRC = getExportsResolverJS();
 /**
  * Preamble string injected ahead of the prebundleOne function in every
  * pre-bundle facet isolate. Must be passed via IsolatePool's
- * `preamble` option.
+ * `preamble` option. `jsFnBody` is the staged esbuild adapter.
  */
-export const PRE_BUNDLE_PREAMBLE = `
+export function preBundlePreamble(jsFnBody) {
+    return `
 // ── pre-bundle facet preamble (auto-generated) ──────────────────────────
 // Esbuild JS helpers (small ~117 KiB). The wasm BYTES are NOT here —
-// they're fetched at facet boot via env.SUPERVISOR.getEsbuildWasm() to
-// keep the per-dispatch worker module source under ~120 KiB instead of
-// ~16 MiB. See this file's header for why.
+// they ride IsolatePool's wasmModules option to keep the per-dispatch
+// worker module source under ~120 KiB instead of ~16 MiB. See this
+// file's header for why.
 const ESBUILD_WASM_VERSION = ${JSON.stringify(ESBUILD_WASM_VERSION)};
-const ESBUILD_WASM_JS_FN_BODY = ${JSON.stringify(ESBUILD_WASM_JS_FN_BODY)};
+const ESBUILD_WASM_JS_FN_BODY = ${JSON.stringify(jsFnBody)};
 
 // ── Materialise esbuild namespace at MODULE STARTUP ─────────────────────
 // workerd's deployed config disallows \"Code generation from strings\" at
@@ -109,3 +113,4 @@ try {
 ${RESOLVER_HELPERS_SRC}
 // ── end pre-bundle facet preamble ───────────────────────────────────────
 `;
+}

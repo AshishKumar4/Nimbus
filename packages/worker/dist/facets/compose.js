@@ -39,7 +39,7 @@ import { resolveDurableWorkerImage } from './durable-images.js';
 import { persistPortCapability, readPortReservation, readPortReservationByOwner, reservePort, routeCapabilityPort, } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
 import { ESBUILD_TRANSFORM_WORKER_ID, esbuildTransformWorkerCode, } from './esbuild-transform.js';
-import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 export { FacetManager, DEFAULT_WORKER_MAIN_MODULE } from './manager.js';
 /**
  * Compose a FacetManager over a host's own ctx, env, process supervisor, port
@@ -138,7 +138,14 @@ function isolatedEsmTransform(ctx, env) {
         if (!assets || typeof assets.fetch !== 'function') {
             throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
         }
-        const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => esbuildTransformWorkerCode(await fetchEsbuildWasmBytes({ ASSETS: assets })));
+        const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => {
+            const assetsEnv = { ASSETS: assets };
+            const [wasmBytes, jsFnBody] = await Promise.all([
+                fetchEsbuildWasmBytes(assetsEnv),
+                fetchEsbuildJsFnBody(assetsEnv),
+            ]);
+            return esbuildTransformWorkerCode(wasmBytes, jsFnBody);
+        });
         const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
         const facet = ctx.facets.get(`esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`, async () => ({ class: transformClass }));
         return facet.transform(code, options);

@@ -1,14 +1,15 @@
 /**
- * esbuild-wasm-bytes.ts — supervisor-side fetcher for the esbuild-wasm
- * binary. The bytes live in the static-assets layer (env.ASSETS); this
- * module hands them to the caller as an ArrayBuffer when needed.
+ * esbuild-wasm-bytes.ts — supervisor-side fetcher for the two esbuild-wasm
+ * artifacts a transform facet is built from: the wasm binary and the JS
+ * adapter that drives it. Both live in the static-assets layer
+ * (env.ASSETS); this module hands them to the caller when needed.
  *
  * Cache strategy
  * ──────────────
  * - NO module-scope cache (would pin 16 MiB in supervisor heap; the
  *   reason this module exists, see Phase 2 A'.5 below).
  * - L2 colo cache via `caches.default` (cache-and-scrub W-D): the bytes
- *   are version-pinned by URL (`/_assets/esbuild-<ESBUILD_VERSION>.wasm`),
+ *   are version-pinned by URL (`/_assets/esbuild-<ESBUILD_VERSION>.*`),
  *   so an `immutable` cache entry is correct. The Cache API holds its
  *   OWN reference outside the supervisor heap, so this does not
  *   re-introduce the residency that A'.5 removed.
@@ -28,6 +29,11 @@
  * are stored OUTSIDE the supervisor heap (workerd manages them), so
  * adding L2 wrap doesn't undo this.
  *
+ * The JS adapter followed the wasm for the same reason at a smaller
+ * scale: the supervisor already imports esbuild-wasm's browser build as a
+ * module for its own transforms, so carrying the same 117 KiB again as a
+ * string literal for facets doubled it in the Worker bundle.
+ *
  * Each call to `fetchEsbuildWasmBytes(env)` now does:
  *   - one `caches.default.match()` — sub-millisecond on hit
  *   - on miss: one env.ASSETS.fetch() + one cache write-back
@@ -39,31 +45,39 @@
  * Cache lookup failure (any throw) → fall through to ASSETS.
  * ASSETS fetch returning non-200 → throw (deploy bug, surface loudly).
  * Digest mismatch on either tier → throw (the bytes are compiled as a wasm
- * module, so they are verified against ESBUILD_WASM_SHA256 before returning).
+ * module or evaluated as facet code, so they are verified against the
+ * digest the generator recorded before returning).
  */
-import { ESBUILD_VERSION } from '@nimbus-sh/core/constants.js';
-import { ESBUILD_WASM_SHA256 } from '../esbuild-wasm-bundle.generated.js';
+import { ESBUILD_JS_ASSET_PATH, ESBUILD_JS_SHA256, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256, } from '../esbuild-wasm-bundle.generated.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
- * Path inside env.ASSETS where the esbuild-wasm binary lives.
- * Versioned so a future esbuild-wasm bump produces a different asset
- * name and forces a fresh fetch (no stale-cache risk). The matching
- * file is staged at public/_assets/esbuild-<version>.wasm by
- * scripts/bundle-esbuild-wasm.mjs at predeploy time.
- */
-export const ESBUILD_WASM_ASSET_PATH = `/_assets/esbuild-${ESBUILD_VERSION}.wasm`;
-/**
- * Synthetic L2 cache key for the esbuild-wasm asset. Versioned via
- * ESBUILD_WASM_ASSET_PATH so each esbuild upgrade lands a fresh entry
- * and old entries naturally evict on TTL.
+ * Synthetic L2 cache keys for the esbuild-wasm assets, staged at
+ * public/_assets/esbuild-<version>.{wasm,js} by scripts/bundle-esbuild-wasm.mjs
+ * at predeploy time. Versioned via the asset paths so each esbuild upgrade
+ * lands fresh entries and old ones naturally evict on TTL.
  *
  * Exported so the test endpoint at /api/_test/cache/wasm/reset can
- * purge the entry between probe runs (otherwise wrangler dev's
+ * purge the entries between probe runs (otherwise wrangler dev's
  * persistent caches.default.state preserves the L2 hit across sessions
  * and the cold path is unobservable).
  */
-export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid/_assets/esbuild-${ESBUILD_VERSION}.wasm`;
+export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_WASM_ASSET_PATH}`;
+export const ESBUILD_JS_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_JS_ASSET_PATH}`;
+const ESBUILD_WASM_ASSET = {
+    label: 'esbuild-wasm',
+    path: ESBUILD_WASM_ASSET_PATH,
+    l2Key: ESBUILD_WASM_L2_KEY,
+    sha256: ESBUILD_WASM_SHA256,
+    contentType: 'application/wasm',
+};
+const ESBUILD_JS_ASSET = {
+    label: 'esbuild-wasm JS adapter',
+    path: ESBUILD_JS_ASSET_PATH,
+    l2Key: ESBUILD_JS_L2_KEY,
+    sha256: ESBUILD_JS_SHA256,
+    contentType: 'text/javascript; charset=utf-8',
+};
 /**
  * Fetch the esbuild-wasm bytes from the static-assets layer.
  *
@@ -77,13 +91,24 @@ export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid/_assets/esbuild
  * to env.ASSETS and write-back. Cache failures are silent — ASSETS is
  * always the correct source of truth.
  */
-export async function fetchEsbuildWasmBytes(env) {
+export function fetchEsbuildWasmBytes(env) {
+    return fetchVerifiedAsset(env, ESBUILD_WASM_ASSET);
+}
+/**
+ * Fetch the esbuild-wasm JS adapter: the function body that, wrapped in
+ * `new Function(...)()`, returns the esbuild namespace. Facet sources
+ * splice it in verbatim, so it is verified like the wasm it drives.
+ */
+export async function fetchEsbuildJsFnBody(env) {
+    return new TextDecoder().decode(await fetchVerifiedAsset(env, ESBUILD_JS_ASSET));
+}
+async function fetchVerifiedAsset(env, asset) {
     const caches = globalThis.caches;
     // ── L2 fast path ────────────────────────────────────────────────
     let ab = null;
     try {
         if (caches?.default) {
-            const hit = await caches.default.match(new Request(ESBUILD_WASM_L2_KEY));
+            const hit = await caches.default.match(new Request(asset.l2Key));
             if (hit && hit.ok)
                 ab = await hit.arrayBuffer();
         }
@@ -95,12 +120,12 @@ export async function fetchEsbuildWasmBytes(env) {
         // Construct a synthetic request — env.ASSETS routes by pathname only;
         // the host is ignored. Using `.invalid` per RFC-2606 makes it
         // unambiguous that this URL is internal-binding-only.
-        const url = `https://nimbus-internal.invalid${ESBUILD_WASM_ASSET_PATH}`;
+        const url = `https://nimbus-internal.invalid${asset.path}`;
         const res = await env.ASSETS.fetch(new Request(url));
         try {
             if (!res.ok) {
-                throw new Error(`esbuild-wasm asset fetch failed: ${res.status} ${res.statusText} ` +
-                    `for ${ESBUILD_WASM_ASSET_PATH} — deploy is missing the wasm asset`);
+                throw new Error(`${asset.label} asset fetch failed: ${res.status} ${res.statusText} ` +
+                    `for ${asset.path} — deploy is missing the asset`);
             }
             // Read the bytes once (Response body is a one-shot stream). The
             // caller needs the ArrayBuffer to hand to workerd's LOADER; we
@@ -112,9 +137,9 @@ export async function fetchEsbuildWasmBytes(env) {
         }
     }
     const digest = await sha256Hex(ab);
-    if (digest !== ESBUILD_WASM_SHA256) {
-        throw new Error(`esbuild-wasm integrity check failed: expected ${ESBUILD_WASM_SHA256}, got ` +
-            `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${ESBUILD_WASM_ASSET_PATH} — ` +
+    if (digest !== asset.sha256) {
+        throw new Error(`${asset.label} integrity check failed: expected ${asset.sha256}, got ` +
+            `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${asset.path} — ` +
             'the staged asset is corrupt or out of sync; rerun ' +
             'scripts/bundle-esbuild-wasm.mjs and redeploy');
     }
@@ -134,14 +159,14 @@ export async function fetchEsbuildWasmBytes(env) {
                 // detach the buffer (only ReadableStream consumption would).
                 const writeBack = new Response(new Uint8Array(ab), {
                     headers: {
-                        'Content-Type': 'application/wasm',
+                        'Content-Type': asset.contentType,
                         'Cache-Control': 'public, max-age=31536000, immutable',
                     },
                 });
                 // Awaited so subsequent reads strictly hit L2 (no
                 // double-fetch race). The wasm payload is 12 MiB; workerd
                 // structured-clones it into the cache, ~1-5 ms locally.
-                await caches.default.put(new Request(ESBUILD_WASM_L2_KEY), writeBack);
+                await caches.default.put(new Request(asset.l2Key), writeBack);
             }
         }
         catch { /* silent */ }

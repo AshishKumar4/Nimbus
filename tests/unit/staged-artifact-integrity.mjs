@@ -24,7 +24,9 @@ import {
   OPENCODE_ARTIFACT_VERSION,
 } from '../../packages/worker/src/opencode-artifact.generated.ts';
 import {
+  ESBUILD_JS_L2_KEY,
   ESBUILD_WASM_L2_KEY,
+  fetchEsbuildJsFnBody,
   fetchEsbuildWasmBytes,
 } from '../../packages/worker/src/runtime/esbuild-wasm-bytes.ts';
 import {
@@ -86,6 +88,13 @@ const cases = [
     l2Key: ESBUILD_WASM_L2_KEY,
     asset: path.join(workerRoot, 'public', '_assets', `esbuild-${ESBUILD_VERSION}.wasm`),
     fetch: (env) => fetchEsbuildWasmBytes(env),
+  },
+  {
+    // The adapter is evaluated as facet code, so it is pinned like the wasm.
+    label: 'esbuild JS adapter',
+    l2Key: ESBUILD_JS_L2_KEY,
+    asset: path.join(workerRoot, 'public', '_assets', `esbuild-${ESBUILD_VERSION}.js`),
+    fetch: async (env) => new TextEncoder().encode(await fetchEsbuildJsFnBody(env)),
   },
   {
     label: 'sql.js wasm',

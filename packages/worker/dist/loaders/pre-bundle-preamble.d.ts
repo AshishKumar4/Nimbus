@@ -10,7 +10,10 @@
  * Specifically prebundleOne references:
  *   - ESBUILD_WASM_JS_FN_BODY — function-body string (~117 KiB) that,
  *                               when run via new Function(...)(), returns
- *                               the esbuild namespace. SMALL — kept inline.
+ *                               the esbuild namespace. Staged beside the
+ *                               wasm and fetched by the supervisor at
+ *                               pool construction (fetchEsbuildJsFnBody),
+ *                               then spliced in here.
  *   - resolvePackageEntry     — the npm-resolver helper used by the
  *                               bare-specifier resolver
  *
@@ -35,7 +38,7 @@
 /**
  * Preamble string injected ahead of the prebundleOne function in every
  * pre-bundle facet isolate. Must be passed via IsolatePool's
- * `preamble` option.
+ * `preamble` option. `jsFnBody` is the staged esbuild adapter.
  */
-export declare const PRE_BUNDLE_PREAMBLE: string;
+export declare function preBundlePreamble(jsFnBody: string): string;
 //# sourceMappingURL=pre-bundle-preamble.d.ts.map

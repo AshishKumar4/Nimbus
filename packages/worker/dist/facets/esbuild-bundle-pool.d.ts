@@ -2,7 +2,7 @@
  * EsbuildBundlePool — the session's single esbuild facet pool.
  *
  * Install-time pre-bundling and on-demand /@modules/ bundling dispatch the
- * same worker (PRE_BUNDLE_PREAMBLE + esbuild.wasm, one slot). When each
+ * same worker (the pre-bundle preamble + esbuild.wasm, one slot). When each
  * pipeline built its own IsolatePool the supervisor retained two copies of
  * the ~12 MiB wasm bytes and warmed two loader slots per session, and the
  * two pools never queued behind each other. One pool, owned by the session,

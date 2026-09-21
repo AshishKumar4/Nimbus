@@ -8,10 +8,7 @@ import {
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import {
-  ESBUILD_WASM_JS_FN_BODY,
-  ESBUILD_WASM_VERSION,
-} from '../esbuild-wasm-bundle.generated.js';
+import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 
 export const ESBUILD_TRANSFORM_WORKER_ID =
   `nimbus-esbuild-transform:${ESBUILD_WASM_VERSION}:${BUNDLER_VERSION}`;
@@ -20,12 +17,16 @@ export type EsbuildTransformFacetRpc = DurableObject & {
   transform(code: string, options: EsbuildTransformOptions): Promise<TransformResult>;
 };
 
-/** Slim Worker Loader module whose DO class owns the esbuild wasm heap. */
-export function esbuildTransformWorkerCode(wasmBytes: ArrayBuffer): WorkerCode {
+/**
+ * Slim Worker Loader module whose DO class owns the esbuild wasm heap.
+ * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), spliced in so
+ * the facet evaluates it at startup, the one moment it may.
+ */
+export function esbuildTransformWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string): WorkerCode {
   const source = [
     'import { DurableObject } from "cloudflare:workers";',
     'import wasmModule from "esbuild.wasm";',
-    `const esbuild = new Function(${JSON.stringify(ESBUILD_WASM_JS_FN_BODY)})();`,
+    `const esbuild = new Function(${JSON.stringify(jsFnBody)})();`,
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildTransformRuntimeSource(),
     'let initialized;',

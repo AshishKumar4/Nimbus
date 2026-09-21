@@ -1,14 +1,15 @@
 /**
- * esbuild-wasm-bytes.ts — supervisor-side fetcher for the esbuild-wasm
- * binary. The bytes live in the static-assets layer (env.ASSETS); this
- * module hands them to the caller as an ArrayBuffer when needed.
+ * esbuild-wasm-bytes.ts — supervisor-side fetcher for the two esbuild-wasm
+ * artifacts a transform facet is built from: the wasm binary and the JS
+ * adapter that drives it. Both live in the static-assets layer
+ * (env.ASSETS); this module hands them to the caller when needed.
  *
  * Cache strategy
  * ──────────────
  * - NO module-scope cache (would pin 16 MiB in supervisor heap; the
  *   reason this module exists, see Phase 2 A'.5 below).
  * - L2 colo cache via `caches.default` (cache-and-scrub W-D): the bytes
- *   are version-pinned by URL (`/_assets/esbuild-<ESBUILD_VERSION>.wasm`),
+ *   are version-pinned by URL (`/_assets/esbuild-<ESBUILD_VERSION>.*`),
  *   so an `immutable` cache entry is correct. The Cache API holds its
  *   OWN reference outside the supervisor heap, so this does not
  *   re-introduce the residency that A'.5 removed.
@@ -28,6 +29,11 @@
  * are stored OUTSIDE the supervisor heap (workerd manages them), so
  * adding L2 wrap doesn't undo this.
  *
+ * The JS adapter followed the wasm for the same reason at a smaller
+ * scale: the supervisor already imports esbuild-wasm's browser build as a
+ * module for its own transforms, so carrying the same 117 KiB again as a
+ * string literal for facets doubled it in the Worker bundle.
+ *
  * Each call to `fetchEsbuildWasmBytes(env)` now does:
  *   - one `caches.default.match()` — sub-millisecond on hit
  *   - on miss: one env.ASSETS.fetch() + one cache write-back
@@ -39,16 +45,9 @@
  * Cache lookup failure (any throw) → fall through to ASSETS.
  * ASSETS fetch returning non-200 → throw (deploy bug, surface loudly).
  * Digest mismatch on either tier → throw (the bytes are compiled as a wasm
- * module, so they are verified against ESBUILD_WASM_SHA256 before returning).
+ * module or evaluated as facet code, so they are verified against the
+ * digest the generator recorded before returning).
  */
-/**
- * Path inside env.ASSETS where the esbuild-wasm binary lives.
- * Versioned so a future esbuild-wasm bump produces a different asset
- * name and forces a fresh fetch (no stale-cache risk). The matching
- * file is staged at public/_assets/esbuild-<version>.wasm by
- * scripts/bundle-esbuild-wasm.mjs at predeploy time.
- */
-export declare const ESBUILD_WASM_ASSET_PATH = "/_assets/esbuild-0.24.2.wasm";
 /**
  * The minimal env shape this module needs. Defined narrowly so the
  * caller can pass any env with an ASSETS Fetcher binding without
@@ -60,16 +59,18 @@ export interface EsbuildWasmFetchEnv {
     };
 }
 /**
- * Synthetic L2 cache key for the esbuild-wasm asset. Versioned via
- * ESBUILD_WASM_ASSET_PATH so each esbuild upgrade lands a fresh entry
- * and old entries naturally evict on TTL.
+ * Synthetic L2 cache keys for the esbuild-wasm assets, staged at
+ * public/_assets/esbuild-<version>.{wasm,js} by scripts/bundle-esbuild-wasm.mjs
+ * at predeploy time. Versioned via the asset paths so each esbuild upgrade
+ * lands fresh entries and old ones naturally evict on TTL.
  *
  * Exported so the test endpoint at /api/_test/cache/wasm/reset can
- * purge the entry between probe runs (otherwise wrangler dev's
+ * purge the entries between probe runs (otherwise wrangler dev's
  * persistent caches.default.state preserves the L2 hit across sessions
  * and the cold path is unobservable).
  */
-export declare const ESBUILD_WASM_L2_KEY = "https://nimbus-cache.invalid/_assets/esbuild-0.24.2.wasm";
+export declare const ESBUILD_WASM_L2_KEY: string;
+export declare const ESBUILD_JS_L2_KEY: string;
 /**
  * Fetch the esbuild-wasm bytes from the static-assets layer.
  *
@@ -84,4 +85,10 @@ export declare const ESBUILD_WASM_L2_KEY = "https://nimbus-cache.invalid/_assets
  * always the correct source of truth.
  */
 export declare function fetchEsbuildWasmBytes(env: EsbuildWasmFetchEnv): Promise<ArrayBuffer>;
+/**
+ * Fetch the esbuild-wasm JS adapter: the function body that, wrapped in
+ * `new Function(...)()`, returns the esbuild namespace. Facet sources
+ * splice it in verbatim, so it is verified like the wasm it drives.
+ */
+export declare function fetchEsbuildJsFnBody(env: EsbuildWasmFetchEnv): Promise<string>;
 //# sourceMappingURL=esbuild-wasm-bytes.d.ts.map

@@ -62,7 +62,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
-import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
+import { fetchEsbuildWasmBytes, ESBUILD_JS_L2_KEY, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { Fanout, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
 import { z } from 'zod/v4';
 // `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
@@ -1455,7 +1455,7 @@ async function handleCacheTestEndpoint(self, url, request) {
         // from esbuild-wasm-bytes.ts so the test endpoint stays in
         // lockstep with the runtime module's key shape across any
         // future ESBUILD_VERSION bump.
-        await purgeL2(ESBUILD_WASM_L2_KEY);
+        await Promise.all([purgeL2(ESBUILD_WASM_L2_KEY), purgeL2(ESBUILD_JS_L2_KEY)]);
         return Response.json({ purged: true });
     }
     if (path === '/api/_test/cache/wasm/bench' && request.method === 'GET') {
