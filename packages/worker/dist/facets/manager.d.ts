@@ -316,13 +316,33 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Reco
     readonly bytes: number;
 };
 /**
+ * Encoded bytes one generated VFS bundle member may carry — the bound the
+ * partition actually packs to, and the threshold below which a bundle stays
+ * inline in the main module.
+ *
+ * The smaller of what the supervisor can afford to hold a second copy of
+ * while it hands the map over ({@link FACET_MODULE_MEMBER_MAX_BYTES}) and
+ * what the loader will accept per member ({@link BUNDLE_MAX_ENCODED_BYTES}),
+ * less the margin the module envelope needs.
+ */
+export declare const FACET_VFS_MODULE_MAX_SOURCE_BYTES: number;
+/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
- * modules below the existing per-module encoded ceiling and merged during
+ * modules below {@link FACET_MODULE_MEMBER_MAX_BYTES} and merged during
  * module evaluation. A single oversized cell is split into ordered fragments;
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
+ *
+ * The partition is bounded by what the SUPERVISOR can hold, not by what the
+ * loader will accept. Every member is read back into the coordinator's own
+ * isolate to build the module map, so a member's size is paid twice at boot
+ * — once as bytes, once as the string decoded from them — on top of the whole
+ * map, which is resident either way. Bounding by the loader's per-member
+ * ceiling let one member reach 22.67 MB on `astro dev` and reset the object;
+ * the ceiling still holds as the platform assertion below, it is simply not
+ * the bound that keeps the launch inside its isolate.
  */
 export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget): Promise<FacetVfsBundleSource>;
 /**
