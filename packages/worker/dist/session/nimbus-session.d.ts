@@ -22,7 +22,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
-import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -326,7 +326,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
-    _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
+    _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;

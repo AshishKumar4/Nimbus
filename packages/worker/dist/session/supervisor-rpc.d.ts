@@ -30,7 +30,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireResult, VfsListPage, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
@@ -74,12 +74,12 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>>;
     lstat(path: string): Promise<any>;
     hasLegacySymlinkUnder(path: string): Promise<boolean>;
-    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<void>;
-    chmod(path: RuntimeFsPath, mode: number): Promise<void>;
+    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt>;
+    chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt>;
     access(path: RuntimeFsPath, mode: number): Promise<void>;
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
-    }): Promise<void>;
+    }): Promise<VfsMutationReceipt>;
     setUmask(mask: number): Promise<number>;
     readdir(path: RuntimeFsPath): Promise<{
         name: string;
@@ -184,10 +184,10 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * a short result, which a caller could mistake for a short file.
      */
     fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number>;
+    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt>;
     fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
     fsAppendAck(moduleId: string, operationId: string): Promise<void>;
-    fsTruncate(path: string, size: number): Promise<void>;
+    fsTruncate(path: string, size: number): Promise<VfsMutationReceipt>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
      * Used by facets that buffer writes locally (git clone/fetch/pull).

@@ -86,8 +86,9 @@ export class ExecutionFs {
     }
     async writeFile(path, bytes) { await this.bridge.writeFile(path, bytes); }
     async writeRange(path, offset, bytes) {
-        const written = await this.bridge.writeRange(path, offset, bytes);
-        return written === undefined ? bytes.length : written;
+        // Both the bridge and the lifo VFS write every byte of the range.
+        await this.bridge.writeRange(path, offset, bytes);
+        return bytes.length;
     }
     async appendFile(path, content) {
         if (this.bridge instanceof VFS) {

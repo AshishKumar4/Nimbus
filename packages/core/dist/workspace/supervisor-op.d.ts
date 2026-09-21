@@ -156,10 +156,10 @@ declare const NATIVE_OPS: {
     rename: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     symlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     access: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    chown: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    chmod: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    utimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    chown: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
+    chmod: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
+    utimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
+    fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
     stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
     stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;

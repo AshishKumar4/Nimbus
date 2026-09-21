@@ -178,7 +178,7 @@ export class SqliteRuntimeFsBridge {
             if (options.expectedRevision !== undefined)
                 throw fsError('ESTALE', 'write', path);
             located.mount.writeRange(located.path, offset, bytes);
-            return bytes.byteLength;
+            return this.mountReceipt();
         }
         const p = located.path;
         this.assertExpectedRevision(p, options.expectedRevision);
@@ -186,8 +186,7 @@ export class SqliteRuntimeFsBridge {
             throw fsError('EISDIR', 'write', path);
         if (options.createParents !== false)
             this.ensureParent(p);
-        this.vfs.writeRange(p, offset, bytes);
-        return bytes.byteLength;
+        return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
     }
     appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
         return this.vfs.appendOnce(this.sqlitePath(path, true, 'append'), pid, writerId, moduleId, operationId, digest, bytes);
@@ -199,36 +198,36 @@ export class SqliteRuntimeFsBridge {
         const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate');
         if (located.mount) {
             located.mount.truncate(located.path, size);
-            return;
+            return this.mountReceipt();
         }
         const p = located.path;
         if (!this.vfs.exists(p))
             throw fsError('ENOENT', 'truncate', path);
         if (this.vfs.isDirectory(p))
             throw fsError('EISDIR', 'truncate', path);
-        this.vfs.truncate(p, size);
+        return this.receipted(p, () => this.vfs.truncate(p, size));
     }
     utimes(path, atimeMs, mtimeMs, options = {}) {
         const located = this.locateMutation(path, options.followSymlinks !== false, 'utimes');
         if (located.mount) {
             located.mount.utimes(located.path, atimeMs, mtimeMs);
-            return;
+            return this.mountReceipt();
         }
         const p = located.path;
         if (!this.vfs.exists(p))
             throw fsError('ENOENT', 'utimes', path);
-        this.vfs.utimes(p, atimeMs, mtimeMs);
+        return this.receipted(p, () => this.vfs.utimes(p, atimeMs, mtimeMs));
     }
     chmod(path, mode) {
         const located = this.locateMutation(path, true, 'chmod');
         if (located.mount) {
             located.mount.chmod(located.path, mode);
-            return;
+            return this.mountReceipt();
         }
         const p = located.path;
         if (!this.vfs.exists(p))
             throw fsError('ENOENT', 'chmod', path);
-        this.vfs.chmod(p, mode);
+        return this.receipted(p, () => this.vfs.chmod(p, mode));
     }
     access(path, mode) {
         const located = this.locate(path, true);
@@ -244,12 +243,12 @@ export class SqliteRuntimeFsBridge {
         const located = this.locateMutation(path, followSymlinks, 'chown');
         if (located.mount) {
             located.mount.chown(located.path, uid, gid);
-            return;
+            return this.mountReceipt();
         }
         const p = located.path;
         if (!this.vfs.exists(p))
             throw fsError('ENOENT', 'chown', path);
-        this.vfs.chown(p, uid, gid, { followSymlinks });
+        return this.receipted(p, () => this.vfs.chown(p, uid, gid, { followSymlinks }));
     }
     open(path, flags) {
         const normalizedFlags = normalizeOpenFlags(flags);
@@ -688,6 +687,21 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ENOENT', syscall, path);
         if (!this.vfs.isDirectory(parent))
             throw fsError('ENOTDIR', syscall, path);
+    }
+    /**
+     * Run one mutation of storage path `p` and report its revision on either
+     * side, both read in the mutation's own synchronous turn: across an await
+     * either would report a peer's clock as ours.
+     */
+    receipted(p, mutate) {
+        const before = this.rawVfs.revision(p);
+        mutate();
+        return { before, after: this.rawVfs.revision() };
+    }
+    /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */
+    mountReceipt() {
+        const r = this.rawVfs.revision();
+        return { before: r, after: r };
     }
     assertExpectedRevision(path, expectedRevision) {
         if (expectedRevision === undefined)

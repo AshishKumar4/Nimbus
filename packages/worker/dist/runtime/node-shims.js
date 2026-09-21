@@ -1832,10 +1832,22 @@ const __fsMod = (() => {
     const before = queued && after ? after() : null;
     const run = async () => {
       if (before) await before;
-      await _fsRpc(rpc(supervisor), syscall, displayPath, () => undefined);
+      const receipt = await _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result);
+      // Only chown answers with a receipt; the rest resolve undefined and
+      // leave the stamp alone.
+      _stampOwnMutation(absPath, receipt);
       _markVfsStale();
     };
     return queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+  }
+
+  // Advance the held cell's stamp past one of this facet's own partial
+  // mutations (see __nimbusStampOwnMutation for the rule). Heap-side stamps
+  // do not describe rows in the resident store, so store mode is left to the
+  // store's own provenance.
+  function _stampOwnMutation(absPath, receipt) {
+    if (_residentStorePresent()) return;
+    __nimbusStampOwnMutation(_strip(absPath), receipt);
   }
 
   // A sync caller has no frame to receive the outcome. The ledger already
@@ -1883,7 +1895,8 @@ const __fsMod = (() => {
     // Pending sync chmod rides along with any flush of the same path
     // (idempotent — the entry stays so local statSync remains coherent).
     if (k in _localModes && typeof supervisor.chmod === "function") {
-      await _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, () => undefined);
+      const receipt = await _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result);
+      _stampOwnMutation(absPath, receipt);
       _markVfsStale();
     }
   }
@@ -2310,8 +2323,10 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
       await _announceLocalDirs(absPath, supervisor);
+      // The revision comes back so the ledger can stamp the cell: an async
+      // whole write is the facet's own as much as a parked sync one is.
       await __nimbusFlushVfsWrite(absPath, (content) =>
-        _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined)
+        _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result)
       );
       _markVfsStale();
     }
@@ -2358,6 +2373,9 @@ const __fsMod = (() => {
             (content, snapshot) =>
               __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
           );
+          // Persisting the append drops the resident cell (the ledger
+          // refetches it on the next live read), so there is no cell to
+          // trim or stamp behind this truncate.
           await __nimbusQueueVfsMutation(absPath, async () => {
             await flush;
             await _fsRpc(
@@ -2379,11 +2397,12 @@ const __fsMod = (() => {
       // Live file is the source of truth — supervisor trims only the
       // boundary chunk; ENOENT propagates when it does not exist.
       const generation = __vfsWriteGenerations[k];
-      await __nimbusQueueVfsMutation(absPath, () =>
-        _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, () => undefined)
+      const receipt = await __nimbusQueueVfsMutation(absPath, () =>
+        _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, (result) => result)
       );
       if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
         _truncateLocalCell(absPath, size);
+        _stampOwnMutation(absPath, receipt);
       }
       _markVfsStale();
       return;
@@ -2423,10 +2442,10 @@ const __fsMod = (() => {
       const rpc = () => _fsRpc(
         supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
         syscall, p,
-        () => undefined,
+        (result) => result,
       );
-      if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, rpc);
-      else await rpc();
+      const receipt = _hasVfsMutationQueue() ? await __nimbusQueueVfsMutation(absPath, rpc) : await rpc();
+      _stampOwnMutation(absPath, receipt);
       _markVfsStale();
       return;
     }
@@ -2476,9 +2495,10 @@ const __fsMod = (() => {
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
     await _flushLocalPathToSupervisor(absPath, supervisor);
-    await _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, () => undefined);
+    const receipt = await _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result);
     const meta = _metadata(absPath);
     if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
+    _stampOwnMutation(absPath, receipt);
     _markVfsStale();
   }
 
@@ -3332,15 +3352,16 @@ const __fsMod = (() => {
             );
             if (meta && meta.type === "file") writeAt = Number(meta.size) || 0;
           }
-          await _fsRpc(
+          const receipt = await _fsRpc(
             supervisor.fsWriteRange(this._abs, writeAt, bytes),
             "write", this._path,
-            () => undefined,
+            (result) => result,
           );
           const key = _strip(this._abs);
           if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
               __vfsWriteGenerations[key] === overlayGeneration) {
             _overlayLocalCell(this._abs, writeAt, bytes);
+            _stampOwnMutation(this._abs, receipt);
           }
         });
         _markVfsStale();

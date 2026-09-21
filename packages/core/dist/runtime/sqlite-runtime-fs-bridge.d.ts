@@ -1,6 +1,6 @@
 import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireResult, VfsListPage } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
     node: VfsOpenDescription;
@@ -48,20 +48,20 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
-    }): number;
+    }): VfsMutationReceipt;
     appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
     acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
-    }): void;
+    }): VfsMutationReceipt;
     utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: {
         followSymlinks?: boolean;
-    }): void;
-    chmod(path: RuntimeFsPath, mode: number): void;
+    }): VfsMutationReceipt;
+    chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt;
     access(path: RuntimeFsPath, mode: number): void;
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
-    }): void;
+    }): VfsMutationReceipt;
     open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
@@ -107,6 +107,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private openMount;
     private ensureParent;
     private assertParentDirectory;
+    /**
+     * Run one mutation of storage path `p` and report its revision on either
+     * side, both read in the mutation's own synchronous turn: across an await
+     * either would report a peer's clock as ours.
+     */
+    private receipted;
+    /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */
+    private mountReceipt;
     private assertExpectedRevision;
     private description;
     private getHandle;

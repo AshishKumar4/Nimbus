@@ -23,7 +23,7 @@
  */
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -163,7 +163,7 @@ export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: num
  * truncated file as a complete one.
  */
 export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: number): Promise<FsReadBatchEntry[]>;
-export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
+export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
 export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
 /**

@@ -312,6 +312,26 @@ function __nimbusStampFlushedCell(snapshot, revision) {
   __vfsBundleRevisions[snapshot.key] = revision;
 }
 
+/**
+ * Advance a held cell's stamp past one of the facet's OWN partial mutations
+ * (ranged write, truncate, utimes, chmod, chown). Each bumps the path's
+ * revision exactly as a flush does; unstamped, the next barrier would evict
+ * the facet's own cell and a sync read would fail EAGAIN on bytes it just
+ * wrote. The RPC answers with the path's revision on either side of the
+ * mutation, read in its synchronous turn, and receipt.before keeps this
+ * sound: a stamp at or past it means the cell was current when the mutation
+ * landed, so the cell with the local effect applied IS what the authority
+ * serves at receipt.after. A stamp below it means a peer touched the path
+ * in between, and the barrier must still evict. Unstamped cells stay so.
+ * Callers mutate the local cell before stamping.
+ */
+function __nimbusStampOwnMutation(key, receipt) {
+  if (!receipt || typeof receipt.before !== "number" || typeof receipt.after !== "number") return;
+  const stamp = __vfsBundleRevisions[key];
+  if (stamp === undefined || stamp < receipt.before) return;
+  __vfsBundleRevisions[key] = receipt.after;
+}
+
 function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
   const snapshot = __nimbusCaptureVfsWrite(path);
   if (!snapshot) return Promise.resolve(undefined);
@@ -465,7 +485,8 @@ async function __nimbusDrainVfsWrites(supervisor) {
 export const VFS_WRITE_LEDGER_SOURCE = `
 const __vfsWriteGenerations = Object.create(null);
 // Per-path: the authority revision the resident cell in __vfsBundle is
-// known-good at. Only a flush of this facet's own bytes sets one, and the
+// known-good at. Only a flush of this facet's own bytes sets one, this
+// facet's own partial mutations of a stamped cell advance it, and the
 // ACQUIRE barrier is the only reader. An unstamped cell is simply evicted,
 // so a mutation path that forgets to stamp costs a refetch and never a
 // stale byte.
