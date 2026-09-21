@@ -54,7 +54,7 @@ const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
-    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites };'
+    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins };'
 );
 const sandbox = factory(
   bundle, metadata, dirs, null, supervisor,
@@ -387,5 +387,57 @@ await fs.promises.truncate('/home/user/durable.txt', 9);
 assert.equal(writes['home/user/durable.txt'], undefined, 'the staged cell was flushed');
 assert.equal(dec.decode(await bridge.readFile('/home/user/durable.txt')), 'persisted',
   'sync writes reach the live VFS');
+
+// ── fs.constants is Node's real linux x64 table, shared everywhere ──
+// modern-tar (create-astro via @bluwy/giget-core) composes its open flags
+// from fs.constants at module init and passes the NUMBER to fs.open. With a
+// partial table the expression is 0 (O_RDONLY) and every extracted file
+// fails ENOENT, so the whole table — not just the access modes — must exist.
+const C = fs.constants;
+const tarFlags = C.O_WRONLY | C.O_CREAT | C.O_TRUNC | (C.O_NOFOLLOW ?? 0) | C.O_EXCL;
+assert.equal(tarFlags, 131777, 'O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_EXCL on linux x64');
+assert.equal(fs.promises.constants, C, 'fs.promises.constants is the same object');
+assert.ok(Object.isFrozen(C), 'fs.constants is frozen, as in Node');
+for (const [k, v] of Object.entries({
+  O_RDONLY: 0, O_RDWR: 2, O_APPEND: 1024, O_DIRECTORY: 65536, O_SYNC: 1052672,
+  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960, S_IRWXU: 448,
+  UV_FS_O_FILEMAP: 0, UV_DIRENT_DIR: 2, COPYFILE_EXCL: 1, UV_FS_COPYFILE_FICLONE_FORCE: 4,
+  EXTENSIONLESS_FORMAT_WASM: 1, F_OK: 0, X_OK: 1,
+})) assert.equal(C[k], v, `fs.constants.${k}`);
+// node:constants is the union of os/fs/crypto constants and reads the SAME table.
+const nodeConstants = sandbox.builtins['node:constants'];
+assert.equal(nodeConstants.O_CREAT, C.O_CREAT);
+assert.equal(nodeConstants.O_NOFOLLOW, C.O_NOFOLLOW);
+assert.equal(sandbox.process.binding('fs').constants.O_CREAT, C.O_CREAT);
+for (const k of Object.keys(C)) assert.equal(nodeConstants[k], C[k], `node:constants.${k} mirrors fs.constants`);
+
+// The modern-tar sequence: numeric flags → open creates → write → close → readable.
+const tarPath = '/home/user/extracted/entry.txt';
+fs.mkdirSync('/home/user/extracted', { recursive: true });
+const tarFd = await new Promise((res, rej) =>
+  fs.open(tarPath, tarFlags, 0o664, (e, d) => (e ? rej(e) : res(d))));
+assert.equal(typeof tarFd, 'number');
+await new Promise((res, rej) =>
+  fs.write(tarFd, Buffer.from('tar entry bytes'), 0, 15, 0, (e) => (e ? rej(e) : res())));
+await new Promise((res, rej) => fs.close(tarFd, (e) => (e ? rej(e) : res())));
+assert.equal(fs.readFileSync(tarPath, 'utf8'), 'tar entry bytes');
+assert.equal(dec.decode(await bridge.readFile(tarPath)), 'tar entry bytes');
+
+// O_EXCL on an existing file is EEXIST, sync and async.
+assert.throws(() => fs.openSync(tarPath, C.O_WRONLY | C.O_CREAT | C.O_EXCL), (e) => e.code === 'EEXIST');
+const exclErr = await new Promise((res) => fs.open(tarPath, tarFlags, 0o664, (e) => res(e)));
+assert.equal(exclErr.code, 'EEXIST');
+// O_TRUNC empties, O_APPEND preserves and appends.
+fs.closeSync(fs.openSync(tarPath, C.O_WRONLY | C.O_TRUNC));
+assert.equal(fs.readFileSync(tarPath, 'utf8'), '');
+const apfd = fs.openSync(tarPath, C.O_WRONLY | C.O_APPEND);
+fs.writeSync(apfd, 'ab');
+fs.writeSync(apfd, 'cd');
+fs.closeSync(apfd);
+assert.equal(fs.readFileSync(tarPath, 'utf8'), 'abcd');
+// O_DIRECTORY on a regular file is ENOTDIR.
+assert.throws(() => fs.openSync(tarPath, C.O_RDONLY | C.O_DIRECTORY), (e) => e.code === 'ENOTDIR');
+const dirErr = await new Promise((res) => fs.open(tarPath, C.O_RDONLY | C.O_DIRECTORY, (e) => res(e)));
+assert.equal(dirErr.code, 'ENOTDIR');
 
 console.log('node-shims fd syscalls: OK');

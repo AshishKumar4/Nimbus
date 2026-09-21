@@ -635,6 +635,43 @@ function __residentAnyUnder(prefix) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  fs.constants (linux x64) ───────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The ONE table behind fs.constants, fs.promises.constants, and the fs slice
+// of node:constants / process.binding('fs'). Values are real Node on Linux
+// x64 (node -p 'require("fs").constants'). Packages compose open flags from
+// this table at module init — modern-tar (create-astro via @bluwy/giget-core)
+// computes O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_EXCL and passes the number
+// to fs.open — so a partial table silently degrades every such open to
+// O_RDONLY (0) and every extraction fails ENOENT. Frozen, as Node's is.
+const __fsConstants = Object.freeze({
+  // ── libuv fs flags ────────────────────────────────────────────────
+  UV_FS_SYMLINK_DIR: 1, UV_FS_SYMLINK_JUNCTION: 2,
+  // ── open(2) flags ─────────────────────────────────────────────────
+  O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
+  UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3,
+  UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7,
+  EXTENSIONLESS_FORMAT_JAVASCRIPT: 0, EXTENSIONLESS_FORMAT_WASM: 1,
+  // ── stat.mode file-type bits ──────────────────────────────────────
+  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192,
+  S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152,
+  O_CREAT: 64, O_EXCL: 128, UV_FS_O_FILEMAP: 0, O_NOCTTY: 256, O_TRUNC: 512,
+  O_APPEND: 1024, O_DIRECTORY: 65536, O_NOATIME: 262144, O_NOFOLLOW: 131072,
+  O_SYNC: 1052672, O_DSYNC: 4096, O_DIRECT: 16384, O_NONBLOCK: 2048,
+  // ── stat.mode permission bits ─────────────────────────────────────
+  S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,
+  S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8,
+  S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1,
+  // ── fs.access modes ───────────────────────────────────────────────
+  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+  // ── fs.copyFile modes (libuv shape + Node alias) ──────────────────
+  UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1,
+  UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
+  UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4,
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  fs shim (VFS-backed) ───────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __fsMod = (() => {
@@ -2956,7 +2993,7 @@ const __fsMod = (() => {
   // ── open-flag parsing for fs.promises.open ──
   function _parseOpenFlags(flags) {
     if (typeof flags === "number") {
-      const O_WRONLY = 1, O_RDWR = 2, O_CREAT = 64, O_EXCL = 128, O_TRUNC = 512, O_APPEND = 1024;
+      const { O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY } = __fsConstants;
       return {
         read: (flags & O_WRONLY) === 0,
         write: (flags & (O_WRONLY | O_RDWR)) !== 0,
@@ -2964,15 +3001,16 @@ const __fsMod = (() => {
         create: (flags & O_CREAT) !== 0,
         truncate: (flags & O_TRUNC) !== 0,
         exclusive: (flags & O_EXCL) !== 0,
+        directory: (flags & O_DIRECTORY) !== 0,
       };
     }
     const s = String(flags === undefined || flags === null ? "r" : flags);
     const plus = s.indexOf("+") !== -1;
     const exclusive = s.indexOf("x") !== -1;
     const base = s.charAt(0);
-    if (base === "w") return { read: plus, write: true, append: false, create: true, truncate: true, exclusive };
-    if (base === "a") return { read: plus, write: true, append: true, create: true, truncate: false, exclusive };
-    return { read: true, write: plus, append: false, create: false, truncate: false, exclusive };
+    if (base === "w") return { read: plus, write: true, append: false, create: true, truncate: true, exclusive, directory: false };
+    if (base === "a") return { read: plus, write: true, append: true, create: true, truncate: false, exclusive, directory: false };
+    return { read: true, write: plus, append: false, create: false, truncate: false, exclusive, directory: false };
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -3211,6 +3249,7 @@ const __fsMod = (() => {
       if (localStat && localStat.isDirectory()) throw _fsErr("EISDIR", "open", path);
     }
     const exists = !!liveMeta || !!localStat;
+    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
     let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
@@ -3234,6 +3273,7 @@ const __fsMod = (() => {
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
     const exists = st !== undefined;
+    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
@@ -3593,8 +3633,9 @@ const __fsMod = (() => {
     },
   };
 
-  // ── constants ──
-  const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
+  // ── constants ── the shared linux x64 table (see __fsConstants).
+  const constants = __fsConstants;
+  promises.constants = constants;
 
   // fs.ReadStream / fs.WriteStream classes. Real Node exposes these as
   // constructors; graceful-fs (bundled by degit → create-cloudflare)
@@ -4029,13 +4070,10 @@ globalThis.WebSocket = __NimbusRelayedWebSocket;
 //
 // require('node:constants') (and the legacy bare require('constants'))
 // expose a FLAT object of POSIX/Linux/OpenSSL constants. Real Node ships
-// ~234 constants; we ship the ones that actually get touched by:
+// ~234 constants; the full fs slice comes from __fsConstants, and the rest
+// is what actually gets touched by:
 //   - create-next-app (touches UV_FS_O_FILEMAP — verified via grep on
 //     unpkg.com/create-next-app@latest/dist/index.js)
-//   - typical fs.openSync flag composition (O_RDONLY, O_WRONLY, O_RDWR,
-//     O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY, etc.)
-//   - typical fs.access mode composition (F_OK, R_OK, W_OK, X_OK)
-//   - typical fs.copyFile mode composition (COPYFILE_EXCL etc.)
 //   - signal/errno tables (shared shape with __osMod.constants.signals
 //     etc. — flat here, nested there; both shapes are real-Node-accurate
 //     and we expose both via the right module).
@@ -4080,26 +4118,10 @@ const __constantsMod = {
   SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
   SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
   SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
-  // ── File-type bits (stat.mode masks) ──────────────────────────────
-  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192,
-  S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152,
-  // ── File-open flags (fs.openSync / fs.constants.O_*) ──────────────
-  O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
-  O_CREAT: 64, O_EXCL: 128, O_NOCTTY: 256, O_TRUNC: 512, O_APPEND: 1024,
-  O_DIRECTORY: 65536, O_NOATIME: 262144, O_NOFOLLOW: 131072,
-  O_SYNC: 1052672, O_DSYNC: 4096, O_DIRECT: 16384, O_NONBLOCK: 2048,
-  // libuv-specific fs flag — create-next-app touches this directly.
-  UV_FS_O_FILEMAP: 0,
-  // ── File-permission bits (chmod / stat.mode user/group/other) ─────
-  S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,
-  S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8,
-  S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1,
-  // ── fs.access mode constants ──────────────────────────────────────
-  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
-  // ── fs.copyFile mode constants (libuv shape + Node alias) ─────────
-  UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1,
-  UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
-  UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4,
+  // ── fs constants (O_*, S_IF*, S_I*, F_OK.., COPYFILE_*, UV_*) ────
+  // Node's constants module is the union of os, fs and crypto constants;
+  // the fs slice is __fsConstants, the same object fs.constants exposes.
+  ...__fsConstants,
   // ── OpenSSL / TLS option flags ────────────────────────────────────
   // Numeric values from real Node v20. Libraries probe defined-ness;
   // we ship the surface so constants.SSL_OP_* doesn't undefined-throw.
