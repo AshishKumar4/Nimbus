@@ -1724,7 +1724,16 @@ const __fsMod = (() => {
   // supervisor.mkdir is recursive, so the deepest unannounced one creates all
   // of them in a single round trip; a path whose directories are already live
   // (the common case) costs none at all.
+  //
+  // This is also the one seam every asynchronous fs entry point crosses on
+  // its way to the authority — directly, or through
+  // _flushLocalPathToSupervisor — so it is where a live call waits for the
+  // structural mutations the program issued synchronously before it:
+  // mkdirSync, rmdirSync, unlinkSync, renameSync queue their authority RPC
+  // (below) rather than land it, and an open/stat/readdir that overtook that
+  // queue would be answered for a tree the program has already changed.
   async function _announceLocalDirs(absPath, supervisor) {
+    await _awaitStructuralOrder(absPath);
     if (!__vfsDirs || typeof supervisor.mkdir !== "function") return;
     const pending = [];
     let key = "";
@@ -1738,6 +1747,69 @@ const __fsMod = (() => {
     await _fsRpc(supervisor.mkdir(deepest), "mkdir", deepest, () => undefined);
     for (const dir of pending) _announcedDirs.add(dir);
     _markVfsStale();
+  }
+
+  // The write ledger is spliced ahead of the shims in every runner
+  // (facets/manager.ts, opencode-facet-runner.ts). A harness that evaluates
+  // the shims alone has no mutation queue and therefore nothing to wait for;
+  // an absent ledger must not be an error on a read path that never needed
+  // one before.
+  function _hasVfsMutationQueue() {
+    return typeof __nimbusQueueVfsMutation === "function";
+  }
+  function _awaitStructuralOrder(absPath) {
+    return _hasVfsMutationQueue() ? __nimbusAwaitAncestorMutations(absPath) : Promise.resolve();
+  }
+
+  /**
+   * Carry a synchronous structural mutation to the authority.
+   *
+   * mkdirSync, rmdirSync, unlinkSync and renameSync used to edit the local
+   * tables and stop: a sync syscall cannot make an RPC, and unlike a sync
+   * write they parked nothing the write-back could later flush. Measured
+   * live: node-tar's \`mkdirSync(dir)\` then \`fs.promises.open(dir/file,
+   * "w")\` — once per extracted entry — was answered ENOENT by an authority
+   * that had never heard of \`dir\`; that is create-astro's template copy.
+   *
+   * The sync effect stays exactly as it was. What is added is the same RPC
+   * the asynchronous form of the call issues, queued through the write
+   * ledger so it registers with the exit drain, is ordered behind pending
+   * mutations of its ancestors (the ledger does that for every queued
+   * mutation), and — for the two that act on a subtree — behind pending
+   * mutations beneath it. The async forms are that same queued call, awaited.
+   *
+   * \`null\` when there is no authority to tell: standalone and unit contexts
+   * keep today's local-only behaviour. Without a ledger the RPC is issued
+   * directly, which is what the async forms did before they were queued.
+   */
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after) {
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor[syscall] !== "function") return null;
+    const queued = _hasVfsMutationQueue();
+    const before = queued && after ? after() : null;
+    const run = async () => {
+      if (before) await before;
+      await _fsRpc(rpc(supervisor), syscall, displayPath, () => undefined);
+      _markVfsStale();
+    };
+    return queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+  }
+
+  // A sync caller has no frame to receive the outcome. The ledger already
+  // marks a queued result handled and retains what the exit drain must
+  // report; this only keeps a ledger-less embedding from raising an
+  // unhandled rejection for a verdict nobody could catch.
+  function _detachStructuralMutation(mutation) {
+    if (mutation) mutation.then(undefined, () => undefined);
+  }
+
+  // A rename lives at two names. Its mutation is queued under the source;
+  // this parks a fence under the destination so that anything queued for the
+  // destination, or an ancestor wait that passes through it, is ordered
+  // behind the move as well. The fence never fails on its own account.
+  function _fenceVfsMutation(absPath, mutation) {
+    if (!mutation || !_hasVfsMutationQueue()) return;
+    __nimbusQueueVfsMutation(absPath, () => mutation.then(() => undefined, () => undefined), false);
   }
 
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
@@ -2148,7 +2220,9 @@ const __fsMod = (() => {
   async function _readlinkAsync(p) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.readlink === "function") {
-      const target = await _fsRpc(supervisor.readlink(_resolve(p)), "readlink", p, (result) => result);
+      const absPath = _resolve(p);
+      await _awaitStructuralOrder(absPath);
+      const target = await _fsRpc(supervisor.readlink(absPath), "readlink", p, (result) => result);
       if (target !== null && target !== undefined) return target;
     }
     throw _fsErr("EINVAL", "readlink", p);
@@ -2157,7 +2231,9 @@ const __fsMod = (() => {
   async function _symlinkAsync(target, path) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.symlink === "function") {
-      await _fsRpc(supervisor.symlink(String(target), _resolve(path)), "symlink", path, () => undefined);
+      const absPath = _resolve(path);
+      await _awaitStructuralOrder(absPath);
+      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", path, () => undefined);
       _markVfsStale();
       return;
     }
@@ -2194,41 +2270,13 @@ const __fsMod = (() => {
     _markVfsStale();
   }
 
-  async function _mkdirAsync(p, opts) {
-    mkdirSync(p, opts);
-    const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.mkdir === "function") {
-      await _fsRpc(supervisor.mkdir(_resolve(p)), "mkdir", p, () => undefined);
-      _markVfsStale();
-    }
-  }
-
-  async function _unlinkAsync(p) {
-    unlinkSync(p);
-    const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.unlink === "function") {
-      await _fsRpc(supervisor.unlink(_resolve(p)), "unlink", p, () => undefined);
-      _markVfsStale();
-    }
-  }
-
-  async function _rmdirAsync(p) {
-    rmdirSync(p);
-    const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.rmdir === "function") {
-      await _fsRpc(supervisor.rmdir(_resolve(p)), "rmdir", p, () => undefined);
-      _markVfsStale();
-    }
-  }
-
-  async function _renameAsync(oldP, newP) {
-    renameSync(oldP, newP);
-    const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.rename === "function") {
-      await _fsRpc(supervisor.rename(_resolve(oldP), _resolve(newP)), "rename", oldP, () => undefined);
-      _markVfsStale();
-    }
-  }
+  // The async structural calls ARE the sync ones, awaited: the same local
+  // effect and the same queued authority RPC, so the two forms cannot
+  // disagree about order, and a program mixing them sees one sequence.
+  async function _mkdirAsync(p, opts) { await _mkdirQueued(p, opts); }
+  async function _unlinkAsync(p) { await _unlinkQueued(p); }
+  async function _rmdirAsync(p) { await _rmdirQueued(p); }
+  async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP); }
 
   async function _truncateAsync(p, len) {
     const absPath = _resolve(p);
@@ -2763,39 +2811,60 @@ const __fsMod = (() => {
   }
 
   // ── mkdirSync ──
-  function mkdirSync(p, opts) {
+  // The sync effect, then the authority mutation queued behind it (see
+  // _queueStructuralMutation). One RPC whatever the depth: the async form
+  // sends the path alone and the authority's mkdir creates the ancestors.
+  function _mkdirQueued(p, opts) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
+    const created = [];
     if (opts?.recursive) {
       const parts = k.split("/").filter(Boolean);
       let cur = "";
-      for (const part of parts) { cur = cur ? cur + "/" + part : part; __vfsDirs[cur] = true; }
+      for (const part of parts) { cur = cur ? cur + "/" + part : part; __vfsDirs[cur] = true; created.push(cur); }
     } else {
       __vfsDirs[k] = true;
+      created.push(k);
     }
+    const queued = _queueStructuralMutation(absPath, "mkdir", p, (supervisor) => supervisor.mkdir(absPath));
+    // Told, not merely known locally: _announceLocalDirs must not issue a
+    // second mkdir for a directory whose own RPC is already in the queue.
+    if (queued) for (const dir of created) _announcedDirs.add(dir);
+    return queued;
   }
+  function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts)); }
 
   // ── unlinkSync ──
-  function unlinkSync(p) {
+  function _unlinkQueued(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
     if (__vfsBundle) delete __vfsBundle[k];
     if (__vfsWrites) delete __vfsWrites[k];
     _forgetSyncPath(k);
+    return _queueStructuralMutation(absPath, "unlink", p, (supervisor) => supervisor.unlink(absPath));
   }
+  function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p)); }
 
   // ── rmdirSync ──
-  function rmdirSync(p) {
+  function _rmdirQueued(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
     if (__vfsDirs) delete __vfsDirs[k];
     _forgetSyncPath(k);
+    return _queueStructuralMutation(
+      absPath, "rmdir", p,
+      (supervisor) => supervisor.rmdir(absPath),
+      () => __nimbusAwaitSubtreeMutations(absPath),
+    );
   }
+  function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p)); }
 
   // ── renameSync ──
-  function renameSync(oldP, newP) {
-    const oldK = _strip(_resolve(oldP));
-    const newK = _strip(_resolve(newP));
+  function _renameQueued(oldP, newP) {
+    const oldAbs = _resolve(oldP);
+    const newAbs = _resolve(newP);
+    const oldK = _strip(oldAbs);
+    const newK = _strip(newAbs);
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     if (content !== undefined) {
       _parkWrite(newK, content);
@@ -2809,8 +2878,32 @@ const __fsMod = (() => {
       const moved = metadata ? metadata[oldK] : undefined;
       _forgetSyncPath(oldK);
       if (moved) metadata[newK] = moved;
+    } else if (__vfsDirs && oldK in __vfsDirs) {
+      // A directory this process made travels under its new name, so the
+      // sync view stops listing the old one and _announceLocalDirs cannot
+      // re-create it at the authority behind the rename.
+      const prefix = oldK + "/";
+      for (const dk of Object.keys(__vfsDirs)) {
+        if (dk !== oldK && !dk.startsWith(prefix)) continue;
+        const moved = newK + dk.slice(oldK.length);
+        __vfsDirs[moved] = true;
+        delete __vfsDirs[dk];
+        if (_announcedDirs.has(dk)) _announcedDirs.add(moved);
+      }
+      _forgetSyncTree(oldK);
     }
+    const queued = _queueStructuralMutation(
+      oldAbs, "rename", oldP,
+      (supervisor) => supervisor.rename(oldAbs, newAbs),
+      // The queue orders the move behind the source's ancestors; the move
+      // also needs the destination's ancestors to exist and every pending
+      // mutation beneath the source to have landed under the old name.
+      () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
+    );
+    _fenceVfsMutation(newAbs, queued);
+    return queued;
   }
+  function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP)); }
 
   // ── copyFileSync ──
   function copyFileSync(src, dest) {

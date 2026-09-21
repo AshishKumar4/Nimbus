@@ -69,6 +69,54 @@ function __nimbusIsDurabilityFailure(error) {
 }
 
 /**
+ * Everything already queued for \`path\` and for every proper ancestor of it,
+ * as of NOW — a snapshot, not a subscription.
+ *
+ * The queue orders mutations per path and nothing else, so \`mkdirSync(a)\`
+ * followed by anything under \`a\` — \`mkdirSync(a/b)\`, a flushed write of
+ * \`a/f\`, an \`fs.promises.open(a/f, "w")\` — could reach the authority
+ * ahead of the directory it lives in and be answered ENOENT for a parent
+ * the program had demonstrably created. node-tar does exactly this for
+ * every entry it extracts.
+ *
+ * Snapshotting at call time is what keeps the graph acyclic: a mutation
+ * only ever waits on mutations that were queued before it, in program
+ * order. Capturing the tails inside the mutation body instead would let a
+ * rename queued behind a slow ancestor pick up a descendant that was
+ * queued after it — and that descendant is already waiting on the rename.
+ *
+ * Map lookups only; resolves on the next tick when nothing is pending.
+ * Tails never reject, so neither does this.
+ */
+function __nimbusAwaitAncestorMutations(path) {
+  const pending = [];
+  let prefix = "";
+  for (const segment of __nimbusVfsPathKey(path).split("/")) {
+    if (!segment) continue;
+    prefix = prefix ? prefix + "/" + segment : segment;
+    const tail = __vfsMutationTails.get(prefix);
+    if (tail) pending.push(tail);
+  }
+  return pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
+}
+
+/**
+ * Everything already queued strictly BELOW \`path\`, as of now. The
+ * complement of the ancestor wait, for the two mutations that act on a
+ * whole subtree: rmdir needs the children gone first, and a rename must
+ * not carry the old name across while a mutation under it is still bound
+ * for the old name.
+ */
+function __nimbusAwaitSubtreeMutations(path) {
+  const prefix = __nimbusVfsPathKey(path) + "/";
+  const pending = [];
+  for (const [key, tail] of __vfsMutationTails) {
+    if (key.startsWith(prefix)) pending.push(tail);
+  }
+  return pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
+}
+
+/**
  * Order a mutation behind the others queued for the same path.
  *
  * A rejection is ALSO reported to the drain when it is durability-class. That
@@ -93,7 +141,11 @@ function __nimbusIsDurabilityFailure(error) {
 function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   const key = __nimbusVfsPathKey(path);
   const previous = __vfsMutationTails.get(key) || Promise.resolve();
-  const result = previous.then(mutation);
+  // Every queued mutation is ordered behind the structural mutations
+  // pending for its ancestors — one place, so a flushed write, an fd write
+  // and a queued mkdir all obey the same rule without each site knowing it.
+  const ancestors = __nimbusAwaitAncestorMutations(key);
+  const result = previous.then(() => ancestors).then(mutation);
   __nimbusPendingVfsMutations.add(result);
   // A failed mutation rejects its own caller but must not poison later writes
   // for the same path or become an unhandled queue-cleanup rejection.
