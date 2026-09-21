@@ -103,8 +103,13 @@ export declare class NpmInstaller {
      *   width <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO loader-pool
      *   width >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO (sibling NimbusSession DOs)
      *
+     * Resolution is per edge, not per name: the first version of a name goes
+     * to root; a later edge the nearest visible placement does not satisfy
+     * nests a copy under its dependent, never higher (placement.ts; live case
+     * in tests/unit/npm-install-nested-conflict.mjs).
+     *
      * The supervisor still owns:
-     *   - cycle detection (`seen`),
+     *   - placement (`placed` / `pending` / `settled`, by placement path),
      *   - X.5-F top-level / required-peer policy,
      *   - X.5-G G1 optional-native silent-skip,
      *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
@@ -170,9 +175,7 @@ export declare class NpmInstaller {
      * Check if a lockfile is still valid against current package.json specs.
      */
     private isLockfileValid;
-    /**
-     * Convert a lockfile back to resolved packages (for cache restore).
-     */
+    /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
     private lockfileToResolved;
     /**
      * Write lockfile to SQLite.

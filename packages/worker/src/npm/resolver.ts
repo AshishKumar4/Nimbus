@@ -36,11 +36,15 @@ export interface ResolvedPackage {
 export interface HoistPlan {
   /** Root-level hoisted packages: name → ResolvedPackage. */
   root: Map<string, ResolvedPackage>;
-  /**
-   * Packages that could not be hoisted due to version conflicts.
-   * Key: "parentName/childName", value: ResolvedPackage.
-   */
+  /** Packages nested under a dependent root does not satisfy, by placement path (placement.ts). */
   nested: Map<string, ResolvedPackage>;
+}
+
+/** One package at one placement: the unit diff, fetch and lockfile work in. */
+export interface PackagePlacement {
+  /** Placement path relative to the project's `node_modules`. */
+  placement: string;
+  pkg: ResolvedPackage;
 }
 
 /**
@@ -66,12 +70,21 @@ export function registryEntryFromResolved(pkg: ResolvedPackage): RegistryCacheEn
   };
 }
 
-/** Compute the flat hoist plan used by the current one-version-per-name resolver. */
+/** The walk's placement decisions carried forward: first version per name at root, the rest nested. */
 export function computeHoistPlan(
   resolved: Map<string, ResolvedPackage>,
+  nested: Map<string, ResolvedPackage> = new Map(),
 ): HoistPlan {
   return {
     root: new Map(resolved),
-    nested: new Map(),
+    nested: new Map(nested),
   };
+}
+
+/** Every placement in the plan, root first. */
+export function hoistPlacements(plan: HoistPlan): PackagePlacement[] {
+  const out: PackagePlacement[] = [];
+  for (const [name, pkg] of plan.root) out.push({ placement: name, pkg });
+  for (const [placement, pkg] of plan.nested) out.push({ placement, pkg });
+  return out;
 }

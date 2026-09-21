@@ -39,6 +39,11 @@ export interface RegistryCacheEntry {
     optionalDepsJson?: string;
     fetchedAt: number;
 }
+/**
+ * One placement in a project's lockfile. The Map key is the placement path
+ * (`name` at root, `<dependent>/node_modules/<name>` nested); it is what the
+ * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
+ */
 export interface LockfileEntry {
     name: string;
     resolvedVer: string;
@@ -121,7 +126,7 @@ export declare class NpmCache {
         written: number;
         failed: number;
     };
-    /** Read the lockfile for a project. Returns null if not found. */
+    /** Read the lockfile for a project, keyed by placement path. Null if not found. */
     readLockfile(projectPath: string): Map<string, LockfileEntry> | null;
     /** Write/overwrite the lockfile for a project. Atomic via transaction. */
     writeLockfile(projectPath: string, entries: Map<string, LockfileEntry>, ctx?: DurableObjectState): void;

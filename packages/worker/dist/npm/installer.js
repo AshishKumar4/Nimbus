@@ -22,7 +22,8 @@
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
-import { computeHoistPlan, } from './resolver.js';
+import { computeHoistPlan, hoistPlacements, } from './resolver.js';
+import { nestedPlacement, visiblePlacements } from './placement.js';
 import { packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
@@ -143,10 +144,11 @@ export class NpmInstaller {
         }
         const lockfile = this.cache.readLockfile(projDir);
         let resolved;
+        let nested;
         let usedLockfile = false;
         if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
             log(`Lockfile valid (${lockfile.size} packages). Skipping resolution.`);
-            resolved = this.lockfileToResolved(lockfile);
+            ({ resolved, nested } = this.lockfileToResolved(lockfile));
             usedLockfile = true;
             phases['lock-check'] = Date.now() - phaseStart;
         }
@@ -168,6 +170,7 @@ export class NpmInstaller {
             log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
             const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised });
             resolved = tree.resolved;
+            nested = tree.nested;
             phases['resolve'] = Date.now() - phaseStart;
             // Transitive platform-gate refusals. Required ones join `failed`
             // with their reason; optional-edge ones stay out of the outcome
@@ -197,13 +200,15 @@ export class NpmInstaller {
         // ── Phase 2: Hoist ────────────────────────────────────────────────
         phaseStart = Date.now();
         setInstallPhase('hoist');
-        const hoistPlan = computeHoistPlan(resolved);
+        const hoistPlan = computeHoistPlan(resolved, nested);
         phases['hoist'] = Date.now() - phaseStart;
         // ── Phase 3: Diff (cache check) ─────────────────────────────────
+        // Per placement: a nested copy is checked at its own directory.
         phaseStart = Date.now();
         setInstallPhase('diff');
         const toFetch = [];
-        for (const [, pkg] of resolved) {
+        for (const target of hoistPlacements(hoistPlan)) {
+            const { pkg } = target;
             if (!pkg.tarballUrl) {
                 // Resolved metadata with no tarball cannot be installed. Silently
                 // dropping it here left the package absent from node_modules and
@@ -213,7 +218,7 @@ export class NpmInstaller {
                 continue;
             }
             // Check if already installed at the correct path
-            const pkgJsonPath = nmDir + '/' + pkg.name + '/package.json';
+            const pkgJsonPath = nmDir + '/' + target.placement + '/package.json';
             if (this.vfs.exists(pkgJsonPath)) {
                 try {
                     const existing = JSON.parse(this.vfs.readFileString(pkgJsonPath));
@@ -229,7 +234,7 @@ export class NpmInstaller {
             // Not present in the VFS at the right version — fetch it. The batch
             // facet consults the shared L2 (caches.default) + L3 (R2) tarball
             // tiers itself, so a cross-DO warm cache still lands here.
-            toFetch.push(pkg);
+            toFetch.push(target);
         }
         phases['diff'] = Date.now() - phaseStart;
         log(`To fetch: ${toFetch.length}, already installed: ${cachedHits}`);
@@ -257,7 +262,7 @@ export class NpmInstaller {
         const commitsBefore = this.storageCommitCount();
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-            const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
+            const batchResult = await this.fetchViaBatchFacet(toFetch, nmDir, opts?.pid);
             totalFiles += batchResult.filesWritten;
             for (const name of batchResult.installed)
                 installed.push(name);
@@ -273,7 +278,7 @@ export class NpmInstaller {
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages) {
-            this.writeLockfile(projDir, resolved, hoistPlan, nmDir);
+            this.writeLockfile(projDir, hoistPlan, nmDir);
         }
         // ── Update package.json if explicit packages were added ─────────
         if (opts?.packages && opts.packages.length > 0) {
@@ -400,7 +405,8 @@ export class NpmInstaller {
                 `${failed.length} missing: ${failed.join(', ')}`);
         }
         else {
-            log(`Done! ${installed.length} packages, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
+            const nestedNote = hoistPlan.nested.size > 0 ? ` (${hoistPlan.nested.size} nested)` : '';
+            log(`Done! ${installed.length} packages${nestedNote}, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
             // npm's own summary line, unstyled: the styled one the command site
             // prints carries a colour prefix that no log parser matches. Carried
             // at `http` — the level from which this stream is machine-readable —
@@ -442,8 +448,13 @@ export class NpmInstaller {
      *   width <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO loader-pool
      *   width >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO (sibling NimbusSession DOs)
      *
+     * Resolution is per edge, not per name: the first version of a name goes
+     * to root; a later edge the nearest visible placement does not satisfy
+     * nests a copy under its dependent, never higher (placement.ts; live case
+     * in tests/unit/npm-install-nested-conflict.mjs).
+     *
      * The supervisor still owns:
-     *   - cycle detection (`seen`),
+     *   - placement (`placed` / `pending` / `settled`, by placement path),
      *   - X.5-F top-level / required-peer policy,
      *   - X.5-G G1 optional-native silent-skip,
      *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
@@ -479,21 +490,27 @@ export class NpmInstaller {
             log(`[npm] note: ${ev.from} has no Workers-compatible build${marker}: ${ev.reason}${hint}`);
         };
         const __f2Diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
-        // Per-walk state — supervisor side.
+        // Per-walk state — supervisor side. Root by name, nested by placement
+        // path, `placed` is both; `pending` is dispatched and unanswered,
+        // `settled` answered whatever the answer was.
         const resolved = new Map();
+        const nested = new Map();
+        const placed = new Map();
+        const pending = new Set();
+        const settled = new Set();
         // Dependencies the walk asked for and could not resolve, name → reason.
-        // A name lands here at most once: the frontier marks it `seen` before
-        // dispatch, so no later parent re-enqueues it.
         const unresolved = new Map();
         // EBADPLATFORM refusals (os/cpu/libc allowlists), in walk order.
         // Announced as `[skip]` lines at record time; required-vs-optional is
         // classified at end of walk, when every required edge has been seen.
         const refusals = new Map();
-        const seen = new Set();
         const topLevelNames = new Set(Object.keys(specs));
         const optionalNames = new Set(); // X.5-G G1
         const bestEffortNames = new Set(); // X.5-drizzle
-        let queue = Object.entries(specs);
+        // A cycle with mutually incompatible ranges has no finite layout; the
+        // edge is refused at this depth rather than nested without end.
+        const MAX_NEST_DEPTH = 16;
+        let queue = Object.entries(specs).map(([name, range]) => ({ name, range, from: '' }));
         const cacheWritesPending = [];
         let totalPackumentBytes = 0;
         let totalPackumentsDecoded = 0;
@@ -544,21 +561,46 @@ export class NpmInstaller {
         // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
         // submitMany batch.
         while (queue.length > 0) {
-            // Dedupe + filter the layer up front. The task body also filters
-            // (defensive), but doing it here avoids dispatching wasted RPC
-            // for already-seen names.
+            // Decide each edge against what Node's walk from its dependent sees.
+            // One whose nearest visible placement is in flight waits a layer.
             const layer = [];
-            const layerSeenLocal = new Set();
-            for (const [name, range] of queue) {
-                if (seen.has(name) || layerSeenLocal.has(name))
+            const deferred = [];
+            for (const edge of queue) {
+                const req = parseRegistryRequest(edge.name, edge.range);
+                let target = edge.name;
+                let decided = false;
+                for (const candidate of visiblePlacements(edge.from, edge.name)) {
+                    if (pending.has(candidate)) {
+                        deferred.push(edge);
+                        decided = true;
+                        break;
+                    }
+                    const pkg = placed.get(candidate);
+                    if (!pkg)
+                        continue; // never asked or failed: the walk goes on upward
+                    if (!isSemverRange(req.range) || satisfiesRange(pkg.version, req.range)) {
+                        decided = true; // reuse
+                    }
+                    else {
+                        target = nestedPlacement(edge.from, edge.name);
+                    }
+                    break;
+                }
+                if (decided)
                     continue;
-                layerSeenLocal.add(name);
-                seen.add(name);
-                layer.push([name, range]);
+                if (settled.has(target))
+                    continue; // failed once, on record under the name
+                if (target.split('/node_modules/').length - 1 > MAX_NEST_DEPTH) {
+                    unresolved.set(edge.name, `${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels (cycle with incompatible ranges)`);
+                    settled.add(target);
+                    continue;
+                }
+                pending.add(target);
+                layer.push({ edge, placement: target });
             }
-            queue = [];
+            queue = deferred;
             if (__f2Diag) {
-                log(`[f2-frontier] N=${layerN} width=${layer.length} resolved-so-far=${resolved.size} seen=${seen.size}`);
+                log(`[f2-frontier] N=${layerN} width=${layer.length} resolved-so-far=${resolved.size} settled=${settled.size}`);
             }
             if (layer.length === 0)
                 break;
@@ -570,7 +612,7 @@ export class NpmInstaller {
             // cache slice (only entries for THIS name) so the per-task RPC
             // stays small. Bounded to 16 versions per name — enough to cover
             // ~2 majors of typical packages, well under any RPC arg size cap.
-            const tasks = layer.map(([name, range]) => {
+            const tasks = layer.map(({ edge: { name, range }, placement }) => {
                 const cachedRows = this.cache.getRegistryVersions(name).slice(0, 16);
                 const cachedEntries = cachedRows.map((e) => ({
                     name: e.name,
@@ -595,7 +637,7 @@ export class NpmInstaller {
                     fetchTimeoutMs: 15_000,
                     retries: 3,
                 };
-                return { key: name, args: taskSpec };
+                return { key: placement, args: taskSpec };
             });
             // Dispatch the layer. Fanout routes:
             //   <5 → in-DO fanout in-DO (IsolatePool), concurrency = layer.length (capped at 4)
@@ -617,7 +659,10 @@ export class NpmInstaller {
             // fanout failed to deliver is recorded instead of skipped.
             for (let i = 0; i < layer.length; i++) {
                 const res = results[i];
-                const [taskName] = layer[i];
+                const { edge, placement } = layer[i];
+                const taskName = edge.name;
+                pending.delete(placement);
+                settled.add(placement);
                 if (!res) {
                     unresolved.set(taskName, `resolver fanout returned no result at layer ${layerN}`);
                     continue;
@@ -716,37 +761,39 @@ export class NpmInstaller {
                         continue;
                     }
                 }
-                if (resolved.has(pkg.name))
+                // A W6 swap answers with another name; place what came back.
+                const isRoot = placement === taskName;
+                const actual = isRoot ? pkg.name : nestedPlacement(edge.from, pkg.name);
+                if (placed.has(actual))
                     continue;
-                resolved.set(pkg.name, pkg);
-                // Edge extraction.
+                placed.set(actual, pkg);
+                settled.add(actual);
+                if (isRoot)
+                    resolved.set(pkg.name, pkg);
+                else
+                    nested.set(actual, pkg);
+                // Edge extraction, from this package's own placement.
                 const inheritBestEffort = bestEffortNames.has(pkg.name);
                 for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
-                    if (resolved.has(depName) || seen.has(depName))
-                        continue;
                     if (inheritBestEffort)
                         bestEffortNames.add(depName);
-                    queue.push([depName, depRange]);
+                    queue.push({ name: depName, range: depRange, from: actual });
                 }
                 const optDeps = pkg.optionalDependencies;
                 if (optDeps) {
                     for (const [depName, depRange] of Object.entries(optDeps)) {
-                        if (resolved.has(depName) || seen.has(depName))
-                            continue;
                         optionalNames.add(depName);
                         if (inheritBestEffort)
                             bestEffortNames.add(depName);
-                        queue.push([depName, depRange]);
+                        queue.push({ name: depName, range: depRange, from: actual });
                     }
                 }
                 if (pkg.peerDependencies) {
                     for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
-                        if (resolved.has(peerName) || seen.has(peerName))
-                            continue;
                         topLevelNames.add(peerName);
                         if (inheritBestEffort)
                             bestEffortNames.add(peerName);
-                        queue.push([peerName, peerRange]);
+                        queue.push({ name: peerName, range: peerRange, from: actual });
                     }
                 }
                 // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
@@ -757,11 +804,9 @@ export class NpmInstaller {
                     const allPeers = pkg.__allPeerDependencies;
                     if (allPeers) {
                         for (const [peerName, peerRange] of Object.entries(allPeers)) {
-                            if (resolved.has(peerName) || seen.has(peerName))
-                                continue;
                             topLevelNames.add(peerName);
                             bestEffortNames.add(peerName);
-                            queue.push([peerName, peerRange]);
+                            queue.push({ name: peerName, range: peerRange, from: actual });
                         }
                     }
                 }
@@ -776,13 +821,18 @@ export class NpmInstaller {
         // sees names in BFS order, so incremental propagation would freeze a
         // dev/optional first sighting before a later required edge lands.
         const requiredNames = new Set();
+        // Followed by name over every placement, root first.
+        const byName = new Map(resolved);
+        for (const pkg of nested.values())
+            if (!byName.has(pkg.name))
+                byName.set(pkg.name, pkg);
         const pendingRequired = Object.keys(specs).filter((name) => !optionalRoots.has(name));
         for (let i = 0; i < pendingRequired.length; i++) {
             const name = pendingRequired[i];
             if (requiredNames.has(name))
                 continue;
             requiredNames.add(name);
-            const pkg = resolved.get(name);
+            const pkg = byName.get(name);
             if (!pkg)
                 continue;
             const optional = pkg.optionalDependencies ?? {};
@@ -829,7 +879,7 @@ export class NpmInstaller {
             `, dispatch barriers=${dispatchBarriers}, ` +
             `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
             (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''));
-        return { resolved, unresolved, rejected };
+        return { resolved, nested, unresolved, rejected };
     }
     /**
      * Batch install via two-tier fan-out (Fanout).
@@ -855,31 +905,26 @@ export class NpmInstaller {
      *   Two-tier topology re-expands the fan-out without re-introducing
      *   the V8 cap risk.
      */
-    async fetchViaBatchFacet(toFetch, hoistPlan, nmDir, pid) {
+    async fetchViaBatchFacet(toFetch, nmDir, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
         let filesWritten = 0;
         const mtime = Date.now();
         // Every entry in `toFetch` has a tarball URL — the diff phase fails
-        // the ones that don't rather than dropping them.
+        // the ones that don't rather than dropping them. `pkgDir` is the
+        // spec's identity: one version may land at two placements.
         const specs = toFetch
-            .map((p) => ({
+            .map(({ placement, pkg: p }) => ({
             name: p.name,
             version: p.version,
             tarballUrl: p.tarballUrl,
             integrity: p.integrity || '',
-            pkgDir: nmDir + '/' + p.name,
+            pkgDir: nmDir + '/' + placement,
             installRoot: nmDir,
             mtime,
             chunkSize: CHUNK_SIZE,
         }));
-        // hoistPlan is intentionally unused: the current installer maps
-        // every package to `${nmDir}/${name}` (flat hoisting). Accepting
-        // the plan as a parameter keeps the caller agnostic of the hoist
-        // strategy and lets a future nested-install variant slot in
-        // without changing the call site.
-        void hoistPlan;
         if (specs.length === 0) {
             return { installed, failed, filesWritten };
         }
@@ -899,13 +944,22 @@ export class NpmInstaller {
         // the two made the phase width control install parallelism, so widening it
         // for latency widened the cold-start burst along with it.
         const INSTALL_PEER_CAP = 8;
-        const shardCount = Math.min(specs.length, INSTALL_PEER_CAP);
-        // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
-        // This produces ⌈specs.length / shardCount⌉ specs per shard at
+        // A tarball's placements share a shard, which acquires it once.
+        const byTarball = new Map();
+        for (const spec of specs) {
+            const group = byTarball.get(spec.tarballUrl);
+            if (group)
+                group.push(spec);
+            else
+                byTarball.set(spec.tarballUrl, [spec]);
+        }
+        const shardCount = Math.min(byTarball.size, INSTALL_PEER_CAP);
+        // Round-robin assignment: tarball at idx → shard idx % shardCount.
+        // This produces ⌈tarballs / shardCount⌉ tarballs per shard at
         // most, with the imbalance bounded to ±1.
         const shards = Array.from({ length: shardCount }, () => []);
-        specs.forEach((spec, idx) => {
-            shards[idx % shardCount].push(spec);
+        [...byTarball.values()].forEach((group, idx) => {
+            shards[idx % shardCount].push(...group);
         });
         const nonEmptyShards = shards.filter((s) => s.length > 0);
         const topology = nonEmptyShards.length < IN_DO_THRESHOLD ? 'in-do (in-DO fanout)' : 'peer-do (peer-DO fanout)';
@@ -967,11 +1021,13 @@ export class NpmInstaller {
             let okCount = 0;
             let failCount = 0;
             const reported = new Set();
-            const specByPackage = new Map(specs.map((s) => [`${s.name}@${s.version}`, s]));
+            const specByDir = new Map(specs.map((s) => [s.pkgDir, s]));
             for (const r of result.perPackage) {
-                reported.add(`${r.name}@${r.version}`);
+                // A pre-placement shard reports no pkgDir; it only wrote root.
+                const dir = r.pkgDir ?? `${nmDir}/${r.name}`;
+                reported.add(dir);
                 // One `npm http` line per tarball, reporting the tier that served it.
-                const spec = specByPackage.get(`${r.name}@${r.version}`);
+                const spec = specByDir.get(dir);
                 if (spec && r.tarballSource) {
                     this.npmLog('http', r.tarballSource === 'registry'
                         ? npmHttpFetchLine(spec.tarballUrl, r.tarballElapsedMs ?? 0)
@@ -996,12 +1052,11 @@ export class NpmInstaller {
             // returns short would otherwise leave its packages in neither list,
             // which is the same silent partial one layer down.
             for (const s of specs) {
-                const id = `${s.name}@${s.version}`;
-                if (reported.has(id))
+                if (reported.has(s.pkgDir))
                     continue;
-                failed.push(id);
+                failed.push(`${s.name}@${s.version}`);
                 failCount++;
-                log(`  [warn] ${id}: install shard returned no result for this package`);
+                log(`  [warn] ${s.name}@${s.version}: install shard returned no result for this package (${s.pkgDir})`);
             }
             // Fold facet counters into the supervisor's diagnostic state.
             recordInstallFacetCounters(result.facetCounters);
@@ -1166,7 +1221,8 @@ export class NpmInstaller {
         // info comes from the registry cache — if the cache miss happens
         // too, we play it safe and invalidate (a fresh resolve repopulates
         // it and is always correct).
-        for (const [, entry] of lockfile) {
+        // An edge is met by any placement Node's walk from the entry finds.
+        for (const [placement, entry] of lockfile) {
             const cached = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
             if (!cached)
                 return false;
@@ -1175,67 +1231,61 @@ export class NpmInstaller {
             for (const depName of Object.keys(deps)) {
                 if (Object.hasOwn(optional, depName))
                     continue;
-                if (!lockfile.has(depName))
+                if (!visiblePlacements(placement, depName).some((p) => lockfile.has(p)))
                     return false;
             }
             const peers = safeJsonParse(cached.peerDepsJson || '{}', {});
             for (const peerName of Object.keys(peers)) {
-                if (!lockfile.has(peerName))
+                if (!visiblePlacements(placement, peerName).some((p) => lockfile.has(p)))
                     return false;
             }
         }
         return true;
     }
-    /**
-     * Convert a lockfile back to resolved packages (for cache restore).
-     */
+    /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
     lockfileToResolved(lockfile) {
         const resolved = new Map();
-        for (const [name, entry] of lockfile) {
-            // Reconstruct from registry cache
+        const nested = new Map();
+        for (const [placement, entry] of lockfile) {
+            const name = entry.name;
+            // Reconstruct from the registry cache; on a miss, a minimal entry.
             const cached = this.cache.getRegistryEntry(name, entry.resolvedVer);
-            if (cached) {
-                resolved.set(name, {
-                    name: cached.name,
-                    version: cached.version,
-                    tarballUrl: cached.tarballUrl,
-                    integrity: cached.integrity,
-                    dependencies: safeJsonParse(cached.depsJson, {}),
-                    exports: safeJsonParse(cached.exportsJson, null),
-                    main: cached.main,
-                    module: cached.moduleField,
-                    bin: safeJsonParse(cached.binJson, {}),
-                });
-            }
-            else {
-                // Registry cache miss — create minimal entry
-                resolved.set(name, {
-                    name,
-                    version: entry.resolvedVer,
-                    tarballUrl: '',
-                    integrity: entry.integrity,
-                    dependencies: safeJsonParse(entry.depsJson, {}),
-                    exports: null,
-                    main: '',
-                    module: '',
-                    bin: {},
-                });
-            }
+            (placement === name ? resolved : nested).set(placement, cached ? {
+                name: cached.name,
+                version: cached.version,
+                tarballUrl: cached.tarballUrl,
+                integrity: cached.integrity,
+                dependencies: safeJsonParse(cached.depsJson, {}),
+                exports: safeJsonParse(cached.exportsJson, null),
+                main: cached.main,
+                module: cached.moduleField,
+                bin: safeJsonParse(cached.binJson, {}),
+            } : {
+                name,
+                version: entry.resolvedVer,
+                tarballUrl: '',
+                integrity: entry.integrity,
+                dependencies: safeJsonParse(entry.depsJson, {}),
+                exports: null,
+                main: '',
+                module: '',
+                bin: {},
+            });
         }
-        return resolved;
+        return { resolved, nested };
     }
     /**
      * Write lockfile to SQLite.
      */
-    writeLockfile(projDir, resolved, _hoistPlan, nmDir) {
+    writeLockfile(projDir, hoistPlan, nmDir) {
         const entries = new Map();
-        for (const [name, pkg] of resolved) {
-            entries.set(name, {
-                name,
+        for (const { placement, pkg } of hoistPlacements(hoistPlan)) {
+            entries.set(placement, {
+                name: pkg.name,
                 resolvedVer: pkg.version,
                 integrity: pkg.integrity,
                 depsJson: JSON.stringify(pkg.dependencies),
-                hoistedPath: nmDir + '/' + name,
+                hoistedPath: nmDir + '/' + placement,
             });
         }
         this.cache.writeLockfile(projDir, entries, this.ctx);

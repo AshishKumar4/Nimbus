@@ -18,6 +18,7 @@
  *   Hit = row(s) returned with size > 0; miss = empty result set. Callers
  *   fall through to L2/L3/L4 on miss.
  */
+import { placementName } from './placement.js';
 import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
 // ── NpmCache ────────────────────────────────────────────────────────────
 export class NpmCache {
@@ -233,7 +234,7 @@ export class NpmCache {
         return { written, failed };
     }
     // ── Lockfile ──────────────────────────────────────────────────────────
-    /** Read the lockfile for a project. Returns null if not found. */
+    /** Read the lockfile for a project, keyed by placement path. Null if not found. */
     readLockfile(projectPath) {
         this.ensureSchema();
         const rows = [...this.sql.exec(`SELECT name, resolved_ver, integrity, deps_json, hoisted_path
@@ -242,8 +243,9 @@ export class NpmCache {
             return null;
         const result = new Map();
         for (const r of rows) {
-            result.set(String(r.name), {
-                name: String(r.name),
+            const placement = String(r.name);
+            result.set(placement, {
+                name: placementName(placement),
                 resolvedVer: String(r.resolved_ver),
                 integrity: String(r.integrity),
                 depsJson: String(r.deps_json),
@@ -267,14 +269,14 @@ export class NpmCache {
             // Clear existing lockfile for this project
             this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
             // Batch insert: DO SQLite ~100 var limit. 6 cols → max 16 rows (16×6=96).
-            const entryList = [...entries.values()];
+            const entryList = [...entries];
             const BATCH = 16;
             for (let i = 0; i < entryList.length; i += BATCH) {
                 const batch = entryList.slice(i, i + BATCH);
                 const placeholders = batch.map(() => '(?,?,?,?,?,?)').join(',');
                 const values = [];
-                for (const e of batch) {
-                    values.push(projectPath, e.name, e.resolvedVer, e.integrity, e.depsJson, e.hoistedPath);
+                for (const [placement, e] of batch) {
+                    values.push(projectPath, placement, e.resolvedVer, e.integrity, e.depsJson, e.hoistedPath);
                 }
                 this.sql.exec(`INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path) VALUES ${placeholders}`, ...values);
             }

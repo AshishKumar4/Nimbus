@@ -32,11 +32,14 @@ export interface ResolvedPackage {
 export interface HoistPlan {
     /** Root-level hoisted packages: name → ResolvedPackage. */
     root: Map<string, ResolvedPackage>;
-    /**
-     * Packages that could not be hoisted due to version conflicts.
-     * Key: "parentName/childName", value: ResolvedPackage.
-     */
+    /** Packages nested under a dependent root does not satisfy, by placement path (placement.ts). */
     nested: Map<string, ResolvedPackage>;
+}
+/** One package at one placement: the unit diff, fetch and lockfile work in. */
+export interface PackagePlacement {
+    /** Placement path relative to the project's `node_modules`. */
+    placement: string;
+    pkg: ResolvedPackage;
 }
 /**
  * Serialize a resolved package into the registry-cache row shape. Facet task
@@ -44,6 +47,8 @@ export interface HoistPlan {
  * cannot import supervisor modules.
  */
 export declare function registryEntryFromResolved(pkg: ResolvedPackage): RegistryCacheEntry;
-/** Compute the flat hoist plan used by the current one-version-per-name resolver. */
-export declare function computeHoistPlan(resolved: Map<string, ResolvedPackage>): HoistPlan;
+/** The walk's placement decisions carried forward: first version per name at root, the rest nested. */
+export declare function computeHoistPlan(resolved: Map<string, ResolvedPackage>, nested?: Map<string, ResolvedPackage>): HoistPlan;
+/** Every placement in the plan, root first. */
+export declare function hoistPlacements(plan: HoistPlan): PackagePlacement[];
 //# sourceMappingURL=resolver.d.ts.map
