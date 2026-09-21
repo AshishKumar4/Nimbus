@@ -281,7 +281,9 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log, pid) {
+export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log, pid, 
+/** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
+registry) {
     const parsed = parseNpxArgs(rawArgs);
     if ('error' in parsed) {
         return { ok: false, error: parsed.error };
@@ -310,6 +312,7 @@ export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log, pid) {
         const result = await installer.install(NPX_CACHE_DIR, {
             packages: [installSpec],
             pid,
+            registry,
         });
         if ((result.failed?.length || 0) > 0) {
             // Partial install — some package failed to resolve. The fix is

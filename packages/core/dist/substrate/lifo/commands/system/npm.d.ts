@@ -2,6 +2,8 @@ import type { Command, CommandContext } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmLogEmitter } from './npm-log.js';
+/** The registry an install reads from when its env names none. */
+export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
 export declare const NPM_VERSION = "10.0.0";
 interface PackageJson {
     name?: string;
@@ -50,6 +52,13 @@ export interface NpmInstallPort {
 export interface NpmCommandDeps {
     installer?: NpmInstallPort;
 }
+/**
+ * The registry origin an install uses: the command's `NPM_REGISTRY`, else
+ * the default. Normalized once, here, where the setting is read: blank is
+ * unset, and a trailing slash is trimmed so one origin spelled two ways
+ * shares one cache namespace downstream.
+ */
+export declare function npmRegistryOrigin(configured: string | undefined): string;
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;

@@ -57,6 +57,61 @@ cli 0.1.11, react 0.1.7, loom 0.1.3.
 - The Worker ships minified with its source map uploaded: 4.12 MB raw,
   1.12 MB gzipped.
 
+## 2026-09-21 (third release)
+
+For embedders composing the hosted runtime. Every public signature that
+changed is listed under "Signatures".
+
+### npm
+
+- `NPM_REGISTRY` is honoured end to end: the hosted `npm install`, `npm
+  install -g`, `npx` and `npm create` paths read packuments from that
+  origin; the resolve facet asks the supervisor for that origin; the shared
+  R2 packument cache keys per origin, so a mirror never serves, nor fills,
+  the npmjs entries. The value is normalized once, where the command reads
+  it (blank is unset, a trailing slash is trimmed).
+
+### VFS
+
+- Construction writes nothing to a store that is already current. The
+  identity row, the device row, the inode allocator seed, the ino backfill
+  and the schema migration marker are each preceded by the read that
+  decides them, and every DDL step is `IF NOT EXISTS`. A `SqliteVFS` opens
+  over a readonly SQLite handle and reads; a write on it is refused by
+  SQLite, not by the open.
+
+### Hosted runtime
+
+- `composeHostedRuntime(...)` returns `facets()`, the composed facet
+  manager, beside `files`, `runtimes` and `terminal`.
+- `@nimbus-sh/worker/workspace-host` re-exports the
+  `LongRunningWorkerSpawnOptions` type with `WorkerRecipe` and
+  `ResolvedWorkerLaunch`.
+- Five subpaths join the `@nimbus-sh/worker` export map, under the paths an
+  embedder was deep-importing: `./session/programmatic`, `./session/rpc`,
+  `./session/supervisor-rpc`, `./session/routes` and
+  `./runtime/package-manager`.
+
+### Signatures
+
+- `NpmInstallPort.install(spec)`: `spec.registry: string` is required (the
+  normalized origin). Core and worker.
+- `NpmInstaller.install(cwd, opts)`: `opts.registry?: string`.
+- `resolveNpxBinary(installer, vfs, cwd, args, log, pid?, registry?)`: one
+  trailing optional parameter.
+- `R2CacheClient.getPackument(name, registry?)`,
+  `putPackument(name, json, registry?)`,
+  `readThroughPackument(name, { retries?, timeoutMs?, registry? })`;
+  `packumentUrl`, `packumentKey`, `packumentL2Url` take `registry?` last.
+  The default is unchanged.
+- `npmRegistryOrigin(configured)` and `NPM_REGISTRY_ORIGIN` are exported from
+  `@nimbus-sh/core/substrate/lifo/commands/system/npm.js` and re-exported
+  from the worker's `npm/r2-cache.js`.
+- `composeHostedRuntime(options)`: `options.resolveWorkerLaunch` is a flat
+  option (it moved out of `hooks` in the 0.9.0 line); `facets()` is added to
+  the return. `composeFacetManager(deps)` requires `deps.filesystem`
+  (unchanged this release, listed because the previous handoff omitted it).
+
 ## 2026-09-21 (second release)
 
 ### npm: nested placements

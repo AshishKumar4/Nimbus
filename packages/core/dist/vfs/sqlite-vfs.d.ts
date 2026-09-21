@@ -258,6 +258,15 @@ export declare class SqliteVFS {
     private _batchWriteRows;
     readonly namespace: string;
     readonly deviceId: number;
+    /**
+     * Construction writes only what is absent. A store whose schema and
+     * identity rows are already current is opened without a single write
+     * statement, so an embedder may hand us a readonly handle (a replica, a
+     * snapshot, a host whose SQLite is shared with us) and read. Every
+     * `CREATE ... IF NOT EXISTS` is a no-op on an existing object; every row
+     * seed is preceded by the read that decides it; the migration markers
+     * are written only when the migration runs.
+     */
     constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string);
     private initSchema;
     /**

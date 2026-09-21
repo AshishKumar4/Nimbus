@@ -3,7 +3,8 @@ import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
 import { npmLogEnabled } from './npm-log.js';
-const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
+/** The registry an install reads from when its env names none. */
+export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 export const NPM_VERSION = '10.0.0';
 /** The end-of-install report, shared by every install path so a failure
  *  reads the same regardless of which engine ran it. Byte-identical to
@@ -33,8 +34,18 @@ async function writeInstallSummary(ctx, installed, failed, opts) {
     }
 }
 // ─── Helpers ───
+/**
+ * The registry origin an install uses: the command's `NPM_REGISTRY`, else
+ * the default. Normalized once, here, where the setting is read: blank is
+ * unset, and a trailing slash is trimmed so one origin spelled two ways
+ * shares one cache namespace downstream.
+ */
+export function npmRegistryOrigin(configured) {
+    const trimmed = configured?.trim();
+    return (trimmed ? trimmed : NPM_REGISTRY_ORIGIN).replace(/\/+$/, '');
+}
 function getRegistry(env) {
-    return env.NPM_REGISTRY || DEFAULT_REGISTRY;
+    return npmRegistryOrigin(env.NPM_REGISTRY);
 }
 function parsePackageSpec(spec) {
     // Scoped: @scope/name@version

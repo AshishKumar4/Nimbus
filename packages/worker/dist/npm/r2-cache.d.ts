@@ -57,6 +57,7 @@
  *     stream directly from npm.
  *   - npm publish webhook -> cache invalidation.
  */
+import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event (cache metrics support). R2CacheClient
@@ -117,14 +118,7 @@ export declare const R2_CACHE_PREFIX = "v2";
  *  No data migration; existing R2 packument entries' customMetadata
  *  .expiresAt stamps remain valid against either TTL. */
 export declare const PACKUMENT_TTL_MS: number;
-/** The registry an install reads from when its env names none (`NPM_REGISTRY`). */
-export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
-/**
- * The registry origin an install uses: the command's `NPM_REGISTRY` when
- * set, else the default — the same rule core's in-process `npm` applies.
- * A trailing slash is dropped so `${origin}/${name}` composes either way.
- */
-export declare function npmRegistryOrigin(configured: string | undefined): string;
+export { NPM_REGISTRY_ORIGIN, npmRegistryOrigin };
 /** The registry URL a packument is read from — also what `npm http` lines report. */
 export declare function packumentUrl(name: string, registry?: string): string;
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
@@ -359,5 +353,4 @@ export declare class R2CacheClient {
     /** Lightweight feature-detection for callers that want to log path. */
     hasPackumentBucket(): boolean;
 }
-export {};
 //# sourceMappingURL=r2-cache.d.ts.map

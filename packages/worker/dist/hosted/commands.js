@@ -1374,7 +1374,7 @@ export async function registerHostedCommands(self, workspace) {
         await self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
-        const resolveResult = await resolveNpxBinary(installer, sqliteFs.as(requireVfsCred(ctx.cred, 'npx')), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid);
+        const resolveResult = await resolveNpxBinary(installer, sqliteFs.as(requireVfsCred(ctx.cred, 'npx')), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');
             if (nodeCmd) {

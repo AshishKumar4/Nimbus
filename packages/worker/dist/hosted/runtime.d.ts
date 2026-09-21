@@ -26,8 +26,7 @@ export interface HostedRuntimeOptions {
     env: services.HostedRuntimeEnv;
     ports: PortRegistry;
     lifecycle: HostedRuntimeLifecycle;
-    /** The embedder's resolver for journalled worker launches it owns. */
-    hooks?: Pick<FacetManagerHostHooks, 'resolveWorkerLaunch'>;
+    resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
     basePath?: string;
     origin?: string;
 }
@@ -84,6 +83,25 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     }>;
     listPorts: () => Promise<operations.SerializedPort[]>;
     listApps: () => Promise<operations.ListedApp[]>;
+    ensureDurableApp: (input: {
+        owner: string;
+        preferredPort?: number;
+        visibility?: "scoped" | "public";
+        name?: string;
+    }) => Promise<{
+        port: number;
+        capability: string | null;
+        visibility: "scoped" | "public";
+    }>;
+    unexposePort: (port: number) => Promise<{
+        port: number;
+        ok: boolean;
+    }>;
+    removeDurableApp: (owner: string) => Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
+    }>;
     exposeApp: (target: operations.AppTarget, options?: {
         visibility?: "scoped" | "public";
         name?: string;
@@ -105,7 +123,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
     }>;
     spawnWorker: (workerCode: string, command: string, cwd: string, opts?: import("../workspace-host.js").LongRunningWorkerSpawnOptions | undefined) => Promise<import("../facets/manager.js").SpawnedWorker>;
-    routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, pathname: string) => Promise<Response>;
+    routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, innerPath: string) => Promise<Response>;
     supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
     onScheduled: (task: HostedRuntimeTask) => Promise<void>;
     attachTerminal: (ws: WebSocket) => Promise<void>;

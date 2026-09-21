@@ -73,5 +73,7 @@ export interface NpxResolveResult {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void, pid?: number): Promise<NpxResolveResult>;
+export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void, pid?: number, 
+/** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
+registry?: string): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map
