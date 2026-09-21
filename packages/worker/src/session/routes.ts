@@ -725,7 +725,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         },
         facet: {
           lastDispatch: getLastFacetId(),
-          prefetchCache: self.facetManager.prefetchCacheDiag(),
+          // Null until the first terminal attaches: the manager is built by initSession.
+          prefetchCache: self.facetManager?.prefetchCacheDiag() ?? null,
           // Facet IDs consumed over this DO's LIFETIME against the 65,536 the
           // platform will ever grant it. Append-only and never reclaimed;
           // crossing the wall is unrecoverable for the object.
