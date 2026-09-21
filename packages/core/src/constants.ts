@@ -186,6 +186,25 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-en
 // this bound exists to prevent rather than a way of caching one more program.
 export const PREFETCH_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 
+// Bytes the ESM→CJS transform cache (facets/manager.ts) may retain across
+// bundle builds. It caches every transformed cell by content so a rebuild
+// after the prefetch entry is invalidated does not pay esbuild again.
+//
+// It was unbounded. A tool whose bundle is a few large chunks (pi: 14 MB of
+// ESM in 22 files) filled it with a second copy of everything the prefetch
+// entry already retained, and the next build of that tool — which every
+// distinct shell command triggers, since the global revision moves — ran
+// with both copies resident plus its own transient peak, and reset the
+// Durable Object. Measured on a throwaway 2026-09-21: with nothing retained
+// between builds the same three launches complete in 13.6 s, 12.3 s, 11.4 s.
+//
+// Half the prefetch cache's bound: a transformed cell that fits is reused,
+// one that does not is transformed again on the next build, which costs
+// seconds rather than the object. Together the two retained caches stay
+// inside the room the ceiling leaves after the baseline and the transient
+// budget.
+export const ESM_TRANSFORM_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+
 // Per-file ceiling for the blind working-tree sweep (facet-manager.ts
 // addCwdProjectFiles). That pass names no file the program asked for — it
 // guesses, so a relative `readFileSync` of a project file resolves — and a

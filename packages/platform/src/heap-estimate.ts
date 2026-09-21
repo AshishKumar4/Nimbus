@@ -201,6 +201,12 @@ export interface HeapBreakdown {
    */
   prefetchCacheBytes: number;
   /**
+   * Bytes retained by the FacetManager's ESM→CJS transform cache
+   * (diag-counters `transformCacheBytes`), the other cache that persists
+   * across execs. Bounded by ESM_TRANSFORM_CACHE_MAX_BYTES.
+   */
+  transformCacheBytes: number;
+  /**
    * Shared-budget occupancy not already represented by the named transient
    * counters. This covers full-budget owners and keeps cross-DO module-local
    * reservations visible without double-counting read/write payloads.
@@ -297,6 +303,7 @@ export function estimateSupervisorHeap(
     streamingBuffersBytes: c.inFlightRpcPayloadBytes,
     prefetchBundleBytes: c.prefetchBundleBytes,
     prefetchCacheBytes: c.prefetchCacheBytes,
+    transformCacheBytes: c.transformCacheBytes,
     unattributedReservationBytes: Math.max(
       0,
       allocationBudget.current - transientAttributedBytes,
@@ -311,6 +318,7 @@ export function estimateSupervisorHeap(
     breakdown.streamingBuffersBytes +
     breakdown.prefetchBundleBytes +
     breakdown.prefetchCacheBytes +
+    breakdown.transformCacheBytes +
     breakdown.unattributedReservationBytes;
 
   const percentOfCeiling = Math.round(

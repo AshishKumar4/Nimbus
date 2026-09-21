@@ -49,12 +49,12 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
-import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
+import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, setTransformCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const ISOLATED_ESM_TRANSFORM_MIN_BYTES = 512 * 1024;
 /**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
@@ -2893,8 +2893,44 @@ function looksLikeEsm(src) {
  *
  * Lives at module scope so warm exec invocations hit the cache without
  * paying the wasm cold-start cost again.
+ *
+ * Bounded by bytes, LRU, and reported to the heap model like the prefetch
+ * cache (see ESM_TRANSFORM_CACHE_MAX_BYTES for the reset it caused
+ * unbounded). An output larger than the whole bound is used for the build
+ * that produced it and not retained: admitting it would evict everything
+ * else to hold something that still does not fit.
  */
 const __esmTransformCache = new Map();
+let __esmTransformCacheBytes = 0;
+function __esmTransformCacheGet(key) {
+    const code = __esmTransformCache.get(key);
+    if (code === undefined)
+        return undefined;
+    // Refresh recency: a Map iterates in insertion order, so the oldest
+    // entry is the first one.
+    __esmTransformCache.delete(key);
+    __esmTransformCache.set(key, code);
+    return code;
+}
+function __esmTransformCacheSet(key, code) {
+    const bytes = key.length + code.length;
+    if (bytes > ESM_TRANSFORM_CACHE_MAX_BYTES)
+        return;
+    const previous = __esmTransformCache.get(key);
+    if (previous !== undefined) {
+        __esmTransformCacheBytes -= key.length + previous.length;
+        __esmTransformCache.delete(key);
+    }
+    __esmTransformCache.set(key, code);
+    __esmTransformCacheBytes += bytes;
+    for (const [oldest, entry] of __esmTransformCache) {
+        if (__esmTransformCacheBytes <= ESM_TRANSFORM_CACHE_MAX_BYTES)
+            break;
+        __esmTransformCache.delete(oldest);
+        __esmTransformCacheBytes -= oldest.length + entry.length;
+    }
+    setTransformCacheBytes(__esmTransformCacheBytes);
+}
 function __cacheKey(src) {
     // FNV-1a 32-bit. Only used for cache keys, NEVER for content
     // integrity. The ~30-byte string we return is a hex hash + length —
@@ -3139,8 +3175,8 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
         // cache entry and the second file would get the first file's URL.
         const absUrl = 'file:///' + path.replace(/^\/+/, '');
         const key = __cacheKey(src + '\0' + absUrl);
-        const cached = __esmTransformCache.get(key);
-        if (cached) {
+        const cached = __esmTransformCacheGet(key);
+        if (cached !== undefined) {
             bundle[target] = cached;
             transformed++;
             continue;
@@ -3160,7 +3196,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
                 : await esbuild.transform(src, transformOptions));
             const code = bindImportMetaResolve(t.code, absUrl);
             bundle[target] = code;
-            __esmTransformCache.set(key, code);
+            __esmTransformCacheSet(key, code);
             transformed++;
         }
         catch (e) {
@@ -3192,7 +3228,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
             const diagnosticSrc = '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
                 '(function () { throw new Error(' + escapedReason + '); })();\n';
             bundle[target] = diagnosticSrc;
-            __esmTransformCache.set(key, diagnosticSrc);
+            __esmTransformCacheSet(key, diagnosticSrc);
             failed++;
         }
     }

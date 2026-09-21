@@ -23,6 +23,7 @@ const _counters = {
     inFlightRpcPayloadBytes: 0,
     prefetchBundleBytes: 0,
     prefetchCacheBytes: 0,
+    transformCacheBytes: 0,
     installFacet: {
         tarballsCompleted: 0,
         cumulativeBytesDecoded: 0,
@@ -121,6 +122,11 @@ export function prefetchBundleEnd(bytes) {
 export function setPrefetchCacheBytes(bytes) {
     const n = Number(bytes);
     _counters.prefetchCacheBytes = Number.isFinite(n) && n > 0 ? n : 0;
+}
+/** Publish the transform cache's live retained total; same contract as above. */
+export function setTransformCacheBytes(bytes) {
+    const n = Number(bytes);
+    _counters.transformCacheBytes = Number.isFinite(n) && n > 0 ? n : 0;
 }
 /** Fold facet-returned counters into the supervisor's diag state.
  *  Called by npm-installer after the batch-facet returns; aggregates

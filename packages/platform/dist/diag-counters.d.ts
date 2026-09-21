@@ -75,6 +75,12 @@ export interface DiagCounters {
      * Surfaced as `breakdown.prefetchCacheBytes`. A gauge, not a delta.
      */
     prefetchCacheBytes: number;
+    /**
+     * Bytes retained by the FacetManager's ESM→CJS transform cache, bounded by
+     * ESM_TRANSFORM_CACHE_MAX_BYTES. Surfaced as `breakdown.transformCacheBytes`.
+     * A gauge, not a delta.
+     */
+    transformCacheBytes: number;
     /** Install-facet counters. Populated by npm-installer after a
      *  successful batch-facet dispatch returns. Confirms the install ran
      *  in the facet (tarballsCompleted > 0) and surfaces the
@@ -175,6 +181,8 @@ export declare function prefetchBundleEnd(bytes: number): void;
  * owns the number and reports it whenever it admits or evicts an entry.
  */
 export declare function setPrefetchCacheBytes(bytes: number): void;
+/** Publish the transform cache's live retained total; same contract as above. */
+export declare function setTransformCacheBytes(bytes: number): void;
 /** Fold facet-returned counters into the supervisor's diag state.
  *  Called by npm-installer after the batch-facet returns; aggregates
  *  rather than replaces so multiple install runs in the same DO
