@@ -5,11 +5,13 @@
 // Kinu deep-imported `dist/session/programmatic.js`, `dist/session/routes.js`,
 // `dist/session/port-capability.js`, `dist/facets/durable-slots.js` and
 // `dist/git/commands.js` because the package's `exports` map stopped short of
-// them. Four subpaths now publish the shipped modules an embedder composes
+// them. Four subpaths published the shipped modules an embedder composes
 // with — `./workspace-host` (the factory and its types), `./port-capability`,
-// `./durable-slots`, `./git` — while `session/programmatic` and
-// `session/routes` stay unexported: the four rpc verbs Kinu used from them
-// are reachable through the composed manager's `apps` surface.
+// `./durable-slots`, `./git` — and the four rpc verbs behind them moved onto
+// the composed manager's `apps` surface. Their programmatic host still needed
+// the RPC surface itself (2026-09-21): `session/programmatic`, `session/rpc`,
+// `session/supervisor-rpc`, `session/routes` and `runtime/package-manager`
+// are published under the paths they were deep-importing.
 //
 //   1. every new subpath names a source file that exists, a d.ts and a js
 //      under dist, in the same three-condition shape as the existing entries;
@@ -48,6 +50,11 @@ const WORKER = `${ROOT}packages/worker/`;
     './port-capability': 'session/port-capability',
     './durable-slots': 'facets/durable-slots',
     './git': 'git/commands',
+    './session/programmatic': 'session/programmatic',
+    './session/rpc': 'session/rpc',
+    './session/supervisor-rpc': 'session/supervisor-rpc',
+    './session/routes': 'session/routes',
+    './runtime/package-manager': 'runtime/package-manager',
   };
   for (const [subpath, module] of Object.entries(expected)) {
     const entry = pkg.exports[subpath];
@@ -59,8 +66,10 @@ const WORKER = `${ROOT}packages/worker/`;
     );
     assert.ok(existsSync(`${WORKER}src/${module}.ts`), `${subpath}: its source exists`);
   }
-  for (const hidden of ['./session/programmatic', './session/routes', './programmatic', './routes']) {
-    assert.equal(pkg.exports[hidden], undefined, `${hidden} stays unexported`);
+  // The subpaths mirror the dist layout an embedder was already reaching
+  // into, so adopting them is a specifier change and nothing else.
+  for (const [subpath, module] of Object.entries(expected)) {
+    assert.ok(existsSync(`${WORKER}dist/${module}.js`) && existsSync(`${WORKER}dist/${module}.d.ts`), `${subpath}: dist carries the module and its types`);
   }
   const packaged = pkg.files.includes('dist');
   assert.ok(packaged, 'dist ships');

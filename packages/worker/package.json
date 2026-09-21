@@ -78,6 +78,31 @@
       "types": "./dist/git/commands.d.ts",
       "import": "./dist/git/commands.js"
     },
+    "./session/programmatic": {
+      "workspace": "./src/session/programmatic.ts",
+      "types": "./dist/session/programmatic.d.ts",
+      "import": "./dist/session/programmatic.js"
+    },
+    "./session/rpc": {
+      "workspace": "./src/session/rpc.ts",
+      "types": "./dist/session/rpc.d.ts",
+      "import": "./dist/session/rpc.js"
+    },
+    "./session/supervisor-rpc": {
+      "workspace": "./src/session/supervisor-rpc.ts",
+      "types": "./dist/session/supervisor-rpc.d.ts",
+      "import": "./dist/session/supervisor-rpc.js"
+    },
+    "./session/routes": {
+      "workspace": "./src/session/routes.ts",
+      "types": "./dist/session/routes.d.ts",
+      "import": "./dist/session/routes.js"
+    },
+    "./runtime/package-manager": {
+      "workspace": "./src/runtime/package-manager.ts",
+      "types": "./dist/runtime/package-manager.d.ts",
+      "import": "./dist/runtime/package-manager.js"
+    },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
     "./public/*": "./public/*",
     "./package.json": "./package.json"
