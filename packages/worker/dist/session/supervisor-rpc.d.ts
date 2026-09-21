@@ -4,10 +4,12 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
+ *   route — the host namespace and dispatch method, minted with the binding
+ *           in the host's isolate; this entrypoint may answer from another
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -53,7 +55,11 @@ export type SupervisorCacheStatEvent = {
     cacheKind: CacheKind;
 };
 export declare class SupervisorRPC extends WorkerEntrypoint {
-    /** Resolve the composed host anew for each WorkerEntrypoint invocation. */
+    /**
+     * Resolve the host anew for each WorkerEntrypoint invocation, by the
+     * route the binding carries. The platform serves this entrypoint from
+     * whichever isolate it likes; the props were minted in the host's.
+     */
     private _dispatch;
     private _op;
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */

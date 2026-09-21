@@ -233,9 +233,10 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
             return null;
         let stub = null;
         try {
-            const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC');
+            const route = this.ctx.props?.route;
+            const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC', route);
             stub = binding.get(binding.idFromString(doId));
-            return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC') };
+            return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
         }
         catch (error) {
             disposeRpcResource(stub);

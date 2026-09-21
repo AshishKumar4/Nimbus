@@ -57,7 +57,7 @@ import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, ge
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -726,14 +726,14 @@ export class CirrusReal {
         });
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: ctx.id.toString(), pid } })
+            ? ctxExports.SupervisorRPC({ props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined } })
             : undefined;
         // Phase 2: separate HMR binding so we don't need to modify
         // supervisor-rpc.ts (off-limits). The CirrusHmrRPC class lives in
         // src/real-vite-hmr.ts and is re-exported from src/index.ts so
         // ctx.exports can build a Service Binding for it.
         const hmrBinding = ctxExports?.CirrusHmrRPC
-            ? ctxExports.CirrusHmrRPC({ props: { doId: ctx.id.toString() } })
+            ? ctxExports.CirrusHmrRPC({ props: { doId: ctx.id.toString(), route: hostRoute() ?? undefined } })
             : undefined;
         // Register this instance's HmrBridge in the module-level registry
         // so the CirrusHmrRPC service can route facet RPCs back to us.

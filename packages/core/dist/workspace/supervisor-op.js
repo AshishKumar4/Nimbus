@@ -253,7 +253,6 @@ export function createSupervisorBridgeStore(deps) {
         },
     };
 }
-/** One dispatch method lets any host serve its workspace to process facets. */
 export function createSupervisorOpHandler(deps) {
     const bridgeFor = deps.bridge?.bridge ?? createSupervisorBridgeStore(deps).bridge;
     const tools = {
@@ -279,8 +278,12 @@ export function createSupervisorOpHandler(deps) {
         if (!route)
             throw new Error(`supervisor op: '${envelope.op}' is not served by this host`);
         const host = deps.host;
-        if (!host)
-            throw new Error(`supervisor op: '${envelope.op}' needs a host that this workspace does not have`);
+        if (!host) {
+            throw new Error(`supervisor op: '${envelope.op}' is a host op, and this handler is a bare workspace's. `
+                + 'Forward supervisorOp(envelope) to composeHostedRuntime(...).supervisorOp on every '
+                + 'instance of the host namespace, the siblings Nimbus opens by name included '
+                + '(fanout peers, process hosts).');
+        }
         const method = host[route.method];
         if (typeof method !== 'function')
             throw new Error(`supervisor op: missing host method ${route.method}`);

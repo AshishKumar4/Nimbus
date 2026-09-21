@@ -24,6 +24,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
+import type { HostRoute } from './composition.js';
 import type { WorkerCode } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -67,6 +68,8 @@ interface NimbusAssetsProps {
     assetsDir?: string;
     /** Supervisor DO id whose VFS holds the assets. */
     doId?: string;
+    /** The way back to that DO, minted with the binding. */
+    route?: HostRoute;
 }
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
@@ -105,6 +108,11 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
         writerId: z.ZodString;
+        route: z.ZodOptional<z.ZodObject<{
+            supervisorEntrypoint: z.ZodString;
+            hostNamespace: z.ZodString;
+            hostDispatchMethod: z.ZodString;
+        }, z.core.$strip>>;
     }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$loose>;
@@ -213,6 +221,8 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoade
 interface NimbusDoNamespaceProps {
     bindingName?: string;
     supervisorDoId?: string;
+    /** The way back to the supervisor DO, minted with the binding. */
+    route?: HostRoute;
 }
 /**
  * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.

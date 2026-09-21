@@ -57,6 +57,55 @@ cli 0.1.11, react 0.1.7, loom 0.1.3.
 - The Worker ships minified with its source map uploaded: 4.12 MB raw,
   1.12 MB gzipped.
 
+## 2026-09-22
+
+For embedders that host Nimbus under their own Durable Object namespace.
+
+### Fabric
+
+- The route back to the host (namespace binding, dispatch method,
+  supervisor entrypoint) is minted into every binding the fabric hands a
+  program, in the host's isolate, and the entrypoints that answer those
+  bindings (`SupervisorRPC`, `NimbusAssetsRPC`, `NimbusDOStub`,
+  `NimbusLoadedEntrypoint`, `CirrusHmrRPC`) read it from their props. A
+  facet whose call landed in an isolate with no composition, or another
+  host's, was refused with "env.NIMBUS_SESSION is not a Durable Object
+  namespace"; it now reaches the host that minted its binding. Fan-out peers
+  and peer process hosts mint the coordinator's route, not their own.
+- `composeFabric` called again with different values throws, naming both
+  compositions. It was first-write-wins and silent, so a Worker that
+  imported Nimbus's own entry and composed its own host ran against a host
+  it never named.
+- The bare workspace's refusal of a host op names the contract: forward
+  `supervisorOp` to a hosted runtime on every instance of the namespace,
+  the siblings Nimbus opens by name included.
+
+### git
+
+- `git -C <path> …` runs the subcommand from `<path>` (repeatable, each
+  relative to the previous). `--no-pager`/`-P` are accepted. Any other
+  leading option is refused instead of being run as the subcommand.
+- `git branch --show-current` prints the current branch (nothing on a
+  detached HEAD). It used to create a branch named `--show-current`; an
+  unrecognized option is now refused rather than taken as a branch name.
+- `git clone -q`/`--quiet` clones without progress output; `-v`/`--verbose`
+  is accepted.
+
+### Signatures
+
+- `HostRoute` and `hostRoute()` are exported from
+  `@nimbus-sh/platform/composition.js` (re-exported by the fabric).
+- `hostNamespaceBinding(env, usage, route?)` and
+  `hostOpDispatch(stub, usage, route?)` take an optional route.
+- `supervisorEntrypoint(exports?, name?)` takes the entrypoint name.
+- `ResidentSupervisorProps.route: HostRoute` is required;
+  `HostProcessOpts.route: HostRoute` is required;
+  `IsolatePoolOptions.supervisorRoute?: HostRoute`.
+- `SupervisorOpDispatch` names the handler type
+  `createSupervisorOpHandler` returns (was `ReturnType<…>` at consumers).
+- `parseCloneArgs` returns `quiet: boolean`; `parseGitGlobals(args, cwd)`
+  is exported from the worker's git commands.
+
 ## 2026-09-21 (third release)
 
 For embedders composing the hosted runtime. Every public signature that

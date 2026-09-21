@@ -23,6 +23,20 @@ type Ctx = {
     cwd: string;
     env: Record<string, string>;
 };
+export interface ParsedGitGlobals {
+    sub: string | undefined;
+    subArgs: string[];
+    /** The directory the subcommand runs in, after every `-C`. */
+    dir: string;
+}
+/**
+ * The options git accepts BEFORE the subcommand. `-C <path>` runs the
+ * command as if started from <path>; repeated, each is relative to the
+ * previous (`git -C a -C b` runs in `a/b`). `--no-pager` and `-P` are
+ * accepted and mean nothing here, there is no pager. Any other leading
+ * option is refused: swallowing it would run the next word as a subcommand.
+ */
+export declare function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals;
 export interface ParsedCloneArgs {
     url: string | undefined;
     dest: string | undefined;
@@ -30,8 +44,10 @@ export interface ParsedCloneArgs {
     noShallow: boolean;
     isBg: boolean;
     branch: string | undefined;
+    /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
+    quiet: boolean;
 }
-export declare const CLONE_USAGE = "usage: git clone [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]";
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
  * flags corrupted positionals for value-taking ones (`--branch dev URL`

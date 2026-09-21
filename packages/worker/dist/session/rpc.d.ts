@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -388,6 +389,8 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
      * a loader isolate land in the PEER's VFS, invisible to the user.
      */
     coordinatorDoId?: string;
+    /** The coordinator's route, minted into the binding with its doId. */
+    coordinatorRoute?: HostRoute;
     /**
      * Invoking process pid, forwarded into the peer-side SUPERVISOR
      * binding so writeBatchStream is authorized under the caller's

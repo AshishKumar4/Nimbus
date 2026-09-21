@@ -81,6 +81,29 @@ try {
   assert.match(await exec(first, 'cat /home/user/hello-world/README'), /Hello World/i);
   console.log('PASS real Bun execution, npm dependency execution, npx CLI and git clone');
 
+  // Kinu's clone-and-serve, verbatim: a quiet clone, then the branch name
+  // read through `-C` from another directory. The facets behind these reach
+  // the supervisor through bindings minted with this host's route, in a
+  // namespace that is not NIMBUS_SESSION.
+  const quiet = await request(first, '/exec', 'POST', { command: 'git clone -q --depth 1 https://github.com/octocat/Hello-World.git /home/user/quiet' });
+  assert.equal(quiet.exitCode, 0, quiet.stderr);
+  assert.equal(quiet.stdout.trim(), '', 'a quiet clone prints no progress');
+  assert.equal((await exec(first, 'git -C /home/user/quiet branch --show-current')).trim(), 'master');
+  assert.equal((await exec(first, 'git -C /home/user/quiet branch')).includes('--show-current'), false, 'no branch was created from the option');
+  // A wide install fans its resolution and its writes out to sibling
+  // Durable Objects of THIS namespace: fresh instances Nimbus opens by
+  // name, which the host serves through the same supervisorOp forward.
+  await request(first, '/file', 'PUT', { path: '/home/user/wide/package.json', content: '{"name":"wide","private":true}' });
+  const wide = await request(first, '/exec', 'POST', { command: 'npm install --ignore-scripts express@4.21.2', options: { cwd: '/home/user/wide', timeoutMs: 600_000 } });
+  assert.equal(wide.exitCode, 0, wide.stderr + wide.stdout);
+  assert.match(wide.stdout, /Resolving \d+ dependencies \(path: fanout/, 'the install resolved through the fan-out');
+  // The tree the peers wrote is the coordinator's: every package the fan-out
+  // resolved is on this workspace's disk, under the dependent that needs it.
+  assert.equal((await exec(first, 'node -e "console.log(require(\'./node_modules/express/package.json\').version)"', { cwd: '/home/user/wide' })).trim(), '4.21.2');
+  const widePackages = Number((await exec(first, 'find node_modules -maxdepth 1 -mindepth 1 -type d | wc -l', { cwd: '/home/user/wide' })).trim());
+  assert.ok(widePackages >= 60, `express@4 brings about 65 packages; ${widePackages} landed`);
+  console.log('PASS quiet clone, git -C, branch --show-current, and a wide install fanned out across the host namespace');
+
   for (const [name, marker] of [[first, 'alpha'], [second, 'beta']]) {
     if (name === second) {
       const refused = await request(name, '/exec', 'POST', { command: 'curl -fsS http://localhost:3021/' });

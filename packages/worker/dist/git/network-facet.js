@@ -24,7 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
@@ -407,7 +407,7 @@ export async function execGitNetwork(ctx, env, opts) {
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({
-                props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner },
+                props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner, route: hostRoute() ?? undefined },
             })
             : undefined;
         if (!supervisorBinding) {
@@ -482,7 +482,8 @@ export async function execGitNetwork(ctx, env, opts) {
                             ? prepare.result.error
                             : 'clone-prepare returned an invalid result', prepare.diagnostic);
                     }
-                    await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
+                    if (!opts.quiet)
+                        await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
                     let checkoutCursor = null;
                     let checkoutChunk = 0;
                     do {
@@ -513,7 +514,9 @@ export async function execGitNetwork(ctx, env, opts) {
                         budgetContext.chunksCompleted++;
                         budgetContext.processedEntries += progress.treeEntriesVisited;
                         budgetContext.decodedBytes += progress.decodedBytes;
-                        await writeCloneChunkProgress(supervisorBinding, checkout.diagnostic, checkoutChunk, progress);
+                        if (!opts.quiet) {
+                            await writeCloneChunkProgress(supervisorBinding, checkout.diagnostic, checkoutChunk, progress);
+                        }
                     } while (checkoutCursor !== null);
                     return {
                         success: true,
@@ -550,7 +553,8 @@ export async function execGitNetwork(ctx, env, opts) {
                             const abort = await invokeFacet(entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
                             phases.push(abort.diagnostic);
                             accountResult(abort.result);
-                            await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
+                            if (!opts.quiet)
+                                await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
                             if (abort.result.success !== true) {
                                 cleanupError = typeof abort.result.error === 'string'
                                     ? abort.result.error
@@ -2185,6 +2189,7 @@ export default {
       }
     }
     const log = (msg) => {
+      if (opts.quiet) return;
       stats.supervisorRpc.stdout++;
       try { useRpcResult(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
     };

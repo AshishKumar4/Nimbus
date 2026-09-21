@@ -24,7 +24,7 @@
  * and binding types used by this implementation.
  */
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint } from './composition.js';
+import { hostRoute, supervisorEntrypoint } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
@@ -243,7 +243,7 @@ export class IsolatePool {
                 const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
                 const supPid = opts?.supervisorPid ?? 0;
                 bindings.SUPERVISOR = supervisorRpc({
-                    props: { doId: supDoId, pid: supPid },
+                    props: { doId: supDoId, pid: supPid, route: opts?.supervisorRoute ?? hostRoute() ?? undefined },
                 });
                 // Whatever the minted worker's env carries must be in its loader
                 // cache key — workerd's loader cache survives a DO hibernation

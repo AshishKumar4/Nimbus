@@ -23,6 +23,7 @@
  * The vendored directory contains only the upstream serialization, error,
  * and binding types used by this implementation.
  */
+import { type HostRoute } from './composition.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
 /**
@@ -102,6 +103,12 @@ export interface IsolatePoolOptions {
      * coordinator. Effective only when `omitSupervisor !== true`.
      */
     supervisorDoIdOverride?: string;
+    /**
+     * The coordinator's route, forwarded with `supervisorDoIdOverride`: the
+     * binding is the coordinator's, so its way back is the coordinator's
+     * too, whatever this peer's isolate composed.
+     */
+    supervisorRoute?: HostRoute;
     /**
      * Process pid baked into the auto-injected SUPERVISOR binding's props.
      * The supervisor derives the write credential from this pid

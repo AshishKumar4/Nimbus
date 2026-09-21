@@ -1189,6 +1189,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         // back to ctx.id.toString() — the legacy behavior, correct for
         // single-DO callers.
         supervisorDoIdOverride: poolOpts.coordinatorDoId,
+        supervisorRoute: poolOpts.coordinatorRoute,
         supervisorPid: poolOpts.supervisorPid,
     });
     try {
@@ -1224,6 +1225,12 @@ const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 const HostProcessOptsSchema = z.object({
     /** Full doId of the coordinator session (SUPERVISOR routing target). */
     coordinatorDoId: z.string().min(1),
+    /** The coordinator's route, minted into the process's SUPERVISOR binding. */
+    route: z.object({
+        supervisorEntrypoint: z.string().min(1),
+        hostNamespace: z.string().min(1),
+        hostDispatchMethod: z.string().min(1),
+    }).optional(),
     /** Supervisor-assigned pid of the process entry on the coordinator. */
     pid: z.number().int().positive(),
     /** Trusted identity of this concrete resident-host incarnation. */
@@ -1264,9 +1271,9 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 function peerDiskReader(supervisor) {
-    const supervisorRpc = supervisorEntrypoint();
+    const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
     if (!supervisorRpc) {
-        throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+        throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? 'SupervisorRPC'} unavailable`);
     }
     const fs = supervisorRpc({ props: supervisor });
     return { readFile: (path) => readSupervisorFile(fs, path) };
@@ -1366,6 +1373,7 @@ export async function _rpcHostProcess(self, boot, opts) {
         doId: hostOpts.coordinatorDoId,
         pid: hostOpts.pid,
         writerId: hostOpts.writerId,
+        route: hostOpts.route,
     };
     let cancel = () => { };
     const cancelled = new Promise((resolve) => { cancel = resolve; });

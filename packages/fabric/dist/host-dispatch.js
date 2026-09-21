@@ -5,16 +5,23 @@ function isNamespace(value) {
         && typeof Reflect.get(value, 'idFromString') === 'function'
         && typeof Reflect.get(value, 'get') === 'function';
 }
-export function hostNamespaceBinding(env, usage) {
-    const name = hostNamespace();
+/**
+ * The host's namespace binding. An entrypoint answering a facet passes the
+ * route the binding's props carry, minted in the host's isolate; the host
+ * itself, and a binding minted before routes travelled (a facet outlives
+ * the deploy that minted its binding), resolve from this isolate's
+ * composition.
+ */
+export function hostNamespaceBinding(env, usage, route) {
+    const name = route?.hostNamespace ?? hostNamespace();
     const binding = env ? Reflect.get(env, name) : undefined;
     if (binding === null || (typeof binding !== 'object' && typeof binding !== 'function') || !isNamespace(binding)) {
         throw new BindingError(`${usage}: env.${name} must be the Durable Object namespace configured by composeFabric`);
     }
     return binding;
 }
-export function hostOpDispatch(stub, usage) {
-    const name = hostDispatchMethod();
+export function hostOpDispatch(stub, usage, route) {
+    const name = route?.hostDispatchMethod ?? hostDispatchMethod();
     if (stub === null || (typeof stub !== 'object' && typeof stub !== 'function')) {
         throw new BindingError(`${usage}: the workspace namespace returned no stub`);
     }

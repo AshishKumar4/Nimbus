@@ -356,7 +356,7 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
-    const supervisorRpc = supervisorEntrypoint();
+    const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
     let supervisorBinding;
     let worker;
     let entrypoint;
@@ -439,9 +439,9 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
         ? await stagedBootAssembler()(env, boot.stage)
         : await residentLoaderConfig(boot.code, disk());
     assertModuleMapWithinCodeLimit(configModules(config));
-    const supervisorRpc = supervisorEntrypoint();
+    const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
     if (!supervisorRpc) {
-        throw new Error(`Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
+        throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
     return { ...config, env: { SUPERVISOR: supervisorRpc({ props: supervisor }) } };
 }

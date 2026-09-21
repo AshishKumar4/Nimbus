@@ -64,6 +64,7 @@
  * that pair unforgeable by anything that did not open the process.
  */
 import { type ProcessHost, type ResidentDiskReader } from './process-fabric.js';
+import { type HostRoute } from './composition.js';
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
 /**
@@ -79,6 +80,8 @@ export declare function isolateToken(): string;
 /** Options the coordinator hands a hosting peer. */
 export interface HostProcessOpts {
     coordinatorDoId: string;
+    /** The coordinator's route, minted into the process's SUPERVISOR binding. */
+    route?: HostRoute;
     pid: number;
     writerId: string;
     workerKey: string;

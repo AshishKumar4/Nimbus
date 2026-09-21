@@ -35,6 +35,7 @@
  * fs shim is streaming VFS events.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { HostRoute } from '@nimbus-sh/fabric/composition.js';
 /**
  * Supervisor-side registry of active HMR connections for a single
  * real-vite session. One instance lives on each NimbusSession that has
@@ -110,6 +111,7 @@ export declare function registerHmrBridge(doId: string, holder: {
  */
 export declare class CirrusHmrRPC extends WorkerEntrypoint<object, {
     doId?: string;
+    route?: HostRoute;
 }> {
     private _bridge;
     private _stub;

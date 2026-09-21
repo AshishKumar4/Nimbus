@@ -16,6 +16,7 @@
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
+import { hostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 import { hostNamespaceBinding, hostOpDispatch, } from './host-dispatch.js';
@@ -265,6 +266,7 @@ export class Fanout {
                                     // ... write into the peer's own VFS — invisible to the
                                     // user. See INSTALL-HONESTY-retro.md.
                                     coordinatorDoId: this.coordDoId,
+                                    coordinatorRoute: hostRoute() ?? undefined,
                                     // Credential source for peer-side writeBatchStream — the
                                     // invoking process pid, so package writes are authorized
                                     // as the user (not rejected as pid:0).

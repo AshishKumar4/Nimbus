@@ -176,6 +176,42 @@ function createGitFs(vfs) {
 function getDir(ctx) {
     return '/' + (ctx.cwd || '/home/user').replace(/^\/+/, '');
 }
+/**
+ * The options git accepts BEFORE the subcommand. `-C <path>` runs the
+ * command as if started from <path>; repeated, each is relative to the
+ * previous (`git -C a -C b` runs in `a/b`). `--no-pager` and `-P` are
+ * accepted and mean nothing here, there is no pager. Any other leading
+ * option is refused: swallowing it would run the next word as a subcommand.
+ */
+export function parseGitGlobals(args, cwd) {
+    let dir = cwd;
+    let i = 0;
+    for (; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '-C') {
+            const path = args[++i];
+            if (path === undefined)
+                throw new Error("option '-C' requires a value");
+            dir = path.startsWith('/') ? path : dir + '/' + path;
+            dir = '/' + dir.split('/').filter((seg) => seg && seg !== '.').join('/');
+        }
+        else if (arg.startsWith('-C') && arg.length > 2) {
+            const path = arg.slice(2);
+            dir = path.startsWith('/') ? path : dir + '/' + path;
+            dir = '/' + dir.split('/').filter((seg) => seg && seg !== '.').join('/');
+        }
+        else if (arg === '--no-pager' || arg === '-P') {
+            // no pager to disable
+        }
+        else if (arg.startsWith('-') && arg !== '--version' && arg !== '-v' && arg !== '--help' && arg !== '-h') {
+            throw new Error(`unknown option '${arg}'\nusage: git [-C <path>] [--no-pager] <command> [<args>]`);
+        }
+        else {
+            break;
+        }
+    }
+    return { sub: args[i], subArgs: args.slice(i + 1), dir };
+}
 function getFlag(args, flag) {
     const idx = args.indexOf(flag);
     if (idx >= 0)
@@ -183,7 +219,7 @@ function getFlag(args, flag) {
     const prefix = `${flag}=`;
     return args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || undefined;
 }
-export const CLONE_USAGE = 'usage: git clone [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+export const CLONE_USAGE = 'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
  * flags corrupted positionals for value-taking ones (`--branch dev URL`
@@ -195,6 +231,7 @@ export function parseCloneArgs(args) {
     let branch;
     let noShallow = false;
     let isBg = false;
+    let quiet = false;
     const positionals = [];
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -217,6 +254,10 @@ export function parseCloneArgs(args) {
             noShallow = true;
         else if (arg === '--bg' || arg === '&')
             isBg = true;
+        else if (arg === '-q' || arg === '--quiet')
+            quiet = true;
+        // Progress is already the default; there is no more of it to ask for.
+        else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
         else if (name === '--filter') {
             throw new Error("clone does not support '--filter': the bundled isomorphic-git has no " +
                 'partial-clone support, so a filter would silently download every object. ' +
@@ -236,6 +277,7 @@ export function parseCloneArgs(args) {
         noShallow,
         isBg,
         branch,
+        quiet,
     };
 }
 function getAuthor(ctx) {
@@ -254,10 +296,18 @@ function getAuthor(ctx) {
 export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
     const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
     const fs = createGitFs(credentialedVfs);
-    const args = ctx.args;
-    const sub = args[0];
-    const subArgs = args.slice(1);
-    const dir = getDir(ctx);
+    let globals;
+    try {
+        globals = parseGitGlobals(ctx.args, getDir(ctx));
+    }
+    catch (e) {
+        ctx.stderr.write(`git: ${e?.message}\n`);
+        return 129;
+    }
+    const { sub, subArgs, dir } = globals;
+    // Every subcommand below reads `dir` and the clone's `getDir(ctx)`; `-C`
+    // moves both, exactly as `git -C <path>` runs the command from <path>.
+    ctx = { ...ctx, cwd: dir };
     if (sub === '--version' || sub === '-v') {
         ctx.stdout.write('git version 2.44.0 (isomorphic-git/cf-git)\n');
         return 0;
@@ -299,7 +349,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'clone': {
-                const { url, dest: destArg, depth, isBg, branch } = parseCloneArgs(subArgs);
+                const { url, dest: destArg, depth, isBg, branch, quiet } = parseCloneArgs(subArgs);
+                const progress = quiet ? { write() { } } : ctx.stdout;
                 if (!url) {
                     ctx.stderr.write(CLONE_USAGE + '\n');
                     return 1;
@@ -322,7 +373,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
-                ctx.stdout.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
+                progress.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
                 // A clone's closed-world filesystem view is correct only while no
                 // other session surface can mutate its destination subtree. Acquire
                 // the lease before the facet performs its lstat/readdir emptiness
@@ -342,6 +393,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                             url,
                             ref: branch,
                             depth,
+                            quiet,
                             exclusiveDestination: true,
                             exclusiveMutationRoot: mutationLease.root,
                             mutationOwner: mutationLease.owner,
@@ -357,7 +409,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                             },
                         });
                         if (result.success) {
-                            ctx.stdout.write(`\n[git] clone complete (${result.filesWritten} files, ` +
+                            progress.write(`\n[git] clone complete (${result.filesWritten} files, ` +
                                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                         }
                         else {
@@ -372,7 +424,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 if (isBg) {
                     const task = doClone();
                     doCtx.waitUntil(task);
-                    ctx.stdout.write('[git] clone running in background...\n');
+                    progress.write('[git] clone running in background...\n');
                     return 0;
                 }
                 else {
@@ -458,6 +510,18 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'branch': {
+                if (subArgs[0] === '--show-current') {
+                    // Empty output on a detached HEAD, like git.
+                    const current = await git.currentBranch({ fs, dir });
+                    if (current)
+                        ctx.stdout.write(`${current}\n`);
+                    return 0;
+                }
+                const unknown = subArgs.find((a) => a.startsWith('-') && !['-a', '--list', '-d', '-D'].includes(a));
+                if (unknown) {
+                    ctx.stderr.write(`error: unknown option '${unknown}'\nusage: git branch [-a | --list | --show-current | -d <name> | -D <name> | <name>]\n`);
+                    return 129;
+                }
                 if (subArgs.length === 0 || subArgs[0] === '-a' || subArgs[0] === '--list') {
                     const branches = await git.listBranches({ fs, dir });
                     const current = await git.currentBranch({ fs, dir });

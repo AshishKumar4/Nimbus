@@ -188,6 +188,8 @@ export interface SupervisorOpBridgeStore {
  */
 export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>): SupervisorOpBridgeStore;
 /** One dispatch method lets any host serve its workspace to process facets. */
-export declare function createSupervisorOpHandler(deps: SupervisorOpDeps): (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+/** One envelope in, its result out: what a host forwards `supervisorOp` to. */
+export type SupervisorOpDispatch = (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+export declare function createSupervisorOpHandler(deps: SupervisorOpDeps): SupervisorOpDispatch;
 export {};
 //# sourceMappingURL=supervisor-op.d.ts.map

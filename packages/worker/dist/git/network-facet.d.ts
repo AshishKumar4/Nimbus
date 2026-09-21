@@ -33,6 +33,8 @@ export interface GitNetworkOpts {
     dir: string;
     /** For clone: repository URL */
     url?: string;
+    /** `git clone -q`: no progress on the terminal; the result is unchanged. */
+    quiet?: boolean;
     /** For fetch/pull: remote name (default "origin") */
     remote?: string;
     /** For clone: branch to clone (default remote HEAD); for pull: branch name (default current) */

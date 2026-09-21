@@ -116,7 +116,15 @@ export interface NimbusWorkspaceOptions {
      * carry REPLs and a resident-process substrate this cannot reach.
      */
     readonly facets?: FacetHost;
-    /** Isolate-wide fabric composition, including the hosting namespace. */
+    /**
+     * Isolate-wide fabric composition, including the hosting namespace, for a
+     * host whose only composition root is this factory. It is the same
+     * `composeFabric`: a second, different composition in the isolate throws.
+     * The bindings a workspace mints carry their route, so composing here
+     * rather than at module scope is safe for them; the host's own
+     * namespace lookups (fan-out, peer placement) read the isolate's
+     * composition and so every instance of the host composes before serving.
+     */
     readonly fabric?: FabricComposition;
     /** Explicit exports override the bag on the transaction host. */
     readonly ctxExports?: CtxExports;
