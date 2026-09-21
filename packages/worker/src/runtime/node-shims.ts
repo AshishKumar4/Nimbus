@@ -1464,6 +1464,27 @@ const __fsMod = (() => {
     return evicted;
   }
 
+  // Cells an own-mutation lease evicted with no barrier in hand.
+  //
+  // A barrier hands _acquireAndRefetch every path it dropped, which is what
+  // keeps a sync read inside a timer callback reading the peer's new bytes
+  // instead of EAGAIN. A lease's end drops a cell on its own account — the
+  // barrier that would have reported it was suppressed by the lease itself
+  // — so the same debt is recorded here and settled by the next untrusted
+  // resumption.
+  const _owedRefetch = new Set();
+
+  // An own-mutation lease can end in an eviction (a peer wrote inside the
+  // window). The ledger owning that decision is spliced AHEAD of this
+  // closure, so it is handed the one eviction path rather than keeping a
+  // second copy of it: content view, stat view, the invalidation count and
+  // the refetch debt move together here or not at all.
+  globalThis.__nimbusEvictResidentCell = (k) => {
+    if (!_evictResident(k)) return;
+    _stats.invalidations++;
+    _owedRefetch.add(k);
+  };
+
   /**
    * Install bytes the supervisor just served as the resident cell for a
    * path, at the cursor they were served under.
@@ -1643,6 +1664,11 @@ const __fsMod = (() => {
     } else if (Array.isArray(result.paths)) {
       for (const entry of result.paths) {
         const k = entry.path;
+        // This cursor is about to advance past the report, so a path with
+        // one of this facet's own writes in flight keeps the number: only
+        // that write's own revision, when it arrives, can say whether the
+        // report was itself or a peer. Everything else ignores it.
+        __nimbusNoteVfsReport(k, entry.rev);
         if (__vfsBundleRevisions[k] >= entry.rev) { _stats.selfWrites++; continue; }
         const held = !!(__vfsBundle && k in __vfsBundle);
         if (_evictResident(k)) _stats.invalidations++;
@@ -1676,6 +1702,13 @@ const __fsMod = (() => {
    */
   async function _acquireAndRefetch(supervisor) {
     const stale = await _acquireBarrier(supervisor);
+    // Plus what an own-mutation lease dropped since the last resumption:
+    // the same debt this function exists to settle, owed by an eviction
+    // that had no barrier to report it (see _owedRefetch).
+    if (_owedRefetch.size > 0) {
+      for (const k of _owedRefetch) if (stale.indexOf(k) === -1) stale.push(k);
+      _owedRefetch.clear();
+    }
     if (stale.length === 0) return;
     await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
   }
@@ -1843,22 +1876,46 @@ const __fsMod = (() => {
     const before = queued && after ? after() : null;
     const run = async () => {
       if (before) await before;
-      const receipt = await _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result);
-      // Only chown answers with a receipt; the rest resolve undefined and
-      // leave the stamp alone.
-      _stampOwnMutation(absPath, receipt);
+      // Only chown answers with a receipt. The rest (mkdir, unlink, rmdir,
+      // rename, rm) have already dropped the path's cell and stamp in their
+      // synchronous half, so no lease is taken at all; where one is — the
+      // stamp unlink leaves behind — an absent receipt retires it, which is
+      // what an unstamped cell already costs.
+      await _ownMutation(
+        absPath,
+        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result),
+      );
       _markVfsStale();
     };
     return queued ? __nimbusQueueVfsMutation(absPath, run) : run();
   }
 
-  // Advance the held cell's stamp past one of this facet's own partial
-  // mutations (see __nimbusStampOwnMutation for the rule). Heap-side stamps
-  // do not describe rows in the resident store, so store mode is left to the
-  // store's own provenance.
-  function _stampOwnMutation(absPath, receipt) {
-    if (_residentStorePresent()) return;
-    __nimbusStampOwnMutation(_strip(absPath), receipt);
+  /**
+   * Run one of this facet's own partial mutations under a lease.
+   *
+   * See __nimbusBeginOwnMutation: the barrier KEEPS the cell while the RPC
+   * is in flight — a barrier issued after this mutation can be answered
+   * ahead of it, and an eviction there loses bytes no later stamp can
+   * recover — and the receipt decides at the end. \`apply\` lands the local
+   * effect while the lease still holds the cell, so the stamp the end
+   * settles describes a cell that already carries the mutation.
+   *
+   * Heap-side stamps do not describe rows in the resident store, so store
+   * mode has no lease to take and is left to the store's own provenance.
+   */
+  async function _ownMutation(absPath, rpc, apply) {
+    const key = _strip(absPath);
+    const held = !_residentStorePresent() && __nimbusBeginOwnMutation(key);
+    let receipt;
+    try { receipt = await rpc(); }
+    finally {
+      // The end runs even if applying the local effect throws: a lease left
+      // open pins its cell at Infinity, which is the one state in this
+      // protocol that can serve a stale byte forever.
+      try { if (receipt !== undefined && apply) apply(receipt); }
+      finally { __nimbusEndOwnMutation(key, held, receipt); }
+    }
+    return receipt;
   }
 
   // A sync caller has no frame to receive the outcome. The ledger already
@@ -1906,8 +1963,10 @@ const __fsMod = (() => {
     // Pending sync chmod rides along with any flush of the same path
     // (idempotent — the entry stays so local statSync remains coherent).
     if (k in _localModes && typeof supervisor.chmod === "function") {
-      const receipt = await _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result);
-      _stampOwnMutation(absPath, receipt);
+      await _ownMutation(
+        absPath,
+        () => _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result),
+      );
       _markVfsStale();
     }
   }
@@ -2408,13 +2467,15 @@ const __fsMod = (() => {
       // Live file is the source of truth — supervisor trims only the
       // boundary chunk; ENOENT propagates when it does not exist.
       const generation = __vfsWriteGenerations[k];
-      const receipt = await __nimbusQueueVfsMutation(absPath, () =>
-        _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, (result) => result)
-      );
-      if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
-        _truncateLocalCell(absPath, size);
-        _stampOwnMutation(absPath, receipt);
-      }
+      await __nimbusQueueVfsMutation(absPath, () => _ownMutation(
+        absPath,
+        () => _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, (result) => result),
+        () => {
+          if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
+            _truncateLocalCell(absPath, size);
+          }
+        },
+      ));
       _markVfsStale();
       return;
     }
@@ -2450,13 +2511,13 @@ const __fsMod = (() => {
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
-      const rpc = () => _fsRpc(
+      const leased = () => _ownMutation(absPath, () => _fsRpc(
         supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
         syscall, p,
         (result) => result,
-      );
-      const receipt = _hasVfsMutationQueue() ? await __nimbusQueueVfsMutation(absPath, rpc) : await rpc();
-      _stampOwnMutation(absPath, receipt);
+      ));
+      if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, leased);
+      else await leased();
       _markVfsStale();
       return;
     }
@@ -2506,10 +2567,14 @@ const __fsMod = (() => {
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
     await _flushLocalPathToSupervisor(absPath, supervisor);
-    const receipt = await _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result);
-    const meta = _metadata(absPath);
-    if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
-    _stampOwnMutation(absPath, receipt);
+    await _ownMutation(
+      absPath,
+      () => _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result),
+      () => {
+        const meta = _metadata(absPath);
+        if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
+      },
+    );
     _markVfsStale();
   }
 
@@ -3363,17 +3428,21 @@ const __fsMod = (() => {
             );
             if (meta && meta.type === "file") writeAt = Number(meta.size) || 0;
           }
-          const receipt = await _fsRpc(
-            supervisor.fsWriteRange(this._abs, writeAt, bytes),
-            "write", this._path,
-            (result) => result,
+          await _ownMutation(
+            this._abs,
+            () => _fsRpc(
+              supervisor.fsWriteRange(this._abs, writeAt, bytes),
+              "write", this._path,
+              (result) => result,
+            ),
+            () => {
+              const key = _strip(this._abs);
+              if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+                  __vfsWriteGenerations[key] === overlayGeneration) {
+                _overlayLocalCell(this._abs, writeAt, bytes);
+              }
+            },
           );
-          const key = _strip(this._abs);
-          if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
-              __vfsWriteGenerations[key] === overlayGeneration) {
-            _overlayLocalCell(this._abs, writeAt, bytes);
-            _stampOwnMutation(this._abs, receipt);
-          }
         });
         _markVfsStale();
       } else {

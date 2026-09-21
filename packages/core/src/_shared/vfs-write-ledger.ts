@@ -267,6 +267,27 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
           typeof __vfsBundle !== "undefined" &&
           __vfsBundle) {
         delete __vfsBundle[snapshot.key];
+      } else if (typeof value === "number" &&
+                 typeof __vfsBundle !== "undefined" &&
+                 __vfsBundle &&
+                 !(snapshot.key in __vfsBundle) &&
+                 !(__vfsParkedReports[snapshot.key] > value)) {
+        // The barrier that evicted the resident copy was answered AHEAD of
+        // this very write (see __nimbusBeginOwnMutation for why that
+        // ordering is ordinary): it reported the path at the revision this
+        // write produced, which is the revision about to be stamped, and
+        // the bytes in hand are the authority's content AT that revision.
+        // So reinstall them rather than let the identity check below
+        // decline and leave the facet holding nothing — a sync read of a
+        // file the program just wrote whole would fail EAGAIN.
+        //
+        // A peer's earlier write was overwritten by this whole-file write.
+        // A peer's LATER one is reported ABOVE this revision, and the guard
+        // above is that test: reported later, the bytes in hand are not
+        // what the authority serves and the eviction stands — a refetch,
+        // never a stale byte. The parked cell is dropped right after, so a
+        // reinstalled copy is the one the sync view serves.
+        __vfsBundle[snapshot.key] = snapshot.content;
       }
       delete __vfsWrites[snapshot.key];
       __nimbusStampFlushedCell(snapshot, value);
@@ -313,23 +334,134 @@ function __nimbusStampFlushedCell(snapshot, revision) {
 }
 
 /**
- * Advance a held cell's stamp past one of the facet's OWN partial mutations
- * (ranged write, truncate, utimes, chmod, chown). Each bumps the path's
- * revision exactly as a flush does; unstamped, the next barrier would evict
- * the facet's own cell and a sync read would fail EAGAIN on bytes it just
- * wrote. The RPC answers with the path's revision on either side of the
- * mutation, read in its synchronous turn, and receipt.before keeps this
- * sound: a stamp at or past it means the cell was current when the mutation
- * landed, so the cell with the local effect applied IS what the authority
- * serves at receipt.after. A stamp below it means a peer touched the path
- * in between, and the barrier must still evict. Unstamped cells stay so.
- * Callers mutate the local cell before stamping.
+ * Take an own-mutation lease on a held cell.
+ *
+ * One of the facet's OWN partial mutations (ranged write, truncate, utimes,
+ * chmod, chown) bumps the path's revision exactly as a flush does, and the
+ * ACQUIRE barrier that reports it back cannot tell who caused it. Stamping
+ * once the RPC answers is not enough, because the two are CONCURRENT: the
+ * supervisor answers \`fsAcquire\` from memory at once, while a write's
+ * response waits on the Durable Object's output gate for durability. So a
+ * barrier issued AFTER this facet's own write can be ANSWERED BEFORE that
+ * write's response arrives. Its delta lists the path at the write's new
+ * revision, the facet's stamp is still the old one, the cell the facet is
+ * about to overlay is evicted out from under it, and the next
+ * \`readFileSync\` fails EAGAIN on bytes the program wrote itself.
+ * Intermittent, and it is what create-astro shows on staging — the README
+ * its extract wrote, read synchronously right after.
+ *
+ * So the cell is HELD for the whole window instead, and the receipt decides
+ * at the end (\`__nimbusEndOwnMutation\`). \`Infinity\` is what the barrier's
+ * \`stamp >= entry.rev\` reads as "mine" for every revision it could report
+ * while the RPC is in flight.
+ *
+ * An UNSTAMPED cell is not leased: it keeps today's evict-and-refetch, so a
+ * mutation path that never stamps still costs a refetch and never a stale
+ * byte. \`false\` says no lease was taken and the end is a no-op.
  */
-function __nimbusStampOwnMutation(key, receipt) {
-  if (!receipt || typeof receipt.before !== "number" || typeof receipt.after !== "number") return;
+function __nimbusBeginOwnMutation(key) {
   const stamp = __vfsBundleRevisions[key];
-  if (stamp === undefined || stamp < receipt.before) return;
-  __vfsBundleRevisions[key] = receipt.after;
+  if (stamp === undefined) return false;
+  const lease = __vfsOwnLeases[key]
+    || (__vfsOwnLeases[key] = { stamp, pending: 0, peer: false, reported: -1 });
+  lease.pending++;
+  __vfsBundleRevisions[key] = Infinity;
+  return true;
+}
+
+/**
+ * Remember a revision the ACQUIRE barrier has just reported for a path one
+ * of this facet's own writes is in flight for. Called for every reported
+ * path; a no-op for the ones nothing of ours is touching.
+ *
+ * A barrier answered inside that window is the whole problem this file is
+ * solving, and its report is CONSUMED — the cursor advances past it and
+ * nothing will ever raise that revision again. Whether it was this facet's
+ * own write coming back or a peer's cannot be decided then, so the number
+ * is kept until the write's own revision arrives and can decide it:
+ *
+ *  - a leased cell had the report SUPPRESSED (the stamp reads Infinity for
+ *    every revision), so \`__nimbusEndOwnMutation\` applies the barrier's own
+ *    test against the stamp the receipt settles on.
+ *  - a PARKED cell is unstamped, so the barrier evicted it legitimately;
+ *    \`__nimbusRunVfsWriteMutation\` uses this to tell a report of its own
+ *    write (put the bytes back) from a peer's later one (leave them gone).
+ *
+ * Neither can be answered by the receipt alone: it is read in the
+ * mutation's own turn, so a peer writing after the mutation landed and
+ * before its response arrived is invisible to it.
+ */
+function __nimbusNoteVfsReport(key, revision) {
+  const lease = __vfsOwnLeases[key];
+  if (lease && revision > lease.reported) lease.reported = revision;
+  if (Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+      !(__vfsParkedReports[key] >= revision)) {
+    __vfsParkedReports[key] = revision;
+  }
+}
+
+/**
+ * End one own-mutation lease, and settle the stamp when it was the last.
+ *
+ * The receipt carries the path's revision on either side of the mutation,
+ * both read in the RPC's own synchronous turn:
+ *
+ *  - \`before\` at or below the stamp the lease began with — nobody else
+ *    touched the path in the window, so the cell with the local effect
+ *    applied IS what the authority serves at \`after\`, and the stamp
+ *    advances there.
+ *  - \`before\` past it — a peer wrote inside the window, and the barrier
+ *    that would have evicted was suppressed by this lease. The end owes
+ *    that eviction, so it performs it.
+ *  - no receipt at all (the RPC threw) — the outcome is unknown, which is
+ *    handled exactly as a peer's write is.
+ *
+ * Then every report the lease suppressed is adjudicated against the stamp
+ * it settled on: a report ABOVE it is a mutation this receipt does not
+ * account for, so the eviction the barrier did not perform is performed
+ * here (see \`__nimbusNoteVfsReport\`).
+ *
+ * A cell that stopped being held during the window (a poison drop, a
+ * parked sync write retiring the stamp) has nothing left to vouch for, so
+ * no stamp is restored for it.
+ */
+function __nimbusEndOwnMutation(key, held, receipt) {
+  if (!held) return;
+  const lease = __vfsOwnLeases[key];
+  if (!lease) return;
+  lease.pending--;
+  if (receipt && typeof receipt.before === "number" && typeof receipt.after === "number") {
+    if (lease.stamp >= receipt.before) lease.stamp = receipt.after;
+    else lease.peer = true;
+  } else {
+    lease.peer = true;
+  }
+  if (lease.pending > 0) return;
+  delete __vfsOwnLeases[key];
+  const evict = lease.peer || lease.reported > lease.stamp;
+  const resident = typeof __vfsBundle !== "undefined" && __vfsBundle && key in __vfsBundle;
+  if (evict || !resident) {
+    delete __vfsBundleRevisions[key];
+    if (evict) __nimbusEvictLeasedCell(key);
+    return;
+  }
+  __vfsBundleRevisions[key] = lease.stamp;
+}
+
+/**
+ * Drop a cell the way the shims' own invalidation does.
+ *
+ * Content view, stat view and the invalidation count move together in the
+ * shims' \`_evictResident\`, and this source is spliced AHEAD of that
+ * closure, so the lease asks through the hook it publishes rather than
+ * keeping a second eviction path in step with it. A ledger embedded without
+ * the shims has no stat view to keep coherent, and the content view is then
+ * all there is to drop.
+ */
+function __nimbusEvictLeasedCell(key) {
+  const evict = globalThis.__nimbusEvictResidentCell;
+  if (typeof evict === "function") { evict(key); return; }
+  if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[key];
 }
 
 function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
@@ -490,13 +622,34 @@ const __vfsWriteGenerations = Object.create(null);
 // facet's own partial mutations of a stamped cell advance it, and the
 // ACQUIRE barrier is the only reader. An unstamped cell is simply evicted,
 // so a mutation path that forgets to stamp costs a refetch and never a
-// stale byte.
+// stale byte. Infinity is not a revision: it is the lease below, held
+// while one of this facet's own mutations of the path is in flight.
 const __vfsBundleRevisions = Object.create(null);
+// Own mutations in flight per path: the stamp the first lease began with,
+// how many are outstanding, whether a receipt has already proven a peer
+// wrote inside the window, and the highest revision a barrier reported for
+// the path while the lease suppressed it.
+//
+// Overlapping own mutations of one path are legal — chown and the chmod
+// ride-along are not queued behind each other — so a second begin reuses
+// the record rather than opening a second window, and an end whose receipt
+// reports a \`before\` past the record's stamp marks \`peer\`. That verdict
+// cannot distinguish a stranger's write from the sibling own mutation still
+// in flight, and does not try to: it is a conservative refetch, never
+// staleness.
+const __vfsOwnLeases = Object.create(null);
+// Per path with a PARKED write: the highest revision a barrier reported for
+// it while that write was in flight. A parked cell is unstamped, so the
+// barrier evicts it and consumes the report; the flush's own revision is
+// what finally says whether that report was its own write coming back.
+// Bounded by the parked set — the entry is retired with the cell below.
+const __vfsParkedReports = Object.create(null);
 const __vfsAppendWrites = Object.create(null);
 const __vfsWrites = new Proxy(Object.create(null), {
   set(target, path, value) {
     target[path] = value;
     delete __vfsAppendWrites[path];
+    delete __vfsParkedReports[path];
     __vfsWriteGenerations[path] = (__vfsWriteGenerations[path] || 0) + 1;
     // Parking a cell is the only signal a synchronous write leaves. It is
     // therefore the one place a write-back can be scheduled from, and it
@@ -507,6 +660,7 @@ const __vfsWrites = new Proxy(Object.create(null), {
   },
   deleteProperty(target, path) {
     delete __vfsAppendWrites[path];
+    delete __vfsParkedReports[path];
     if (Object.prototype.hasOwnProperty.call(target, path)) {
       delete target[path];
       __vfsWriteGenerations[path] = (__vfsWriteGenerations[path] || 0) + 1;
