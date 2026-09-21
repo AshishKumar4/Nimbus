@@ -60,7 +60,9 @@ cli 0.1.11, react 0.1.7, loom 0.1.3.
 ## 2026-09-21 (third release)
 
 For embedders composing the hosted runtime. Every public signature that
-changed is listed under "Signatures".
+changed is listed under "Signatures". Published as core 0.12.0, worker
+0.10.0, platform 0.5.1, fabric 0.7.1, sdk 0.8.1, cli 0.1.12, loom 0.1.4;
+the carets are minor-strict, so every range moves.
 
 ### npm
 
