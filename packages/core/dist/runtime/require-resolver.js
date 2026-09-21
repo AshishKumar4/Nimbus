@@ -206,6 +206,9 @@ async function resolvePkgSubpathEx(vfs, pkgDir, subpath, sink) {
         const r = (await resolveFile(vfs, pkgDir + '/index', sink));
         return r ? { resolved: r } : null;
     }
+    // The runtime resolver reads this package.json unconditionally to walk
+    // exports/main; record it so its content ships in the bundle.
+    sink?.(pkgJsonPath);
     let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
     if (entry == null && pkg.exports != null) {
         entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);

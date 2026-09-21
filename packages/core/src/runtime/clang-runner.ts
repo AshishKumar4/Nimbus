@@ -552,9 +552,13 @@ async function ensureSysrootUnpacked(vfs: ExecutionFs, tarVfsPath: string, sysro
     for (let cut = slash; cut > dir.length; cut = path.lastIndexOf('/', cut - 1)) dirSet.add(path.slice(0, cut));
     const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
     files.push({ path, parentPath: path.slice(0, slash), isDir: false, size: data.length, mtime, mode: 0o644, chunkCount });
+    // Each chunk owns its bytes. The W7 encoder hands a chunk's buffer
+    // straight to a byte stream and workerd TRANSFERS it on enqueue, so a
+    // second chunk that was a view into the same buffer is detached by the
+    // time it is read. A copy per chunk costs one pass over the archive.
     const chunks: BatchChunkEntry[] = [];
     for (let i = 0; i < chunkCount; i++) {
-      chunks.push({ path, chunkId: i, data: data.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE) });
+      chunks.push({ path, chunkId: i, data: data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE) });
     }
     chunksByPath.set(path, chunks);
   }

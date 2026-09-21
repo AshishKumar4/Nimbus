@@ -34,7 +34,9 @@ export const SYSROOT_FILES = Object.freeze({
   'include/c++/v1/vector': '// libc++\n',
   'lib/clang/8.0.1/include/stddef.h': 'typedef unsigned long size_t;\n',
   'lib/wasm32-wasi/crt1.o': '\0asm-crt1',
-  'lib/wasm32-wasi/libc.a': '!<arch>\n',
+  // Larger than one 64 KiB chunk, so its chunks are several views of one
+  // buffer — the shape the live archive's libc.a has.
+  'lib/wasm32-wasi/libc.a': `!<arch>\n${'libc-archive-bytes\n'.repeat(8000)}`,
   'lib/wasm32-wasi/libc.imports': 'fd_write\n',
   'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a': '!<arch>\n',
 });
@@ -107,6 +109,38 @@ function toolchainFacet(spec, calls) {
   };
 }
 
+/**
+ * The sysroot unpack crosses a supervisor RPC hop live, and workerd
+ * TRANSFERS every chunk's ArrayBuffer it streams: a view the producer still
+ * holds into that buffer is detached once the wave has gone. The harness has
+ * no hop, so its host lease's writeStream consumes each batch the same way —
+ * transferring the buffers of the chunks it receives — and a producer that
+ * hands over views into a buffer it means to keep using fails here as it
+ * fails live.
+ */
+function detachingAuthority(authority) {
+  const openHost = authority.openHost.bind(authority);
+  authority.openHost = (cred) => {
+    const lease = openHost(cred);
+    const fs = lease.fs;
+    const writeStream = fs.writeStream.bind(fs);
+    fs.writeStream = (stream, options) => {
+      const reader = stream.getReader();
+      const transferred = new ReadableStream({
+        type: 'bytes',
+        async pull(controller) {
+          const { value, done } = await reader.read();
+          if (done) { controller.close(); return; }
+          controller.enqueue(structuredClone(value, { transfer: [value.buffer] }));
+        },
+      });
+      return writeStream(transferred, options);
+    };
+    return lease;
+  };
+  return authority;
+}
+
 export function makeInvocationVfs(options = {}) {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
@@ -132,7 +166,7 @@ export function makeInvocationVfs(options = {}) {
     parking: 'none',
     open(spec) { return toolchainFacet(spec, calls); },
   };
-  const filesystem = new SqliteFilesystemAuthority(raw);
+  const filesystem = detachingAuthority(new SqliteFilesystemAuthority(raw));
   const handler = makeClangRunnerFactory({ facets, filesystem })(
     MANIFEST, '/runtime/clang', 'clang', undefined,
   );

@@ -20,6 +20,10 @@ const SYSROOT = 'runtime/clang/share/clang/sysroot';
   user.writeFile('home/user/main.c', 'int main(void) { return 0; }');
   assert.equal(await run(commandContext(['main.c', '-o', 'main.wasm']).ctx), 0);
 
+  // The harness's writeStream transfers every chunk buffer it receives, as
+  // workerd does across the supervisor hop; libc.a spans several chunks, so
+  // chunks that were views into one buffer would arrive detached.
+  assert.ok(Buffer.byteLength(SYSROOT_FILES['lib/wasm32-wasi/libc.a']) > 65536, 'the fixture must span chunks');
   for (const [rel, text] of Object.entries(SYSROOT_FILES)) {
     const path = `${SYSROOT}/${rel}`;
     assert.equal(user.readFileString(path), text, `${rel} must be unpacked byte for byte`);
