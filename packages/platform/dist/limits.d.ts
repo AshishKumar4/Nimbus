@@ -19,6 +19,13 @@ export declare const MAX_TX_BLOB_BYTES: number;
 export declare const MAX_TX_LOGICAL_ROWS = 256;
 export declare const MAX_TX_SQL_EXECS = 64;
 /**
+ * Bound parameters per SQL statement on Durable Objects SQLite. Measured
+ * 2026-09-21 on workerd: 100 bind, 101 fail as `too many SQL variables`
+ * (a 9-row insert of 12 columns fails, 8 rows succeed). Every IN-list and
+ * multi-row VALUES statement is sized from this.
+ */
+export declare const SQL_MAX_BOUND_PARAMETERS = 100;
+/**
  * Storage per SQLite-backed Durable Object: 10 decimal GB documented
  * (Workers Paid), shared by the root object, every facet beneath it, and
  * every clone — a copy-on-write clone consumes its FULL logical bytes with

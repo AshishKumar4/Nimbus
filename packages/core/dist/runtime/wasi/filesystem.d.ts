@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, WasiImports } from './types.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
@@ -13,6 +13,20 @@ export interface AuthorityFd {
         type: string;
     }[];
 }
+/**
+ * A read-only open of a regular file, answered from this isolate: the bytes
+ * are the file's content at its stat revision, so every read, seek and stat on
+ * the descriptor is local. Nothing on the authority side is held for it.
+ */
+export interface ResidentFd {
+    kind: 'resident';
+    stat: RuntimeVfsStat;
+    bytes: Uint8Array;
+    position: number;
+    rights: bigint;
+    rightsInheriting: bigint;
+    fdflags: number;
+}
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -20,7 +34,7 @@ export interface AuthorityPreopen {
     rights?: bigint;
     rightsInheriting?: bigint;
 }
-export type FilesystemFd = AuthorityFd | AuthorityPreopen | {
+export type FilesystemFd = AuthorityFd | ResidentFd | AuthorityPreopen | {
     kind: 'stdin' | 'stdout' | 'stderr' | 'file' | 'dir' | 'socket' | 'listener' | 'pipe';
 };
 export type FilesystemImports = Pick<WasiImports, 'path_open' | 'path_filestat_get' | 'fd_filestat_get' | 'fd_read' | 'fd_pread' | 'fd_write' | 'fd_pwrite' | 'fd_close' | 'fd_renumber' | 'fd_seek' | 'fd_tell' | 'fd_fdstat_get' | 'fd_fdstat_set_flags' | 'fd_fdstat_set_rights' | 'fd_filestat_set_size' | 'fd_sync' | 'fd_datasync' | 'fd_allocate' | 'fd_advise' | 'fd_readdir' | 'path_create_directory' | 'path_remove_directory' | 'path_unlink_file' | 'path_rename' | 'path_symlink' | 'path_readlink' | 'path_link' | 'fd_filestat_set_times' | 'path_filestat_set_times'>;
@@ -58,6 +72,15 @@ export interface AuthorityFilesystemOptions {
     synchronous: boolean;
     /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
     umask?(): number;
+    /**
+     * Largest regular file a read-only open answers from a resident copy. A
+     * guest that reopens the same file for every module (CPython's zipimport,
+     * a shell's scripts) then pays one stat per open and one read per revision,
+     * rather than a round trip per descriptor call. Content is keyed by inode
+     * and validated against the stat revision, so a file rewritten by anyone
+     * is fetched again on its next open. Zero keeps every open on the authority.
+     */
+    residentBytes?: number;
 }
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;

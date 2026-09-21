@@ -17,7 +17,7 @@
  * must not share either.
  */
 import { sha256Hex } from '../_shared/crypto.js';
-import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
 export function runtimeAbiForManifest(manifest) {
     const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
@@ -46,8 +46,8 @@ export function runtimeAbiForManifest(manifest) {
  */
 export const RUNTIME_EXTRA_ENTRYPOINTS = {
     bash: [
-        { binName: '/bin/bash', runner: 'bash-runner', args: [] },
-        { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
+        { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
+        { binName: '/usr/bin/bash', runner: BASH_RUNNER, args: [] },
     ],
     // `pip` belongs to whichever runtime provides the interpreter, and only one
     // may claim it. The python row went with python-runner: Pyodide's manifest

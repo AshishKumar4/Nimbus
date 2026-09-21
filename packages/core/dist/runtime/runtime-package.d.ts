@@ -73,6 +73,7 @@ export interface RuntimeAvailability {
     name: string;
     abi: RuntimePackageAbi;
     defaultVersion: string;
+    /** In publish order, oldest first: version strings carry no order of their own. */
     versions: Array<{
         version: string;
         sizeBytes: number;

@@ -115,7 +115,7 @@ export function checkedReadPayloadBytes(bytes) {
  * `stat` here is a local SQLite lookup inside the DO — the same one
  * `_rpcReadFile` makes for the same reason — not a second round trip.
  */
-export async function rangeReadBytes(fs, path, offset, length) {
+async function rangeReadBytes(fs, path, offset, length) {
     const stat = await fs.stat(path);
     if (!stat)
         return 0;
@@ -282,11 +282,6 @@ export async function _rpcRename(self, from, to, pid, cred) {
     await self.supervisorOp({ op: 'rename', args: [from, to], pid, cred });
 }
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
-export const FsReadRangeArgsSchema = z.object({
-    path: z.string(),
-    offset: FsRangeOffsetSchema,
-    length: FsRangeOffsetSchema,
-});
 const FsReadBatchArgsSchema = z.array(z.object({
     path: z.string().min(1),
     offset: FsRangeOffsetSchema,
@@ -483,25 +478,6 @@ export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid
     }
     const processId = processPid(pid);
     await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
-}
-export async function _rpcFsOpen(self, path, flags, pid) {
-    return self.supervisorBridge(pid).open(path, flags || {});
-}
-export async function _rpcFsRead(self, handleId, offset, length, pid) {
-    return withReadAllocation(length, () => self.supervisorBridge(pid).read(handleId, offset, length));
-}
-export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
-    let data;
-    if (bytes instanceof Uint8Array)
-        data = bytes;
-    else if (bytes instanceof ArrayBuffer)
-        data = new Uint8Array(bytes);
-    else
-        data = new Uint8Array(bytes || []);
-    return self.supervisorBridge(pid).write(handleId, offset, data);
-}
-export async function _rpcFsClose(self, handleId, pid) {
-    await self.supervisorBridge(pid).close(handleId);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so

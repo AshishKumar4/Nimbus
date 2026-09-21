@@ -728,13 +728,6 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcWsClose(id, code, reason, pid) {
         return _rpc._rpcWsClose(this, id, code, reason, pid);
     }
-    async _rpcFsRead(handleId, offset, length, pid) {
-        return _rpc._rpcFsRead(this, handleId, offset, length, pid);
-    }
-    async _rpcFsWrite(handleId, offset, bytes, pid) {
-        return _rpc._rpcFsWrite(this, handleId, offset, bytes, pid);
-    }
-    async _rpcFsClose(handleId, pid) { return _rpc._rpcFsClose(this, handleId, pid); }
     async _rpcFsReadRange(path, offset, length, pid, cred) {
         return _rpc._rpcFsReadRange(this, path, offset, length, pid, cred);
     }

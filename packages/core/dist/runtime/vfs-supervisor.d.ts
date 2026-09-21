@@ -54,7 +54,12 @@ export type FilesystemSupervisor = {
 };
 /** Local facets retain the process-bound bridge and its synchronous capability. */
 export declare function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor;
-/** Remote facets use the same typed supervisor RPC methods. */
-export declare function supervisorFilesystem(supervisor: WasiSupervisorStub): RuntimeFsBridge;
+/**
+ * Remote facets use the same typed supervisor RPC methods. A synchronous view
+ * is a same-isolate capability: an RPC stub answers every property with a
+ * callable, so it is never read from the stub, only carried by a local
+ * supervisor whose view really is in this isolate.
+ */
+export declare function supervisorFilesystem(supervisor: WasiSupervisorStub, local?: RuntimeSynchronousFs): RuntimeFsBridge;
 export {};
 //# sourceMappingURL=vfs-supervisor.d.ts.map

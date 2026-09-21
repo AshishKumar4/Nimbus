@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -148,7 +148,7 @@ export async function registerHostedCommands(self, workspace) {
     // mechanisms). Interactive terminal invocations use the shared
     // ReplSession line editor; -c, scripts, and piped stdin retain the
     // canonical one-shot handler.
-    workspace.runtimes.registerRunner('bash-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
+    workspace.runtimes.registerRunner(BASH_RUNNER, (manifest, installRoot, binName, binKind) => async (ctx) => {
         const argv = ctx.args || [];
         const explicitInteractive = argv.includes('-i');
         const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;

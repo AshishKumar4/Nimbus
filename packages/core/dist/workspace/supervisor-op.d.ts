@@ -39,6 +39,12 @@ export interface SupervisorOpDeps {
      * uses; in-process workspaces let the handler build its own.
      */
     readonly bridge?: SupervisorOpBridgeStore;
+    /**
+     * Accounting around a read that answers up to `bytes`: a host under a
+     * memory budget holds a lease for the payload while it is produced. Absent,
+     * reads are unaccounted, which is an in-process workspace's whole budget.
+     */
+    readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
     readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
 }
 /**
@@ -93,6 +99,7 @@ export interface SupervisorOpTools {
     readonly vfs: SqliteVFS;
     readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
     readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
 }
 /**
  * The host-side argument plan per op — how an envelope becomes an _rpc*
@@ -111,6 +118,9 @@ export declare const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpN
 declare const NATIVE_OPS: {
     readFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<string | null>;
     fsOpen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
+    fsRead: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike>>;
+    fsWrite: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
+    fsClose: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsFstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat>;
     fsDup: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
     fsSeek: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
@@ -129,14 +139,14 @@ declare const NATIVE_OPS: {
         owner: string;
     }>;
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
+    readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
     lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
     exists: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<boolean>;
     readdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
     readlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
-    fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
-    fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<Uint8Array<ArrayBufferLike> | null>;
+    fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
+    fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsRevision: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     hasLegacySymlinkUnder: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => boolean;
     writeFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;

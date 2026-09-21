@@ -1,5 +1,6 @@
 import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // Sizing is measurement-grounded (local pre-gate stats): bash's deepest
 // observed asyncify capture is ~25 KiB (full control suite), so 8 MiB
@@ -283,7 +284,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false) {
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES });
     installPreopenRehoming(proc, imports);
     return imports;
 }
@@ -1306,8 +1307,6 @@ async function pump(s) {
  * nothing but a boot/feed-shaped payload can reach the scheduler.
  */
 globalThis.__bashStep = async function __bashStep(raw, supervisor) {
-    if (supervisor)
-        filesystem = supervisorFilesystem(supervisor);
     if (typeof raw !== 'object' || raw === null || !('op' in raw)) {
         return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: step args must be an object with op' };
     }
@@ -1323,6 +1322,11 @@ globalThis.__bashStep = async function __bashStep(raw, supervisor) {
         if (!Array.isArray(a.argv) || !Array.isArray(a.environ) || typeof a.cwd !== 'string') {
             return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: malformed boot args' };
         }
+        // A synchronous view exists only in the isolate that owns the filesystem,
+        // which is where a guest that cannot park runs; across a hop the stub
+        // answers the property with a callable, so it is read only for that host.
+        if (supervisor)
+            filesystem = supervisorFilesystem(supervisor, a.parking === 'none' ? supervisor.synchronous : undefined);
         return globalThis.__bashBoot(raw);
     }
     return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: `bash-runner: unknown step op ${JSON.stringify(raw.op)}` };

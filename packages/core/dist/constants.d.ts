@@ -29,6 +29,13 @@ export declare const VFS_BUNDLE_MAX_BYTES: number;
 export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const PREFETCH_CACHE_MAX_BYTES: number;
 export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
+/**
+ * Largest regular file a WASI guest holds resident: a read-only open at or
+ * under this size is answered from the facet's own copy of the content (one
+ * stat per open, one read per revision), a larger one is windowed through
+ * the supervisor. CPython's stdlib archive (3.7 MiB) and busybox sit under it.
+ */
+export declare const WASI_RESIDENT_FILE_CAP_BYTES: number;
 export declare const NPM_REGISTRY = "https://registry.npmjs.org";
 export declare const NPM_CONCURRENCY = 12;
 export declare const NPM_DECOMPRESS_TIMEOUT = 15000;

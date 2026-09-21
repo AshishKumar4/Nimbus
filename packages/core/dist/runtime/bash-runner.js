@@ -1,7 +1,7 @@
 import { withHostFilesystem } from '../shell/execution-fs.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 const BashSliceSchema = z.object({
     state: z.enum(['need-input', 'exited', 'error']),
@@ -105,7 +105,7 @@ export async function createBashFacetSession(deps) {
             .filter(Boolean)
         : [];
     const facet = deps.facets.open({
-        tag: 'bash-runner',
+        tag: BASH_RUNNER,
         concurrency: 1,
         syscalls: { vfs: deps.filesystem, pid: deps.pid },
         preamble: BASH_RUNNER_PREAMBLE,

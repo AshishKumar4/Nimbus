@@ -324,9 +324,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
     _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void>;
-    _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
-    _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-    _rpcFsClose(handleId: number, pid?: number): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;

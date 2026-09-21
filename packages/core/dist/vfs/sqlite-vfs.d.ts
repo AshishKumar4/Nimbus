@@ -171,6 +171,7 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         message: string;
     };
 });
+export declare const INODE_ROWS_PER_SQL_EXEC: number;
 export declare const VFS_APPEND_RECEIPT_LIMIT = 2048;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';

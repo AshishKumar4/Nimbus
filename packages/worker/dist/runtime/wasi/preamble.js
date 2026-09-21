@@ -1,5 +1,6 @@
 import { installAuthorityFilesystem, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
 import { supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -126,7 +127,7 @@ function __wasiEmptyFS() {
         root: '',
         files: new Map(), dirs: new Set(), times: new Map(), symlinks: new Map(),
         modes: new Map(), sizes: new Map(), origFiles: new Map(),
-        residentFileCap: 8 * 1024 * 1024,
+        residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES,
         enumeratedRoots: [],
         revision: null,
     };
@@ -443,7 +444,7 @@ export function __wasiInitFS(opts) {
         origFiles,
         // Files at or above this size are never held whole; reads window through
         // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
-        residentFileCap: Number(opts.residentFileCap ?? (8 * 1024 * 1024)),
+        residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
         // Roots the seed claims to have listed COMPLETELY. Only a producer that
         // walked a subtree without exclusions may claim one. Inside such a root a
         // path the manifest lacks is genuinely absent, so the miss is answered
@@ -2844,12 +2845,13 @@ export function __wasiMakeImports(opts) {
         },
     };
     installAuthorityFilesystem(imports, {
-        fs: () => __wasiSup ? supervisorFilesystem(__wasiSup) : null,
+        fs: () => __wasiSup ? supervisorFilesystem(__wasiSup, opts.parking === 'none' ? __wasiSup.synchronous : undefined) : null,
         memory: opts.getMemory,
         fds: fdTable,
         allocateFd: __wasiAllocateFd,
         abi: opts.abi,
         synchronous: opts.parking === 'none',
+        residentBytes: __wasiFS.residentFileCap,
     });
     // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
     // fd_write can route socket fds through them (wasi-libc maps read(2)/

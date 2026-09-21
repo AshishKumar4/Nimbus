@@ -21,24 +21,13 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
 export declare function checkedReadPayloadBytes(bytes: number): number;
-/**
- * Bytes a ranged read can actually return, so the reservation covers the
- * result rather than the ask. A 64 KiB range over a 200-byte file retains 200
- * bytes; reserving the range would let a handful of small reads exhaust the
- * read reserve and serialise a workload whose real cost is negligible.
- *
- * `stat` here is a local SQLite lookup inside the DO — the same one
- * `_rpcReadFile` makes for the same reason — not a second round trip.
- */
-export declare function rangeReadBytes(fs: RuntimeFsBridge, path: string, offset: number, length: number): Promise<number>;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
  * `files.readFile` — the read with the supervisor's allocation lease.
@@ -107,11 +96,6 @@ export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, c
 export declare function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
 export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
-export declare const FsReadRangeArgsSchema: z.ZodObject<{
-    path: z.ZodString;
-    offset: z.ZodNumber;
-    length: z.ZodNumber;
-}, z.core.$strip>;
 declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodObject<{
     path: z.ZodString;
     offset: z.ZodNumber;
@@ -182,10 +166,6 @@ export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: 
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
-export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any>;
-export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
-export declare function _rpcFsWrite(self: RpcHost, handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsClose(self: RpcHost, handleId: number, pid?: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this

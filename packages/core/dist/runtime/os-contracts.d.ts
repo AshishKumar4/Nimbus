@@ -393,6 +393,15 @@ export declare const PYODIDE_PACKAGE_ABI = "pyodide-emscripten-2025_0-wasm32";
 export declare const NATIVE_UNSUPPORTED_ABI = "native-unsupported";
 export type RuntimePackageAbi = 'javascript' | typeof NIMBUS_ABI_TARGET | typeof PYODIDE_PACKAGE_ABI | 'py3-none-any' | 'python-source-pure' | 'pyodide' | 'ruby-wasm' | typeof NATIVE_UNSUPPORTED_ABI;
 export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>>;
+/**
+ * The runner key a bash manifest entrypoint names. Its number is the contract
+ * between the bash preamble and the wasm build in `packages/worker/wasm/bash`:
+ * the `nimbus_proc` import table and the Asyncify allowlist. A rebuild that
+ * changes either takes the next number and a new catalog version, because the
+ * catalog is shared by every deployment reading it and a workspace binds only
+ * the build its preamble was written against.
+ */
+export declare const BASH_RUNNER = "bash-runner@2";
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {
     /** Original package name the user (or a transitive dep) asked for. */

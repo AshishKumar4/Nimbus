@@ -27,6 +27,17 @@ function numberArg(envelope, index) {
     }
     return value;
 }
+function nullableNumberArg(envelope, index) {
+    return envelope.args?.[index] === null ? null : numberArg(envelope, index);
+}
+function bytesArg(envelope, index) {
+    const value = envelope.args?.[index];
+    if (value instanceof Uint8Array)
+        return value;
+    if (value instanceof ArrayBuffer)
+        return new Uint8Array(value);
+    throw new Error(`supervisor op ${envelope.op}: argument ${index} must be bytes`);
+}
 function contentArg(envelope, index) {
     const value = envelope.args?.[index];
     if (typeof value === 'string' || value instanceof Uint8Array)
@@ -97,9 +108,6 @@ export const SUPERVISOR_OP_ROUTES = {
     wsPoll: { method: '_rpcWsPoll', args: [0, 1, 'pid'] },
     wsSend: { method: '_rpcWsSend', args: [0, 1, 2, 'pid'] },
     wsClose: { method: '_rpcWsClose', args: [0, 1, 2, 'pid'] },
-    fsRead: { method: '_rpcFsRead', args: [0, 1, 2, 'pid'] },
-    fsWrite: { method: '_rpcFsWrite', args: [0, 1, 2, 'pid'] },
-    fsClose: { method: '_rpcFsClose', args: [0, 'pid'] },
     fsReadBatch: { method: '_rpcFsReadBatch', args: [0, 'pid'] },
     fsWriteRange: { method: '_rpcFsWriteRange', args: [0, 1, 2, 'pid'] },
     fsAppend: { method: '_rpcFsAppend', args: [0, 'writerId', 1, 2, 3, 'pid'] },
@@ -133,6 +141,22 @@ export const SUPERVISOR_OP_ROUTES = {
 };
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);
+/** A whole-file read, leased for what the file holds. */
+async function readWholeFile(e, t, path) {
+    const fs = fsFor(e, t);
+    const stat = await fs.stat(path);
+    if (!stat)
+        return null;
+    return t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)));
+}
+/** A range read, leased for what the range can return rather than what it asks. */
+async function readRange(e, t, options) {
+    const fs = fsFor(e, t);
+    const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
+    const stat = await fs.stat(path);
+    const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
+    return t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)));
+}
 /**
  * The ops `createSupervisorOpHandler` serves natively — one pid-keyed
  * filesystem bridge, plus the output stream. This table is the definition:
@@ -142,10 +166,16 @@ const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);
  */
 const NATIVE_OPS = {
     readFile: async (e, t) => {
-        const bytes = await fsFor(e, t).readFile(stringArg(e, 0));
+        const bytes = await readWholeFile(e, t, stringArg(e, 0));
         return bytes === null ? null : new TextDecoder().decode(bytes);
     },
     fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), OpenOptions.parse(e.args?.[1])),
+    fsRead: (e, t) => {
+        const length = numberArg(e, 2);
+        return t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length)));
+    },
+    fsWrite: (e, t) => fsFor(e, t).write(numberArg(e, 0), nullableNumberArg(e, 1), bytesArg(e, 2)),
+    fsClose: (e, t) => fsFor(e, t).close(numberArg(e, 0)),
     fsFstat: (e, t) => fsFor(e, t).fstat(numberArg(e, 0)),
     fsDup: (e, t) => fsFor(e, t).dup(numberArg(e, 0)),
     fsSeek: (e, t) => fsFor(e, t).seek(numberArg(e, 0), numberArg(e, 1), z.enum(['set', 'current', 'end']).parse(e.args?.[2])),
@@ -161,15 +191,15 @@ const NATIVE_OPS = {
     fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
     fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({ includeMissingAncestors: z.boolean().optional() }).optional().parse(e.args?.[1])),
     fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
-    readFileBytes: (e, t) => fsFor(e, t).readFile(FsPath.parse(e.args?.[0])),
+    readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
     stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
     lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
     exists: async (e, t) => (await fsFor(e, t).stat(stringArg(e, 0))) !== null,
     readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0])),
     readlink: (e, t) => fsFor(e, t).readlink(FsPath.parse(e.args?.[0])),
-    fsReadRange: (e, t) => fsFor(e, t).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+    fsReadRange: (e, t) => readRange(e, t, {}),
     // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.
-    fsReadRangeUncached: (e, t) => fsFor(e, t).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2), { cached: false }),
+    fsReadRangeUncached: (e, t) => readRange(e, t, { cached: false }),
     fsRevision: (e, t) => fsFor(e, t).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
     hasLegacySymlinkUnder: (e, t) => getSymlinkRegistry(t.vfs).hasAtOrBelow(stringArg(e, 0)),
     writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
@@ -231,6 +261,7 @@ export function createSupervisorOpHandler(deps) {
         vfs: deps.vfs,
         cred: (pid, cred) => credFor(deps, pid, cred),
         output: deps.output,
+        readLease: deps.readLease ?? ((_bytes, read) => read()),
     };
     const extend = deps.extend ?? {};
     return async (envelope) => {

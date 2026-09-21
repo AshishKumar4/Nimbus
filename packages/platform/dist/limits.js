@@ -24,6 +24,13 @@ export const CHUNK_SIZE = 65_536;
 export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
 export const MAX_TX_LOGICAL_ROWS = 256;
 export const MAX_TX_SQL_EXECS = 64;
+/**
+ * Bound parameters per SQL statement on Durable Objects SQLite. Measured
+ * 2026-09-21 on workerd: 100 bind, 101 fail as `too many SQL variables`
+ * (a 9-row insert of 12 columns fails, 8 rows succeed). Every IN-list and
+ * multi-row VALUES statement is sized from this.
+ */
+export const SQL_MAX_BOUND_PARAMETERS = 100;
 // ── SQLite storage walls ────────────────────────────────────────────────
 /**
  * Storage per SQLite-backed Durable Object: 10 decimal GB documented
