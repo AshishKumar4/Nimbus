@@ -363,6 +363,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         });
         sharedBufferedBytes += additionalBytes;
     });
+    // A tarball placed twice in this shard is acquired once: the first owner
+    // publishes its bytes here, later owners of the URL wait for them. `null`
+    // means it had nothing to share and the waiter acquires on its own.
+    // Owners register on entry, so no waiter blocks an unstarted owner.
+    const tarballBytesByUrl = new Map();
     // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
     //
     // Kept inline because cloudflare-parallel serializes this whole function
@@ -374,6 +379,19 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         inFlight++;
         if (inFlight > inFlightPeak)
             inFlightPeak = inFlight;
+        let publishTarballBytes = () => { };
+        let sharedBytes = null;
+        const owner = tarballBytesByUrl.get(spec.tarballUrl);
+        if (owner) {
+            sharedBytes = await owner;
+        }
+        else {
+            tarballBytesByUrl.set(spec.tarballUrl, new Promise((rs) => { publishTarballBytes = rs; }));
+        }
+        // [W4] Compressed bytes for R2 write-back, captured by the integrity
+        // tee below (null without integrity); published to duplicates on exit.
+        let capturedTgzBytes = null;
+        let r2HitBytes = sharedBytes;
         // [W4] 1a. R2 cache lookup, hedged by the network fetch.
         //
         // The R2 GET is bounded by R2_RACE_TIMEOUT_MS. That bound guards against a
@@ -393,7 +411,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // supervisor deployment) the R2 leg becomes a noop and there is nothing to
         // overlap with, so no hedge is armed — the retry loop's own first fetch is
         // already the first thing that happens.
-        const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const r2Available = sharedBytes === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
         const r2WaitStart = Date.now();
         const r2P = r2Available
             ? Promise.race([
@@ -438,13 +456,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             hedgeAbort.abort();
         };
         try {
-            // [W4] Captured compressed bytes for write-back to R2 on miss.
-            // Populated by the integrity-tee path below; remains null when
-            // integrity isn't present (rare; we only writeback when we can
-            // verify on next read). Hoisted to installOne scope per W4-plan
-            // §11 finding #4 lifecycle correctness.
-            let capturedTgzBytes = null;
-            let r2HitBytes = null;
             // Acquisition span, measured from the first cache probe to the moment
             // the tarball body is in hand.
             let tarballElapsedMs = 0;
@@ -501,10 +512,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // Cache HIT. The cross-tenant store is content-addressed and
                 // re-hashes on every read, so bytes that come back are already
                 // proven to be spec.integrity's tarball — there is exactly one
-                // verification point and it is not here.
+                // verification point and it is not here. Bytes shared by another
+                // placement were verified by their owner; not an R2 outcome.
                 discardPendingNetwork();
                 tarballElapsedMs = Date.now() - r2WaitStart;
-                pipelinedTarballRaceWins++;
+                if (!sharedBytes)
+                    pipelinedTarballRaceWins++;
                 tarballsCompleted++;
                 cumulativeBytesDecoded += r2HitBytes.length;
                 // Synthesize a Response body from the R2 bytes so the existing
@@ -556,14 +569,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 }
                 if (!resp) {
                     return {
-                        name: spec.name, version: spec.version,
+                        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
                         fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
                         errorText: `fetch failed: ${lastErr?.message || String(lastErr)}`,
                     };
                 }
                 if (!resp.ok) {
                     return {
-                        name: spec.name, version: spec.version,
+                        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
                         fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
                         errorText: `HTTP ${resp.status}`,
                     };
@@ -571,7 +584,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 const body = resp.body;
                 if (!body) {
                     return {
-                        name: spec.name, version: spec.version,
+                        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
                         fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
                         errorText: 'no response body',
                     };
@@ -767,7 +780,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 }
             }
             return {
-                name: spec.name, version: spec.version,
+                name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
                 fileCount: totalFileInodes, bytesWritten: totalBytesWritten,
                 elapsed: Date.now() - t0, warnings,
                 tarballSource: r2HitBytes ? 'cache' : 'registry',
@@ -776,7 +789,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         }
         catch (e) {
             return {
-                name: spec.name, version: spec.version,
+                name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
                 fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
                 errorText: e?.message || String(e),
             };
@@ -784,6 +797,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         finally {
             // No-op once the retry loop has taken it; closes every early return.
             discardPendingNetwork();
+            publishTarballBytes(capturedTgzBytes ?? r2HitBytes);
             inFlight = Math.max(0, inFlight - 1);
         }
     };

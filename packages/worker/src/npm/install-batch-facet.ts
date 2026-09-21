@@ -59,6 +59,8 @@ export interface InstallBatchSpec {
 export interface InstallBatchPerPackage {
   name: string;
   version: string;
+  /** The spec's identity: one version may land at two directories. Absent from pre-placement shards. */
+  pkgDir?: string;
   fileCount: number;
   bytesWritten: number;
   elapsed: number;
@@ -515,6 +517,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     sharedBufferedBytes += additionalBytes;
   });
 
+  // A tarball placed twice in this shard is acquired once: the first owner
+  // publishes its bytes here, later owners of the URL wait for them. `null`
+  // means it had nothing to share and the waiter acquires on its own.
+  // Owners register on entry, so no waiter blocks an unstarted owner.
+  const tarballBytesByUrl = new Map<string, Promise<Uint8Array | null>>();
+
   // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
   //
   // Kept inline because cloudflare-parallel serializes this whole function
@@ -529,6 +537,19 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
     inFlight++;
     if (inFlight > inFlightPeak) inFlightPeak = inFlight;
+
+    let publishTarballBytes: (bytes: Uint8Array | null) => void = () => {};
+    let sharedBytes: Uint8Array | null = null;
+    const owner = tarballBytesByUrl.get(spec.tarballUrl);
+    if (owner) {
+      sharedBytes = await owner;
+    } else {
+      tarballBytesByUrl.set(spec.tarballUrl, new Promise((rs) => { publishTarballBytes = rs; }));
+    }
+    // [W4] Compressed bytes for R2 write-back, captured by the integrity
+    // tee below (null without integrity); published to duplicates on exit.
+    let capturedTgzBytes: Uint8Array | null = null;
+    let r2HitBytes: Uint8Array | null = sharedBytes;
 
     // [W4] 1a. R2 cache lookup, hedged by the network fetch.
     //
@@ -549,7 +570,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // supervisor deployment) the R2 leg becomes a noop and there is nothing to
     // overlap with, so no hedge is armed — the retry loop's own first fetch is
     // already the first thing that happens.
-    const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+    const r2Available = sharedBytes === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
     const r2WaitStart = Date.now();
     const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
       ? Promise.race([
@@ -597,13 +618,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
     try {
 
-      // [W4] Captured compressed bytes for write-back to R2 on miss.
-      // Populated by the integrity-tee path below; remains null when
-      // integrity isn't present (rare; we only writeback when we can
-      // verify on next read). Hoisted to installOne scope per W4-plan
-      // §11 finding #4 lifecycle correctness.
-      let capturedTgzBytes: Uint8Array | null = null;
-      let r2HitBytes: Uint8Array | null = null;
       // Acquisition span, measured from the first cache probe to the moment
       // the tarball body is in hand.
       let tarballElapsedMs = 0;
@@ -657,10 +671,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         // Cache HIT. The cross-tenant store is content-addressed and
         // re-hashes on every read, so bytes that come back are already
         // proven to be spec.integrity's tarball — there is exactly one
-        // verification point and it is not here.
+        // verification point and it is not here. Bytes shared by another
+        // placement were verified by their owner; not an R2 outcome.
         discardPendingNetwork();
         tarballElapsedMs = Date.now() - r2WaitStart;
-        pipelinedTarballRaceWins++;
+        if (!sharedBytes) pipelinedTarballRaceWins++;
         tarballsCompleted++;
         cumulativeBytesDecoded += r2HitBytes.length;
         // Synthesize a Response body from the R2 bytes so the existing
@@ -705,14 +720,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         }
         if (!resp) {
           return {
-            name: spec.name, version: spec.version,
+            name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
             fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
             errorText: `fetch failed: ${lastErr?.message || String(lastErr)}`,
           };
         }
         if (!resp.ok) {
           return {
-            name: spec.name, version: spec.version,
+            name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
             fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
             errorText: `HTTP ${resp.status}`,
           };
@@ -720,7 +735,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         const body = resp.body;
         if (!body) {
           return {
-            name: spec.name, version: spec.version,
+            name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
             fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
             errorText: 'no response body',
           };
@@ -922,7 +937,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       }
 
       return {
-        name: spec.name, version: spec.version,
+        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
         fileCount: totalFileInodes, bytesWritten: totalBytesWritten,
         elapsed: Date.now() - t0, warnings,
         tarballSource: r2HitBytes ? 'cache' : 'registry',
@@ -930,13 +945,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       };
     } catch (e: any) {
       return {
-        name: spec.name, version: spec.version,
+        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
         fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
         errorText: e?.message || String(e),
       };
     } finally {
       // No-op once the retry loop has taken it; closes every early return.
       discardPendingNetwork();
+      publishTarballBytes(capturedTgzBytes ?? r2HitBytes);
       inFlight = Math.max(0, inFlight - 1);
     }
   };

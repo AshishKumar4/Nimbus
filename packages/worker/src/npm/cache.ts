@@ -18,6 +18,7 @@
  *   Hit = row(s) returned with size > 0; miss = empty result set. Callers
  *   fall through to L2/L3/L4 on miss.
  */
+import { placementName } from './placement.js';
 import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -64,6 +65,11 @@ export interface RegistryCacheEntry {
   fetchedAt: number;
 }
 
+/**
+ * One placement in a project's lockfile. The Map key is the placement path
+ * (`name` at root, `<dependent>/node_modules/<name>` nested); it is what the
+ * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
+ */
 export interface LockfileEntry {
   name: string;
   resolvedVer: string;
@@ -347,7 +353,7 @@ export class NpmCache {
 
   // ── Lockfile ──────────────────────────────────────────────────────────
 
-  /** Read the lockfile for a project. Returns null if not found. */
+  /** Read the lockfile for a project, keyed by placement path. Null if not found. */
   readLockfile(projectPath: string): Map<string, LockfileEntry> | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
@@ -358,8 +364,9 @@ export class NpmCache {
     if (rows.length === 0) return null;
     const result = new Map<string, LockfileEntry>();
     for (const r of rows) {
-      result.set(String(r.name), {
-        name: String(r.name),
+      const placement = String(r.name);
+      result.set(placement, {
+        name: placementName(placement),
         resolvedVer: String(r.resolved_ver),
         integrity: String(r.integrity),
         depsJson: String(r.deps_json),
@@ -389,15 +396,15 @@ export class NpmCache {
       this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
 
       // Batch insert: DO SQLite ~100 var limit. 6 cols → max 16 rows (16×6=96).
-      const entryList = [...entries.values()];
+      const entryList = [...entries];
       const BATCH = 16;
       for (let i = 0; i < entryList.length; i += BATCH) {
         const batch = entryList.slice(i, i + BATCH);
         const placeholders = batch.map(() => '(?,?,?,?,?,?)').join(',');
         const values: any[] = [];
-        for (const e of batch) {
+        for (const [placement, e] of batch) {
           values.push(
-            projectPath, e.name, e.resolvedVer,
+            projectPath, placement, e.resolvedVer,
             e.integrity, e.depsJson, e.hoistedPath,
           );
         }

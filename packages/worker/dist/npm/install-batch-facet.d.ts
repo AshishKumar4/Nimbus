@@ -49,6 +49,8 @@ export interface InstallBatchSpec {
 export interface InstallBatchPerPackage {
     name: string;
     version: string;
+    /** The spec's identity: one version may land at two directories. Absent from pre-placement shards. */
+    pkgDir?: string;
     fileCount: number;
     bytesWritten: number;
     elapsed: number;
