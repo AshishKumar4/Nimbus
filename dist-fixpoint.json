@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "fa4c2f070e3399b485f8ca7259c7c2fa43f8e24d4aa3796572bcf2a311ca7111",
+  "fingerprint": "3d5f3740a7e65906a324bc0e9c36a36cd691a9032b0fd8777043ad166f4d9880",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1470,9 +1470,9 @@
     "packages/worker/dist/facets/exec-telemetry.d.ts": "89240f94f6224680636554fff1f3b9354cb2f7745b420a00c04c403fc477c287",
     "packages/worker/dist/facets/exec-telemetry.d.ts.map": "ae7188f86dc873645810a23ef2b37a8a376987ddc2edfce282fb8e12aa500b86",
     "packages/worker/dist/facets/exec-telemetry.js": "ca016fce9d18f6a29cc2db43a71e958c52d39c25f2ca3f0ab12215a29065d0f9",
-    "packages/worker/dist/facets/manager.d.ts": "0b78093fd487429469f89b18d4a60b212b204e2c1be6bcfc1a72180e9eb8a93e",
-    "packages/worker/dist/facets/manager.d.ts.map": "7c82c0bddb4daa4071c87b9b62606b27bb1bbd38cf28eea1546ae1ba58510df7",
-    "packages/worker/dist/facets/manager.js": "b44845b01bd0920a8584af045b7f8d6bf7bb4191b576daad87cb6a1496fa6fec",
+    "packages/worker/dist/facets/manager.d.ts": "77607e1410dd64087de9d4a8439cbdf83051dd9801869138a0888b5abc0fa7ca",
+    "packages/worker/dist/facets/manager.d.ts.map": "fd2149e591940471bcea1e4866445689d03de88e2d67f699484bfcb0fb89ca29",
+    "packages/worker/dist/facets/manager.js": "66ba04d6e94b724b85741428fa38baabe8c3e7c43df03ff9c0d55e3cf249f816",
     "packages/worker/dist/facets/opencode-staging.d.ts": "5111ac1a1f4c929ab95b316f4e9e481d64e20ba61cf5486df260368a20b5c239",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "4fce2e1a859a0867ba76c43a3f5085acb98831ba6c816c4a9fb68b7023de9228",
     "packages/worker/dist/facets/opencode-staging.js": "7b466b5f2972009c5421e2bc74867b1703f35675d9af3bfd181f97f970b1507c",
@@ -1903,7 +1903,7 @@
     "packages/worker/src/facets/esbuild-bundle-pool.ts": "aeff9d32d72c31bef455e2f75ce9ff3b10b1995ecc08bd872cceb633031ecec9",
     "packages/worker/src/facets/esbuild-transform.ts": "f3818d4148c405ee6516afdcba730296d7e8eaee9b6891707e4f288d5e47e158",
     "packages/worker/src/facets/exec-telemetry.ts": "9675e15f036d39d8a221d7970d97a7cef9dc61012e28f51bea067b7916703ee0",
-    "packages/worker/src/facets/manager.ts": "459df7773818b8a8ae4c81133563efbf61854e3504b11b5197bebd4fb1ac0cb0",
+    "packages/worker/src/facets/manager.ts": "9024ec85cd1399231626616d71bec0cd4a1713276f3852ea4dde6c811a4f8ba3",
     "packages/worker/src/facets/opencode-staging.ts": "05e1ad10d6732febf922a6aad48415bfdc4dbd1aa80a74e9e304fbf9197a730a",
     "packages/worker/src/facets/process.ts": "0ecaa0eda8eab85ef3e094b6c1f721bc0340b8046f100d93895468655af707ff",
     "packages/worker/src/facets/real-vite-fs-shim.ts": "62543eeea667a320a55400a4d4c4f5beb27536b864db47f321ea19b8408c007d",

@@ -28,6 +28,7 @@
 import assert from 'node:assert/strict';
 import {
   BUNDLE_PRECOMPILE_LOOP,
+  FACET_COMPILE_HELPER,
   buildPrefetchBundle,
   bundleTypescriptLoader,
   compiledCellKey,
@@ -187,24 +188,33 @@ const oneShot = (await generateEntrypointCode('', state, false, SHIMS)).code;
 const resident = (await generateLongRunningNodeCode('', state, { cred: CRED }, false, SHIMS)).code;
 for (const [label, source] of [['one-shot node facet', oneShot], ['long-running node facet', resident]]) {
   assert.ok(source.includes(BUNDLE_PRECOMPILE_LOOP.trim()), `${label}: splices the shared pre-compile loop`);
+  assert.ok(source.includes(FACET_COMPILE_HELPER.trim()), `${label}: splices the shared compile helper`);
+  assert.equal(source.split('function __mkCompiledFn(').length, 2, `${label}: defines the helper once`);
 }
 
 // Run the loop the way the facet does: at module evaluation, over the parsed
-// bundle, with the facet's own compile helper shape.
+// bundle, with the facet's own compile helper. A required module that keeps
+// its shebang (pi 0.87.0's cli-runtime.js, loaded through createRequire from
+// the bin) must compile like the bin itself does; before the helper was
+// shared, only the one-shot facet stripped it.
 const facetBundle = {
   ...Object.fromEntries(Object.entries(bundle).filter(([, cell]) => typeof cell === 'string')),
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
+  [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
 };
 const __compiledModules = new Map();
 const __compileFailures = new Map();
-// The facet's helper strips a leading shebang before `new Function`.
-const __mkCompiledFn = (code) => new Function(
-  'exports', 'require', 'module', '__filename', '__dirname',
-  code.startsWith('#!') ? code.slice(code.indexOf('\n') + 1) : code,
-);
+const __mkCompiledFn = new Function(`${FACET_COMPILE_HELPER}; return __mkCompiledFn;`)();
 new Function('__MODULE_VFS_BUNDLE', '__compiledModules', '__compileFailures', '__mkCompiledFn', BUNDLE_PRECOMPILE_LOOP)(
   facetBundle, __compiledModules, __compileFailures, __mkCompiledFn,
 );
+{
+  const runtime = __compiledModules.get(`${TS}/lib/runtime.js`);
+  assert.equal(typeof runtime, 'function', `a required module with a shebang compiles: ${__compileFailures.get(`${TS}/lib/runtime.js`)}`);
+  const m = { exports: {} };
+  runtime(m.exports, () => { throw new Error('no require expected'); }, m, '/x', '/');
+  assert.deepEqual(m.exports, { shebang: 'stripped' }, 'and its own `require` declaration wins over the parameter');
+}
 
 // The TypeScript source is now runnable under its real path, from the emit.
 const compiled = __compiledModules.get(`${PROJ}/src/index.ts`);
