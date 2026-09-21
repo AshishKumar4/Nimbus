@@ -198,6 +198,16 @@ export type RuntimeSynchronousFs = {
       ? (...args: A) => Awaited<R> : never;
 };
 
+/**
+ * The path's revision immediately before and after one mutation, read in
+ * the same synchronous turn as the mutation. A caller holding the path's
+ * content stamped at `before` (or later) knows its copy, with this
+ * mutation's own local effect applied, is exactly what the authority
+ * serves at `after`. A `before` past its stamp means someone else touched
+ * the path in between, and the stamp must stay where it is.
+ */
+export interface VfsMutationReceipt { before: number; after: number }
+
 export interface RuntimeFsBridge {
   readonly synchronous?: RuntimeSynchronousFs;
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsStat | null>;
@@ -216,21 +226,22 @@ export interface RuntimeFsBridge {
   /**
    * Stateless ranged write: updates only the chunks the range touches
    * (never a whole-file rewrite), zero-filling any gap past EOF.
-   * Creates the file when missing. Returns bytes written.
+   * Creates the file when missing. Every byte is written, so the receipt
+   * carries the revisions rather than a byte count.
    */
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
-  }): Awaitable<number>;
+  }): Awaitable<VfsMutationReceipt>;
   /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
-  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
-  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
+  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
-  chmod(path: RuntimeFsPath, mode: number): Awaitable<void>;
+  chmod(path: RuntimeFsPath, mode: number): Awaitable<VfsMutationReceipt>;
   /** Check access using the bridge's process credential. */
   access(path: RuntimeFsPath, mode: number): Awaitable<void>;
   /** Change stored ownership, optionally operating on a symlink itself. */
-  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
+  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;

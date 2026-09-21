@@ -247,6 +247,14 @@ const NATIVE_REFUSED = {
   fsFchown: /EPERM/,
 };
 
+// The five partial mutations answer with the path's revision on either
+// side of the mutation (VfsMutationReceipt), which the facet's stamp rule
+// consumes; nothing else on this surface returns an object like it.
+function assertReceipt(r, label) {
+  assert.deepEqual(Object.keys(r).sort(), ['after', 'before'], label);
+  assert.ok(Number.isInteger(r.before) && Number.isInteger(r.after) && r.after > r.before, `${label}: after > before`);
+}
+
 // Native ops run the real implementation — what they return IS the
 // assertion; everything else is a captured delegate call.
 const nativeAssert = {
@@ -256,18 +264,22 @@ const nativeAssert = {
   stat: (r) => assert.equal(r.type, 'file', 'stat'),
   lstat: (r) => assert.equal(r.type, 'symlink', 'lstat'),
   hasLegacySymlinkUnder: (r) => assert.equal(r, false, 'hasLegacySymlinkUnder'),
-  utimes: async () => {
+  utimes: async (r) => {
+    assertReceipt(r, 'utimes answers a mutation receipt');
     const stat = kernelVfs.stat('home/user/utimes');
     assert.equal(stat.atime, atimeMs, 'utimes applied atime');
     assert.equal(stat.mtime, mtimeMs, 'utimes applied mtime');
   },
-  chmod: async () => assert.equal(kernelVfs.stat('home/user/chmod').mode & 0o777, mode, 'chmod applied'),
+  chmod: async (r) => {
+    assertReceipt(r, 'chmod answers a mutation receipt');
+    assert.equal(kernelVfs.stat('home/user/chmod').mode & 0o777, mode, 'chmod applied');
+  },
   access: async (r) => {
     assert.equal(r, undefined, 'access grants read on an owned file');
     await assert.rejects(ops.dispatch({ op: 'access', args: [path, xOk], pid }), /EACCES/, 'access refuses execute');
   },
   chown: async (r) => {
-    assert.equal(r, undefined, "chown to the caller's own uid/gid is permitted");
+    assertReceipt(r, "chown to the caller's own uid/gid is permitted, and answers a mutation receipt");
     const stat = kernelVfs.stat('home/user/file');
     assert.deepEqual([stat.uid, stat.gid], [uid, gid], 'chown kept the owner');
     await assert.rejects(ops.dispatch({ op: 'chown', args: [path, 0, 0], pid }), /EPERM/, 'chown to root is refused');
@@ -283,7 +295,10 @@ const nativeAssert = {
   fsReadRange: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRange'),
   fsReadRangeUncached: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRangeUncached'),
   fsRevision: (r) => assert.equal(typeof r, 'number', 'fsRevision'),
-  fsTruncate: async () => assert.equal(kernelVfs.readFile('home/user/trunc').length, size, 'fsTruncate sized'),
+  fsTruncate: async (r) => {
+    assertReceipt(r, 'fsTruncate answers a mutation receipt');
+    assert.equal(kernelVfs.readFile('home/user/trunc').length, size, 'fsTruncate sized');
+  },
   // The descriptor ops, in the order the canonical list runs them: fsOpen
   // mints the handle every one of them addresses.
   fsOpen: (r) => {

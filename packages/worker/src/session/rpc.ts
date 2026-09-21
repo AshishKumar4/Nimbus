@@ -67,6 +67,7 @@ import {
   type VfsAcquireResult,
   type VfsCred,
   type VfsListPage,
+  type VfsMutationReceipt,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CredentialedVfs, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
@@ -632,7 +633,7 @@ export async function _rpcFsWriteRange(
   offset: number,
   bytes: Uint8Array | ArrayBuffer | number[],
   pid?: number,
-): Promise<number> {
+): Promise<VfsMutationReceipt> {
   const args = FsWriteRangeArgsSchema.parse({ path, offset });
   return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
 }

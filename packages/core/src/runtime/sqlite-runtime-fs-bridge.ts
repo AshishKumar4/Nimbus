@@ -13,6 +13,7 @@ import type {
   RuntimeVfsStat,
   VfsAcquireResult,
   VfsListPage,
+  VfsMutationReceipt,
 } from './os-contracts.js';
 
 interface OpenDescription {
@@ -202,19 +203,18 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     offset: number,
     bytes: Uint8Array,
     options: { createParents?: boolean; expectedRevision?: number } = {},
-  ): number {
+  ): VfsMutationReceipt {
     const located = this.locateMutation(path, true, 'write');
     if (located.mount) {
       if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
       located.mount.writeRange(located.path, offset, bytes);
-      return bytes.byteLength;
+      return this.mountReceipt();
     }
     const p = located.path;
     this.assertExpectedRevision(p, options.expectedRevision);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
     if (options.createParents !== false) this.ensureParent(p);
-    this.vfs.writeRange(p, offset, bytes);
-    return bytes.byteLength;
+    return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
   }
 
   appendOnce(
@@ -242,13 +242,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: RuntimeFsPath,
     size: number,
     options: { followSymlinks?: boolean } = {},
-  ): void {
+  ): VfsMutationReceipt {
     const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate');
-    if (located.mount) { located.mount.truncate(located.path, size); return; }
+    if (located.mount) { located.mount.truncate(located.path, size); return this.mountReceipt(); }
     const p = located.path;
     if (!this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
-    this.vfs.truncate(p, size);
+    return this.receipted(p, () => this.vfs.truncate(p, size));
   }
 
   utimes(
@@ -256,20 +256,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     atimeMs: number,
     mtimeMs: number,
     options: { followSymlinks?: boolean } = {},
-  ): void {
+  ): VfsMutationReceipt {
     const located = this.locateMutation(path, options.followSymlinks !== false, 'utimes');
-    if (located.mount) { located.mount.utimes(located.path, atimeMs, mtimeMs); return; }
+    if (located.mount) { located.mount.utimes(located.path, atimeMs, mtimeMs); return this.mountReceipt(); }
     const p = located.path;
     if (!this.vfs.exists(p)) throw fsError('ENOENT', 'utimes', path);
-    this.vfs.utimes(p, atimeMs, mtimeMs);
+    return this.receipted(p, () => this.vfs.utimes(p, atimeMs, mtimeMs));
   }
 
-  chmod(path: RuntimeFsPath, mode: number): void {
+  chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt {
     const located = this.locateMutation(path, true, 'chmod');
-    if (located.mount) { located.mount.chmod(located.path, mode); return; }
+    if (located.mount) { located.mount.chmod(located.path, mode); return this.mountReceipt(); }
     const p = located.path;
     if (!this.vfs.exists(p)) throw fsError('ENOENT', 'chmod', path);
-    this.vfs.chmod(p, mode);
+    return this.receipted(p, () => this.vfs.chmod(p, mode));
   }
 
   access(path: RuntimeFsPath, mode: number): void {
@@ -284,13 +284,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     uid: number,
     gid: number,
     options: { followSymlinks?: boolean } = {},
-  ): void {
+  ): VfsMutationReceipt {
     const followSymlinks = options.followSymlinks !== false;
     const located = this.locateMutation(path, followSymlinks, 'chown');
-    if (located.mount) { located.mount.chown(located.path, uid, gid); return; }
+    if (located.mount) { located.mount.chown(located.path, uid, gid); return this.mountReceipt(); }
     const p = located.path;
     if (!this.vfs.exists(p)) throw fsError('ENOENT', 'chown', path);
-    this.vfs.chown(p, uid, gid, { followSymlinks });
+    return this.receipted(p, () => this.vfs.chown(p, uid, gid, { followSymlinks }));
   }
 
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle {
@@ -671,6 +671,23 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!parent) return;
     if (!this.vfs.exists(parent)) throw fsError('ENOENT', syscall, path);
     if (!this.vfs.isDirectory(parent)) throw fsError('ENOTDIR', syscall, path);
+  }
+
+  /**
+   * Run one mutation of storage path `p` and report its revision on either
+   * side, both read in the mutation's own synchronous turn: across an await
+   * either would report a peer's clock as ours.
+   */
+  private receipted(p: string, mutate: () => void): VfsMutationReceipt {
+    const before = this.rawVfs.revision(p);
+    mutate();
+    return { before, after: this.rawVfs.revision() };
+  }
+
+  /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */
+  private mountReceipt(): VfsMutationReceipt {
+    const r = this.rawVfs.revision();
+    return { before: r, after: r };
   }
 
   private assertExpectedRevision(path: string, expectedRevision: number | undefined): void {

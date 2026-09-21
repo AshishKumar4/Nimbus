@@ -51,8 +51,8 @@ const CRED_OTHER = Object.freeze({
   assert.equal((await bridge.readRange('/home/user/data.txt', 100, 5)).length, 0, 'past EOF clamps to empty');
   assert.equal(await bridge.readRange('/home/user/missing.txt', 0, 5), null, 'missing file reads as null');
 
-  const written = await bridge.writeRange('/home/user/data.txt', 6, enc.encode('WORLD'));
-  assert.equal(written, 5);
+  const receipt = await bridge.writeRange('/home/user/data.txt', 6, enc.encode('WORLD'));
+  assert.ok(receipt.after > receipt.before, 'writeRange answers with the revisions around it');
   assert.equal(dec.decode(await bridge.readFile('/home/user/data.txt')), 'hello WORLD');
 
   // writeRange creates missing files and parents (like writeFile).

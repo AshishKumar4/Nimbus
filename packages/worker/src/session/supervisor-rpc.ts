@@ -40,7 +40,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireResult, VfsListPage, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
@@ -206,11 +206,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('hasLegacySymlinkUnder', [path]));
   }
 
-  async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<void> {
+  async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt> {
     return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
   }
 
-  async chmod(path: RuntimeFsPath, mode: number): Promise<void> {
+  async chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt> {
     return this._call(this._fsOp('chmod', [path, mode]));
   }
 
@@ -223,7 +223,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     uid: number,
     gid: number,
     options?: { followSymlinks?: boolean },
-  ): Promise<void> {
+  ): Promise<VfsMutationReceipt> {
     return this._call(this._fsOp('chown', [path, uid, gid, options]));
   }
 
@@ -436,7 +436,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
   }
 
-  async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number> {
+  async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt> {
     return this._call(this._fsOp('fsWriteRange', [path, offset, bytes]));
   }
 
@@ -457,7 +457,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     );
   }
 
-  async fsTruncate(path: string, size: number): Promise<void> {
+  async fsTruncate(path: string, size: number): Promise<VfsMutationReceipt> {
     return this._call(this._fsOp('fsTruncate', [path, size]));
   }
 

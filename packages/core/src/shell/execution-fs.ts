@@ -87,8 +87,9 @@ export class ExecutionFs {
   }
   async writeFile(path: string, bytes: string | Uint8Array): Promise<void> { await this.bridge.writeFile(path, bytes); }
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<number> {
-    const written = await this.bridge.writeRange(path, offset, bytes);
-    return written === undefined ? bytes.length : written;
+    // Both the bridge and the lifo VFS write every byte of the range.
+    await this.bridge.writeRange(path, offset, bytes);
+    return bytes.length;
   }
   async appendFile(path: string, content: string | Uint8Array): Promise<void> {
     if (this.bridge instanceof VFS) { this.bridge.appendFile(path, content); return; }

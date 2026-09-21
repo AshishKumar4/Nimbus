@@ -18,6 +18,7 @@ import {
   type VfsAcquireResult,
   type VfsCred,
   type VfsListPage,
+  type VfsMutationReceipt,
 } from './os-contracts.js';
 import {
   createSqliteDescriptorScope,
@@ -97,19 +98,19 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
-  }): number {
+  }): VfsMutationReceipt {
     this.guard();
     return this.target.writeRange(path, offset, bytes, options);
   }
-  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): void {
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard();
     return this.target.truncate(path, size, options);
   }
-  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): void {
+  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard();
     return this.target.utimes(path, atimeMs, mtimeMs, options);
   }
-  chmod(path: RuntimeFsPath, mode: number): void {
+  chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt {
     this.guard();
     return this.target.chmod(path, mode);
   }
@@ -117,7 +118,7 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
     this.guard();
     return this.target.access(path, mode);
   }
-  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): void {
+  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard();
     return this.target.chown(path, uid, gid, options);
   }

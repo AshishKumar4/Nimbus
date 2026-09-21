@@ -24,7 +24,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -845,7 +845,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]> {
     return _rpc._rpcFsReadBatch(this as any, requests, pid);
   }
-  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
+  async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt> {
     return _rpc._rpcFsWriteRange(this as any, path, offset, bytes, pid);
   }
   async _rpcFsAppend(
