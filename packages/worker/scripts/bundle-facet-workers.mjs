@@ -47,11 +47,52 @@ import { build } from 'esbuild';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// core's own parser dependency, reached through the workspace hoist; the
+// script runs under plain node at postinstall, so nothing here is TypeScript.
+import { parse } from 'acorn';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const coreRoot = join(root, '..', 'core');
 const platformRoot = join(root, '..', 'platform');
+
+/**
+ * The bundle without its comments. esbuild keeps every comment that sits
+ * inside an expression or object literal, plus its own `// path` module
+ * markers, and nothing reads any of them: the strings are evaluated, never
+ * shown, mapped or `toString()`ed. The comment ranges come from a real
+ * parse of the output, so a `//` inside a string, template or regex is
+ * untouched; only comments go, and a line that held nothing but a comment
+ * goes with it. Every other character, identifier and line stays put.
+ */
+function withoutComments(text) {
+  const comments = [];
+  parse(text, { ecmaVersion: 'latest', sourceType: 'module', allowAwaitOutsideFunction: true, onComment: comments });
+  let out = '';
+  let cursor = 0;
+  for (const { start, end } of comments) {
+    if (start < cursor) continue;
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    const lineEndAt = text.indexOf('\n', end);
+    const lineEnd = lineEndAt < 0 ? text.length : lineEndAt;
+    const leading = text.slice(lineStart, start);
+    const trailing = text.slice(end, lineEnd);
+    if (leading.trim() === '' && trailing.trim() === '') {
+      // The comment is the whole line (or lines): drop them, newline included.
+      out += text.slice(cursor, lineStart);
+      cursor = lineEndAt < 0 ? text.length : lineEnd + 1;
+    } else if (trailing.trim() === '') {
+      // Trailing comment: drop it and the blank that led to it.
+      out += text.slice(cursor, start).replace(/[ \t]+$/, '');
+      cursor = end;
+    } else {
+      // Mid-line block comment: one space keeps the tokens on either side apart.
+      out += `${text.slice(cursor, start)} `;
+      cursor = end;
+    }
+  }
+  return out + text.slice(cursor);
+}
 
 /**
  * Bundle one TS source into a self-contained ESM string suitable for
@@ -76,7 +117,7 @@ async function bundleAsPreamble(entryPath, label) {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
-  let stripped = result.outputFiles[0].text;
+  let stripped = withoutComments(result.outputFiles[0].text);
   stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
   return stripped;
@@ -112,7 +153,7 @@ async function bundleVirtualSocketKernel() {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/virtual-socket-kernel] esbuild produced no output');
   }
-  return result.outputFiles[0].text;
+  return withoutComments(result.outputFiles[0].text);
 }
 
 /**
@@ -165,7 +206,7 @@ async function bundleWasiInstance() {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/wasi-instance] esbuild produced no output');
   }
-  let src = result.outputFiles[0].text;
+  let src = withoutComments(result.outputFiles[0].text);
   // The body is spliced into another module; a re-export block there is a
   // syntax error, and callers append their own `export { … }`.
   src = src.replace(/^export\s+(async\s+function|function|const|let|var|class)\b/gm, '$1');
@@ -230,7 +271,7 @@ async function bundleBashRunner() {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/bash-runner] esbuild produced no output');
   }
-  const src = result.outputFiles[0].text;
+  const src = withoutComments(result.outputFiles[0].text);
   for (const name of ['__bashBoot', '__bashFeed']) {
     if (!new RegExp(`^\\s*globalThis\\.${name}\\s*=`, 'm').test(src)) {
       throw new Error(

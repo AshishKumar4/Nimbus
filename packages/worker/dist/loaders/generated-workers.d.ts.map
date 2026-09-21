@@ -1,1 +1,1 @@
-{"version":3,"file":"generated-workers.d.ts","sourceRoot":"","sources":["../../src/loaders/generated-workers.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;GAmBG;AAEH,eAAO,MAAM,mBAAmB,EAAE,MAAk1J,CAAC;AAEr3J,eAAO,MAAM,iBAAiB,EAAE,MAAwm9B,CAAC"}
+{"version":3,"file":"generated-workers.d.ts","sourceRoot":"","sources":["../../src/loaders/generated-workers.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;GAmBG;AAEH,eAAO,MAAM,mBAAmB,EAAE,MAAwyJ,CAAC;AAE30J,eAAO,MAAM,iBAAiB,EAAE,MAAqv8B,CAAC"}
