@@ -1298,6 +1298,10 @@ const __fsMod = (() => {
 
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
   const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // Modes set locally that the authority has not received yet. Delivered once:
+  // re-sending on every flush made each read of the path a chmod, which bumped
+  // its revision and evicted the process's own cell (create-astro EAGAIN).
+  const _pendingModes = globalThis.__nimbusVfsPendingModes || (globalThis.__nimbusVfsPendingModes = new Set());
 
   function _coerceMode(value, syscall, p) {
     const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
@@ -1967,13 +1971,18 @@ const __fsMod = (() => {
       await _flushParkedWrite(absPath, supervisor);
       _markVfsStale();
     }
-    // Pending sync chmod rides along with any flush of the same path
-    // (idempotent — the entry stays so local statSync remains coherent).
-    if (k in _localModes && typeof supervisor.chmod === "function") {
-      await _ownMutation(
-        absPath,
-        () => _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result),
-      );
+    // A pending sync chmod rides along with the next flush of the same path.
+    if (_pendingModes.has(k) && typeof supervisor.chmod === "function") {
+      _pendingModes.delete(k);
+      try {
+        await _ownMutation(
+          absPath,
+          () => _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result),
+        );
+      } catch (error) {
+        _pendingModes.add(k);
+        throw error;
+      }
       _markVfsStale();
     }
   }
@@ -2535,7 +2544,9 @@ const __fsMod = (() => {
     if (!existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
     // Local-visible immediately (statSync overlay); the live write-through
     // rides the next flush of the same path — same fidelity as utimesSync.
-    _localModes[_strip(_resolve(p))] = _coerceMode(mode, "chmod", p);
+    const k = _strip(_resolve(p));
+    _localModes[k] = _coerceMode(mode, "chmod", p);
+    _pendingModes.add(k);
   }
 
   async function _chmodAsync(p, mode) {
@@ -2548,6 +2559,7 @@ const __fsMod = (() => {
     }
     const m = _coerceMode(mode, "chmod", p);
     _localModes[_strip(absPath)] = m;
+    _pendingModes.add(_strip(absPath));
     if (supervisor && typeof supervisor.chmod === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       _markVfsStale();
@@ -3763,7 +3775,9 @@ const __fsMod = (() => {
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
-    _localModes[_strip(handle._abs)] = _coerceMode(mode, "fchmod", handle._path);
+    const k = _strip(handle._abs);
+    _localModes[k] = _coerceMode(mode, "fchmod", handle._path);
+    _pendingModes.add(k);
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
