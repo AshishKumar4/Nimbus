@@ -881,7 +881,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
   async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
-  async _rpcReportExit(pid: number, code: number, tail: string): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail); }
+  async _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[]): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail, residencyMisses); }
 
   // W3 emitters / external-exit / log janitor
   _emitExitDump(pid: number, code: number): void { return _rpc._emitExitDump(this as any, pid, code); }

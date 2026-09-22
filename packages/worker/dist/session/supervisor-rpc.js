@@ -554,8 +554,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * has error state it couldn't stream in-band (rare; main path drains
      * via __pendingIO first).
      */
-    async reportExit(code, tail) {
-        return this._call(this._op('reportExit', [code, tail || ''], { pid: this._reportingPid() }));
+    async reportExit(code, tail, residencyMisses) {
+        return this._call(this._op('reportExit', [code, tail || '', residencyMisses ?? []], { pid: this._reportingPid() }));
     }
     // ── Prefetch ──────────────────────────────────────────────────────────
     async prefetch(cwd, entryCode) {

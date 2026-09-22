@@ -112,6 +112,28 @@ import {
   assert.equal(budgetState.fileCount, 3);
 }
 
+// A miss on a path the build already staged as speculative, then evicted:
+// nuxt's on-change, reached through a dynamic import. Skipping it because it
+// is "already in the bundle" left it evictable, so every launch missed again.
+// It also brings its static imports, or each of them misses on its own launch.
+{
+  const h = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(h.sql, h.ctx).as(CRED_KERNEL);
+  const dir = 'home/user/app/node_modules/on-change/source';
+  vfs.mkdir(dir, { recursive: true });
+  vfs.writeFile(`${dir}/index.js`, "import { TARGET } from './constants.js';\nexport default TARGET;\n");
+  vfs.writeFile(`${dir}/constants.js`, "import './smart-clone.js';\nexport const TARGET = 1;\n");
+  vfs.writeFile(`${dir}/smart-clone.js`, 'export const clone = 1;\n');
+  const path = `${dir}/index.js`;
+  const bundle = { [path]: vfs.readFileString(path) };
+  const requiredPaths = new Set();
+  await addObservedReads(vfs, new Set([path]), bundle, requiredPaths, { totalBytes: 0, fileCount: 0 });
+  assert.ok(requiredPaths.has(path), 'an observed path already staged is promoted to required');
+  for (const dep of [`${dir}/constants.js`, `${dir}/smart-clone.js`]) {
+    assert.ok(dep in bundle && requiredPaths.has(dep), `${dep} comes with it, as required`);
+  }
+}
+
 // ── Part 2: the whole loop, through a real facet ────────────────────────────
 
 adoptCtxExports({ SupervisorRPC: () => makeSupervisor() });

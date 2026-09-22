@@ -18,7 +18,7 @@
 //
 // And the rewrite bought nothing: the facet's pre-compile loop only ever
 // compiled `.js`/`.mjs`/`.cjs`/extensionless cells, so a `require('./x.ts')`
-// still died at request time with "file was not pre-bundled".
+// still died at request time with "not in this launch's module map".
 //
 // Now the source cell stays verbatim, the emit travels under a compiled-cell
 // key no path can collide with, declaration files are never transformed, and

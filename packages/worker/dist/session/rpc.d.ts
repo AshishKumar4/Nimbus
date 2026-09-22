@@ -229,7 +229,7 @@ export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array)
  *
  * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
  */
-export declare function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string): Promise<void>;
+export declare function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string, residencyMisses?: string[]): Promise<void>;
 /**
  * Emit a formatted exit-dump banner + last 30 lines of output to the
  * terminal. Called from both the facet-reported exit path and the

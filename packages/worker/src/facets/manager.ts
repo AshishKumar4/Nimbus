@@ -475,6 +475,11 @@ const ENTRYPOINT_TIMER_TRACKER = `
  */
 const RESIDENCY_MISS_REPORT = `
 const __NIMBUS_RESIDENCY_NAMED_MAX = 20;
+// Everything the next launch of this entry must stage: unanswered reads and
+// modules whose text arrived after boot, too late to compile.
+function __nimbusStagingMisses() {
+  return [...(globalThis.__nimbusVfsResidencyMisses || []), ...(globalThis.__nimbusModuleMisses || [])];
+}
 function __nimbusResidencyMissReport() {
   const __missed = globalThis.__nimbusVfsResidencyMisses;
   if (!__missed || __missed.size === 0) return "";
@@ -594,7 +599,7 @@ const __compiledModules = new Map();
 const __compileFailures = new Map();
 // Precompile JS modules AND extensionless CJS entries (bin scripts and
 // shims). workerd forbids new Function at request time, so anything not
-// precompiled here surfaces the misleading "file was not pre-bundled".
+// precompiled here surfaces the misleading "not in this launch's module map".
 ${BUNDLE_PRECOMPILE_LOOP}
 
 class __ProcessExit extends Error {
@@ -776,7 +781,7 @@ ${RESIDENCY_MISS_REPORT}
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
-      residencyMisses: [...(globalThis.__nimbusVfsResidencyMisses || [])],
+      residencyMisses: __nimbusStagingMisses(),
       ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
     });
   }
@@ -1164,7 +1169,7 @@ ${RESIDENCY_MISS_REPORT}
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
-      await __supervisor.reportExit(code, reason || "");
+      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -1223,9 +1228,7 @@ ${RESIDENCY_MISS_REPORT}
       try { await __supervisor.stderr(__nimbusOutEnc.encode(tail)); } catch {}
     }
     if (exitCode !== 0) {
-      if (__supervisor && !__nimbusProcessExitReported) {
-        await __supervisor.reportExit(exitCode, stderr || ("exit " + exitCode + "\\n"));
-      }
+      await __nimbusReportFinalExit(exitCode, stderr || ("exit " + exitCode + "\\n"));
       throw new Error(stderr || ("long-running node startup exited " + exitCode));
     }
     __nimbusStarted = true;
@@ -2930,7 +2933,9 @@ export async function addObservedReads(
 
   const candidates: { path: string; size: number }[] = [];
   for (const path of observed) {
-    if (path === '' || bundle[path] !== undefined) continue;
+    if (path === '') continue;
+    // Already staged, but evictable: the evidence is what makes it required.
+    if (bundle[path] !== undefined) { requiredPaths.add(path); continue; }
     let stat: { size: number; type?: string };
     try { stat = (await vfs.lstat(path)); } catch { continue; }
     if (stat.type === 'directory') continue;
@@ -2951,6 +2956,25 @@ export async function addObservedReads(
     budgetState.totalBytes += cellLen;
     budgetState.fileCount++;
     added++;
+  }
+  // A module brings its static imports: learned one miss per launch, nuxt's
+  // on-change alone would have cost a relaunch for each of its files.
+  for (const path of observed) {
+    if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined) continue;
+    const closure = await prefetchForRequire(vfs, '', path.slice(0, path.lastIndexOf('/')), '/' + path);
+    if ('kind' in closure) continue;
+    for (const [dep, content] of Object.entries(closure.bundle)) {
+      if (closure.speculative.has(dep)) continue;
+      if (bundle[dep] !== undefined) { requiredPaths.add(dep); continue; }
+      const cellLen = _bundleCellLength(content);
+      if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
+      bundle[dep] = content;
+      requiredPaths.add(dep);
+      budgetState.totalBytes += cellLen;
+      budgetState.fileCount++;
+      added++;
+    }
   }
   return { added };
 }
@@ -3743,7 +3767,7 @@ async function _buildPrefetchBundle(
   //     ESM files (e.g. tldts/dist/es6/index.js, @remix-run/react/dist/esm,
   //     @tailwindcss/vite, react-remove-scroll, astro) silently fail
   //     `new Function` at facet startup and surface as the misleading
-  //     "file was not pre-bundled" at request time.
+  //     "not in this launch's module map" at request time.
   if (esbuild) {
     try {
       await transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform);
@@ -4177,6 +4201,9 @@ export class FacetManager {
   // spawn created as an OS-child of the attach TUI. When the attach process
   // exits (reported / killed), its serve facet is torn down with it.
   private _pairedServeFacet = new Map<number, number>();
+  // The bundle a resident pid booted from, so the misses it reports at exit
+  // stage into the next launch of the same entry, as a one-shot's do.
+  private readonly residentBundleKeys = new Map<number, string>();
   /**
    * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
    * over the prefetch bundle. Created on first exec where vfs is set;
@@ -4321,6 +4348,7 @@ export class FacetManager {
     // Rooted on waitUntil: the hook fires synchronously inside whatever turn
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
+      this.residentBundleKeys.delete(pid);
       this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
     });
   }
@@ -4760,7 +4788,9 @@ export class FacetManager {
     return this.processRpcResources.has(pid);
   }
 
-  noteProcessReportedExit(pid: number, exitCode: number): void {
+  noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[]): void {
+    // Filed before the exit marks the table: the terminal hook forgets the key.
+    this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
     this.portRegistry.unregisterByPid(pid);
     this.processes.exit(pid, exitCode);
     const tracked = this.processRpcResources.get(pid);
@@ -6035,6 +6065,7 @@ export class FacetManager {
     const cacheHit = vfsState.cacheHit ?? false;
 
     const vfsCursor = vfsState.cursor;
+    if (vfsState.bundleKey) this.residentBundleKeys.set(entry.pid, vfsState.bundleKey);
     // The map is generated; the state's only remaining job is its cursor.
     // Released here, before the boot — releasing afterwards keeps the copy
     // alive for exactly the window that was resetting the isolate. A state

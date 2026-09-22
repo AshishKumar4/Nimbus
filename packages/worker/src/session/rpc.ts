@@ -903,7 +903,9 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
    *
    * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
    */
-export async function _rpcReportExit(self: RpcHost, pid: number, code: number, tail: string): Promise<void> {
+export async function _rpcReportExit(
+  self: RpcHost, pid: number, code: number, tail: string, residencyMisses?: string[],
+): Promise<void> {
     if (pid <= 0) return; // Ignore the pid-0 sentinel.
     // Prior-generation straggler unwinding after an instance reset: this
     // instance never owned the pid, so skip the table/lifecycle plumbing and
@@ -930,7 +932,7 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
     // (e.g. from an external kill path) don't dump twice.
     if (self.processes.getExit(pid)) return;
     self.processes.markExit(pid, code);
-    try { self.facetManager?.noteProcessReportedExit?.(pid, code); } catch {
+    try { self.facetManager?.noteProcessReportedExit?.(pid, code, residencyMisses); } catch {
       try { self.processes.exit(pid, code); } catch {}
     }
     // Structured exit notification for the tabs UI. Idempotent on the

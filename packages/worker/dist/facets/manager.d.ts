@@ -885,6 +885,7 @@ export declare class FacetManager {
     private readonly launchTasks;
     private launchesClosed;
     private _pairedServeFacet;
+    private readonly residentBundleKeys;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
      * over the prefetch bundle. Created on first exec where vfs is set;
@@ -1101,7 +1102,7 @@ export declare class FacetManager {
      * exit. A caller that launched the command must not record an exit for it.
      */
     hasResidentProcess(pid: number): boolean;
-    noteProcessReportedExit(pid: number, exitCode: number): void;
+    noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[]): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
      * Called when the attach TUI exits (reported / killed) so the OS-child serve

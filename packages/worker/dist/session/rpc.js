@@ -693,7 +693,7 @@ function shouldMirrorProcessOutputToShell(self, pid) {
  *
  * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
  */
-export async function _rpcReportExit(self, pid, code, tail) {
+export async function _rpcReportExit(self, pid, code, tail, residencyMisses) {
     if (pid <= 0)
         return; // Ignore the pid-0 sentinel.
     // Prior-generation straggler unwinding after an instance reset: this
@@ -730,7 +730,7 @@ export async function _rpcReportExit(self, pid, code, tail) {
         return;
     self.processes.markExit(pid, code);
     try {
-        self.facetManager?.noteProcessReportedExit?.(pid, code);
+        self.facetManager?.noteProcessReportedExit?.(pid, code, residencyMisses);
     }
     catch {
         try {

@@ -8285,7 +8285,7 @@ function __loadModule(resolvedPath) {
       } catch (evalErr) {
         // W3.5 Fix C: if the file was in the bundle but its pre-compile
         // failed at facet startup, surface the original SyntaxError
-        // instead of the misleading "file was not pre-bundled" text.
+        // instead of the misleading "not in this launch's module map" text.
         const normalizedPath2 = resolvedPath.replace(/^\\/+/, "");
         const compileErr =
           (typeof __compileFailures !== "undefined" && __compileFailures &&
@@ -8297,7 +8297,10 @@ function __loadModule(resolvedPath) {
           );
         }
         if (evalErr.message && evalErr.message.includes("Code generation from strings disallowed")) {
-          throw new Error("Cannot load module '" + resolvedPath + "': file was not pre-bundled. Add it to the VFS bundle.");
+          // Not a read miss (the text is here) and nothing in the process can
+          // answer it, so it is kept apart from the read ledger that settles those.
+          (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath2);
+          throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
         }
         throw evalErr;
       }
