@@ -232,33 +232,6 @@ export const ESM_TRANSFORM_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 // it now raises ENOENT instead of costing the session.
 export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-// What async reads may ADD, in total, to the resident view a facet holds on
-// the heap (node-shims.ts `_installResident`).
-//
-// The boot snapshot is bounded twice over — BUNDLE_MAX_ENCODED_BYTES for the
-// whole of it, CWD_SNAPSHOT_MAX_FILE_BYTES for any one file the working-tree
-// sweep guesses at — and then every async whole-file read installed its bytes
-// into that same object, for the life of the process, with no bound at all. So
-// those ceilings described what a facet STARTED with and nothing about where
-// it ended up: a program reached any heap it liked by reading files, in an
-// isolate the session's own Durable Object shares (NIMBUS_PROCESS_HOST=facet).
-// Found on a throwaway 2026-09-21 under the opencode TUI, which reads a
-// 4.55 MB model catalogue at launch and exceeds the isolate's limit; the
-// bound removes the read's retained copy and its two transient ones, and
-// the launch still exceeds the limit on what it loads besides. This closes
-// the unbounded growth; it is not what keeps that facet inside its isolate.
-//
-// A total and not a per-file ceiling, deliberately. The fill is what makes a
-// SYNCHRONOUS read of a file the boot snapshot did not stage succeed on the
-// next attempt — refuse by size and an ordinary `readFileSync` of a 3 MB
-// fixture can never be repaired, however much room the facet has. So any one
-// cell may use the whole budget, and it is age that decides what goes:
-// oldest-first, the shape _admitPrefetchCacheEntry uses for the supervisor's
-// prefetch cache, with a cell too large for the budget ITSELF refused rather
-// than admitted after evicting everything else for something that still does
-// not fit.
-export const RESIDENT_FILL_MAX_BYTES = 8 * 1024 * 1024;
-
 /**
  * Largest regular file a WASI guest holds resident: a read-only open at or
  * under this size is answered from the facet's own copy of the content (one

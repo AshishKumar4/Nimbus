@@ -8,7 +8,7 @@
  * globalThis.__bashBoot / globalThis.__bashFeed. bash-runner.ts re-exports it
  * as BASH_RUNNER_PREAMBLE and passes it as the facet preamble.
  *
- * Size: 78.62 KiB
+ * Size: 78.57 KiB
  */
 export declare const BASH_RUNNER_BODY_SRC: string;
 //# sourceMappingURL=bash-runner.generated.d.ts.map
