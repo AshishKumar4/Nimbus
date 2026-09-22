@@ -91,17 +91,18 @@ hosts that facet is one deployment-wide var, `NIMBUS_PROCESS_HOST`:**
 
 | Value | Where the process runs | Spawn | Memory | CPU |
 |---|---|---|---|---|
-| `facet` (default) | a child actor of the user's own session DO | ~250 ms p50 | shared with the session | shared with siblings |
+| `facet` (default) | a child actor of the user's own session DO | ~250 ms p50 | independent | shared with siblings |
 | `peer` | a child actor of a sibling session DO | ~1,400 ms p50 | independent | independent |
 
 Both give the process its own SQLite, and both run the same code: a peer opens
 it by calling the same `processes(ctx, env).spawn` on its own `ctx`. Peer routing costs
-one extra DO hop, measured at +13 ms per request. A `facet`-hosted process
-shares the session's isolate memory limit: when the opencode TUI exceeded it
-(measured 2026-09-21 on a throwaway, the session's own heap flat at 13.6 MB
-throughout), the session Durable Object was reset with it and the terminal
-closed with 1006. Only `peer` gives a resident process memory the session
-does not pay for. Nothing per-process chooses:
+one extra DO hop, measured at +13 ms per request. A process has its own
+memory limit under either host: measured 2026-09-22 on staging, a
+facet-hosted process allocating 215 MB of heap objects was killed with
+"Worker exceeded memory limit" while its own session and a second session
+kept their terminals and were not reset. What resets a session is the
+session's own work, the launch-time bundle build above all. Nothing
+per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
