@@ -65,7 +65,7 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyDoCall, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
 import { z } from 'zod/v4';
@@ -496,7 +496,7 @@ class PeerProcessHost implements ProcessHost {
         }
         return probe;
       } catch (err) {
-        if (attempt < PEER_TRANSIENT_RESET_RETRIES && isTransientDoReset(err)) {
+        if (attempt < PEER_TRANSIENT_RESET_RETRIES && isRetryableDoCall(classifyDoCall(err))) {
           await new Promise((r) => setTimeout(
             r, PEER_RETRY_BACKOFF_MS[Math.min(attempt, PEER_RETRY_BACKOFF_MS.length - 1)],
           ));

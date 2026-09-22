@@ -329,6 +329,7 @@ export function describeError(input: unknown): string {
   const suffix = cause !== 'unknown' ? ` [${cause}]`
     : isTransientDoReset(input) ? ' [transient-do-reset]'
     : isDoOverloaded(input) ? ' [do-overloaded]'
+    : classifyDoCall(input) === 'retryable_flag' ? ' [retryable]'
     : '';
   return `${name}${message}${suffix}`;
 }

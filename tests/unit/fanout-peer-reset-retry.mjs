@@ -155,6 +155,28 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   console.log(`  case5: ${err.message}`);
 }
 
+// ── Case 6: an undescribed rejection the platform flags `.retryable`, and a
+// dropped connection, are re-dispatched like a reset. The fanned-out work is
+// idempotent, so the shared DO-call classification decides, not reset prose.
+for (const make of [
+  () => Object.assign(new Error('internal error; reference = x'), { retryable: true }),
+  () => new Error('Network connection lost.'),
+]) {
+  const calls = new Map();
+  const env = makeEnv((name) => ({
+    async fanoutExecute(_fnSource, args) {
+      const n = (calls.get(name) ?? 0) + 1;
+      calls.set(name, n);
+      if (n === 1) throw make();
+      return { results: args };
+    },
+  }));
+  const pool = new Fanout(env, ctx, { tag: 'retryable-test', omitSupervisor: true });
+  assert.deepEqual(await pool.submitMany(TASKS, (x) => x), TASKS.map((t) => t.args));
+  for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once after ${make().message}`);
+}
+console.log('  case6: retryable-flagged and connection-lost shards re-dispatched');
+
 // ── describeError: the message is the least of what an error carries. ──
 assert.equal(
   describeError(new Error('Internal error in Durable Object storage caused object to be reset; reference = x')),
@@ -163,6 +185,10 @@ assert.equal(
 assert.equal(describeError(new Error('Durable Object is overloaded.')), 'Durable Object is overloaded. [do-overloaded]');
 assert.equal(describeError(new TypeError('fs[method] is not a function')), 'TypeError: fs[method] is not a function');
 assert.equal(describeError(new Error('internal error')), 'internal error');
+assert.equal(
+  describeError(Object.assign(new Error('internal error; reference = x'), { retryable: true })),
+  'internal error; reference = x [retryable]',
+);
 assert.equal(
   describeError(Object.assign(new Error('wrapped'), { name: 'ExecutionError', remoteMessage: 'boom in the facet' })),
   'ExecutionError: boom in the facet (remote)',

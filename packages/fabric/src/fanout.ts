@@ -19,7 +19,7 @@ import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
 import { hostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyDoCall, describeError, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { WorkerLoader } from './vendor/types.js';
 import {
   hostNamespaceBinding,
@@ -414,8 +414,9 @@ export class Fanout {
             }
             return;
           } catch (err) {
-            const schedule = isTransientDoReset(err) ? PEER_RETRY_BACKOFF_MS
-              : isDoOverloaded(err) ? PEER_OVERLOAD_BACKOFF_MS
+            const cls = classifyDoCall(err);
+            const schedule = cls === 'overloaded' ? PEER_OVERLOAD_BACKOFF_MS
+              : isRetryableDoCall(cls) ? PEER_RETRY_BACKOFF_MS
               : null;
             if (schedule && attempt < PEER_TRANSIENT_RESET_RETRIES) {
               const backoff = schedule[Math.min(attempt, schedule.length - 1)];

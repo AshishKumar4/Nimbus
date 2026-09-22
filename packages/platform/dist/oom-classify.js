@@ -311,7 +311,8 @@ export function describeError(input) {
     const suffix = cause !== 'unknown' ? ` [${cause}]`
         : isTransientDoReset(input) ? ' [transient-do-reset]'
             : isDoOverloaded(input) ? ' [do-overloaded]'
-                : '';
+                : classifyDoCall(input) === 'retryable_flag' ? ' [retryable]'
+                    : '';
     return `${name}${message}${suffix}`;
 }
 function readMessage(input) {
