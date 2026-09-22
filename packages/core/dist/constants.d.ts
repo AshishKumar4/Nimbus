@@ -30,6 +30,7 @@ export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const PREFETCH_CACHE_MAX_BYTES: number;
 export declare const ESM_TRANSFORM_CACHE_MAX_BYTES: number;
 export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
+export declare const RESIDENT_FILL_MAX_BYTES: number;
 /**
  * Largest regular file a WASI guest holds resident: a read-only open at or
  * under this size is answered from the facet's own copy of the content (one
