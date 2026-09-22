@@ -101,6 +101,20 @@ export const BLOCK_CONCURRENCY_CANCEL_MS = 30_000;
  */
 export const RESIDENT_KEEPALIVE_MS = 5_000;
 
+/**
+ * How long the keep-alive holds a session after its last client is gone.
+ *
+ * The keep-alive exists so a quiet process survives while its user is
+ * present. Unbounded, it made every abandoned session with a dev server
+ * run forever: the probe suite's cancelled runs left staging with resident
+ * watchers polling `stat` at ~7.5/s in the isolate every session shares,
+ * and launches that pass on a fresh Worker reset there (2026-09-22). Past
+ * this grace with no attached socket and no request, the session idles
+ * out as it did before the keep-alive, and the launch journal re-drives
+ * the process when a client returns. Long enough for a tab reload.
+ */
+export const RESIDENT_KEEPALIVE_DETACHED_MS = 60_000;
+
 // ── WebSocket attachment bound ──────────────────────────────────────────
 
 /**

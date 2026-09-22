@@ -192,7 +192,11 @@ the carets are minor-strict, so every range moves.
 ### Session
 
 - A session with a running resident process holds itself in memory on an
-  alarm cycle instead of being evicted after ten idle seconds.
+  alarm cycle while a client is present (an attached socket, or a request
+  within the last sixty seconds), instead of being evicted after ten idle
+  seconds. Past that, it idles out as before and the launch journal
+  re-drives the process when the client returns. (Bounded 2026-09-22; the
+  first cut held every abandoned dev server forever.)
 - `wait $!` answers a successful job's status instead of 127.
 - `/api/_diag/memory` reports the prefetch cache's entries, revisions and
   miss profiles.

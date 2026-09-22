@@ -60,6 +60,12 @@ export interface HibHost extends TimerHost {
     _w1JanitorArmed: boolean;
     /** W1: resident keep-alive alarm believed armed for this instance. */
     _w1KeepaliveArmed: boolean;
+    /**
+     * W1: when a client last reached this session over HTTP (an exec, a file
+     * read, a port preview, a socket upgrade). Facet RPCs are not clients: a
+     * process's own traffic must not keep its abandoned session alive.
+     */
+    _w1LastClientActivityAt: number;
     /** W1: destroyed-session tombstone — never re-arm alarms while set. */
     _w1SessionDestroyed: boolean;
 }
@@ -126,6 +132,20 @@ export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 export declare function ensureResidentKeepalive(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void;
+/**
+ * Whether a client is here: a hibernatable socket attached (terminal,
+ * process log, file watch) or a request within the detached grace. The
+ * keep-alive re-arms on this and on a running resident, never on the
+ * resident alone.
+ */
+export declare function residentClientPresent(host: HibHost, ctx: any, now: number): boolean;
+/**
+ * W1: a client reached the session. Records the moment, and re-arms the
+ * keep-alive if a resident is running and the cycle had lapsed: a session
+ * whose client came back before the platform evicted it still holds its
+ * process, and the next quiet stretch must not idle it out mid-session.
+ */
+export declare function noteClientActivity(host: HibHost, ctx: any): void;
 /**
  * W1: this session's canonical alarm-reason strings, registered on the
  * fabric's reason map. Forward-compat: the dispatcher silently drops unknown

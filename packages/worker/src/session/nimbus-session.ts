@@ -121,7 +121,7 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 // sibling modules (-hib, -diag, -ws). The class file itself no longer
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
-import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
+import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
@@ -430,6 +430,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    *  recurring event that holds this object in memory for as long as a
    *  resident process runs (hibernation.ts ensureResidentKeepalive). */
   _w1KeepaliveArmed: boolean = false;
+  /** W1: when a client last reached this session over HTTP; the keep-alive
+   *  holds the object only while one is attached or was here within
+   *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
+  _w1LastClientActivityAt: number = 0;
   /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
    *  While set, log activity never re-arms the janitor alarm cycle. */
   _w1SessionDestroyed: boolean = false;
@@ -1037,6 +1041,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   // ── HTTP handler ──────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
+    // Every client reaches the session through here; facets reach it
+    // through RPC, which is deliberately not counted.
+    noteClientActivity(this, this.ctx);
     try {
       return await this._handleFetch(request);
     } catch (e: any) {
