@@ -20,6 +20,13 @@ function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\\/+/, "");
 }
 
+// Write-backs in flight at once. Unbounded, a burst of ~250 left some
+// SupervisorRPC-to-DO calls undelivered with no error, so the process never
+// exited (measured 2026-09-22); capped at 6, none stalled.
+const __NIMBUS_VFS_RPC_MAX_IN_FLIGHT = 6;
+let __nimbusVfsRpcInFlight = 0;
+const __nimbusVfsRpcWaiters = [];
+
 /**
  * A supervisor round trip the ledger issues on its own account.
  *
@@ -38,11 +45,25 @@ function __nimbusVfsPathKey(path) {
  * them and into embeddings that are not the one-shot entrypoint, and an
  * absent counter must not be an error.
  */
-async function __nimbusVfsRpc(promise) {
+async function __nimbusVfsRpc(issue) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
   globalThis.__nimbusPendingOps++;
-  try { return await promise; }
-  finally { globalThis.__nimbusPendingOps--; }
+  try {
+    if (__nimbusVfsRpcInFlight < __NIMBUS_VFS_RPC_MAX_IN_FLIGHT) {
+      __nimbusVfsRpcInFlight++;
+    } else {
+      const slot = Promise.withResolvers();
+      __nimbusVfsRpcWaiters.push(slot.resolve);
+      await slot.promise;
+    }
+    try { return await issue(); }
+    finally {
+      // Hand the slot straight to the next waiter; the count only drops when none waits.
+      const next = __nimbusVfsRpcWaiters.shift();
+      if (next) next();
+      else __nimbusVfsRpcInFlight--;
+    }
+  } finally { globalThis.__nimbusPendingOps--; }
 }
 
 /**
@@ -498,7 +519,7 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
     }
     for (const operation of __nimbusVfsAppendOperations(snapshot)) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
-      await __nimbusVfsRpc(supervisor.fsAppend(
+      await __nimbusVfsRpc(() => supervisor.fsAppend(
         path,
         __nimbusVfsModuleIncarnation(),
         operation.id,
@@ -506,7 +527,7 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
       ));
       __nimbusCommitVfsAppendOperation(snapshot, operation);
       try {
-        await __nimbusVfsRpc(supervisor.fsAppendAck(__nimbusVfsModuleIncarnation(), operation.id));
+        await __nimbusVfsRpc(() => supervisor.fsAppendAck(__nimbusVfsModuleIncarnation(), operation.id));
       } catch {
         // The client has already relinquished retry ownership after the
         // append success. A lost acknowledgement may retain a receipt, but
@@ -517,7 +538,7 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
   }
   // The revision this write produced. It is what lets the ACQUIRE barrier
   // tell this facet's own mutation apart from a peer's.
-  return __nimbusVfsRpc(supervisor.writeFile(path, content));
+  return __nimbusVfsRpc(() => supervisor.writeFile(path, content));
 }
 
 /**

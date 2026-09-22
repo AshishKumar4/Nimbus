@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6417a7787d49d9555bd182a9899cd8c3f733cbfa3eaf472866676ef8871ee2f0",
+  "fingerprint": "4ac5aa0ccf63a3015358013aea85ea21376657cf2e7ec49362b5fe813db741cd",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -81,8 +81,8 @@
     "packages/core/dist/_shared/untrusted-request.d.ts.map": "85b2341b1c7daa5ec3eb7d490d3c728bc0f5b9adff47d67ce611f75879c82992",
     "packages/core/dist/_shared/untrusted-request.js": "3086d00a12d50dde5eeee68928cd2f59f0077e6f2b6d28612f628700fb58ff80",
     "packages/core/dist/_shared/vfs-write-ledger.d.ts": "6a992c0bfc88945e734b766290ebc8ffb002083ae4a156f4700c349851e00c0d",
-    "packages/core/dist/_shared/vfs-write-ledger.d.ts.map": "9ba49e6210cd9c7980f1a4879ae3903c78f68e179f7f9d9c6e4138d72748f5ce",
-    "packages/core/dist/_shared/vfs-write-ledger.js": "b9bcb4781e91efccf10f130c540ac73f79a44e5498b5f0860eff2df1c664bf64",
+    "packages/core/dist/_shared/vfs-write-ledger.d.ts.map": "3b97314f14175b172ab70f436758e6863b44485f642b4a1f6e5c3de584729ec8",
+    "packages/core/dist/_shared/vfs-write-ledger.js": "12e3320073461d70c086d74aea8412c1a03ff72030ca86dfc2a6144e6789df66",
     "packages/core/dist/constants.d.ts": "d2bb18253a82e6e61b11966b758c36fdc698bbd592af84b876add41a06e3d8b0",
     "packages/core/dist/constants.d.ts.map": "2e3f78e944c2afd0ae3d1dc379ee14b3f1d7ca72ae75f28b0b706a0c211135d4",
     "packages/core/dist/constants.js": "f275fc9f1396984b0589b18cb6e580d35df75c29c88eef3cef2038da7445c0d0",
@@ -903,7 +903,7 @@
     "packages/core/src/_shared/terminal.ts": "29ab44d1c8ed28dc5ea2f855b25441d2a2fde8f861009aef8aaade6e4d7c1eb7",
     "packages/core/src/_shared/typescript-specifiers.ts": "980d4dfe13c0b0bdc3037d5ec95f50764257b921cbeca8e4e7910a10c8c8c9df",
     "packages/core/src/_shared/untrusted-request.ts": "dcef6638202698a39857c9a0be6c8f2df829b929b0402b431a683d5217c87f47",
-    "packages/core/src/_shared/vfs-write-ledger.ts": "443bb6d5d58ce26f42f0a309665f2044fce7a4f3ae8ea4034c9d6265f6deeb5f",
+    "packages/core/src/_shared/vfs-write-ledger.ts": "33b265d8297cae5edbf5ad7262d93a321a9d4523086a31e2b4d51a1460f7c6bc",
     "packages/core/src/constants.ts": "0198db8fdc623e5525cb2f0562d8e9ea14faa1e11d6046c0c771e9dd192e3a26",
     "packages/core/src/index.ts": "c3031230421adefc5792d65e950e8d45965fb3579bb65d46bbb59c078273dd03",
     "packages/core/src/runtime/assets-loader.ts": "b27835cf7b3e5fef88785c07376aca3c0594e0ca4b7d25aa2829ccaab83b2798",
@@ -1861,7 +1861,6 @@
     "packages/worker/public/s/index.html": "ca7b1537d18e9d6847d3b3e2a42c9a1701e7225f8fbe39d2765fdd8d254c326c",
     "packages/worker/runtime-contracts/nimbus-threads.c": "f20fe40184b9b9664458b01a10536f4382f2141c468ffb8203cbb2649cc0a8be",
     "packages/worker/runtime-contracts/pyodide-workerd-adapter.json": "50b11f60f9bbf8d3e05a676ef19128e240ab53fc479d1f1a067b7799dd269410",
-    "packages/worker/scripts/_astro-admission-tmp.mjs": "def46d790d2ec3ca0f1eba42786c03d7443336477481d681719cf0e7a1a2b112",
     "packages/worker/scripts/build-opencode-attach-entry.mjs": "91dcf4ecba4e1675f1f0f9b961ce1f3eac80265f4031d3b0fcd3d0fbf9fcfe99",
     "packages/worker/scripts/bundle-agent-chat.mjs": "ad48e46d1bcbc1b970bbb576c683e2b1d96511faa5ecb2c2775c343349ae77d2",
     "packages/worker/scripts/bundle-esbuild-wasm.mjs": "c8396abed2383740b47b32b6cae9fe189652ba0f52f5d61b782e0b2d6fcc1ad8",
