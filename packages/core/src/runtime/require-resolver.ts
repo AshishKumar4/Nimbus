@@ -540,6 +540,8 @@ async function resolveImportsField(
  */
 export interface PrefetchResult {
   bundle: Record<string, string>;
+  /** Reached only via dynamic `import()`: staged after the static closure, evictable, never a refusal. */
+  speculative: Set<string>;
 }
 
 /**
@@ -577,11 +579,17 @@ export async function prefetchForRequire(
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
 ): Promise<PrefetchOutcome> {
   const bundle: Record<string, string> = {};
+  const speculative = new Set<string>();
   const visited = new Set<string>();
   let bytesSeen = 0;
   let closureExceeded: ClosureBoundExceeded | null = null;
+  // Followed after the static closure so a lazy subtree never spends its bound.
+  const deferredDynamic: Array<{ specifier: string; fromDir: string }> = [];
+  let lazy = false;
 
-  async function addFile(vfsPath: string): Promise<void> {
+  // `entry`: the entry file itself, whose own `import()` is a deferral of its
+  // main module, not an optional feature, and is followed as required.
+  async function addFile(vfsPath: string, entry = false): Promise<void> {
     if (closureExceeded || visited.has(vfsPath)) return;
     visited.add(vfsPath);
     // Stat before read: a required file is not optional, so if its size
@@ -592,6 +600,7 @@ export async function prefetchForRequire(
     let size = 0;
     try { size = (await vfs.stat(vfsPath)).size; } catch { /* size unknown */ }
     if (bytesSeen + size > maxBundleBytes) {
+      if (lazy) return;
       closureExceeded = {
         kind: 'closure-exceeds-bound',
         entry: entryFile ?? 'entry code',
@@ -606,6 +615,7 @@ export async function prefetchForRequire(
     catch { return; }
     bytesSeen += size;
     bundle[vfsPath] = content;
+    if (lazy) speculative.add(vfsPath);
 
     // Also add the package.json for the enclosing node_modules package
     // so the runtime resolver can read the same exports/main field we
@@ -660,11 +670,11 @@ export async function prefetchForRequire(
     // walk everything else as CJS/ESM.
     if (!vfsPath.endsWith('.json')) {
       const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
-      (await parseAndResolve(content, fromDir));
+      (await parseAndResolve(content, fromDir, entry));
     }
   }
 
-  async function parseAndResolve(code: string, fromDir: string): Promise<void> {
+  async function parseAndResolve(code: string, fromDir: string, entry = false): Promise<void> {
     // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
     // `/* */` comments before running IMPORT_RE / REQUIRE_RE so the
     // regexes don't break on embedded comments. Real-world bite:
@@ -730,12 +740,12 @@ export async function prefetchForRequire(
         if (r.stub) (await addStub(r.stub.path, r.stub.content));
       }
     }
-    // Follow static-string dynamic imports so a CLI entry that defers to
-    // import('./dist/index.js') has that subtree's content prefetched.
+    // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     DYNIMPORT_RE.lastIndex = 0;
     for (let match = DYNIMPORT_RE.exec(stripped); match !== null; match = DYNIMPORT_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
+      if (!entry) { deferredDynamic.push({ specifier, fromDir }); continue; }
       const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
       if (closureExceeded) break;
       if (r) {
@@ -801,12 +811,12 @@ export async function prefetchForRequire(
     const slash = stripped.lastIndexOf('/');
     if (slash > 0) entryFromDir = stripped.substring(0, slash);
   }
-  (await parseAndResolve(entryCode, entryFromDir));
+  (await parseAndResolve(entryCode, entryFromDir, true));
 
   // If there's an entry file, add it (and recurse)
   if (entryFile) {
     const stripped = strip(entryFile);
-    (await addFile(stripped));
+    (await addFile(stripped, true));
   }
 
   // Also add cwd package.json if it exists (for npm scripts, main field etc)
@@ -819,7 +829,20 @@ export async function prefetchForRequire(
     } catch { /* ignore */ }
   }
 
-  return closureExceeded ?? { bundle };
+  if (closureExceeded) return closureExceeded;
+
+  // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
+  lazy = true;
+  for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
+    const { specifier, fromDir } = deferredDynamic[i];
+    const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+    if (r) {
+      (await addFile(r.resolved));
+      if (r.stub) (await addStub(r.stub.path, r.stub.content));
+    }
+  }
+
+  return { bundle, speculative };
 }
 
 const BUILTINS = new Set([

@@ -3629,7 +3629,9 @@ async function _buildPrefetchBundle(
     throw new ClosureBoundExceededError(prefetch);
   }
   const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
-  const requiredPaths = new Set(Object.keys(prefetch.bundle));
+  const requiredPaths = new Set(
+    Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)),
+  );
   let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
   // Each enrichment pass below re-scans the bundle accumulated so far, so a
@@ -3799,17 +3801,20 @@ async function _buildPrefetchBundle(
     // snapshot breached its bound by 591 files, and among the largest were
     // modules while 3,291 declaration files (never a require target) stayed.
     //
-    // So spend the cells the require path can never load first, whatever
-    // their size, and only then the ones it can. This widens the module
-    // budget; it does not decide admission. A chunk the oversample never
-    // admitted (astro's `rolldown/dist/shared/*` behind a static import of an
-    // admitted module) is missing either way, and that is the walker's rule
-    // to close.
+    // Unloadable cells first, then enrichment largest-first, then dynamic-import
+    // subtrees last-discovered first, so a CLI's own `import()` deferral is shed last.
+    const speculativeRank = new Map<string, number>();
+    for (const path of prefetch.speculative) speculativeRank.set(path, speculativeRank.size);
+    const rankOf = (path: string): number =>
+      speculativeRank.get(compiledCellPath(path) ?? path) ?? -1;
     const evictable = Object.keys(bundle)
       .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
       .sort((a, b) => {
         const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
         if (loadable !== 0) return loadable;
+        const rankA = rankOf(a);
+        const rankB = rankOf(b);
+        if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
         return _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]);
       });
     const evicted: BundleCellSize[] = [];

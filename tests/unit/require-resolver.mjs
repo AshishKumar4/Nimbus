@@ -28,6 +28,11 @@ class FakeVfs {
     return this.files.get(path);
   }
 
+  stat(path) {
+    if (!this.files.has(path)) throw new Error(`missing file: ${path}`);
+    return { size: this.files.get(path).length };
+  }
+
   readdir(path) {
     const prefix = path ? `${path}/` : '';
     const entries = new Map();
@@ -209,3 +214,75 @@ assert.equal(
 );
 
 console.log('require-resolver: createRequire ok');
+
+// Dynamic-import subtrees: staged after the static closure, never a refusal.
+{
+  const grammar = 'export default ' + JSON.stringify('x'.repeat(400)) + ';';
+  const lazyVfs = new FakeVfs({
+    'home/user/cli/bin.mjs': "import './lib/main.js';",
+    'home/user/cli/lib/main.js': "import './static.js'; import('./feature.js'); export const m = 1;",
+    'home/user/cli/lib/static.js': 'export const s = 1;',
+    'home/user/cli/lib/feature.js':
+      "import './grammars/a.js'; import './grammars/b.js'; export const f = 1;",
+    'home/user/cli/lib/grammars/a.js': grammar,
+    'home/user/cli/lib/grammars/b.js': grammar,
+  });
+  const staticBytes = lazyVfs.files.get('home/user/cli/bin.mjs').length
+    + lazyVfs.files.get('home/user/cli/lib/main.js').length
+    + lazyVfs.files.get('home/user/cli/lib/static.js').length;
+
+  // Bound fits the static closure and one grammar, not both.
+  const featureBytes = lazyVfs.files.get('home/user/cli/lib/feature.js').length;
+  const bound = staticBytes + featureBytes + grammar.length + 10;
+  const r = await prefetchForRequire(
+    lazyVfs, lazyVfs.files.get('home/user/cli/bin.mjs'), '/home/user/cli', '/home/user/cli/bin.mjs', bound,
+  );
+  assert.ok(!('kind' in r), `lazy subtree past the bound must not refuse the launch: ${JSON.stringify(r)}`);
+  assert.deepEqual(
+    [...r.speculative],
+    ['home/user/cli/lib/feature.js', 'home/user/cli/lib/grammars/a.js'],
+    'dynamic-import subtree staged in discovery order within the bound',
+  );
+  assert.equal(r.bundle['home/user/cli/lib/grammars/b.js'], undefined, 'lazy file past the bound is not staged');
+  assert.equal(r.bundle['home/user/cli/lib/static.js'], 'export const s = 1;', 'static closure staged');
+  assert.ok(!r.speculative.has('home/user/cli/lib/static.js'), 'static closure is required');
+
+  // The static closure alone past the bound is still a refusal.
+  const refused = await prefetchForRequire(
+    lazyVfs, lazyVfs.files.get('home/user/cli/bin.mjs'), '/home/user/cli', '/home/user/cli/bin.mjs', staticBytes - 1,
+  );
+  assert.equal(refused.kind, 'closure-exceeds-bound', 'static closure past the bound refuses');
+
+  // A target reached both lazily and statically is required.
+  const bothVfs = new FakeVfs({
+    'home/user/cli/bin.mjs': "import './lib/y.js'; import './lib/z.js';",
+    'home/user/cli/lib/y.js': "import('./x.js'); export const y = 1;",
+    'home/user/cli/lib/z.js': "import './x.js'; export const z = 1;",
+    'home/user/cli/lib/x.js': 'export const x = 1;',
+  });
+  const both = await prefetchForRequire(
+    bothVfs, bothVfs.files.get('home/user/cli/bin.mjs'), '/home/user/cli', '/home/user/cli/bin.mjs',
+  );
+  assert.equal(both.bundle['home/user/cli/lib/x.js'], 'export const x = 1;');
+  assert.equal(both.speculative.size, 0, 'a statically reachable file is required even when also imported lazily');
+
+  // The entry's own `import()` defers its main module; that module and its
+  // static closure are required, and only ITS dynamic imports are lazy.
+  const deferVfs = new FakeVfs({
+    'home/user/cli/bin/astro.mjs': "import('../dist/cli/index.js').then(({ cli }) => cli());",
+    'home/user/cli/dist/cli/index.js': "import './core.js'; export const cli = () => import('./dev/index.js');",
+    'home/user/cli/dist/cli/core.js': 'export const core = 1;',
+    'home/user/cli/dist/cli/dev/index.js': 'export const dev = 1;',
+  });
+  const defer = await prefetchForRequire(
+    deferVfs, deferVfs.files.get('home/user/cli/bin/astro.mjs'), '/home/user/cli', '/home/user/cli/bin/astro.mjs',
+  );
+  assert.ok(!('kind' in defer));
+  assert.deepEqual([...defer.speculative], ['home/user/cli/dist/cli/dev/index.js'], 'only the subcommand behind the main module is lazy');
+  assert.ok('home/user/cli/dist/cli/core.js' in defer.bundle, "the main module's static closure is staged");
+  const deferBound = await prefetchForRequire(
+    deferVfs, deferVfs.files.get('home/user/cli/bin/astro.mjs'), '/home/user/cli', '/home/user/cli/bin/astro.mjs', 40,
+  );
+  assert.equal(deferBound.kind, 'closure-exceeds-bound', "the entry's deferral is part of the required closure");
+}
+console.log('require-resolver: speculative dynamic imports ok');

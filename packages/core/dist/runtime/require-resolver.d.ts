@@ -43,6 +43,8 @@ import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
  */
 export interface PrefetchResult {
     bundle: Record<string, string>;
+    /** Reached only via dynamic `import()`: staged after the static closure, evictable, never a refusal. */
+    speculative: Set<string>;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content
