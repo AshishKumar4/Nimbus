@@ -90,6 +90,39 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.ok(config.modules['runtime.wasm'] instanceof Object);
 }
 
+// A wasm member is handed to the loader as the read's OWN buffer when the
+// read fits it exactly, and copied only when the read is a view into a
+// larger one. These are the largest members a spec carries (ruby's 34.3 MiB
+// interpreter, esbuild's 13.3 MiB image); an unconditional slice held both
+// copies at once in the coordinator's 128 MiB isolate, at the one moment the
+// module map is also resident.
+{
+  const exact = new Uint8Array(new ArrayBuffer(16)).fill(7);
+  const backing = new Uint8Array(64);
+  for (let i = 0; i < backing.length; i++) backing[i] = i;
+  const view = backing.subarray(8, 24);
+  const disk = {
+    readFile: (path) => {
+      if (path === '/img/exact.wasm') return exact;
+      if (path === '/img/view.wasm') return view;
+      throw new Error(`unexpected read: ${path}`);
+    },
+  };
+  const config = await residentLoaderConfig(
+    ResidentCodeSpecSchema.parse({
+      ...BASE,
+      vfsWasmModules: { 'exact.wasm': '/img/exact.wasm', 'view.wasm': '/img/view.wasm' },
+    }),
+    disk,
+  );
+  assert.equal(config.modules['exact.wasm'].wasm, exact.buffer,
+    'an exact-fit read is passed through as its own buffer, not copied');
+  const copied = config.modules['view.wasm'].wasm;
+  assert.notEqual(copied, backing.buffer, 'a view into a larger buffer must not leak the whole buffer');
+  assert.equal(copied.byteLength, 16);
+  assert.deepEqual([...new Uint8Array(copied)], [...view], 'the copy carries exactly the viewed bytes');
+}
+
 // Explicit env needs no supervisor composition at all: this runs before
 // any composeFabric/adoptCtxExports, so resolving proves residentWorkerConfig
 // never consults the supervisor entrypoint on this path.

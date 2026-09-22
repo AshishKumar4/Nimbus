@@ -227,8 +227,16 @@ export async function residentLoaderConfig(spec, disk) {
     const resolved = {};
     for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
         const bytes = await disk.readFile(path);
+        // The read's own buffer when it fits exactly, and only otherwise a copy.
+        // These are the largest members a spec carries — ruby's interpreter image
+        // is 34.3 MiB, esbuild's 13.3 — and an unconditional slice held both
+        // copies at once in the coordinator's 128 MiB isolate, at the one moment
+        // the module map is also resident.
+        const exact = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
         resolved[moduleName] = {
-            wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+            wasm: exact
+                ? bytes.buffer
+                : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
         };
     }
     for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
