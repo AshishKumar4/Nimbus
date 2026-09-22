@@ -378,10 +378,11 @@ export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, 
     added: number;
 }>;
 /**
- * The packages a computed `require(name)` inside the program can plausibly
- * name: the project root's own runtime `dependencies`, plus every package
- * ONE `dependencies` hop from a package that already owns a file in the
- * static closure. Never devDependencies, never a second hop.
+ * The packages a name resolved at runtime — a computed `require(name)`, or a
+ * resolver call like exsolve's `resolveModulePath(name, { from: rootDir })` —
+ * can plausibly reach: every package ONE `dependencies` hop from a package
+ * the project itself declares or that owns a file in the static closure, plus
+ * those roots themselves. Never devDependencies, never a second hop.
  *
  * Unbounded, the greedy oversample read every installed package's main:
  * for `node -e "import('got')"` in got's repo — a one-file static closure —
@@ -393,6 +394,21 @@ export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, 
  * tree. Computed requires almost always target a declared runtime
  * dependency of the package doing the requiring, so the bound is one hop
  * over `dependencies` only. Directories, sorted for a stable bundle.
+ *
+ * The project's own dependencies are hop ROOTS and not merely members,
+ * because a bin runs inside the project and resolves from the project root,
+ * where what it names is its host framework's runtime peer rather than
+ * anything its own package declares. Measured on staging, `nuxt dev` on a
+ * `nuxi init` project: npm points `node_modules/.bin/nuxt` at
+ * `@nuxt/cli/bin/nuxi.mjs`, so `@nuxt/cli` owns the entry; `@nuxt/kit` is a
+ * devDependency of `@nuxt/cli` and a dependency of `nuxt`, which the project
+ * declares. Admitting `nuxt` without hopping from it left
+ * `@nuxt/kit/package.json` unstaged, `readFileSync` raised EAGAIN inside
+ * exsolve — which swallows every error — and the CLI reported
+ * `Cannot resolve module "@nuxt/kit" (from: /home/user/nuxt-probe/mvp/)`.
+ * One hop from each project dependency is what the project's own node_modules
+ * was hoisted for; it is the same edge kind and the same single level the
+ * owner hop already spends.
  */
 export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
 /**
