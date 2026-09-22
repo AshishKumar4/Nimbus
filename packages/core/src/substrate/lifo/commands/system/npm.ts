@@ -4,6 +4,7 @@ import type { ExecutionFs as VFS } from '../../../../shell/execution-fs.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
+import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import {
 	RegistryPackumentSchema,
 	RegistrySearchResponseSchema,
@@ -813,14 +814,6 @@ async function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistr
 	return count;
 }
 
-function isNativeExecutableBin(binPath: string): boolean {
-	const clean = binPath.split(/[?#]/)[0];
-	const base = clean.slice(clean.lastIndexOf('/') + 1);
-	const dot = base.lastIndexOf('.');
-	const ext = dot > 0 ? base.slice(dot).toLowerCase() : '';
-	return ext === '.exe' || ext === '.node';
-}
-
 async function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, kernel?: Kernel): Promise<number> {
 	const pkgJsonPath = join(pkgDir, 'package.json');
 	if (!(await vfs.exists(pkgJsonPath))) return 0;
@@ -834,7 +827,7 @@ async function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegist
 			// opencode-ai's bin/opencode.exe) is handled by the npm-bin
 			// fallback resolver, which reads the authoritative bin manifest
 			// (including staged-artifact sentinels) instead of this raw scan.
-			if (isNativeExecutableBin(binPath)) continue;
+			if (isNativeBinPath(binPath)) continue;
 			// Only register if not already in registry
 			if (!registry.has(binName)) {
 				const scriptPath = resolve(pkgDir, binPath);

@@ -116,7 +116,7 @@ import {
   ESM_TRANSFORM_CACHE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import {
@@ -2171,7 +2171,7 @@ export async function greedyAddMainEntries(
       // Measured: freeing 1.3 MiB of rollup let `@napi-rs/lzma-linux-x64-gnu`'s
       // 1,445,448-byte `.node` in, which the size guard had been evicting.
       // Only the guess is filtered; a path the closure requires is untouched.
-      if (stripped.endsWith('.node') || stripped.endsWith('.exe')) return false;
+      if (isNativeBinPath(stripped)) return false;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);

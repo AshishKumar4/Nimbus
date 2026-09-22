@@ -52,7 +52,7 @@ import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runti
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, setTransformCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
@@ -1811,7 +1811,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             // Measured: freeing 1.3 MiB of rollup let `@napi-rs/lzma-linux-x64-gnu`'s
             // 1,445,448-byte `.node` in, which the size guard had been evicting.
             // Only the guess is filtered; a path the closure requires is untouched.
-            if (stripped.endsWith('.node') || stripped.endsWith('.exe'))
+            if (isNativeBinPath(stripped))
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
             const content = (await _readBundleCell(vfs, stripped));

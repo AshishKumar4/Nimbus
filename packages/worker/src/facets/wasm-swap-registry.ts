@@ -30,6 +30,7 @@
  */
 
 import {
+  NATIVE_BIN_EXTENSIONS,
   NATIVE_UNSUPPORTED_ABI,
   NIMBUS_ABI_TARGET,
   PYODIDE_PACKAGE_ABI,
@@ -334,7 +335,7 @@ export const PACKAGE_ABI_POLICY: PackageAbiPolicy = {
   // @rollup/wasm-node matches the '@rollup/rollup-'-adjacent shard shape
   // check by prefix but is the pure-WASM build, not a native shard.
   nativeShardExemptions: ['@rollup/wasm-node'],
-  nativeBinExtensions: ['.exe', '.node'],
+  nativeBinExtensions: NATIVE_BIN_EXTENSIONS,
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -701,21 +702,15 @@ export function policyNativeBinAdvisory(
   policy: PackageAbiPolicy,
   pkg: PackageBinManifest,
 ): PackageRejectEntry | undefined {
+  // Self-contained: this function is serialized into the facet preamble.
   const fileExtension = (path: string): string => {
-    const text = String(path || '');
-    const query = text.indexOf('?');
-    const fragment = text.indexOf('#');
-    const end = query < 0
-      ? (fragment < 0 ? text.length : fragment)
-      : (fragment < 0 ? query : Math.min(query, fragment));
-    const clean = text.slice(0, end);
+    const clean = String(path || '').split(/[?#]/)[0];
     const name = clean.slice(clean.lastIndexOf('/') + 1);
     const dot = name.lastIndexOf('.');
     return dot > 0 ? name.slice(dot).toLowerCase() : '';
   };
   for (const target of Object.values(pkg.bin ?? {})) {
-    const ext = fileExtension(target);
-    if (policy.nativeBinExtensions.includes(ext)) {
+    if (policy.nativeBinExtensions.includes(fileExtension(target))) {
       return {
         from: pkg.name,
         reason:

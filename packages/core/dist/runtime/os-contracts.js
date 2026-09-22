@@ -59,6 +59,15 @@ export const PYODIDE_PACKAGE_ABI = 'pyodide-emscripten-2025_0-wasm32';
  *  execute (Linux/Windows/macOS executables, .node bindings, native
  *  wheels/gems). */
 export const NATIVE_UNSUPPORTED_ABI = 'native-unsupported';
+/** File extensions of native binaries no Workers isolate can load. */
+export const NATIVE_BIN_EXTENSIONS = ['.exe', '.node'];
+/** True when `path` (a bin target or file path, query/fragment allowed) is a native binary. */
+export function isNativeBinPath(path, extensions = NATIVE_BIN_EXTENSIONS) {
+    const clean = String(path || '').split(/[?#]/)[0];
+    const name = clean.slice(clean.lastIndexOf('/') + 1);
+    const dot = name.lastIndexOf('.');
+    return dot > 0 && extensions.includes(name.slice(dot).toLowerCase());
+}
 export const NIMBUS_RUNTIME_ABIS = Object.freeze({
     bash: NIMBUS_ABI_TARGET,
     clang: NIMBUS_ABI_TARGET,

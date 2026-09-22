@@ -404,6 +404,10 @@ export declare const PYODIDE_PACKAGE_ABI = "pyodide-emscripten-2025_0-wasm32";
  *  execute (Linux/Windows/macOS executables, .node bindings, native
  *  wheels/gems). */
 export declare const NATIVE_UNSUPPORTED_ABI = "native-unsupported";
+/** File extensions of native binaries no Workers isolate can load. */
+export declare const NATIVE_BIN_EXTENSIONS: readonly string[];
+/** True when `path` (a bin target or file path, query/fragment allowed) is a native binary. */
+export declare function isNativeBinPath(path: string, extensions?: readonly string[]): boolean;
 export type RuntimePackageAbi = 'javascript' | typeof NIMBUS_ABI_TARGET | typeof PYODIDE_PACKAGE_ABI | 'py3-none-any' | 'python-source-pure' | 'pyodide' | 'ruby-wasm' | typeof NATIVE_UNSUPPORTED_ABI;
 export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>>;
 /**

@@ -41,6 +41,7 @@ import {
 } from '../_shared/typescript-specifiers.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 
 // Match literal-string require/require.resolve with single, double, or
@@ -592,6 +593,8 @@ export async function prefetchForRequire(
   async function addFile(vfsPath: string, entry = false): Promise<void> {
     if (closureExceeded || visited.has(vfsPath)) return;
     visited.add(vfsPath);
+    // A native binary is answered by the ABI policy, never loaded from the map.
+    if (isNativeBinPath(vfsPath)) return;
     // Stat before read: a required file is not optional, so if its size
     // would carry the bundle past the bound the closure cannot launch —
     // stop here rather than buy the read that resets the isolate. A stat

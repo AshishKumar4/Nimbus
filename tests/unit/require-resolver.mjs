@@ -285,4 +285,21 @@ console.log('require-resolver: createRequire ok');
   );
   assert.equal(deferBound.kind, 'closure-exceeds-bound', "the entry's deferral is part of the required closure");
 }
+
+// A native binary is never staged: the facet answers its require from the ABI
+// policy, and rolldown's 19 MB `.node` reached lazily starved every subtree after it.
+{
+  const nativeVfs = new FakeVfs({
+    'home/user/cli/bin.mjs': "import './lib/main.js';",
+    'home/user/cli/lib/main.js': "require('./binding.node'); import('./feature.js');",
+    'home/user/cli/lib/binding.node': 'x'.repeat(600),
+    'home/user/cli/lib/feature.js': 'export const f = 1;',
+  });
+  const r = await prefetchForRequire(
+    nativeVfs, nativeVfs.files.get('home/user/cli/bin.mjs'), '/home/user/cli', '/home/user/cli/bin.mjs', 500,
+  );
+  assert.ok(!('kind' in r), 'a native binary in the closure does not count against the bound');
+  assert.equal(r.bundle['home/user/cli/lib/binding.node'], undefined, 'native binary not staged');
+  assert.equal(r.bundle['home/user/cli/lib/feature.js'], 'export const f = 1;', 'the lazy subtree after it is staged');
+}
 console.log('require-resolver: speculative dynamic imports ok');
