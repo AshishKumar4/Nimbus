@@ -10,7 +10,11 @@
  * different name is the scope — resolution never walks past it to a
  * matching ancestor. It sits after relative/absolute and `#imports`
  * specifiers and before the node_modules walk, so a same-named package in
- * node_modules does not shadow the package's own map.
+ * node_modules does not shadow the package's own map. Once the enclosing
+ * package claims the name, its map is the whole answer: a subpath it does
+ * not expose is not found even when a node_modules copy could satisfy it,
+ * and the scope walk never crosses a node_modules directory (a file that
+ * sits directly under one belongs to no package).
  *
  * Differential: every expectation below is produced by REAL node
  * (`require.resolve` from a CommonJS file, `import.meta.resolve` from an ESM
@@ -66,6 +70,11 @@ const FILES = {
   'home/user/pkg/lib/main.mjs': '',
   'home/user/node_modules/selfref-pkg/package.json': pkg({ name: 'selfref-pkg', main: 'index.js' }),
   'home/user/node_modules/selfref-pkg/index.js': 'module.exports = { decoy: true };\n',
+  // The decoy also carries the subpath the package's own map does NOT
+  // expose: a resolver that falls through to node_modules after the
+  // self-reference rule claims the name would find it. Node does not.
+  'home/user/node_modules/selfref-pkg/private.js': 'module.exports = { decoyPrivate: true };\n',
+  'home/user/node_modules/selfref-pkg/lib/private.js': 'module.exports = { decoyPrivate: true };\n',
 
   // B: an import-only map.
   'home/user/esm-only/package.json': pkg({ name: 'esm-only-pkg', exports: { '.': { import: './lib/esm.mjs' } } }),
@@ -88,6 +97,15 @@ const FILES = {
   'home/user/outer/inner/package.json': pkg({ name: 'inner-pkg', exports: { '.': './inner.js' } }),
   'home/user/outer/inner/inner.js': 'module.exports = { inner: true };\n',
   'home/user/outer/inner/lib/main.js': '',
+
+  // F: the project root is a package with exports; a file that sits
+  // directly under its node_modules (no package.json of its own between it
+  // and the node_modules directory) belongs to no package scope, so the
+  // root's name does not self-reference from there. Node's readPackageScope
+  // stops at a node_modules directory.
+  'home/user/package.json': pkg({ name: 'user-root', exports: { '.': './root.js' } }),
+  'home/user/root.js': 'module.exports = { root: true };\n',
+  'home/user/node_modules/loose/lib/main.js': '',
 
   // E: a scoped name.
   'home/user/scoped/package.json': pkg({ name: '@scope/self', exports: { '.': './index.js', './sub': './lib/sub.js' } }),
@@ -119,6 +137,9 @@ const CASES = [
   // D
   ['home/user/outer/inner/lib/main.js', 'outer-pkg', 'require'],
   ['home/user/outer/inner/lib/main.js', 'inner-pkg', 'require'],
+  // F
+  ['home/user/node_modules/loose/lib/main.js', 'user-root', 'require'],
+  ['home/user/pkg/lib/main.js', 'user-root', 'require'],
   // E
   ['home/user/scoped/lib/main.js', '@scope/self', 'require'],
   ['home/user/scoped/lib/main.js', '@scope/self/sub', 'require'],
@@ -223,7 +244,8 @@ try {
   assert.equal(oracle('home/user/noexports/lib/main.js', 'noexports-pkg', 'require'), null, 'no exports → no self-reference');
   assert.equal(oracle('home/user/noexports-installed/lib/main.js', 'installed-pkg', 'require'), 'home/user/noexports-installed/node_modules/installed-pkg/index.js');
   assert.equal(oracle('home/user/outer/inner/lib/main.js', 'outer-pkg', 'require'), null, 'a nearer package of another name is the scope');
-  assert.equal(oracle('home/user/pkg/lib/main.js', 'selfref-pkg/private', 'require'), null, 'a subpath the map does not expose is not exported');
+  assert.equal(oracle('home/user/pkg/lib/main.js', 'selfref-pkg/private', 'require'), null, 'a subpath the map does not expose is not exported, even with a node_modules copy that has it');
+  assert.equal(oracle('home/user/node_modules/loose/lib/main.js', 'user-root', 'require'), null, 'the scope walk stops at node_modules');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

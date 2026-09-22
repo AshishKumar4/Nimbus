@@ -14,7 +14,9 @@
 //     alias name, and does NOT re-announce a swap (the supervisor did);
 //   - a bare transitive edge to a swapped name takes the same path and
 //     announces the swap once, as `ctx: 'transitive'`;
-//   - a user's explicit alias to some OTHER package is authoritative;
+//   - a user's explicit alias to some OTHER package is authoritative, and
+//     an alias to the NATIVE package still gets its target swapped: policy
+//     keys on the registry identity, placement on the declared name;
 //   - the cache fast-path is keyed by the install name, so a warm second
 //     install answers `esbuild` with the entry the first install wrote.
 
@@ -121,6 +123,38 @@ const REGISTRY = {
   assert.equal(res.pkg?.version, '1.0.0');
   assert.ok(!res.events.some((e) => e.type === 'swap'));
   console.log('  explicit alias to another package → no swap');
+}
+
+// ── Policy applies to the registry identity, placement to the name ───────
+//
+// A user's explicit alias to the NATIVE package (`build-a@npm:esbuild`) is
+// still esbuild at the registry, so the swap applies to its target — and
+// the package keeps the name the alias declared. Two aliases of the same
+// swapped identity install side by side under their own names.
+{
+  const { env, asked } = registry(REGISTRY);
+  for (const name of ['build-a', 'build-b']) {
+    const res = await resolveOnePackumentInFacet(spec({ name, range: 'npm:esbuild@^0.20.0' }), env);
+    assert.equal(res.pkg?.name, name, 'the alias keeps its own install name');
+    assert.equal(res.pkg?.version, '0.20.1');
+    assert.match(res.pkg.tarballUrl, /esbuild-wasm-0\.20\.1\.tgz$/, 'the tarball is the swap target\'s');
+    assert.deepEqual(res.events.filter((e) => e.type === 'swap'), [{ type: 'swap', from: 'esbuild', to: 'esbuild-wasm', ctx: 'transitive' }]);
+  }
+  assert.deepEqual(asked, ['esbuild-wasm', 'esbuild-wasm'], 'the native packument is never fetched');
+  console.log('  explicit alias to the native package → its target is swapped, the alias name is kept');
+}
+
+// A reject advisory follows the same identity: an alias of a listed
+// package is that package.
+{
+  const { env } = registry({ ...REGISTRY, sharp: packument('sharp', { '0.34.0': {} }) });
+  const res = await resolveOnePackumentInFacet(spec({ name: 'img', range: 'npm:sharp@^0.34.0' }), env);
+  assert.equal(res.pkg?.name, 'img');
+  assert.equal(res.pkg?.version, '0.34.0');
+  const advisories = res.events.filter((e) => e.type === 'advisory');
+  assert.equal(advisories.length, 1, `one advisory (events=${JSON.stringify(res.events)})`);
+  assert.equal(advisories[0].from, 'sharp', 'the advisory names the registry package');
+  console.log('  explicit alias to a listed package → the advisory follows the registry identity');
 }
 
 // ── Warm cache: the entry the first install wrote answers the second ─────

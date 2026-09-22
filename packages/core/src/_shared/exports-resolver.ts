@@ -235,8 +235,8 @@ export function packageSelfReferenceSubpath(
   if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
   if (pkg.exports === undefined || pkg.exports === null) return null;
   if (specifier === pkg.name) return '.';
-  if (!specifier.startsWith(pkg.name + '/')) return null;
-  return '.' + specifier.slice(pkg.name.length);
+  if (!specifier.startsWith(`${pkg.name}/`)) return null;
+  return `.${specifier.slice(pkg.name.length)}`;
 }
 
 // ─── JS-source emission for embedding into facet preambles ───────────────

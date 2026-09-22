@@ -8096,16 +8096,20 @@ function __resolveNodeModule(name, fromDir) {
 }
 
 /**
- * Node's "package scope" of a directory: the nearest enclosing package.json,
- * walking up from fromDir. The FIRST package.json found is the scope, even
- * when it lacks the field the caller wants — the imports field and the
- * self-reference rule both belong to the importing module's own package,
- * never to an ancestor past it. Returns { dir, pkg } (pkg null when the
- * file is unparseable) or null when no package.json encloses fromDir.
+ * Node's "package scope" of a directory (readPackageScope): the nearest
+ * enclosing package.json, walking up from fromDir. The FIRST package.json
+ * found is the scope, even when it lacks the field the caller wants — the
+ * imports field and the self-reference rule both belong to the importing
+ * module's own package, never to an ancestor past it. The walk never
+ * crosses a node_modules directory: a file that sits directly under one
+ * belongs to no package, not to the project above it. Returns { dir, pkg }
+ * (pkg null when the file is unparseable) or null when no package.json
+ * encloses fromDir.
  */
 function __nearestPackageScope(fromDir) {
   let dir = (fromDir || "").replace(/^\\/+/, "");
   while (true) {
+    if (dir === "node_modules" || dir.endsWith("/node_modules")) return null;
     const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
     if (__fileExists(pkgJsonPath)) {
       return { dir, pkg: __readPkgJson(dir) };
@@ -8152,6 +8156,12 @@ function __resolveImportsField(name, fromDir) {
  * require: the runtime's CJS set first, the ESM set when the map exposes
  * the subpath only under \`import\` (dynamic import() is lowered onto this
  * require chain, see __resolvePkgSubpath).
+ *
+ * Tri-state, as in Node: null when the rule does not apply (the caller
+ * walks node_modules); { resolved: null } when the enclosing package claims
+ * the name but its map does not expose the subpath or the target is
+ * missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
+ * there and never consults node_modules, so neither does the caller.
  */
 function __resolvePackageSelf(name, fromDir) {
   const scope = __nearestPackageScope(fromDir);
@@ -8160,8 +8170,8 @@ function __resolvePackageSelf(name, fromDir) {
   if (subpath === null) return null;
   let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
   if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
-  if (entry == null) return null;
-  return __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, ""));
+  if (entry == null) return { resolved: null };
+  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, "")) };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -8381,8 +8391,11 @@ function __resolveFrom(id, fromDir) {
   }
   // Bare specifier: the enclosing package's own name resolves through its
   // exports map (Node's LOAD_PACKAGE_SELF), then node_modules resolution.
+  // Once the enclosing package claims the name, its map is the whole
+  // answer: a subpath it does not expose is not found, never a
+  // node_modules copy's.
   const self = __resolvePackageSelf(id, fromDir);
-  if (self) return self;
+  if (self) return self.resolved;
   return __resolveNodeModule(id, fromDir);
 }
 

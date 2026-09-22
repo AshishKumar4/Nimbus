@@ -482,21 +482,25 @@ async function resolveRequireEx(vfs: CredentialedVfs, id: string, fromDir: strin
     return r ? { resolved: r } : null;
   }
   // The enclosing package's own name resolves through its exports map
-  // (Node's LOAD_PACKAGE_SELF), before the node_modules walk. Mirrors
-  // node-shims.ts:__resolvePackageSelf.
+  // (Node's LOAD_PACKAGE_SELF), before the node_modules walk. Once the
+  // enclosing package claims the name, its map is the whole answer: a
+  // subpath it does not expose is not found, never a node_modules copy's.
+  // Mirrors node-shims.ts:__resolvePackageSelf.
   const self = await resolvePackageSelf(vfs, id, fromDir, sink);
-  if (self) return { resolved: self };
+  if (self) return self.resolved ? { resolved: self.resolved } : null;
   return (await resolveNodeModuleEx(vfs, id, fromDir, sink));
 }
 
 /**
- * Node's "package scope" of a directory: the nearest enclosing package.json
- * walking up from `fromDir`. The FIRST one found is the scope, even when it
- * lacks the field the caller wants — the imports field and the
- * self-reference rule both belong to the importing module's own package,
- * never to an ancestor past it. Mirrors node-shims.ts:__nearestPackageScope.
- * The package.json is recorded with `sink` so the runtime can repeat the
- * same lookup from the bundle.
+ * Node's "package scope" of a directory (`readPackageScope`): the nearest
+ * enclosing package.json walking up from `fromDir`. The FIRST one found is
+ * the scope, even when it lacks the field the caller wants — the imports
+ * field and the self-reference rule both belong to the importing module's
+ * own package, never to an ancestor past it. The walk never crosses a
+ * `node_modules` directory: a file that sits directly under one belongs to
+ * no package, not to the project above it. Mirrors
+ * node-shims.ts:__nearestPackageScope. The package.json is recorded with
+ * `sink` so the runtime can repeat the same lookup from the bundle.
  */
 async function nearestPackageScope(
   vfs: CredentialedVfs,
@@ -505,6 +509,7 @@ async function nearestPackageScope(
 ): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
   let dir = strip(fromDir);
   while (true) {
+    if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
     if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
       sink?.(pkgJsonPath);
@@ -555,21 +560,28 @@ async function resolveImportsField(
  * through `exports` (no main/index probing). Same condition order as the
  * node_modules walk: CJS first, ESM when the map exposes the subpath only
  * under `import`. Mirrors node-shims.ts:__resolvePackageSelf.
+ *
+ * Tri-state, as in Node: `null` when the rule does not apply (the caller
+ * walks node_modules); `{ resolved: null }` when the enclosing package
+ * claims the name but its map does not expose the subpath or the target
+ * is missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
+ * there and never consults node_modules, so neither does the caller.
  */
 async function resolvePackageSelf(
   vfs: CredentialedVfs,
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
-): Promise<string | null> {
+): Promise<{ resolved: string | null } | null> {
   const scope = await nearestPackageScope(vfs, fromDir, sink);
   if (!scope || !scope.pkg) return null;
   const subpath = packageSelfReferenceSubpath(scope.pkg, name);
   if (subpath === null) return null;
   let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
   if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
-  if (entry == null) return null;
-  return (await resolveFile(vfs, normalizePath((scope.dir ? scope.dir + '/' : '') + entry.replace(/^\.\//, '')), sink));
+  if (entry == null) return { resolved: null };
+  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink);
+  return { resolved };
 }
 
 /**
