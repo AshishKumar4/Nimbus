@@ -42,6 +42,7 @@
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
+import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
@@ -63,6 +64,9 @@ const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
 const EXPORTS_RESOLVER_JS = getExportsResolverJS();
 const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
+// One module-cell compile for every facet (core/_shared/compiled-fn.ts).
+// Interpolated into the emitted shim below as ${COMPILED_FN_JS}.
+const COMPILED_FN_JS = MK_COMPILED_FN_SOURCE;
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
 // constants.ts for the rationale (create-astro preflight, etc.).
@@ -5243,11 +5247,31 @@ const __utilMod = {
 // (set+restored by __loadModule per call). When set, the fallback becomes
 // "file:///" + __currentModulePath so relative URLs resolve against
 // the real on-VFS module location — restoring proper import.meta.url
+//
+// The leniency is scoped to calls that PASSED a base. \`new URL(x)\` with one
+// argument is Node's strict absolute-URL parse: it throws
+// TypeError [ERR_INVALID_URL] for anything that is not already a URL, and
+// that throw is load-bearing rather than incidental. Node's own ESM
+// resolver — and every vendored copy of it, including exsolve, which is what
+// \`nuxt dev\` resolves \`@nuxt/kit\` and \`nuxt\` with — spells the
+// bare-specifier test as
+//     try { resolved = new URL(specifier); } catch { packageResolve(…); }
+// Swallowing the throw made \`new URL("@nuxt/kit")\` answer
+// file:///@nuxt/kit, so moduleResolve never reached packageResolve and
+// finalizeResolution stat'd /@nuxt/kit — the FILESYSTEM ROOT — instead of
+// walking <from>/node_modules. Two syscalls and every bare import in the
+// project was unresolvable. The bundler breakage this wrapper exists for
+// (\`new URL(rel, import.meta.url)\` where the rolldown/esbuild polyfill
+// reduced import.meta.url to null/undefined) is always a two-argument call,
+// so requiring the base argument keeps that fix and restores Node's
+// contract for the one-argument form. URL.canParse, which is bound
+// straight off the native constructor below, already answered false for
+// these strings; the constructor now agrees with it.
 (() => {
   const _Orig = globalThis.URL;
   class _Shim extends _Orig {
     constructor(input, base) {
-      if (base == null && typeof input === "string") {
+      if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
         catch {
           // X.5-M3: prefer current module path when known, so
@@ -8234,36 +8258,13 @@ function __resolveImportsField(name, fromDir) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  X.5-S: __mkCompiledFn — conditional-param-rename wrap for new Function
+// ──  __mkCompiledFn — the request-time fallback compile ──────────────
 // ═══════════════════════════════════════════════════════════════════════
-//
-// vite's chunks/node.js (transitive bundle of open@10.2.0) contains the
-// ESM idiom \`const __dirname = path.dirname(fileURLToPath(import.meta.url))\`.
-// W3.5 Fix B's esbuild ESM→CJS transform preserves that line verbatim
-// while substituting \`import.meta\` with \`const import_meta = {}\`. Wrapping
-// the body in \`new Function("exports","require","module","__filename","__dirname", code)\`
-// then collides at parse time:
-//
-//     SyntaxError: Identifier '__dirname' has already been declared
-//
-// (VERIFY-23417C5 §4 #1 / X5M3-retro §"Next bucket".) The helper RENAMES
-// the conflicting param to a placeholder name so the body's own
-// \`const __dirname\` becomes the single declarer. We rename rather than
-// drop because callers pass 5 positional arguments and dropping a slot
-// would mis-align downstream slots (e.g. the USER_CODE wrap appends
-// \`console\` / \`process\` / etc. after \`__dirname\`). Renaming preserves
-// slot alignment while letting the body's binding win.
-//
-// Symmetric for \`__filename\` because open@10's idiom often emits both.
-function __mkCompiledFn(code) {
-  const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
-  const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
-  const reRequire = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+require\\s*=/m;
-  const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
-  const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
-  const requireName = reRequire.test(code) ? "require__nimbus_unused" : "require";
-  return new Function("exports", requireName, "module", fnName, dnName, code);
-}
+// One definition, from core/_shared/compiled-fn.ts (interpolated above as
+// MK_COMPILED_FN_SOURCE); here it serves a cell the startup precompile set
+// did not include, where the runtime permits it. See that file for why the
+// collision is detected by compiling rather than by scanning the source.
+${COMPILED_FN_JS}
 
 function __exportsTarget(mod) {
   const value = mod.exports;
@@ -8419,6 +8420,25 @@ function __loadModule(resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir) {
+  // An absolute file: URL is a specifier Node accepts: \`import(href)\` is the
+  // portable way to load a path a resolver just handed back, and it is what
+  // every package that resolves before it imports emits — @nuxt/cli's
+  // loadKit does \`import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)\`.
+  // The ESM→CJS transform funnels those imports through this one resolver, so
+  // the scheme has to come off before the specifier is classified: with it on,
+  // the file: URL misses the absolute-path branch below and gets looked up as
+  // if it were the name of a package.
+  if (typeof id === "string" && id.startsWith("file:")) {
+    let filePath;
+    try {
+      const u = new URL(id);
+      // .pathname drops the query a cache-busting importer appends
+      // (\`import(href + "?t=" + Date.now())\` is the standard HMR spelling),
+      // and the decode is what node:url's fileURLToPath does with it.
+      filePath = decodeURIComponent(u.pathname);
+    } catch { filePath = id.replace(/^file:\\/\\//, ""); }
+    id = filePath;
+  }
   // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
   // Pre-fix they slipped past the startsWith("./")/("../") guards (which
   // require >= 3 / >= 4 chars respectively) and fell into the bare-spec
