@@ -210,8 +210,10 @@ export const FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
  * generated text into `startArgs` would make every image per-PROGRAM and
  * shareable across spawns and sessions; the sweep bounds the store either way.
  */
-export async function facetImageDigest(source: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+export async function facetImageDigest(image: string | Uint8Array): Promise<string> {
+  // An image is its UTF-8 bytes; a caller holding them is not made to encode a second copy.
+  const bytes = typeof image === 'string' ? new TextEncoder().encode(image) : image;
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -303,15 +305,16 @@ async function readFacetImage(disk: ResidentDiskReader, path: string): Promise<s
   if (!expected) {
     throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
   }
-  const source = new TextDecoder().decode(await disk.readFile(path));
-  const actual = await facetImageDigest(source);
+  // Verified from the bytes read, and decoded only after: re-encoding the decoded string held a third copy of the largest member.
+  const bytes = await disk.readFile(path);
+  const actual = await facetImageDigest(bytes);
   if (actual !== expected) {
     throw new Error(
       `Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
         + 'the image store is corrupt and the process cannot boot from it',
     );
   }
-  return source;
+  return new TextDecoder().decode(bytes);
 }
 
 // ── The hosting substrate ───────────────────────────────────────────────────

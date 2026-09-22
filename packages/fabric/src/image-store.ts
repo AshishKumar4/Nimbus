@@ -138,12 +138,12 @@ export class ImageStore {
     fs.mkdirp(FACET_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      const path = facetImagePath(await facetImageDigest(source));
+      const bytes = new TextEncoder().encode(source);
+      const path = facetImagePath(await facetImageDigest(bytes));
       paths[moduleName] = path;
       rooted.push(path);
       count++;
       const stored = path.replace(/^\/+/, '');
-      const bytes = new TextEncoder().encode(source);
       console.log(
         '[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
         + path.slice(-12) + ' ' + bytes.byteLength + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES

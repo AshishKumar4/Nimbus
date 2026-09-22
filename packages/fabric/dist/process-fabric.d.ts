@@ -178,7 +178,7 @@ export declare const FACET_IMAGE_DIR = "var/lib/nimbus/facet-images";
  * generated text into `startArgs` would make every image per-PROGRAM and
  * shareable across spawns and sessions; the sweep bounds the store either way.
  */
-export declare function facetImageDigest(source: string): Promise<string>;
+export declare function facetImageDigest(image: string | Uint8Array): Promise<string>;
 export declare function facetImagePath(digest: string): string;
 /**
  * The digest an image path claims, for the reader's verify-on-read. Content
