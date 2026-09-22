@@ -96,4 +96,31 @@ export declare const SUPERVISOR_READ_RESERVE_BYTES: number;
 export declare const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES: number;
 export declare const PRE_BUNDLE_SLICE_CAP_BYTES: number;
 export declare const PRE_BUNDLE_CONCURRENCY = 1;
+/**
+ * Bytes ONE member of a resident process's generated module map may carry.
+ *
+ * Distinct from the loader's per-member platform ceiling, and much smaller,
+ * because the two bound different things. The platform ceiling asks what
+ * workerd will accept. This asks what the SUPERVISOR can hold while handing
+ * it over: every member is read back off the image store into the
+ * coordinator's own 128 MiB isolate at boot (`residentLoaderConfig`), so the
+ * map's total is resident by necessity and the LARGEST member is paid for a
+ * second time on top of it, as the bytes read and the string decoded from
+ * them.
+ *
+ * Sizing the split by the platform ceiling instead is what reset the object
+ * on `astro dev`: the closure packed one member at 22,673,358 bytes, whose
+ * read-back cost ~68 MB beside the ~25 MB map it belonged to, and the alarm
+ * turn that finished materializing the images died with "Durable Object's
+ * isolate exceeded its memory limit and was reset" (measured 2026-09-21 on
+ * nimbus-probe-staging). `nuxt dev` and the opencode TUI reached the same
+ * wall from the inline side, as a single ~13.4 MB `worker.js`.
+ *
+ * 4 MiB keeps that second copy a small fraction of the map rather than a
+ * multiple of it: a bundle at VFS_BUNDLE_MAX_BYTES becomes ~6 members, which
+ * is a handful more images and no additional turns — the write path already
+ * paces by bytes, not by member — for a read-back peak of the map plus 4 MiB
+ * instead of the map plus twice its largest member.
+ */
+export declare const FACET_MODULE_MEMBER_MAX_BYTES: number;
 //# sourceMappingURL=limits.d.ts.map

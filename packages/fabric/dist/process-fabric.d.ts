@@ -179,6 +179,19 @@ export declare const FACET_IMAGE_DIR = "var/lib/nimbus/facet-images";
  * shareable across spawns and sessions; the sweep bounds the store either way.
  */
 export declare function facetImageDigest(source: string): Promise<string>;
+/**
+ * The same name, taken from the bytes directly.
+ *
+ * An image IS its UTF-8 bytes — that is what the store writes and what the
+ * reader gets back — so both ends of the protocol have them in hand and
+ * neither needs to make a second copy to learn the name. Going through the
+ * string form instead cost a full extra copy of the largest member at each
+ * end: `materialize` encoded the source once to name it and again to write
+ * it, and the reader encoded the string it had just decoded, on the
+ * coordinator's 128 MiB isolate at the exact moment the whole module map was
+ * already resident.
+ */
+export declare function facetImageBytesDigest(bytes: Uint8Array): Promise<string>;
 export declare function facetImagePath(digest: string): string;
 /**
  * The digest an image path claims, for the reader's verify-on-read. Content

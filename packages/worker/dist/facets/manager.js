@@ -50,7 +50,7 @@ import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { FACET_MODULE_MEMBER_MAX_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
@@ -1369,6 +1369,17 @@ function _serializeBundleForFacet(bundle) {
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
 /**
+ * Encoded bytes one generated VFS bundle member may carry — the bound the
+ * partition actually packs to, and the threshold below which a bundle stays
+ * inline in the main module.
+ *
+ * The smaller of what the supervisor can afford to hold a second copy of
+ * while it hands the map over ({@link FACET_MODULE_MEMBER_MAX_BYTES}) and
+ * what the loader will accept per member ({@link BUNDLE_MAX_ENCODED_BYTES}),
+ * less the margin the module envelope needs.
+ */
+export const FACET_VFS_MODULE_MAX_SOURCE_BYTES = Math.min(BUNDLE_MAX_ENCODED_BYTES, FACET_MODULE_MEMBER_MAX_BYTES) - FACET_VFS_MODULE_SOURCE_MARGIN;
+/**
  * UTF-8 byte length of a generated module source, counted rather than
  * materialized.
  *
@@ -1466,23 +1477,35 @@ function _inlineBundleSourceBytes(bundle) {
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
- * modules below the existing per-module encoded ceiling and merged during
+ * modules below {@link FACET_MODULE_MEMBER_MAX_BYTES} and merged during
  * module evaluation. A single oversized cell is split into ordered fragments;
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
+ *
+ * The partition is bounded by what the SUPERVISOR can hold, not by what the
+ * loader will accept. Every member is read back into the coordinator's own
+ * isolate to build the module map, so a member's size is paid twice at boot
+ * — once as bytes, once as the string decoded from them — on top of the whole
+ * map, which is resident either way. Bounding by the loader's per-member
+ * ceiling let one member reach 22.67 MB on `astro dev` and reset the object;
+ * the ceiling still holds as the platform assertion below, it is simply not
+ * the bound that keeps the launch inside its isolate.
  */
 export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer) {
+    const maxModuleBytes = FACET_VFS_MODULE_MAX_SOURCE_BYTES;
     // Size the inline form before building it. A bundle that will be split has
     // no use for the whole-bundle expression, and building one to read its
     // length off cost a second full copy of the largest string this DO makes.
-    if (!forceSideModules
-        && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES) {
+    //
+    // The inline form is a member too — it rides inside `worker.js` — so it
+    // answers to the same bound. `nuxt dev` and the opencode TUI reached the
+    // memory wall from exactly here, as one ~13.4 MB main module.
+    if (!forceSideModules && _inlineBundleSourceBytes(bundle) <= maxModuleBytes) {
         return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
     }
     if (Object.keys(bundle).length === 0) {
         return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
     }
-    const maxModuleBytes = BUNDLE_MAX_ENCODED_BYTES - FACET_VFS_MODULE_SOURCE_MARGIN;
     function sourceBytes(path, cell) {
         return _FACET_MODULE_ENVELOPE_BYTES + _facetBundleCellBytes(path, cell);
     }
@@ -1551,7 +1574,10 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
         const alias = `__nimbusVfsBundle${index}`;
         const source = _facetBundleModuleSource(chunks[index]);
-        if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
+        // The packer's own bound, asserted on what it actually produced: the
+        // counter it packs by is exact, so a member over this is a packing bug,
+        // and an unbounded member is what the supervisor pays for twice at boot.
+        if (_encodedSourceBytes(source) > maxModuleBytes) {
             throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
         }
         modules[moduleName] = source;
@@ -2678,6 +2704,31 @@ const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
     '.webm',
 ];
 /**
+ * Whether the facet's require path could ever load this cell AS A MODULE.
+ *
+ * Not a judgement about whether the file is useful — an evicted cell is a
+ * real loss either way, since the synchronous read it exists for raises
+ * EAGAIN. It is a judgement about what the loss can BREAK. A cell the loader
+ * can resolve is one some other module may be importing, and losing it takes
+ * every importer down with it; a cell it can never resolve is only ever read
+ * as data, by whoever asked for that path specifically.
+ *
+ * Declaration files are the clean case, and the reason this is a suffix test
+ * rather than a content one: `foo.d.ts` is consumed by a type checker and is
+ * never the target of a `require`, so shedding one cannot orphan a module.
+ * That does not contradict the list above keeping them admissible — a `.d.ts`
+ * IS a legitimate runtime read for the one package that reads its own (tsc
+ * and `lib.*.d.ts`). This decides only what goes FIRST once a bound has
+ * already been breached and something has to.
+ */
+function _isLoadableModuleCell(path) {
+    if (isTypescriptDeclarationFile(path))
+        return false;
+    const ext = vfsPathExtension(path);
+    return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
+        || ext === '.wasm' || ext === '' || bundleTypescriptLoader(path) !== null;
+}
+/**
  * Per-file ceiling for the speculative passes over installed packages: the
  * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
  * (`greedyAddMainEntries`).
@@ -3438,9 +3489,28 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     const size = encodedBundleSize(bundle, manifest);
     if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
         // A compiled cell goes with its source: required when the source is.
+        //
+        // Order matters as much as the bound. Largest-first alone ranks a cell by
+        // what it costs and never by what losing it costs: an admitted module and
+        // the sibling it imports are both "optional", and shedding the sibling
+        // leaves a module in the bundle that cannot load. On `astro dev` the
+        // snapshot breached its bound by 591 files, and among the largest were
+        // modules while 3,291 declaration files (never a require target) stayed.
+        //
+        // So spend the cells the require path can never load first, whatever
+        // their size, and only then the ones it can. This widens the module
+        // budget; it does not decide admission. A chunk the oversample never
+        // admitted (astro's `rolldown/dist/shared/*` behind a static import of an
+        // admitted module) is missing either way, and that is the walker's rule
+        // to close.
         const evictable = Object.keys(bundle)
             .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
-            .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
+            .sort((a, b) => {
+            const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
+            if (loadable !== 0)
+                return loadable;
+            return _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]);
+        });
         const evicted = [];
         for (const k of evictable) {
             if (size.bytes <= BUNDLE_MAX_ENCODED_BYTES)

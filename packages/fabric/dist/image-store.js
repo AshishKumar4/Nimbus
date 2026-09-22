@@ -17,7 +17,7 @@
  * credentials.
  */
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
+import { FACET_IMAGE_DIR, facetImageBytesDigest, facetImagePath } from './process-fabric.js';
 /**
  * Bytes of an image written in one storage transaction.
  *
@@ -111,12 +111,16 @@ export class ImageStore {
         fs.mkdirp(FACET_IMAGE_DIR);
         let count = 0;
         for await (const [moduleName, source] of images) {
-            const path = facetImagePath(await facetImageDigest(source));
+            // Encoded once and named from those bytes. Naming through the string
+            // form encoded it a second time and threw that copy away, which for
+            // a launch's largest member is a full extra copy of it on the
+            // coordinator's isolate for no other purpose than the digest.
+            const bytes = new TextEncoder().encode(source);
+            const path = facetImagePath(await facetImageBytesDigest(bytes));
             paths[moduleName] = path;
             rooted.push(path);
             count++;
             const stored = path.replace(/^\/+/, '');
-            const bytes = new TextEncoder().encode(source);
             console.log('[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
                 + path.slice(-12) + ' ' + bytes.byteLength + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
                 + ' turns=' + pacer.chunks);

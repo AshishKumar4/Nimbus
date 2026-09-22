@@ -180,7 +180,22 @@ export const FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
  * shareable across spawns and sessions; the sweep bounds the store either way.
  */
 export async function facetImageDigest(source) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+    return await facetImageBytesDigest(new TextEncoder().encode(source));
+}
+/**
+ * The same name, taken from the bytes directly.
+ *
+ * An image IS its UTF-8 bytes — that is what the store writes and what the
+ * reader gets back — so both ends of the protocol have them in hand and
+ * neither needs to make a second copy to learn the name. Going through the
+ * string form instead cost a full extra copy of the largest member at each
+ * end: `materialize` encoded the source once to name it and again to write
+ * it, and the reader encoded the string it had just decoded, on the
+ * coordinator's 128 MiB isolate at the exact moment the whole module map was
+ * already resident.
+ */
+export async function facetImageBytesDigest(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 export function facetImagePath(digest) {
@@ -240,8 +255,13 @@ async function readFacetImage(disk, path) {
     if (!expected) {
         throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
     }
-    const source = new TextDecoder().decode(await disk.readFile(path));
-    const actual = await facetImageDigest(source);
+    const bytes = await disk.readFile(path);
+    // Verified against the bytes that were read, not against a re-encoding of
+    // the string decoded from them. The two agree — the store writes exactly
+    // this encoding — but only one of them holds a third copy of the member
+    // while the rest of the map is already resident here.
+    const actual = await facetImageBytesDigest(bytes);
+    const source = new TextDecoder().decode(bytes);
     if (actual !== expected) {
         throw new Error(`Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
             + 'the image store is corrupt and the process cannot boot from it');
