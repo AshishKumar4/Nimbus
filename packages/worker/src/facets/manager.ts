@@ -115,10 +115,7 @@ import {
   PREFETCH_CACHE_MAX_BYTES,
   ESM_TRANSFORM_CACHE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
-import {
-  FACET_MODULE_MEMBER_MAX_BYTES,
-  MAX_RPC_SAFE_PAYLOAD_BYTES,
-} from '@nimbus-sh/platform/limits.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
@@ -1712,19 +1709,6 @@ const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
 
 /**
- * Encoded bytes one generated VFS bundle member may carry — the bound the
- * partition actually packs to, and the threshold below which a bundle stays
- * inline in the main module.
- *
- * The smaller of what the supervisor can afford to hold a second copy of
- * while it hands the map over ({@link FACET_MODULE_MEMBER_MAX_BYTES}) and
- * what the loader will accept per member ({@link BUNDLE_MAX_ENCODED_BYTES}),
- * less the margin the module envelope needs.
- */
-export const FACET_VFS_MODULE_MAX_SOURCE_BYTES =
-  Math.min(BUNDLE_MAX_ENCODED_BYTES, FACET_MODULE_MEMBER_MAX_BYTES) - FACET_VFS_MODULE_SOURCE_MARGIN;
-
-/**
  * UTF-8 byte length of a generated module source, counted rather than
  * materialized.
  *
@@ -1812,40 +1796,30 @@ function _inlineBundleSourceBytes(bundle: FacetVfsBundle): number {
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
- * modules below {@link FACET_MODULE_MEMBER_MAX_BYTES} and merged during
+ * modules below the existing per-module encoded ceiling and merged during
  * module evaluation. A single oversized cell is split into ordered fragments;
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
- *
- * The partition is bounded by what the SUPERVISOR can hold, not by what the
- * loader will accept. Every member is read back into the coordinator's own
- * isolate to build the module map, so a member's size is paid twice at boot
- * — once as bytes, once as the string decoded from them — on top of the whole
- * map, which is resident either way. Bounding by the loader's per-member
- * ceiling let one member reach 22.67 MB on `astro dev` and reset the object;
- * the ceiling still holds as the platform assertion below, it is simply not
- * the bound that keeps the launch inside its isolate.
  */
 export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
   pacer?: TurnBudget,
 ): Promise<FacetVfsBundleSource> {
-  const maxModuleBytes = FACET_VFS_MODULE_MAX_SOURCE_BYTES;
   // Size the inline form before building it. A bundle that will be split has
   // no use for the whole-bundle expression, and building one to read its
   // length off cost a second full copy of the largest string this DO makes.
-  //
-  // The inline form is a member too — it rides inside `worker.js` — so it
-  // answers to the same bound. `nuxt dev` and the opencode TUI reached the
-  // memory wall from exactly here, as one ~13.4 MB main module.
-  if (!forceSideModules && _inlineBundleSourceBytes(bundle) <= maxModuleBytes) {
+  if (
+    !forceSideModules
+    && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES
+  ) {
     return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
   if (Object.keys(bundle).length === 0) {
     return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
 
+  const maxModuleBytes = BUNDLE_MAX_ENCODED_BYTES - FACET_VFS_MODULE_SOURCE_MARGIN;
   type BundlePiece = [path: string, cell: FacetVfsBundle[string]];
 
   function sourceBytes(path: string, cell: FacetVfsBundle[string]): number {
@@ -1921,10 +1895,7 @@ export async function buildFacetVfsBundleSource(
     const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
     const alias = `__nimbusVfsBundle${index}`;
     const source = _facetBundleModuleSource(chunks[index]);
-    // The packer's own bound, asserted on what it actually produced: the
-    // counter it packs by is exact, so a member over this is a packing bug,
-    // and an unbounded member is what the supervisor pays for twice at boot.
-    if (_encodedSourceBytes(source) > maxModuleBytes) {
+    if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
       throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
     }
     modules[moduleName] = source;
