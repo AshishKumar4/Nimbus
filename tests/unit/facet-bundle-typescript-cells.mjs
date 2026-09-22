@@ -28,7 +28,6 @@
 import assert from 'node:assert/strict';
 import {
   BUNDLE_PRECOMPILE_LOOP,
-  FACET_COMPILE_HELPER,
   buildPrefetchBundle,
   bundleTypescriptLoader,
   compiledCellKey,
@@ -38,6 +37,7 @@ import {
   isBundleModuleCandidate,
   isTypescriptDeclarationFile,
 } from '../../packages/worker/src/facets/manager.ts';
+import { MK_COMPILED_FN_SOURCE } from '../../packages/core/src/_shared/compiled-fn.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -188,7 +188,7 @@ const oneShot = (await generateEntrypointCode('', state, false, SHIMS)).code;
 const resident = (await generateLongRunningNodeCode('', state, { cred: CRED }, false, SHIMS)).code;
 for (const [label, source] of [['one-shot node facet', oneShot], ['long-running node facet', resident]]) {
   assert.ok(source.includes(BUNDLE_PRECOMPILE_LOOP.trim()), `${label}: splices the shared pre-compile loop`);
-  assert.ok(source.includes(FACET_COMPILE_HELPER.trim()), `${label}: splices the shared compile helper`);
+  assert.ok(source.includes(MK_COMPILED_FN_SOURCE.trim()), `${label}: splices the shared compile helper`);
   assert.equal(source.split('function __mkCompiledFn(').length, 2, `${label}: defines the helper once`);
 }
 
@@ -204,7 +204,7 @@ const facetBundle = {
 };
 const __compiledModules = new Map();
 const __compileFailures = new Map();
-const __mkCompiledFn = new Function(`${FACET_COMPILE_HELPER}; return __mkCompiledFn;`)();
+const __mkCompiledFn = new Function(`${MK_COMPILED_FN_SOURCE}; return __mkCompiledFn;`)();
 new Function('__MODULE_VFS_BUNDLE', '__compiledModules', '__compileFailures', '__mkCompiledFn', BUNDLE_PRECOMPILE_LOOP)(
   facetBundle, __compiledModules, __compileFailures, __mkCompiledFn,
 );

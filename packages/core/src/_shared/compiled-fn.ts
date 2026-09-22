@@ -16,8 +16,11 @@
  * declared, so every transformed import's `require(...)` was undefined.
  * Only the parser knows what a module declares.
  *
- * One definition, embedded by every facet generator and the node shims'
- * request-time fallback, so the three sites cannot drift.
+ * One definition, embedded by both facet generators (facets/manager.ts) and
+ * the node shims' request-time fallback, so the three sites cannot drift.
+ * They did: the long-running facet's copy once lacked the shebang strip,
+ * and a required module that kept its shebang (pi 0.87.0's cli-runtime.js)
+ * compiled in a short command and failed in the attached process.
  */
 
 export const MK_COMPILED_FN_SOURCE = `

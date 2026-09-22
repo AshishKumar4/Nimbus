@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
@@ -384,7 +385,7 @@ ${facetWasmImportsSource(wasmImports)}
 const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
-${FACET_COMPILE_HELPER}
+${MK_COMPILED_FN_SOURCE}
 
 let __compiledFn = null;
 let __entryCompileFailure = null;
@@ -681,7 +682,7 @@ const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
 
-${FACET_COMPILE_HELPER}
+${MK_COMPILED_FN_SOURCE}
 
 let __compiledFn = null;
 let __entryCompileFailure = null;
@@ -3135,35 +3136,6 @@ export function compiledCellKey(path) {
 export function compiledCellPath(key) {
     return key.startsWith(COMPILED_CELL_KEY_PREFIX) ? key.slice(COMPILED_CELL_KEY_PREFIX.length) : null;
 }
-/**
- * The compile helper both generated facets define: one CommonJS cell to one
- * function, at module evaluation, the only moment workerd lets a string
- * become code. One definition so the two facets cannot drift on what a cell
- * may contain — the long-running facet once lacked the shebang strip, and a
- * required module that carried one compiled in a short command and failed
- * in the same tool's attached process.
- */
-export const FACET_COMPILE_HELPER = `
-function __mkCompiledFn(code) {
-  // Node strips a leading shebang from every module before evaluation, not
-  // only the entry: a required module bundled with its "#!/usr/bin/env node"
-  // line is a SyntaxError under new Function.
-  if (typeof code === "string" && code.charCodeAt(0) === 35 && code.charCodeAt(1) === 33) {
-    const __nl = code.indexOf("\\n");
-    code = __nl >= 0 ? code.slice(__nl + 1) : "";
-  }
-  function renameIfDeclared(name) {
-    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "(?![$\\\\w])", "m");
-    return re.test(code) ? name + "__nimbus_unused" : name;
-  }
-  const baseParams = [
-    "exports", renameIfDeclared("require"), "module",
-    renameIfDeclared("__filename"),
-    renameIfDeclared("__dirname"),
-  ];
-  return new Function(...baseParams, code);
-}
-`;
 /**
  * The pre-compile loop both generated facets run at module evaluation, the
  * only moment workerd lets a string become code. One definition so the two

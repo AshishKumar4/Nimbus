@@ -619,15 +619,6 @@ export declare function compiledCellKey(path: string): string;
 /** The source path a compiled-cell key stands for, or null for a plain path. */
 export declare function compiledCellPath(key: string): string | null;
 /**
- * The compile helper both generated facets define: one CommonJS cell to one
- * function, at module evaluation, the only moment workerd lets a string
- * become code. One definition so the two facets cannot drift on what a cell
- * may contain — the long-running facet once lacked the shebang strip, and a
- * required module that carried one compiled in a short command and failed
- * in the same tool's attached process.
- */
-export declare const FACET_COMPILE_HELPER = "\nfunction __mkCompiledFn(code) {\n  // Node strips a leading shebang from every module before evaluation, not\n  // only the entry: a required module bundled with its \"#!/usr/bin/env node\"\n  // line is a SyntaxError under new Function.\n  if (typeof code === \"string\" && code.charCodeAt(0) === 35 && code.charCodeAt(1) === 33) {\n    const __nl = code.indexOf(\"\\n\");\n    code = __nl >= 0 ? code.slice(__nl + 1) : \"\";\n  }\n  function renameIfDeclared(name) {\n    const re = new RegExp(\"(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+\" + name + \"(?![$\\\\w])\", \"m\");\n    return re.test(code) ? name + \"__nimbus_unused\" : name;\n  }\n  const baseParams = [\n    \"exports\", renameIfDeclared(\"require\"), \"module\",\n    renameIfDeclared(\"__filename\"),\n    renameIfDeclared(\"__dirname\"),\n  ];\n  return new Function(...baseParams, code);\n}\n";
-/**
  * The pre-compile loop both generated facets run at module evaluation, the
  * only moment workerd lets a string become code. One definition so the two
  * facets cannot drift on what they compile: every JavaScript-shaped cell
