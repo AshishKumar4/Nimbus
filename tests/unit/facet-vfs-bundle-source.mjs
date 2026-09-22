@@ -3,16 +3,9 @@
 import assert from 'node:assert/strict';
 
 import {
-  buildFacetVfsBundleSource,
-  FACET_VFS_MODULE_MAX_SOURCE_BYTES,
-} from '../../packages/worker/src/facets/manager.ts';
-
-// The bound the partition packs to and the threshold a bundle stays inline
-// below. It is the SUPERVISOR's bound, not the loader's per-member ceiling:
-// every member is read back into the coordinator's own isolate to build the
-// map, so the largest one is paid for a second time on top of a map that is
-// already resident. See tests/unit/facet-image-member-bound.mjs.
-const CEILING = FACET_VFS_MODULE_MAX_SOURCE_BYTES;
+  BUNDLE_MAX_ENCODED_BYTES,
+} from '../../packages/core/src/constants.ts';
+import { buildFacetVfsBundleSource } from '../../packages/worker/src/facets/manager.ts';
 
 function evaluateModule(source) {
   const prefix = 'export default ';
@@ -42,7 +35,7 @@ assert.ok(
 );
 for (const [name, moduleSource] of Object.entries(source.modules)) {
   assert.ok(
-    new TextEncoder().encode(moduleSource).length <= CEILING,
+    new TextEncoder().encode(moduleSource).length <= BUNDLE_MAX_ENCODED_BYTES,
     `${name} stays within the encoded per-module ceiling`,
   );
 }
@@ -77,7 +70,7 @@ for (const [label, char, bytesPerChar] of [
   // Eight bytes under the ceiling: an inline verdict here is only correct if
   // the counter is right to within those eight bytes.
   const justUnder = char.repeat(
-    Math.floor((CEILING - 8 - overheadBytes) / bytesPerChar),
+    Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - overheadBytes) / bytesPerChar),
   );
   const fits = await buildFacetVfsBundleSource({ [CELL]: justUnder });
   assert.deepEqual(
@@ -85,7 +78,7 @@ for (const [label, char, bytesPerChar] of [
     `a ${label} bundle that truly fits the ceiling is not split (the counter does not over-count)`,
   );
   assert.ok(
-    new TextEncoder().encode(fits.expression).length <= CEILING,
+    new TextEncoder().encode(fits.expression).length <= BUNDLE_MAX_ENCODED_BYTES,
     `an inline ${label} bundle really is within the ceiling (the counter does not under-count)`,
   );
 
@@ -106,7 +99,7 @@ for (const [label, char, bytesPerChar] of [
     .encode((await buildFacetVfsBundleSource({ [BIN]: new Uint8Array(0) })).expression).length;
   // Base64 spends 4 characters per 3 bytes, so back the payload out of the
   // room left under the ceiling and leave the same eight bytes of slack.
-  const fittingBytes = Math.floor((CEILING - 8 - binOverhead) / 4) * 3;
+  const fittingBytes = Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - binOverhead) / 4) * 3;
   const justUnder = new Uint8Array(fittingBytes).fill(0xff);
   const fits = await buildFacetVfsBundleSource({ [BIN]: justUnder });
   assert.deepEqual(
@@ -114,7 +107,7 @@ for (const [label, char, bytesPerChar] of [
     'a binary bundle that truly fits the ceiling is not split (the counter does not over-count)',
   );
   assert.ok(
-    new TextEncoder().encode(fits.expression).length <= CEILING,
+    new TextEncoder().encode(fits.expression).length <= BUNDLE_MAX_ENCODED_BYTES,
     'an inline binary bundle really is within the ceiling (the counter does not under-count)',
   );
   assert.deepEqual(
