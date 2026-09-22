@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "bbe7df2aa50d4354db92e937c57e30cc14ccfeedb79610f120300e1e3b985cee",
+  "fingerprint": "50f04412ed4eac30a4a02269d8b58053c5e8e1ef765066df82b0fcf113935519",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1225,8 +1225,8 @@
     "packages/fabric/dist/outbox.d.ts.map": "968d51f9fd1b2b65f337e5c5566359f6b41863faf1206e1822552e7440c918c2",
     "packages/fabric/dist/outbox.js": "7ca7cb4878548cd4f47e3907ea3f5024918cefdb9bffb603628e68fbc28cfc6f",
     "packages/fabric/dist/process-fabric.d.ts": "76bd4c28cd8485b1d46e890b3f9b828fdb36ab6cf6f4c0cd8a0d8bd736159abb",
-    "packages/fabric/dist/process-fabric.d.ts.map": "252809750cb7e9162b6f27cfa61fcea5b7637b893a1cd88fe596ec78d91fe114",
-    "packages/fabric/dist/process-fabric.js": "fe9e82734f89df4229527e7e0eafffad6621fce44a28499d84110a8c05a3a5a9",
+    "packages/fabric/dist/process-fabric.d.ts.map": "25a8684e7ab68183b1838c482b415f61f0deb6d3fbc890eea8ff394c71cac494",
+    "packages/fabric/dist/process-fabric.js": "51ba0dfef50fdfed9a6cc13824a358f23db3858431a86cc76424bea1b84724d5",
     "packages/fabric/dist/process-host.d.ts": "14eaeb459ba6d076ec3ef30c9d3bde56bb67bde5b7b68dbc782f466340c2f15a",
     "packages/fabric/dist/process-host.d.ts.map": "7215dff93b6650324f5dcee656645c23cd6136bed6d7f336f502ff975a22e3e2",
     "packages/fabric/dist/process-host.js": "7f58acf17405fc8381fd20ad0b57b891aa065a5293d1bfa69af26265346217d0",
@@ -1274,7 +1274,7 @@
     "packages/fabric/src/journal.ts": "fc58a11fb783debc6da6720ac0bb71f674a0b4209abb2394c2ef4c17c17b8123",
     "packages/fabric/src/node-async-hooks.d.ts": "87f754955f48ebe7702aca02d071cc5afc7e96eda2b429ac2a64354cb064fe5e",
     "packages/fabric/src/outbox.ts": "0e8f04c4e8f2c1cc380857a998e7ed716f76714cfe77346755cbc90f1077e2c3",
-    "packages/fabric/src/process-fabric.ts": "227e801d941398fe1cfbd745223c7822755e522cee054724cf48f7ad3cd2225d",
+    "packages/fabric/src/process-fabric.ts": "b17b1319f669566cd243ba7c3bb63ee15f54c091816db0fa0e29c650492546cd",
     "packages/fabric/src/process-host.ts": "801b1c7e87b424fb6a2581266d6f70a687773f5b532d52b5131d8e3f92691c5c",
     "packages/fabric/src/sealed.ts": "4a7c5b7b26979c136273dc6f29b8a4c8762462c4cdf7e989ba72cf54152a8154",
     "packages/fabric/src/timers.ts": "824ffe485986748b352c73df7a565cacfccdc3ad8c3549fe4f469b40f4c247ee",
