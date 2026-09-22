@@ -134,6 +134,30 @@ import {
   }
 }
 
+// A miss inside a package is not the static closure choosing that corner of
+// it. nuxt dev missed vue/dist/vue.cjs.js; once that was required, the greedy
+// pass skipped vue's main, vue/index.js, which is the file that loads it.
+{
+  const h = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(h.sql, h.ctx);
+  const k = raw.as(CRED_KERNEL);
+  const app = 'home/user/vue-app';
+  k.mkdir(`${app}/node_modules/vue/dist`, { recursive: true, mode: 0o755 });
+  k.writeFile(`${app}/package.json`, JSON.stringify({ dependencies: { vue: '3' } }), { mode: 0o644 });
+  k.writeFile(`${app}/entry.js`, "require(process.env.NAME);\n", { mode: 0o644 });
+  k.writeFile(`${app}/node_modules/vue/package.json`, JSON.stringify({ name: 'vue', main: 'index.js' }), { mode: 0o644 });
+  k.writeFile(`${app}/node_modules/vue/index.js`, "module.exports = require('./dist/vue.cjs.js');\n", { mode: 0o644 });
+  k.writeFile(`${app}/node_modules/vue/dist/vue.cjs.js`, 'exports.h = 1;\n', { mode: 0o644 });
+  for (const d of ['home/user', app]) k.chown(d, 1000, 1000);
+  const fs = new ExecutionFs(new SqliteFilesystemAuthority(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs);
+  const state = await buildPrefetchBundle(
+    fs, `/${app}/entry.js`, `/${app}`, '', undefined, undefined,
+    new Set([`${app}/node_modules/vue/dist/vue.cjs.js`]),
+  );
+  assert.ok(`${app}/node_modules/vue/dist/vue.cjs.js` in state.bundle, 'the observed module is staged');
+  assert.ok(`${app}/node_modules/vue/index.js` in state.bundle, 'the package main that loads it stays staged');
+}
+
 // ── Part 2: the whole loop, through a real facet ────────────────────────────
 
 adoptCtxExports({ SupervisorRPC: () => makeSupervisor() });

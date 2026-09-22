@@ -72,4 +72,9 @@ for (const source of [
   const source = `${commonJs}; const load=__commonJS({"node_modules/undici/index.js"(e,m){m.exports='native'},}); module.exports=load();`;
   assert.equal(execute(rewriteProvidedCommonJsModules(source)).exports, provided, 'a trailing comma is valid module metadata');
 }
+{
+  // @babel/types' generated builders: a member named import/export at top level.
+  const source = `"use strict";\nexports.import = _import;\nexports.export = _export;\nfunction _import() {}\nfunction _export() {}`;
+  assert.equal(rewriteProvidedCommonJsModules(source), source, 'a member named import or export is not a declaration');
+}
 console.log('bundled provided packages: scoped binding, identity, aliases, syntax boundaries, and private subpaths pass');

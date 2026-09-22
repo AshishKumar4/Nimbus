@@ -3345,7 +3345,10 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         throw new ClosureBoundExceededError(prefetch);
     }
     const bundle = { ...prefetch.bundle };
-    const requiredPaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
+    const closurePaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
+    // Grows with evidence; `closurePaths` stays the static closure. An observed
+    // subpath is not the closure choosing that corner of a package.
+    const requiredPaths = new Set(closurePaths);
     let truncated = false;
     const budgetState = { totalBytes: 0, fileCount: 0 };
     // Each enrichment pass below re-scans the bundle accumulated so far, so a
@@ -3374,7 +3377,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
     //    regex prefetch misses. Its budget is independent from the complete
     //    static require closure, which is correctness-critical.
-    const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths));
+    const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, closurePaths));
     await paceAfterPass();
     // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
     //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:

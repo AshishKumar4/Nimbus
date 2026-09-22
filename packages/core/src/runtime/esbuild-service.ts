@@ -546,6 +546,8 @@ function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange
     let braces = 0;
     let parens = 0;
     let brackets = 0;
+    // `exports.import = …` is a member, not a declaration.
+    let previous = tokTypes.eof;
 
     const updateDepth = (type: typeof tokTypes.eof): void => {
       if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
@@ -560,6 +562,8 @@ function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange
       const token = tokens.getToken();
       const type = token.type;
       if (type === tokTypes.eof) return active ? null : ranges;
+      const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
+      previous = type;
 
       if (active) {
         updateDepth(type);
@@ -571,15 +575,16 @@ function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange
       }
 
       const topLevel = braces === 0 && parens === 0 && brackets === 0;
-      if (topLevel && type === tokTypes._import) {
+      if (topLevel && type === tokTypes._import && !member) {
         const next = tokens.getToken();
+        previous = next.type;
         if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) {
           active = { start: token.start, kind: 'import' };
         }
         updateDepth(next.type);
         continue;
       }
-      if (topLevel && type === tokTypes._export) {
+      if (topLevel && type === tokTypes._export && !member) {
         active = { start: token.start, kind: 'export' };
         continue;
       }
