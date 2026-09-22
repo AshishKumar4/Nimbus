@@ -337,9 +337,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   };
 
   // 1. Registry policy.
+  //
+  // A swap is an npm alias the policy declares for the package: the
+  // packument comes from the swap target, the package installs under the
+  // requested name (`request.installName`) — exactly the shape an explicit
+  // `name@npm:target@range` spec already has. A spec that arrives as an
+  // alias is authoritative: a top-level swap was already rewritten that way
+  // by the supervisor (applySwaps, which also announced it), and a user's
+  // explicit alias names the package they want. Only a bare edge — a
+  // transitive dependency on the swapped name — is swapped here.
   let effName = request.registryName;
   // @ts-ignore — preamble.
-  const __swap = SHOULD_SWAP(spec.name);
+  const __swap = request.alias ? undefined : SHOULD_SWAP(spec.name);
   if (__swap) {
     messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
     events.push({ type: 'swap', from: __swap.from, to: __swap.to, ctx: 'transitive' });

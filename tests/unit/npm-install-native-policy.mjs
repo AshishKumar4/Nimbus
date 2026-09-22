@@ -31,6 +31,8 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
+import { npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
@@ -149,12 +151,27 @@ function makeInstaller(pkgJson, resultFor) {
 }
 
 // ── Case C: swap applies even when the sibling spec is refused ───────────
+//
+// The swap reaches the resolver as the alias spec `esbuild` →
+// `npm:esbuild-wasm@latest` — the same shape as a user's explicit
+// `esbuild@npm:esbuild-wasm` — and the facet answers an alias with the
+// TARGET's packument under the REQUESTED name (resolve-one-facet.ts:
+// `name: request.installName`). The fixture mirrors exactly that contract:
+// it is keyed on the spec it receives, not on a name the real facet never
+// sees. The earlier fixture answered a spec named `esbuild-wasm` with a
+// package named `esbuild`, which is why it passed while the live install
+// put the package in node_modules/esbuild-wasm.
 {
-  const { installer, log, root } = makeInstaller(
+  const specsSeen = [];
+  const { installer, log, root, harness } = makeInstaller(
     { name: 'x', dependencies: {} },
-    (name) => {
-      if (name === 'esbuild-wasm') return resolvedResult('esbuild', '0.27.0');
-      return resolvedResult(name, '1.0.0');
+    (name, spec) => {
+      specsSeen.push({ name, range: spec.range });
+      if (name === 'esbuild') {
+        assert.equal(spec.range, 'npm:esbuild-wasm@latest', 'the swap is dispatched as an alias spec');
+        return resolvedResult('esbuild', '0.27.0', { bin: { esbuild: 'bin/esbuild' } });
+      }
+      return resolvedResult(name, name === 'sharp' ? '0.34.0' : '1.0.0');
     },
   );
   // Padding specs keep the resolve layer on the peer-DO topology the
@@ -162,13 +179,72 @@ function makeInstaller(pkgJson, resultFor) {
   // are what this case asserts.
   const result = await installer.install(PROJ, { packages: ['esbuild', 'sharp', 'pad-a', 'pad-b', 'pad-c', 'pad-d'] });
   const output = log.join('\n');
+
+  assert.ok(/\[swap\].*esbuild → esbuild-wasm/.test(output), `the swap is announced:\n${output}`);
+  assert.equal(
+    (output.match(/\[swap\]/g) || []).length, 1,
+    `the swap is announced exactly once (the alias spec must not re-fire it in the facet):\n${output}`,
+  );
+  assert.ok(specsSeen.some((s) => s.name === 'esbuild'), `the resolver is asked for esbuild (seen=${JSON.stringify(specsSeen)})`);
+  assert.ok(!specsSeen.some((s) => s.name === 'esbuild-wasm'), 'no spec is keyed by the swap target');
+  assert.ok(
+    result.installed.some((entry) => entry.startsWith('esbuild@')),
+    `the swap target installs under the requested name (installed=${JSON.stringify(result.installed)})`,
+  );
+  // On-disk layout: the declared name's directory, and nothing under the
+  // swap target's — that is what makes require('esbuild') resolve.
+  assert.ok(root.exists(`${NM}/esbuild/package.json`), 'esbuild is on disk under its own name');
+  assert.ok(!root.exists(`${NM}/esbuild-wasm`), 'nothing lands under the swap target name');
+  // Bin link: points into the declared name's directory.
+  const binManifest = JSON.parse(root.readFileString(npmBinManifestPath(NM)));
+  assert.equal(binManifest.bins?.esbuild?.packageName, 'esbuild', 'the esbuild bin belongs to the esbuild package');
+  assert.equal(binManifest.bins?.esbuild?.targetPath, `${NM}/esbuild/bin/esbuild`, 'the esbuild bin targets node_modules/esbuild');
+  assert.ok(root.exists(`${NM}/.bin/esbuild`), 'node_modules/.bin/esbuild exists');
+  // Lockfile: keyed by the declared name, hoisted at its directory.
+  const lock = new NpmCache(harness.sql).readLockfile(PROJ);
+  assert.ok(lock?.has('esbuild'), `the lockfile records esbuild (keys=${JSON.stringify([...(lock?.keys() ?? [])])})`);
+  assert.ok(!lock?.has('esbuild-wasm'), 'the lockfile has no entry under the swap target name');
+  assert.equal(lock.get('esbuild').resolvedVer, '0.27.0');
+  assert.equal(lock.get('esbuild').hoistedPath, `${NM}/esbuild`);
   assert.ok(result.installed.some((entry) => entry.startsWith('sharp@')), `the listed sibling installs too (installed=${JSON.stringify(result.installed)})`);
   assert.ok(/\[npm\] note: sharp has no Workers-compatible build: /.test(output), `the sibling gets its advisory:\n${output}`);
   assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp is on disk');
   const pkgJson = JSON.parse(root.readFileString(`${PROJ}/package.json`));
-  assert.ok(pkgJson.dependencies?.esbuild, 'package.json records the swapped spec');
+  assert.equal(pkgJson.dependencies?.esbuild, '^0.27.0', 'package.json records the swapped spec under the user\'s key');
+  assert.ok(!pkgJson.dependencies?.['esbuild-wasm'], 'package.json is not rewritten to the swap target');
   assert.ok(pkgJson.dependencies?.sharp, 'package.json records the listed spec (it installed)');
-  console.log('  caseC: esbuild→esbuild-wasm and sharp both install; sharp gets a note');
+  console.log('  caseC: esbuild→esbuild-wasm installs under node_modules/esbuild; sharp installs with a note');
+}
+
+// ── Case C2: a declared swap and a declared swap TARGET are two packages ─
+//
+// `dependencies: { esbuild, esbuild-wasm }` must install both, each under
+// its own name. The old key rename collapsed the two into one
+// `esbuild-wasm` spec, silently dropping whichever range lost.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const { installer, log, root, harness } = makeInstaller(
+    { name: 'both', dependencies: { ...ok, esbuild: '^0.27.0', 'esbuild-wasm': '^0.26.0' } },
+    (name, spec) => {
+      if (name === 'esbuild') {
+        assert.equal(spec.range, 'npm:esbuild-wasm@^0.27.0');
+        return resolvedResult('esbuild', '0.27.0');
+      }
+      if (name === 'esbuild-wasm') {
+        assert.equal(spec.range, '^0.26.0', 'the sibling keeps its own range');
+        return resolvedResult('esbuild-wasm', '0.26.0');
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  assert.deepEqual(result.failed, [], `nothing fails (log:\n${log.join('\n')})`);
+  assert.equal(JSON.parse(root.readFileString(`${NM}/esbuild/package.json`)).version, '0.27.0');
+  assert.equal(JSON.parse(root.readFileString(`${NM}/esbuild-wasm/package.json`)).version, '0.26.0');
+  const lock = new NpmCache(harness.sql).readLockfile(PROJ);
+  assert.equal(lock.get('esbuild').resolvedVer, '0.27.0');
+  assert.equal(lock.get('esbuild-wasm').resolvedVer, '0.26.0');
+  console.log('  caseC2: esbuild and esbuild-wasm both install, each under its own name');
 }
 
 // ── Case D: a devDependency advisory installs, marked dev ──────────────
@@ -613,8 +689,8 @@ function makeInstaller(pkgJson, resultFor) {
 
 // ── Case R: lockfile validity across spec shapes ────────────────────────
 //
-// A swapped root (esbuild → esbuild-wasm) keeps a semver range and stays
-// valid; `latest` stays valid; a changed range invalidates; a git spec —
+// A swapped root (esbuild → npm:esbuild-wasm@<range>) answers its inner
+// semver range against the pin under `esbuild` and stays valid; `latest` stays valid; a changed range invalidates; a git spec —
 // which is not a semver range at all — answers presence-only.
 {
   const cw = (name, version) => ({
@@ -628,11 +704,11 @@ function makeInstaller(pkgJson, resultFor) {
   {
     const { installer, log } = makeInstaller(
       { name: 'swap-app', dependencies: { ...ok, esbuild: '^0.20.0' } },
-      (name) => { const v = name === 'esbuild-wasm' ? '0.20.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
+      (name) => { const v = name === 'esbuild' ? '0.20.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
     );
     const first = await installer.install(PROJ);
     assert.deepEqual(first.failed, []);
-    assert.ok(first.installed.includes('esbuild-wasm@0.20.0'), `the swap target installed (installed=${JSON.stringify(first.installed)})`);
+    assert.ok(first.installed.includes('esbuild@0.20.0'), `the swap target installed under the declared name (installed=${JSON.stringify(first.installed)})`);
     log.length = 0;
     const second = await installer.install(PROJ);
     assert.ok(/Lockfile valid/.test(log.join('\n')), `a swapped root reuses its lockfile:\n${log.join('\n')}`);
