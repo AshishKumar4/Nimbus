@@ -10,11 +10,17 @@
 // A bound that followed edges from the project's devDependencies reached
 // all 772 packages (a library's dev toolchain reaches the whole tree).
 //
-// The rule: the project root's runtime `dependencies`, plus ONE
-// `dependencies` hop from every package that owns a file in the static
-// closure. Never devDependencies, never a second hop. Measured on the real
-// got tree: 10 packages / 18 files / 0.07 MB (got's runtime deps exactly);
-// on a consumer app whose closure already holds express: +0 files.
+// The rule: ONE `dependencies` hop from every package the project itself
+// declares or that owns a file in the static closure, plus those roots.
+// Never devDependencies, never a second hop. Measured on the real got tree:
+// 10 packages / 18 files / 0.07 MB (got's runtime deps exactly); on a
+// consumer app whose closure already holds express: +0 files.
+//
+// The project's own dependencies became hop roots (2026-09-21) because a bin
+// resolves from the project root, not from its own package: `nuxt dev` runs
+// `@nuxt/cli/bin/nuxi.mjs`, which resolves `@nuxt/kit` — a devDependency of
+// `@nuxt/cli`, a dependency of the project's `nuxt` — out of the project's
+// node_modules. See facet-bundle-project-dep-hop.
 
 import assert from 'node:assert/strict';
 import { greedyAddMainEntries, speculativePackageDirs } from '../../packages/worker/src/facets/manager.ts';
@@ -63,14 +69,22 @@ const files = {
 const vfs = new FakeVfs(files);
 const name = (dir) => dir.replace(/^.*node_modules\//, '');
 
-// ── 1. empty closure: the project's runtime deps only ───────────────────────
+// ── 1. empty closure: the project's runtime deps, one hop out ───────────────
 {
-  assert.deepEqual((await speculativePackageDirs(vfs, 'home/user/app', {})).map(name), ['got'], 'runtime dependencies only, no devDependencies, no second hop');
+  assert.deepEqual((await speculativePackageDirs(vfs, 'home/user/app', {})).map(name),
+    ['got', 'keyv', 'p-cancelable'],
+    'the project\'s runtime dependencies and one hop from them; json-buffer is a second hop, ava/typescript are dev');
   const bundle = {};
   const budget = { totalBytes: 0, fileCount: 0 };
   (await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget));
-  assert.deepEqual(Object.keys(bundle).sort(), [`${NM}/got/index.js`, `${NM}/got/package.json`]);
-  console.log('  empty closure → the project\'s runtime deps');
+  assert.deepEqual(Object.keys(bundle).sort(), [
+    `${NM}/got/index.js`, `${NM}/got/package.json`,
+    `${NM}/keyv/index.js`, `${NM}/keyv/package.json`,
+    `${NM}/p-cancelable/index.js`, `${NM}/p-cancelable/package.json`,
+  ]);
+  assert.equal(bundle[`${NM}/json-buffer/index.js`], undefined, 'no second hop from a project dependency');
+  assert.equal(bundle[`${NM}/ava/index.js`], undefined, 'no devDependencies of the project');
+  console.log('  empty closure → the project\'s runtime deps, one hop out');
 }
 
 // ── 2. closure owning got: got's runtime deps, one hop ──────────────────────
