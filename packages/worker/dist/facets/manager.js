@@ -2704,6 +2704,31 @@ const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
     '.webm',
 ];
 /**
+ * Whether the facet's require path could ever load this cell AS A MODULE.
+ *
+ * Not a judgement about whether the file is useful — an evicted cell is a
+ * real loss either way, since the synchronous read it exists for raises
+ * EAGAIN. It is a judgement about what the loss can BREAK. A cell the loader
+ * can resolve is one some other module may be importing, and losing it takes
+ * every importer down with it; a cell it can never resolve is only ever read
+ * as data, by whoever asked for that path specifically.
+ *
+ * Declaration files are the clean case, and the reason this is a suffix test
+ * rather than a content one: `foo.d.ts` is consumed by a type checker and is
+ * never the target of a `require`, so shedding one cannot orphan a module.
+ * That does not contradict the list above keeping them admissible — a `.d.ts`
+ * IS a legitimate runtime read for the one package that reads its own (tsc
+ * and `lib.*.d.ts`). This decides only what goes FIRST once a bound has
+ * already been breached and something has to.
+ */
+function _isLoadableModuleCell(path) {
+    if (isTypescriptDeclarationFile(path))
+        return false;
+    const ext = vfsPathExtension(path);
+    return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
+        || ext === '.wasm' || ext === '' || bundleTypescriptLoader(path) !== null;
+}
+/**
  * Per-file ceiling for the speculative passes over installed packages: the
  * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
  * (`greedyAddMainEntries`).
@@ -3464,9 +3489,27 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     const size = encodedBundleSize(bundle, manifest);
     if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
         // A compiled cell goes with its source: required when the source is.
+        //
+        // Order matters as much as the bound. Largest-first alone ranks a cell by
+        // what it costs and never by what losing it costs: the greedy oversample
+        // admits a package's chunks without walking their own static imports, so
+        // an admitted module and the sibling it imports are both "optional", and
+        // shedding the sibling leaves a module in the bundle that cannot load.
+        // `astro dev` died exactly there — `rolldown/dist/experimental-index.mjs`
+        // was retained and its static
+        // `./shared/resolve-tsconfig-Bf6oL9fm.mjs` was evicted, so the process
+        // exited 1 reporting that path and nothing else.
+        //
+        // So spend the cells the require path can never load first, whatever
+        // their size, and only then the ones it can.
         const evictable = Object.keys(bundle)
             .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
-            .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
+            .sort((a, b) => {
+            const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
+            if (loadable !== 0)
+                return loadable;
+            return _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]);
+        });
         const evicted = [];
         for (const k of evictable) {
             if (size.bytes <= BUNDLE_MAX_ENCODED_BYTES)
