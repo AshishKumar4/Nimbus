@@ -143,6 +143,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      *  recurring event that holds this object in memory for as long as a
      *  resident process runs (hibernation.ts ensureResidentKeepalive). */
     _w1KeepaliveArmed: boolean;
+    /** W1: when a client last reached this session over HTTP; the keep-alive
+     *  holds the object only while one is attached or was here within
+     *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
+    _w1LastClientActivityAt: number;
     /** Destroyed-session tombstone (SESSION_DESTROYED_KEY), hydrated at boot.
      *  While set, log activity never re-arms the janitor alarm cycle. */
     _w1SessionDestroyed: boolean;

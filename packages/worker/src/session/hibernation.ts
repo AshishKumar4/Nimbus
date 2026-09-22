@@ -45,7 +45,7 @@ import type { LogChunk, PersistAdapter, ProcessExitInfo } from '@nimbus-sh/core/
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
-import { RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
+import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 
 export type { WsHibernationConfigResult };
@@ -66,6 +66,12 @@ export interface HibHost extends TimerHost {
   _w1JanitorArmed: boolean;
   /** W1: resident keep-alive alarm believed armed for this instance. */
   _w1KeepaliveArmed: boolean;
+  /**
+   * W1: when a client last reached this session over HTTP (an exec, a file
+   * read, a port preview, a socket upgrade). Facet RPCs are not clients: a
+   * process's own traffic must not keep its abandoned session alive.
+   */
+  _w1LastClientActivityAt: number;
   /** W1: destroyed-session tombstone — never re-arm alarms while set. */
   _w1SessionDestroyed: boolean;
 }
@@ -284,6 +290,7 @@ export function ensureLogJanitor(host: HibHost, ctx: any): void {
  */
 export function ensureResidentKeepalive(host: HibHost, ctx: any): void {
   if (host._w1KeepaliveArmed) return;
+  if (host.processes.residentRunning === 0) return;
   // Same zombie-alarm rule as the janitor: a destroyed session stays inert,
   // so a straggler facet RPC that wakes the dead DO and spawns cannot leave
   // an eternal keep-alive loop on a session that no longer exists.
@@ -320,6 +327,29 @@ export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any):
     console.warn('[nimbus/W9] schema init failed:', e?.message);
     host._w9SchemaInit = false; // retry next time
   }
+}
+
+/**
+ * Whether a client is here: a hibernatable socket attached (terminal,
+ * process log, file watch) or a request within the detached grace. The
+ * keep-alive re-arms on this and on a running resident, never on the
+ * resident alone.
+ */
+export function residentClientPresent(host: HibHost, ctx: any, now: number): boolean {
+  const sockets: unknown[] = typeof ctx?.getWebSockets === 'function' ? ctx.getWebSockets() : [];
+  if (sockets.length > 0) return true;
+  return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+}
+
+/**
+ * W1: a client reached the session. Records the moment, and re-arms the
+ * keep-alive if a resident is running and the cycle had lapsed: a session
+ * whose client came back before the platform evicted it still holds its
+ * process, and the next quiet stretch must not idle it out mid-session.
+ */
+export function noteClientActivity(host: HibHost, ctx: any): void {
+  host._w1LastClientActivityAt = Date.now();
+  ensureResidentKeepalive(host, ctx);
 }
 
 /**
@@ -412,13 +442,13 @@ export function dispatchAlarm(
     'resident-keepalive': (now) => {
       // Deliberately no work: this alarm exists so the object HAS an event,
       // and being dispatched is the entire payload. Re-arm only while a
-      // resident process is actually running — the same rule the janitor
-      // learned the hard way (see its comment above): an unconditional
-      // self-renewal makes every session ever created boot its DO forever,
-      // and the fleet of deleted sessions doing that resets live ones.
-      // The next resident spawn re-arms the cycle via
-      // ensureResidentKeepalive.
-      if (host.processes.residentRunning > 0) {
+      // resident process runs AND a client is present — the same rule the
+      // janitor learned the hard way (see its comment above): an
+      // unconditional self-renewal makes every session boot its DO forever,
+      // and the fleet doing that resets live ones. Bounded by the resident
+      // alone, an abandoned dev server did exactly that. The next resident
+      // spawn, or the client's return, re-arms the cycle.
+      if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
         return { rearmAt: now + RESIDENT_KEEPALIVE_MS };
       }
       host._w1KeepaliveArmed = false;
