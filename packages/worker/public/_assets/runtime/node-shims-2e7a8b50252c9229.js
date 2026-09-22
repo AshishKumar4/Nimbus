@@ -1353,6 +1353,22 @@ const __fsMod = (() => {
       reconciles: 0, selfWrites: 0, misses: 0,
     });
 
+  // What the fills below may hold, and what they are holding.
+  //
+  // Only cells THIS ledger admitted are in it. The boot snapshot is bounded by
+  // the bundle ceilings before it ever reaches the facet, and dropping it here
+  // would discard content the supervisor deliberately staged; the fills are
+  // the part that grew afterwards, and the part that had no bound.
+  //
+  // Insertion order is eviction order — the same oldest-first policy
+  // _admitPrefetchCacheEntry applies to the supervisor's cache. It rides on a
+  // global beside _stats so a second evaluation of these shims shares one
+  // ledger rather than starting a second one beside the cells the first is
+  // still holding.
+  const _FILL_MAX_BYTES = 8388608;
+  const _fills = globalThis.__nimbusVfsFills
+    || (globalThis.__nimbusVfsFills = { cells: new Map(), bytes: 0 });
+
   /**
    * Drop a path from the sync CONTENT views, leaving the existence views
    * alone.
@@ -1382,6 +1398,11 @@ const __fsMod = (() => {
   function _evictResident(k) {
     let evicted = false;
     delete __vfsBundleRevisions[k];
+    // A cell this facet filled is no longer held, so the fill budget must stop
+    // charging for it — otherwise a program that rewrites the same paths spends
+    // the budget on cells that are long gone and refuses fills it has room for.
+    const filled = _fills.cells.get(k);
+    if (filled !== undefined) { _fills.cells.delete(k); _fills.bytes -= filled; }
     if (__vfsBundle && k in __vfsBundle) { delete __vfsBundle[k]; evicted = true; }
     const metadata = _metadataTable();
     if (metadata && k in metadata) { delete metadata[k]; evicted = true; }
@@ -1410,6 +1431,43 @@ const __fsMod = (() => {
   };
 
   /**
+   * Stop holding a filled cell, leaving its existence and stat views alone.
+   *
+   * Narrower than _evictResident, and for a different reason: nothing here
+   * says the bytes were stale, only that this process will not go on holding
+   * them. The name and the stat record stay as the authority reported them, so
+   * the next synchronous read refuses with EAGAIN ("exists, not resident") and
+   * faults the content back in, rather than fabricating an ENOENT for a file
+   * that is plainly there.
+   */
+  function _releaseResidentFill(k) {
+    const held = _fills.cells.get(k);
+    if (held !== undefined) { _fills.cells.delete(k); _fills.bytes -= held; }
+    if (__vfsBundle && k in __vfsBundle) delete __vfsBundle[k];
+  }
+
+  /**
+   * Whether this fill may be retained, after releasing older ones to make room.
+   *
+   * A cell larger than the WHOLE budget is refused rather than admitted and
+   * then evicted: admitting it would release every other cell to make room for
+   * something that still does not fit, which is the pressure the bound exists
+   * to prevent. Same refusal _admitPrefetchCacheEntry makes, one layer down.
+   */
+  function _admitResidentFill(k, size) {
+    const held = _fills.cells.get(k);
+    if (held !== undefined) { _fills.cells.delete(k); _fills.bytes -= held; }
+    if (size > _FILL_MAX_BYTES) return false;
+    for (const [oldest, cost] of _fills.cells) {
+      if (_fills.bytes + size <= _FILL_MAX_BYTES) break;
+      _fills.cells.delete(oldest);
+      _fills.bytes -= cost;
+      if (__vfsBundle && oldest in __vfsBundle) delete __vfsBundle[oldest];
+    }
+    return _fills.bytes + size <= _FILL_MAX_BYTES;
+  }
+
+  /**
    * Install bytes the supervisor just served as the resident cell for a
    * path, at the cursor they were served under.
    *
@@ -1423,6 +1481,12 @@ const __fsMod = (() => {
    *
    * The parent's manifest entry gains the name too, so the existence view
    * cannot go on denying a file whose bytes this process is holding.
+   *
+   * Bounded, though, which the obligation above survives: a fill this facet
+   * will not retain DROPS whatever it was holding for that path instead of
+   * leaving it. The cell the program could go backwards to is the one thing
+   * that must not stay, and dropping it is what makes the refusal honest —
+   * the next synchronous read refuses rather than answers old bytes.
    */
   function _installResident(absPath, bytes) {
     if (!__vfsBundle) return;
@@ -1444,7 +1508,20 @@ const __fsMod = (() => {
     // written file, against 1 / 0 / 0 with the repair absent.
     if (__vfsWrites && k in __vfsWrites) return;
     if (__vfsBundleRevisions[k] !== undefined) return;
-    __vfsBundle[k] = bytes;
+    const size = _byteLen(bytes);
+    const retain = _admitResidentFill(k, size);
+    // Refused: release whatever was held for this path FIRST. Whatever it was
+    // — a boot-snapshot cell, an earlier fill — it is now the one value this
+    // read could send a later synchronous read backwards to, and the bytes
+    // that would have replaced it are not being kept. The stat view below
+    // still learns the size, because that much was measured.
+    if (retain) {
+      __vfsBundle[k] = bytes;
+      _fills.cells.set(k, size);
+      _fills.bytes += size;
+    } else {
+      _releaseResidentFill(k);
+    }
     // Keep the stat view consistent with the bytes now held. Without this
     // the content view is fresh while statSync still reports the
     // spawn-time length, so a program can read N bytes and be told the
@@ -1454,11 +1531,12 @@ const __fsMod = (() => {
     // (make, tsc --build, watchers) does not see every read as a change.
     const metadata = _metadataTable();
     if (metadata && k in metadata) {
-      metadata[k] = { ...metadata[k], size: _byteLen(bytes) };
+      metadata[k] = { ...metadata[k], size };
     }
     _announceSyncPath(k);
+    if (!retain) return;
     _stats.fills++;
-    _stats.filledBytes += _byteLen(bytes);
+    _stats.filledBytes += size;
   }
 
   /**
@@ -2105,24 +2183,39 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", displayPath);
   }
 
-  // Every chunk of `absPath` from `from` to EOF, issued in ONE turn so the
-  // read batch carries them together. A stat bounds the walk; a chunk that
-  // comes back short or missing still ends the file, exactly as taking them
-  // one at a time did, so a file that shrank under the reader is read short
-  // rather than read wrong.
+  // Chunks issued together, so one round trip carries them all — and no more
+  // than one batch's worth at a time, so the bytes in flight are bounded by the
+  // same ceiling that bounds a batch rather than by the size of the file.
+  //
+  // The whole remainder used to go out in a single Promise.all. That is not
+  // one round trip past 4 MiB, because the batcher splits on its own byte
+  // bound; it is N of them with every payload live at once, on BOTH sides of
+  // a hop whose two ends — the session's Durable Object and its facet — share
+  // one isolate. A 4.55 MB read put 73 chunk payloads in flight there.
+  const READ_WAVE_CHUNKS = Math.max(1, Math.floor(READ_BATCH_REQUEST_BYTES / READ_STREAM_CHUNK_BYTES));
+
+  // Every chunk of `absPath` from `from` to EOF. A stat bounds the walk; a
+  // chunk that comes back short or missing still ends the file, exactly as
+  // taking them one at a time did, so a file that shrank under the reader is
+  // read short rather than read wrong.
   async function _readChunksFrom(absPath, displayPath, supervisor, from) {
     const meta = await _fsRpc(supervisor.stat(absPath), "stat", displayPath, (result) => result);
     const end = meta ? Number(meta.size) || 0 : 0;
-    const offsets = [];
-    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
-    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
-      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
-    )));
     const parts = [];
-    for (const chunk of chunks) {
-      if (chunk === null) break;
-      parts.push(chunk);
-      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    for (let base = from; base < end; base += READ_WAVE_CHUNKS * READ_STREAM_CHUNK_BYTES) {
+      const offsets = [];
+      const waveEnd = Math.min(end, base + READ_WAVE_CHUNKS * READ_STREAM_CHUNK_BYTES);
+      for (let off = base; off < waveEnd; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
+      const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
+        absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
+      )));
+      let short = false;
+      for (const chunk of chunks) {
+        if (chunk === null) { short = true; break; }
+        parts.push(chunk);
+        if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) { short = true; break; }
+      }
+      if (short) break;
     }
     return parts;
   }
@@ -2180,10 +2273,20 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", p);
   }
 
+  // Drains the array as it copies. The caller holds it until this returns, so
+  // keeping the chunks alive past their copy means a whole-file read peaks at
+  // TWO copies of the file — the assembled one and the pieces it was assembled
+  // from — in a facet isolate the session's Durable Object shares. Releasing
+  // each chunk on the way through makes the peak one copy plus one chunk, and
+  // costs nothing: nobody reads the pieces afterwards.
   function _concatBytes(parts, total) {
     const out = new Uint8Array(total);
     let off = 0;
-    for (const part of parts) { out.set(part, off); off += part.byteLength; }
+    for (let i = 0; i < parts.length; i++) {
+      out.set(parts[i], off);
+      off += parts[i].byteLength;
+      parts[i] = null;
+    }
     return out;
   }
 
