@@ -1,20 +1,12 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * Architecture:
- *   - esbuild-wasm is imported directly in the supervisor bundle
- *   - WASM is compiled during module evaluation (startup phase) — allowed
- *   - transform() runs in the supervisor's isolate (fast, no facet needed)
- *   - build() also runs in supervisor with a VFS resolver plugin
- *
- * Why not a facet? The esbuild-wasm WASM binary needs to be compiled
- * during module startup (not request time). Dynamic workers created via
- * LOADER.load() have the same restriction. Since esbuild-wasm is bundled
- * into the supervisor, it initializes once at startup and stays warm.
- *
- * Memory: esbuild-wasm uses ~15-20MB heap. Within the DO's 128MB budget
- * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
- * facet once wasm module passing to dynamic workers is stable.
+ * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
+ * growing with every module transformed and never released. A host whose
+ * isolate is memory-constrained passes a `transformHost` so transform()
+ * runs in another isolate (the session's is the loader-backed esbuild
+ * transform facet); without one, transforms run here. build() always runs
+ * here, over a VFS resolver plugin.
  */
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
@@ -1183,16 +1175,28 @@ export function generateEsbuildTransformRuntimeSource() {
         transformWithEsbuild.toString(),
     ].join('\n');
 }
+/** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
+function withProvidedModuleRewrite(code, options) {
+    return options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')
+        ? rewriteProvidedCommonJsModules(code)
+        : code;
+}
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
     vfs;
+    transformHost;
     initialized = false;
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     _esbuild = null;
     /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-    constructor(vfs) {
+    constructor(vfs, options = {}) {
         this.vfs = vfs ?? null;
+        this.transformHost = options.transformHost ?? null;
+    }
+    /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
+    get transformsInIsolate() {
+        return this.transformHost === null;
     }
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
@@ -1333,11 +1337,43 @@ export class EsbuildService {
      * intersection.
      */
     async transform(code, options) {
-        if (options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')) {
-            code = rewriteProvidedCommonJsModules(code);
+        if (this.transformHost) {
+            const [outcome] = await this.transformMany([{ code, options }]);
+            if ('error' in outcome)
+                throw new Error(outcome.error);
+            return outcome;
         }
         await this.ensureInit();
-        return transformWithEsbuild(this._esbuild, code, options);
+        return transformWithEsbuild(this._esbuild, withProvidedModuleRewrite(code, options), options);
+    }
+    /**
+     * Transform many modules in one round trip to the transform host (or in
+     * this isolate when there is none). Outcomes are positional, and a module
+     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
+     * bad module never costs the others their output.
+     */
+    async transformMany(requests) {
+        if (requests.length === 0)
+            return [];
+        const prepared = requests.map(({ code, options }) => ({ code: withProvidedModuleRewrite(code, options), options }));
+        if (this.transformHost) {
+            const outcomes = await this.transformHost(prepared);
+            if (outcomes.length !== prepared.length) {
+                throw new Error(`esbuild transform host answered ${outcomes.length} of ${prepared.length} requests`);
+            }
+            return outcomes;
+        }
+        await this.ensureInit();
+        const outcomes = [];
+        for (const { code, options } of prepared) {
+            try {
+                outcomes.push(await transformWithEsbuild(this._esbuild, code, options));
+            }
+            catch (e) {
+                outcomes.push({ error: errorText(e) });
+            }
+        }
+        return outcomes;
     }
     /**
      * Bundle entry points from the VFS.

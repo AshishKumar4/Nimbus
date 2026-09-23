@@ -16,6 +16,7 @@ import {
 import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
 } from '../../packages/platform/src/limits.ts';
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -116,7 +117,9 @@ const files = {
   [shebangCommandPath]: 'module.exports = () => "node";',
 };
 const vfs = new FakeVfs(files);
-const identityEsbuild = { async transform(code) { return { code }; } };
+const identityEsbuild = new EsbuildService(undefined, {
+  transformHost: async (requests) => requests.map(({ code }) => ({ code, map: '', warnings: [] })),
+});
 const snapshot = await buildPrefetchBundle(
   vfs,
   `/${entryPath}`,
@@ -172,7 +175,7 @@ assert.equal(
   const subVfs = new FakeVfs(files);
   const snap = await buildPrefetchBundle(
     subVfs, '/home/user/app/entry.js', '/home/user/app', files['home/user/app/entry.js'],
-    { async transform(code) { return { code }; } },
+    identityEsbuild,
   );
   const has = (p) => Object.hasOwn(snap.bundle, p);
 
@@ -506,7 +509,7 @@ assert.deepEqual(
   try {
     await buildPrefetchBundle(
       vfs, `/${entryPath}`, cwd, files[entryPath],
-      identityEsbuild, undefined, undefined, undefined, undefined, bound,
+      identityEsbuild, undefined, undefined, undefined, bound,
     );
   } catch (e) {
     failure = e;
@@ -532,7 +535,7 @@ assert.deepEqual(
   // A closure that fits the bound is unchanged.
   const ok = await buildPrefetchBundle(
     new FakeVfs(files), `/${entryPath}`, cwd, files[entryPath],
-    identityEsbuild, undefined, undefined, undefined, undefined, VFS_BUNDLE_MAX_BYTES,
+    identityEsbuild, undefined, undefined, undefined, VFS_BUNDLE_MAX_BYTES,
   );
   assert.equal(
     ok.bundle[`${cwd}/c.js`], files[`${cwd}/c.js`],

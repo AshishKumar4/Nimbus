@@ -39,7 +39,7 @@ import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -149,7 +149,7 @@ export async function restorePersistedDevServer(self, onlyPort) {
         if (!self.esbuildService) {
             if (!self.sqliteFs)
                 throw new Error('Session VFS is not initialized');
-            self.esbuildService = new EsbuildService(self.sqliteFs.as(CRED_KERNEL));
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.sqliteFs.as(CRED_KERNEL));
         }
         // Prefer the current request's basePath (just captured from the
         // X-Nimbus-Base header) over the stored one — the latter is only
@@ -1025,7 +1025,7 @@ export async function handleFetch(self, request) {
             if (!self.esbuildService) {
                 if (!self.sqliteFs)
                     throw new Error('Session VFS is not initialized');
-                self.esbuildService = new EsbuildService(self.sqliteFs.as(CRED_KERNEL));
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.sqliteFs.as(CRED_KERNEL));
             }
             const basePath = self.viteBasePath;
             // process metadata support: allocate a PID + port even on the

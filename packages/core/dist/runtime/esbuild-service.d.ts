@@ -1,20 +1,12 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * Architecture:
- *   - esbuild-wasm is imported directly in the supervisor bundle
- *   - WASM is compiled during module evaluation (startup phase) — allowed
- *   - transform() runs in the supervisor's isolate (fast, no facet needed)
- *   - build() also runs in supervisor with a VFS resolver plugin
- *
- * Why not a facet? The esbuild-wasm WASM binary needs to be compiled
- * during module startup (not request time). Dynamic workers created via
- * LOADER.load() have the same restriction. Since esbuild-wasm is bundled
- * into the supervisor, it initializes once at startup and stays warm.
- *
- * Memory: esbuild-wasm uses ~15-20MB heap. Within the DO's 128MB budget
- * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
- * facet once wasm module passing to dynamic workers is stable.
+ * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
+ * growing with every module transformed and never released. A host whose
+ * isolate is memory-constrained passes a `transformHost` so transform()
+ * runs in another isolate (the session's is the loader-backed esbuild
+ * transform facet); without one, transforms run here. build() always runs
+ * here, over a VFS resolver plugin.
  */
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
@@ -136,14 +128,37 @@ export interface BuildResult {
 }
 /** Source needed by the slim Worker Loader transform isolate. */
 export declare function generateEsbuildTransformRuntimeSource(): string;
+/** One transform a {@link EsbuildTransformHost} runs. */
+export interface EsbuildTransformRequest {
+    code: string;
+    options?: EsbuildTransformOptions;
+}
+/** A host's answer for one request: the output, or why esbuild rejected the module. */
+export type EsbuildTransformOutcome = TransformResult | {
+    error: string;
+};
+/**
+ * Runs transforms in another isolate: one call per batch, outcomes positional.
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows with every module it
+ * transforms and is never released, so an isolate that is memory-constrained
+ * (a session supervisor) hands its transforms to one of these.
+ */
+export type EsbuildTransformHost = (requests: EsbuildTransformRequest[]) => Promise<EsbuildTransformOutcome[]>;
+export interface EsbuildServiceOptions {
+    /** Where transform() and transformMany() run. Absent: this isolate. build() always runs here. */
+    transformHost?: EsbuildTransformHost;
+}
 export declare class EsbuildService {
     private vfs;
+    private readonly transformHost;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
     /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-    constructor(vfs?: CredentialedVfs);
+    constructor(vfs?: CredentialedVfs, options?: EsbuildServiceOptions);
+    /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
+    get transformsInIsolate(): boolean;
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
      * via `loadEsbuild()` (which itself is deferred) and caches it on
@@ -215,6 +230,13 @@ export declare class EsbuildService {
      * intersection.
      */
     transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
+    /**
+     * Transform many modules in one round trip to the transform host (or in
+     * this isolate when there is none). Outcomes are positional, and a module
+     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
+     * bad module never costs the others their output.
+     */
+    transformMany(requests: readonly EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
     /**
      * Bundle entry points from the VFS.
      */

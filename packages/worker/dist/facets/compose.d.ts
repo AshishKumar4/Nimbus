@@ -21,10 +21,11 @@
  *
  * What the factory owns and the host does not:
  *
- *   - `transformLargeEsm`: the isolated esbuild transform for module text
- *     past the in-isolate size bound. It needs `env.LOADER`, `env.ASSETS`
- *     and `ctx.facets` and nothing of any host, so it is the factory's
- *     default rather than every host's copy.
+ *   - the manager's esbuild, when the host shares none: its transforms run
+ *     in a loader-backed facet that owns the esbuild wasm heap, because that
+ *     heap is never released and the host's isolate is memory-constrained.
+ *     It needs `env.LOADER`, `env.ASSETS` and `ctx.facets` and nothing of
+ *     any host, so it is the factory's default rather than every host's copy.
  *   - `resolveWorkerLaunchFallback`: the durable image-store resolver a
  *     self-owned worker launch (the session's python/ruby residents, or an
  *     embedder spawn that let the manager persist its image) re-drives
@@ -66,7 +67,10 @@ export interface FacetManagerDeps {
     vfs: SqliteVFS;
     /** The session's one authority — the manager never constructs a second. */
     filesystem: NimbusFilesystemAuthority;
-    /** A host's already-warm esbuild, shared so the wasm is initialized once. */
+    /**
+     * A host's esbuild, shared with the manager. Absent: one whose transforms
+     * run in the loader-backed transform facet, never in this isolate.
+     */
     esbuild?: EsbuildService;
     hooks: FacetManagerHostHooks;
 }

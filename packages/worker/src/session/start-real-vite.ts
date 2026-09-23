@@ -17,7 +17,7 @@
  */
 
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -89,7 +89,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       .find((p) => kernelFs.exists(p)) ?? null;
     if (cfgPath) {
       try {
-        if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
+        if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
         const bundleResult = await self.esbuildService.build([cfgPath], {
           bundle: true,
           format: 'esm',

@@ -7,6 +7,7 @@ import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath, type RuntimeSpec } from '@nimbus-sh/core/runtime/runtime-registry.js';
@@ -324,7 +325,7 @@ const nodeSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = new EsbuildService(kernelFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
       }
       return self.esbuildService!;
     },
@@ -475,7 +476,7 @@ const bunSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = new EsbuildService(kernelFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
       }
       return self.esbuildService!;
     },
@@ -520,7 +521,7 @@ const bunSpec: RuntimeSpec = {
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
           }
           return self.esbuildService!;
         },
@@ -788,7 +789,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     // Lazy-init esbuild
     if (!self.esbuildService) {
       self.ensureSqliteFs();
-      self.esbuildService = new EsbuildService(kernelFs);
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
     }
 
     // Parse --root flag; default to the shell cwd so `npm run dev` from

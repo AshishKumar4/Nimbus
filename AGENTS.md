@@ -101,8 +101,11 @@ memory limit under either host: measured 2026-09-22 on staging, a
 facet-hosted process allocating 215 MB of heap objects was killed with
 "Worker exceeded memory limit" while its own session and a second session
 kept their terminals and were not reset. What resets a session is the
-session's own work, the launch-time bundle build above all. Nothing
-per-process chooses:
+session's own work: the launch-time bundle build, and esbuild-wasm, whose
+heap starts at ~28 MiB and is never released. That is why every session-side
+transform runs in the loader-backed transform facet
+(`supervisorEsbuildService`); only `EsbuildService.build()` still runs in the
+session's isolate. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,

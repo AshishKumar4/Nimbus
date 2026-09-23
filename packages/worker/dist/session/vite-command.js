@@ -17,7 +17,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { parseViteConfigSource, viteBuildBlockingPlugins, unhandledVitePlugins } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -53,7 +53,7 @@ export function createViteCommand(self) {
                     // Transform TS to JS
                     if (cfgName.endsWith('.ts')) {
                         if (!self.esbuildService)
-                            self.esbuildService = new EsbuildService(kernelFs);
+                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
                         const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
                         cfgCode = t.code;
                     }
@@ -89,7 +89,7 @@ export function createViteCommand(self) {
                     ' (' + buildSkippedPlugins.join(', ') + '); output is the plain-Vite bundle.\n');
             }
             if (!self.esbuildService)
-                self.esbuildService = new EsbuildService(kernelFs);
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
             const htmlPath = cwd + '/index.html';
             let entryPoint = cwd + '/src/main.tsx';
             let origHtml = '';
@@ -295,7 +295,7 @@ export function createViteCommand(self) {
             }
             // Start vite on the dist directory
             if (!self.esbuildService)
-                self.esbuildService = new EsbuildService(kernelFs);
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
             if (self.viteDevServer?.isRunning)
                 self.viteDevServer.stop();
             const previewBasePath = self.viteBasePath;
@@ -502,7 +502,7 @@ export function createViteCommand(self) {
                 ' (' + devSkipped.join(', ') + '); serving the plain-Vite app.\n');
         }
         if (!self.esbuildService)
-            self.esbuildService = new EsbuildService(kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
         const previewBasePath = self.viteBasePath;
         const viteDefine = viteConfig.define;
         // Vite dev servers are represented as long-running process-table

@@ -15,6 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -91,14 +92,15 @@ const files = {
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
 };
 
-// Stands in for esbuild's CJS emit: marks its output and drops the import
-// statements, so the bundle shows which cells the pass actually reached.
-const cjsEsbuild = {
-  async transform(code, opts) {
-    assert.equal(opts.format, 'cjs');
-    return { code: '/* cjs */\n' + code.replace(/^import .*$/gm, '') };
-  },
-};
+// Stands in for esbuild's CJS emit, as the transform host the session's
+// esbuild uses: marks its output and drops the import statements, so the
+// bundle shows which cells the pass actually reached.
+const cjsEsbuild = new EsbuildService(undefined, {
+  transformHost: async (requests) => requests.map(({ code, options }) => {
+    assert.equal(options.format, 'cjs');
+    return { code: '/* cjs */\n' + code.replace(/^import .*$/gm, ''), map: '', warnings: [] };
+  }),
+});
 
 const vfs = new FakeVfs(files);
 const state = await buildPrefetchBundle(
@@ -133,50 +135,71 @@ for (const [path, cell] of Object.entries(state.bundle)) {
 // Non-JS content stays byte-identical: the pass parses before it rewrites.
 assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
 
-// Sources at or above the transform isolation boundary must never initialize
-// esbuild-wasm in the session supervisor. Pi 0.84.3 introduced a 3.7 MiB ESM
-// chunk; transforming it beside the VFS snapshot exceeded the 128 MiB limit.
+// No cell is transformed in the session isolate. esbuild-wasm's heap starts at
+// ~28 MiB, grows with every module and is never released, and a launch that
+// transformed in-session carried it into the next step: `node -e 1` in the
+// seed project cost the session 39 MiB it never got back, `npx nuxi init`
+// took it from 36 to 151 MiB, and npm install then died of exceededMemory.
+// With a transform host, everything esbuild must see goes in ONE round trip,
+// and a large bundled cell whose shape allows it never reaches esbuild.
 {
   const root = 'home/user/node_modules/large-esm';
   const entry = `${root}/cli.js`;
   const large = `${root}/large.js`;
+  const unsupported = `${root}/unsupported.js`;
+  const small = `${root}/small.js`;
+  const broken = `${root}/broken.js`;
   const largeFiles = {
     'home/user/package.json': JSON.stringify({ name: 'large-test' }),
     [`${root}/package.json`]: JSON.stringify({ name: 'large-esm', type: 'module' }),
-    [entry]: 'import "./large.js";\n',
+    [entry]: 'import "./large.js";\nimport "./unsupported.js";\nimport "./small.js";\nimport "./broken.js";\n',
     [large]: `const payload = "${'x'.repeat(600_000)}";\nexport{payload};\n`,
-  };
-  let isolatedCalls = 0;
-  const local = {
-    async transform(code) {
-      assert.ok(code.length < 512 * 1024, 'large source reached supervisor transform');
-      return { code: '/* local-cjs */\n', map: '', warnings: [] };
-    },
-  };
-  const isolated = async (code) => {
-    isolatedCalls++;
-    assert.ok(code.length >= 512 * 1024);
-    return { code: '/* isolated-cjs */\n', map: '', warnings: [] };
-  };
-  const largeState = await buildPrefetchBundle(
-    new FakeVfs(largeFiles), `/${entry}`, 'home/user', largeFiles[entry], local,
-    undefined, undefined, undefined, isolated,
-  );
-  assert.equal(isolatedCalls, 0, 'bounded bundler rewrite should avoid esbuild entirely');
-  assert.match(largeState.bundle[large], /Object\.defineProperty\(module\.exports, "payload"/);
-
-  const unsupported = `${root}/unsupported.js`;
-  const unsupportedFiles = {
-    ...largeFiles,
-    [entry]: 'import "./unsupported.js";\n',
     [unsupported]: `export function payload() { return "${'x'.repeat(600_000)}"; }\n`,
+    [small]: 'export const small = 1;\n',
+    [broken]: 'export const BROKEN = ;\n',
   };
-  const unsupportedState = await buildPrefetchBundle(
-    new FakeVfs(unsupportedFiles), `/${entry}`, 'home/user', unsupportedFiles[entry], local,
-    undefined, undefined, undefined, isolated,
+  const calls = [];
+  const hosted = new EsbuildService(undefined, {
+    transformHost: async (requests) => {
+      calls.push(requests.map(({ code }) => code));
+      return requests.map(({ code }) => (code.includes('BROKEN')
+        ? { error: 'Unexpected ";"' }
+        : { code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+    },
+  });
+  assert.equal(hosted.transformsInIsolate, false);
+  const state = await buildPrefetchBundle(
+    new FakeVfs(largeFiles), `/${entry}`, 'home/user', largeFiles[entry], hosted,
   );
-  assert.equal(isolatedCalls, 1, 'unsupported large syntax should use the isolated transform worker');
-  assert.equal(unsupportedState.bundle[unsupported], '/* isolated-cjs */\n');
+  assert.equal(calls.length, 1, 'the whole launch is one round trip to the host');
+  assert.equal(calls[0].length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
+  assert.match(state.bundle[large], /Object\.defineProperty\(module\.exports, "payload"/,
+    'the bounded rewrite needs no esbuild at all');
+  for (const cell of [entry, unsupported, small]) assert.equal(state.bundle[cell], '/* hosted-cjs */\n', cell);
+  assert.throws(() => new Function(state.bundle[broken])(), /esbuild transform failed for .*broken\.js: Unexpected ";"/,
+    'a rejected module throws its reason when required, and costs the others nothing');
+
+  // A host that fails is no verdict on any module: this launch gets
+  // diagnostics, and the next one, with the host back, gets the emit.
+  const downRoot = 'home/user/node_modules/down-esm';
+  const downFiles = {
+    'home/user/package.json': JSON.stringify({ name: 'down-test' }),
+    [`${downRoot}/package.json`]: JSON.stringify({ name: 'down-esm', type: 'module' }),
+    [`${downRoot}/cli.js`]: 'import "./dep.js";\n',
+    [`${downRoot}/dep.js`]: 'export const dep = 2;\n',
+  };
+  const failing = new EsbuildService(undefined, {
+    transformHost: async () => { throw new Error('transform facet unavailable'); },
+  });
+  const down = await buildPrefetchBundle(
+    new FakeVfs(downFiles), `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], failing,
+  );
+  assert.throws(() => new Function(down.bundle[`${downRoot}/dep.js`])(),
+    /esbuild transform failed for .*dep\.js: transform facet unavailable/);
+  const back = await buildPrefetchBundle(
+    new FakeVfs(downFiles), `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], hosted,
+  );
+  assert.equal(back.bundle[`${downRoot}/dep.js`], '/* hosted-cjs */\n', 'the host failure was not cached');
 }
 
 console.log('facet-bundle-esm-candidates: ok');
