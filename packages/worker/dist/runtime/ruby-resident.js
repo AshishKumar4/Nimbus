@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { buildRubyPreamble, normalizeRubyFacetResult, } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from '@nimbus-sh/core/runtime/virtual-socket-kernel.generated.js';
 const RubySocketProcessBootResponseSchema = z.object({
-    state: z.string().optional(),
+    state: z.enum(['listening', 'exited']),
     port: z.number().optional(),
     stdout: z.string().optional(),
     stderr: z.string().optional(),
@@ -69,34 +69,16 @@ export function rubyResidentStart(facetMgr) {
                 port: routeablePort,
             };
         }
-        const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid);
-        if (reservedPorts.length > 0) {
-            return {
-                exitCode: 0,
-                stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${reservedPorts[0]}]\x1b[0m\n`,
-                stderr: boot.stderr || '',
-                spawnedPid: spawned.pid,
-                port: reservedPorts[0],
-            };
-        }
-        if (boot.state === 'exited') {
-            const result = normalizeRubyFacetResult(boot.result) || {
-                exitCode: 1,
-                stdout: '',
-                stderr: 'ruby process returned an invalid exit payload\n',
-            };
-            facetMgr.finishProcess(spawned.pid, result.exitCode, result.stderr || 'ruby process exited');
-            return {
-                exitCode: result.exitCode,
-                stdout: result.stdout,
-                stderr: result.stderr || result.error || '',
-            };
-        }
+        const result = normalizeRubyFacetResult(boot.result) || {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'ruby process returned an invalid exit payload\n',
+        };
+        facetMgr.finishProcess(spawned.pid, result.exitCode, result.stderr || 'ruby process exited');
         return {
-            exitCode: 0,
-            stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`,
-            stderr: boot.stderr || '',
-            spawnedPid: spawned.pid,
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr || result.error || '',
         };
     };
 }
@@ -223,7 +205,8 @@ export function buildRubySocketProcessWorker(preamble) {
         '    });',
         '  }',
         '  const started = globalThis.__nimbusRubyProcessOutputStart || { stdoutStart: 0, stderrStart: 0 };',
-        '  const listen = globalThis.__nimbusVirtualSockets.waitForListen(10_000).then((port) => ({ state: port ? "listening" : "pending", port }));',
+        // No deadline: a server reports once it binds, however long its requires take.
+        '  const listen = globalThis.__nimbusVirtualSockets.waitForListen().then((port) => ({ state: "listening", port }));',
         '  const exit = globalThis.__nimbusRubyProcessPromise.then((result) => ({ state: "exited", result }));',
         '  const first = await Promise.race([listen, exit]);',
         '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
@@ -231,10 +214,7 @@ export function buildRubySocketProcessWorker(preamble) {
         '  const stdout = (globalThis.__nimbusRubyStdout || []).slice(started.stdoutStart).join("");',
         '  const stderr = (globalThis.__nimbusRubyStderr || []).slice(started.stderrStart).join("");',
         '  if (first.state === "listening") return { state: "listening", port: first.port, stdout, stderr };',
-        '  if (first.state === "exited") return { state: "exited", result: first.result, stdout, stderr };',
-        '  const currentPort = globalThis.__nimbusVirtualSockets.firstListeningPort();',
-        '  if (currentPort) return { state: "listening", port: currentPort, stdout, stderr };',
-        '  return { state: "running", stdout, stderr };',
+        '  return { state: "exited", result: first.result, stdout, stderr };',
         '}',
         '',
         // Only adopt a real binding: routed handleHttpRequest/fetch hops resolve

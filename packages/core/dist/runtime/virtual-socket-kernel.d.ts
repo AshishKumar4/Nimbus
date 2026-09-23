@@ -237,7 +237,7 @@ export declare class VirtualSocketKernel {
     firstListeningPort(): number | null;
     /** select()-style readiness: resolves ports with queued connections, [] on timeout. */
     waitReadable(ports: readonly number[], timeoutSeconds?: number | null): Promise<number[]>;
-    waitForListen(timeoutMs?: number): Promise<number | null>;
+    waitForListen(): Promise<number>;
     handleHttpRequest(port: number, request: Request): Promise<Response>;
     private notifyReadable;
 }

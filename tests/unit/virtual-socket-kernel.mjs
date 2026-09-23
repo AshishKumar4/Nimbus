@@ -297,10 +297,10 @@ for (const [status, statusText] of [[204, 'No Content'], [205, 'Reset Content'],
 // waitForListen resolves the first listening port.
 {
   const kernel = new VirtualSocketKernel({});
-  const listenPromise = withTimeout(kernel.waitForListen(1_000), 'waitForListen');
+  const listenPromise = withTimeout(kernel.waitForListen(), 'waitForListen');
   const port = kernel.listen(8125);
   assert.equal(await listenPromise, 8125);
-  assert.equal(await kernel.waitForListen(1_000), 8125, 'existing listener resolves immediately');
+  assert.equal(await kernel.waitForListen(), 8125, 'existing listener resolves immediately');
 
   assert.deepEqual(await withTimeout(kernel.waitReadable([port], 0.05), 'waitReadable timeout'), []);
 

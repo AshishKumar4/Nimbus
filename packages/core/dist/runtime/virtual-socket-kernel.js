@@ -1053,23 +1053,13 @@ export class VirtualSocketKernel {
         this.readableWaiters.add(waiter);
         return deferred.promise;
     }
-    async waitForListen(timeoutMs) {
+    waitForListen() {
         const existing = this.firstListeningPort();
         if (existing)
-            return existing;
+            return Promise.resolve(existing);
         const waiter = new Deferred();
         this.listenWaiters.push(waiter);
-        let timer = null;
-        const timeout = new Promise((resolve) => {
-            timer = setTimeout(() => resolve(null), Math.max(1, timeoutMs ?? 5_000));
-        });
-        try {
-            return await Promise.race([waiter.promise, timeout]);
-        }
-        finally {
-            if (timer !== null)
-                clearTimeout(timer);
-        }
+        return waiter.promise;
     }
     async handleHttpRequest(port, request) {
         const n = Number(port);
