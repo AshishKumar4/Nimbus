@@ -11,6 +11,7 @@ import * as services from './services.js';
 import { z } from 'zod/v4';
 declare const HostedTask: z.ZodEnum<{
     "resident-launch": "resident-launch";
+    "resident-keepalive": "resident-keepalive";
     "log-flush": "log-flush";
     "log-janitor": "log-janitor";
 }>;
@@ -34,10 +35,10 @@ export interface RuntimeFiles extends SandboxFs {
     as(cred: VfsCred): RuntimeFiles;
 }
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
-    workspace: NimbusWorkspace;
-    terminal: WebSocketTerminal;
-    files: RuntimeFiles;
-    runtimes: import("@nimbus-sh/core/runtime/runtime-manager.js").RuntimeManager;
+    supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+    onScheduled: (task: HostedRuntimeTask) => Promise<void>;
+    terminalClose: (ws: WebSocket) => void;
+    close: () => Promise<void>;
     facets: () => ComposedFacetManager;
     ready: (options?: operations.ProgrammaticReadyOptions | undefined) => Promise<{
         ok: true;
@@ -124,12 +125,12 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     }>;
     spawnWorker: (workerCode: string, command: string, cwd: string, opts?: import("../workspace-host.js").LongRunningWorkerSpawnOptions | undefined) => Promise<import("../facets/manager.js").SpawnedWorker>;
     routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, innerPath: string) => Promise<Response>;
-    supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
-    onScheduled: (task: HostedRuntimeTask) => Promise<void>;
     attachTerminal: (ws: WebSocket) => Promise<void>;
     terminalFrame: (ws: WebSocket, message: string | ArrayBuffer) => Promise<void>;
-    terminalClose: (ws: WebSocket) => void;
-    close: () => Promise<void>;
+    workspace: NimbusWorkspace;
+    terminal: WebSocketTerminal;
+    files: RuntimeFiles;
+    runtimes: import("@nimbus-sh/core/runtime/runtime-manager.js").RuntimeManager;
 }>;
 export type HostedRuntime = Awaited<ReturnType<typeof composeHostedRuntime>>;
 export {};
