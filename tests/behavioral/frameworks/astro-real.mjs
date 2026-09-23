@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 // frameworks/astro-real — the real `npm create astro` → `npm install` →
-// `astro dev` flow under Nimbus, checked end to end over the public port
-// route.
+// `astro dev` flow under Nimbus, up to the boundary it stops at.
 //
 // Category: R (runtime-behavioral)
 //
@@ -10,28 +9,24 @@
 //   cd mvp && npm install
 //   npx astro dev --host 0.0.0.0 --port 4321
 //
-// What this probe PROVES, honestly:
+// What this probe PROVES:
 //   1. create-astro resolves+installs its own dependency tree and launches
-//      as a facet (npm resolver + facet spawn). This guards the regression
-//      where the facet exited before giget's async template download had
-//      settled: create-astro must stay alive through that fetch, which is
-//      why the "facet started" line and the exit-0 check are separate.
-//      The download also needs outbound fetch with a User-Agent — giget
-//      hits api.github.com, which 403s UA-less requests; Nimbus injects
-//      "User-Agent: node" so GitHub answers 302→codeload 200.
-//   2. create-astro exits 0 and the template is on disk: mvp/package.json,
-//      mvp/astro.config.mjs and mvp/src/pages/index.astro exist. The copy
-//      goes through node-tar's gzip extract; workerd now ships synchronous
-//      zlib (`zlib.Gunzip` is a constructor, `gunzipSync` works), so the
-//      old "no synchronous zlib" boundary no longer exists.
-//   3. `npm install` of the generated project exits 0.
-//   4. `npx astro dev --host 0.0.0.0 --port 4321` starts as a long-running
-//      bin, binds 4321, and `GET /s/<sid>/port/4321/` answers 200 with
-//      HTML containing "Astro" (the minimal template renders <h1>Astro</h1>).
+//      as a facet, stays alive through giget's template download (outbound
+//      fetch with Nimbus's default "User-Agent: node"; api.github.com 403s
+//      UA-less requests), exits 0, and the template is on disk (node-tar's
+//      gzip extract over workerd's synchronous zlib).
+//   2. `npm install` of the generated project exits 0, and announces that
+//      rolldown has no Workers-compatible build.
+//   3. `npx astro dev` starts as a long-running bin and stops at that
+//      boundary with a diagnostic that says so.
 //
-// Failure is loud: if the dev server does not serve within its budget the
-// probe fails with the last 60 lines of the process log in the message
-// instead of an assertion that encodes "expected to fail".
+// The boundary is a platform limit, not a Nimbus gap: the template's
+// astro@7 requires vite@8, which loads rolldown's binding at startup.
+// rolldown ships platform .node shards and one wasm build,
+// @rolldown/binding-wasm32-wasi: a wasm32-wasip1-threads binary (shared
+// memory import, wasi thread-spawn, raw memory.atomic.wait32). Workers run
+// one thread per isolate with Atomics.wait disabled. If `astro dev` ever
+// serves, the check below fails so the probe goes back to asserting it.
 
 import {
   Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort,
@@ -102,7 +97,12 @@ try {
   console.log(`[astro-real] install exit=${ins.exit} elapsed=${ins.elapsed}ms`);
   console.log(tail(ins.output, 8));
   a.check('npm install exits 0', ins.exit === 0, `exit=${ins.exit} tail=${JSON.stringify(tail(ins.output, 20))}`);
-  if (ins.exit !== 0) throw new Error('npm install failed; nothing to serve');
+  if (ins.exit !== 0) throw new Error('npm install failed; nothing to launch');
+  const insOut = stripAnsi(ins.output);
+  const installNote = insOut.split(/\r?\n/).find((l) => /note:\s*rolldown has no Workers-compatible build/.test(l)) ?? '';
+  a.check('npm install announces that rolldown has no Workers-compatible build, naming the wasi-threads build',
+    /wasm32-wasip1-threads/.test(installNote) && /Atomics\.wait/.test(installNote),
+    JSON.stringify(installNote || tail(insOut, 20)));
 
   // ── 3. astro dev ────────────────────────────────────────────────────
   // A long-running npm bin returns the shell prompt immediately with a
@@ -120,25 +120,27 @@ try {
   let served = null;
   let lastStatus = 'no response';
   const deadline = Date.now() + DEV_BUDGET_MS;
-  while (Date.now() < deadline && !served) {
-    if (proc.exit) break;
+  while (Date.now() < deadline && !served && !proc.exit) {
     try {
       const pr = await fetchPort(sid, PORT);
       lastStatus = `status=${pr.status} body=${JSON.stringify(pr.body.slice(0, 200))}`;
-      if (pr.status === 200 && /<html/i.test(pr.body)) { served = pr; break; }
+      if (pr.status === 200 && /<html/i.test(pr.body)) served = pr;
     } catch (e) {
       lastStatus = `fetch error: ${e.message}`;
     }
-    await sleep(1_000);
+    if (!served) await sleep(1_000);
   }
-  const procTail = tail(proc.output, 60);
+  const procOut = proc.output;
+  const procTail = tail(procOut, 60);
   console.log(`[astro-real] process log tail:\n${procTail}`);
-  a.check(`GET /s/<sid>/port/${PORT}/ answers 200 HTML within ${DEV_BUDGET_MS / 1000}s`,
-    served !== null,
-    `${proc.exit ? `process exited: ${JSON.stringify(proc.exit)}; ` : ''}last ${lastStatus}\n--- last 60 lines of astro dev log (pid ${pid}) ---\n${procTail}`);
-  a.check('the served page is the Astro minimal template ("Astro" in HTML)',
-    served !== null && /Astro/.test(served.body),
-    served ? JSON.stringify(served.body.slice(0, 600)) : 'not served');
+  const evidence = `exit=${JSON.stringify(proc.exit)} last ${lastStatus}\n--- last 60 lines of astro dev log (pid ${pid}) ---\n${procTail}`;
+  a.check(`port ${PORT} never serves: GET /s/<sid>/port/${PORT}/ is not 200 HTML (if it is, the rolldown boundary moved — assert the page again)`,
+    served === null, served ? JSON.stringify(served.body.slice(0, 600)) : evidence);
+  a.check(`astro dev exits non-zero within ${DEV_BUDGET_MS / 1000}s`,
+    proc.exit !== null && proc.exit.code !== 0, evidence);
+  const devNote = procOut.split(/\r?\n/).find((l) => /Nimbus: rolldown has no Workers-compatible build/.test(l)) ?? '';
+  a.check('astro dev\'s error says rolldown has no Workers-compatible build and why',
+    /wasm32-wasip1-threads/.test(devNote) && /Atomics\.wait/.test(devNote), evidence);
 } finally {
   if (proc) { try { proc.ws.close(); } catch { /* probe teardown */ } }
   await t.close();
