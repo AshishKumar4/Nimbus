@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f74e2ba65cc225ec4c95e86d0b63ad39271d673be9245089ca796df11e284074",
+  "fingerprint": "623b79e1c4b4b5629e546dc2d418f01455581fe25ebe1c996b3310fbbb2aa47b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1587,7 +1587,7 @@
     "packages/worker/dist/npm/semver.js": "4b80c6bcf9b039d42c56e940cb85423788407f804cc430382621dc8e12b99dd3",
     "packages/worker/dist/opencode-artifact.generated.d.ts": "1f746b1394b05787ea4885550f45b56c1c94e9a2a30df51294410f3f26773bef",
     "packages/worker/dist/opencode-artifact.generated.d.ts.map": "2ef273271b1b2d2a21b073cc301f6e4df73272452d8c566a0fd88857764bf104",
-    "packages/worker/dist/opencode-artifact.generated.js": "4a0a19a1fb0a37b38ef6f1b7d1c46390be31718f999ae75830a504a2502b2c81",
+    "packages/worker/dist/opencode-artifact.generated.js": "8f8ba7c8caf97bf1288eef06791eb4764c9a5f738c3c29fdbfb875496990789c",
     "packages/worker/dist/opentui-wasm-artifact.generated.d.ts": "692f30d396a3bdd4cb8b499b4a731b3e307497efc60d9e661494952d03d05e19",
     "packages/worker/dist/opentui-wasm-artifact.generated.d.ts.map": "89dcd867ae0cc21010793400c29974ca5ce4b2f582892b0e7143b0cd2c9014fc",
     "packages/worker/dist/opentui-wasm-artifact.generated.js": "24c742335d0f7948aec2df166bedba450877b40899a42efe3b3e801d0dbf6168",
@@ -1831,7 +1831,7 @@
     "packages/worker/public/_assets/opencode/1.16.2/highlights-hk7bwhj4.scm": "f2232f0fde717543e4541cec871dd8633cb9bc6b5d1686a56b2d469c1dd9e6b6",
     "packages/worker/public/_assets/opencode/1.16.2/highlights-r812a2qc.scm": "f3b02df1a9213cfecfb6936bce8db2f777edd523fc23ed890695e6cb4552d556",
     "packages/worker/public/_assets/opencode/1.16.2/highlights-x6tmsnaa.scm": "ca9a109ddd21c5ffdc6b84f00c0a4b2eeb55ae36a0b8eeb9b02348269c5acd22",
-    "packages/worker/public/_assets/opencode/1.16.2/index-attach.js": "9b11e5c29b61050c1a1822d5427ff160a23538e28115b1acf6106fdf1e467123",
+    "packages/worker/public/_assets/opencode/1.16.2/index-attach.js": "8affc9bb21dc8ef55e8599a2b82f36d9a2cf39189563f9f7a9f029a0f9cc7db0",
     "packages/worker/public/_assets/opencode/1.16.2/index.js": "6002a1bba20dc167453ade832a636f620f00d89c03a4d5f8f9da29e406ee2179",
     "packages/worker/public/_assets/opencode/1.16.2/injections-73j83es3.scm": "a2bf8c052454acbe765970a4ad2706c60cad7b62a762b927e28f60af1a0ef516",
     "packages/worker/public/_assets/opencode/1.16.2/nope-03-2z8weyjw.mp3": "9832805f84dcdb4a8ccb46a98cc75def72b52509610837938ed8343b2537df0c",
@@ -1861,7 +1861,7 @@
     "packages/worker/public/s/index.html": "ca7b1537d18e9d6847d3b3e2a42c9a1701e7225f8fbe39d2765fdd8d254c326c",
     "packages/worker/runtime-contracts/nimbus-threads.c": "f20fe40184b9b9664458b01a10536f4382f2141c468ffb8203cbb2649cc0a8be",
     "packages/worker/runtime-contracts/pyodide-workerd-adapter.json": "50b11f60f9bbf8d3e05a676ef19128e240ab53fc479d1f1a067b7799dd269410",
-    "packages/worker/scripts/build-opencode-attach-entry.mjs": "91dcf4ecba4e1675f1f0f9b961ce1f3eac80265f4031d3b0fcd3d0fbf9fcfe99",
+    "packages/worker/scripts/build-opencode-attach-entry.mjs": "a05a47b7fa9573d62e654dc7e2db76de922a9e5d73d10b02c48c3c4d217181ff",
     "packages/worker/scripts/bundle-agent-chat.mjs": "ad48e46d1bcbc1b970bbb576c683e2b1d96511faa5ecb2c2775c343349ae77d2",
     "packages/worker/scripts/bundle-esbuild-wasm.mjs": "c8396abed2383740b47b32b6cae9fe189652ba0f52f5d61b782e0b2d6fcc1ad8",
     "packages/worker/scripts/bundle-facet-workers.mjs": "f9486026c4df4562c5ba51daf7508f363ce1e921a637dffdbecc701ec9e55883",
@@ -1949,7 +1949,7 @@
     "packages/worker/src/npm/resolve-one-facet.ts": "4b8d571cbb9b37674e82eb7e5886733dd16db29d4759595f6e692300f5322417",
     "packages/worker/src/npm/resolver.ts": "093d01f04f1310317c7a91a011b1acf5a05ba15c6aa4b648bf27f73959d73e3b",
     "packages/worker/src/npm/semver.ts": "541d2fc57bcc100804afcf51d2790f89f62c934c5a500a2fed274bbe238b2e4f",
-    "packages/worker/src/opencode-artifact.generated.ts": "7cc6068e5053f112acd61a508b2c917730d84b3795aa6fb1eb86e8043486e493",
+    "packages/worker/src/opencode-artifact.generated.ts": "fe2f34af73b773a848261e478feb6ccde232c27c85bace372df6678eac8183b4",
     "packages/worker/src/opentui-wasm-artifact.generated.ts": "d7fbc62f0ebd648e62d84c4aa2a4241b6850f0a4204ce07612ea3b5be6663d83",
     "packages/worker/src/real-vite-bundle.generated.ts": "fe7711a983797efd555d78325c443866435b01a6dd12ed8ebfcbb4315abd3f86",
     "packages/worker/src/replica/routing.ts": "7ac7f42169816c0f6c2f625862f9cde6d9d1e193f825d0cb7ac1a7279df81ee8",
