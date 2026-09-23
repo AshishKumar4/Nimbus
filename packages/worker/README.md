@@ -288,6 +288,7 @@ npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 | `@nimbus-sh/worker` | Runtime implementation package used by the SDK entrypoint. |
 | `@nimbus-sh/worker/router` | Runtime router implementation and hook types. |
 | `@nimbus-sh/worker/auth` | Runtime auth implementation re-exported by `@nimbus-sh/sdk/token`. |
+| `@nimbus-sh/worker/workspace-host` | `composeHostedRuntime`: the runtime over a `NimbusWorkspace` in your own Durable Object. Its `lifecycle.schedule` must be backed by an alarm; see [Use as a library](https://nimbus-os.dev/docs/sdk/library/). |
 
 ## Required bindings
 
