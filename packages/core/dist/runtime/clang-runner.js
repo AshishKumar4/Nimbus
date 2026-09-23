@@ -577,13 +577,6 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
     await vfs.writeFile(stampPath, JSON.stringify(stamp));
 }
 async function loadClangToolchain(args) {
-    // Hand the file's own backing buffer to the loader when the Uint8Array
-    // spans it exactly (the uncached reads below always allocate a fresh
-    // whole buffer) — avoids a second 31 MiB copy of clang.wasm in the DO
-    // heap during warm-up. Falls back to a slice for sub-views.
-    const toAB = (u8) => (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
-        ? u8.buffer
-        : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
     // Uncached reads: these are one-shot bulk reads of large runtime blobs
     // (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB). Routing them
     // through the LRU content cache would evict the user's hot working set
@@ -591,9 +584,10 @@ async function loadClangToolchain(args) {
     // session — a primary cause of supervisor-DO memory pressure that tips
     // heavy sessions into an OOM reset mid-compile.
     await ensureSysrootUnpacked(args.vfs, args.sysrootVfsPath, args.sysrootDir);
-    const clangBytes = await args.vfs.readFileUncached(args.clangVfsPath);
-    const lldBytes = await args.vfs.readFileUncached(args.lldVfsPath);
-    return { clang: toAB(clangBytes), lld: toAB(lldBytes) };
+    return {
+        clang: await args.vfs.readArrayBufferUncached(args.clangVfsPath),
+        lld: await args.vfs.readArrayBufferUncached(args.lldVfsPath),
+    };
 }
 async function dispatchClangFacet(target, args) {
     const facetFn = async function clangFacetCall(inArgs, facetEnv) {

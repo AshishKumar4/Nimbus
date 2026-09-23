@@ -164,10 +164,6 @@ async function buildPythonModulePipInvocation(
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -382,7 +378,7 @@ export function makeCPythonRunnerFactory(deps: {
         // never reaches the session.
         syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
         preamble: buildCPythonPreamble(),
-        wasmModules: { 'python.wasm': toArrayBuffer((await vfs.readFile(wasmVfs))) },
+        wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
       });
 
       const facetArgs = {

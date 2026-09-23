@@ -138,9 +138,6 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
         return { mode: 'none', code: '', exitCode: 0 };
     return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
-function toArrayBuffer(bytes) {
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -314,7 +311,7 @@ export function makeCPythonRunnerFactory(deps) {
                 // never reaches the session.
                 syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
                 preamble: buildCPythonPreamble(),
-                wasmModules: { 'python.wasm': toArrayBuffer((await vfs.readFile(wasmVfs))) },
+                wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
             });
             const facetArgs = {
                 userCode: `${prelude}\n${userCode}`,
