@@ -1,6 +1,7 @@
 export { composeFacetManager, type FacetManagerDeps, type FacetManagerHostHooks, type ComposedFacetManager } from './facets/compose.js';
 export type { WorkerRecipe, ResolvedWorkerLaunch, LongRunningWorkerSpawnOptions } from './facets/manager.js';
 export { composeHostedRuntime, type HostedRuntime, type HostedRuntimeOptions, type HostedRuntimeLifecycle, type HostedRuntimeTask, type RuntimeFiles } from './hosted/runtime.js';
+export { collectExecStream, decodeExecStream, encodeExecStream, type ExecChunk, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName } from '@nimbus-sh/core/runtime/exec-stream.js';
 export { runtimeCatalogSource } from './runtime/runtime-catalog.js';
 export { SupervisorRPC } from './session/supervisor-rpc.js';
 export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub } from '@nimbus-sh/fabric/bindings.js';

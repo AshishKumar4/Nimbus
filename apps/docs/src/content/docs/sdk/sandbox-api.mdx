@@ -35,6 +35,23 @@ const proc = await box.startProcess('node --watch server.js');
 // NimbusExecResult & { pid, process, ports }
 ```
 
+`exec` holds the whole output until the command exits. For large or
+long-running output, use `execStream`: it returns stdout and stderr as bytes
+while the command writes them.
+
+```ts
+const run = await box.execStream('npm test', { timeoutMs: 600_000 });
+for await (const chunk of run.output) {
+  await spill.write(chunk.stream, chunk.data);   // chunk: { stream: 'stdout' | 'stderr', data: Uint8Array }
+}
+const { exitCode } = await run.exit;             // settles after the last chunk
+```
+
+The stream applies backpressure. When the reader stops, the command waits at
+its next write, so unread output does not pile up in the sandbox: it holds
+about 64 KiB, plus what the RPC or HTTP transport has in flight. Cancelling `run.output` kills the command, and `run.exit` then rejects
+with the cancel reason. `exec` reads this same stream to the end.
+
 ## Files
 
 Read and change files through the sandbox VFS.

@@ -2,6 +2,7 @@
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
 import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
+import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { z } from 'zod/v4';
 /** The trailing wire argument a credentialed file op carries, or nothing. */
 function fileWireOptions(cred) {
@@ -29,6 +30,29 @@ const RemoteRpcFailureSchema = z.object({
     message: z.string().optional(),
     code: z.string().optional(),
 }).passthrough();
+async function remotePayload(response) {
+    const text = await response.text();
+    if (!text)
+        return null;
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        throw new NimbusRemoteError(`Nimbus remote API returned non-JSON response (${response.status})`, {
+            status: response.status,
+            body: text,
+        });
+    }
+}
+function remoteFailure(response, payload) {
+    const failure = RemoteRpcFailureSchema.safeParse(payload);
+    const fallback = `Nimbus remote API request failed (${response.status})`;
+    return new NimbusRemoteError(failure.success ? failure.data.error ?? failure.data.message ?? fallback : fallback, {
+        status: response.status,
+        code: failure.success ? failure.data.code : undefined,
+        body: payload,
+    });
+}
 const WireBytesSchema = z.object({
     __nimbusWireType: z.literal('bytes'),
     base64: z.string(),
@@ -283,7 +307,7 @@ export class NimbusSandbox {
     remoteStub() {
         return {
             _rpcReady: (options) => this.remoteRpc('ready', [options], ReadyResultSchema),
-            _rpcExec: (command, options) => this.remoteRpc('exec', [command, options], ExecResultSchema),
+            _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
             _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options], StartResultSchema),
             _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options], ExecResultSchema),
             // A credential rides the wire as a trailing `{ cred }` options object
@@ -329,16 +353,32 @@ export class NimbusSandbox {
         };
     }
     async remoteRpc(op, args, resultSchema) {
+        const response = await this.remoteFetch(op, args, 'application/json');
+        const payload = await remotePayload(response);
+        const success = RemoteRpcSuccessSchema.safeParse(payload);
+        if (!response.ok || !success.success)
+            throw remoteFailure(response, payload);
+        return resultSchema.parse(decodeWire(success.data.result));
+    }
+    /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
+    async remoteExecStream(args) {
+        const response = await this.remoteFetch('execStream', args, EXEC_STREAM_CONTENT_TYPE);
+        const type = response.headers.get('Content-Type') ?? '';
+        if (response.ok && response.body && type.startsWith(EXEC_STREAM_CONTENT_TYPE))
+            return response.body;
+        throw remoteFailure(response, await remotePayload(response));
+    }
+    async remoteFetch(op, args, accept) {
         if (this.target.kind !== 'remote') {
-            throw new Error('Nimbus internal error: remoteRpc called on non-remote target');
+            throw new Error('Nimbus internal error: remote call on non-remote target');
         }
         const headers = new Headers(await resolveHeaders(this.target.headers));
-        headers.set('Accept', 'application/json');
+        headers.set('Accept', accept);
         headers.set('Content-Type', 'application/json');
         if (this.target.token && !headers.has('Authorization')) {
             headers.set('Authorization', `Bearer ${this.target.token}`);
         }
-        const response = await this.target.fetch(`${this.target.endpoint}${this.target.basePath}/sandboxes/${encodeURIComponent(this.id)}/rpc`, {
+        return this.target.fetch(`${this.target.endpoint}${this.target.basePath}/sandboxes/${encodeURIComponent(this.id)}/rpc`, {
             method: 'POST',
             headers,
             body: JSON.stringify(encodeWire({
@@ -350,32 +390,6 @@ export class NimbusSandbox {
                 args,
             })),
         });
-        const text = await response.text();
-        let payload = null;
-        if (text) {
-            try {
-                payload = JSON.parse(text);
-            }
-            catch {
-                throw new NimbusRemoteError(`Nimbus remote API returned non-JSON response (${response.status})`, {
-                    status: response.status,
-                    body: text,
-                });
-            }
-        }
-        const success = RemoteRpcSuccessSchema.safeParse(payload);
-        if (!response.ok || !success.success) {
-            const failure = RemoteRpcFailureSchema.safeParse(payload);
-            const message = failure.success
-                ? failure.data.error ?? failure.data.message ?? `Nimbus remote API request failed (${response.status})`
-                : `Nimbus remote API request failed (${response.status})`;
-            throw new NimbusRemoteError(message, {
-                status: response.status,
-                code: failure.success ? failure.data.code : undefined,
-                body: payload,
-            });
-        }
-        return resultSchema.parse(decodeWire(success.data.result));
     }
     async ready() {
         if (!this.readyPromise) {
@@ -386,9 +400,18 @@ export class NimbusSandbox {
         }
         return this.readyPromise;
     }
+    /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     async exec(command, options = {}) {
+        return collectExecStream(await this.execStream(command, options));
+    }
+    /**
+     * Run a command and read its stdout and stderr as they are written, as
+     * bytes, without the sandbox or this client holding the whole output.
+     * Resolves once the command has started. `timeoutMs` still applies.
+     */
+    async execStream(command, options = {}) {
         await this.ready();
-        return this.rpc(this.stub()._rpcExec(command, this.execOptions(options)));
+        return decodeExecStream(await this.stub()._rpcExecStream(command, this.execOptions(options)));
     }
     /**
      * Start a command in the background. Returns as soon as the process has a

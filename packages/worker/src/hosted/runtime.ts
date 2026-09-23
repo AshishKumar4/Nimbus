@@ -342,6 +342,7 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
     facets: () => owner.ensureFacetManager(),
     ready: operations.ensureProgrammaticReady.bind(null, owner),
     exec: operations.rpcExec.bind(null, owner),
+    execStream: operations.rpcExecStream.bind(null, owner),
     runCode: operations.rpcRunCode.bind(null, owner),
     startProcess: operations.rpcStartProcess.bind(null, owner),
     listProcesses: operations.rpcListProcesses.bind(null, owner),

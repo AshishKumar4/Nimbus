@@ -10,13 +10,12 @@
 
 import assert from 'node:assert/strict';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
+import { EXEC_STREAM_CONTENT_TYPE, createExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 
-const EXEC_RESULT = {
+const EXEC_EXIT = {
   command: 'pwd',
   exitCode: 0,
   success: true,
-  stdout: '',
-  stderr: '',
   duration: 0,
   timestamp: 0,
 };
@@ -38,9 +37,17 @@ function connectSpy(sandboxOptions) {
   const fetch = async (url, init) => {
     const body = JSON.parse(init.body);
     calls.push(body);
+    if (body.op === 'execStream') {
+      const writer = createExecStream(() => {});
+      writer.end(EXEC_EXIT);
+      return new Response(encodeExecStream(writer.stream), {
+        status: 200,
+        headers: { 'content-type': EXEC_STREAM_CONTENT_TYPE },
+      });
+    }
     const result = body.op === 'ready'
       ? { ok: true, preinstalled: [] }
-      : body.op === 'startProcess' ? START_RESULT : EXEC_RESULT;
+      : START_RESULT;
     return new Response(JSON.stringify({ ok: true, result }), {
       status: 200,
       headers: { 'content-type': 'application/json' },

@@ -16,6 +16,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
     env?: Record<string, string>;
@@ -28,9 +29,9 @@ export interface ProgrammaticShell {
 interface ProgrammaticShellExecuteOptions {
     cwd?: string;
     env?: Record<string, string>;
-    /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. */
-    onStdout?: (data: Uint8Array) => void;
-    onStderr?: (data: Uint8Array) => void;
+    /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. A returned promise is backpressure. */
+    onStdout?: (data: Uint8Array) => void | Promise<void>;
+    onStderr?: (data: Uint8Array) => void | Promise<void>;
     signal?: AbortSignal;
     stdin?: string;
     isolateShellState?: boolean;
@@ -155,15 +156,8 @@ export interface ProgrammaticDestroyResult {
     destroyedAt: number;
     reason: string | null;
 }
-export interface ProgrammaticExecResult {
-    command: string;
-    exitCode: number;
-    success: boolean;
-    stdout: string;
-    stderr: string;
-    duration: number;
-    timestamp: number;
-}
+/** The buffered exec result: the exec stream read to its end. */
+export type ProgrammaticExecResult = ExecOutput;
 /**
  * A started background process. There is no exit code or output here — the
  * process is still running when this returns. Read both back through
@@ -198,7 +192,14 @@ export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?
     ok: true;
     preinstalled: string[];
 }>;
+/** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export declare function rpcExec(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticExecResult>;
+/**
+ * Run a command and hand back its output as it is written. Resolves once the
+ * command has started (after any earlier call on the same named shell);
+ * validation and readiness failures reject here, not on the stream.
+ */
+export declare function rpcExecStream(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ExecStream>;
 /**
  * Start a command in the background and return its handle immediately.
  *

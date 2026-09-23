@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { rpcExec, rpcStartProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
+import { createExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 
 const AGENT = Object.freeze({ uid: 4242, gid: 4242, groups: Object.freeze([4242]), umask: 0o022 });
 
@@ -112,9 +113,11 @@ function makeRemoteEnv(calls) {
     NIMBUS_SESSION: {
       idFromName: (name) => ({ name }),
       get: () => ({
-        _rpcExec: async (command, options) => {
+        _rpcExecStream: async (command, options) => {
           calls.push({ command, options });
-          return { command, exitCode: 0, success: true, stdout: '', stderr: '', durationMs: 0 };
+          const writer = createExecStream(() => {});
+          writer.end({ command, exitCode: 0, success: true, duration: 0, timestamp: 0 });
+          return encodeExecStream(writer.stream);
         },
       }),
     },

@@ -3,6 +3,7 @@
 // Flue's sandbox connector contract without a hard runtime dependency.
 
 import { makeAsserter } from '../../_driver.mjs';
+import { createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
 
 const a = makeAsserter('sdk/new/flue-adapter');
 const { Nimbus } = await import('../../../../packages/sdk/src/index.ts');
@@ -19,9 +20,12 @@ class FakeNamespace {
 const calls = [];
 const stub = {
   async _rpcReady(options) { calls.push(['ready', options]); return { ok: true, preinstalled: [] }; },
-  async _rpcExec(command, options) {
+  async _rpcExecStream(command, options) {
     calls.push(['exec', command, options]);
-    return { command, exitCode: 0, success: true, stdout: 'ok\n', stderr: '', duration: 1, timestamp: 1 };
+    const writer = createExecStream(() => {});
+    await writer.write('stdout', new TextEncoder().encode('ok\n'));
+    writer.end({ command, exitCode: 0, success: true, duration: 1, timestamp: 1 });
+    return encodeExecStream(writer.stream);
   },
   async _rpcReadFile(path) { calls.push(['readFile', path]); return 'hello'; },
   async _rpcReadFileBytes(path) { calls.push(['readFileBytes', path]); return new Uint8Array([104, 105]); },

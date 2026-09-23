@@ -27,7 +27,8 @@ import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPre
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
-import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
     cwd: z.string().startsWith('/'),
@@ -192,7 +193,7 @@ function startShellJob(self, command, options, job, scoped) {
             }
             catch { /* ring gone */ }
         }
-        sink?.(data);
+        return sink?.(data);
     };
     const run = shell.execute(line, {
         // A named shell already holds its own cwd and env; passing them again
@@ -240,22 +241,46 @@ function assertAbsoluteExecCwd(options) {
         throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
     }
 }
+/** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export async function rpcExec(self, command, options = {}) {
+    return collectExecStream(await rpcExecStream(self, command, options));
+}
+/**
+ * Run a command and hand back its output as it is written. Resolves once the
+ * command has started (after any earlier call on the same named shell);
+ * validation and readiness failures reject here, not on the stream.
+ */
+export async function rpcExecStream(self, command, options = {}) {
     assertAbsoluteExecCwd(options);
     await ensureProgrammaticReady(self, options);
-    return withShellState(self, options, false, (scoped) => execOnShell(self, command, options, scoped));
+    let writer = null;
+    return new Promise((resolve, reject) => {
+        // The exit lands after a named shell's state is saved, so a caller that
+        // has read `exit` sees its `cd` on the next call.
+        withShellState(self, options, false, (scoped) => streamOnShell(self, command, options, scoped, (started) => {
+            writer = started;
+            resolve(started.stream);
+        })).then((exit) => writer.end(exit), (error) => (writer ? writer.fail(error) : reject(error)));
+    });
 }
-async function execOnShell(self, command, options, scoped) {
-    const stdout = [];
-    const stderr = [];
-    const started = Date.now();
-    let timeout = null;
-    let timedOut = false;
+async function streamOnShell(self, command, options, scoped, started) {
+    const began = Date.now();
+    let abort = () => { };
+    const writer = createExecStream(() => abort());
+    const wrote = { stdout: false, stderr: false };
+    const sink = (name) => (data) => {
+        wrote[name] = true;
+        return writer.write(name, data);
+    };
     const job = startShellJob(self, command, options, {
         background: false,
-        onStdout: textSink((d) => stdout.push(d)),
-        onStderr: textSink((d) => stderr.push(d)),
+        onStdout: sink('stdout'),
+        onStderr: sink('stderr'),
     }, scoped);
+    abort = job.abort;
+    started(writer);
+    let timeout = null;
+    let timedOut = false;
     let result;
     try {
         result = options.timeoutMs && options.timeoutMs > 0
@@ -271,27 +296,28 @@ async function execOnShell(self, command, options, scoped) {
             ])
             : await job.run;
     }
+    catch (error) {
+        self.processes.exit(job.pid, 1);
+        throw error;
+    }
     finally {
-        if (timeout)
-            clearTimeout(timeout);
+        clearTimeout(timeout);
     }
     const exitCode = Number(result.exitCode ?? (timedOut ? 124 : 0));
     self.processes.exit(job.pid, exitCode);
     if (timedOut) {
-        stderr.push(`command timed out after ${options.timeoutMs}ms\n`);
+        await sink('stderr')(enc.encode(`command timed out after ${options.timeoutMs}ms\n`));
     }
     const logged = collectJobOutput(self, job.pid);
-    if (stdout.length === 0 && logged.stdout)
-        stdout.push(logged.stdout);
-    if (stderr.length === 0 && logged.stderr)
-        stderr.push(logged.stderr);
+    if (!wrote.stdout && logged.stdout)
+        await writer.write('stdout', enc.encode(logged.stdout));
+    if (!wrote.stderr && logged.stderr)
+        await writer.write('stderr', enc.encode(logged.stderr));
     return {
         command: String(command),
         exitCode,
         success: exitCode === 0,
-        stdout: stdout.join(''),
-        stderr: stderr.join(''),
-        duration: Date.now() - started,
+        duration: Date.now() - began,
         timestamp: Date.now(),
     };
 }
