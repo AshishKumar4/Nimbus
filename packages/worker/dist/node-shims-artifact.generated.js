@@ -7,6 +7,6 @@
  * prefix so cache layers never serve stale bytes after a rebuild;
  * NODE_SHIMS_SHA256 is the full digest verified at fetch time.
  */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-56d47090123c0250.js";
-export const NODE_SHIMS_BUILD_ID = "56d47090123c0250";
-export const NODE_SHIMS_SHA256 = "56d47090123c02507e7da7db1047579c10e4dcfafa664afe862982753c31bd97";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-a0518e6be9e8fa03.js";
+export const NODE_SHIMS_BUILD_ID = "a0518e6be9e8fa03";
+export const NODE_SHIMS_SHA256 = "a0518e6be9e8fa038080986290e5f602a401c65df7b0612bb7120e0b9a0fbbb1";

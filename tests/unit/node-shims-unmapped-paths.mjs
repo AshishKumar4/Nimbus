@@ -333,4 +333,41 @@ assert.equal(
   );
 }
 
+// ── 9. The observation is ordered ahead of the program's own mutation ───────
+// update-check's `if (!existsSync(dir)) await mkdir(dir)`: the existence check
+// is provisional, and the stat that settles it must see the authority as it
+// was at the refusal. Issued concurrently with the mkdir it was overtaken in
+// transport, saw the program's own directory, and create-next-app exited 1
+// over /tmp/update-check (measured on a throwaway: 1 of 3 bare runs).
+{
+  // The authority answers a stat as of when it ARRIVES, and it arrives late.
+  const lateStat = {
+    ...supervisor,
+    stat: async (path) => {
+      await settle(4);
+      return bridge.stat(path);
+    },
+    mkdir: async (path) => { bridge.mkdir(path, { recursive: true }); },
+  };
+  const { fs: rfs } = factory(
+    {},
+    { 'home/user/work': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
+    {},
+    { '': ['home', 'tmp'], home: ['user'], 'home/user': ['work'], 'home/user/work': [] },
+    lateStat,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    '/home/user/work', [], {}, '/home/user/work/cli.js', '/home/user/work',
+  );
+  globalThis.__nimbusVfsResidencyMisses.clear();
+  const DIR = '/tmp/update-check-dir';
+  assert.equal(rfs.existsSync(DIR), false, 'nothing is there yet');
+  await rfs.promises.mkdir(DIR);
+  assert.equal((await bridge.stat(DIR))?.type, 'directory', 'the mkdir reached the authority');
+  await globalThis.__nimbusVfsResidencySettle();
+  assert.deepEqual(
+    [...globalThis.__nimbusVfsResidencyMisses], [],
+    'a directory the program created after being told it was absent was never withheld',
+  );
+}
+
 process.stdout.write('node-shims-unmapped-paths: all tests passed\n');
