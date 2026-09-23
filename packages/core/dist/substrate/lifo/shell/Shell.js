@@ -219,8 +219,9 @@ export class Shell {
         return this.registry;
     }
     /**
-     * Programmatic command execution with captured stdout/stderr.
-     * Used by Sandbox.commands.run() for headless mode.
+     * Programmatic command execution. Each stream goes to its sink when one is
+     * given, and is otherwise captured into the result; never both, so a
+     * streaming caller's output is not also held for the length of the command.
      */
     _executeDepth = 0;
     async execute(cmd, options) {
@@ -228,21 +229,28 @@ export class Shell {
         if (this._executeDepth > 10) {
             this._executeDepth--;
             const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-            await options?.onStderr?.(enc.encode(msg));
+            if (options?.onStderr) {
+                await options.onStderr(enc.encode(msg));
+                return { stdout: '', stderr: '', exitCode: 1 };
+            }
             return { stdout: '', stderr: msg, exitCode: 1 };
         }
         let stdoutBuf = '';
         let stderrBuf = '';
+        const onStdout = options?.onStdout;
+        const onStderr = options?.onStderr;
         const stdoutStream = {
             write: async (text) => {
+                if (onStdout)
+                    return (await onStdout(enc.encode(text)));
                 stdoutBuf += text;
-                return (await options?.onStdout?.(enc.encode(text)));
             },
         };
         const stderrStream = {
             write: async (text) => {
+                if (onStderr)
+                    return (await onStderr(enc.encode(text)));
                 stderrBuf += text;
-                return (await options?.onStderr?.(enc.encode(text)));
             },
         };
         // Save current state
@@ -264,10 +272,7 @@ export class Shell {
         // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
         // options so a nested `execute` never mutates shared interpreter config the
         // parent command's late-bound closures read.
-        const writeToTerminal = async (text) => {
-            stderrBuf += text;
-            return (await options?.onStderr?.(enc.encode(text)));
-        };
+        const writeToTerminal = (text) => stderrStream.write(text);
         // Apply per-call overrides
         if (options?.cwd) {
             this.setCwd(options.cwd);
@@ -303,8 +308,7 @@ export class Shell {
         }
         catch (e) {
             const msg = e instanceof Error ? (e.stack || e.message) : String(e);
-            stderrBuf += msg + '\n';
-            await options?.onStderr?.(enc.encode(msg + '\n'));
+            await stderrStream.write(msg + '\n');
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
         }
         finally {

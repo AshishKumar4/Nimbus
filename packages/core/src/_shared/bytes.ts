@@ -51,10 +51,10 @@ export class StreamTextDecoders<K> {
  * reads whole characters even when a multibyte one straddles two chunks.
  * One per stream; do not share a sink between stdout and stderr.
  */
-export function textSink(write: (text: string) => void): (bytes: Uint8Array) => void {
+export function textSink(write: (text: string) => void | Promise<void>): (bytes: Uint8Array) => void | Promise<void> {
   const decoder = new TextDecoder('utf-8');
   return (bytes) => {
     const text = decoder.decode(bytes, { stream: true });
-    if (text.length > 0) write(text);
+    if (text.length > 0) return write(text);
   };
 }

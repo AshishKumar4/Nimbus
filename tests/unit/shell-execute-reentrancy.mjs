@@ -43,6 +43,7 @@ const box = await Sandbox.create({ persist: false, terminal });
 
 try {
   let nestedResult = null;
+  let nestedOut = '';
 
   // Parent registry command modelled on the real `npm run` path: at the
   // interactive path `ctx.stdout` is the late-bound terminal fallback. It runs
@@ -54,7 +55,7 @@ try {
   box.commands.registry.register('parentcmd', async (ctx) => {
     ctx.stdout.write('PARENT_BEFORE\n');
     nestedResult = await box.shell.execute('echo NESTED_CAPTURED', {
-      onStdout: (t) => { try { ctx.stdout.write(text(t)); } catch {} },
+      onStdout: (t) => { nestedOut += text(t); try { ctx.stdout.write(text(t)); } catch {} },
       onStderr: (t) => { try { ctx.stderr.write(text(t)); } catch {} },
     });
     ctx.stdout.write('PARENT_AFTER\n');
@@ -69,8 +70,8 @@ try {
   terminal.clear();
   await box.shell.executeLine('parentcmd');
 
-  // Nested execute's output stays in its own capture buffer.
-  assert.equal(nestedResult.stdout, 'NESTED_CAPTURED\n', 'nested stdout captured');
+  // Nested execute's output reaches its own sink.
+  assert.equal(nestedOut, 'NESTED_CAPTURED\n', 'nested stdout captured');
   assert.equal(nestedResult.exitCode, 0, 'nested exit');
 
   // The crux: every line reaches the terminal exactly once, in order. Pre-fix
@@ -97,8 +98,8 @@ try {
   const captured = await box.shell.execute('echo CAPTURED_AGAIN', {
     onStdout: (t) => { cap += text(t); },
   });
-  assert.equal(captured.stdout, 'CAPTURED_AGAIN\n', 'post-nested captured stdout');
   assert.equal(cap, 'CAPTURED_AGAIN\n', 'post-nested onStdout');
+  assert.equal(captured.stdout, '', 'a sunk stream is not also held in the result');
   assert.equal(terminal.text.includes('CAPTURED_AGAIN'), false, 'capture did not leak to terminal');
 
   // And a subsequent interactive line still reaches the real terminal.

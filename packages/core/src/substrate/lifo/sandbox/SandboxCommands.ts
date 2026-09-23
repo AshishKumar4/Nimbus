@@ -2,6 +2,7 @@ import type { Shell } from '../shell/Shell.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { Command } from '../commands/types.js';
 import type { SandboxCommands as ISandboxCommands, RunOptions, CommandResult } from './types.js';
+import { textSink } from '../../../_shared/bytes.js';
 
 /**
  * Wraps Shell.execute() and serializes concurrent calls.
@@ -42,17 +43,26 @@ export class SandboxCommandsImpl implements ISandboxCommands {
     if (controller && signal) signal.addEventListener('abort', forwardAbort, { once: true });
     const timeoutId = controller ? setTimeout(() => controller.abort(), options?.timeout) : undefined;
 
+    // The result carries the output even when the caller also streams it;
+    // the shell captures only a stream nobody sinks, so a sunk one is teed.
+    let stdout = '';
+    let stderr = '';
+    const onStdout = options?.onStdout;
+    const onStderr = options?.onStderr;
     try {
       const result = await this.shell.execute(cmd, {
         cwd: options?.cwd,
         env: options?.env,
-        onStdout: options?.onStdout,
-        onStderr: options?.onStderr,
+        onStdout: onStdout && tee(onStdout, (text) => { stdout += text; }),
+        onStderr: onStderr && tee(onStderr, (text) => { stderr += text; }),
         stdin: options?.stdin,
         signal: controller?.signal ?? signal,
       });
-
-      return result;
+      return {
+        exitCode: result.exitCode,
+        stdout: onStdout ? stdout : result.stdout,
+        stderr: onStderr ? stderr : result.stderr,
+      };
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
@@ -60,4 +70,12 @@ export class SandboxCommandsImpl implements ISandboxCommands {
       signal?.removeEventListener('abort', forwardAbort);
     }
   }
+}
+
+function tee(sink: (data: Uint8Array) => void, capture: (text: string) => void): (data: Uint8Array) => void {
+  const decode = textSink(capture);
+  return (data) => {
+    decode(data);
+    sink(data);
+  };
 }

@@ -27,8 +27,8 @@ export type ShellEntrypointExecutor = {
   execute(cmd: string, options?: {
     cwd?: string;
     env?: Record<string, string>;
-    onStdout?: (data: Uint8Array) => void;
-    onStderr?: (data: Uint8Array) => void;
+    onStdout?: (data: Uint8Array) => void | Promise<void>;
+    onStderr?: (data: Uint8Array) => void | Promise<void>;
     stdin?: string;
     terminalStdin?: TerminalInputStream;
     runExitTrap?: boolean;
@@ -42,7 +42,7 @@ export type ShellEntrypointExecutor = {
     };
     commandContext?: Record<string, unknown>;
     runAs?: CommandRunAsHost;
-  }): Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
+  }): Promise<{ exitCode: number }>;
 };
 
 type RegistryLike = {
@@ -102,8 +102,6 @@ function makeShellEntrypoint(
       return 0;
     }
 
-    let forwardedStdout = '';
-    let forwardedStderr = '';
     const inheritedStdin = await resolveInheritedStdin(shellName, program, ctx);
     if ('error' in inheritedStdin) {
       (await ctx.stderr.write(inheritedStdin.error + '\n'));
@@ -117,14 +115,8 @@ function makeShellEntrypoint(
       scriptMode: true,
       stdin: inheritedStdin.stdin,
       terminalStdin: ctx.terminalStdin,
-      onStdout: textSink(async (data) => {
-        forwardedStdout += data;
-        (await ctx.stdout.write(data));
-      }),
-      onStderr: textSink(async (data) => {
-        forwardedStderr += data;
-        (await ctx.stderr.write(data));
-      }),
+      onStdout: textSink((data) => ctx.stdout.write(data)),
+      onStderr: textSink((data) => ctx.stderr.write(data)),
       runExitTrap: true,
       terminalFds: {
         stdin: ctx.isFdTerminal?.(0) ?? false,
@@ -138,8 +130,6 @@ function makeShellEntrypoint(
       },
       runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
     });
-    writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
-    writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
     return result.exitCode;
   };
 }
@@ -309,13 +299,3 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
-function writeUnforwarded(output: Output, returned: string | undefined, forwarded: string): void {
-  if (!returned) return;
-  if (!forwarded) {
-    output.write(returned);
-    return;
-  }
-  if (returned.length > forwarded.length && returned.startsWith(forwarded)) {
-    output.write(returned.slice(forwarded.length));
-  }
-}

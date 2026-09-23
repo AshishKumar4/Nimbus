@@ -33,5 +33,5 @@ export declare class StreamTextDecoders<K> {
  * reads whole characters even when a multibyte one straddles two chunks.
  * One per stream; do not share a sink between stdout and stderr.
  */
-export declare function textSink(write: (text: string) => void): (bytes: Uint8Array) => void;
+export declare function textSink(write: (text: string) => void | Promise<void>): (bytes: Uint8Array) => void | Promise<void>;
 //# sourceMappingURL=bytes.d.ts.map

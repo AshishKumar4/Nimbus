@@ -24,8 +24,8 @@ export type ShellEntrypointExecutor = {
     execute(cmd: string, options?: {
         cwd?: string;
         env?: Record<string, string>;
-        onStdout?: (data: Uint8Array) => void;
-        onStderr?: (data: Uint8Array) => void;
+        onStdout?: (data: Uint8Array) => void | Promise<void>;
+        onStderr?: (data: Uint8Array) => void | Promise<void>;
         stdin?: string;
         terminalStdin?: TerminalInputStream;
         runExitTrap?: boolean;
@@ -41,8 +41,6 @@ export type ShellEntrypointExecutor = {
         runAs?: CommandRunAsHost;
     }): Promise<{
         exitCode: number;
-        stdout?: string;
-        stderr?: string;
     }>;
 };
 type RegistryLike = {

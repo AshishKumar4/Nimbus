@@ -66,6 +66,8 @@ export interface ExecuteOptions {
    * is the seam a child's output crosses on its way to a parent process. The
    * shell's own command output is text, encoded here at the producer's edge;
    * a text consumer decodes at its own edge with a streaming decoder.
+   * A stream with a sink is not also captured into the result, and the
+   * command's next write waits on a promise the sink returns.
    */
   onStdout?: (data: Uint8Array) => void | Promise<void>;
   onStderr?: (data: Uint8Array) => void | Promise<void>;
@@ -313,8 +315,9 @@ export class Shell {
   }
 
   /**
-   * Programmatic command execution with captured stdout/stderr.
-   * Used by Sandbox.commands.run() for headless mode.
+   * Programmatic command execution. Each stream goes to its sink when one is
+   * given, and is otherwise captured into the result; never both, so a
+   * streaming caller's output is not also held for the length of the command.
    */
   private _executeDepth = 0;
 
@@ -326,22 +329,27 @@ export class Shell {
     if (this._executeDepth > 10) {
       this._executeDepth--;
       const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-      await options?.onStderr?.(enc.encode(msg));
+      if (options?.onStderr) {
+        await options.onStderr(enc.encode(msg));
+        return { stdout: '', stderr: '', exitCode: 1 };
+      }
       return { stdout: '', stderr: msg, exitCode: 1 };
     }
     let stdoutBuf = '';
     let stderrBuf = '';
 
+    const onStdout = options?.onStdout;
+    const onStderr = options?.onStderr;
     const stdoutStream: CommandOutputStream = {
       write: async (text: string) => {
+        if (onStdout) return (await onStdout(enc.encode(text)));
         stdoutBuf += text;
-        return (await options?.onStdout?.(enc.encode(text)));
       },
     };
     const stderrStream: CommandOutputStream = {
       write: async (text: string) => {
+        if (onStderr) return (await onStderr(enc.encode(text)));
         stderrBuf += text;
-        return (await options?.onStderr?.(enc.encode(text)));
       },
     };
 
@@ -362,10 +370,7 @@ export class Shell {
     // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
     // options so a nested `execute` never mutates shared interpreter config the
     // parent command's late-bound closures read.
-    const writeToTerminal = async (text: string) => {
-      stderrBuf += text;
-      return (await options?.onStderr?.(enc.encode(text)));
-    };
+    const writeToTerminal = (text: string) => stderrStream.write(text);
 
     // Apply per-call overrides
     if (options?.cwd) {
@@ -407,8 +412,7 @@ export class Shell {
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     } catch (e) {
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
-      stderrBuf += msg + '\n';
-      await options?.onStderr?.(enc.encode(msg + '\n'));
+      await stderrStream.write(msg + '\n');
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       this._executeDepth--;

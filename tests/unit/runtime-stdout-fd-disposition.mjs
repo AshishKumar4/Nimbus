@@ -61,7 +61,7 @@ try {
     { stdout: false, stderr: true },
     'a redirect takes fd 1 off the terminal',
   );
-  const readBack = await box.shell.execute('cat /tmp-fd-probe.txt', { onStdout: () => {} });
+  const readBack = await box.shell.execute('cat /tmp-fd-probe.txt');
   assert.equal(
     readBack.stdout,
     'probe-output\n',
@@ -83,8 +83,9 @@ try {
   // The programmatic shape: `sandbox.exec()` runs the line through
   // `Shell.execute` with capture sinks and no terminal behind them at all.
   seen.length = 0;
-  const captured = await box.shell.execute('fdprobe', {
-    onStdout: () => {},
+  let captured = '';
+  await box.shell.execute('fdprobe', {
+    onStdout: (data) => { captured += new TextDecoder().decode(data); },
     onStderr: () => {},
   });
   assert.deepEqual(
@@ -92,7 +93,7 @@ try {
     { stdout: false, stderr: false },
     'a captured execution owns neither fd — its result IS the output',
   );
-  assert.equal(captured.stdout, 'probe-output\n');
+  assert.equal(captured, 'probe-output\n');
 } finally {
   await box.destroy?.();
 }
