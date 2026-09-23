@@ -113,8 +113,10 @@ function installCache() {
         const hit = store.get(req.url);
         return hit ? hit.clone() : undefined;
       },
+      // Reads the body as the platform does: a body that errors stores nothing.
       async put(req, res) {
-        store.set(req.url, res.clone());
+        const bytes = await res.arrayBuffer();
+        store.set(req.url, new Response(bytes, { status: res.status, headers: res.headers }));
       },
     },
   };
@@ -143,6 +145,9 @@ function honestR2() {
         async text() {
           return new TextDecoder().decode(bytes);
         },
+        get body() {
+          return new Response(bytes).body;
+        },
       };
     },
   };
@@ -150,6 +155,7 @@ function honestR2() {
 
 const envWith = (r2) => ({ NIMBUS_RUNTIME_CACHE: r2 });
 const text = (bytes) => new TextDecoder().decode(bytes);
+const readAll = async (stream) => new Uint8Array(await new Response(stream).arrayBuffer());
 
 function poison(store, url, bytes) {
   store.set(url, new Response(bytes, { headers: { 'Cache-Control': 'public, max-age=31536000' } }));
@@ -169,7 +175,7 @@ const keys = await (async () => {
   const catalog = await fetchCatalog(envWith(r2));
   const entry = catalog.runtimes.python.versions['1.0'];
   const manifest = await fetchManifest(envWith(r2), entry);
-  await fetchBlob(envWith(r2), manifest.files[0]);
+  await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
 
   const urls = [...store.keys()];
   assert.equal(urls.length, 3, `expected catalog+manifest+blob in L2, got ${JSON.stringify(urls)}`);
@@ -222,10 +228,28 @@ for (const url of Object.values(keys)) {
   const r2 = honestR2();
   poison(store, keys.blob, ATTACKER_BLOB);
 
-  const bytes = await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]);
+  const bytes = await readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]));
 
   assert.equal(text(bytes), text(HONEST_BLOB), 'a poisoned L2 blob was executed');
   assert.ok(r2.reads.includes(HONEST_BLOB_KEY), 'the rejected cache entry did not fall through to R2');
+}
+
+// ── 3b. An honest blob in L2 is served from L2 ─────────────────────────
+//
+// The check that makes a poisoned entry a miss must not make every entry
+// one: a blob whose cached bytes hash to their key is served without R2.
+
+{
+  const big = Uint8Array.from({ length: 3 * 1024 * 1024 + 17 }, (_, i) => (i * 131) & 0xff);
+  const file = { path: 'share/python.wasm', content: 'blobs/python-1.0/big/python.wasm', sha256: sha(big), size: big.length };
+  const store = installCache();
+  const r2 = honestR2();
+  poison(store, keys.blob.replace(sha(HONEST_BLOB), sha(big)), big);
+
+  const served = await readAll(await fetchBlob(envWith(r2), file));
+
+  assert.equal(sha(served), sha(big), 'an L2 entry was served altered');
+  assert.deepEqual(r2.reads, [], 'a verified L2 entry was re-read from R2');
 }
 
 // ── 4. A poisoned catalog in L2 is not served ──────────────────────────
@@ -262,7 +286,7 @@ for (const url of Object.values(keys)) {
   const catalog = await fetchCatalog(envWith(r2));
   const entry = catalog.runtimes.python.versions['1.0'];
   const manifest = await fetchManifest(envWith(r2), entry);
-  const bytes = await fetchBlob(envWith(r2), manifest.files[0]);
+  const bytes = await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
 
   assert.equal(
     text(bytes),
@@ -278,7 +302,7 @@ for (const url of Object.values(keys)) {
   const r2 = honestR2();
   const catalog = await fetchCatalog(envWith(r2));
   const manifest = await fetchManifest(envWith(r2), catalog.runtimes.python.versions['1.0']);
-  await fetchBlob(envWith(r2), manifest.files[0]);
+  await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
 
   assert.ok(store.size > 0, 'nothing was cached, so this proves nothing about what caching allows');
   for (const [url, res] of store) {
@@ -308,7 +332,7 @@ for (const url of Object.values(keys)) {
   const r2 = honestR2();
   const file = { ...JSON.parse(honestManifestText).files[0], sha256: sha(ATTACKER_BLOB) };
   await assert.rejects(
-    () => fetchBlob(envWith(r2), file),
+    async () => readAll(await fetchBlob(envWith(r2), file)),
     /sha256 mismatch for blob/,
     'a blob whose R2 bytes contradict the manifest was accepted',
   );
@@ -364,6 +388,29 @@ for (const url of Object.values(keys)) {
 
   assert.equal(manifest.files[0].content, HONEST_BLOB_KEY, 'an undigested manifest was read from L2 anyway');
   assert.deepEqual(await snapshot(), before, 'an unverifiable manifest was written into the shared cache');
+}
+
+// ── 9b. The blob fill re-reads R2, and stores only what verifies ─────────
+//
+// A blob streams to its consumer and fills L2 from a second R2 read, so
+// neither holds it whole. That second read is checked on its own: R2
+// answering it with other bytes stores nothing, and the first read, which
+// verified, is still served.
+
+{
+  const store = installCache();
+  const r2 = honestR2();
+  const get = r2.get;
+  r2.get = async (key) => {
+    const reads = r2.reads.filter((k) => k === HONEST_BLOB_KEY).length;
+    return key === HONEST_BLOB_KEY && reads === 1 ? get(ATTACKER_BLOB_KEY) : get(key);
+  };
+
+  const bytes = await readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]));
+
+  assert.equal(text(bytes), text(HONEST_BLOB));
+  assert.equal(r2.reads.filter((k) => k === ATTACKER_BLOB_KEY).length, 1, 'the fill never re-read R2');
+  assert.equal(store.has(keys.blob), false, 'bytes that did not hash to their key were stored in L2');
 }
 
 // ── 10. The Cache API is reachable only through the checked helpers ────

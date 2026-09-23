@@ -53,6 +53,7 @@ type R2BucketLike = {
     get(key: string): Promise<{
         arrayBuffer(): Promise<ArrayBuffer>;
         text(): Promise<string>;
+        readonly body: ReadableStream<Uint8Array>;
     } | null>;
 } | null | undefined;
 /** Minimal env shape this module consumes. */
@@ -95,15 +96,19 @@ export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCat
  */
 export declare function fetchManifest(env: RuntimeCatalogEnv, entry: CatalogVersionEntry): Promise<RuntimeManifest>;
 /**
- * Fetch the blob a manifest file entry points at, verified against the
- * digest that same entry carries.
+ * Stream the blob a manifest file entry points at, verified against the
+ * digest that same entry carries. A colo-cache entry is verified whole
+ * before any of it is served, so a poisoned one is a miss. An R2 read errors
+ * at its end, rather than closing, when its bytes do not hash to the digest.
+ * The consumer hashes what it reads as well (the installer does, before it
+ * commits a blob), so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
  * a `ManifestFile` always has both, and it is the only thing this takes.
  * Blobs are interpreters, so an unverified read here is arbitrary code
  * execution in whichever session installs it.
  */
-export declare function fetchBlob(env: RuntimeCatalogEnv, file: ManifestFile): Promise<Uint8Array>;
+export declare function fetchBlob(env: RuntimeCatalogEnv, file: ManifestFile): Promise<ReadableStream<Uint8Array>>;
 export declare function runtimeAbiForCatalogName(name: string): RuntimePackageAbi;
 /**
  * The R2 catalog as a core `RuntimeSource` — the worker adapter half of the

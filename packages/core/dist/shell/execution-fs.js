@@ -78,6 +78,15 @@ export class ExecutionFs {
         return bytes;
     }
     async readFileString(path) { return new TextDecoder().decode(await this.readFile(path)); }
+    /** Ranged read that neither consults nor fills the session's content cache. */
+    async readRangeUncached(path, offset, length) {
+        const bytes = this.bridge instanceof VFS
+            ? this.bridge.readRange(path, offset, length)
+            : await this.bridge.readRange(path, offset, length, { cached: false });
+        if (bytes === null)
+            throw new VFSError('ENOENT', path);
+        return bytes;
+    }
     async readRange(path, offset, length) {
         const bytes = await this.bridge.readRange(path, offset, length);
         if (bytes === null)

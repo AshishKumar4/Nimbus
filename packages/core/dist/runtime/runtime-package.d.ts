@@ -28,7 +28,11 @@ export interface RuntimePackageFs {
     exists(path: string): Awaitable<boolean>;
     readFile(path: string): Awaitable<Uint8Array>;
     readFileString(path: string): Awaitable<string>;
+    /** Clamped at EOF; never pins the bytes in a content cache. */
+    readRangeUncached(path: string, offset: number, length: number): Awaitable<Uint8Array>;
     writeFile(path: string, data: string | Uint8Array): Awaitable<void>;
+    writeRange(path: string, offset: number, bytes: Uint8Array): Awaitable<unknown>;
+    rename(from: string, to: string): Awaitable<void>;
     mkdir(path: string, options?: {
         recursive?: boolean;
     }): Awaitable<void>;
@@ -55,11 +59,15 @@ import { type ManifestFile, type RuntimeManifest } from './runtime-manifest.js';
  * `fetchBlob` in the Cloudflare catalog: a key and the digest that vouches for
  * it never travel as separate arguments, so there is no call in which they can
  * disagree.
+ *
+ * A blob may be a stream. The installer holds a blob a piece at a time
+ * either way, but only a stream spares the package holding it whole.
  */
 export interface RuntimePackage {
     readonly manifest: RuntimeManifest;
-    readBlob(file: ManifestFile): Uint8Array | Promise<Uint8Array>;
+    readBlob(file: ManifestFile): RuntimeBlob | Promise<RuntimeBlob>;
 }
+export type RuntimeBlob = Uint8Array | ReadableStream<Uint8Array>;
 export interface SeededRuntime {
     readonly name: string;
     readonly version: string;
@@ -129,6 +137,11 @@ export declare function composeRuntimeSources(sources: readonly RuntimeSource[])
  * the identical manifest and every payload file verifies against its digest
  * — the legacy R2 installer wrote the manifest first, so its interrupted
  * trees fail this check and are rewritten rather than reported as installed.
+ *
+ * Each blob streams through a digest into a sibling `.nimbus-partial` file
+ * that is renamed into place only once its digest matches: an install holds
+ * pieces of blobs, never a whole one, and bytes that fail their digest never
+ * sit at a path a runner would execute.
  */
 export declare function seedRuntimePackage(vfs: CredentialedVfs, homeDir: string, runtimePackage: RuntimePackage, options?: {
     force?: boolean;

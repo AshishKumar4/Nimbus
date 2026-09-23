@@ -18,12 +18,50 @@ export async function pkceChallenge(verifier) {
 }
 /** Lowercase hex SHA-256 — the digest form the staged-artifact integrity checks pin. */
 export async function sha256Hex(input) {
-    const digest = await crypto.subtle.digest('SHA-256', typeof input === 'string' ? textEncoder.encode(input) : input);
+    return hex(await crypto.subtle.digest('SHA-256', typeof input === 'string' ? textEncoder.encode(input) : input));
+}
+/** Web Crypto has no incremental digest: workerd offers `crypto.DigestStream`, Node and Bun `node:crypto`. */
+export function sha256Incremental() {
+    if (typeof crypto.DigestStream === 'function') {
+        const stream = new crypto.DigestStream('SHA-256');
+        const writer = stream.getWriter();
+        return {
+            update: (bytes) => writer.write(bytes),
+            async hex() {
+                await writer.close();
+                return hex(await stream.digest);
+            },
+        };
+    }
+    const nodeCrypto = globalThis.process?.getBuiltinModule?.('node:crypto');
+    if (!nodeCrypto)
+        throw new Error('incremental SHA-256 needs crypto.DigestStream or node:crypto');
+    const hash = nodeCrypto.createHash('sha256');
+    return {
+        async update(bytes) { hash.update(bytes); },
+        async hex() { return hash.digest('hex'); },
+    };
+}
+/** Hex SHA-256 of a whole stream. On workerd the bytes are piped to the
+ *  digest natively, with no JavaScript per chunk. */
+export async function sha256HexOfStream(stream) {
+    if (typeof crypto.DigestStream === 'function') {
+        const digest = new crypto.DigestStream('SHA-256');
+        await stream.pipeTo(digest);
+        return hex(await digest.digest);
+    }
+    const digest = sha256Incremental();
+    const reader = stream.getReader();
+    for (let next = await reader.read(); !next.done; next = await reader.read())
+        await digest.update(next.value);
+    return await digest.hex();
+}
+function hex(digest) {
     const view = new Uint8Array(digest);
-    let hex = '';
+    let out = '';
     for (let i = 0; i < view.length; i++)
-        hex += view[i].toString(16).padStart(2, '0');
-    return hex;
+        out += view[i].toString(16).padStart(2, '0');
+    return out;
 }
 export async function sealJson(value, secret, options = {}) {
     const purpose = normalizePurpose(options.purpose);

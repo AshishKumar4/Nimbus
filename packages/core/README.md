@@ -113,6 +113,12 @@ await ws.exec(`python -c "import sqlite3; print('live')"`);  // CPython 3.13, re
 package carries the same manifest and the same sha256-verified blobs the
 hosted product serves from R2.
 
+A runtime package is `{ manifest, readBlob(file) }` (`RuntimePackage`).
+`readBlob` returns the file's bytes or a `ReadableStream<Uint8Array>` of them.
+Each blob is hashed as it is written, so a stream lets an install hold
+512 KiB pieces instead of whole interpreters. A blob
+whose digest does not match never reaches its install path.
+
 Without `facets` and `runtimes` you still get the full shell and coreutils.
 The wasm runtimes are a dependency you add.
 

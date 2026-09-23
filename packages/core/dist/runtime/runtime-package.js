@@ -23,8 +23,8 @@
  * verifies them — these blobs are interpreters, so bytes that reach the
  * filesystem are bytes that execute.
  */
-import { sha256Hex } from '../_shared/crypto.js';
-import { installRoot, runtimeAbiForManifest, runtimeEntrypoints, runtimePayloadIntact, } from './installed-runtimes.js';
+import { sha256Incremental } from '../_shared/crypto.js';
+import { installRoot, RUNTIME_BLOB_PIECE_BYTES, runtimeAbiForManifest, runtimeEntrypoints, runtimePayloadIntact, } from './installed-runtimes.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
 export function splitRuntimeSpec(spec) {
     const atIdx = spec.indexOf('@');
@@ -135,6 +135,11 @@ export function composeRuntimeSources(sources) {
  * the identical manifest and every payload file verifies against its digest
  * — the legacy R2 installer wrote the manifest first, so its interrupted
  * trees fail this check and are rewritten rather than reported as installed.
+ *
+ * Each blob streams through a digest into a sibling `.nimbus-partial` file
+ * that is renamed into place only once its digest matches: an install holds
+ * pieces of blobs, never a whole one, and bytes that fail their digest never
+ * sit at a path a runner would execute.
  */
 export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) {
     const manifest = parseRuntimeManifest(runtimePackage.manifest);
@@ -163,10 +168,11 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
             (await vfs.mkdir(parent, { recursive: true }));
     }
     // Three in flight, as the R2 installer ran: blob reads dominate wall-clock
-    // and bounded overlap beats head-of-line batches. A failure stops the
+    // and bounded overlap beats head-of-line batches. Each blob streams, so
+    // three in flight hold three pieces, not three blobs. A failure stops the
     // dequeue, but `Promise.all` still waits for every started worker — no
-    // `readBlob` is left running when the throw escapes, so a retry never
-    // contends with the attempt that just failed.
+    // read is left running when the throw escapes, so a retry never contends
+    // with the attempt that just failed.
     const files = manifest.files;
     let next = 0;
     let completed = 0;
@@ -178,7 +184,7 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
                 return;
             const file = files[i];
             try {
-                (await vfs.writeFile(`${root}/${file.path}`, await verifiedBlob(manifest, runtimePackage, file)));
+                await writeVerifiedBlob(vfs, manifest, runtimePackage, file, `${root}/${file.path}`);
                 completed++;
                 options?.onProgress?.(`[${manifest.name}] fetched ${file.path} (${(file.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${files.length}`);
             }
@@ -209,12 +215,104 @@ async function runtimeManifestIntact(vfs, root, manifest) {
         return false;
     }
 }
-async function verifiedBlob(manifest, runtimePackage, file) {
-    const bytes = await runtimePackage.readBlob(file);
-    const actual = await sha256Hex(bytes);
-    if (actual !== file.sha256) {
-        throw new Error(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
-            + `${file.sha256}, ${file.content} holds ${actual}`);
+async function writeVerifiedBlob(vfs, manifest, runtimePackage, file, target) {
+    const partial = `${target}.nimbus-partial`;
+    // Left behind by an attempt that died mid-write; appending to it would
+    // keep its tail.
+    if (await vfs.exists(partial))
+        await vfs.unlink(partial);
+    try {
+        await vfs.writeFile(partial, new Uint8Array(0));
+        const digest = sha256Incremental();
+        let offset = 0;
+        for await (const piece of blobPieces(await runtimePackage.readBlob(file))) {
+            await vfs.writeRange(partial, offset, piece);
+            offset += piece.length;
+            await digest.update(piece);
+        }
+        const actual = await digest.hex();
+        if (actual !== file.sha256) {
+            throw new Error(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
+                + `${file.sha256}, ${file.content} holds ${actual}`);
+        }
+        await vfs.rename(partial, target);
     }
-    return bytes;
+    catch (error) {
+        if (await vfs.exists(partial))
+            await vfs.unlink(partial);
+        throw error;
+    }
+}
+/** A blob in {@link RUNTIME_BLOB_PIECE_BYTES} pieces; a stream abandoned
+ *  partway is cancelled, so no read outlives the install that started it. */
+async function* blobPieces(blob) {
+    if (blob instanceof Uint8Array) {
+        for (let at = 0; at < blob.length; at += RUNTIME_BLOB_PIECE_BYTES) {
+            yield blob.subarray(at, at + RUNTIME_BLOB_PIECE_BYTES);
+        }
+        return;
+    }
+    const byob = byteStreamReader(blob);
+    yield* byob ? byteStreamPieces(byob) : chunkPieces(blob.getReader());
+}
+/** A BYOB reader when `stream` has a byte source; only those accept one. */
+function byteStreamReader(stream) {
+    try {
+        return stream.getReader({ mode: 'byob' });
+    }
+    catch {
+        return null;
+    }
+}
+// workerd hands R2 and cache bodies to JavaScript 4 KiB at a time; `min`
+// fills a whole piece natively instead of once per chunk in JavaScript.
+async function* byteStreamPieces(reader) {
+    const filling = reader;
+    let done = false;
+    try {
+        while (!done) {
+            const next = await filling.read(new Uint8Array(RUNTIME_BLOB_PIECE_BYTES), { min: RUNTIME_BLOB_PIECE_BYTES });
+            done = next.done;
+            if (next.value?.length)
+                yield next.value;
+        }
+    }
+    finally {
+        if (!done)
+            await reader.cancel();
+        reader.releaseLock();
+    }
+}
+async function* chunkPieces(reader) {
+    let done = false;
+    try {
+        let piece = new Uint8Array(RUNTIME_BLOB_PIECE_BYTES);
+        let filled = 0;
+        while (true) {
+            const next = await reader.read();
+            if (next.done) {
+                done = true;
+                break;
+            }
+            let chunk = next.value;
+            while (chunk.length > 0) {
+                const take = Math.min(chunk.length, piece.length - filled);
+                piece.set(chunk.subarray(0, take), filled);
+                filled += take;
+                chunk = chunk.subarray(take);
+                if (filled === piece.length) {
+                    yield piece;
+                    piece = new Uint8Array(RUNTIME_BLOB_PIECE_BYTES);
+                    filled = 0;
+                }
+            }
+        }
+        if (filled > 0)
+            yield piece.subarray(0, filled);
+    }
+    finally {
+        if (!done)
+            await reader.cancel();
+        reader.releaseLock();
+    }
 }

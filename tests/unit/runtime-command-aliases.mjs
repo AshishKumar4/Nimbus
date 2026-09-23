@@ -98,12 +98,11 @@ const fakeEnv = {
       else if (manifests[key]) body = JSON.stringify(manifests[key]);
       else if (key.startsWith('blobs/')) body = blobBytes;
       if (body === null) return null;
+      const bytes = typeof body === 'string' ? encoder.encode(body) : body;
       return {
-        async text() { return typeof body === 'string' ? body : new TextDecoder().decode(body); },
-        async arrayBuffer() {
-          const bytes = typeof body === 'string' ? encoder.encode(body) : body;
-          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        },
+        async text() { return new TextDecoder().decode(bytes); },
+        async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
+        get body() { return new Response(bytes).body; },
       };
     },
   },
@@ -146,6 +145,17 @@ class FakeVfs {
     const parent = path.slice(0, path.lastIndexOf('/'));
     if (parent) this.mkdir(parent);
     this.files.set(path, content);
+  }
+  writeRange(path, offset, bytes) {
+    const prior = this.files.get(path) ?? new Uint8Array(0);
+    const next = new Uint8Array(Math.max(prior.length, offset + bytes.length));
+    next.set(prior);
+    next.set(bytes, offset);
+    this.files.set(path, next);
+  }
+  rename(from, to) {
+    this.files.set(to, this.files.get(from));
+    this.files.delete(from);
   }
   readFileString(path) {
     const data = this.files.get(path);

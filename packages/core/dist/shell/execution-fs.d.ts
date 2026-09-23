@@ -24,6 +24,8 @@ export declare class ExecutionFs {
     isSymlink(path: string): Promise<boolean>;
     readFile(path: string): Promise<Uint8Array>;
     readFileString(path: string): Promise<string>;
+    /** Ranged read that neither consults nor fills the session's content cache. */
+    readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array>;
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     writeFile(path: string, bytes: string | Uint8Array): Promise<void>;
     writeRange(path: string, offset: number, bytes: Uint8Array): Promise<number>;

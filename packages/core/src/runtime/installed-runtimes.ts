@@ -17,7 +17,7 @@
  * must not share either.
  */
 
-import { sha256Hex } from '../_shared/crypto.js';
+import { sha256Incremental } from '../_shared/crypto.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
@@ -172,14 +172,21 @@ export async function listInstalledManifestsView(
   return out;
 }
 /**
+ * Runtime blobs are read and written in whole 64 KiB VFS chunks, eight at a
+ * time: an append then touches no chunk it does not replace, and stays inside
+ * one SQLite transaction's 1 MiB blob bound.
+ */
+export const RUNTIME_BLOB_PIECE_BYTES = 512 * 1024;
+
+/**
  * An installed tree is trustworthy when its manifest parses and every payload
  * file it declares is present with the digest the manifest vouches for.
  *
  * Digest-verified rather than size-verified because the tree's manifest is
  * what rehydration binds commands to: a same-size corruption or a rewritten
  * entrypoints table is a different runtime than the one that was installed,
- * and trusting it would run bytes nobody published. One file at a time —
- * these are interpreters, tens of megabytes each.
+ * trusting it would run bytes nobody published. One piece of one file at a
+ * time — these are interpreters, tens of megabytes each.
  */
 export async function runtimePayloadIntact(
   fs: CredentialedVfs,
@@ -190,7 +197,14 @@ export async function runtimePayloadIntact(
     for (const file of manifest.files) {
       const target = `${root}/${file.path}`;
       if (!await fs.exists(target)) return false;
-      if ((await sha256Hex(await fs.readFile(target))) !== file.sha256) return false;
+      const digest = sha256Incremental();
+      for (let offset = 0; ;) {
+        const piece = await fs.readRangeUncached(target, offset, RUNTIME_BLOB_PIECE_BYTES);
+        if (piece.length === 0) break;
+        await digest.update(piece);
+        offset += piece.length;
+      }
+      if (await digest.hex() !== file.sha256) return false;
     }
     return true;
   } catch {

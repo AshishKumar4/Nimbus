@@ -78,14 +78,20 @@ export declare function listInstalledManifestsView(fs: CredentialedVfs, homeDir:
     manifest: RuntimeManifest;
 }>>;
 /**
+ * Runtime blobs are read and written in whole 64 KiB VFS chunks, eight at a
+ * time: an append then touches no chunk it does not replace, and stays inside
+ * one SQLite transaction's 1 MiB blob bound.
+ */
+export declare const RUNTIME_BLOB_PIECE_BYTES: number;
+/**
  * An installed tree is trustworthy when its manifest parses and every payload
  * file it declares is present with the digest the manifest vouches for.
  *
  * Digest-verified rather than size-verified because the tree's manifest is
  * what rehydration binds commands to: a same-size corruption or a rewritten
  * entrypoints table is a different runtime than the one that was installed,
- * and trusting it would run bytes nobody published. One file at a time —
- * these are interpreters, tens of megabytes each.
+ * trusting it would run bytes nobody published. One piece of one file at a
+ * time — these are interpreters, tens of megabytes each.
  */
 export declare function runtimePayloadIntact(fs: CredentialedVfs, root: string, manifest: RuntimeManifest): Promise<boolean>;
 /**

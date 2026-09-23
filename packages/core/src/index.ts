@@ -31,6 +31,7 @@ export { seedRuntimePackage } from './runtime/runtime-package.js';
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export type {
   RuntimeAvailability,
+  RuntimeBlob,
   RuntimePackage,
   RuntimeSource,
   SeededRuntime,

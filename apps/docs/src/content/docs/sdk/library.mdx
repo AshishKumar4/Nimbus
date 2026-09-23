@@ -102,6 +102,12 @@ await ws.exec('python -c "print(6*7)"');    // CPython 3.13 with the real stdlib
 (clang → `wasm32-wasi`) work the same way. Every package carries the same
 manifests and sha256-verified blobs the hosted product serves from R2.
 
+A runtime package is `{ manifest, readBlob(file) }` (`RuntimePackage`).
+`readBlob` returns the file's bytes or a `ReadableStream<Uint8Array>` of them.
+Each blob is hashed as it is written, so a stream lets an install hold
+512 KiB pieces instead of whole interpreters. A blob
+whose digest does not match never reaches its install path.
+
 `localFacetHost()` covers bun and node only. On workerd the CSP forbids
 request-time `WebAssembly.instantiate`. Wasm rides the Worker Loader
 module map instead, which is the machinery in `@nimbus-sh/worker` and

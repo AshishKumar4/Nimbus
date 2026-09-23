@@ -27,14 +27,63 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 
 /** Lowercase hex SHA-256 — the digest form the staged-artifact integrity checks pin. */
 export async function sha256Hex(input: BufferSource | string): Promise<string> {
-  const digest = await crypto.subtle.digest(
+  return hex(await crypto.subtle.digest(
     'SHA-256',
     typeof input === 'string' ? textEncoder.encode(input) : input,
-  );
+  ));
+}
+
+/** SHA-256 fed in pieces, for payloads too large to hold whole. */
+export interface Sha256Digest {
+  update(bytes: Uint8Array): Promise<void>;
+  /** Lowercase hex, as {@link sha256Hex}. Ends the digest. */
+  hex(): Promise<string>;
+}
+
+type NodeCrypto = { createHash(algorithm: 'sha256'): { update(bytes: Uint8Array): unknown; digest(encoding: 'hex'): string } };
+type BuiltinModules = { process?: { getBuiltinModule?(id: 'node:crypto'): NodeCrypto | undefined } };
+
+/** Web Crypto has no incremental digest: workerd offers `crypto.DigestStream`, Node and Bun `node:crypto`. */
+export function sha256Incremental(): Sha256Digest {
+  if (typeof crypto.DigestStream === 'function') {
+    const stream = new crypto.DigestStream('SHA-256');
+    const writer = stream.getWriter();
+    return {
+      update: (bytes) => writer.write(bytes),
+      async hex() {
+        await writer.close();
+        return hex(await stream.digest);
+      },
+    };
+  }
+  const nodeCrypto = (globalThis as BuiltinModules).process?.getBuiltinModule?.('node:crypto');
+  if (!nodeCrypto) throw new Error('incremental SHA-256 needs crypto.DigestStream or node:crypto');
+  const hash = nodeCrypto.createHash('sha256');
+  return {
+    async update(bytes) { hash.update(bytes); },
+    async hex() { return hash.digest('hex'); },
+  };
+}
+
+/** Hex SHA-256 of a whole stream. On workerd the bytes are piped to the
+ *  digest natively, with no JavaScript per chunk. */
+export async function sha256HexOfStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  if (typeof crypto.DigestStream === 'function') {
+    const digest = new crypto.DigestStream('SHA-256');
+    await stream.pipeTo(digest);
+    return hex(await digest.digest);
+  }
+  const digest = sha256Incremental();
+  const reader = stream.getReader();
+  for (let next = await reader.read(); !next.done; next = await reader.read()) await digest.update(next.value);
+  return await digest.hex();
+}
+
+function hex(digest: ArrayBuffer): string {
   const view = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < view.length; i++) hex += view[i].toString(16).padStart(2, '0');
-  return hex;
+  let out = '';
+  for (let i = 0; i < view.length; i++) out += view[i].toString(16).padStart(2, '0');
+  return out;
 }
 
 export async function sealJson(
