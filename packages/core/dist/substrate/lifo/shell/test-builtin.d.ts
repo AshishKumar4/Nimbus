@@ -4,10 +4,10 @@ import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
 import { type ExpandContext } from './expander.js';
 /**
- * Implementation of the `test` / `[` shell builtin.
- * Evaluates conditional expressions.
+ * Implementation of the `test` / `[` shell builtin (POSIX `test`).
+ * `bracket` is true for `[`, whose last argument must be `]`.
  */
-export declare function evaluateTest(args: string[], vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
+export declare function evaluateTest(args: string[], vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext, bracket?: boolean): Promise<number>;
 /**
  * `[[ ... ]]`, whose operands are expanded only when the expression actually
  * reaches them: `[[ $# = 2 && $2 = x ]]` must not touch `$2` under `set -u`.

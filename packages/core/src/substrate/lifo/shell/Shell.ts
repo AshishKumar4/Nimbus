@@ -259,7 +259,7 @@ export class Shell {
     this.builtins.set('test', async (args, _stdout, stderr, _stdin, context) =>
       (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
     this.builtins.set('[', async (args, _stdout, stderr, _stdin, context) =>
-      (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+      (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context, true)));
   }
 
   getJobTable(): JobTable {
