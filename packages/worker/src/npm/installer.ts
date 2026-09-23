@@ -1660,7 +1660,7 @@ export class NpmInstaller {
     const binChunks: { path: string; chunkId: number; data: Uint8Array }[] = [];
     const mtime = Date.now();
     for (const binEntry of Object.values(manifest.bins)) {
-      const data = enc.encode(createNpmBinShim(binEntry));
+      const data = enc.encode(createNpmBinShim(binEntry, binDir));
       const linkPath = binDir + '/' + binEntry.name;
       binEntries.push({
         path: linkPath,

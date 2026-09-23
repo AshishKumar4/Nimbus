@@ -39,7 +39,7 @@ const entry = {
 };
 vfs.mkdir(`${nodeModules}/.bin`, { recursive: true });
 vfs.mkdir(entry.packagePath, { recursive: true });
-vfs.writeFile(`${nodeModules}/.bin/${entry.name}`, createNpmBinShim(entry));
+vfs.writeFile(`${nodeModules}/.bin/${entry.name}`, createNpmBinShim(entry, `${nodeModules}/.bin`));
 vfs.writeFile(npmBinManifestPath(nodeModules), JSON.stringify(createNpmBinManifest([entry])));
 vfs.mkdir(`${entry.packagePath}/bin`, { recursive: true });
 vfs.writeFile(entry.targetPath, 'console.log("real wrangler — must never run")\n');
@@ -85,7 +85,7 @@ const lone = {
   targetPath: `${nodeModules}/lone-cli/cli.js`,
 };
 vfs.mkdir(lone.packagePath, { recursive: true });
-vfs.writeFile(`${nodeModules}/.bin/${lone.name}`, createNpmBinShim(lone));
+vfs.writeFile(`${nodeModules}/.bin/${lone.name}`, createNpmBinShim(lone, `${nodeModules}/.bin`));
 vfs.writeFile(npmBinManifestPath(nodeModules), JSON.stringify(createNpmBinManifest([entry, lone])));
 vfs.writeFile(lone.targetPath, 'console.log("lone")\n');
 

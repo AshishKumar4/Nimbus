@@ -618,9 +618,14 @@ export class Interpreter {
         if (expandedArgs.length === 0) {
             return 0;
         }
-        const [name, ...args] = expandedArgs;
+        let [name, ...args] = expandedArgs;
+        // `exec utility [args]` runs the utility in place of this shell: its
+        // status becomes the shell's exit status and nothing after it runs.
+        const replacesShell = name === 'exec' && args.length > 0 && !(args.length === 1 && args[0] === '--');
+        if (replacesShell)
+            [name, ...args] = args[0] === '--' ? args.slice(1) : args;
         // Check alias expansion
-        const aliases = this.config.aliases;
+        const aliases = replacesShell ? undefined : this.config.aliases;
         if (aliases) {
             const aliasValue = aliases.get(name);
             if (aliasValue !== undefined) {
@@ -683,7 +688,7 @@ export class Interpreter {
             }
             else {
                 // Check functions
-                const funcBody = this.functions.get(name);
+                const funcBody = replacesShell ? undefined : this.functions.get(name);
                 if (funcBody) {
                     exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
                 }
@@ -835,6 +840,8 @@ export class Interpreter {
         this.lastExitCode = exitCode;
         if (fatalSpecialBuiltin)
             throw new ErrexitSignal(exitCode);
+        if (replacesShell)
+            throw new ExitSignal(exitCode);
         return exitCode;
     }
     assignEnv(name, value) {

@@ -45,19 +45,25 @@ export function createNpmBinManifest(entries) {
         bins[entry.name] = entry;
     return { version: NPM_BIN_MANIFEST_VERSION, bins };
 }
-export function createNpmBinShim(entry) {
+export function createNpmBinShim(entry, shimDir) {
     if (isStagedArtifactTarget(entry.targetPath)) {
         // The runnable bundle is staged in the assets layer; the shell dispatches
         // it through the staged-artifact runtime by recognizing the sentinel in
         // the bin manifest. The shim body is only a marker for PATH discovery.
         return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
     }
-    // targetPath is a normalized VFS path with no leading slash. require()
-    // must receive it as absolute (leading "/"), otherwise the runtime's
-    // resolver treats "home/user/…" as a bare specifier and fails the
-    // node_modules lookup. Matches how npm-bin-entrypoints runs the manifest
-    // target ("/" + targetPath).
-    return `#!/usr/bin/env node\nrequire(${JSON.stringify('/' + entry.targetPath)});\n`;
+    // Relative to the shim, as npm's .bin symlinks are, so a node_modules
+    // tree that is moved (a staged install renamed into place) still runs.
+    return `#!/usr/bin/env node\nrequire(${JSON.stringify(relativeRequest(shimDir, entry.targetPath))});\n`;
+}
+function relativeRequest(fromDir, target) {
+    const from = normalizeVfsPath(fromDir).split('/').filter(Boolean);
+    const to = normalizeVfsPath(target).split('/').filter(Boolean);
+    let common = 0;
+    while (common < from.length && common < to.length - 1 && from[common] === to[common])
+        common++;
+    const rel = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
+    return rel.startsWith('../') ? rel : `./${rel}`;
 }
 export function packageBinEntries(pkg, nodeModulesPath) {
     const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
@@ -99,6 +105,24 @@ export function resolveNpmBinFromPath(vfs, cwd, envPath, name) {
     }
     return null;
 }
+/** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
+export function resolveNpmBinPath(vfs, cwd, path) {
+    const shimPath = resolveVfsPath(path, cwd || '/home/user');
+    const slash = shimPath.lastIndexOf('/');
+    if (slash < 0)
+        return null;
+    const binDir = shimPath.slice(0, slash);
+    if (!binDir.endsWith('/node_modules/.bin'))
+        return null;
+    try {
+        if ((vfs.stat(shimPath).mode & 0o111) === 0)
+            return null;
+    }
+    catch {
+        return null;
+    }
+    return resolveNpmBinInBinDir(vfs, binDir, shimPath.slice(slash + 1));
+}
 export function materializeNpmBinShims(vfs, nodeModulesPath, binDir) {
     const entries = listNpmBinEntries(vfs, normalizeVfsPath(nodeModulesPath));
     if (entries.length === 0)
@@ -107,7 +131,7 @@ export function materializeNpmBinShims(vfs, nodeModulesPath, binDir) {
     vfs.mkdir(targetBinDir, { recursive: true });
     for (const entry of entries) {
         const shimPath = `${targetBinDir}/${entry.name}`;
-        vfs.writeFile(shimPath, createNpmBinShim(entry));
+        vfs.writeFile(shimPath, createNpmBinShim(entry, targetBinDir));
         // writeFile creates files 0o644; a bin shim on PATH must be executable
         // or the shell rejects it ("command not found"). Match the 0o755 the
         // Phase-6 .bin linker uses. chmod (not a mode arg) so a re-install over
