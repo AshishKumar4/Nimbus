@@ -170,6 +170,12 @@ const SEQ_2M_BYTES = 14_888_896;
     { stdout: 'hi\n', stderr: 'there\n', exitCode: 1 },
   );
 
+  // A named shell's cwd survives a streamed call over the remote API.
+  const moved = await box.execStream('cd /tmp', { shellId: 'remote-named' });
+  for await (const _ of moved.output) { /* cd prints nothing */ }
+  await moved.exit;
+  assert.equal((await box.exec('pwd', { shellId: 'remote-named' })).stdout, '/tmp\n');
+
   await assert.rejects(box.execStream('pwd', { shellId: '!bad' }),
     'a refused call rejects execStream itself, before any stream exists');
 }

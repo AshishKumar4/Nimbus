@@ -2,6 +2,7 @@ import { LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { z } from 'zod/v4';
 import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
     profile: z.string().optional(),
@@ -70,6 +71,13 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         // `rpcMs` only when the caller sets `diag`, so the normal SDK envelope
         // is unchanged.
         const wantDiag = body.diag === true;
+        // The one op whose answer is a stream: the body is the encoded exec
+        // stream itself, so output flows under the client's own backpressure.
+        if (body.op === 'execStream') {
+            const args = body.args ?? [];
+            const wire = await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
+            return corsResponse(wire, 200, { 'Content-Type': EXEC_STREAM_CONTENT_TYPE });
+        }
         const t0 = Date.now();
         return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }));
     }
@@ -154,7 +162,7 @@ async function dispatchRemoteRpc(ctx) {
         case 'bootProbe':
             return ctx.stub._rpcBootProbe();
         case 'exec':
-            return ctx.stub._rpcExec(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
+            return collectExecStream(decodeExecStream(await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]))));
         case 'startProcess':
             return ctx.stub._rpcStartProcess(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
         case 'runCode': {
@@ -311,6 +319,9 @@ function execOptions(ctx, value) {
     if (options.cred !== undefined) {
         throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
     }
+    // A named shell owns its cwd; defaulting one here reset it on every call.
+    if (options.shellId !== undefined && options.cwd === undefined)
+        return options;
     return {
         ...options,
         cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,

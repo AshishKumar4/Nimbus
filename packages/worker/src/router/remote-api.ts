@@ -482,6 +482,8 @@ function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown
   if (options.cred !== undefined) {
     throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
   }
+  // A named shell owns its cwd; defaulting one here reset it on every call.
+  if (options.shellId !== undefined && options.cwd === undefined) return options;
   return {
     ...options,
     cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,
