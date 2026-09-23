@@ -24,10 +24,11 @@ import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
+import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { applySwaps, findRejects, lookupSwap, isOptionalNativeBinding, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
+import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { Fanout, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout.js';
@@ -127,7 +128,10 @@ export class NpmInstaller {
         this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
         let phaseStart = Date.now();
         log('Checking lockfile...');
-        const { specs, devOnly, optionalRoots, advised } = await this.buildSpecs(projDir, opts?.packages, opts?.production);
+        // npm ci takes its roots from the lock, not from package.json specs.
+        const { specs, devOnly, optionalRoots, advised } = opts?.fromLockfile
+            ? { specs: {}, devOnly: new Set(), optionalRoots: new Set(), advised: new Set() }
+            : await this.buildSpecs(projDir, opts?.packages, opts?.production);
         // EBADPLATFORM refusals (os/cpu/libc allowlists on a required
         // package) fail the install like real npm; every refused name was
         // already logged as a [skip] line, name them again with the reason.
@@ -139,7 +143,10 @@ export class NpmInstaller {
                 log(`npm ERR! ${r.name}: ${r.reason}`);
             }
         };
-        if (Object.keys(specs).length === 0) {
+        const packageLock = opts?.fromLockfile
+            ? await this.treeFromPackageLock(projDir, opts.production === true, log, registry)
+            : null;
+        if (packageLock === null && Object.keys(specs).length === 0) {
             log('No dependencies to install.');
             return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
         }
@@ -147,7 +154,17 @@ export class NpmInstaller {
         let resolved;
         let nested;
         let usedLockfile = false;
-        if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
+        if (packageLock !== null) {
+            ({ resolved, nested } = packageLock);
+            recordRefusals(packageLock.rejected);
+            for (const [name, reason] of packageLock.unresolved) {
+                failed.push(name);
+                log(`npm ERR! could not resolve ${name}: ${reason}`);
+            }
+            log(`Lockfile ${packageLock.lockName}: ${resolved.size + nested.size} packages to place.`);
+            phases['lock-check'] = Date.now() - phaseStart;
+        }
+        else if (lockfile && !opts?.packages && this.isLockfileValid(lockfile, specs)) {
             log(`Lockfile valid (${lockfile.size} packages). Skipping resolution.`);
             ({ resolved, nested } = this.lockfileToResolved(lockfile));
             usedLockfile = true;
@@ -1251,6 +1268,110 @@ export class NpmInstaller {
             }
         }
         return true;
+    }
+    /**
+     * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
+     * records, checked against package.json first. The ABI policy the resolver
+     * applies still holds: platform-native optional shards are skipped, a
+     * required one is refused, and a swapped package resolves its swap target
+     * at the locked version.
+     */
+    async treeFromPackageLock(projDir, production, log, registry) {
+        const lockName = ['npm-shrinkwrap.json', 'package-lock.json']
+            .find((name) => this.vfs.exists(`${projDir}/${name}`));
+        if (!lockName)
+            throw new Error('`npm ci` needs a package-lock.json or npm-shrinkwrap.json');
+        const lock = parsePackageLock(this.vfs.readFileString(`${projDir}/${lockName}`), lockName);
+        const pkgJsonPath = `${projDir}/package.json`;
+        if (!this.vfs.exists(pkgJsonPath))
+            throw new Error('`npm ci` needs a package.json');
+        const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+        const mismatches = packageLockMismatches(pkgJson, lock);
+        if (mismatches.length > 0) {
+            throw new Error(`\`npm ci\` can only install packages when your package.json and ${lockName} are in sync. ` +
+                `Update the lock file with \`npm install\` before continuing.\n` +
+                mismatches.map((m) => `npm ERR! ${m}`).join('\n'));
+        }
+        const resolved = new Map();
+        const nested = new Map();
+        const unresolved = new Map();
+        const rejected = [];
+        const swapSpecs = {};
+        for (const [key, entry] of Object.entries(lock.packages)) {
+            if (key === '')
+                continue;
+            if (!key.startsWith('node_modules/')) {
+                throw new Error(`${lockName} entry "${key}" is a workspace or linked package, which \`npm ci\` here does not install`);
+            }
+            if (production && entry.dev === true)
+                continue;
+            const placement = key.slice('node_modules/'.length);
+            const folderName = placement.split('/node_modules/').pop() ?? placement;
+            const name = typeof entry.name === 'string' ? entry.name : folderName;
+            const version = typeof entry.version === 'string' ? entry.version : '';
+            const platform = {
+                name,
+                os: stringList(entry.os),
+                cpu: stringList(entry.cpu),
+                libc: stringList(entry.libc),
+                main: '',
+            };
+            if (entry.optional === true && isOptionalNativeBinding(platform)) {
+                log(`[resolve-fanout] [skip] ${name} — optional native binding (os=${platform.os ?? '*'}, cpu=${platform.cpu ?? '*'}, libc=${platform.libc ?? '*'})`);
+                continue;
+            }
+            const platformReject = policyNativePlatformReject(PACKAGE_ABI_POLICY, platform);
+            if (platformReject) {
+                log(`[resolve-fanout] [skip] ${name} — ${platformReject.reason}`);
+                rejected.push({ name, reason: platformReject.reason, required: entry.optional !== true });
+                continue;
+            }
+            if (lookupSwap(name)) {
+                if (!(name in swapSpecs))
+                    swapSpecs[name] = version;
+                continue;
+            }
+            if (entry.link === true || typeof entry.resolved !== 'string' || !version) {
+                unresolved.set(name, `${lockName} records no registry tarball for ${key}`);
+                continue;
+            }
+            const reject = lookupReject(name);
+            if (reject)
+                log(`[npm] note: ${name} has no Workers-compatible build: ${reject.reason}${reject.suggest ? ` … try: ${reject.suggest}` : ''}`);
+            const pkg = {
+                name,
+                version,
+                tarballUrl: entry.resolved,
+                integrity: typeof entry.integrity === 'string' ? entry.integrity : '',
+                dependencies: stringRecord(entry.dependencies),
+                optionalDependencies: stringRecord(entry.optionalDependencies),
+                peerDependencies: stringRecord(entry.peerDependencies),
+                os: platform.os,
+                cpu: platform.cpu,
+                libc: platform.libc,
+                exports: null,
+                main: '',
+                module: '',
+                bin: typeof entry.bin === 'string' ? { [folderName]: entry.bin } : stringRecord(entry.bin),
+            };
+            const staged = lookupStagedArtifact(name);
+            if (staged)
+                applyStagedArtifact(pkg, staged);
+            (placement.includes('/node_modules/') ? nested : resolved).set(placement, pkg);
+        }
+        if (Object.keys(swapSpecs).length > 0) {
+            const swapped = await this.resolveTreeViaFanout(swapSpecs, log, { registry });
+            for (const [placement, pkg] of swapped.resolved)
+                if (!resolved.has(placement))
+                    resolved.set(placement, pkg);
+            for (const [placement, pkg] of swapped.nested)
+                if (!nested.has(placement))
+                    nested.set(placement, pkg);
+            for (const [name, reason] of swapped.unresolved)
+                unresolved.set(name, reason);
+            rejected.push(...swapped.rejected);
+        }
+        return { resolved, nested, unresolved, rejected, lockName };
     }
     /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
     lockfileToResolved(lockfile) {
