@@ -3800,8 +3800,11 @@ function mkSeq() {
             step = nums[1];
             end = nums[2];
         }
-        for (let i = start; step > 0 ? i <= end : i >= end; i += step)
+        for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+            if (ctx.signal.aborted)
+                return 130;
             (await ctx.stdout.write(i + '\n'));
+        }
         return 0;
     };
 }
