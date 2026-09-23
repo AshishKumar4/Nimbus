@@ -361,6 +361,7 @@ export class ProcessFabric {
                 writerId,
                 startArgs: spawn.startArgs,
                 ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
+                ...(spawn.storeKey !== undefined ? { storeKey: spawn.storeKey } : {}),
             });
         }
         catch (error) {

@@ -356,6 +356,13 @@ export interface ProcessHostParams {
    * the store on release.
    */
   facet?: { name: string; durable: boolean };
+  /**
+   * Ephemeral only. A released slot keeps its SQLite for the next spawn with
+   * the same key, so a resident's filesystem mirror is refreshed rather than
+   * rebuilt. Any other reuse of the slot starts from empty storage. Absent,
+   * release deletes the storage as it always has.
+   */
+  storeKey?: string;
 }
 
 /**
@@ -669,6 +676,13 @@ export interface ResidentProcessSpawn {
    */
   facet?: { name: string; durable: boolean };
   /**
+   * Ephemeral only. A released slot keeps its SQLite for the next spawn with
+   * the same key, so a resident's filesystem mirror is refreshed rather than
+   * rebuilt. Any other reuse of the slot starts from empty storage. Absent,
+   * release deletes the storage as it always has.
+   */
+  storeKey?: string;
+  /**
    * Called before any concrete host capability can expose this writer.
    * A spawn must not proceed unless the supervisor accepts the authority.
    */
@@ -712,6 +726,7 @@ export class ProcessFabric {
         writerId,
         startArgs: spawn.startArgs,
         ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
+        ...(spawn.storeKey !== undefined ? { storeKey: spawn.storeKey } : {}),
       });
     } catch (error) {
       spawn.onWriterRetired(writerId);

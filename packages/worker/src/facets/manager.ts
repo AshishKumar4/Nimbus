@@ -5551,6 +5551,7 @@ export class FacetManager {
       boot: ResidentBootSpec;
       startArgs?: unknown;
       facet?: { name: string; durable: boolean };
+      storeKey?: string;
     },
   ): Promise<ResidentProcessHandle> {
     const handle = await this.processFabric.startResidentProcess({
@@ -6104,9 +6105,11 @@ export class FacetManager {
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the
         // reservation's durability reaches this process's storage too.
+        // Otherwise the slot's filesystem mirror outlives the process, for
+        // the next resident of this session under the same credential.
         ...(durableFacetName !== undefined
           ? { facet: { name: durableFacetName, durable: true } }
-          : {}),
+          : { storeKey: `${this.ctx.id.toString()}:${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}` }),
         boot: {
           kind: 'code',
           code: {
