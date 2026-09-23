@@ -9,6 +9,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
+  "limits": { "cpu_ms": 300000 },
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": false,
   "vars": {

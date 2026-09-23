@@ -135,6 +135,8 @@
   // `placement` is an inheritable key — env.production picks it up
   // automatically from the top level.
   "placement": { "mode": "smart" },
+  // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
+  "limits": { "cpu_ms": 300000 },
   "vars": {
     // Diagnostic gate for [sqlite-vfs/W2.5b] logs. Set to "1" to enable;
     // empty/absent disables. The diag code remains in

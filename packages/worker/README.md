@@ -83,6 +83,8 @@ export default createNimbusHandler({
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "placement": { "mode": "smart" },
+  // Shell commands run in the session DO. The 30 s default kills long ones.
+  "limits": { "cpu_ms": 300000 },
   "assets": {
     "directory": "node_modules/@nimbus-sh/worker/public",
     "binding": "ASSETS",

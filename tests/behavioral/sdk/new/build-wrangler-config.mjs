@@ -35,6 +35,7 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
     && c.assets.run_worker_first?.includes('/s/*')
     && c.assets.run_worker_first?.includes('/new'));
   a.check('Smart Placement default', c.placement?.mode === 'smart');
+  a.check('session DO CPU limit raised to 5 min', c.limits?.cpu_ms === 300_000);
   a.check('no public-directory binding by default',
     !c.durable_objects.bindings.find((b) => b.name === 'NIMBUS_PUBLIC_DIRECTORY'));
 }
