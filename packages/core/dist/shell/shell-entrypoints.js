@@ -38,8 +38,6 @@ function makeShellEntrypoint(shellName, shell) {
             (await ctx.stdout.write(usageText(shellName, program.topic)));
             return 0;
         }
-        let forwardedStdout = '';
-        let forwardedStderr = '';
         const inheritedStdin = await resolveInheritedStdin(shellName, program, ctx);
         if ('error' in inheritedStdin) {
             (await ctx.stderr.write(inheritedStdin.error + '\n'));
@@ -53,14 +51,8 @@ function makeShellEntrypoint(shellName, shell) {
             scriptMode: true,
             stdin: inheritedStdin.stdin,
             terminalStdin: ctx.terminalStdin,
-            onStdout: textSink(async (data) => {
-                forwardedStdout += data;
-                (await ctx.stdout.write(data));
-            }),
-            onStderr: textSink(async (data) => {
-                forwardedStderr += data;
-                (await ctx.stderr.write(data));
-            }),
+            onStdout: textSink((data) => ctx.stdout.write(data)),
+            onStderr: textSink((data) => ctx.stderr.write(data)),
             runExitTrap: true,
             terminalFds: {
                 stdin: ctx.isFdTerminal?.(0) ?? false,
@@ -74,8 +66,6 @@ function makeShellEntrypoint(shellName, shell) {
             },
             runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
         });
-        writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
-        writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
         return result.exitCode;
     };
 }
@@ -217,15 +207,4 @@ function formatError(error) {
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
-}
-function writeUnforwarded(output, returned, forwarded) {
-    if (!returned)
-        return;
-    if (!forwarded) {
-        output.write(returned);
-        return;
-    }
-    if (returned.length > forwarded.length && returned.startsWith(forwarded)) {
-        output.write(returned.slice(forwarded.length));
-    }
 }

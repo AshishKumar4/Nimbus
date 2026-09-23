@@ -2,6 +2,7 @@
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type ExecChunk, type ExecExit, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 export type RuntimeSpec = string;
 export type RuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
 export interface NimbusRuntimePolicy {
@@ -147,14 +148,19 @@ export interface NimbusApp {
     diagnostic: string | null;
     url: string | undefined;
 }
-export interface NimbusExecResult {
-    command: string;
-    exitCode: number;
-    success: boolean;
+/** A slice of a command's stdout or stderr, as the bytes it wrote. */
+export type NimbusExecChunk = ExecChunk;
+/** How a command ended: what `exec` returns, without the output. */
+export type NimbusExecExit = ExecExit;
+/**
+ * A running command's output. Read `output` to the end (or cancel it, which
+ * kills the command); `exit` settles after the last chunk. A reader that
+ * stops reading stops the command at its next write.
+ */
+export type NimbusExecStream = ExecStream;
+export interface NimbusExecResult extends NimbusExecExit {
     stdout: string;
     stderr: string;
-    duration: number;
-    timestamp: number;
 }
 export interface NimbusTerminalSize {
     columns: number;
@@ -270,7 +276,7 @@ interface NimbusSessionStub {
         ok: true;
         preinstalled: string[];
     }>;
-    _rpcExec(command: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
+    _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
     _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
     _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
     _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<string | null>;
@@ -421,8 +427,18 @@ export declare class NimbusSandbox {
     private stub;
     private remoteStub;
     private remoteRpc;
+    /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
+    private remoteExecStream;
+    private remoteFetch;
     ready(): Promise<void>;
+    /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     exec(command: string, options?: NimbusExecOptions): Promise<NimbusExecResult>;
+    /**
+     * Run a command and read its stdout and stderr as they are written, as
+     * bytes, without the sandbox or this client holding the whole output.
+     * Resolves once the command has started. `timeoutMs` still applies.
+     */
+    execStream(command: string, options?: NimbusExecOptions): Promise<NimbusExecStream>;
     /**
      * Start a command in the background. Returns as soon as the process has a
      * pid — it does not wait for the command to finish.

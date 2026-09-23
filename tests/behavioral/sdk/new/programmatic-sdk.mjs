@@ -3,6 +3,7 @@
 // Worker-side sandbox handle over a Durable Object binding.
 
 import { makeAsserter } from '../../_driver.mjs';
+import { createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
 
 const a = makeAsserter('sdk/new/programmatic-sdk');
 const { Nimbus } = await import('../../../../packages/sdk/src/index.ts');
@@ -30,9 +31,12 @@ const stub = {
     calls.push(['ready', options]);
     return { ok: true, preinstalled: options?.preinstall ?? [] };
   },
-  async _rpcExec(command, options) {
+  async _rpcExecStream(command, options) {
     calls.push(['exec', command, options]);
-    return { command, exitCode: 0, success: true, stdout: 'ok\n', stderr: '', duration: 1, timestamp: Date.now() };
+    const writer = createExecStream(() => {});
+    await writer.write('stdout', new TextEncoder().encode('ok\n'));
+    writer.end({ command, exitCode: 0, success: true, duration: 1, timestamp: 1 });
+    return encodeExecStream(writer.stream);
   },
   async _rpcStartProcess(command, options) {
     calls.push(['startProcess', command, options]);

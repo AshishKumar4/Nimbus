@@ -418,12 +418,13 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcBootProbe(): Promise<{
         ok: true;
     }>;
-    _rpcExec(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticExecResult>;
+    /** The command's output as it is written: an encoded exec stream (`@nimbus-sh/core/runtime/exec-stream`). */
+    _rpcExecStream(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<_programmatic.ProgrammaticStartResult>;
     _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & {
         language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
         install?: 'never' | 'ifMissing';
-    }): Promise<_programmatic.ProgrammaticExecResult>;
+    }): Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
     _rpcInstallRuntime(spec: string, options?: {
         force?: boolean;
     }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary>;

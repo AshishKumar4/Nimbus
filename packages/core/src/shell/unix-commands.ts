@@ -3601,7 +3601,10 @@ function mkSeq(): CmdFn {
     if (nums.length === 1) end = nums[0];
     else if (nums.length === 2) { start = nums[0]; end = nums[1]; }
     else if (nums.length >= 3) { start = nums[0]; step = nums[1]; end = nums[2]; }
-    for (let i = start; step > 0 ? i <= end : i >= end; i += step) (await ctx.stdout.write(i + '\n'));
+    for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+      if (ctx.signal.aborted) return 130;
+      (await ctx.stdout.write(i + '\n'));
+    }
     return 0;
   };
 }

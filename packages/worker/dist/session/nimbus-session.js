@@ -73,6 +73,7 @@ import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
+import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
@@ -814,7 +815,10 @@ export class NimbusSession extends CloudflareDurableObject {
      *  full `ready` isolates the platform DO-placement floor from the
      *  initSession build cost. */
     async _rpcBootProbe() { return { ok: true }; }
-    async _rpcExec(command, options) { return _programmatic.rpcExec(this, command, options); }
+    /** The command's output as it is written: an encoded exec stream (`@nimbus-sh/core/runtime/exec-stream`). */
+    async _rpcExecStream(command, options) {
+        return encodeExecStream(await _programmatic.rpcExecStream(this, command, options));
+    }
     async _rpcStartProcess(command, options) { return _programmatic.rpcStartProcess(this, command, options); }
     async _rpcRunCode(code, options) {
         return _programmatic.rpcRunCode(this, code, options);

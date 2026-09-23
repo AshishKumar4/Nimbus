@@ -9,6 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { nimbus } from '../../packages/computesdk-nimbus/src/index.ts';
+import { EXEC_STREAM_CONTENT_TYPE, createExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 
 const ENDPOINT = 'https://nimbus.test';
 
@@ -30,6 +31,18 @@ function fakeNimbus(handlers = {}) {
     }
     const handler = handlers[body.op];
     const result = typeof handler === 'function' ? handler(body.args) : handler;
+    // `execStream` answers with the encoded stream of an exec result.
+    if (body.op === 'execStream') {
+      const writer = createExecStream(() => {});
+      const { stdout, stderr, ...exit } = result;
+      await writer.write('stdout', new TextEncoder().encode(stdout));
+      await writer.write('stderr', new TextEncoder().encode(stderr));
+      writer.end(exit);
+      return new Response(encodeExecStream(writer.stream), {
+        status: 200,
+        headers: { 'Content-Type': EXEC_STREAM_CONTENT_TYPE },
+      });
+    }
     // Void ops answer `{ok:true}` with no `result` key.
     const payload = result === undefined ? { ok: true } : { ok: true, result };
     return new Response(JSON.stringify(payload), {
@@ -147,7 +160,7 @@ const execResult = (over = {}) => ({
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
     writeFile: 12,
-    exec: execResult({ duration: 34, stdout: 'v22.0.0\n' }),
+    execStream: execResult({ duration: 34, stdout: 'v22.0.0\n' }),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
 
@@ -159,7 +172,7 @@ const execResult = (over = {}) => ({
   assert.equal(result.stdout, 'v22.0.0\n');
   assert.equal(result.exitCode, 0);
   assert.equal(result.durationMs, 34, 'durationMs is Nimbus’s measurement, not a re-timing');
-  const exec = fake.calls.find((c) => c.op === 'exec');
+  const exec = fake.calls.find((c) => c.op === 'execStream');
   assert.equal(exec.args[0], 'node -v');
 }
 
@@ -168,7 +181,7 @@ const execResult = (over = {}) => ({
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
     writeFile: 12,
-    exec: execResult({ exitCode: 127, success: false, stdout: '', stderr: 'not found\n' }),
+    execStream: execResult({ exitCode: 127, success: false, stdout: '', stderr: 'not found\n' }),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
 
@@ -187,7 +200,7 @@ const execResult = (over = {}) => ({
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
     writeFile: 12,
-    exec: execResult(),
+    execStream: execResult(),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
 
@@ -196,7 +209,7 @@ const execResult = (over = {}) => ({
     await sandbox.runCommand('env', { env: { EXTRA: '1' } });
   });
 
-  const exec = fake.calls.find((c) => c.op === 'exec');
+  const exec = fake.calls.find((c) => c.op === 'execStream');
   assert.deepEqual(exec.args[1].env, { TOKEN: 'abc', EXTRA: '1' });
 }
 

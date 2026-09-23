@@ -193,7 +193,7 @@ export interface SessionInternal {
   _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;
   // perf(boot): cold DO placement + constructor probe (no initSession).
   _rpcBootProbe(): Promise<{ ok: true }>;
-  _rpcExec(command: string, options?: any): Promise<any>;
+  _rpcExecStream(command: string, options?: any): Promise<ReadableStream<Uint8Array>>;
   _rpcStartProcess(command: string, options?: any): Promise<any>;
   _rpcRunCode(code: string, options?: any): Promise<any>;
   _rpcInstallRuntime(spec: string, options?: { force?: boolean }): Promise<any>;

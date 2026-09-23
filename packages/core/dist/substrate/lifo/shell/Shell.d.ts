@@ -16,6 +16,8 @@ export interface ExecuteOptions {
      * is the seam a child's output crosses on its way to a parent process. The
      * shell's own command output is text, encoded here at the producer's edge;
      * a text consumer decodes at its own edge with a streaming decoder.
+     * A stream with a sink is not also captured into the result, and the
+     * command's next write waits on a promise the sink returns.
      */
     onStdout?: (data: Uint8Array) => void | Promise<void>;
     onStderr?: (data: Uint8Array) => void | Promise<void>;
@@ -110,8 +112,9 @@ export declare class Shell {
     getRunAsHost(): CommandRunAsHost | undefined;
     getRegistry(): CommandRegistry;
     /**
-     * Programmatic command execution with captured stdout/stderr.
-     * Used by Sandbox.commands.run() for headless mode.
+     * Programmatic command execution. Each stream goes to its sink when one is
+     * given, and is otherwise captured into the result; never both, so a
+     * streaming caller's output is not also held for the length of the command.
      */
     private _executeDepth;
     execute(cmd: string, options?: ExecuteOptions): Promise<{

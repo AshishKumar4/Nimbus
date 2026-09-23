@@ -3,6 +3,7 @@
 // handle API as Nimbus.fromEnv and transports binary file payloads safely.
 
 import { makeAsserter } from '../../_driver.mjs';
+import { EXEC_STREAM_CONTENT_TYPE, createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
 
 const a = makeAsserter('sdk/new/remote-sdk-client');
 const { Nimbus, NimbusRemoteError } = await import('../../../../packages/sdk/src/index.ts');
@@ -25,18 +26,12 @@ const fetchImpl = async (url, init) => {
       result: { type: 'file', size: 2, mtime: 1, mode: 420 },
     });
   }
-  if (body.op === 'exec') {
-    return Response.json({
-      ok: true,
-      result: {
-        command: body.args[0],
-        exitCode: 0,
-        success: true,
-        stdout: '4\n',
-        stderr: '',
-        duration: 1,
-        timestamp: 1,
-      },
+  if (body.op === 'execStream') {
+    const writer = createExecStream(() => {});
+    await writer.write('stdout', new TextEncoder().encode('4\n'));
+    writer.end({ command: body.args[0], exitCode: 0, success: true, duration: 1, timestamp: 1 });
+    return new Response(encodeExecStream(writer.stream), {
+      headers: { 'content-type': EXEC_STREAM_CONTENT_TYPE },
     });
   }
   if (body.op === 'installRuntime') {
@@ -122,7 +117,7 @@ a.check('files.stat calls remote stat operation',
 a.check('exec result is decoded unchanged',
   result.success === true && result.stdout === '4\n');
 a.check('exec cwd defaults to profile root',
-  calls.find((c) => c.body.op === 'exec')?.body.args[1]?.cwd === '/home/user/project');
+  calls.find((c) => c.body.op === 'execStream')?.body.args[1]?.cwd === '/home/user/project');
 a.check('destroy calls remote lifecycle operation',
   destroyed.ok === true
   && calls.find((c) => c.body.op === 'destroy')?.body.args[0]?.reason === 'remote-test-cleanup');

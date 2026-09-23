@@ -34,7 +34,8 @@ import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentit
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
-import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 
 export interface ProgrammaticShell {
@@ -57,9 +58,9 @@ type ProgrammaticShellParent = ProgrammaticShell & Pick<
 interface ProgrammaticShellExecuteOptions {
   cwd?: string;
   env?: Record<string, string>;
-  /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. */
-  onStdout?: (data: Uint8Array) => void;
-  onStderr?: (data: Uint8Array) => void;
+  /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. A returned promise is backpressure. */
+  onStdout?: (data: Uint8Array) => void | Promise<void>;
+  onStderr?: (data: Uint8Array) => void | Promise<void>;
   signal?: AbortSignal;
   stdin?: string;
   isolateShellState?: boolean;
@@ -282,15 +283,8 @@ export interface ProgrammaticDestroyResult {
   reason: string | null;
 }
 
-export interface ProgrammaticExecResult {
-  command: string;
-  exitCode: number;
-  success: boolean;
-  stdout: string;
-  stderr: string;
-  duration: number;
-  timestamp: number;
-}
+/** The buffered exec result: the exec stream read to its end. */
+export type ProgrammaticExecResult = ExecOutput;
 
 /**
  * A started background process. There is no exit code or output here — the
@@ -404,8 +398,8 @@ function startShellJob(
     /** Background job: keep an input channel, tee output to the log ring, and
      *  let a registry command adopt this pid instead of allocating a second. */
     background: boolean;
-    onStdout?: (data: Uint8Array) => void;
-    onStderr?: (data: Uint8Array) => void;
+    onStdout?: (data: Uint8Array) => void | Promise<void>;
+    onStderr?: (data: Uint8Array) => void | Promise<void>;
   },
   scoped: ScopedShell | null,
 ): ShellJob {
@@ -429,11 +423,11 @@ function startShellJob(
     try { controller.abort(); } catch { /* already settled */ }
   });
 
-  const emit = (stream: 'stdout' | 'stderr', sink?: (data: Uint8Array) => void) => (data: Uint8Array) => {
+  const emit = (stream: 'stdout' | 'stderr', sink?: (data: Uint8Array) => void | Promise<void>) => (data: Uint8Array) => {
     if (job.background) {
       try { self.processes.appendOutputBytes(pid, stream, data); } catch { /* ring gone */ }
     }
-    sink?.(data);
+    return sink?.(data);
   };
 
   const run = shell.execute(line, {
@@ -482,34 +476,66 @@ function assertAbsoluteExecCwd(options: ProgrammaticExecOptions): void {
   }
 }
 
+/** Buffered exec: the exec stream collected into strings by the caller of this function. */
 export async function rpcExec(
   self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticExecResult> {
-  assertAbsoluteExecCwd(options);
-  await ensureProgrammaticReady(self, options);
-  return withShellState(self, options, false, (scoped) => execOnShell(self, command, options, scoped));
+  return collectExecStream(await rpcExecStream(self, command, options));
 }
 
-async function execOnShell(
+/**
+ * Run a command and hand back its output as it is written. Resolves once the
+ * command has started (after any earlier call on the same named shell);
+ * validation and readiness failures reject here, not on the stream.
+ */
+export async function rpcExecStream(
+  self: ProgrammaticHost,
+  command: string,
+  options: ProgrammaticExecOptions = {},
+): Promise<ExecStream> {
+  assertAbsoluteExecCwd(options);
+  await ensureProgrammaticReady(self, options);
+  let writer: ExecStreamWriter | null = null;
+  return new Promise<ExecStream>((resolve, reject) => {
+    // The exit lands after a named shell's state is saved, so a caller that
+    // has read `exit` sees its `cd` on the next call.
+    withShellState(self, options, false, (scoped) => streamOnShell(self, command, options, scoped, (started) => {
+      writer = started;
+      resolve(started.stream);
+    })).then(
+      (exit) => writer!.end(exit),
+      (error: unknown) => (writer ? writer.fail(error) : reject(error)),
+    );
+  });
+}
+
+async function streamOnShell(
   self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions,
   scoped: ScopedShell | null,
-): Promise<ProgrammaticExecResult> {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const started = Date.now();
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let timedOut = false;
-
+  started: (writer: ExecStreamWriter) => void,
+): Promise<ExecExit> {
+  const began = Date.now();
+  let abort = () => {};
+  const writer = createExecStream(() => abort());
+  const wrote = { stdout: false, stderr: false };
+  const sink = (name: ExecStreamName) => (data: Uint8Array) => {
+    wrote[name] = true;
+    return writer.write(name, data);
+  };
   const job = startShellJob(self, command, options, {
     background: false,
-    onStdout: textSink((d) => stdout.push(d)),
-    onStderr: textSink((d) => stderr.push(d)),
+    onStdout: sink('stdout'),
+    onStderr: sink('stderr'),
   }, scoped);
+  abort = job.abort;
+  started(writer);
 
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
   let result: { exitCode: number };
   try {
     result = options.timeoutMs && options.timeoutMs > 0
@@ -524,27 +550,28 @@ async function execOnShell(
         }),
       ])
       : await job.run;
+  } catch (error) {
+    self.processes.exit(job.pid, 1);
+    throw error;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
   }
 
   const exitCode = Number(result.exitCode ?? (timedOut ? 124 : 0));
   self.processes.exit(job.pid, exitCode);
   if (timedOut) {
-    stderr.push(`command timed out after ${options.timeoutMs}ms\n`);
+    await sink('stderr')(enc.encode(`command timed out after ${options.timeoutMs}ms\n`));
   }
 
   const logged = collectJobOutput(self, job.pid);
-  if (stdout.length === 0 && logged.stdout) stdout.push(logged.stdout);
-  if (stderr.length === 0 && logged.stderr) stderr.push(logged.stderr);
+  if (!wrote.stdout && logged.stdout) await writer.write('stdout', enc.encode(logged.stdout));
+  if (!wrote.stderr && logged.stderr) await writer.write('stderr', enc.encode(logged.stderr));
 
   return {
     command: String(command),
     exitCode,
     success: exitCode === 0,
-    stdout: stdout.join(''),
-    stderr: stderr.join(''),
-    duration: Date.now() - started,
+    duration: Date.now() - began,
     timestamp: Date.now(),
   };
 }

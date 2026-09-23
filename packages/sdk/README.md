@@ -208,6 +208,10 @@ const box = nimbus.sandbox('session-or-job-id', {
 
 await box.ready();
 await box.exec('node -e "console.log(2 + 2)"');
+// large output: read it as it is written, under backpressure
+const run = await box.execStream('seq 1 2000000');
+for await (const { stream, data } of run.output) sink(stream, data);   // Uint8Array chunks
+const { exitCode } = await run.exit;
 const proc = await box.startProcess('node --watch /home/user/example-app/server.js');
 // returns immediately with proc.pid; poll box.processes.logs(proc.pid) for
 // output and the exit record, or box.processes.kill(proc.pid) to stop it

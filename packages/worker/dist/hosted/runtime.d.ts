@@ -44,11 +44,12 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         ok: true;
         preinstalled: string[];
     }>;
-    exec: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<operations.ProgrammaticExecResult>;
+    exec: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
+    execStream: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecStream>;
     runCode: (code: string, options?: (operations.ProgrammaticExecOptions & {
         language?: "javascript" | "typescript" | "python" | "ruby" | "shell";
         install?: "never" | "ifMissing";
-    }) | undefined) => Promise<operations.ProgrammaticExecResult>;
+    }) | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
     startProcess: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<operations.ProgrammaticStartResult>;
     listProcesses: () => Promise<operations.SerializedProcess[]>;
     killProcess: (pid: number) => Promise<{

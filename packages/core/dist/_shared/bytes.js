@@ -51,6 +51,6 @@ export function textSink(write) {
     return (bytes) => {
         const text = decoder.decode(bytes, { stream: true });
         if (text.length > 0)
-            write(text);
+            return write(text);
     };
 }

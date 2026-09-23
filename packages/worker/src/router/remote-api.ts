@@ -12,6 +12,7 @@ import {
   type VerifiedNimbusToken,
 } from '../auth/index.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 
 export type NimbusRuntimeName =
   | 'node'
@@ -75,7 +76,7 @@ export interface NimbusSdkRouterConfig {
 interface NimbusSessionRpcStub {
   _rpcReady(options?: { preinstall?: string[] }): Promise<unknown>;
   _rpcBootProbe(): Promise<unknown>;
-  _rpcExec(command: string, options?: Record<string, unknown>): Promise<unknown>;
+  _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
   _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<unknown>;
   _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<unknown>;
   _rpcReadFile(path: string): Promise<unknown>;
@@ -223,6 +224,13 @@ export async function handleNimbusRemoteApi(
     // `rpcMs` only when the caller sets `diag`, so the normal SDK envelope
     // is unchanged.
     const wantDiag = body.diag === true;
+    // The one op whose answer is a stream: the body is the encoded exec
+    // stream itself, so output flows under the client's own backpressure.
+    if (body.op === 'execStream') {
+      const args = body.args ?? [];
+      const wire = await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
+      return corsResponse(wire, 200, { 'Content-Type': EXEC_STREAM_CONTENT_TYPE });
+    }
     const t0 = Date.now();
     return await useRpcResource(
       dispatchRemoteRpc(ctx),
@@ -314,7 +322,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'bootProbe':
       return ctx.stub._rpcBootProbe();
     case 'exec':
-      return ctx.stub._rpcExec(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
+      return collectExecStream(decodeExecStream(await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]))));
     case 'startProcess':
       return ctx.stub._rpcStartProcess(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
     case 'runCode': {
@@ -474,6 +482,8 @@ function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown
   if (options.cred !== undefined) {
     throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
   }
+  // A named shell owns its cwd; defaulting one here reset it on every call.
+  if (options.shellId !== undefined && options.cwd === undefined) return options;
   return {
     ...options,
     cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,

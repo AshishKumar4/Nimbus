@@ -1,3 +1,4 @@
+import { textSink } from '../../../_shared/bytes.js';
 /**
  * Wraps Shell.execute() and serializes concurrent calls.
  * Concurrent commands.run() calls are queued (matches real shell behavior).
@@ -37,16 +38,26 @@ export class SandboxCommandsImpl {
         if (controller && signal)
             signal.addEventListener('abort', forwardAbort, { once: true });
         const timeoutId = controller ? setTimeout(() => controller.abort(), options?.timeout) : undefined;
+        // The result carries the output even when the caller also streams it;
+        // the shell captures only a stream nobody sinks, so a sunk one is teed.
+        let stdout = '';
+        let stderr = '';
+        const onStdout = options?.onStdout;
+        const onStderr = options?.onStderr;
         try {
             const result = await this.shell.execute(cmd, {
                 cwd: options?.cwd,
                 env: options?.env,
-                onStdout: options?.onStdout,
-                onStderr: options?.onStderr,
+                onStdout: onStdout && tee(onStdout, (text) => { stdout += text; }),
+                onStderr: onStderr && tee(onStderr, (text) => { stderr += text; }),
                 stdin: options?.stdin,
                 signal: controller?.signal ?? signal,
             });
-            return result;
+            return {
+                exitCode: result.exitCode,
+                stdout: onStdout ? stdout : result.stdout,
+                stderr: onStderr ? stderr : result.stderr,
+            };
         }
         finally {
             if (timeoutId !== undefined) {
@@ -55,4 +66,11 @@ export class SandboxCommandsImpl {
             signal?.removeEventListener('abort', forwardAbort);
         }
     }
+}
+function tee(sink, capture) {
+    const decode = textSink(capture);
+    return (data) => {
+        decode(data);
+        sink(data);
+    };
 }
