@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
@@ -16,10 +17,21 @@ const requireFromFacet = factory(
     // answer is the status Node gives when the cache is off.
     'home/user/compile-cache.js': 'const m = require("node:module"); module.exports = [m.enableCompileCache().status === m.constants.compileCacheStatus.DISABLED, m.isBuiltin("node:fs"), m.isBuiltin("fs"), m.isBuiltin("undici"), m.isBuiltin("left-pad")];\n',
     'home/user/kit dist/index.mjs': 'module.exports = "kit";\n',
+    'home/user/app/main.js': 'require("./node_modules/rolldown/dist/binding.mjs");\n',
+    'home/user/app/node_modules/rolldown/dist/binding.mjs': 'throw new Error("Cannot find native binding.");\n',
+    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi/binding.cjs': 'throw new Error("Cannot find module \'node:wasi\'");\n',
+    'home/user/app/node_modules/left-pad/index.js': 'throw new Error("left-pad failed");\n',
   },
   {}, {}, {}, {
-    'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist'],
+    'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],
     'home/user/kit dist': ['index.mjs'],
+    'home/user/app': ['main.js', 'node_modules'],
+    'home/user/app/node_modules': ['rolldown', '@rolldown', 'left-pad'],
+    'home/user/app/node_modules/rolldown': ['dist'],
+    'home/user/app/node_modules/rolldown/dist': ['binding.mjs'],
+    'home/user/app/node_modules/@rolldown': ['binding-wasm32-wasi'],
+    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi': ['binding.cjs'],
+    'home/user/app/node_modules/left-pad': ['index.js'],
   },
   null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -46,5 +58,25 @@ assert.match(requireFromFacet('file:///home/user/module-require.js'), /^v\d+\./)
 // percent-escapes are how a file URL carries a path with a space in it.
 assert.equal(requireFromFacet('file:///home/user/local-require.js?t=1790000000'), 'local');
 assert.equal(requireFromFacet('file:///home/user/kit%20dist/index.mjs'), 'kit');
+
+// A module that fails to load inside a package the ABI policy lists says why
+// that package cannot run here, once, whichever module required it.
+function loadError(path) {
+  try { requireFromFacet(path); } catch (e) { return e; }
+  return assert.fail(`${path} was expected to throw`);
+}
+for (const [path, pkg] of [
+  ['/home/user/app/main.js', 'rolldown'],
+  ['/home/user/app/node_modules/rolldown/dist/binding.mjs', 'rolldown'],
+  ['/home/user/app/node_modules/@rolldown/binding-wasm32-wasi/binding.cjs', '@rolldown/binding-wasm32-wasi'],
+]) {
+  const e = loadError(path);
+  const note = `Nimbus: ${pkg} has no Workers-compatible build: ${lookupReject(pkg).reason}`;
+  assert.ok(e.message.includes(note), `${path}: the message names the policy reason:\n${e.message}`);
+  assert.equal(e.message.split('Nimbus: ').length, 2, `${path}: one advisory, not one per importer:\n${e.message}`);
+  assert.ok(e.stack.includes(note), `${path}: the printed stack names it too:\n${e.stack}`);
+}
+assert.ok(!loadError('/home/user/app/node_modules/left-pad/index.js').message.includes('Nimbus: '),
+  'a package the policy does not list gets no advisory');
 
 console.log('node-shims-module-require: ok');

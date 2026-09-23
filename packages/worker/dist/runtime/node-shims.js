@@ -47,6 +47,7 @@ import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-sp
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
+import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -66,6 +67,7 @@ const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
 // from _shared/ai-egress.ts at build time rather than being written twice.
 const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
 const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
+const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map((r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason]));
 export function generateShimsCode() {
     return `
 // ═══════════════════════════════════════════════════════════════════════
@@ -7867,6 +7869,8 @@ globalThis.__nimbusCellImport = (req, id) => Promise.resolve().then(() => {
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __moduleCache = new Map();
+// package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
+const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 
 /**
  * Direct VFS bundle access for module resolution.
@@ -8330,13 +8334,15 @@ function __loadModule(resolvedPath) {
     __moduleCache.delete(resolvedPath);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
       try {
-        e.__nimbusModulePath = resolvedPath;
-        if (typeof e.message === "string") {
-          e.message += "\\nNimbus module: " + resolvedPath;
-        }
-        if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) {
-          e.stack += "\\nNimbus module: " + resolvedPath;
-        }
+        Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
+        const at = resolvedPath.lastIndexOf("node_modules/");
+        const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
+        const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
+        const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
+        const note = "\\nNimbus module: " + resolvedPath
+          + (advisory ? "\\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory : "");
+        if (typeof e.message === "string") e.message += note;
+        if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) e.stack += note;
       } catch {}
     }
     throw e;
