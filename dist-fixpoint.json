@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9cd11a09caf3956c4c4c0fcf4b893832efd95e916abb9f64512941a8331761b5",
+  "fingerprint": "d664549167e9bbe979463385f0ce93c3612530fcba7260462ffcffc7e498a807",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1768,9 +1768,9 @@
     "packages/worker/dist/session/supervisor-op.d.ts": "8b1d72941de1d529bdfa9c3c4e9412c885c16e2c6bd174df5884361b6aec4605",
     "packages/worker/dist/session/supervisor-op.d.ts.map": "cddb0e37e05609997cba248ea8a003097457a31b512a0928292ce19ca1f4de95",
     "packages/worker/dist/session/supervisor-op.js": "8e7a7abd65eae335da3581bbf07b3dcaa32579ad4b817a3a4af755473eeb15cb",
-    "packages/worker/dist/session/supervisor-rpc.d.ts": "f529210da4835651f35914df9ac1ba718e82d94bea1c4f6d2cf3bbd6b37c57fe",
-    "packages/worker/dist/session/supervisor-rpc.d.ts.map": "0d32329481356dcecb4c9faf0bfaae7fde5871aa7b3821020617ba5e87751a6b",
-    "packages/worker/dist/session/supervisor-rpc.js": "9a6f691e9c7b90600581c5720d900a4e24aa41fa0e8af979b8855145d87c6034",
+    "packages/worker/dist/session/supervisor-rpc.d.ts": "57c77da896f408d974f9a6cc0082d85536b4940808cf3e214eba8f36dccb30bc",
+    "packages/worker/dist/session/supervisor-rpc.d.ts.map": "dba06bf241d18bac1139cf853381e2ec42b5354c1f55b06dae2f78fe0afabadd",
+    "packages/worker/dist/session/supervisor-rpc.js": "b4898fef423940a063d4d89dd7d2f2a329735954050c919784fc4c175a97fc6d",
     "packages/worker/dist/session/vite-command.d.ts": "8ab65c3321df100969bb85c3c8653cccad4b2b68c34faebe2b7cb3864225c56d",
     "packages/worker/dist/session/vite-command.d.ts.map": "3b5c1d53a04795faa92cda9f74125129e03276dfcae6f8f65468e048a34fcde4",
     "packages/worker/dist/session/vite-command.js": "8c19e901747a1c26103b51678832be371fb6bbc6bd3901d5c6b4c8ce35498d5a",
@@ -2011,7 +2011,7 @@
     "packages/worker/src/session/start-real-vite.ts": "483aabd647c35957b0a2836f0016a2cf6a6e4cbb60245f9232eae7ce1cc0cbc1",
     "packages/worker/src/session/state-store.ts": "4565b5dc5bae66d32a0592184e0a21d180cad68c88d129ca50571cce1afa1e77",
     "packages/worker/src/session/supervisor-op.ts": "3f68d7e9da0d002df9225184ce94120f466ec1f1dbc40545eaa7b93e8cbf5892",
-    "packages/worker/src/session/supervisor-rpc.ts": "efbef79f2c44f2ad57f5e2bc0ef548008189d59cd8be0ba17b78712434dfe0ff",
+    "packages/worker/src/session/supervisor-rpc.ts": "c9465458038d333ffa221a65c839fc6a3ace46b273076ccb6e2c62997d78c267",
     "packages/worker/src/session/vite-command.ts": "53de0b4fbc9f4c65aea86c4546764342feca37b850f23c919329ffe81443f471",
     "packages/worker/src/session/ws-relay.ts": "b6c94d0d32217c38c7028a59f737862fd7e55f94e08ed5fa8bb16369a0a35da2",
     "packages/worker/src/session/ws.ts": "190c54540cb2ef811dc895983b4eda22611d5e3adb8cc998f541039d9760eabe",

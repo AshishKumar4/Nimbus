@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { mock } from 'bun:test';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -94,15 +93,30 @@ await assert.rejects(
   'a pid-less host caller cannot take ownership as root',
 );
 
-const supervisorSource = readFileSync(fileURLToPath(
-  new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url),
-), 'utf8');
-for (const method of ['access', 'chown', 'setUmask']) {
-  const body = supervisorSource.match(new RegExp(`async ${method}\\([^]*?\\n  }`))?.[0] ?? '';
-  assert.match(body, new RegExp(`this\\._fsOp\\('${method}',`),
-    `SupervisorRPC.${method} forwards only its bound process pid`);
+// SupervisorRPC forwards the pid its binding was minted with, never one a
+// facet supplies: whatever the arguments, the host sees the bound process.
+mock.module('cloudflare:workers', () => ({
+  WorkerEntrypoint: class {
+    constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  },
+}));
+const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+{
+  const envelopes = [];
+  const namespace = {
+    idFromName: (id) => ({ toString: () => id }),
+    idFromString: (id) => ({ toString: () => id }),
+    get: () => ({ async supervisorOp(envelope) { envelopes.push(envelope); return 0; } }),
+  };
+  const bound = new SupervisorRPC({ props: { doId: 'session', pid: user.pid } }, { NIMBUS_SESSION: namespace });
+  await bound.access('/user.txt', 0o4, root.pid);
+  await bound.chown('/user.txt', 0, 0, { followSymlinks: true, pid: root.pid });
+  await bound.setUmask(0o022, root.pid);
+  assert.deepEqual(
+    envelopes.map((envelope) => [envelope.op, envelope.pid]),
+    [['access', user.pid], ['chown', user.pid], ['setUmask', user.pid]],
+    'SupervisorRPC forwards only its bound process pid',
+  );
 }
-assert.match(supervisorSource, /private _fsOp<T>[^]*?pid: this\._pid\(\)/,
-  'the shared filesystem dispatch stamps the supervisor-bound pid');
 
 console.log('supervisor permission RPC contracts: ok');
