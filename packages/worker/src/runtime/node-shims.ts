@@ -82,10 +82,37 @@ export function generateShimsCode(): string {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Format helper ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+function __isErrorValue(v) {
+  return v instanceof Error || Object.prototype.toString.call(v) === "[object Error]";
+}
+// Node's util.inspect(err); JSON.stringify drops non-enumerable name/message/stack.
+function __fmtError(e, seen) {
+  if (seen.has(e)) return "[Circular *]";
+  seen.add(e);
+  let text;
+  try { text = typeof e.stack === "string" && e.stack ? e.stack : Error.prototype.toString.call(e); }
+  catch { text = String(e); }
+  const fields = [];
+  for (const key of Object.keys(e)) {
+    if (key === "cause") continue;
+    let value;
+    try { value = e[key]; } catch { continue; }
+    fields.push(key + ": " + __fmtField(value, seen));
+  }
+  if (Object.prototype.hasOwnProperty.call(e, "cause")) fields.push("[cause]: " + __fmtField(e.cause, seen));
+  if (fields.length === 0) return text;
+  return text + " {\\n" + fields.map((f) => "  " + f.split("\\n").join("\\n  ")).join(",\\n") + "\\n}";
+}
+function __fmtField(v, seen) {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (v !== null && typeof v === "object" && __isErrorValue(v)) return __fmtError(v, seen);
+  return __fmt(v);
+}
 function __fmt(v) {
   if (v === null) return "null";
   if (v === undefined) return "undefined";
   if (typeof v === "object") {
+    if (__isErrorValue(v)) return __fmtError(v, new Set());
     try { return JSON.stringify(v); } catch { return String(v); }
   }
   return String(v);
@@ -4879,9 +4906,14 @@ ${UNDICI_SHIM_CODE}
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __utilMod = {
-  inspect: (o, opts) => { try { return JSON.stringify(o, null, 2); } catch { return String(o); } },
-  format: (fmt, ...a) => {
-    if (typeof fmt !== "string") return [fmt, ...a].map(__fmt).join(" ");
+  inspect: (o, opts) => {
+    if (o !== null && typeof o === "object" && __isErrorValue(o)) return __fmtError(o, new Set());
+    try { return JSON.stringify(o, null, 2); } catch { return String(o); }
+  },
+  format: (...args) => {
+    if (args.length === 0) return "";
+    const [fmt, ...a] = args;
+    if (typeof fmt !== "string") return args.map(__fmt).join(" ");
     let i = 0;
     return fmt.replace(/%[sdifjoO%]/g, (m) => {
       if (m === "%%") return "%";
@@ -4890,7 +4922,7 @@ const __utilMod = {
       if (m === "%s") return String(v);
       if (m === "%d" || m === "%i" || m === "%f") return Number(v).toString();
       if (m === "%j") { try { return JSON.stringify(v); } catch { return "[Circular]"; } }
-      if (m === "%o" || m === "%O") { try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
+      if (m === "%o" || m === "%O") return __utilMod.inspect(v);
       return String(v);
     }) + (i < a.length ? " " + a.slice(i).map(__fmt).join(" ") : "");
   },

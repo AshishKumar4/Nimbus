@@ -44,4 +44,39 @@ assert.equal(
 assert.equal(util.format('%s %d', 'hello', 42), 'hello 42');
 assert.equal(util.format('%o', { x: 1 }), JSON.stringify({ x: 1 }, null, 2));
 
+// console.log() with no arguments prints an empty line, as in Node.
+assert.equal(util.format(), '');
+assert.equal(util.formatWithOptions({}), '');
+assert.equal(util.format(undefined), 'undefined', 'an explicit undefined argument still prints');
+
+// An Error prints like Node's util.inspect: stack, own fields, [cause].
+{
+  const plain = new Error('plain failure');
+  assert.equal(util.format(plain), plain.stack, 'an error with no own fields is its stack');
+  assert.equal(util.inspect(plain), plain.stack);
+
+  const inner = new TypeError('inner reason');
+  const outer = new Error('Cannot find native binding.');
+  outer.cause = inner;
+  outer.__nimbusModulePath = 'node_modules/rolldown/dist/shared/binding.mjs';
+  for (const [how, text] of [
+    ['format', util.format(outer)],
+    ['inspect', util.inspect(outer)],
+    ['%o', util.format('%o', outer)],
+    ['format with a leading string', util.format('failed:', outer)],
+  ]) {
+    assert.ok(text.includes(outer.stack), `${how}: the stack (message and frames) is printed:\n${text}`);
+    assert.ok(text.includes('[cause]: TypeError: inner reason'), `${how}: the cause is printed:\n${text}`);
+    assert.ok(text.includes('__nimbusModulePath: "node_modules/rolldown/dist/shared/binding.mjs"'),
+      `${how}: own fields are printed:\n${text}`);
+  }
+
+  // An option-bag cause (non-enumerable) prints too; a cycle terminates.
+  const looped = new Error('outer', { cause: new Error('middle') });
+  looped.cause.cause = looped;
+  const text = util.format(looped);
+  assert.ok(text.includes('[cause]: Error: middle'), text);
+  assert.ok(text.includes('[Circular *]'), text);
+}
+
 console.log('node-util-format: ok');
