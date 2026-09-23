@@ -4,7 +4,7 @@ import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
-import { installLogPersistence } from '../session/hibernation.js';
+import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { routeRuntimeLoopback } from '../session/loopback.js';
@@ -15,7 +15,7 @@ import { registerHostedCommands } from './commands.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
-const HostedTask = z.enum(['resident-launch', 'log-flush', 'log-janitor']);
+const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor']);
 const InputFrame = z.discriminatedUnion('type', [
     z.object({ type: z.literal('input'), data: z.string() }),
     z.object({ type: z.literal('resize'), cols: z.number().int().positive(), rows: z.number().int().positive() }),
@@ -31,6 +31,8 @@ class RuntimeOwner {
     closing = null;
     _w9PersistWired = false;
     _w9SchemaInit = false;
+    _w1KeepaliveArmed = false;
+    _w1LastClientActivityAt = 0;
     _viteShimPid = null;
     _viteShimPort = null;
     wranglerAliasBannerShown = false;
@@ -73,6 +75,7 @@ class RuntimeOwner {
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             resolveWorkerLaunch: options.resolveWorkerLaunch,
             filesystem: () => options.workspace.filesystem,
+            armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
         });
         options.workspace.shell.bindTerminal(this.terminal);
         installLogPersistence(this, options.ctx, () => this.scheduleLogs());
@@ -131,6 +134,14 @@ class RuntimeOwner {
         const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
         this.options.lifecycle.waitUntil(pending);
         return pending;
+    }
+    noteClientActivity() {
+        noteResidentClient(this, (at) => this.scheduleKeepalive(at));
+    }
+    scheduleKeepalive(at) {
+        const pending = this.schedule('resident-keepalive', at);
+        this.options.lifecycle.waitUntil(pending);
+        return pending.then(() => true, () => false);
     }
     schedule(reason, at) {
         if (this._w1SessionDestroyed)
@@ -194,6 +205,11 @@ class RuntimeOwner {
             return;
         if (task === 'resident-launch') {
             await this.ensureFacetManager().pumpLaunches();
+        }
+        else if (task === 'resident-keepalive') {
+            const next = residentKeepaliveFired(this, this.ctx, Date.now());
+            if (next !== null && !(await this.scheduleKeepalive(next)))
+                this._w1KeepaliveArmed = false;
         }
         else if (task === 'log-flush') {
             this.flushScheduled = false;
@@ -299,14 +315,20 @@ class RuntimeOwner {
         return this.closing;
     }
 }
+/** Every call an embedder makes is a client's: it notes activity for the resident keep-alive. */
+function clientCalls(owner, calls) {
+    const wrapped = Object.fromEntries(Object.entries(calls).map(([name, call]) => [name, (...args) => {
+            owner.noteClientActivity();
+            return Reflect.apply(call, undefined, args);
+        }]));
+    // Same keys, same signatures: each entry forwards its arguments unchanged.
+    return wrapped;
+}
 export async function composeHostedRuntime(options) {
     const owner = new RuntimeOwner(options);
     await owner.ensureRuntimeReady();
-    return {
-        workspace: options.workspace,
-        terminal: owner.terminal,
-        files: owner.files(owner.processes.cred(owner.shellProcessPid)),
-        runtimes: owner.runtimeManager,
+    // Facet RPCs (supervisorOp), alarms and teardown are not clients.
+    const client = clientCalls(owner, {
         facets: () => owner.ensureFacetManager(),
         ready: operations.ensureProgrammaticReady.bind(null, owner),
         exec: operations.rpcExec.bind(null, owner),
@@ -335,10 +357,17 @@ export async function composeHostedRuntime(options) {
             await operations.ensureProgrammaticReady(owner);
             return owner.ensureFacetManager().apps.routeCapabilityPort(...args);
         },
-        supervisorOp: (envelope) => owner.supervisorOp(envelope),
-        onScheduled: (task) => owner.onScheduled(task),
         attachTerminal: (ws) => owner.attachTerminal(ws),
         terminalFrame: (ws, message) => owner.terminalFrame(ws, message),
+    });
+    return {
+        workspace: options.workspace,
+        terminal: owner.terminal,
+        files: owner.files(owner.processes.cred(owner.shellProcessPid)),
+        runtimes: owner.runtimeManager,
+        ...client,
+        supervisorOp: (envelope) => owner.supervisorOp(envelope),
+        onScheduled: (task) => owner.onScheduled(task),
         terminalClose: (ws) => owner.terminalClose(ws),
         close: () => owner.close(),
     };

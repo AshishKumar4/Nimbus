@@ -246,7 +246,7 @@ try {
     _notifySession(line) { sessionEvents.push(['notify', line]); },
   };
   const sessionAuthority = new bundle.SqliteFilesystemAuthority(vfs);
-  bundle.ensureFacetManager(host, {ctx: host.ctx, env: host.env, notify: line => host._notifySession(line), requestLaunchTurn: notBefore => host._scheduleLaunchTurn(notBefore), filesystem: () => sessionAuthority});
+  bundle.ensureFacetManager(host, {ctx: host.ctx, env: host.env, notify: line => host._notifySession(line), requestLaunchTurn: notBefore => host._scheduleLaunchTurn(notBefore), filesystem: () => sessionAuthority, armResidentKeepalive: () => {}});
   const sessionManager = host.facetManagerComposed.manager;
   assert.ok(sessionManager, 'the session composed a manager');
   assert.equal(host.sqliteFs, vfs, 'over its filesystem, which it stood up first');

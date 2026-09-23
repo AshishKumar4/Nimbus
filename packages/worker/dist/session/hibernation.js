@@ -239,15 +239,16 @@ export function ensureLogJanitor(host, ctx) {
  * platform evicts an idle object after roughly ten seconds, and a pending
  * `ctx.waitUntil` is not the in-flight event that counts (see
  * RESIDENT_KEEPALIVE_MS). A quiet process sends no RPC, so without this the
- * session idles out and the launch journal re-drives the process under a new
+ * host idles out and the launch journal re-drives the process under a new
  * pid namespace, dropping its attached terminal and its port. The alarm is
  * the event; its dispatch is the whole payload.
  *
- * Idempotent per instance via `_w1KeepaliveArmed`; dispatchAlarm clears the
- * flag when the last resident process is gone, so the next resident spawn
- * re-arms the cycle.
+ * The one rule for both hosts: the session DO schedules through the fabric
+ * timer mux, a hosted runtime through its embedder's lifecycle. Idempotent
+ * per instance via `_w1KeepaliveArmed`; `residentKeepaliveFired` clears the
+ * flag when the cycle ends, so the next resident spawn re-arms it.
  */
-export function ensureResidentKeepalive(host, ctx) {
+export function armResidentKeepalive(host, schedule) {
     if (host._w1KeepaliveArmed)
         return;
     if (host.processes.residentRunning === 0)
@@ -258,14 +259,45 @@ export function ensureResidentKeepalive(host, ctx) {
     if (host._w1SessionDestroyed)
         return;
     // Optimistic flag (dedupes same-turn spawns), CONFIRMED by the schedule
-    // outcome: timers.schedule swallows storage errors, and a failure with the
-    // flag left set would mean no alarm AND nothing ever re-arming until the
-    // instance recycles.
+    // outcome: a failure with the flag left set would mean no alarm AND
+    // nothing ever re-arming until the instance recycles.
     host._w1KeepaliveArmed = true;
-    void timers(host, ctx).schedule('resident-keepalive', Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
+    void schedule(Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
         if (!ok)
             host._w1KeepaliveArmed = false;
     });
+}
+/**
+ * W1: the keep-alive alarm fired. Deliberately no work: the alarm exists so
+ * the object HAS an event, and being dispatched is the entire payload.
+ * Returns when to fire next, or null after clearing the armed flag.
+ *
+ * Re-arms only while a resident process runs AND a client is present — the
+ * rule the janitor learned the hard way (see dispatchAlarm): an
+ * unconditional self-renewal makes every session boot its DO forever, and
+ * the fleet doing that resets live ones. Bounded by the resident alone, an
+ * abandoned dev server did exactly that. The next resident spawn, or the
+ * client's return, re-arms the cycle.
+ */
+export function residentKeepaliveFired(host, ctx, now) {
+    if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
+        return now + RESIDENT_KEEPALIVE_MS;
+    }
+    host._w1KeepaliveArmed = false;
+    return null;
+}
+/**
+ * W1: a client reached the host. Records the moment, and re-arms the
+ * keep-alive if a resident is running and the cycle had lapsed: a host
+ * whose client came back before the platform evicted it still holds its
+ * process, and the next quiet stretch must not idle it out mid-session.
+ */
+export function noteResidentClient(host, schedule) {
+    host._w1LastClientActivityAt = Date.now();
+    armResidentKeepalive(host, schedule);
+}
+export function ensureResidentKeepalive(host, ctx) {
+    armResidentKeepalive(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
 }
 /** W9: idempotent SQL schema bootstrap. */
 export function ensureHibSchema(host, ctx) {
@@ -300,15 +332,9 @@ export function residentClientPresent(host, ctx, now) {
         return true;
     return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
-/**
- * W1: a client reached the session. Records the moment, and re-arms the
- * keep-alive if a resident is running and the cycle had lapsed: a session
- * whose client came back before the platform evicted it still holds its
- * process, and the next quiet stretch must not idle it out mid-session.
- */
+/** W1: a client reached the session DO (see noteResidentClient). */
 export function noteClientActivity(host, ctx) {
-    host._w1LastClientActivityAt = Date.now();
-    ensureResidentKeepalive(host, ctx);
+    noteResidentClient(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
 }
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -385,18 +411,9 @@ export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunche
             host._w1JanitorArmed = false;
         },
         'resident-keepalive': (now) => {
-            // Deliberately no work: this alarm exists so the object HAS an event,
-            // and being dispatched is the entire payload. Re-arm only while a
-            // resident process runs AND a client is present — the same rule the
-            // janitor learned the hard way (see its comment above): an
-            // unconditional self-renewal makes every session boot its DO forever,
-            // and the fleet doing that resets live ones. Bounded by the resident
-            // alone, an abandoned dev server did exactly that. The next resident
-            // spawn, or the client's return, re-arms the cycle.
-            if (host.processes.residentRunning > 0 && residentClientPresent(host, ctx, now)) {
-                return { rearmAt: now + RESIDENT_KEEPALIVE_MS };
-            }
-            host._w1KeepaliveArmed = false;
+            const rearmAt = residentKeepaliveFired(host, ctx, now);
+            if (rearmAt !== null)
+                return { rearmAt };
         },
     }, () => {
         // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called

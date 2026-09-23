@@ -113,6 +113,12 @@ export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWir
  */
 export declare function clearDestroyedTombstone(host: HibHost, ctx: any): void;
 export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
+/** The fields the keep-alive rule reads and keeps; both hosts carry them. */
+export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
+/** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
+export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
+/** Where a host's attached clients are counted: its hibernatable sockets. */
+export type KeepaliveClients = Partial<Pick<DurableObjectState, 'getWebSockets'>>;
 /**
  * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
  * of a LONG-RUNNING process only.
@@ -121,14 +127,36 @@ export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
  * platform evicts an idle object after roughly ten seconds, and a pending
  * `ctx.waitUntil` is not the in-flight event that counts (see
  * RESIDENT_KEEPALIVE_MS). A quiet process sends no RPC, so without this the
- * session idles out and the launch journal re-drives the process under a new
+ * host idles out and the launch journal re-drives the process under a new
  * pid namespace, dropping its attached terminal and its port. The alarm is
  * the event; its dispatch is the whole payload.
  *
- * Idempotent per instance via `_w1KeepaliveArmed`; dispatchAlarm clears the
- * flag when the last resident process is gone, so the next resident spawn
- * re-arms the cycle.
+ * The one rule for both hosts: the session DO schedules through the fabric
+ * timer mux, a hosted runtime through its embedder's lifecycle. Idempotent
+ * per instance via `_w1KeepaliveArmed`; `residentKeepaliveFired` clears the
+ * flag when the cycle ends, so the next resident spawn re-arms it.
  */
+export declare function armResidentKeepalive(host: ResidentKeepaliveHost, schedule: ResidentKeepaliveSchedule): void;
+/**
+ * W1: the keep-alive alarm fired. Deliberately no work: the alarm exists so
+ * the object HAS an event, and being dispatched is the entire payload.
+ * Returns when to fire next, or null after clearing the armed flag.
+ *
+ * Re-arms only while a resident process runs AND a client is present — the
+ * rule the janitor learned the hard way (see dispatchAlarm): an
+ * unconditional self-renewal makes every session boot its DO forever, and
+ * the fleet doing that resets live ones. Bounded by the resident alone, an
+ * abandoned dev server did exactly that. The next resident spawn, or the
+ * client's return, re-arms the cycle.
+ */
+export declare function residentKeepaliveFired(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): number | null;
+/**
+ * W1: a client reached the host. Records the moment, and re-arms the
+ * keep-alive if a resident is running and the cycle had lapsed: a host
+ * whose client came back before the platform evicted it still holds its
+ * process, and the next quiet stretch must not idle it out mid-session.
+ */
+export declare function noteResidentClient(host: ResidentKeepaliveHost, schedule: ResidentKeepaliveSchedule): void;
 export declare function ensureResidentKeepalive(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void;
@@ -138,13 +166,8 @@ export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ct
  * keep-alive re-arms on this and on a running resident, never on the
  * resident alone.
  */
-export declare function residentClientPresent(host: HibHost, ctx: any, now: number): boolean;
-/**
- * W1: a client reached the session. Records the moment, and re-arms the
- * keep-alive if a resident is running and the cycle had lapsed: a session
- * whose client came back before the platform evicted it still holds its
- * process, and the next quiet stretch must not idle it out mid-session.
- */
+export declare function residentClientPresent(host: ResidentKeepaliveHost, ctx: KeepaliveClients, now: number): boolean;
+/** W1: a client reached the session DO (see noteResidentClient). */
 export declare function noteClientActivity(host: HibHost, ctx: any): void;
 /**
  * W1: this session's canonical alarm-reason strings, registered on the

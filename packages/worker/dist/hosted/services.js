@@ -94,7 +94,7 @@ export function ensureFacetManager(self, runtimeContext) {
                         catch { }
                         // The one arming site: the journal's re-drive path comes back
                         // through this same hook. See ensureResidentKeepalive.
-                        runtimeContext.armResidentKeepalive?.();
+                        runtimeContext.armResidentKeepalive();
                     }
                     // Only surface long-running / user-visible spawns to keep
                     // the terminal uncluttered. Short `node <file>` evals also

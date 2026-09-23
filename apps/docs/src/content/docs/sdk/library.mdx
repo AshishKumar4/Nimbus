@@ -74,6 +74,66 @@ Cold starts, hibernation wakes, and resets all re-instantiate the class.
 The counter bumps once per instance, and the code uses the bumped value
 only after the `put` resolves.
 
+## The hosted runtime in your Durable Object
+
+`composeHostedRuntime` from `@nimbus-sh/worker/workspace-host` adds the
+terminal, resident processes, ports and the programmatic API on top of a
+`NimbusWorkspace` in your own object. It runs its background work as
+tasks your object schedules through `lifecycle`:
+
+| Task | What it does |
+|---|---|
+| `resident-launch` | Boots the next chunk of a resident process's launch. Each chunk needs its own CPU budget. |
+| `resident-keepalive` | No work. The invocation itself keeps the object, and the resident processes that die with it, in memory. It re-arms while a resident runs and a client is present: a hibernatable WebSocket on `ctx`, or a runtime call within the last 60 s. |
+| `log-flush` | Persists buffered process output. |
+| `log-janitor` | Drops the logs of exited processes every 60 s while any remain. |
+
+`lifecycle.schedule(task, at)` must make `runtime.onScheduled(task)` run in
+a new invocation, a Durable Object alarm, at or after `at`. It replaces any
+pending deadline for that task and rejects when it cannot arm one.
+`lifecycle.cancel(task)` drops the deadline. Do not run `onScheduled` from
+`setTimeout` in the current invocation. That timer shares the current
+invocation's CPU budget, so paced launches run out of CPU, and it is not an
+event, so the platform evicts the object after about 10 s idle and the
+resident processes die with it.
+
+One alarm serves every task:
+
+```ts
+type Task = Parameters<HostedRuntimeOptions['lifecycle']['schedule']>[0];
+
+export class Workspace extends DurableObject {
+  private schedule = (task: Task, at: number) => this.ctx.storage.transaction(async (txn) => {
+    const tasks = { ...(await txn.get<Record<string, number>>('tasks')), [task]: at };
+    await txn.put('tasks', tasks);
+    await txn.setAlarm(Math.min(...Object.values(tasks)));
+  });
+
+  private cancel = (task: Task) => this.ctx.storage.transaction(async (txn) => {
+    const { [task]: _, ...tasks } = (await txn.get<Record<string, number>>('tasks')) ?? {};
+    await txn.put('tasks', tasks);
+    const next = Object.values(tasks);
+    if (next.length > 0) await txn.setAlarm(Math.min(...next));
+    else await txn.deleteAlarm();
+  });
+
+  // composeHostedRuntime({ ..., lifecycle: {
+  //   waitUntil: (p) => this.ctx.waitUntil(p), schedule: this.schedule, cancel: this.cancel } })
+
+  async alarm() {
+    const tasks = (await this.ctx.storage.get<Record<string, number>>('tasks')) ?? {};
+    for (const [task, at] of Object.entries(tasks)) {
+      if (at > Date.now()) continue;
+      await this.cancel(task as Task);
+      await (await this.runtime()).onScheduled(task as Task);
+    }
+  }
+}
+```
+
+`onScheduled` re-arms a task through `schedule` when it needs another turn,
+so cancel a task before running it, as above.
+
 ## Runtime packages
 
 The wasm runtimes are separate npm packages, so a filesystem-only embedder
