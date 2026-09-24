@@ -19,15 +19,13 @@
 import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
+import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
-import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ExecutionFs, type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
@@ -218,10 +216,11 @@ function _reviveVfsWriteCell(v: unknown): string | Uint8Array {
 
 // ── Code generators ─────────────────────────────────────────────────────
 //
-// The ~230 KiB node-compat shim source is staged as a static asset
+// The node-compat layer's sources — the ~230 KiB shims, the VFS write ledger
+// and the resident store — are staged as static assets
 // (scripts/bundle-node-shims.mjs) and fetched once per isolate via
-// fetchNodeShimsCode — it no longer lives in the worker bundle (≤6 MiB
-// gate). The codegen functions take it as the `shims` parameter; the async
+// fetchNodeFacetSources: they no longer live in the worker bundle (its size
+// gate). The codegen functions take them as the `sources` parameter; the async
 // exec/spawn callers await the memoized fetch.
 
 interface LoadedWorkerStub {
@@ -572,7 +571,7 @@ export async function generateEntrypointCode(
   userCode: string,
   vfsState: FacetVfsState,
   usesSqlite: boolean,
-  shims: string,
+  sources: NodeFacetSources,
   wasmImports: readonly FacetWasmImport[] = [],
 ): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
@@ -657,11 +656,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${VFS_WRITE_LEDGER_SOURCE}
+${sources.ledger}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${shims}
+${sources.shims}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -900,7 +899,7 @@ export async function generateLongRunningNodeCode(
     wasmImports?: readonly FacetWasmImport[];
   },
   usesSqlite: boolean,
-  shims: string,
+  sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
@@ -953,7 +952,7 @@ const __compileFailures = new Map();
 // here, off the module map. That is why code cannot come from the store.
 ${BUNDLE_PRECOMPILE_LOOP}
 
-${FACET_RESIDENT_STORE_SOURCE}
+${sources.residentStore}
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -1091,11 +1090,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${VFS_WRITE_LEDGER_SOURCE}
+${sources.ledger}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${shims}
+${sources.shims}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -5129,9 +5128,9 @@ export class FacetManager {
     // Answered by _buildProcessBundle while the raw cells were still in
     // hand; re-deriving it here is what forced them to be retained.
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
-    const [sqliteModules, shims] = await Promise.all([
+    const [sqliteModules, sources] = await Promise.all([
       this.sqliteModuleEntry(usesSqlite),
-      fetchNodeShimsCode(this.env),
+      fetchNodeFacetSources(this.env),
     ]);
     const writerId = crypto.randomUUID();
     let writerActivated = false;
@@ -5170,7 +5169,7 @@ export class FacetManager {
             // the map, and compiled by the loader like the sqlite sidecar.
             const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
             const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
-            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims, wasmImports);
+            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, sources, wasmImports);
             if (diagSink) {
               diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
               for (const source of Object.values(generatedWorker.modules)) {
@@ -5241,7 +5240,7 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'shimsCode' | 'mode'> & { command?: string; attachedTty?: boolean },
+    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean },
   ): Promise<StagedArtifactExecResult> {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);
@@ -6115,9 +6114,9 @@ export class FacetManager {
       : spawnEnv;
     // Answered by _buildProcessBundle while the raw cells were still in hand.
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
-    const [sqliteModules, shims] = await Promise.all([
+    const [sqliteModules, sources] = await Promise.all([
       this.sqliteModuleEntry(usesSqlite),
-      fetchNodeShimsCode(this.env),
+      fetchNodeFacetSources(this.env),
     ]);
     // Each image is read by path when the facet loads, never by value here.
     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
@@ -6126,7 +6125,7 @@ export class FacetManager {
       vfsState,
       { ...opts, env: processEnv, cred: entry.cred, wasmImports },
       usesSqlite,
-      shims,
+      sources,
       pacer,
     );
 

@@ -1,31 +1,37 @@
 #!/usr/bin/env node
 /**
- * bundle-node-shims.mjs — stage the node-compat shim source as a static asset.
+ * bundle-node-shims.mjs — stage the node-compat layer's sources as static assets.
  *
  * Why this exists
  * ───────────────
- * `generateShimsCode()` (src/runtime/node-shims.ts) produces the ~230 KiB
- * node-compat shim source that every node facet's generated worker text
- * interpolates (`${SHIMS}` in facets/manager.ts entrypoint codegen and the
- * opencode facet runner). Keeping that template inside the worker bundle
- * pushed the main bundle over the ≤6 MiB gate
- * (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), whose intended
- * fix is exactly this promote: large facet-runner source strings belong in
- * the static-assets layer, not the supervisor bundle.
+ * Every node facet's generated worker text splices three sources that only
+ * ever run inside the facet:
+ *   - `generateShimsCode()` (src/runtime/node-shims.ts), the ~230 KiB
+ *     node-compat shims;
+ *   - `VFS_WRITE_LEDGER_SOURCE` (@nimbus-sh/core _shared/vfs-write-ledger.ts),
+ *     the write ledger the shims' filesystem writes go through;
+ *   - `FACET_RESIDENT_STORE_SOURCE` (src/vfs/facet-resident-store.ts), a
+ *     resident facet's SQLite-backed resident set the shims read from.
+ * Keeping them inside the worker bundle pushed the main bundle over its size
+ * gate (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), whose
+ * intended fix is exactly this promote: large facet-runner source strings
+ * belong in the static-assets layer, not the supervisor bundle. Nothing the
+ * Worker bundle imports reaches the three modules any more.
  *
- * This script evaluates the COMMITTED dist's generateShimsCode() — dist is
- * the deployable truth (package "main" points at dist; apps bundle from it),
- * so the staged asset always matches what a deploy would have shipped inline.
- * Drift between src and the staged asset is caught by
- * tests/unit/node-shims-artifact-parity.mjs (asserts asset bytes equal the
- * CURRENT src generateShimsCode() output).
+ * This script evaluates the COMMITTED dist — dist is the deployable truth
+ * (package "main" points at dist; apps bundle from it), so each staged asset
+ * matches what a deploy would have shipped inline. Drift between src and the
+ * staged assets is caught by tests/unit/node-shims-artifact-parity.mjs
+ * (asserts each asset's bytes equal the CURRENT src output).
  *
  * Output:
- *   public/_assets/runtime/node-shims-<buildId>.js   (the shim source)
- *   src/node-shims-artifact.generated.ts
- *     export const NODE_SHIMS_ENTRY: string;     // asset path
- *     export const NODE_SHIMS_BUILD_ID: string;  // content-hash prefix
- *     export const NODE_SHIMS_SHA256: string;    // full digest
+ *   public/_assets/runtime/node-shims-<buildId>.js
+ *   public/_assets/runtime/vfs-write-ledger-<buildId>.js
+ *   public/_assets/runtime/resident-store-<buildId>.js
+ *   src/node-shims-artifact.generated.ts, per source:
+ *     export const <NAME>_ENTRY: string;     // asset path
+ *     export const <NAME>_BUILD_ID: string;  // content-hash prefix
+ *     export const <NAME>_SHA256: string;    // full digest
  *
  * Fetched at runtime by src/runtime/node-shims-artifact.ts (L2 + ASSETS,
  * sha-verified, memoized per isolate).
@@ -42,9 +48,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-const { generateShimsCode } = await import(
-  path.join(ROOT, 'dist/runtime/node-shims.js')
-);
+const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
+const { FACET_RESIDENT_STORE_SOURCE } = await import(path.join(ROOT, 'dist/vfs/facet-resident-store.js'));
+const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
 
 const shims = generateShimsCode();
 if (typeof shims !== 'string' || shims.length < 100_000) {
@@ -55,38 +61,58 @@ if (typeof shims !== 'string' || shims.length < 100_000) {
   );
 }
 
-const sha256 = createHash('sha256').update(shims, 'utf8').digest('hex');
-const buildId = sha256.slice(0, 16);
-const assetDir = path.join(ROOT, 'public/_assets/runtime');
-const assetName = `node-shims-${buildId}.js`;
-const entry = `/_assets/runtime/${assetName}`;
+const SOURCES = [
+  { name: 'NODE_SHIMS', family: 'node-shims', source: shims, from: 'dist/runtime/node-shims.js generateShimsCode()' },
+  {
+    name: 'VFS_WRITE_LEDGER',
+    family: 'vfs-write-ledger',
+    source: VFS_WRITE_LEDGER_SOURCE,
+    from: '@nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE',
+  },
+  {
+    name: 'RESIDENT_STORE',
+    family: 'resident-store',
+    source: FACET_RESIDENT_STORE_SOURCE,
+    from: 'dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE',
+  },
+];
 
+const assetDir = path.join(ROOT, 'public/_assets/runtime');
 await fs.mkdir(assetDir, { recursive: true });
-// Remove stale same-family assets so the directory carries exactly one
-// node-shims blob (the entry constant pins which one a deploy serves).
-for (const f of await fs.readdir(assetDir)) {
-  if (f.startsWith('node-shims-') && f !== assetName) {
-    await fs.unlink(path.join(assetDir, f));
+const existing = await fs.readdir(assetDir);
+const pins = [];
+for (const { name, family, source, from } of SOURCES) {
+  if (typeof source !== 'string' || source.length === 0) {
+    throw new Error(`[bundle-node-shims] ${from} is ${typeof source === 'string' ? 'empty' : typeof source}, not the source to stage`);
   }
+  const sha256 = createHash('sha256').update(source, 'utf8').digest('hex');
+  const buildId = sha256.slice(0, 16);
+  const assetName = `${family}-${buildId}.js`;
+  // Remove stale same-family assets so the directory carries exactly one blob
+  // per family (the entry constant pins which one a deploy serves).
+  for (const f of existing) {
+    if (f.startsWith(`${family}-`) && f !== assetName) await fs.unlink(path.join(assetDir, f));
+  }
+  await fs.writeFile(path.join(assetDir, assetName), source, 'utf8');
+  pins.push(
+    `/** ${from} */`,
+    `export const ${name}_ENTRY: string = ${JSON.stringify(`/_assets/runtime/${assetName}`)};`,
+    `export const ${name}_BUILD_ID: string = ${JSON.stringify(buildId)};`,
+    `export const ${name}_SHA256: string = ${JSON.stringify(sha256)};`,
+    '',
+  );
+  console.log(`[bundle-node-shims] staged ${assetName} (${(source.length / 1024).toFixed(1)} KiB, sha ${buildId}…)`);
 }
-await fs.writeFile(path.join(assetDir, assetName), shims, 'utf8');
 
 const generated = `/**
  * node-shims-artifact.generated.ts — AUTO-GENERATED by
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
- * Pins the staged node-compat shim asset (the generateShimsCode() output
- * promoted out of the worker bundle). NODE_SHIMS_BUILD_ID is a content-hash
- * prefix so cache layers never serve stale bytes after a rebuild;
- * NODE_SHIMS_SHA256 is the full digest verified at fetch time.
+ * Pins the staged sources of the node-compat layer, promoted out of the worker
+ * bundle: the shims, the VFS write ledger and the resident store. Each
+ * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
+ * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 
-export const NODE_SHIMS_ENTRY: string = ${JSON.stringify(entry)};
-export const NODE_SHIMS_BUILD_ID: string = ${JSON.stringify(buildId)};
-export const NODE_SHIMS_SHA256: string = ${JSON.stringify(sha256)};
-`;
+${pins.join('\n')}`;
 await fs.writeFile(path.join(ROOT, 'src/node-shims-artifact.generated.ts'), generated, 'utf8');
-
-console.log(
-  `[bundle-node-shims] staged ${assetName} (${(shims.length / 1024).toFixed(1)} KiB, sha ${buildId}…)`,
-);

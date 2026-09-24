@@ -38,6 +38,12 @@ import {
   fetchSqliteWasmBytes,
 } from '../../packages/worker/src/runtime/sqlite-wasm-bytes.ts';
 import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/opencode-artifact.ts';
+import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
+import {
+  NODE_SHIMS_ENTRY,
+  RESIDENT_STORE_ENTRY,
+  VFS_WRITE_LEDGER_ENTRY,
+} from '../../packages/worker/src/node-shims-artifact.generated.ts';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -184,11 +190,60 @@ try {
       `OPENCODE_ARTIFACT_DIGESTS is missing ${file}`,
     );
   }
+
+  // The node-compat layer's three sources arrive in one per-isolate fetch.
+  // Each is verified on its own: poisoning any one of them, on either tier,
+  // is a throw that names it, never a facet spliced from attacker text.
+  // Failed fetches are not memoized, so the clean fetch comes last.
+  const nodeSources = [
+    ['node-shims', NODE_SHIMS_ENTRY, 'shims'],
+    ['vfs-write-ledger', VFS_WRITE_LEDGER_ENTRY, 'ledger'],
+    ['resident-store', RESIDENT_STORE_ENTRY, 'residentStore'],
+  ];
+  const stagedText = (entry) => readFileSync(path.join(workerRoot, 'public', entry.slice(1)), 'utf8');
+  const nodeAssets = (poisoned) => ({
+    ASSETS: {
+      async fetch(request) {
+        const entry = new URL(request.url).pathname;
+        return new Response(entry === poisoned ? POISON : stagedText(entry));
+      },
+    },
+  });
+  /** caches.default serving POISON for `poisoned`'s entry, a miss for the rest. */
+  const nodeCaches = (poisoned) => {
+    const puts = [];
+    globalThis.caches = {
+      default: {
+        async match(request) {
+          return poisoned !== null && new URL(request.url).pathname === poisoned ? new Response(POISON) : undefined;
+        },
+        async put(request, response) {
+          puts.push(request.url);
+          await response.text();
+        },
+      },
+    };
+    return puts;
+  };
+  for (const [label, entry] of nodeSources) {
+    nodeCaches(entry);
+    await rejects(() => fetchNodeFacetSources(nodeAssets(null)), new RegExp(`${label} asset integrity mismatch`),
+      `${label}: poisoned L2 entry`);
+    nodeCaches(null);
+    await rejects(() => fetchNodeFacetSources(nodeAssets(entry)), new RegExp(`${label} asset integrity mismatch`),
+      `${label}: poisoned ASSETS read`);
+  }
+  const nodePuts = nodeCaches(null);
+  const fetched = await fetchNodeFacetSources(nodeAssets(null));
+  for (const [label, entry, field] of nodeSources) {
+    assert.equal(fetched[field], stagedText(entry), `${label}: the facet gets the staged source`);
+  }
+  assert.equal(new Set(nodePuts).size, nodeSources.length, 'each source is written back to L2 under its own key');
 } finally {
   delete globalThis.caches;
 }
 
 console.log(
-  `staged-artifact-integrity OK: ${cases.length} readers reject poisoned L2 + ASSETS bytes; ` +
-    `${Object.keys(OPENCODE_ARTIFACT_DIGESTS).length} opencode files pinned`,
+  `staged-artifact-integrity OK: ${cases.length} readers and the node-compat sources reject poisoned ` +
+    `L2 + ASSETS bytes; ${Object.keys(OPENCODE_ARTIFACT_DIGESTS).length} opencode files pinned`,
 );

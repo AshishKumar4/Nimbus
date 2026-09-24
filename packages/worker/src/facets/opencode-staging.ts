@@ -24,7 +24,7 @@
  */
 
 import { z } from 'zod/v4';
-import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
+import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import {
   fetchOpencodeBundle,
@@ -230,10 +230,10 @@ export async function assembleOpencodeFacetConfig(
   const assets = requireAssets(env, 'staged opencode artifact');
   const attached = spec.mode === 'attached';
 
-  const [bundle, shimsCode, sqliteModules, treeSitterModules, openTuiModules, chunkModules, workerModules, yogaModules] =
+  const [bundle, sources, sqliteModules, treeSitterModules, openTuiModules, chunkModules, workerModules, yogaModules] =
     await Promise.all([
       fetchOpencodeBundle(assets, attached ? 'attach' : 'default'),
-      fetchNodeShimsCode(assets),
+      fetchNodeFacetSources(assets),
       sqliteWasmModuleEntry(assets, true),
       treeSitterModuleEntries(assets),
       // Rendering stack is attach-only: serve/oneshot never link the TUI
@@ -258,7 +258,7 @@ export async function assembleOpencodeFacetConfig(
     cred: spec.cred,
     cwd: spec.cwd,
     stdin: spec.stdin,
-    shimsCode,
+    sources,
     vfsBundle: spec.vfsBundle,
     vfsManifest: spec.vfsManifest,
     vfsMetadata: spec.vfsMetadata,

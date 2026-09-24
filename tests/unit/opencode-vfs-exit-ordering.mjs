@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const source = generateOpencodeRunnerCode({
   argv: ['serve'],
@@ -9,7 +10,7 @@ const source = generateOpencodeRunnerCode({
   cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   cwd: '/home/user',
   stdin: '',
-  shimsCode: 'const __nimbusTestShimMarker = true;',
+  sources: nodeFacetSources('const __nimbusTestShimMarker = true;'),
   vfsBundle: '{}',
   vfsManifest: '{}',
   vfsMetadata: '{}',

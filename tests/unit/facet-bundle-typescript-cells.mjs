@@ -39,6 +39,7 @@ import {
 } from '../../packages/worker/src/facets/manager.ts';
 import { MK_COMPILED_FN_SOURCE } from '../../packages/core/src/_shared/compiled-fn.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -190,8 +191,8 @@ assert.ok(`${PROJ}/src/index.ts` in state.metadata, 'metadata describes the sour
 // Both generated facets splice the same loop, so one evaluation covers both.
 const SHIMS = '/* __SHIMS_MARKER__ */';
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const oneShot = (await generateEntrypointCode('', state, false, SHIMS)).code;
-const resident = (await generateLongRunningNodeCode('', state, { cred: CRED }, false, SHIMS)).code;
+const oneShot = (await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS))).code;
+const resident = (await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources(SHIMS))).code;
 for (const [label, source] of [['one-shot node facet', oneShot], ['long-running node facet', resident]]) {
   assert.ok(source.includes(BUNDLE_PRECOMPILE_LOOP.trim()), `${label}: splices the shared pre-compile loop`);
   assert.ok(source.includes(MK_COMPILED_FN_SOURCE.trim()), `${label}: splices the shared compile helper`);

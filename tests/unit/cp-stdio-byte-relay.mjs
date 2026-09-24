@@ -24,6 +24,7 @@ import {
   generateEntrypointCode,
   generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 // Captured before the shims install their timer barrier over the global.
@@ -158,11 +159,12 @@ console.log('  the child\'s reported text decodes split characters as one');
     serializedManifest: '{}', serializedMetadata: '{}',
   };
   const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-  const oneShot = (await generateEntrypointCode('', state, false, generateShimsCode())).code;
-  const resident = (await generateLongRunningNodeCode('', state, { cred }, false, generateShimsCode())).code;
+  const sources = nodeFacetSources(generateShimsCode());
+  const oneShot = (await generateEntrypointCode('', state, false, sources)).code;
+  const resident = (await generateLongRunningNodeCode('', state, { cred }, false, sources)).code;
   const opencode = generateOpencodeRunnerCode({
     argv: [], env: {}, cred, cwd: '/home/user', stdin: '', mode: 'attached',
-    shimsCode: generateShimsCode(), vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
+    sources, vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
   });
   for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident], ['opencode wrapper', opencode]]) {
     assert.doesNotThrow(() => parse(code, { ecmaVersion: 'latest', sourceType: 'module' }), `${label} parses`);
