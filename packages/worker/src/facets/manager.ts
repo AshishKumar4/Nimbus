@@ -4714,9 +4714,21 @@ export class FacetManager {
   ): Promise<string[]> {
     if (!this.vfs || !this.filesystem) return [];
     const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
+    const started = Date.now();
+    const trace = (what: string) => {
+      if (!this.debugEnabled) return;
+      console.log(`[nimbus-debug] pid ${entry.pid} data plan: ${what} at ${Date.now() - started} ms`);
+    };
+    trace('static references');
+    const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
+    trace(`${refs.length} modules name paths; learned reads`);
+    const learned = await this._learnedReads(vfsState);
+    trace(`${learned.length} learned; listing`);
+    let pages = 0;
     const plan = await planFacetData({
       list: async (after) => {
         const page = await vfs.authority.list(after, FS_LIST_PAGE_LIMIT);
+        trace(`page ${++pages}: ${page.entries.length} entries`);
         return { entries: page.entries, next: page.next };
       },
       readText: async (path) => {
@@ -4729,19 +4741,14 @@ export class FacetManager {
       cwd,
       home: home || '/home/user',
       closure: vfsState.bundlePaths ?? [],
-      refs: await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer),
-      learned: await this._learnedReads(vfsState),
+      refs,
+      learned,
       spend: (units) => pacer.spend(units),
     });
+    trace(`planned ${plan.paths.length}`);
     return plan.paths;
   }
 
-  /**
-   * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
-   * read from the VFS as written rather than from the module map, whose ESM
-   * cells were rewritten and lost their import.meta. Each module is parsed once
-   * per revision of it, in this session.
-   */
   /**
    * Paths earlier launches missed: this session's for the same build, and,
    * with a shared profile, every session's for the packages this closure
@@ -4772,6 +4779,12 @@ export class FacetManager {
     return sql ? new NpmCache(sql).installedIntegrities() : new Map();
   }
 
+  /**
+   * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
+   * read from the VFS as written rather than from the module map, whose ESM
+   * cells were rewritten and lost their import.meta. Each module is parsed once
+   * per revision of it, in this session.
+   */
   private async _closureStaticRefs(
     vfs: ExecutionFs,
     paths: readonly string[],

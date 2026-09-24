@@ -2050,8 +2050,8 @@ const __fsMod = (() => {
         }
       }
       const applied = __residentAdmit(result);
-      _cursor.epoch = result.epoch;
-      _cursor.rev = result.rev;
+      _cursor.epoch = applied.cursor.epoch;
+      _cursor.rev = applied.cursor.rev;
       // A directory that became searchable has descendants no delta names.
       for (const dir of applied.relist) await __nsRelist(supervisor, dir);
       _nsRetire(begin);

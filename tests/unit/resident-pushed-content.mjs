@@ -8,6 +8,7 @@
 // after launch is a first miss, named — and nothing is ever truncated.
 
 import assert from 'node:assert/strict';
+import { _rpcFsAcquire } from '../../packages/worker/src/session/rpc.ts';
 import {
   coherenceStats,
   createAuthority,
@@ -26,11 +27,11 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot() {
+async function boot(overrides) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/node_modules/dep', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
-  const handle = facetSupervisor(authority);
+  const handle = facetSupervisor(authority, overrides ? overrides(authority) : {});
   await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
   return { authority, probe: globalThis.__probe, log: handle.log };
 }
@@ -71,6 +72,34 @@ await runScenarios(import.meta.path, {
     const [held, fresh] = seen.split('|');
     assert.equal(held.length, big.length, 'the held file comes back whole');
     assert.equal(fresh, 'ERR:EAGAIN');
+  },
+
+  async 'an answer admitted after a newer one changes nothing'() {
+    // Two resumptions in flight: A's ACQUIRE is served while n.txt exists and
+    // delivered late; B's is served after a peer removed it and lands first.
+    // A's answer is older than the store's cursor by then, so neither its
+    // pushed bytes nor its stat may come back.
+    const gate = { armed: false, held: null, release: Promise.withResolvers(), served: Promise.withResolvers() };
+    const { authority, probe } = await boot((auth) => ({
+      async fsAcquire(...args) {
+        const answer = await _rpcFsAcquire(auth.host, args[0], args[1], args[2]);
+        if (gate.armed && !gate.held) {
+          gate.held = true;
+          gate.served.resolve();
+          await gate.release.promise;
+        }
+        return answer;
+      },
+    }));
+    authority.kfs.writeFile('home/user/app/n.txt', 'stale');
+    gate.armed = true;
+    const a = probe.resume('/home/user/app/n.txt');
+    await gate.served.promise;
+    authority.kfs.unlink('home/user/app/n.txt');
+    assert.equal(await probe.resume('/home/user/app/n.txt'), 'ERR:ENOENT', 'B sees the removal');
+    gate.release.resolve();
+    assert.equal(await a, 'ERR:ENOENT', 'A resumes on the newer state, not its own stale answer');
+    assert.equal(probe.read('/home/user/app/n.txt'), 'ERR:ENOENT');
   },
 
   async 'a dependency written after launch is not pushed, and misses by name'() {

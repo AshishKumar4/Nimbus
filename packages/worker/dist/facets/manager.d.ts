@@ -1093,12 +1093,6 @@ export declare class FacetManager {
      */
     private _planResidentData;
     /**
-     * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
-     * read from the VFS as written rather than from the module map, whose ESM
-     * cells were rewritten and lost their import.meta. Each module is parsed once
-     * per revision of it, in this session.
-     */
-    /**
      * Paths earlier launches missed: this session's for the same build, and,
      * with a shared profile, every session's for the packages this closure
      * loads. A learned path is planned only where the process's own listing
@@ -1107,6 +1101,12 @@ export declare class FacetManager {
     private _learnedReads;
     /** Installed package directory → the tarball integrity the session's lockfiles pin. */
     private _installedIntegrities;
+    /**
+     * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
+     * read from the VFS as written rather than from the module map, whose ESM
+     * cells were rewritten and lost their import.meta. Each module is parsed once
+     * per revision of it, in this session.
+     */
     private _closureStaticRefs;
     private _buildProcessBundle;
     /**

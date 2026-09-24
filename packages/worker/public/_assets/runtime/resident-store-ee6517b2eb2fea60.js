@@ -200,6 +200,16 @@ function __residentAdmit(result) {
       "rather than serving rows it cannot date"
     );
   }
+  // Answers can be admitted out of the order they were served in (two
+  // barriers in flight). One older than the store's cursor describes a state
+  // the store has already moved past: admitting it would move the cursor
+  // back and install its bytes over newer ones. Within an epoch the cursor
+  // only moves forward, and only entries above it are applied.
+  const at = __residentCursor();
+  const floor = at !== null && !__residentSealed && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
+  if (floor !== null && rev <= floor) {
+    return { dropped, kept, pushed: 0, relist, cursor: at, stale: rev < floor };
+  }
   // The namespace moves with the cursor or not at all: a delta without stats,
   // or a poison, leaves it describing a revision the cursor has left, so it
   // stops answering until a listing restores it.
@@ -218,6 +228,7 @@ function __residentAdmit(result) {
     __residentDropDated();
   } else if (Array.isArray(result.paths)) {
     for (const entry of result.paths) {
+      if (floor !== null && Number(entry.rev) <= floor) continue;
       const path = entry.path;
       if (namespaced) {
         const again = __nsApplyEntry(sql, entry);

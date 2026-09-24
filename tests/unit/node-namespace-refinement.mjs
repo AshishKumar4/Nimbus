@@ -49,6 +49,29 @@ const LOCAL = [
     ],
   },
   {
+    // The model's counterexample: a log naming only the removed root leaves
+    // /d/y as a ghost once /d is recreated. The session logs every path.
+    name: 'recursive removal then recreation leaves no ghost',
+    initial: { '/d': { kind: 'dir' }, '/d/y': { kind: 'file', bytes: 'y' }, '/d/s': { kind: 'dir' }, '/d/s/z': { kind: 'file', bytes: 'z' } },
+    steps: [
+      { auth: 'rmrf', path: '/d' }, { auth: 'mkdir', path: '/d' },
+      { facet: 'acquire' },
+      { facet: 'readdir', path: '/d', expect: [] },
+      { facet: 'stat', path: '/d/y', expect: 'ENOENT' },
+      { facet: 'stat', path: '/d/s/z', expect: 'ENOENT' },
+    ],
+  },
+  {
+    name: 'rename onto a recreated source leaves no ghost',
+    initial: { '/d': { kind: 'dir' }, '/d/y': { kind: 'file', bytes: 'y' } },
+    steps: [
+      { auth: 'rename', path: '/d', to: '/e' }, { auth: 'mkdir', path: '/d' },
+      { facet: 'acquire' },
+      { facet: 'readdir', path: '/d', expect: [] },
+      { facet: 'read', path: '/e/y', expect: 'y' },
+    ],
+  },
+  {
     name: 'own write survives a peer barrier until flushed, then a peer write wins',
     initial: { '/a': { kind: 'dir' }, '/a/f': { kind: 'file', bytes: 'x' } },
     steps: [
@@ -76,7 +99,23 @@ const LOCAL = [
 ];
 
 const fixture = existsSync(FIXTURE) ? JSON.parse(readFileSync(FIXTURE, 'utf8')) : null;
-const cases = [...LOCAL, ...(fixture?.cases ?? []).map((c, i) => ({ name: c.name ?? `${fixture.fixture} #${i}`, ...c }))];
+const cases = [...LOCAL, ...(fixture?.cases ?? []).map((c, i) => ({ name: c.name ?? `${fixture.fixture} #${i}`, initial: {}, ...c }))];
+
+/** The facet's whole namespace under ROOT, as the fixture states it: path → {kind, bytes}. */
+function snapshot(fs) {
+  const out = {};
+  const walk = (dir, rel) => {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = dir + '/' + name;
+      const key = rel + '/' + name;
+      const st = fs.lstatSync(abs);
+      if (st.isDirectory()) { out[key] = { kind: 'dir' }; walk(abs, key); }
+      else out[key] = { kind: 'file', bytes: fs.readFileSync(abs, 'utf8') };
+    }
+  };
+  walk('/' + ROOT, '');
+  return out;
+}
 
 const PROGRAM = `
 const fs = require("fs");
@@ -115,7 +154,13 @@ async function facetStep(probe, step) {
   const { fs } = probe;
   const p = '/' + at(step.path);
   switch (step.facet) {
-    case 'acquire': await probe.resume(); return;
+    case 'acquire': {
+      await probe.resume();
+      // The model's claim: after the barrier the namespace (and every held
+      // file's bytes) is exactly the authority's.
+      if (step.expect) assert.deepEqual(snapshot(fs), step.expect, 'namespace after ACQUIRE');
+      return;
+    }
     case 'writeSync': fs.writeFileSync(p, step.bytes); return;
     case 'flush': await globalThis.__nimbusVfsReleaseBarrier(); return;
     case 'read': {
