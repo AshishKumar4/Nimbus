@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "51afc9d2cf5f9f38cdf22d469299a1107412ea2e672547fe733ac5446fb2c481",
+  "fingerprint": "fac58cff1d4b3dd9fce692545428ea548f8d17b3434c597a3b0bc307962d40eb",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1962,7 +1962,7 @@
     "packages/worker/scripts/bundle-agent-chat.mjs": "ad48e46d1bcbc1b970bbb576c683e2b1d96511faa5ecb2c2775c343349ae77d2",
     "packages/worker/scripts/bundle-esbuild-wasm.mjs": "c8396abed2383740b47b32b6cae9fe189652ba0f52f5d61b782e0b2d6fcc1ad8",
     "packages/worker/scripts/bundle-facet-workers.mjs": "a9da110eb2c25c2d762c2b504a4b696a375634bad592e2b0fe7d0e1b9a7a9d3e",
-    "packages/worker/scripts/bundle-git.mjs": "78b7a19e8a37e094c01fdf5da807fbb252c1391c295145661cca381d21e3aeba",
+    "packages/worker/scripts/bundle-git.mjs": "e5fe082fa2db0a500c09a37ae90a1ad947dae1139ee1918f13b764f5681e07f8",
     "packages/worker/scripts/bundle-node-shims.mjs": "b572e3a0673c46540c035e94eac073ccae6c4d42a43b5124ba9c187468a3d347",
     "packages/worker/scripts/bundle-npm-cjs.mjs": "069f750eefcc6c4394028a4c9200e79cc00ddfea114f7e25752ea6c68eab8cbb",
     "packages/worker/scripts/bundle-opencode.mjs": "cfc4f730159ea7f1dd4592280eb05cd444868d317ff7a4d0ef078ee562aad521",
@@ -1971,6 +1971,7 @@
     "packages/worker/scripts/bundle-runtime.mjs": "67884317e68042a2a4051095139102225a532b78e1baa839221ba4b00f969ce7",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "f5a7299e50c572a6f567a9bc6619f28d7d26af223600c557eff6865a99843f46",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "7e364d37acfd22db218e2f5717aa00a44c9e5d20d61ad96cc45ced67e9a17849",
+    "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
     "packages/worker/scripts/clean-dist.mjs": "b0e9c33c41e1489e20e5ffad843264aa9dd4a8cb248bb02c43c29999af7c6945",
     "packages/worker/scripts/opencode/README.md": "9e33dc5a2ecdd250e6ab3008521b730812db81b1eb80704caeded4225f98acae",
     "packages/worker/scripts/opencode/build-node.ts": "f766162cf357d99e83fd945b9265e23a1fa53712c80e23983310cdaea1370b08",
@@ -1986,7 +1987,7 @@
     "packages/worker/scripts/opentui/build-wasm.mjs": "4bc20aeafd7bcba34cfc4fb2a1a45c473cb770550d01ae4e70285face2c1e011",
     "packages/worker/scripts/opentui/nimbus-wasm-ffi-abi.patch": "ede6ce5ad53abdd3d0f4d7abdcfba70a8fef1d4b4a70237894f11c82d67e830c",
     "packages/worker/scripts/opentui/nimbus-wasm-reactor-target.patch": "3e8b903c1493cef640668cc495d9f1a8e317c0f2a62c79e11ec8609f294a0f45",
-    "packages/worker/scripts/patch-install-deps.mjs": "5f66086194a1b7d4927e4967b324a65bc2ee9e9c5bea83b84fd0ffe411f3e7ae",
+    "packages/worker/scripts/patch-install-deps.mjs": "8bf2476696f9d29090f3ccacb84ce72d6fce50e8502a2d4569d2894540f4b25a",
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/runtime-specs.mjs": "d476672b2e8d6c3a19a9953082411206adad6a9685861515e9ba37d0e89fcffd",
     "packages/worker/src/_shared/preview-host.ts": "839c43ed65a5e903052df0452a60b0fddf018f2aeb4fac09097c9642632a481d",
