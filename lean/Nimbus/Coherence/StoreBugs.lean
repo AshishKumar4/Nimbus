@@ -173,4 +173,56 @@ theorem own_committed_write_is_served_past_a_peer :
     simp only [admit, commitMut, init, List.nil_append, List.append_assoc, List.singleton_append]
     rw [valAt_two t (by omega)]; omega
 
+/-! ## The fix (ResidentCoherenceLane, rule (a)) -/
+
+/-- The resumption guard the fix needs: no own acknowledgement is in flight for
+    a path that carries a noted report — from this barrier's answer or from any
+    earlier one. -/
+def AcksSettled (s : St) : Prop := ∀ g ∈ s.flights, s.parked g.path = some g.w → s.reports g.path = 0
+
+/-- With it, an own row whose write already committed is as fresh as a dated
+    row: the authority held its bytes at some instant at or after the horizon. -/
+theorem own_fresh_when_acks_settled {s : St} (h : Reachable s) (hs : AcksSettled s) {g : Flight}
+    (hg : g ∈ s.flights) {r : Nat} (hr : g.committed = some r) (hp : s.parked g.path = some g.w) :
+    Fresh s g.path r r := by
+  have hi := reachable_inv h
+  obtain ⟨hm, _, hf⟩ := hi.flightOk g hg r hr
+  refine ⟨Or.inr hm, ?_⟩
+  rcases hf hp with h' | h'
+  · rw [hs g hg hp] at h'; omega
+  · exact h'
+
+/-- A wait snapshotted per barrier, over only the paths THIS answer names, is not
+    enough: after `ownRace` (whose resumption waits), a second barrier from the
+    advanced cursor names nothing, so its resumption would not wait, and serves
+    the own bytes committed at 1 past the peer's 2. The noted report is still on
+    the path; `AcksSettled` catches it. -/
+theorem a_per_answer_wait_misses_an_earlier_report :
+    ∃ s a, Reachable s ∧ a ∈ s.answers ∧ a.delta = [] ∧ s.rows 0 = some ⟨0, .own⟩ ∧
+      ⟨0, 0, some 1⟩ ∈ s.flights ∧ s.parked 0 = some 0 ∧ s.reports 0 = 2 ∧ ¬ AcksSettled s ∧
+      ∀ t, (admit s a).H ≤ t → valAt s.muts 0 t ≠ 1 := by
+  have h1 := Reachable.step .init (.writeSync init 0)
+  have h2 := Reachable.step h1 (.flushSend _ 0 0 (by simp [init, upd]) (by simp [init]))
+  have h3 := Reachable.step h2 (.flushCommit _ ⟨0, 0, none⟩ 1 (by simp [init]) rfl (by decide))
+  have h4 := Reachable.step h3 (.peerWrite _ 0 2 (by decide))
+  have h5 := Reachable.step h4 (.request _)
+  have h6 := Reachable.step h5 (.serve _ (1, 0) (List.mem_append_right _ (List.mem_singleton.mpr rfl)))
+  have h7 := Reachable.step h6 (.admitDelta _ _ (List.mem_append_right _ (List.mem_singleton.mpr rfl))
+    (by simp [poisons, commitMut, init]) rfl rfl)
+  have h8 := Reachable.step h7 (.request _)
+  have h9 := Reachable.step h8 (.serve _ (2, 2) (List.mem_append_right _ (List.mem_singleton.mpr rfl)))
+  refine ⟨_, _, h9, List.mem_append_right _ (List.mem_singleton.mpr rfl), ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · simp [deltaFrom, retained, admit, commitMut, init]
+  · simp [admit, commitMut, upd, init]
+  · simp [admit, commitMut, init]
+  · simp [admit, commitMut, upd, init]
+  · simp [admit, commitMut, upd, init, repOf, deltaFrom, retained, last, valAt]
+  · intro hs
+    have := hs ⟨0, 0, some 1⟩ (by simp [admit, commitMut, init]) (by simp [admit, commitMut, upd, init])
+    simp [admit, commitMut, upd, init, repOf, deltaFrom, retained, last, valAt] at this
+  · intro t ht
+    simp [admit, commitMut, init] at ht
+    simp only [admit, commitMut, init, List.nil_append, List.append_assoc, List.singleton_append]
+    rw [valAt_two t (by omega)]; omega
+
 end Nimbus.Coherence.Store

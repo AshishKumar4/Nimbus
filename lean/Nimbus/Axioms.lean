@@ -12,6 +12,15 @@
 
 import Nimbus
 
+/-! ## Nimbus/Coherence/Namespace.lean -/
+
+#print axioms Nimbus.Coherence.Namespace.closed_above
+#print axioms Nimbus.Coherence.Namespace.nothing_below
+#print axioms Nimbus.Coherence.Namespace.applyEntry_self
+#print axioms Nimbus.Coherence.Namespace.applyEntry_other
+#print axioms Nimbus.Coherence.Namespace.apply_exact
+#print axioms Nimbus.Coherence.Namespace.a_log_naming_only_the_removed_root_leaves_a_ghost
+
 /-! ## Nimbus/Coherence/Refetch.lean -/
 
 #print axioms Nimbus.Coherence.Refetch.new_settles
@@ -34,6 +43,8 @@ import Nimbus
 #print axioms Nimbus.Coherence.Store.a_listing_below_the_last_commit_keeps_a_stale_row
 #print axioms Nimbus.Coherence.Store.a_push_admitted_out_of_order_is_stale
 #print axioms Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
+#print axioms Nimbus.Coherence.Store.own_fresh_when_acks_settled
+#print axioms Nimbus.Coherence.Store.a_per_answer_wait_misses_an_earlier_report
 
 /-! ## Nimbus/Coherence/StoreSafety.lean -/
 
