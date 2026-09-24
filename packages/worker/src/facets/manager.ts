@@ -1047,11 +1047,21 @@ ${VFS_CURSOR_SEED_SOURCE}
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
+    const __residentBootStarted = Date.now();
     const __residentBooted = await __residentBoot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
       __supervisor,
     );
+    if (__startArgs && __startArgs.diag && __supervisor) {
+      // NIMBUS_DEBUG only: what this process holds, for per-process storage measurement.
+      try {
+        const __stats = __residentStats();
+        await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
+          ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
+        }) + "\\n"));
+      } catch {}
+    }
     __MODULE_VFS_BUNDLE = null;
     // One cursor, not two. The seed above publishes the cursor this SPAWN
     // staged at, which is right for a cold store and stale for a kept one —
@@ -6177,7 +6187,7 @@ export class FacetManager {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
-        startArgs: { vfsCursor },
+        startArgs: { vfsCursor, ...(this.debugEnabled ? { diag: true } : {}) },
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the
         // reservation's durability reaches this process's storage too.
