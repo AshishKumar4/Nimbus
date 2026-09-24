@@ -157,5 +157,21 @@ assert.equal(elsewhere.slot, 0, 'a different Durable Object has its own slot spa
   assert.deepEqual(ctx4.reopenedStores, [], 'every ephemeral grant starts from empty storage');
 }
 
+// ── A newly minted name never inherits a previous incarnation's store ───────
+//
+// The slot book is per instance, but facet storage outlives the instance: a
+// fresh incarnation that mints proc-slot-0 again finds the old SQLite there.
+{
+  const before = makeCtx('reincarnated');
+  await processes(before, env).spawn(disk, { doId: 'reincarnated', pid: 1, writerId: 'w1' },
+    { pid: 1, writerId: 'w1', startArgs: {}, boot: { kind: 'code', code: {} } });
+  // Same facets (same storage), fresh ctx object: what a new incarnation sees.
+  const after = { ...before, storage: before.storage };
+  const fresh = processes(after, env).spawn(disk, { doId: 'reincarnated', pid: 2, writerId: 'w2' },
+    { pid: 2, writerId: 'w2', startArgs: {}, boot: { kind: 'code', code: {} } });
+  assert.equal(fresh.slot, 0);
+  assert.deepEqual(before.reopenedStores, [], 'a minted name is emptied before its first get');
+}
+
 console.log('resident-facet-slot-pool: ok');
 console.log(`  200 sequential spawns → ${ctx.everCreated.length} facet name(s) ever created`);

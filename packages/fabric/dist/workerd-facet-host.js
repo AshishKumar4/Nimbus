@@ -151,12 +151,16 @@ function slotBook(ctx) {
     }
     return book;
 }
-/** Take a slot for `pid`, reusing a returned one before minting a new name. */
+/**
+ * Take a slot for `pid`, reusing a returned one before minting a new name.
+ * `minted` names may still hold storage a previous incarnation of this actor
+ * left there, so the caller deletes it before the first get.
+ */
 function acquireSlot(ctx, pid) {
     const book = slotBook(ctx);
     const existing = book.held.get(pid);
     if (existing !== undefined)
-        return existing;
+        return { slot: existing, minted: false };
     const reused = book.free.length > 0;
     const slot = reused ? book.free.shift() : book.next++;
     book.held.set(pid, slot);
@@ -164,7 +168,7 @@ function acquireSlot(ctx, pid) {
     // in the budgets ledger (see budgets.ts).
     if (!reused)
         recordFacetNameMinted(ctx, book.next);
-    return slot;
+    return { slot, minted: !reused };
 }
 /** Return `pid`'s slot to the free list. */
 function releaseSlot(ctx, pid) {
@@ -241,8 +245,15 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         throw new Error(`Nimbus: an explicit facet name must carry the '${DURABLE_FACET_NAME_PREFIX}' `
             + `prefix, got '${explicit.name}'`);
     }
-    const slot = explicit ? undefined : acquireSlot(ctx, params.pid);
+    const grant = explicit ? undefined : acquireSlot(ctx, params.pid);
+    const slot = grant?.slot;
     const name = explicit ? explicit.name : residentFacetName(slot);
+    if (grant?.minted) {
+        try {
+            facets.delete(name);
+        }
+        catch { /* nothing stored under this name */ }
+    }
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
