@@ -276,15 +276,26 @@ export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
             case FRAME_STDERR:
               controller.enqueue({ stream: header.kind === FRAME_STDOUT ? 'stdout' : 'stderr', data: payload });
               return;
-            case FRAME_EXIT: {
+            case FRAME_EXIT:
+            case FRAME_ERROR: {
+              let parsed: ExecExit | { message: string };
+              try {
+                const json = JSON.parse(new TextDecoder().decode(payload));
+                parsed = header.kind === FRAME_EXIT ? ExitFrameSchema.parse(json) : ErrorFrameSchema.parse(json);
+              } catch (error) {
+                fail(controller, new Error(`exec stream: malformed ${header.kind === FRAME_EXIT ? 'exit' : 'error'} frame: ${error instanceof Error ? error.message : String(error)}`));
+                await reader.cancel().catch(() => {});
+                return;
+              }
+              if ('message' in parsed) {
+                fail(controller, new Error(parsed.message));
+                return;
+              }
               finished = true;
               controller.close();
-              resolveExit(ExitFrameSchema.parse(JSON.parse(new TextDecoder().decode(payload))));
+              resolveExit(parsed);
               return;
             }
-            case FRAME_ERROR:
-              fail(controller, new Error(ErrorFrameSchema.parse(JSON.parse(new TextDecoder().decode(payload))).message));
-              return;
             default:
               fail(controller, new Error(`exec stream: unknown frame kind ${header.kind}`));
               await reader.cancel().catch(() => {});
