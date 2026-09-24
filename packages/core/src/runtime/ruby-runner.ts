@@ -1120,8 +1120,6 @@ async function __nimbusRubyEval(boot, rubyCode) {
 globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
   const boot = await globalThis.__rubyBootstrap;
   if (!boot.ok) return { resumed: false, alive: false, hostDriven: false, wakeAfter: null };
-  // A parked fiber wakes on the host's timer or a request, not through WASI.
-  __wasiResumed();
   const stderrStart = globalThis.__nimbusRubyStderr.length;
   await __nimbusRubyEval(boot, [
     '$__nimbus_resumed = ($__nimbus_main && $__nimbus_main.alive?) ? (begin; $__nimbus_main.resume; true; ' +

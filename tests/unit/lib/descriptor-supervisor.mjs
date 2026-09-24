@@ -27,7 +27,7 @@ export function descriptorSupervisor(supervisor) {
   };
   const originalMkdir = supervisor.mkdir;
   if (originalMkdir) supervisor.mkdir = async value => { const name = path(value); const result = await originalMkdir.call(supervisor, name); directories.add(name); return result; };
-  for (const key of ['unlink', 'rmdir', 'readlink', 'readdir']) {
+  for (const key of ['unlink', 'rmdir', 'readlink']) {
     const fn = supervisor[key];
     if (fn) supervisor[key] = (value, ...args) => fn.call(supervisor, path(value), ...args);
   }
@@ -71,6 +71,5 @@ export function descriptorSupervisor(supervisor) {
     async fsReaddirHandle(id) { return supervisor.readdir(get(id).path); },
     async fsSync(id) { if (id !== undefined) get(id); },
     async access(value) { if (!await stat(value)) throw error('ENOENT'); },
-    async fsRealpath(value) { const name = path(value); if (!await stat(name)) throw error('ENOENT'); return '/' + name; },
   });
 }
