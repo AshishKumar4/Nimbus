@@ -168,9 +168,20 @@ published to npm: `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
 `NimbusWorkspace.create({ runtimes })` installs them into the workspace
 filesystem at the path `nimbus install` uses. One script builds them all:
 `bundle-runtime.mjs <name> <version> --npm-package <dir>` stages what the R2
-path stages, and lays the blobs out under the keys its own manifest names. A runtime joins the npm set by gaining an `npm` entry in its spec.
-`node` and `bun` have none, because they are workerd's `nodejs_compat` rather
-than an artifact to ship.
+path stages, and lays the blobs out under the keys its own manifest names. A
+runtime joins the npm set by gaining an `npm` entry in its spec
+(`packages/worker/scripts/runtime-specs.mjs`). `node` and `bun` have none,
+because they are workerd's `nodejs_compat` rather than an artifact to ship.
+
+Release runtimes first, then core. Core's `prepublishOnly` runs
+`packages/core/scripts/check-runtime-packages.mjs`, which builds each npm
+runtime package and refuses the core publish unless the registry has that
+version, with the same `manifest.json`, as `dist-tags.latest`, and the core
+being published runs it. It prints the fix for each failure. Publish runtime
+packages with `npm publish --tag latest --access public --auth-type=web`:
+`5.2.37-2` sorts below `5.2.37` and any range admitting one admits the other,
+so consumers get the new build only through `latest`. Deprecate the build it
+replaces.
 
 Current runtime substrate:
 
