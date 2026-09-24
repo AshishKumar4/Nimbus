@@ -2,11 +2,11 @@
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
  * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
- * growing with every module transformed and never released. A host whose
- * isolate is memory-constrained passes a `transformHost` so transform()
- * runs in another isolate (the session's is the loader-backed esbuild
- * transform facet); without one, transforms run here. build() always runs
- * here, over a VFS resolver plugin.
+ * growing with every module transformed or bundled and never released. A
+ * host whose isolate is memory-constrained passes a `transformHost` and a
+ * `buildHost` so esbuild runs in another isolate (the session's is the
+ * loader-backed esbuild facet); without them, esbuild runs here. build()'s
+ * VFS resolver plugin always runs here, over this service's view.
  */
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
@@ -1162,8 +1162,44 @@ async function transformWithEsbuild(esbuildApi, source, options) {
         })) || [],
     };
 }
-/** Source needed by the slim Worker Loader transform isolate. */
-export function generateEsbuildTransformRuntimeSource() {
+/**
+ * One esbuild build in which `plugin` resolves and loads every module,
+ * wherever that plugin runs. Self-contained: it is serialized into the
+ * esbuild facet as well as called here.
+ */
+async function buildWithEsbuild(esbuildApi, options, plugin) {
+    const result = await esbuildApi.build({
+        ...options,
+        write: false,
+        plugins: [{
+                name: plugin.name,
+                setup(build) {
+                    build.onResolve({ filter: /.*/ }, async (args) => (await plugin.resolve({
+                        path: args.path,
+                        importer: args.importer,
+                        namespace: args.namespace,
+                        resolveDir: args.resolveDir,
+                        kind: args.kind,
+                        with: args.with,
+                    })) ?? undefined);
+                    build.onLoad({ filter: /.*/ }, async (args) => (await plugin.load({
+                        path: args.path,
+                        namespace: args.namespace,
+                        suffix: args.suffix,
+                        with: args.with,
+                    })) ?? undefined);
+                },
+            }],
+    });
+    return {
+        outputFiles: (result.outputFiles || []).map((file) => ({ path: file.path, contents: file.contents })),
+        errors: result.errors.map((message) => ({ text: message.text, location: message.location })),
+        warnings: result.warnings.map((message) => ({ text: message.text, location: message.location })),
+        metafile: result.metafile,
+    };
+}
+/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
+export function generateEsbuildFacetRuntimeSource() {
     return [
         // scanJsSource is self-contained — its constants live in the body —
         // so this serialized copy carries the whole scanner.
@@ -1173,7 +1209,48 @@ export function generateEsbuildTransformRuntimeSource() {
         hasEsmExports.toString(),
         convertEsmImportsToRequire.toString(),
         transformWithEsbuild.toString(),
+        buildWithEsbuild.toString(),
     ].join('\n');
+}
+/**
+ * `plugin`, set up here, answering esbuild's resolve and load callbacks the
+ * way esbuild's own dispatch within one plugin does: callbacks in the order
+ * registered, and the first to return a result answers.
+ */
+async function remotePlugin(plugin, initialOptions) {
+    const resolvers = [];
+    const loaders = [];
+    const build = {
+        initialOptions,
+        onResolve: (options, callback) => { resolvers.push({ ...options, callback }); },
+        onLoad: (options, callback) => { loaders.push({ ...options, callback }); },
+    };
+    // The VFS plugin reads initialOptions and registers callbacks; it uses nothing else of PluginBuild.
+    await plugin.setup(build);
+    const matches = (entry, path, namespace) => (entry.namespace === undefined || entry.namespace === namespace) && entry.filter.test(path);
+    return {
+        name: plugin.name,
+        async resolve(args) {
+            for (const entry of resolvers) {
+                if (!matches(entry, args.path, args.namespace))
+                    continue;
+                const result = await entry.callback({ ...args, pluginData: undefined });
+                if (result != null)
+                    return result;
+            }
+            return null;
+        },
+        async load(args) {
+            for (const entry of loaders) {
+                if (!matches(entry, args.path, args.namespace))
+                    continue;
+                const result = await entry.callback({ ...args, pluginData: undefined });
+                if (result != null)
+                    return result;
+            }
+            return null;
+        },
+    };
 }
 /** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
 function withProvidedModuleRewrite(code, options) {
@@ -1185,6 +1262,7 @@ function withProvidedModuleRewrite(code, options) {
 export class EsbuildService {
     vfs;
     transformHost;
+    buildHost;
     initialized = false;
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
@@ -1193,6 +1271,7 @@ export class EsbuildService {
     constructor(vfs, options = {}) {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
+        this.buildHost = options.buildHost ?? null;
     }
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate() {
@@ -1376,19 +1455,14 @@ export class EsbuildService {
         return outcomes;
     }
     /**
-     * Bundle entry points from the VFS.
+     * Bundle entry points from the VFS. The VFS plugin runs here over this
+     * service's view either way; esbuild itself runs in the build host when
+     * one was given.
      */
     async build(entryPoints, options) {
-        await this.ensureInit();
-        // VFS plugin reads directly from VFS (synchronous, co-located)
-        const vfsPlugin = this.makeVfsPlugin({
-            viteAssets: options?.viteAssets,
-            vitePublicDir: options?.vitePublicDir,
-        });
-        const result = await this._esbuild.build({
+        const buildOptions = {
             entryPoints: entryPoints.map(ep => ep.startsWith('/') ? ep : '/' + ep),
             bundle: options?.bundle ?? true,
-            write: false,
             format: options?.format || 'esm',
             target: options?.target || 'esnext',
             platform: options?.platform || 'browser',
@@ -1415,10 +1489,21 @@ export class EsbuildService {
             // __commonJS and only emits `export default`, losing named exports.
             conditions: ['import', 'module', 'browser', 'default'],
             mainFields: ['module', 'browser', 'main'],
-            plugins: [vfsPlugin],
-        });
+        };
+        const plugin = await remotePlugin(this.makeVfsPlugin({
+            viteAssets: options?.viteAssets,
+            vitePublicDir: options?.vitePublicDir,
+        }), buildOptions);
+        let outcome;
+        if (this.buildHost) {
+            outcome = await this.buildHost(buildOptions, plugin);
+        }
+        else {
+            await this.ensureInit();
+            outcome = await buildWithEsbuild(this._esbuild, buildOptions, plugin);
+        }
         return {
-            outputFiles: (result.outputFiles || []).map((f) => {
+            outputFiles: outcome.outputFiles.map((f) => {
                 let text;
                 return {
                     path: f.path,
@@ -1428,9 +1513,9 @@ export class EsbuildService {
                     },
                 };
             }),
-            errors: result.errors?.map(e => ({ text: e.text, location: e.location })) || [],
-            warnings: result.warnings?.map(w => ({ text: w.text, location: w.location })) || [],
-            metafile: result.metafile,
+            errors: outcome.errors,
+            warnings: outcome.warnings,
+            metafile: outcome.metafile,
         };
     }
     requireVfs() {

@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { EsbuildService, generateEsbuildTransformRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, generateEsbuildFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_CLI_PREAMBLE } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { hostRoute, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -8,14 +8,16 @@ import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 /**
  * Everything of the facet's module but esbuild's JS adapter, which the wasm
- * version keys. `wasmModule` and `esbuild` are bound by the lines before it.
+ * version keys. `wasmModule`, `newEsbuild` and `esbuild` are bound by the
+ * lines before it.
  *
- * Transforms share one esbuild, whose heap only grows. An `esbuild` command
- * gets its own Go instance, dropped when it ends, so what it grew goes with it.
+ * Transforms share one esbuild, whose heap only grows. A build or an
+ * `esbuild` command gets its own Go instance, dropped when it ends, so what
+ * it grew goes with it.
  */
 const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
-    generateEsbuildTransformRuntimeSource(),
+    generateEsbuildFacetRuntimeSource(),
     ESBUILD_CLI_PREAMBLE,
     'let initialized;',
     'function ensureInitialized() {',
@@ -35,6 +37,15 @@ const ESBUILD_FACET_BODY = [
     '    }',
     '    return outcomes;',
     '  }',
+    '  async build(options, plugin) {',
+    '    const own = newEsbuild();',
+    '    await own.initialize({ wasmModule, worker: false });',
+    '    try {',
+    '      return await buildWithEsbuild(own, options, plugin);',
+    '    } finally {',
+    '      await own.stop();',
+    '    }',
+    '  }',
     '  async cli(args, supervisor, output) {',
     '    return globalThis.__esbuildCliRun(args, supervisor, output, wasmModule);',
     '  }',
@@ -46,14 +57,16 @@ export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:$
 const TRANSFORM_BATCH_SOURCE_BYTES = 4 * 1024 * 1024;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
- * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), spliced in so the
- * facet evaluates it at startup, the one moment it may.
+ * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
+ * factory at startup, the one moment code may be generated from a string;
+ * each call of the factory is a separate esbuild.
  */
 export function esbuildFacetWorkerCode(wasmBytes, jsFnBody) {
     const source = [
         'import { DurableObject } from "cloudflare:workers";',
         'import wasmModule from "esbuild.wasm";',
-        `const esbuild = new Function(${JSON.stringify(jsFnBody)})();`,
+        `const newEsbuild = new Function(${JSON.stringify(jsFnBody)});`,
+        'const esbuild = newEsbuild();',
         ESBUILD_FACET_BODY,
     ].join('\n');
     return {
@@ -112,6 +125,16 @@ export function esbuildTransformHost(ctx, env) {
     };
 }
 /**
+ * The build host a Durable Object's esbuild runs its builds on: its esbuild
+ * facet. The plugin, and with it every file read, stays with the caller.
+ */
+export function esbuildBuildHost(ctx, env) {
+    return async (options, plugin) => {
+        const facet = await esbuildFacet(ctx, env);
+        return await facet.build(options, plugin);
+    };
+}
+/**
  * Runs one `esbuild` command in the Durable Object's esbuild facet, as
  * process `pid`: its files go through a supervisor capability minted for that
  * pid, the one IsolatePool mints for a facet, and its stdout and stderr come
@@ -128,9 +151,12 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
     return await facet.cli(args, supervisor, output);
 }
 /**
- * The esbuild a Durable Object's supervisor shares: build() runs in its
- * isolate over `vfs`, every transform in its esbuild facet.
+ * The esbuild a Durable Object's supervisor shares: its transforms and its
+ * builds run in its esbuild facet, and build() reads `vfs` from here.
  */
 export function supervisorEsbuildService(ctx, env, vfs) {
-    return new EsbuildService(vfs, { transformHost: esbuildTransformHost(ctx, env) });
+    return new EsbuildService(vfs, {
+        transformHost: esbuildTransformHost(ctx, env),
+        buildHost: esbuildBuildHost(ctx, env),
+    });
 }
