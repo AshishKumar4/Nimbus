@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "2e6ac8b6c0bdcbf4ecaaccca093d82bde14afd38546efa1135ad462eb0777c0d",
+  "fingerprint": "4590c3adc04a9e9c4885db2157938e6634a38b535cc2d2a9a66e2513d2a918f5",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -127,7 +127,7 @@
     "packages/core/dist/runtime/cpython-preamble.js": "677cfe3829cf064d773dfccd3d9daf4993261cd1ab81a685c2ff3f9400e7a49c",
     "packages/core/dist/runtime/cpython-runner.d.ts": "eb6dc8b26cf47040b1a30bfeb7969941cfe836169d27c502df48f4f93e373822",
     "packages/core/dist/runtime/cpython-runner.d.ts.map": "fd1b4946deede143e60b6bab664a884f5fb4eef1b0d811b0e9413a712e039e46",
-    "packages/core/dist/runtime/cpython-runner.js": "533b06fb02f22893a26ed103b5d70433ea2a07063cee87d4918dbcd587e23f87",
+    "packages/core/dist/runtime/cpython-runner.js": "80854ea5812e8a5025629d1bf0e2ad304ac66b3bc02328a244e76ad99e8f5f14",
     "packages/core/dist/runtime/esbuild-cli.d.ts": "11568220c705bebd4a9c35e4a478f41dde166380db97f41b8ff303b5f4837fe2",
     "packages/core/dist/runtime/esbuild-cli.d.ts.map": "f9d935ca141f1b1a0bcd73e09dfeee28574aa4f64c18986dc585c525333b02b9",
     "packages/core/dist/runtime/esbuild-cli.generated.d.ts": "1ddce90db56a6c4bb1ceae3b1f348e6d802b85bfc647db201c72e2311c7d2e68",
@@ -933,7 +933,7 @@
     "packages/core/src/runtime/cli-flags.ts": "23b203c999b01585cb6e4ddc5e6234066f10edb80fa2a4bb7f3f3dc260b8fd80",
     "packages/core/src/runtime/comment-strip.ts": "1cb3e5edf1cc31fdff5b23beb8359139c84989ffde2bd36f764a4ca78584a5f9",
     "packages/core/src/runtime/cpython-preamble.ts": "067957344393833e20d0a904dff7467262011ebe44b0b3f5cd7b5ad66dde71ef",
-    "packages/core/src/runtime/cpython-runner.ts": "37e057a775b112094ffee1113e89d7a671813704767f32ada94e6b6da5675db3",
+    "packages/core/src/runtime/cpython-runner.ts": "41436bf4f030f0014d2cbbeb6fa9617e4a21231292876d58eb86fa8beb2232ec",
     "packages/core/src/runtime/esbuild-cli.generated.ts": "caeffec292790f65bf476995b37533e6ddecb790620814180e0fbf40b907ef47",
     "packages/core/src/runtime/esbuild-cli.ts": "ad2a23e31d7520cd71f67b8cfd227113576fb35d91ec2c7fb074efa021c9be5a",
     "packages/core/src/runtime/esbuild-cli/preamble.ts": "e63b07576bf740add3a0dae17ea3c8b624efaa9ba1731da8b0ec5ac61c730deb",

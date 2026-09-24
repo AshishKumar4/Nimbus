@@ -88,6 +88,26 @@ function assertHandedOff(raw, images, name) {
   console.log('  ok  python hands its facet the installed image without caching it');
 }
 
+// A program that keeps serving runs as a resident process, whose host reads
+// the image by path itself: the one-shot path's copy is never taken.
+{
+  const { raw, filesystem } = installed({
+    'runtime/python/share/cpython/python.wasm': image,
+    'runtime/python/lib/python313.zip': new Uint8Array([1]),
+  });
+  const manifest = { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] };
+  const facets = recordingFacets();
+  const started = [];
+  const startResident = async (spec) => { started.push(spec.wasmVfsPath); return { exitCode: 0, stdout: '', stderr: '' }; };
+  const run = makeCPythonRunnerFactory({ facets: facets.host, startResident })(manifest, '/runtime/python', 'python', undefined);
+
+  assert.equal(await run(context(filesystem, ['-m', 'http.server', '8000'])), 0);
+  assert.deepEqual(started, ['/runtime/python/share/cpython/python.wasm']);
+  assert.equal(facets.images.length, 0, 'a resident python read the image for a facet it never ran');
+  assert.equal(raw.getStats().cache.hotBytes, 0);
+  console.log('  ok  resident python leaves the image to its host');
+}
+
 {
   const { raw, filesystem } = installed({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
   const manifest = { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] };
