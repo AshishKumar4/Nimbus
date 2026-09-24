@@ -3435,7 +3435,8 @@ function mkTouch(vfs) {
  *   - link count (%h) is always 1, device numbers are 0: one store, no
  *     hard links, no device nodes.
  *   - birth time (%w/%W) prints `-`/`0`, GNU's own convention for a
- *     filesystem that does not record it. Change time (%z/%Z) tracks mtime.
+ *     filesystem that does not record it. Change time (%z/%Z) is the
+ *     inode's ctime.
  *   - SELinux context (%C) prints `?`, as GNU does where there is none.
  */
 const STAT_TERSE_FORMAT = '%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o %C';
