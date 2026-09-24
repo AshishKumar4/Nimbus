@@ -104,8 +104,26 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   processes.setDefaultSignalAction((pid, code, signal) => ended.push([pid, code, signal]));
   const third = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
   processes.openInput(third.pid);
+  let stopped = 0;
+  processes.setTerminator(third.pid, () => { stopped++; });
   processes.signal(third.pid, 'SIGINT');
   assert.deepEqual(ended, [[third.pid, 130, 'SIGINT']]);
+  assert.equal(stopped, 1, 'the work behind the pid is stopped, not only recorded as ended');
+}
+
+// ── a background job with an unread input channel is not "not yet started" ──
+{
+  const processes = new SessionProcessSupervisor();
+  processes.setDefaultSignalAction(() => assert.fail('a background job is not an attached launch'));
+  const job = processes.spawn('tail -f log', ['tail -f log'], '/home/user', { longRunning: true });
+  processes.openInput(job.pid);
+  let aborted = 0;
+  processes.setTerminator(job.pid, () => { aborted++; });
+  assert.deepEqual(processes.signal(job.pid, 'SIGTERM'), { ok: true });
+  assert.equal(processes.get(job.pid)?.state, 'running', 'no exit is recorded for work that keeps running');
+  assert.equal(aborted, 0);
+  assert.equal(processes.kill(job.pid), true, 'a later kill still reaches it');
+  assert.equal(aborted, 1);
 }
 
 // ── output / exit ordering ───────────────────────────────────────────
