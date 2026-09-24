@@ -729,6 +729,23 @@ export class Shell {
         // "user@host:path$ " — count visible chars only (no ANSI codes)
         return user.length + 1 + host.length + 1 + displayPath.length + 2;
     }
+    /**
+     * An asynchronous notice. While a command runs it is ordinary output; at an
+     * idle prompt it goes above the prompt, which is redrawn with the line being
+     * edited, so the prompt stays the last thing on screen.
+     */
+    writeNotice(text) {
+        if (this.running) {
+            this.terminal.write(text);
+            return;
+        }
+        if (this.screenCursorRow > 0)
+            this.terminal.write(`\x1b[${this.screenCursorRow}A`);
+        this.terminal.write('\r\x1b[J');
+        this.terminal.write(text.endsWith('\n') ? text : `${text}\r\n`);
+        this.screenCursorRow = 0;
+        this.redrawLine();
+    }
     redrawLine() {
         const cols = this.terminal.cols;
         const promptWidth = this.getPromptWidth();

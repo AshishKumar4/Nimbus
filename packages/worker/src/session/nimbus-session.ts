@@ -690,7 +690,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    */
   private _notifySession(line: string): void {
     if (this.terminal) {
-      this.terminal.write(line);
+      if (this.shell) this.shell.writeNotice(line);
+      else this.terminal.write(line);
       return;
     }
     try { appendScrollback(this.ctx, line, Date.now()); }

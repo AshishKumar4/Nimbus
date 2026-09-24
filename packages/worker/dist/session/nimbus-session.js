@@ -572,7 +572,10 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _notifySession(line) {
         if (this.terminal) {
-            this.terminal.write(line);
+            if (this.shell)
+                this.shell.writeNotice(line);
+            else
+                this.terminal.write(line);
             return;
         }
         try {
