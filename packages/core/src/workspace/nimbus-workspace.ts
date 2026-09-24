@@ -674,9 +674,9 @@ async function registerWasmRuntimes(deps: {
  *
  * Listed rather than discovered because the namespace is the contract an
  * embedder is owed: these names, and nothing else in their database, belong
- * to the workspace. `inodes`, `file_chunks` and `content_lifecycle` are the
- * three that carry no `vfs_` prefix and so are the ones most likely to
- * collide with a host's own schema.
+ * to the workspace. Every one carries the `vfs_` prefix. The pre-v2 tables
+ * (`inodes`, `file_chunks`, `content_lifecycle`) are not listed: SqliteVFS
+ * drops them itself, and only once their columns prove they are its own.
  */
 const WORKSPACE_TABLES = [
   'vfs_append_receipts_v2',
@@ -684,11 +684,13 @@ const WORKSPACE_TABLES = [
   'vfs_append_module_state_v2',
   'vfs_append_pid_revocations_v2',
   'vfs_append_acked_gaps_v2',
-  'vfs_ino_allocator',
-  'inodes',
-  'file_chunks',
-  'content_lifecycle',
-  'vfs_schema_migrations',
+  'vfs_state',
+  'vfs_inodes',
+  'vfs_chunks',
+  'vfs_contents',
+  'vfs_content_chunks',
+  'vfs_inode_history',
+  'vfs_gc_queue',
   'vfs_append_receipts',
   'vfs_append_writer_state',
   'vfs_append_module_state',

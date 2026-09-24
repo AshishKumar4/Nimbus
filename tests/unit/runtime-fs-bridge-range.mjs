@@ -18,7 +18,7 @@ import {
   SQL_MAX_BOUND_PARAMETERS,
 } from '../../packages/platform/src/limits.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const APPEND_MODULE = '77777777-7777-4777-8777-777777777777';
 
@@ -149,10 +149,8 @@ const CRED_OTHER = Object.freeze({
   // Positional write inside chunk 1 must commit exactly one chunk.
   const statementStart = harness.statementCount;
   await bridge.write(handle.id, CHUNK_SIZE + 10, enc.encode('zz'));
-  const chunkWrites = harness.statements.slice(statementStart)
-    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
-    .reduce((count, statement) => count + (statement.params.length / 3), 0);
-  assert.equal(chunkWrites, 1, 'a small positional write must rewrite only the touched chunk');
+  const chunkWrites = chunkBytesWritten(harness, statementStart);
+  assert.ok(chunkWrites > 0 && chunkWrites <= CHUNK_SIZE, `a small positional write stored ${chunkWrites} chunk bytes, not the file`);
   const verify = await bridge.readRange('/wk/big.bin', CHUNK_SIZE + 9, 4);
   assert.deepEqual(Array.from(verify), [9, 122, 122, 9]);
   assert.equal((await bridge.stat('/wk/big.bin')).size, big.length, 'positional write must not grow the file');

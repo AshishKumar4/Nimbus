@@ -1,44 +1,30 @@
 /**
- * SqliteVFS — Demand-paged virtual filesystem on DO SQLite.
+ * SqliteVFS — Demand-paged, content-addressed virtual filesystem on DO SQLite.
  *
- * Architecture (from webcontainer-v2-feasibility.md §4):
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │ in memory: inode cache (bounded view of vfs_inodes)              │
+ * │            chunk cache (LRU keyed by immutable chunk id)         │
+ * └──────────────────────────────────────────────────────────────────┘
+ *        │ miss → one indexed read            │ miss → one PK read
+ *        ▼                                    ▼
+ *  vfs_inodes (path PK, WITHOUT ROWID)   vfs_chunks (id PK, sha256 UNIQUE)
+ *    chunk_id   → file ≤ 64 KiB: one chunk
+ *    content_id → file > 64 KiB: vfs_contents + vfs_content_chunks
+ *                 (FastCDC 16/32/64 KiB manifest keyed (content_id, off))
  *
- * ┌─────────────────────────────────────────┐
- * │           Nimbus VFS (in-memory)           │
- * │  INode cache: bounded view of `inodes`   │  64k entries ≈ 14 MB (V8)
- * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
- * │  ─────────────────────────────────────── │
- * │  On cache miss → SQLite read             │
- * │  Writes commit synchronously to SQLite   │
- * │  On npm install → batch SQLite writes    │
- * └─────────────────────────────────────────┘
- *          │                    │
- *          ▼                    ▼
- * ┌─────────────────┐  ┌─────────────────────┐
- * │  file_chunks     │  │  inodes              │
- * │  (content_id,    │  │  (path, type, mode,  │
- * │   chunk_id, data)│  │   size, content_id)  │
- * │  64KB chunks     │  │                      │
- * └─────────────────┘  └─────────────────────┘
- *            DO SQLite (10 GB)
+ * Every chunk is stored once per database, by sha256. A file ≤ 64 KiB names
+ * its chunk from the inode; a larger file names a manifest. Copies copy rows.
  *
- * Key design from do86's SqlPageStore:
- * - Disposable read cache; SQLite owns every accepted write durably
- * - Bounded batch writes (33 chunk rows per INSERT)
- * - All operations SYNCHRONOUS (DO sql.exec() is sync)
+ * Every committing transaction advances `vfs_state.gen` once and stamps every
+ * inode row it writes with it. A snapshot pins a generation; the first write
+ * after it to a row it can see keeps a before-image in vfs_inode_history.
+ * Every dereference (an overwritten or deleted row's chunk/content, a dropped
+ * history row's) is queued in vfs_gc_queue in the same transaction, and GC
+ * deletes a queued id only when a probe of every reference finds none.
  *
- * Durability:
- * - writeFile() returns void (sync) — preserved to match LIFO's
- *   MountProvider.writeFile(subpath, content): void contract.
- * - Every write returns only after its SQLite transaction commits. Large
- *   replacements stage bounded chunk groups and atomically publish the new
- *   content generation before returning.
- *
- * Key design decisions:
- * - 64KB chunks (not 4KB): file access is sequential, fewer rows
- * - INode metadata demand-loaded by path through a bounded cache; SQLite
- *   indexes it by path and by parent, so no walk needs the whole tree
- * - File content demand-paged through LRU cache
+ * All operations are synchronous (DO sql.exec is); every write returns after
+ * its transaction commits. Large writes stage bounded transactions into a
+ * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
@@ -80,6 +66,8 @@ export interface VfsStat {
     mode: number;
     uid: number;
     gid: number;
+    /** Generation that last wrote this inode; absent for a stat from a non-SQLite mount. */
+    gen?: number;
 }
 export interface CredentialedVfs {
     readonly cred: VfsCred;
@@ -145,6 +133,11 @@ export interface CredentialedVfs {
     }): Promise<WriteBatchStreamResult>;
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
+    /**
+     * The file's content key: sha256 of its bytes up to CHUNK_SIZE, else the
+     * digest of its chunk manifest. An equal key proves equal bytes.
+     */
+    contentKey(path: string): string;
     /**
      * This VFS incarnation's identity. Paired with `revision()` it is the
      * cache-coherence cursor a facet is stamped with when its bundle is built,
@@ -228,6 +221,12 @@ export declare class SqliteVFS {
     private readonly _epoch;
     private _invalidations;
     private _invalidationBytes;
+    /**
+     * The log holds every publication after this revision: the clock at open,
+     * then the newest revision an entry was dropped from. A cursor below it
+     * cannot be served completely.
+     */
+    private _invalidationFloor;
     private static readonly INVALIDATION_LOG_MAX_BYTES;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch(): string;
@@ -237,11 +236,28 @@ export declare class SqliteVFS {
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
     private _peakStagedStreamBytes;
-    /** In-memory liveness only; content_lifecycle remains durable ownership. */
+    /**
+     * Staging contents a live operation is still assembling. Durable state 0
+     * alone does not protect them from GC: after a restart nothing is live, and
+     * every state-0 content is garbage.
+     */
     private readonly activeStagingContentIds;
-    /** True only while durable GC work or a known abandoned staging row exists. */
+    /** True only while vfs_gc_queue may hold work or a janitor has rows left. */
     private maintenancePending;
-    private orphanScanCursor;
+    /** Resume points of the GC queue walk, per kind; pinned ids are stepped over. */
+    private gcCursor;
+    /** Keyset cursor of the reference audit (chunks, then contents); null once done this lifetime. */
+    private auditCursor;
+    /** Legacy tables still holding rows, until the janitor drops them. */
+    private legacyTables;
+    /** Last committed generation: every committed VFS transaction advances it. */
+    private _gen;
+    /** MAX(vfs_snapshots.gen), 0 without a snapshot. */
+    private _pinGen;
+    /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
+    private readonly manifestWindows;
+    /** Content keys computed for manifests whose digest could not be stored. */
+    private readonly contentKeyMemo;
     private _activeTransaction;
     private _transactionDuration;
     private _postCommitDuration;
@@ -289,54 +305,26 @@ export declare class SqliteVFS {
     constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options?: SqliteVfsOptions);
     private initSchema;
     /**
-     * Allocate the next inode number. The counter row and the inode insert that
-     * consumes the value always share one transaction, so rollback discards the
-     * bump together with the publication it funded.
+     * After a restart no operation is assembling anything, so every state-0
+     * content is an abandoned write: queue them all. Read first, so a store
+     * with none opens without a write.
      */
-    private nextIno;
-    /**
-     * Give every durable inode row a stable ino. Rows that already carry one
-     * keep it; rows published by the retired vfs_inode_identity side table
-     * inherit that ino so existing stat().ino values do not change across the
-     * upgrade; anything else takes its rowid, which matches what the shadow
-     * table would have allocated for it anyway. The allocator is then seeded
-     * past the largest ino in use.
-     */
-    private backfillInoColumn;
-    /**
-     * Fold legacy append-control tables into the namespace-scoped v2 schema.
-     * Three layouts exist: pre-namespace tables (rows get the empty namespace,
-     * which is what the rewrite effectively gave them since a namespace-less
-     * deployment had exactly one scope), hex-suffixed tables produced by the
-     * table-name rewrite (rows decode back to their real namespace), and the
-     * v2 tables themselves. Legacy tables are renamed to vfs_append_legacy_*
-     * rather than dropped so the data stays recoverable.
-     */
-    /** Decode a hex scope suffix back to its namespace; null when malformed. */
+    private queueAbandonedStaging;
     private tableColumns;
-    private migrateFromLegacy;
     /** The cache's loader: the inode at `path`, read from SQLite. */
     private loadInode;
     private inodeFromRow;
     /**
-     * Number a row that has no ino. Every writer since the column existed
-     * assigns one, and the backfill numbered every row older than the column,
-     * so only code from before the column, run against this database after a
-     * newer one had opened it, leaves one behind. The number comes from the
-     * allocator, which is past every ino in use, so it cannot collide.
-     */
-    private repairIno;
-    /**
-     * Load the running counters with one aggregate over `inodes`, the first
+     * Load the running counters with one aggregate over `vfs_inodes`, the first
      * time anything reads them. Opening does not pay for it; the first stats
      * read does, once.
      */
     private ensureCounters;
     /** Every non-directory counts as a file, symlinks included, as it always has. */
     private aggregateCounters;
-    private cacheKey;
     private cacheGet;
     private cacheSet;
+    private cacheEvict;
     private enforceCacheLimit;
     private evictOne;
     shrinkForInstall(targetEntries?: number): void;
@@ -346,26 +334,14 @@ export declare class SqliteVFS {
     restoreAfterInstall(): void;
     /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
-    /**
-     * Batch version of cacheInvalidate — invalidate every cache entry
-     * whose path is in `paths`. One pass over the cache instead of one
-     * pass per path (audit R2: writeBatch was O(P × C) before this).
-     *
-     */
-    private cacheInvalidateBatch;
     openDescription(path: string, cred: VfsCred, rights: {
         read: boolean;
         write: boolean;
     }): VfsOpenDescription;
     private now;
     private parentPath;
-    /** The single content resolver for both legacy-null and generated inodes. */
-    private contentIdForInode;
-    private legacyContentId;
-    private createContentId;
     private blobToUint8Array;
     private copyBytes;
-    private readChunkFromSql;
     /**
      * Principals whose `/tmp` is private, keyed by uid, valued by the storage
      * root their `/tmp` resolves to.
@@ -467,25 +443,29 @@ export declare class SqliteVFS {
     private isFile;
     private isSymlink;
     /**
-     * Without a path: the global mutation clock. With a path: the clock
-     * value at the last mutation inside that path's subtree, or the revision
-     * floor if that is older than the revisions still held (0 if nothing under
-     * it changed in this DO lifetime and nothing has been dropped). Never less
-     * than the last mutation. `revision('')` equals the global clock by
-     * construction (every mutation stamps all ancestors).
+     * Without a path: the global mutation clock, which is the last committed
+     * generation (`vfs_state.gen`) as of the last publication. With a path:
+     * the clock value at the last mutation inside that path's subtree, or the
+     * revision floor if that is older than the revisions still held (0 if
+     * nothing under it changed in this lifetime and nothing has been dropped).
+     * Never less than the last mutation. `revision('')` equals the global clock
+     * by construction (every mutation stamps all ancestors).
      */
     revision(path?: string, cred?: VfsCred): number;
     /** A storage key's revision: its own, or the floor once it was dropped. */
     private pathRevision;
     /**
-     * Advance the clock once, stamp every path + its ancestors, and record
-     * the mutation in the invalidation log.
+     * Advance the clock to the committed generation, stamp every path + its
+     * ancestors, and record the mutation in the invalidation log. Every
+     * mutation commits at least one generation before it gets here, so the
+     * clock is strictly monotonic and equals `vfs_state.gen` after each
+     * publication; an operation of several transactions ticks it once, to its
+     * last generation.
      *
-     * This is the single mutation chokepoint for coherence purposes. Five
-     * mutation paths bypass the `_writeBatchOnce` funnel — `_mkdirSingle`,
-     * `utimes`, `chmod`, `chown`, `rename` — but all of them reach here, so
-     * a hook sited anywhere else silently misses renames, which is the
-     * mutation most likely to break a build tool.
+     * This is the single mutation chokepoint for coherence purposes. `rename`
+     * bypasses the `_writeBatchOnce` funnel but reaches here, so a hook sited
+     * anywhere else silently misses renames, which is the mutation most likely
+     * to break a build tool.
      *
      * The log records the mutated path AND its parent. A facet's content
      * cells key on the exact path; its directory-shape view keys on the
@@ -495,6 +475,8 @@ export declare class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     private bumpRevision;
+    /** Commit a generation that writes nothing, so a publication has a tick of its own. */
+    private advanceGeneration;
     /**
      * Drop every per-path revision at or below the oldest quarter's newest,
      * and raise the floor to it. A quarter at a time, so the sort is paid once
@@ -546,11 +528,8 @@ export declare class SqliteVFS {
     private symlink;
     private readlink;
     private resolveSymlink;
-    /** Read one chunk via cache → SQL, caching on miss. */
-    private readChunk;
     private readFile;
     private readInodeBytes;
-    private requireChunk;
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
      * entirely (neither consulted nor populated). For one-shot bulk reads
@@ -563,10 +542,9 @@ export declare class SqliteVFS {
     private readFileUncached;
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
-     * only the chunks overlapping the range are touched. Reads past EOF
-     * are clamped; missing spans retain the existing zero-fill range semantics.
-     */
-    /**
+     * only the chunks overlapping the range are touched. Reads past EOF are
+     * clamped.
+     *
      * `cached: false` reads the range straight from SQL, neither consulting nor
      * populating the LRU — the ranged counterpart of `readFileUncached`, and it
      * exists for the same reason. A boot spec's by-path members are the largest
@@ -580,14 +558,34 @@ export declare class SqliteVFS {
      * slice count.
      */
     private readRange;
+    /** Bytes [start, end) of the content an inode (or a snapshot's row) names. */
+    private readContent;
+    private copyManifestRow;
     /**
-     * Overwrite `bytes` at `offset`, rewriting only the chunks the range
-     * (plus any EOF extension) touches — file-handle and page writers must
-     * not pay a whole-file rewrite. Writing past EOF zero-fills the gap so
-     * every chunk row up to the new EOF stays materialized at its
-     * positional length (readFile reassembles by plain concatenation).
-     * Creates the file when missing; callers own parent-dir creation
-     * (same contract as writeFile).
+     * The manifest rows of `contentId` overlapping [start, end), in order.
+     *
+     * A manifest of a file up to MANIFEST_KEPT_BYTES (at most 256 rows) is read
+     * whole once and kept (manifestWindows), so a run of small reads in it costs
+     * its chunk reads alone, as it did when chunks were positional. A larger one
+     * is read per range: one descending seek for the row holding `start`, and a
+     * range scan only past its end. A kept manifest is dropped when it is edited.
+     */
+    private manifestRange;
+    /** One chunk's bytes, through the LRU when `cached`. */
+    private readChunk;
+    /**
+     * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
+     * else the digest of the manifest's ordered chunk hashes. An in-place edit
+     * clears a manifest's digest; it is recomputed here and stored unless
+     * another content already holds it.
+     */
+    private contentKeyOf;
+    private contentKey;
+    /**
+     * Overwrite `bytes` at `offset`. Only the chunks around the range are
+     * re-cut and rewritten (rewriteFile); writing past EOF zero-fills the gap.
+     * Creates the file when missing; callers own parent-dir creation (same
+     * contract as writeFile).
      */
     private writeRange;
     /**
@@ -606,18 +604,62 @@ export declare class SqliteVFS {
     private deleteAppendRowsBounded;
     private resumeAppendMaintenance;
     /**
-     * Truncate or zero-extend to `size`, touching only the boundary chunk.
-     * Shrinking drops trailing chunk rows and trims the new last chunk;
-     * growing zero-fills like writeRange. Every mutation commits before return.
+     * Truncate or zero-extend to `size`. Only the chunk at the new end is
+     * re-cut; rows past it go. Every mutation commits before return.
      */
     private truncate;
-    private updatedFileInode;
-    private commitCurrentContentMutation;
-    private generatedMutationChunk;
+    /**
+     * Publish `node` resized to `newSize`, with `change` written over it and
+     * any growth zero-filled. `path` null is a detached description (unlinked,
+     * still open): its content is always copied, never edited in place.
+     *
+     * A file up to CHUNK_SIZE is one chunk, rewritten in place when nothing
+     * else can see it. A larger file is re-cut from the start of the old chunk
+     * holding the first changed byte until a new cut lands on an old boundary
+     * past the change (FastCDC resynchronises there, so every later chunk is
+     * what cutting the whole file would give) or the end. An unshared manifest
+     * is then edited in place over that span in one transaction; a shared or
+     * oversized one is rebuilt as a new staged content, the untouched rows
+     * copied by reference. The manifest always equals FastCDC of the bytes.
+     */
+    private rewriteFile;
+    /** Publish a rewrite in one transaction when it fits; false when it does not. */
+    private tryPublishRewrite;
+    private publishRewrite;
+    private rewrittenEntry;
+    private commitRewrite;
+    /** The start offsets of a manifest's rows after `after`, read a page at a time on demand. */
+    private manifestOffsets;
+    /**
+     * True when nothing but the live row at `path` can observe `node`'s chunk,
+     * so the chunk may be rewritten in place: no other inode, manifest or
+     * history row names it, no snapshot can see the row (the write would
+     * preserve it), and no detached description holds it.
+     */
+    private chunkUnshared;
+    /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
+    private contentUnshared;
+    private newPlan;
+    /** Create a state-0 content in its own transaction and hold it live. */
+    private beginStaging;
+    /**
+     * Copy `source`'s manifest rows over [lo, hi) into `staging` by reference,
+     * a bounded page per transaction. The copied chunks' hashes are not read,
+     * so the published content's digest is left for contentKey to fill.
+     */
+    private stageManifestCopy;
+    /** A staging content that will never publish: queue it now. */
+    private abandonStaging;
     private readFileString;
     private stat;
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     private statOf;
+    /**
+     * Rewrite an inode's metadata in its own generation. The row is rewritten
+     * whole so a snapshot that can see it keeps its before-image, and the
+     * content it names carries over by reference.
+     */
+    private publishMetadata;
     private utimes;
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
@@ -696,6 +738,11 @@ export declare class SqliteVFS {
      * way.
      */
     private unpublishRenameDestination;
+    /**
+     * Copy a file by reference: one inode row naming the source's chunk or
+     * manifest. No byte is read or written; a later write to either side
+     * copies on write (rewriteFile's sharing probes).
+     */
     private copyFile;
     private normalizeBatchInode;
     private authorizeBatch;
@@ -715,23 +762,18 @@ export declare class SqliteVFS {
      * bounded group of the removal.
      */
     private commitBatch;
+    /**
+     * Write a file too large for one transaction: its FastCDC chunks stage into
+     * a state-0 content over bounded transactions, and one more publishes it.
+     * Until then no inode names the content and GC steps over it (active).
+     */
     private replaceFileWithStagedContent;
     /**
-     * Copy-on-write replacement for an over-limit range/truncate mutation.
-     * Chunks are produced and staged one at a time, so the operation never
-     * assembles the file as one BLOB or exceeds a Stage 2 transaction bound.
+     * The inode row publishing `inode` with `content`. Ownership is inherited
+     * from what the path already holds; the reference it replaces is queued by
+     * the transaction that commits it.
      */
-    private replaceFileWithGeneratedContent;
-    private beginStagedContent;
-    private executeStagedChunkPlan;
-    /**
-     * The rows that publishing `inode` from `contentId` writes: the inode
-     * itself, the lifecycle transition, and the content it supersedes. The
-     * single definition of a file's publication — ownership inheritance and
-     * the GC of the replaced content are the same whether the file publishes
-     * alone or as one member of a batched group.
-     */
-    private addFilePublication;
+    private fileEntry;
     private publishStagedFile;
     /**
      * Incremental W7 v3 consumer. Chunk payload is admitted through one
@@ -744,14 +786,13 @@ export declare class SqliteVFS {
      * durable or none is. A file never publishes partially — a group is closed
      * on the record boundary before the file that would overflow it, so a file
      * too large for one transaction stages across several and publishes on the
-     * last, exactly as the per-file path did. Chunks staged for a file still
-     * in flight may ride along in a group that publishes other files; they
-     * carry a content id no inode references yet, so nothing observes them.
+     * last. Chunks staged for a file still in flight may ride along in a group
+     * that publishes other files; they belong to a state-0 content no inode
+     * references yet, so nothing observes them.
      *
-     * Publishing per file cost three transactions each (stage the content
-     * row, flush the chunks, publish), which at ~0.9 ms of commit apiece made
-     * writing 19,429 files the dominant term of an npm install and stalled
-     * every download shard behind the one Durable Object's storage queue.
+     * The wire's 64 KiB positional chunks are re-cut by FastCDC as they arrive
+     * (ContentCutter holds at most one chunk of carry), so a streamed file is
+     * stored exactly as the same bytes written any other way.
      */
     private writeStream;
     private _writeBatchWithRetry;
@@ -784,18 +825,74 @@ export declare class SqliteVFS {
     private emitMutation;
     private transactionSync;
     /**
+     * Commit one plan as one transaction and one generation.
+     *
      * `priors`, when the caller has them, holds what stood at each of
      * `plan.inodes`' paths before this transaction, in the same order.
+     *
+     * Order inside the transaction: advance the generation; keep before-images
+     * of rows a snapshot can see; remove deleted rows; create staging rows;
+     * resolve every chunk by hash (hits reuse, misses insert with ids from
+     * next_chunk); resolve whole large files by manifest digest; publish or
+     * edit manifests; upsert inodes; queue every reference a replaced or
+     * removed row held and no row now holds; store the counters.
      */
     private executeTransactionPlan;
+    /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
+    private insertRows;
     private executeMeasuredTransaction;
     /**
-     * Bounded, idempotent content maintenance. Age only orders work; durable
-     * reference checks in each mutation transaction are the deletion authority.
+     * Bounded, idempotent content maintenance: at most `maxTransactions`
+     * transactions of, in order, the legacy janitor, content GC, chunk GC and
+     * one page of the reference audit.
+     *
+     * GC deletes only what vfs_gc_queue names, and only after probing every
+     * reference in the deleting statement, so a stale or duplicate queue row
+     * costs a probe, never data; the queue is the work list, the probe is the
+     * authority. Ids a live description or staging holds are stepped over and
+     * stay queued. Each kind is popped in key order from a cursor, which is
+     * what keeps a page a range read of the queue's primary key.
      */
     runContentMaintenance(maxTransactions?: number): {
         transactions: number;
     };
+    /**
+     * The next page of queued ids of `kind` past the cursor, pinned ones
+     * stepped over (the cursor moves past them; they stay queued). Null when
+     * the queue has nothing past the cursor.
+     */
+    private gcPage;
+    /**
+     * Collect queued contents that no inode or history row names. A content
+     * found dead is marked dying (state 2, digest cleared) in the same
+     * transaction, so digest dedup can never adopt it again; its manifest then
+     * drains a bounded page per transaction, and the row goes when the manifest
+     * is empty. The drained rows' chunks are collected in the same transaction
+     * when nothing else names them, and queued when something might.
+     */
+    private collectContents;
+    /** Delete queued chunks that no inode, manifest or history row names. */
+    private collectChunks;
+    /**
+     * One page of the reference audit: queue every chunk and content in the
+     * page that nothing names: chunks first, then contents. It finds only what
+     * a bug leaked, so it walks once per lifetime, a page per maintenance run,
+     * and stops.
+     */
+    private auditPage;
+    /** Queue rows (kind, id pairs) for the chunks and contents given that nothing names. */
+    private unreferenced;
+    /**
+     * Debug-only: walk every chunk and content and report what nothing names
+     * and the queue does not hold. Zero after GC means no leak. O(store); tests
+     * and diagnostics only.
+     */
+    _auditContentStore(): {
+        chunks: number;
+        contents: number;
+    };
+    /** Delete one page of the first legacy table's rows; drop it once empty. */
+    private legacyJanitorPage;
     private runContentMaintenanceSafely;
     private metricsOnlyPlan;
     private recordOverLimitFile;
@@ -803,6 +900,11 @@ export declare class SqliteVFS {
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     private _safeHeapUsed;
+    /**
+     * The plan of one strict batch. Every file's positional wire chunks are
+     * joined, cut and hashed here, before the transaction; the hashes resolve
+     * to chunk ids inside it.
+     */
     private prepareBatchTransaction;
     private validateFileChunks;
     private validateInodeContentShape;

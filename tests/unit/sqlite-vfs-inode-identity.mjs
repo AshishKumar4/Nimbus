@@ -94,8 +94,8 @@ const text = (d) => new TextDecoder().decode(d);
   const detached = fs.open('/atomic', { read: true, write: true });
   fs.unlink('/atomic');
   const before = fs.fstat(detached.id).size;
-  // Fault every file_chunks write: the resize must roll back wholesale.
-  h.setFaultInjector((statement) => statement.sql.startsWith('INSERT OR REPLACE INTO file_chunks')
+  // Fault every chunk insert: the resize must roll back wholesale.
+  h.setFaultInjector((statement) => statement.sql.startsWith('INSERT INTO vfs_chunks')
     ? new Error('injected detached-resize failure') : null);
   assert.throws(() => fs.write(detached.id, 0, bytes('B'.repeat(150 * 1024))), /injected/);
   h.clearFault();
@@ -121,28 +121,20 @@ const text = (d) => new TextDecoder().decode(d);
   // Retire both contents; only /free is collectable while /held is open.
   fs.unlink('/held');
   fs.unlink('/free');
-  const collectable = [...h.sql.exec(
-    `SELECT COUNT(*) AS n FROM file_chunks c
-     WHERE NOT EXISTS (SELECT 1 FROM inodes i WHERE i.content_id = c.content_id)`,
-  )][0].n;
-  assert.ok(collectable > 0, 'both retired contents await collection');
-  const { entries } = fs.list();
-  void entries;
-  // Trigger maintenance through the public path: a batch mutation runs the
-  // collector before returning.
-  fs.writeFile('/trigger', 'x');
-  fs.writeFile('/trigger', 'y');
-  const remaining = [...h.sql.exec(
-    `SELECT c.content_id, COUNT(*) AS n FROM file_chunks c
-     WHERE NOT EXISTS (SELECT 1 FROM inodes i WHERE i.content_id = c.content_id)
-     GROUP BY c.content_id`,
-  )];
-  const heldChunks = remaining.filter((row) => row.n > 0);
-  // /held stays (an open descriptor pins it); /free must have been collected
+  const unreferenced = () => [...h.sql.exec(
+    `SELECT id FROM vfs_chunks c
+     WHERE NOT EXISTS (SELECT 1 FROM vfs_inodes i WHERE i.chunk_id = c.id)
+       AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks m WHERE m.chunk_id = c.id)`,
+  )].length;
+  // Each unlink runs the collector before returning (and a later write would
+  // again). /held stays (an open descriptor pins it); /free must have been collected
   // even though it queued behind the held one — a halted scan used to starve
   // every orphan behind the first pinned candidate.
+  assert.equal(unreferenced(), 1, 'only the held content remains uncollected');
+  assert.equal(text(fs.read(held.id, 0, 64)), 'held-content', 'the pinned content still reads');
   fs.close(held.id);
-  assert.ok(heldChunks.length <= 1, 'only the held content may remain uncollected');
+  fs.writeFile('/trigger', 'z');
+  assert.equal(unreferenced(), 0, 'closing the last descriptor lets GC collect it');
   h.db.close();
 }
 

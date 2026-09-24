@@ -8,7 +8,6 @@ import {
   MAX_TX_SQL_EXECS,
 } from '../../packages/platform/src/limits.ts';
 import {
-  INODE_ROWS_PER_SQL_EXEC,
   SqliteVFS,
   SqliteVfsTransactionTooLargeError,
 } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -114,11 +113,8 @@ function assertBounded(stats) {
   );
   assert.equal(vfs.revision(), before.revision);
   assert.equal(vfs.exists('over-bytes.bin'), false);
-  assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'over-bytes.bin'"), []);
-  assert.deepEqual(
-    harness.sql.exec("SELECT content_id FROM content_lifecycle WHERE content_id LIKE '/content:%'"),
-    [],
-  );
+  assert.deepEqual(harness.sql.exec("SELECT path FROM vfs_inodes WHERE path = 'over-bytes.bin'"), []);
+  assert.deepEqual(harness.sql.exec('SELECT id FROM vfs_contents WHERE state = 0'), []);
 }
 
 // Metadata-only logical-row boundary is exact and fail-before-side-effect.
@@ -140,25 +136,6 @@ function assertBounded(stats) {
   assert.equal(rawVfs.getStats().directories, 0);
 }
 
-// SQL-exec boundary accounts for exact-path deletes plus inode groups sized
-// to the bound-parameter limit.
-const INODE_GROUPS = 5;
-{
-  const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: INODE_GROUPS * INODE_ROWS_PER_SQL_EXEC }, (_, index) => dirInode(`sql-${index}`));
-  const deletePaths = Array.from({ length: MAX_TX_SQL_EXECS - INODE_GROUPS }, (_, index) => `absent-${index}`);
-  vfs.writeBatch({ inodes, chunks: [], deletePaths });
-  assert.equal(harness.transactionCount, baselineTransactions + 1);
-  assert.equal(rawVfs.getStats().sql.transactions.sqlExecs.last, MAX_TX_SQL_EXECS);
-}
-{
-  const { harness, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: INODE_GROUPS * INODE_ROWS_PER_SQL_EXEC }, (_, index) => dirInode(`sql-over-${index}`));
-  const deletePaths = Array.from({ length: MAX_TX_SQL_EXECS - INODE_GROUPS + 1 }, (_, index) => `absent-over-${index}`);
-  assertE2Big(() => vfs.writeBatch({ inodes, chunks: [], deletePaths }), 'sqlExecs');
-  assert.equal(harness.transactionCount, baselineTransactions);
-}
-
 // Empty strict work remains a no-op after schema initialization.
 {
   const { harness, vfs, baselineTransactions } = openVfs();
@@ -174,7 +151,7 @@ const INODE_GROUPS = 5;
   const data = new Uint8Array(MAX_TX_BLOB_BYTES * 2);
   vfs.writeFile('range.bin', data);
   const priorContentId = harness.sql.exec(
-    "SELECT content_id FROM inodes WHERE path = 'range.bin'",
+    "SELECT content_id FROM vfs_inodes WHERE path = 'range.bin'",
   )[0].content_id;
   const firstRangeTransaction = harness.transactionCount + 1;
   vfs.writeRange('range.bin', 0, new Uint8Array(data.length).fill(7));
@@ -185,7 +162,7 @@ const INODE_GROUPS = 5;
   );
   assert.ok(transactions.size >= 2);
   assert.notEqual(
-    harness.sql.exec("SELECT content_id FROM inodes WHERE path = 'range.bin'")[0].content_id,
+    harness.sql.exec("SELECT content_id FROM vfs_inodes WHERE path = 'range.bin'")[0].content_id,
     priorContentId,
   );
   assertBounded(rawVfs.getStats());

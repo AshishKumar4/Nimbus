@@ -279,23 +279,4 @@ function counters(rawVfs) {
   assert.ok(rawVfs.getStats().inodes.resident <= 64);
 }
 
-// ── A row with no ino is numbered on first read, never reusing one ────────
-// Only code older than the ino column writes such a row. Opening no longer
-// scans for them, so the first read numbers the row from the allocator.
-{
-  const { harness, vfs } = openVfs();
-  vfs.writeFile('a.txt', 'a');
-  const aIno = vfs.stat('a.txt').ino;
-  harness.sql.exec(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
-     VALUES ('legacy.txt', '', 0, 0, 1, ${0o100644}, 0)`,
-  );
-  const reopened = openVfs(createSqliteVfsTestHarness(harness.db)).vfs;
-  const legacyIno = reopened.stat('legacy.txt').ino;
-  assert.ok(legacyIno > aIno, `legacy row numbered ${legacyIno}, beside ${aIno}`);
-  reopened.writeFile('b.txt', 'b');
-  assert.ok(reopened.stat('b.txt').ino > legacyIno);
-  assert.equal(openVfs(createSqliteVfsTestHarness(harness.db)).vfs.stat('legacy.txt').ino, legacyIno);
-}
-
 console.log('sqlite-vfs-lazy-inodes: ok');

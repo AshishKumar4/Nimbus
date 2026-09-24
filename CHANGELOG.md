@@ -6,6 +6,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-09-24
 
+### filesystem
+
+- The SQLite filesystem stores content by sha256: every chunk is stored once
+  per database. A file up to 64 KiB is one chunk named from its inode row; a
+  larger file is a manifest of FastCDC chunks (16/32/64 KiB), so an edit
+  re-cuts and stores only the chunks around it. Writing a second identical
+  node_modules tree stores no chunk (measured: 167 MB then 10.7 MB for a
+  20,000-file corpus written twice, against 263 MB each time before).
+- `stat()` reports the row's generation (`gen`), and `contentKey(path)` gives
+  a key that is equal only for equal bytes.
+- `copyFile` copies the inode row, not the bytes; a later write to either
+  file copies on write.
+- Garbage collection works from a queue written in the same transaction as
+  every dereference, and deletes a chunk only after probing every reference
+  to it. A reset in the middle of a large write leaves no chunk behind.
+- The revision clock is the durable generation, so revisions jump by more
+  than one between publications. Existing filesystems start empty: the
+  pre-v2 tables are ignored and deleted in bounded pages.
+
 ### git
 
 - `git rev-parse` answers `--show-toplevel`, `--git-dir`,

@@ -12,7 +12,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -201,10 +201,8 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   const fh = await fsp.open('/home/user/huge.bin', 'r+');
   await fh.write(enc.encode('!!'), 0, 2, CHUNK + 1); // inside chunk 1 only
   await fh.close();
-  const chunkWrites = harness.statements.slice(statementStart)
-    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
-    .reduce((count, statement) => count + (statement.params.length / 3), 0);
-  assert.equal(chunkWrites, 1, 'a small FileHandle positional write must rewrite one chunk');
+  const chunkWrites = chunkBytesWritten(harness, statementStart);
+  assert.ok(chunkWrites > 0 && chunkWrites <= CHUNK, `a small FileHandle positional write stored ${chunkWrites} chunk bytes, not the file`);
 }
 
 console.log('node-shims-live-fs-range: all assertions passed');

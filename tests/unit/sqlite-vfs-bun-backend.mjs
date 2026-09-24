@@ -104,16 +104,13 @@ try {
 
   first.user.writeFile(LARGE_PATH, large);
   assert.deepEqual(first.user.readFile(LARGE_PATH), large, 'a multi-chunk file round-trips');
-  assert.deepEqual(
-    [...first.harness.sql.exec(
-      `SELECT count(*) AS chunks FROM file_chunks
-       WHERE content_id = (SELECT content_id FROM inodes WHERE path = ?)`,
-      LARGE_PATH,
-    )],
-    [{ chunks: 3 }],
-    'the file is stored as 64KiB chunks, so the chunking path ran',
-  );
-  const [storedChunk] = [...first.harness.sql.exec('SELECT data FROM file_chunks LIMIT 1')];
+  const [manifest] = [...first.harness.sql.exec(
+    `SELECT count(*) AS chunks FROM vfs_content_chunks
+     WHERE content_id = (SELECT content_id FROM vfs_inodes WHERE path = ?)`,
+    LARGE_PATH,
+  )];
+  assert.ok(manifest.chunks >= 3, 'the file is stored as a manifest of CDC chunks, so the chunking path ran');
+  const [storedChunk] = [...first.harness.sql.exec('SELECT data FROM vfs_chunks LIMIT 1')];
   assert.ok(
     storedChunk.data instanceof Uint8Array,
     'this host returns blobs as Uint8Array where workerd returns ArrayBuffer',
@@ -168,9 +165,10 @@ try {
   );
   assert.deepEqual(second.user.readFile(RENAMED_PATH), large, 'the multi-chunk file survived the reopen');
   assert.equal(second.user.exists(BINARY_PATH), false, 'the unlinked file stayed unlinked');
-  // A rename changes the inode's ctime, so that is compared to the moved file.
-  const { atime: reopenedAtime, ctime: reopenedCtime, ...reopenedStat } = second.user.stat(RENAMED_PATH);
-  const { atime: writtenAtime, ctime: writtenCtime, ...writtenStat } = stat;
+  // A rename rewrites the inode's row, so its ctime and generation move with it.
+  const { atime: reopenedAtime, ctime: reopenedCtime, gen: reopenedGen, ...reopenedStat } = second.user.stat(RENAMED_PATH);
+  const { atime: writtenAtime, ctime: writtenCtime, gen: writtenGen, ...writtenStat } = stat;
+  assert.ok(reopenedGen > writtenGen, 'the move is a later generation');
   assert.deepEqual(reopenedStat, writtenStat, 'inode metadata survived the reopen');
   assert.equal(reopenedCtime, renamedCtime, 'ctime survived the reopen');
   assert.ok(reopenedAtime >= writtenAtime, 'reading it again only moved atime forward');
@@ -188,11 +186,11 @@ try {
 
   const tornPath = `${DIR}/torn.bin`;
   harness.setFaultInjector((statement) => (
-    statement.sql.startsWith('INSERT OR REPLACE INTO file_chunks')
-      ? new Error('injected chunk write failure')
+    statement.sql.startsWith('INSERT OR REPLACE INTO vfs_inodes')
+      ? new Error('injected inode write failure')
       : null
   ));
-  assert.throws(() => user.writeFile(tornPath, pattern(4096)), /injected chunk write failure/);
+  assert.throws(() => user.writeFile(tornPath, pattern(4096)), /injected inode write failure/);
   harness.clearFault();
 
   const executed = harness.statements;
@@ -201,16 +199,16 @@ try {
   assert.ok(
     executed.some((statement) => (
       statement.transaction === failed.transaction
-      && statement.sql.startsWith('INSERT OR REPLACE INTO inodes')
+      && statement.sql.startsWith('INSERT INTO vfs_chunks')
     )),
-    'the inode row was written earlier in that same transaction',
+    'the chunk row was written earlier in that same transaction',
   );
 
   assert.equal(user.exists(tornPath), false, 'the failed write is not visible in memory');
   assert.deepEqual(
-    [...harness.sql.exec('SELECT count(*) AS rows FROM inodes WHERE path = ?', tornPath)],
+    [...harness.sql.exec('SELECT count(*) AS rows FROM vfs_chunks')],
     [{ rows: 0 }],
-    'the inode row was rolled back with the chunk that failed',
+    'the chunk row was rolled back with the inode that failed',
   );
 
   const reopened = mountFilesystem(database);

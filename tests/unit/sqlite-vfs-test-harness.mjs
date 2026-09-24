@@ -141,20 +141,37 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
 }
 
 /**
- * Statements recorded since `from` whose query plan reads the whole `inodes`
- * table, or a whole index of it, rather than seeking. Every such statement
- * costs the size of the filesystem, whatever it was asked about. A bare
- * `SEARCH inodes`, with no index named, is a MIN/MAX over an unindexed
+ * Statements recorded since `from` whose query plan reads the whole
+ * `vfs_inodes` table, or a whole index of it, rather than seeking. Every such
+ * statement costs the size of the filesystem, whatever it was asked about. A
+ * bare `SEARCH vfs_inodes`, with no index named, is a MIN/MAX over an unindexed
  * column: a scan by another name.
  */
 export function inodeTableScans(harness, from = 0) {
   const scans = [];
   for (const statement of harness.statements.slice(from)) {
-    if (!/\binodes\b/.test(statement.sql)) continue;
+    if (!/\bvfs_inodes\b/.test(statement.sql)) continue;
     for (const step of harness.db.query(`EXPLAIN QUERY PLAN ${statement.sql}`).all(...statement.params)) {
       const detail = String(step.detail);
-      if (/^SCAN inodes\b/.test(detail) || detail === 'SEARCH inodes') scans.push(`${detail}: ${statement.sql}`);
+      if (/^SCAN vfs_inodes\b/.test(detail) || detail === "SEARCH vfs_inodes") scans.push(`${detail}: ${statement.sql}`);
     }
   }
   return scans;
+}
+
+/**
+ * Chunk bytes written to vfs_chunks since statement `from`: new chunk rows
+ * plus in-place rewrites. What an edit costs in content, independent of how
+ * its chunks are keyed.
+ */
+export function chunkBytesWritten(harness, from = 0) {
+  let bytes = 0;
+  for (const statement of harness.statements.slice(from)) {
+    if (/^\s*INSERT INTO vfs_chunks\b/.test(statement.sql)) {
+      for (let i = 3; i < statement.params.length; i += 4) bytes += statement.params[i].byteLength;
+    } else if (/^\s*UPDATE vfs_chunks SET hash/.test(statement.sql)) {
+      bytes += statement.params[2].byteLength;
+    }
+  }
+  return bytes;
 }
