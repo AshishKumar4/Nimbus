@@ -166,6 +166,20 @@ def admitM (s : St) (a : Answer) : St :=
   let t := admit s { a with delta := a.delta.filter fun x => s.cursor < x.2 }
   { t with answers := s.answers.erase a, cursor := max s.cursor a.rev }
 
+/-- NodeNoMirror's pushed content: a delta carries, for a path under the push
+    roots and within the answer's byte budget (`push`), its bytes at the
+    answer's revision; they are installed stamped at the path's reported
+    revision unless the facet holds its own bytes or a row dated at or after it. -/
+def acceptsPush : Option Row → Nat → Bool
+  | some ⟨_, .own⟩, _ => false
+  | some ⟨_, .dated r⟩, e => decide (r < e)
+  | none, _ => true
+
+def pushRows (t : St) (d : List (Path × Nat)) (push : Path → Bool) : St :=
+  { t with rows := fun p =>
+      if push p = true ∧ 0 < repOf d p ∧ t.parked p = none ∧ acceptsPush (t.rows p) (repOf d p) = true
+      then some ⟨repOf d p, .dated (repOf d p)⟩ else t.rows p }
+
 /-- `__residentFill` declines over own bytes or a row dated later than the read. -/
 def accepts : Option Row → Nat → Bool
   | some ⟨_, .own⟩, _ => false
@@ -202,6 +216,11 @@ inductive Step : St → St → Prop
       cursor, and the cursor never moves back. -/
   | admitMono (s : St) (a : Answer) : a ∈ s.answers → a.poison = false → a.base ≤ s.cursor →
       s.repair = none → Step s (admitM s a)
+  /-- NodeNoMirror: an answer admitted as `admitMono` also installs the bytes it
+      pushed. (While only this admission is in use the cursor is the horizon.) -/
+  | admitPush (s : St) (a : Answer) (push : Path → Bool) : a ∈ s.answers → a.poison = false →
+      a.base ≤ s.cursor → s.repair = none → s.cursor = s.H →
+      Step s (pushRows (admitM s a) (a.delta.filter fun x => s.cursor < x.2) push)
   /-- A poison lands: every read in flight is spoiled and the single-flight
       repair starts. -/
   | admitPoison (s : St) (a : Answer) : a ∈ s.answers → a.poison = true → s.repair = none →

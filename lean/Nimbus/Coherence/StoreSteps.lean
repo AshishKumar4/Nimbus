@@ -41,7 +41,7 @@ theorem mem_map_eq {α : Type} {l : List α} {f : α → α} {y : α} (h : y ∈
 /-- A commit above `lo`, at or below the answer, is reported at or above itself. -/
 theorem covered {s : St} (hi : Inv s) {a : Answer} (ha : a ∈ s.answers) (hp : a.poison = false)
     {x : Path × Nat} (hx : x ∈ s.muts) (hb : a.base < x.2) (hr : x.2 ≤ a.rev) : x.2 ≤ repOf a.delta x.1 :=
-  (hi.answerOk a ha).2.2 hp x hx hb hr
+  (hi.answerOk a ha).2.2.1 hp x hx hb hr
 
 /-! ## Admission -/
 
@@ -111,8 +111,8 @@ theorem admit_inv {s : St} (hi : Inv s) (a : Answer) (ha : a ∈ s.answers)
   · intro hr; exact absurd hrep hr
   · intro q hq; have := hi.requestLe q hq; show q.2 ≤ max s.H a.rev; omega
   · intro b hb'
-    obtain ⟨h1, h2, h3⟩ := hi.answerOk b (List.mem_of_mem_erase hb')
-    exact ⟨fun h => by have := h1 h; show b.base ≤ max s.H a.rev; omega, h2, h3⟩
+    obtain ⟨h1, h2, h3, h4⟩ := hi.answerOk b (List.mem_of_mem_erase hb')
+    exact ⟨fun h => by have := h1 h; show b.base ≤ max s.H a.rev; omega, h2, h3, h4⟩
   · intro L hL; simp only [admit] at hL; rw [hrep] at hL; cases hL
   · intro g hg r hr
     obtain ⟨h1, h2, h3⟩ := hi.flightOk g hg r hr
@@ -156,6 +156,55 @@ theorem admitMono_inv {s : St} (hi : Inv s) {a : Answer} (ha : a ∈ s.answers) 
     (fun x hx h1 h2 => hd x hx (by omega) h2 (by omega))
     (max s.cursor a.rev) (by omega)
   exact this
+
+/-! ## Pushed content (NodeNoMirror) -/
+
+theorem admitPush_inv {s : St} (hi : Inv s) {a : Answer} (ha : a ∈ s.answers) (hp : a.poison = false)
+    (hb : a.base ≤ s.cursor) (hrep : s.repair = none) (hcH : s.cursor = s.H) (push : Path → Bool) :
+    Inv (pushRows (admitM s a) (a.delta.filter fun x => s.cursor < x.2) push) := by
+  have ht := admitMono_inv hi ha hp hb hrep
+  let t := admitM s a
+  let d := a.delta.filter fun x => s.cursor < x.2
+  obtain ⟨_, hrev, _, hval⟩ := hi.answerOk a ha
+  -- what a push installs is the path at the answer's revision, above the horizon
+  have hpush : ∀ p, 0 < repOf d p → (p, repOf d p) ∈ a.delta ∧ s.H < repOf d p ∧
+      repOf d p = valAt s.muts p a.rev := by
+    intro p hpos
+    have hm := repOf_mem hpos
+    obtain ⟨hm', hgt⟩ := List.mem_filter.mp hm
+    simp at hgt
+    exact ⟨hm', by omega, hval _ hm'⟩
+  have hle : ∀ p, 0 < repOf d p → repOf d p ≤ a.rev := by
+    intro p hpos
+    obtain ⟨_, _, e⟩ := hpush p hpos
+    rw [e]
+    rcases (valAt_spec s.muts p a.rev).1 with h | h
+    · omega
+    · exact h.2
+  refine ⟨ht.mutsLe, ht.hLe, ht.cursorLe, ?_, ?_, ht.fillRev, ht.fillFresh, ht.repairSpoiled, ht.requestLe,
+    ht.answerOk, ht.listingOk, ht.flightOk, ht.flightLt, ht.parkedLt⟩
+  · intro p v r h
+    simp only [pushRows] at h
+    split at h
+    · rename_i hc
+      injection h with h; injection h with h1 h2; injection h2 with h2; subst h2
+      have := hle p hc.2.1; show repOf d p ≤ s.rev; omega
+    · exact ht.rowStamp p v r h
+  · intro p v r h
+    simp only [pushRows] at h
+    split at h
+    · rename_i hc
+      injection h with h; injection h with h1 h2; injection h2 with h2; subst h1 h2
+      obtain ⟨_, hgt, e⟩ := hpush p hc.2.1
+      have hle' := hle p hc.2.1
+      refine ⟨?_, ?_⟩
+      · rcases (valAt_spec s.muts p a.rev).1 with h | h
+        · exact Or.inl (by rw [e]; exact h)
+        · exact Or.inr (by show (p, repOf d p) ∈ s.muts; rw [e]; exact h.1)
+      · show NoMut s.muts p (repOf d p) (max (repOf d p) (max s.H a.rev))
+        rw [e]
+        exact noMut_mono (noMut_valAt s.muts p a.rev) (Nat.le_refl _) (by omega)
+    · exact ht.rowFresh p v r h
 
 /-! ## Every other event -/
 
@@ -218,12 +267,13 @@ theorem step_inv {s s' : St} (hi : Inv s) (h : Step s s') : Inv s' := by
     rcases List.mem_append.mp ha with ha | ha
     · exact hi.answerOk a ha
     · simp at ha; subst ha
-      refine ⟨fun _ => hi.requestLe q hq, Nat.le_refl _, fun hp x hx hb hr => ?_⟩
-      simp only at hp hb hr ⊢
-      have hf : ¬ q.2 < s.logFloor := by simpa [poisons] using hp
-      have h1 := repOf_ge (deltaFrom_covers s q.2 hf hx hb)
-      have h2 := (valAt_spec s.muts x.1 s.rev).2 x hx rfl hr
-      unfold last at h1; omega
+      refine ⟨fun _ => hi.requestLe q hq, Nat.le_refl _, fun hp x hx hb hr => ?_, fun y hy => ?_⟩
+      · simp only at hp hb hr ⊢
+        have hf : ¬ q.2 < s.logFloor := by simpa [poisons] using hp
+        have h1 := repOf_ge (deltaFrom_covers s q.2 hf hx hb)
+        have h2 := (valAt_spec s.muts x.1 s.rev).2 x hx rfl hr
+        unfold last at h1; omega
+      · exact deltaFrom_last s q.2 hy
   | route =>
     refine ⟨hi.mutsLe, hi.hLe, hi.cursorLe, hi.rowStamp, hi.rowFresh, hi.fillRev, hi.fillFresh,
       hi.repairSpoiled, hi.requestLe, ?_, hi.listingOk, hi.flightOk, ?_, ?_⟩
@@ -231,12 +281,13 @@ theorem step_inv {s s' : St} (hi : Inv s) (h : Step s s') : Inv s' := by
       rcases List.mem_append.mp ha with ha | ha
       · exact hi.answerOk a ha
       · simp at ha; subst ha
-        refine ⟨fun h => by simp at h, Nat.le_refl _, fun _ x hx hb hr => ?_⟩
+        refine ⟨fun h => by simp at h, Nat.le_refl _, fun _ x hx hb hr => ?_, fun y hy => deltaFrom_last s s.rev hy⟩
         simp at hb hr; omega
     · intro g hg; have := hi.flightLt g hg; show g.w < s.nextId + 1; omega
     · intro p w hw; have := hi.parkedLt p w hw; show w < s.nextId + 1; omega
   | admitDelta a ha hp hro hrep => exact admitDelta_inv hi ha hp hro hrep
   | admitMono a ha hp hb hrep => exact admitMono_inv hi ha hp hb hrep
+  | admitPush a push ha hp hb hrep hcH => exact admitPush_inv hi ha hp hb hrep hcH push
   | admitPoison a ha _ hrep =>
     refine ⟨hi.mutsLe, hi.hLe, hi.cursorLe, hi.rowStamp, hi.rowFresh, ?_, ?_, ?_, hi.requestLe,
       fun b hb => hi.answerOk b (List.mem_of_mem_erase hb), ?_, hi.flightOk, hi.flightLt, hi.parkedLt⟩
@@ -300,8 +351,8 @@ theorem step_inv {s s' : St} (hi : Inv s) (h : Step s s') : Inv s' := by
     · intro f hf v _; exact Or.inl (hsp f hf)
     · intro _ f hf; exact hsp f hf
     · intro q hq; have := hi.requestLe q hq; show q.2 ≤ max s.H L.cursor; omega
-    · intro a ha; obtain ⟨h1, h2, h3⟩ := hi.answerOk a ha
-      exact ⟨fun h => by have := h1 h; show a.base ≤ max s.H L.cursor; omega, h2, h3⟩
+    · intro a ha; obtain ⟨h1, h2, h3, h4⟩ := hi.answerOk a ha
+      exact ⟨fun h => by have := h1 h; show a.base ≤ max s.H L.cursor; omega, h2, h3, h4⟩
     · intro L' hL'; simp at hL'; subst hL'
       exact ⟨l1, fun h => by simp at h, fun _ => by show L.cursor ≤ max s.H L.cursor; omega, l4, l5⟩
     · intro g hg r hrr

@@ -148,6 +148,25 @@ theorem deltaFrom_covers (s : St) (c : Nat) (hf : ¬ c < s.logFloor) {x : Path �
       · exact h2 _ (List.mem_append_right _ (by simp))
       · exact h1 q hq
 
+/-- Every entry of a delta is its path at its newest revision. -/
+theorem deltaFrom_last (s : St) (c : Nat) {y : Path × Nat} (hy : y ∈ deltaFrom s c) : y.2 = last s y.1 := by
+  unfold deltaFrom at hy
+  suffices ∀ (l : List Path) (acc : List (Path × Nat)), (∀ y ∈ acc, y.2 = last s y.1) →
+      ∀ y ∈ l.foldl (fun acc p => if acc.any (·.1 == p) then acc else acc ++ [(p, last s p)]) acc, y.2 = last s y.1 from
+    this _ [] (fun _ h => by cases h) y hy
+  intro l
+  induction l with
+  | nil => intro acc h; exact h
+  | cons p l ih =>
+    intro acc hacc
+    simp only [List.foldl_cons]
+    split
+    · exact ih acc hacc
+    · apply ih
+      intro y hy; rcases List.mem_append.mp hy with hy | hy
+      · exact hacc y hy
+      · simp at hy; subst hy; rfl
+
 /-! ## The invariant -/
 
 def IsVer (s : St) (p : Path) (v : Nat) : Prop := v = 0 ∨ (p, v) ∈ s.muts
@@ -168,7 +187,8 @@ structure Inv (s : St) : Prop where
   repairSpoiled : s.repair ≠ none → ∀ f ∈ s.fills, f.spoiled = true
   requestLe : ∀ q ∈ s.requests, q.2 ≤ s.H
   answerOk : ∀ a ∈ s.answers, (a.routed = false → a.base ≤ s.H) ∧ a.rev ≤ s.rev ∧
-    (a.poison = false → ∀ x ∈ s.muts, a.base < x.2 → x.2 ≤ a.rev → x.2 ≤ repOf a.delta x.1)
+    (a.poison = false → ∀ x ∈ s.muts, a.base < x.2 → x.2 ≤ a.rev → x.2 ≤ repOf a.delta x.1) ∧
+    (∀ x ∈ a.delta, x.2 = valAt s.muts x.1 a.rev)
   listingOk : ∀ L, s.repair = some (some L) → L.cursor ≤ s.rev ∧ (L.reconciled = false → s.H ≤ L.cursor) ∧
     (L.reconciled = true → L.cursor ≤ s.H) ∧
     (∀ p, valAt s.muts p L.cursor ≤ L.listed p) ∧ (∀ p, L.listed p ≤ L.cursor)
@@ -215,11 +235,13 @@ theorem commit_inv {s : St} (hi : Inv s) (p : Path) {n : Nat} (hn : s.rev < n) :
     · have := hi.fillRev f hf; have := hi.hLe
       exact Or.inr (Or.inr (fresh_ext h hmem (hno _ _ _ (by omega) h.2) rfl))
   · intro a ha
-    obtain ⟨h1, h2, h3⟩ := hi.answerOk a ha
-    refine ⟨h1, by show a.rev ≤ n; omega, fun hp x hx hb hr => ?_⟩
-    rcases List.mem_append.mp hx with hx | hx
-    · exact h3 hp x hx hb hr
-    · simp at hx; subst hx; simp at hr; omega
+    obtain ⟨h1, h2, h3, h4⟩ := hi.answerOk a ha
+    refine ⟨h1, by show a.rev ≤ n; omega, fun hp x hx hb hr => ?_, fun x hx => ?_⟩
+    · rcases List.mem_append.mp hx with hx | hx
+      · exact h3 hp x hx hb hr
+      · simp at hx; subst hx; simp at hr; omega
+    · show x.2 = valAt (s.muts ++ [(p, n)]) x.1 a.rev
+      rw [valAt_append_le (by omega)]; exact h4 x hx
   · intro L hL
     obtain ⟨h1, h2, h3, h4, h5⟩ := hi.listingOk L hL
     refine ⟨by show L.cursor ≤ n; omega, h2, h3, fun q => ?_, h5⟩

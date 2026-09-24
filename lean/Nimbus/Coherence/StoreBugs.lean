@@ -118,6 +118,32 @@ theorem a_listing_below_the_last_commit_keeps_a_stale_row :
   simp only [commitMut, hm, List.nil_append]
   rw [valAt_one t ht]; omega
 
+/-- NodeNoMirror's pushed bytes must only ride 4c8871bb's admission (entries
+    above the cursor). Under integrate/0924's admission an answer served before
+    a newer one, admitted after it, pushes the path at its older revision into
+    an empty row: stale bytes installed as current. -/
+theorem a_push_admitted_out_of_order_is_stale :
+    ∃ s a, Reachable s ∧ a ∈ s.answers ∧ a.delta = [(0, 1)] ∧ s.rows 0 = none ∧ 2 ≤ s.H ∧
+      (pushRows (admit s a) a.delta (fun _ => true)).rows 0 = some ⟨1, .dated 1⟩ ∧
+      ∀ t, s.H ≤ t → valAt s.muts 0 t ≠ 1 := by
+  have h1 := Reachable.step .init (.request init)
+  have h2 := Reachable.step h1 (.peerWrite _ 0 1 (by decide))
+  have h3 := Reachable.step h2 (.serve _ (0, 0) (List.mem_singleton.mpr rfl))
+  have h4 := Reachable.step h3 (.peerWrite _ 0 2 (by decide))
+  have h5 := Reachable.step h4 (.request _)
+  have h6 := Reachable.step h5 (.serve _ (1, 0) (List.mem_singleton.mpr rfl))
+  have h7 := Reachable.step h6 (.admitDelta _ _ (List.mem_append_right _ (List.mem_singleton.mpr rfl))
+    (by simp [poisons, commitMut, init]) rfl rfl)
+  refine ⟨_, ⟨0, 0, 1, false, [(0, 1)], false⟩, h7, ?_, rfl, ?_, ?_, ?_, ?_⟩
+  · simp [admit, commitMut, init, poisons, deltaFrom, retained, last, valAt]
+  · simp [admit, commitMut, init]
+  · simp [admit, commitMut, init]
+  · simp [pushRows, admit, commitMut, init, repOf, acceptsPush]
+  · intro t ht
+    simp [admit, commitMut, init] at ht
+    simp only [admit, commitMut, init, List.nil_append, List.append_assoc, List.singleton_append]
+    rw [valAt_two t (by omega)]; omega
+
 /-! ## Open finding: a facet's own committed write is served past a peer's -/
 
 /-- `writeFileSync` on path 0; the write-back commits it at revision 1; a peer

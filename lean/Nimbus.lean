@@ -5,10 +5,11 @@
 
   Vfs: RevisionFloor
   ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs
-  Coherence: Store, StoreSafety, StoreSteps, StoreBugs
+  Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Refetch
   Refine (a separate root): the generators of `lean/fixtures/`
 -/
 
 import Nimbus.Vfs.RevisionFloor
 import Nimbus.ContentStore.Bugs
 import Nimbus.Coherence.StoreBugs
+import Nimbus.Coherence.Refetch

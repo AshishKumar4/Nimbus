@@ -12,6 +12,13 @@
 
 import Nimbus
 
+/-! ## Nimbus/Coherence/Refetch.lean -/
+
+#print axioms Nimbus.Coherence.Refetch.new_settles
+#print axioms Nimbus.Coherence.Refetch.old_never_settles
+#print axioms Nimbus.Coherence.Refetch.livelock_before_eb542b0b
+#print axioms Nimbus.Coherence.Refetch.settles_after_eb542b0b
+
 /-! ## Nimbus/Coherence/StoreBugs.lean -/
 
 #print axioms Nimbus.Coherence.Store.no_stale_read
@@ -25,6 +32,7 @@ import Nimbus
 #print axioms Nimbus.Coherence.Store.an_empty_log_without_a_floor_serves_a_stale_row
 #print axioms Nimbus.Coherence.Store.a_read_installed_past_a_report_is_stale
 #print axioms Nimbus.Coherence.Store.a_listing_below_the_last_commit_keeps_a_stale_row
+#print axioms Nimbus.Coherence.Store.a_push_admitted_out_of_order_is_stale
 #print axioms Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
 
 /-! ## Nimbus/Coherence/StoreSafety.lean -/
@@ -38,6 +46,7 @@ import Nimbus
 #print axioms Nimbus.Coherence.Store.valAt_append_le
 #print axioms Nimbus.Coherence.Store.repOf_ge
 #print axioms Nimbus.Coherence.Store.deltaFrom_covers
+#print axioms Nimbus.Coherence.Store.deltaFrom_last
 #print axioms Nimbus.Coherence.Store.init_inv
 #print axioms Nimbus.Coherence.Store.fresh_ext
 #print axioms Nimbus.Coherence.Store.commit_inv
@@ -52,6 +61,7 @@ import Nimbus
 #print axioms Nimbus.Coherence.Store.admit_inv
 #print axioms Nimbus.Coherence.Store.admitDelta_inv
 #print axioms Nimbus.Coherence.Store.admitMono_inv
+#print axioms Nimbus.Coherence.Store.admitPush_inv
 #print axioms Nimbus.Coherence.Store.flush_rows
 #print axioms Nimbus.Coherence.Store.step_inv
 #print axioms Nimbus.Coherence.Store.reachable_inv
