@@ -393,7 +393,8 @@ requirements:
       - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
       - packages/worker/src/runtime/node-shims.ts#generateShimsCode
     remainingEvidence:
-      - The fix is ResidentCoherenceLane's; its red-then-green unit test drives the reachable trace on the real resident body
+      - The fix is ResidentCoherenceLane's b6825561 (work/resident-coherence); tests/unit/resident-store-provenance.mjs drives each trace on the real resident body, red before the fix ('a peer write that lands while the own write is in flight', 'a later barrier while an earlier one waits on the acknowledgement', 'a poison while the own write is in flight', 'a newer write parked over one being acknowledged')
+      - The guard counts only the current write's acknowledgement (parked = its write), which is the code's supersession exemption; lease acknowledgements are never skipped and leases are not modeled
   COH-005:
     statement: Before eb542b0b a resumption waiting on a refetch never runs while a peer rewrites the path faster than one read round trip; after it the wait ends within two read landings whatever the writer does.
     status: proved-in-abstract-model
