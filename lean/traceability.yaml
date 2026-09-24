@@ -525,3 +525,24 @@ requirements:
       - VfsLazyInodesLane's test (5d191b32) passes all 155 cases, is red on the previous rules (8bb2b940, db8791aa) and on a mutant reporting hidden names as themselves
       - Visibility is traversability of every directory above a name for one caller; symlinks, confined /tmp views and uid/gid are folded into that one bit
       - Log completeness (every node change logged, structural when kind, existence or traversability changed) is a hypothesis
+  COH-010:
+    statement: NodeNoMirror's content-key savings (a fill copied from a row with the listed key, a row kept and re-dated when an entry's key matches, a repair keeping rows whose key the listing repeats, across incarnations) keep every dated row holding bytes the authority held at some instant at or after the newest admitted answer, given only that equal keys mean equal bytes; without that property a repair keeps stale bytes.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.ContentKey.no_stale_read
+      - Nimbus.Coherence.ContentKey.a_colliding_key_keeps_a_stale_row
+      - Nimbus.Coherence.ContentKey.bytesAt_eq
+      - Nimbus.Coherence.ContentKey.lastRev_fold
+      - Nimbus.Coherence.ContentKey.lastRev_spec
+      - Nimbus.Coherence.ContentKey.le_lastRev
+      - Nimbus.Coherence.ContentKey.acqRow_some
+      - Nimbus.Coherence.ContentKey.noMut_extend
+      - Nimbus.Coherence.ContentKey.noMut_append
+      - Nimbus.Coherence.ContentKey.bytesAt_append
+      - Nimbus.Coherence.ContentKey.step_inv
+      - Nimbus.Coherence.ContentKey.reachable_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Built by NodeNoMirrorBuild at 04cb9dd9 (work/node-nomirror, schema 2); ACQUIRE is served and admitted in one step and a repair lists and reconciles in one step here, the finer interleavings being Nimbus.Coherence.Store's
+      - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis

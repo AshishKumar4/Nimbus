@@ -13,6 +13,21 @@
 import Nimbus
 import Nimbus.Refine
 
+/-! ## Nimbus/Coherence/ContentKey.lean -/
+
+#print axioms Nimbus.Coherence.ContentKey.bytesAt_eq
+#print axioms Nimbus.Coherence.ContentKey.lastRev_fold
+#print axioms Nimbus.Coherence.ContentKey.lastRev_spec
+#print axioms Nimbus.Coherence.ContentKey.le_lastRev
+#print axioms Nimbus.Coherence.ContentKey.acqRow_some
+#print axioms Nimbus.Coherence.ContentKey.noMut_extend
+#print axioms Nimbus.Coherence.ContentKey.noMut_append
+#print axioms Nimbus.Coherence.ContentKey.bytesAt_append
+#print axioms Nimbus.Coherence.ContentKey.step_inv
+#print axioms Nimbus.Coherence.ContentKey.reachable_inv
+#print axioms Nimbus.Coherence.ContentKey.no_stale_read
+#print axioms Nimbus.Coherence.ContentKey.a_colliding_key_keeps_a_stale_row
+
 /-! ## Nimbus/Coherence/DurableDelta.lean -/
 
 #print axioms Nimbus.Coherence.DurableDelta.init_inv
