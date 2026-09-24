@@ -107,8 +107,17 @@ async function copyAcrossMounts(ctx: CommandContext, source: string, target: str
     await ensureParentDir(ctx, target);
     await ctx.vfs.copyFile(source, target);
   }
-  await ctx.vfs.chmod(target, stat.mode);
-  await ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime);
+  // GNU mv preserves attributes best effort (mv.c: require_preserve = false).
+  await preserve(ctx, 'times', target, () => ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime));
+  await preserve(ctx, 'permissions', target, () => ctx.vfs.chmod(target, stat.mode));
+}
+
+async function preserve(ctx: CommandContext, what: string, target: string, apply: () => Promise<void>): Promise<void> {
+  try { await apply(); }
+  catch (error) {
+    if (!(error instanceof VFSError)) throw error;
+    await ctx.stderr.write(`mv: preserving ${what} for '${target}': ${error.message}\n`);
+  }
 }
 
 /** A leaf copied across mounts arrives before the destination holds its parent. */
