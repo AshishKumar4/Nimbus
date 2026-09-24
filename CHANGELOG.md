@@ -134,6 +134,17 @@ published independently in the `@nimbus-sh` npm scope.
   as the shared `/tmp/x`, not at all. They named the storage key, so a peer's
   write to a confined process's `/tmp` file never evicted the copy the
   process held, and a write to the shared file evicted it instead.
+- An ACQUIRE delta names only the paths the caller could list: every
+  directory above them traversable, as `list()` requires. It named every
+  path the caller had a name for, so a resident process was told the names
+  of files in another principal's private root and in directories it cannot
+  read. A path whose directory has since been deleted, renamed or remade is
+  judged by the mode that directory had when it went, so removing a private
+  directory does not reveal what it held. A path the caller could list is
+  still named after `rm -rf`, so no resident row it filled goes stale. Those
+  modes are kept exactly as long as the invalidation log keeps the paths
+  they judge. `list()` checks a confined caller's own directories, not the
+  storage directories that hold its `/tmp`.
 
 ### Runtimes
 

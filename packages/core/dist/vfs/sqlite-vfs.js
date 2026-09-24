@@ -459,6 +459,14 @@ export class SqliteVFS {
     // that the cost went unnoticed until it took an agent turn past the DO CPU
     // limit.
     static INVALIDATION_LOG_MAX_BYTES = 256 * 1024;
+    // Directories removed within the log's window (deleted, or renamed away),
+    // each with the mode, owner and group it had when it went. A logged path
+    // under one of them is judged by the directory its mutation passed
+    // through, not by whatever stands at that name now (visibleName), so a
+    // deletion, a rename or a re-creation never reveals a name the caller
+    // could not have listed. Trimmed with the log: every retained entry keeps
+    // the records it is judged by, and a cursor older than the log relists.
+    _goneDirectories = new Map();
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch() { return this._epoch; }
     exclusiveMutationLeases = new Map();
@@ -1468,12 +1476,14 @@ export class SqliteVFS {
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
      * none. The inverse of {@link storageKey}, for the surfaces that report
-     * paths they were not asked about: {@link list} and {@link invalidatedSince}.
+     * paths they were not asked about: {@link list} and
+     * {@link invalidatedSince}.
      *
-     * A confined caller has no name for the shared scratch tree — `/tmp` is its
-     * own root — nor for another principal's, so both answer `null` and are
-     * omitted. An unconfined caller sees storage as it is, which is what the
-     * kernel and the session user need.
+     * A confined caller has no name for the shared scratch tree: `/tmp` is its
+     * own root. Another principal's private root does have a name, its storage
+     * path, and what keeps it out of those reports is its mode, which the
+     * caller cannot traverse (visibleName). An unconfined caller sees storage
+     * as it is, which is what the kernel and the session user need.
      */
     logicalPath(key, cred) {
         const root = this.confinedTmpRoots.get(cred.uid);
@@ -1728,7 +1738,7 @@ export class SqliteVFS {
      * Recording every ancestor would cost O(depth) entries per write for no
      * additional coverage, since no facet view keys on a grandparent.
      */
-    bumpRevision(paths) {
+    bumpRevision(paths, gone = []) {
         for (const opened of this.openNodes) {
             if (opened.path === null)
                 continue;
@@ -1743,9 +1753,17 @@ export class SqliteVFS {
         if (this.transactionPublication) {
             for (const path of paths)
                 this.transactionPublication.paths.add(path);
+            this.transactionPublication.gone.push(...gone);
             return;
         }
         const rev = ++this._revision;
+        for (const dir of gone) {
+            if (!dir.isDir)
+                continue;
+            const records = this._goneDirectories.get(dir.path) ?? [];
+            records.push({ rev, mode: dir.mode, uid: dir.uid, gid: dir.gid });
+            this._goneDirectories.set(dir.path, records);
+        }
         for (const path of paths) {
             let p = normalizeVfsPath(path);
             const mutated = p;
@@ -1778,6 +1796,13 @@ export class SqliteVFS {
         }
         if (dropped > 0)
             this._invalidations = this._invalidations.slice(dropped);
+        const oldest = this._invalidations.length > 0 ? this._invalidations[0].rev : rev + 1;
+        for (const [path, records] of this._goneDirectories) {
+            while (records.length > 0 && records[0].rev < oldest)
+                records.shift();
+            if (records.length === 0)
+                this._goneDirectories.delete(path);
+        }
     }
     /**
      * Drop every per-path revision at or below the oldest quarter's newest,
@@ -1830,9 +1855,11 @@ export class SqliteVFS {
      *
      * With a credential, each path is the caller's own name for it, the one
      * `list()` reports it under: a confined caller's private /tmp/x is named
-     * tmp/x, and a path it has no name for, such as the shared tmp/x, is left
-     * out. The caller's cache is keyed on those names, so a storage key would
-     * evict nothing it holds, and the shared tmp/x would evict its own.
+     * tmp/x. And only the paths it could list are named, by list()'s rule: a
+     * path it has no name for, such as the shared tmp/x, or one below a
+     * directory it cannot traverse, such as another principal's private root,
+     * is left out (visibleName). A path it could list when it changed is never
+     * left out, deleted or not, so no row it filled goes stale unreported.
      */
     invalidatedSince(epoch, cursor, cred) {
         const rev = this._revision;
@@ -1850,15 +1877,63 @@ export class SqliteVFS {
         // The log is append-ordered by revision, so the last entry for a path
         // is its newest — the one the caller has to be at or past to keep it.
         const latest = new Map();
+        const standing = new Map();
         for (const entry of this._invalidations) {
             if (entry.rev <= cursor)
                 continue;
-            const path = cred === undefined ? entry.path : this.logicalPath(entry.path, cred);
+            const path = cred === undefined ? entry.path : this.visibleName(entry.path, cred, entry.rev, standing);
+            // A directory above the path went without a record: nothing can say
+            // whether the caller may know this name, so it relists instead.
+            if (path === undefined)
+                return { epoch: this._epoch, rev, paths: [], poison: true };
             if (path !== null)
                 latest.set(path, entry.rev);
         }
         const paths = [...latest].map(([path, pathRev]) => ({ path, rev: pathRev }));
         return { epoch: this._epoch, rev, paths, poison: false };
+    }
+    /**
+     * The name `cred` has for storage key `key`, if it could list the path by
+     * list()'s rule: every directory above it traversable. `rev` is the
+     * revision the path was mutated at. A directory above it that has gone
+     * since (deleted, renamed away, or deleted and made again) is judged by
+     * the mode it had when it went, so a name hidden when it changed stays
+     * hidden. Returns null for a path the caller could not see, and undefined
+     * when a directory above it has gone without a record, which the caller
+     * must answer by relisting. `standing` memoizes the verdicts on
+     * directories still standing.
+     */
+    visibleName(key, cred, rev, standing) {
+        const name = this.logicalPath(key, cred);
+        if (name === null)
+            return null;
+        const root = this.confinedTmpRoots.get(cred.uid);
+        for (let dir = this.parentPath(name); dir !== ''; dir = this.parentPath(dir)) {
+            const dirKey = this.keyOfName(dir, root);
+            const went = this._goneDirectories.get(dirKey)?.find((record) => record.rev >= rev);
+            if (went !== undefined) {
+                if (!this.accessMode(went.mode, went.uid, went.gid, 0o1, cred))
+                    return null;
+                continue;
+            }
+            // Standing since the mutation, and so is everything above it: none of
+            // them could have gone without taking this one along.
+            let verdict = standing.get(dir);
+            if (verdict === undefined) {
+                if (!this.inodes.get(dirKey))
+                    return undefined;
+                try {
+                    this.checkAccess(dir, 0o1, cred);
+                    verdict = true;
+                }
+                catch {
+                    verdict = false;
+                }
+                standing.set(dir, verdict);
+            }
+            return verdict ? name : null;
+        }
+        return name;
     }
     acquireExclusiveMutation(path, options = {}) {
         let root = normalizeVfsPath(path);
@@ -2901,8 +2976,10 @@ export class SqliteVFS {
                 if (logical === null)
                     continue;
                 // What checkAccess(path, 0, cred, { followLeaf: false }) asks of an
-                // entry that exists: every directory above it is traversable.
-                const parent = this.parentPath(path);
+                // entry that exists: every directory above it, as the caller names
+                // them, is traversable. A confined caller's /tmp answers for its own
+                // root, never for the storage directories that happen to hold it.
+                const parent = this.parentPath(logical);
                 if (parent !== checkedParent) {
                     checkedParent = parent;
                     try {
@@ -3291,7 +3368,9 @@ export class SqliteVFS {
             retired.push(entry);
         }
         retire();
-        this.bumpRevision([...touchedPaths]);
+        // The source's directories went, and the paths logged under them are
+        // judged by the modes they had (visibleName).
+        this.bumpRevision([...touchedPaths], retiring);
         this.emitMutation('rename', newPath, oldPath);
         this.runContentMaintenanceSafely(1);
     }
@@ -3990,6 +4069,7 @@ export class SqliteVFS {
         const publication = {
             paths: new Set(),
             events: new Array(),
+            gone: new Array(),
         };
         const maintenancePending = this.maintenancePending;
         const openBefore = new Map([...this.openNodes].map(opened => [opened, { path: opened.path, inode: opened.inode }]));
@@ -4034,7 +4114,7 @@ export class SqliteVFS {
             this.transactionPublication = null;
         }
         if (publication.paths.size > 0)
-            this.bumpRevision([...publication.paths]);
+            this.bumpRevision([...publication.paths], publication.gone);
         for (const event of publication.events) {
             this.events.emit(event.type, event.path, event.oldPath);
         }
@@ -4632,7 +4712,7 @@ export class SqliteVFS {
             const touched = new Set(plan.affectedPaths);
             for (const entry of plan.inodes)
                 touched.add(entry.path);
-            this.bumpRevision(Array.from(touched));
+            this.bumpRevision(Array.from(touched), deletedInodes);
         }
         // 5. Events observe the already-published metadata and revision.
         for (const inode of deletedInodes) {

@@ -110,10 +110,15 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
   );
   assert.deepEqual(delta.paths.filter((entry) => entry.path.startsWith('var/agents/a/tmp')), []);
 
-  // An unconfined caller sees storage as it is.
+  // An unconfined caller names storage as it is, but only what it could
+  // list: the shared tmp/x, and not A's private file, whose root it cannot
+  // traverse. The kernel can, and is told of both.
   const session = host.supervisorBridge().acquire(raw.epoch, cursor);
   const names = new Set(session.paths.map((entry) => entry.path));
-  assert.ok(names.has('tmp/x') && names.has(`${PRIVATE_ROOT}/x`));
+  assert.ok(names.has('tmp/x'));
+  assert.ok(!names.has(`${PRIVATE_ROOT}/x`), 'the session user was told a name in A\'s private root');
+  const kernelNames = new Set(kernel.invalidatedSince(raw.epoch, cursor).paths.map((entry) => entry.path));
+  assert.ok(kernelNames.has('tmp/x') && kernelNames.has(`${PRIVATE_ROOT}/x`));
 }
 
 // ── The resident store keeps A's /tmp coherent ─────────────────────────────

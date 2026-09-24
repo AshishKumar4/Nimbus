@@ -242,6 +242,7 @@ export declare class SqliteVFS {
     private _invalidations;
     private _invalidationBytes;
     private static readonly INVALIDATION_LOG_MAX_BYTES;
+    private _goneDirectories;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch(): string;
     private readonly exclusiveMutationLeases;
@@ -450,12 +451,14 @@ export declare class SqliteVFS {
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
      * none. The inverse of {@link storageKey}, for the surfaces that report
-     * paths they were not asked about: {@link list} and {@link invalidatedSince}.
+     * paths they were not asked about: {@link list} and
+     * {@link invalidatedSince}.
      *
-     * A confined caller has no name for the shared scratch tree — `/tmp` is its
-     * own root — nor for another principal's, so both answer `null` and are
-     * omitted. An unconfined caller sees storage as it is, which is what the
-     * kernel and the session user need.
+     * A confined caller has no name for the shared scratch tree: `/tmp` is its
+     * own root. Another principal's private root does have a name, its storage
+     * path, and what keeps it out of those reports is its mode, which the
+     * caller cannot traverse (visibleName). An unconfined caller sees storage
+     * as it is, which is what the kernel and the session user need.
      */
     private logicalPath;
     as(cred: VfsCred): CredentialedVfs;
@@ -567,11 +570,25 @@ export declare class SqliteVFS {
      *
      * With a credential, each path is the caller's own name for it, the one
      * `list()` reports it under: a confined caller's private /tmp/x is named
-     * tmp/x, and a path it has no name for, such as the shared tmp/x, is left
-     * out. The caller's cache is keyed on those names, so a storage key would
-     * evict nothing it holds, and the shared tmp/x would evict its own.
+     * tmp/x. And only the paths it could list are named, by list()'s rule: a
+     * path it has no name for, such as the shared tmp/x, or one below a
+     * directory it cannot traverse, such as another principal's private root,
+     * is left out (visibleName). A path it could list when it changed is never
+     * left out, deleted or not, so no row it filled goes stale unreported.
      */
     invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult;
+    /**
+     * The name `cred` has for storage key `key`, if it could list the path by
+     * list()'s rule: every directory above it traversable. `rev` is the
+     * revision the path was mutated at. A directory above it that has gone
+     * since (deleted, renamed away, or deleted and made again) is judged by
+     * the mode it had when it went, so a name hidden when it changed stays
+     * hidden. Returns null for a path the caller could not see, and undefined
+     * when a directory above it has gone without a record, which the caller
+     * must answer by relisting. `standing` memoizes the verdicts on
+     * directories still standing.
+     */
+    private visibleName;
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
