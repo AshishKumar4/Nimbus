@@ -13,6 +13,14 @@
 import Nimbus
 import Nimbus.Refine
 
+/-! ## Nimbus/Coherence/DurableDelta.lean -/
+
+#print axioms Nimbus.Coherence.DurableDelta.init_inv
+#print axioms Nimbus.Coherence.DurableDelta.step_inv
+#print axioms Nimbus.Coherence.DurableDelta.reachable_inv
+#print axioms Nimbus.Coherence.DurableDelta.sql_delta_exact
+#print axioms Nimbus.Coherence.DurableDelta.a_pruned_tombstone_hides_a_delete
+
 /-! ## Nimbus/Coherence/Namespace.lean -/
 
 #print axioms Nimbus.Coherence.Namespace.closed_above

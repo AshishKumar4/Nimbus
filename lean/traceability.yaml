@@ -452,3 +452,18 @@ requirements:
     remainingEvidence:
       - The gear table and masks are parameters of every theorem; the fixture checks the deployed ones
       - That an edit's re-cut stops exactly where old and new cuts rejoin follows from cdcCut_local but the edit loop itself is not modeled
+  COH-007:
+    statement: From any cursor at or above the tombstone floor, the durable ACQUIRE answer read from row generations and tombstones names exactly the paths whose last write or delete came after the cursor, at that generation, across restarts and pruning; below the floor a pruned tombstone hides a delete, so it must poison.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.DurableDelta.sql_delta_exact
+      - Nimbus.Coherence.DurableDelta.a_pruned_tombstone_hides_a_delete
+      - Nimbus.Coherence.DurableDelta.init_inv
+      - Nimbus.Coherence.DurableDelta.step_inv
+      - Nimbus.Coherence.DurableDelta.reachable_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - invalidatedFromSql lives on work/content-store (P5); its tsRef is added when that lands here
+      - Directory parents the SQL answer adds, and the 16384-entry cap (else poison), are not modeled; both only add names or poison
+      - Every row write stamps the transaction's generation and every delete tombstones, as ContentStoreBuild states of executeTransactionPlan and copyTree
