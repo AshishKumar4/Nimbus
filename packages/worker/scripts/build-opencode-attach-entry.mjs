@@ -110,6 +110,56 @@ function stripEmbeddedModelsCatalog(pack) {
   return pack;
 }
 
+const unicodeEscape = (code) => '\\u' + code.toString(16).padStart(4, '0');
+
+/** One regex literal with every non-ASCII code unit written as `\uXXXX`; `\…` is an identity escape of `…`. */
+function escapeRegexLiteral(literal) {
+  let out = '';
+  for (let i = 0; i < literal.length; i++) {
+    const code = literal.charCodeAt(i);
+    if (code === 0x5c && i + 1 < literal.length) {
+      const next = literal.charCodeAt(i + 1);
+      out += next > 0x7f ? unicodeEscape(next) : literal.slice(i, i + 2);
+      i++;
+    } else {
+      out += code > 0x7f ? unicodeEscape(code) : literal[i];
+    }
+  }
+  return out;
+}
+
+/**
+ * Make the attach entry pure ASCII. esbuild's default ASCII charset escapes
+ * every literal except regular expressions, so opencode's typographic-quote
+ * regexes (`/[‘’‚‛]/g`, `/…/g`) survive, and one character above U+00FF makes
+ * V8 hold the whole 14 MB source as a two-byte string: 29 MB in the session
+ * that assembles the facet's module map and again in the facet that runs it.
+ * Fails loud if non-ASCII remains anywhere else.
+ */
+function asciiOnlyAttachEntry(src) {
+  const acorn = require('acorn');
+  const parts = [];
+  let last = 0;
+  for (const token of acorn.tokenizer(src, { ecmaVersion: 'latest', sourceType: 'module' })) {
+    if (token.type !== acorn.tokTypes.regexp) continue;
+    const literal = src.slice(token.start, token.end);
+    if (!/[^\x00-\x7f]/.test(literal)) continue;
+    parts.push(src.slice(last, token.start), escapeRegexLiteral(literal));
+    last = token.end;
+  }
+  parts.push(src.slice(last));
+  const out = parts.join('');
+  const residual = out.search(/[^\x00-\x7f]/);
+  if (residual >= 0) {
+    throw new Error(
+      '[build-opencode-attach-entry] non-ASCII outside a regex literal at offset ' +
+        `${residual} (${JSON.stringify(out.slice(Math.max(0, residual - 40), residual + 10))}) — ` +
+        'escape it here, or the attach source is held as a two-byte string',
+    );
+  }
+  return out;
+}
+
 /**
  * Build the attach entry text from in-memory sources.
  * @param entry index.js source text.
@@ -178,7 +228,7 @@ export async function buildOpencodeAttachEntryFromSources(entry, packInput) {
       },
     ],
   });
-  const out = result.outputFiles[0].text;
+  const out = asciiOnlyAttachEntry(result.outputFiles[0].text);
   const residual = [...out.matchAll(/import\(\s*["'](?:\.\/)?(chunk-[a-z0-9]+\.js)["']\s*\)/g)];
   if (residual.length > 0) {
     throw new Error(

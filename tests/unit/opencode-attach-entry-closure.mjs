@@ -64,4 +64,22 @@ await assert.rejects(
   'must fail loud when the attach command is absent',
 );
 
+// The attach entry is pure ASCII, so the session assembling the facet and the
+// facet running it hold its ~14 MB source as a one-byte string, not a two-byte
+// one. opencode's regexes carry typographic quotes that esbuild's ASCII
+// charset leaves alone; they must still match what they matched.
+{
+  const quotePack = {
+    ...pack,
+    'chunk-attachtui.js':
+      'import "./chunk-shared.js";\n' +
+      'export const TuiConfig = { norm: (s) => s.replace(/[\u2018\u2019]/g, "\'").replace(/\\\u2026/g, "...") };',
+  };
+  const ascii = await buildOpencodeAttachEntryFromSources(entry, quotePack);
+  assert.equal(ascii.search(/[^\x00-\x7f]/), -1, 'the attach entry must be ASCII-only');
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(ascii).toString('base64')}`);
+  const [TuiConfig] = await mod.cli[0].handler();
+  assert.equal(TuiConfig.norm('\u2018hi\u2019 \u2026'), "'hi' ...", 'escaped regexes match what the originals matched');
+}
+
 console.log('opencode-attach-entry-closure OK: attach closure inlined, sibling commands stubbed');

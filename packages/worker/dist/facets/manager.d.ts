@@ -23,13 +23,11 @@ import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contr
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
-import { EsbuildService, type TransformResult } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
-type EsbuildTransformOptions = NonNullable<Parameters<EsbuildService['transform']>[1]>;
-type LargeEsmTransform = (code: string, options: EsbuildTransformOptions) => Promise<TransformResult>;
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -624,7 +622,7 @@ export declare const BUNDLE_PRECOMPILE_LOOP: string;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, isolatedTransform?: LargeEsmTransform, maxBundleBytes?: number): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -657,7 +655,6 @@ export interface FacetManagerHooks {
      * survives until someone reconnects to read it.
      */
     notify?: (line: string) => void;
-    transformLargeEsm?: LargeEsmTransform;
     /**
      * Resolve the launch inputs a journalled worker launch needs re-driven with.
      * Keyed by `recipe.owner`: the embedder's own record of the durable

@@ -38,6 +38,7 @@ import {
   isTypescriptDeclarationFile,
 } from '../../packages/worker/src/facets/manager.ts';
 import { MK_COMPILED_FN_SOURCE } from '../../packages/core/src/_shared/compiled-fn.ts';
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -143,16 +144,21 @@ const files = {
   [`${TS}/lib/typescript.d.ts`]: TYPESCRIPT_DTS,
 };
 
-// Stands in for esbuild's CJS emit: strips the type annotation and marks the
-// output, so the bundle shows what the pass produced and from what.
+// Stands in for esbuild's CJS emit, as the transform host the session's
+// esbuild uses: strips the type annotation and marks the output, so the
+// bundle shows what the pass produced and from what.
 const touched = [];
-const cjsEsbuild = {
-  async transform(code, opts) {
-    touched.push(opts.loader);
-    assert.equal(opts.format, 'cjs');
-    return { code: `/* emit:${opts.loader} */\nexports.greet = function (who) { return "NIMBUS-TSC-EMIT:" + who; };\n` };
-  },
-};
+const cjsEsbuild = new EsbuildService(undefined, {
+  transformHost: async (requests) => requests.map(({ options }) => {
+    touched.push(options.loader);
+    assert.equal(options.format, 'cjs');
+    return {
+      code: `/* emit:${options.loader} */\nexports.greet = function (who) { return "NIMBUS-TSC-EMIT:" + who; };\n`,
+      map: '',
+      warnings: [],
+    };
+  }),
+});
 
 const vfs = new FakeVfs(files);
 const state = await buildPrefetchBundle(

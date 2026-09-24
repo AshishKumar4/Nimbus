@@ -101,8 +101,11 @@ memory limit under either host: measured 2026-09-22 on staging, a
 facet-hosted process allocating 215 MB of heap objects was killed with
 "Worker exceeded memory limit" while its own session and a second session
 kept their terminals and were not reset. What resets a session is the
-session's own work, the launch-time bundle build above all. Nothing
-per-process chooses:
+session's own work: the launch-time bundle build, and esbuild-wasm, whose
+heap starts at ~28 MiB and is never released. That is why every session-side
+transform runs in the loader-backed transform facet
+(`supervisorEsbuildService`); only `EsbuildService.build()` still runs in the
+session's isolate. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
@@ -325,6 +328,22 @@ you are done.
 build gets stood up twice to compare two settings of it. Redeploying the same
 name with a different `--var` keeps the secret, so tokens already minted stay
 valid across the flip.
+
+**Tails reset sessions.** Attaching `wrangler tail` to a Worker resets
+every live session DO it serves. Measured 2026-09-23: with a tail started,
+4 of 4 idle sessions dropped with 1006 within 1-5 s; without one, 0 of 4
+dropped. Start a tail before you create the sessions it should watch, and
+never restart it mid-run. A reset within a few seconds of a tail (re)start
+is self-inflicted. To name a real reset, read
+`durableObjectsPeriodicGroups` in the GraphQL analytics.
+`sum { exceededMemoryErrors exceededCpuErrors fatalInternalErrors }` per
+object and `datetime` names the cause, and `max { memoryUsageBytes }` is the
+peak over each 60 s window of the object's life. A session's facets report
+under the session's name and id. The session's own rows are the ones with
+`max { activeWebsocketConnections }` of at least 1 and nonzero
+`rowsWritten`. A reset with no counter, no deploy and no tail is a platform
+shutdown (runtime update or host move). The DO lifecycle docs say such a
+shutdown terminates WebSockets.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes

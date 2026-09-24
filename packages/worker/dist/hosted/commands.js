@@ -3,11 +3,12 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
+import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath } from '@nimbus-sh/core/runtime/runtime-registry.js';
-import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, refusedNextSubcommand, NEXT_REFUSAL_MESSAGE } from '../session/helpers.js';
 import { createViteCommand } from '../session/vite-command.js';
@@ -282,7 +283,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = new EsbuildService(kernelFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
                 }
                 return self.esbuildService;
             },
@@ -430,7 +431,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = new EsbuildService(kernelFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
                 }
                 return self.esbuildService;
             },
@@ -474,7 +475,7 @@ export async function registerHostedCommands(self, workspace) {
                     getEsbuild: () => {
                         if (!self.esbuildService) {
                             self.ensureSqliteFs();
-                            self.esbuildService = new EsbuildService(kernelFs);
+                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
                         }
                         return self.esbuildService;
                     },
@@ -517,142 +518,11 @@ export async function registerHostedCommands(self, workspace) {
             pstats.total + ' total (next PID: ' + pstats.nextPid + ')\n');
         return 0;
     });
-    // ── esbuild command: transform/bundle via esbuild facet ───────────────
-    // Lazy-creates the EsbuildService on first use (esbuild-wasm is ~10MB).
-    registry.register('esbuild', async (ctx) => {
-        const args = ctx.args || [];
-        if (args.includes('--version')) {
-            ctx.stdout.write('0.24.2 (esbuild-wasm, bundled)\n');
-            return 0;
-        }
-        if (args.includes('--help') || args.length === 0) {
-            ctx.stdout.write('Usage: esbuild [options] [entry points]\n\n');
-            ctx.stdout.write('Options:\n');
-            ctx.stdout.write('  --bundle           Bundle all dependencies into output\n');
-            ctx.stdout.write('  --outfile=<path>   Write output to a file\n');
-            ctx.stdout.write('  --outdir=<path>    Write output to a directory\n');
-            ctx.stdout.write('  --format=esm|cjs   Output format (default: esm)\n');
-            ctx.stdout.write('  --platform=browser|node  Target platform\n');
-            ctx.stdout.write('  --minify           Minify output\n');
-            ctx.stdout.write('  --sourcemap        Generate source maps\n');
-            ctx.stdout.write('  --target=<target>  JS target (default: esnext)\n');
-            ctx.stdout.write('  --loader=<loader>  Force file loader (ts, tsx, jsx, css)\n');
-            ctx.stdout.write('  --version          Show version\n');
-            ctx.stdout.write('\nPowered by esbuild-wasm (bundled in supervisor).\n');
-            return 0;
-        }
-        // Lazy-init esbuild service
-        if (!self.esbuildService) {
-            self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(kernelFs);
-        }
-        // Parse flags
-        const flags = {};
-        const entryPoints = [];
-        for (const arg of args) {
-            if (arg.startsWith('--')) {
-                const eqIdx = arg.indexOf('=');
-                if (eqIdx > 0) {
-                    flags[arg.substring(2, eqIdx)] = arg.substring(eqIdx + 1);
-                }
-                else {
-                    flags[arg.substring(2)] = 'true';
-                }
-            }
-            else {
-                entryPoints.push(arg);
-            }
-        }
-        // Transform-only mode (single file, no --bundle)
-        if (entryPoints.length === 1 && !flags['bundle']) {
-            // Read the file and transform it
-            const filePath = resolveVfsPath(entryPoints[0], ctx.cwd || '/home/user');
-            let code;
-            try {
-                code = kernelFs.readFileString(filePath);
-            }
-            catch {
-                ctx.stderr.write(`esbuild: could not read file: ${entryPoints[0]}\n`);
-                return 1;
-            }
-            try {
-                ctx.stderr.write('Transforming...\n');
-                const result = await self.esbuildService.transform(code, {
-                    loader: flags['loader'] || (() => {
-                        const ext = filePath.split('.').pop()?.toLowerCase();
-                        return { ts: 'ts', tsx: 'tsx', jsx: 'jsx', js: 'js', mts: 'ts', mjs: 'js', css: 'css', json: 'json' }[ext || ''];
-                    })(),
-                    format: flags['format'] || 'esm',
-                    target: flags['target'] || 'esnext',
-                    sourcemap: flags['sourcemap'] === 'true',
-                    minify: flags['minify'] === 'true',
-                });
-                if (flags['outfile']) {
-                    const outPath = resolveVfsPath(flags['outfile'], ctx.cwd || '/home/user');
-                    const parent = parentVfsPath(outPath);
-                    if (parent && !kernelFs.exists(parent))
-                        kernelFs.mkdir(parent, { recursive: true });
-                    kernelFs.writeFile(outPath, result.code);
-                    ctx.stdout.write(`  ${outPath}  ${result.code.length} bytes\n`);
-                }
-                else {
-                    ctx.stdout.write(result.code);
-                }
-                for (const w of result.warnings || []) {
-                    ctx.stderr.write(`warning: ${w.text}\n`);
-                }
-                return 0;
-            }
-            catch (e) {
-                ctx.stderr.write(`esbuild error: ${e?.message || e}\n`);
-                return 1;
-            }
-        }
-        // Bundle mode
-        if (entryPoints.length === 0) {
-            ctx.stderr.write('esbuild: no entry points specified\n');
-            return 1;
-        }
-        // Resolve entry points relative to cwd
-        const resolvedEntryPoints = entryPoints.map(ep => resolveVfsPath(ep, ctx.cwd || '/home/user'));
-        try {
-            ctx.stderr.write('Bundling...\n');
-            const result = await self.esbuildService.build(resolvedEntryPoints, {
-                bundle: flags['bundle'] === 'true',
-                format: flags['format'] || 'esm',
-                target: flags['target'] || 'esnext',
-                platform: flags['platform'] || 'browser',
-                outdir: flags['outfile'] ? undefined : (flags['outdir'] || '/dist'),
-                outfile: flags['outfile'],
-                sourcemap: flags['sourcemap'] === 'true',
-                minify: flags['minify'] === 'true',
-                external: flags['external']?.split(','),
-            });
-            for (const e of result.errors || []) {
-                ctx.stderr.write(`error: ${e.text}\n`);
-            }
-            for (const w of result.warnings || []) {
-                ctx.stderr.write(`warning: ${w.text}\n`);
-            }
-            if (result.errors?.length)
-                return 1;
-            // Write output files to VFS
-            for (const f of result.outputFiles || []) {
-                const outPath = normalizeVfsPath(f.path);
-                const parent = parentVfsPath(outPath);
-                if (parent && !kernelFs.exists(parent))
-                    kernelFs.mkdir(parent, { recursive: true });
-                kernelFs.writeFile(outPath, f.contents);
-                ctx.stdout.write(`  ${outPath}  ${f.contents.length} bytes\n`);
-            }
-            ctx.stderr.write(`Done (${result.outputFiles?.length || 0} output files)\n`);
-            return 0;
-        }
-        catch (e) {
-            ctx.stderr.write(`esbuild error: ${e?.message || e}\n`);
-            return 1;
-        }
-    });
+    // ── esbuild: the real esbuild CLI, in the session's esbuild facet ─────
+    // See @nimbus-sh/core runtime/esbuild-cli.ts.
+    registry.register('esbuild', makeEsbuildCommand({
+        run: (args, ctx, output) => runEsbuildCli(self.ctx, self.env, ctx.pid, args, output),
+    }));
     // ── vite command: start/stop the dev server ──────────────────────────
     registry.register('vite', createViteCommand(self));
     // ── nimbus-wrangler / wrangler command: Worker dev server ─────────────
@@ -715,7 +585,7 @@ export async function registerHostedCommands(self, workspace) {
         // Lazy-init esbuild
         if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
         }
         // Parse --root flag; default to the shell cwd so `npm run dev` from
         // a project directory picks up that project's wrangler.jsonc.

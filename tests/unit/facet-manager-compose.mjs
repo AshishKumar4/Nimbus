@@ -14,8 +14,8 @@
 //      the journal row and the port registration land;
 //   2. the session's `ensureFacetManager` and the factory wire hooks
 //      identically — proven through behaviour: the same launch on each
-//      produces the same hook-event sequence, and the transform hook the
-//      session used to carry reaches the same loader-backed facet from both.
+//      produces the same hook-event sequence, and each manager's esbuild
+//      transforms in the same loader-backed facet, never in the host isolate.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -30,7 +30,6 @@ import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
-import { ESBUILD_TRANSFORM_WORKER_ID } from '../../packages/worker/src/facets/esbuild-transform.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -154,6 +153,8 @@ try {
     // typed check sees a stranger.
     `export { SqliteFilesystemAuthority } from '${new URL('../../', import.meta.url).pathname}packages/core/src/runtime/filesystem-authority.ts';`,
     `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
+    // The facet's id hashes its code, and this graph's copy of that code is its own.
+    `export { ESBUILD_FACET_WORKER_ID } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/esbuild-transform.ts';`,
     '',
   ].join('\n'));
   const build = await Bun.build({
@@ -206,9 +207,9 @@ try {
       get(name) {
         reached.push(['facets.get', name]);
         return {
-          transform: async (code, options) => {
-            reached.push(['transform', code, options]);
-            return { code: 'T(' + code + ')' };
+          transformMany: async (requests) => {
+            reached.push(['transformMany', requests]);
+            return requests.map(({ code }) => ({ code: 'T(' + code + ')', map: '', warnings: [] }));
           },
         };
       },
@@ -226,14 +227,14 @@ try {
   }));
   const sessionProbe = transformProbe();
   const sessionCtx = createFacetCtx(sessionWorld, 'session-do');
-  sessionCtx.facets = { ...sessionWorld.facets, get: (name, start) => (name.startsWith('esbuild-transform-') ? sessionProbe.facets.get(name) : sessionWorld.facets.get(name, start)) };
+  sessionCtx.facets = { ...sessionWorld.facets, get: (name, start) => (name === bundle.ESBUILD_FACET_WORKER_ID ? sessionProbe.facets.get(name) : sessionWorld.facets.get(name, start)) };
   const sessionEvents = [];
   const sessionProcesses = new SessionProcessSupervisor();
   sessionProcesses.setPidBase(PID_GEN_STRIDE);
   const terminalWrites = [];
   const host = {
     ctx: sessionCtx,
-    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === ESBUILD_TRANSFORM_WORKER_ID ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...sessionWorld.loader, get: (id, config) => (id === bundle.ESBUILD_FACET_WORKER_ID ? sessionProbe.env.LOADER.get(id) : sessionWorld.loader.get(id, config)) }, ASSETS },
     processes: sessionProcesses,
     portRegistry: new PortRegistry(),
     sqliteFs: null,
@@ -261,13 +262,13 @@ try {
   }));
   const embedderProbe = transformProbe();
   const embedderCtx = createFacetCtx(embedderWorld, 'embedder-do');
-  embedderCtx.facets = { ...embedderWorld.facets, get: (name, start) => (name.startsWith('esbuild-transform-') ? embedderProbe.facets.get(name) : embedderWorld.facets.get(name, start)) };
+  embedderCtx.facets = { ...embedderWorld.facets, get: (name, start) => (name === bundle.ESBUILD_FACET_WORKER_ID ? embedderProbe.facets.get(name) : embedderWorld.facets.get(name, start)) };
   const embedderEvents = [];
   const embedderProcesses = new SessionProcessSupervisor();
   embedderProcesses.setPidBase(PID_GEN_STRIDE);
   const composed = bundle.composeFacetManager({
     ctx: embedderCtx,
-    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === ESBUILD_TRANSFORM_WORKER_ID ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
+    env: { LOADER: { ...embedderWorld.loader, get: (id, config) => (id === bundle.ESBUILD_FACET_WORKER_ID ? embedderProbe.env.LOADER.get(id) : embedderWorld.loader.get(id, config)) }, ASSETS },
     processes: embedderProcesses,
     portRegistry: new PortRegistry(),
     vfs,
@@ -284,20 +285,22 @@ try {
   assert.deepEqual(sessionRun.map((e) => e[0]), ['exit'], 'a plain worker spawn+kill: one external-exit report, nothing else');
   assert.deepEqual(sessionRun[0].slice(2), [137, 'killed']);
 
-  // (c) the transform hook that used to live in nimbus-session is the
-  // factory's default: from either manager it reaches the same loader id
-  // and the same facet name with the same payload.
-  const sessionTransform = sessionManager.hooks.transformLargeEsm;
-  const embedderTransform = composed.manager.hooks.transformLargeEsm;
-  assert.equal(typeof sessionTransform, 'function', 'the session manager carries the transform hook');
-  assert.equal(typeof embedderTransform, 'function', 'so does the composed one');
-  const out1 = await sessionTransform('export const a = 1;', { loader: 'js' });
-  const out2 = await embedderTransform('export const a = 1;', { loader: 'js' });
+  // (c) the manager's esbuild is the factory's default: its transforms leave
+  // the host isolate for the same loader id and facet, with the same payload,
+  // from either manager.
+  const sessionEsbuild = sessionManager.esbuild;
+  const embedderEsbuild = composed.manager.esbuild;
+  assert.equal(sessionEsbuild.transformsInIsolate, false, 'the session manager never transforms in its own isolate');
+  assert.equal(embedderEsbuild.transformsInIsolate, false, 'nor does the composed one');
+  const request = [{ code: 'export const a = 1;', options: { loader: 'js', format: 'esm' } }];
+  const out1 = await sessionEsbuild.transformMany(request);
+  const out2 = await embedderEsbuild.transformMany(request);
   assert.deepEqual(out1, out2);
+  assert.deepEqual(out1, [{ code: 'T(export const a = 1;)', map: '', warnings: [] }]);
   assert.deepEqual(sessionProbe.reached, embedderProbe.reached, 'both reached the same loader id, facet and payload');
-  assert.deepEqual(sessionProbe.reached.map((r) => r[0]), ['loader.get', 'facets.get', 'transform']);
-  assert.equal(sessionProbe.reached[0][1], ESBUILD_TRANSFORM_WORKER_ID);
-  assert.equal(sessionProbe.reached[1][1], `esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`);
+  assert.deepEqual(sessionProbe.reached.map((r) => r[0]), ['loader.get', 'facets.get', 'transformMany']);
+  assert.equal(sessionProbe.reached[0][1], bundle.ESBUILD_FACET_WORKER_ID);
+  assert.equal(sessionProbe.reached[1][1], bundle.ESBUILD_FACET_WORKER_ID);
 
   // (d) and both carry the image-store fallback the factory owns.
   assert.equal(typeof sessionManager.hooks.resolveWorkerLaunchFallback, 'function');

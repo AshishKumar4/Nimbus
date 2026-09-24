@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 // Parity guard for the facet bodies that are compiled out of TypeScript.
 //
-// The WASI shim (runtime/wasi/preamble.ts) and the bash scheduler
-// (runtime/bash/preamble.ts) are real, type-checked modules. What actually
-// ships is the STRING scripts/bundle-facet-workers.mjs esbuilds out of them
-// into core's runtime/wasi-instance.generated.ts and runtime/bash-runner.generated.ts,
-// which the runners splice into their facet module sources.
+// The WASI shim (runtime/wasi/preamble.ts), the bash scheduler
+// (runtime/bash/preamble.ts) and the esbuild CLI runner
+// (runtime/esbuild-cli/preamble.ts) are real, type-checked modules. What
+// actually ships is the STRING scripts/bundle-facet-workers.mjs esbuilds out of
+// them into core's runtime/*.generated.ts, which the runners splice into their
+// facet module sources.
 //
 // Both generated files are tracked, so an edit to a preamble without re-running
 // the bundler ships the OLD body while the source, the types and every review
@@ -23,10 +24,12 @@ import assert from 'node:assert/strict';
 
 import {
   bundleBashRunner,
+  bundleEsbuildCli,
   bundleWasiInstance,
 } from '../../packages/worker/scripts/bundle-facet-workers.mjs';
 import { WASI_INSTANCE_BODY_SRC } from '../../packages/core/src/runtime/wasi-instance.generated.ts';
 import { BASH_RUNNER_BODY_SRC } from '../../packages/core/src/runtime/bash-runner.generated.ts';
+import { ESBUILD_CLI_BODY_SRC } from '../../packages/core/src/runtime/esbuild-cli.generated.ts';
 
 const cases = [
   {
@@ -42,6 +45,13 @@ const cases = [
     generated: 'packages/core/src/runtime/bash-runner.generated.ts',
     committed: BASH_RUNNER_BODY_SRC,
     rebuild: bundleBashRunner,
+  },
+  {
+    label: 'esbuild CLI runner',
+    source: 'packages/core/src/runtime/esbuild-cli/preamble.ts',
+    generated: 'packages/core/src/runtime/esbuild-cli.generated.ts',
+    committed: ESBUILD_CLI_BODY_SRC,
+    rebuild: bundleEsbuildCli,
   },
 ];
 

@@ -18,7 +18,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { parseViteConfigSource, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import {
@@ -67,7 +67,7 @@ export function createViteCommand(self: ViteHost) {
           let cfgCode = kernelFs.readFileString(cfgPath);
           // Transform TS to JS
           if (cfgName.endsWith('.ts')) {
-            if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
+            if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
             const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
             cfgCode = t.code;
           }
@@ -107,7 +107,7 @@ export function createViteCommand(self: ViteHost) {
         );
       }
 
-      if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
       const htmlPath = cwd + '/index.html';
       let entryPoint = cwd + '/src/main.tsx';
       let origHtml = '';
@@ -315,7 +315,7 @@ export function createViteCommand(self: ViteHost) {
         return 1;
       }
       // Start vite on the dist directory
-      if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
       if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
@@ -527,7 +527,7 @@ export function createViteCommand(self: ViteHost) {
     }
 
 
-    if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
+    if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
     const previewBasePath = self.viteBasePath;
     const viteDefine = viteConfig.define;
 

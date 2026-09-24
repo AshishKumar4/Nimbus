@@ -27,7 +27,7 @@ import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -1174,7 +1174,7 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
     if (!self.esbuildService) {
       self.ensureSqliteFs();
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = new EsbuildService(self.sqliteFs.as(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.sqliteFs.as(CRED_KERNEL));
     }
     try {
       const result = await self.esbuildService.transform(code, {

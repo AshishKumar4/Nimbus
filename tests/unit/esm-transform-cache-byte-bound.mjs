@@ -23,6 +23,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { ESM_TRANSFORM_CACHE_MAX_BYTES } from '../../packages/core/src/constants.ts';
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -58,16 +59,16 @@ const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
 // Stands in for esbuild's CJS emit (the wasm is a wrangler-time binding, not
-// available here): the output is the input's size, which is what the bound
-// prices.
+// available here), as the transform host the session's esbuild uses: the
+// output is the input's size, which is what the bound prices.
 let transforms = 0;
-manager.setEsbuildService({
-  async transform(code, opts) {
-    assert.equal(opts.format, 'cjs');
+manager.setEsbuildService(new EsbuildService(undefined, {
+  transformHost: async (requests) => requests.map(({ code, options }) => {
+    assert.equal(options.format, 'cjs');
     transforms++;
-    return { code: code.replace(/^export const /m, 'exports.x = ') };
-  },
-});
+    return { code: code.replace(/^export const /m, 'exports.x = '), map: '', warnings: [] };
+  }),
+}));
 
 // ESM modules of a size the walker stages whole and esbuild transforms. Each
 // program imports a different one, so each build transforms fresh content.

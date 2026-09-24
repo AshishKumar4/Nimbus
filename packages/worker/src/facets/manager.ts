@@ -63,8 +63,10 @@ import {
   EsbuildService,
   rewriteBundledEsmToCjs,
   rewriteProvidedCommonJsModules,
-  type TransformResult,
+  type EsbuildTransformOutcome,
+  type EsbuildTransformRequest,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
@@ -126,12 +128,8 @@ import {
   setTransformCacheBytes,
 } from '@nimbus-sh/platform/diag-counters.js';
 
-const ISOLATED_ESM_TRANSFORM_MIN_BYTES = 512 * 1024;
-type EsbuildTransformOptions = NonNullable<Parameters<EsbuildService['transform']>[1]>;
-type LargeEsmTransform = (
-  code: string,
-  options: EsbuildTransformOptions,
-) => Promise<TransformResult>;
+/** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
+const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -3335,11 +3333,19 @@ function _markBundleEsmAsFailed(
     // the emit it cannot get; a JavaScript file only if it is ESM.
     const typescript = bundleTypescriptLoader(path) !== null;
     if (!typescript && !looksLikeEsm(src)) continue;
-    const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
-    bundle[typescript ? compiledCellKey(path) : path] =
-      '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
-      '(function () { throw new Error(' + escapedReason + '); })();\n';
+    bundle[typescript ? compiledCellKey(path) : path] = esbuildDiagnosticShim(path, reason);
   }
+}
+
+/**
+ * Parseable CommonJS standing in for a module esbuild could not transform: it
+ * throws the esbuild reason when required, so the failure surfaces at the
+ * `require` with its cause rather than as a bare "Cannot use import statement".
+ */
+function esbuildDiagnosticShim(path: string, reason: string): string {
+  const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason.replace(/\n/g, ' ')}`);
+  return '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
+    '(function () { throw new Error(' + escapedReason + '); })();\n';
 }
 
 /**
@@ -3459,9 +3465,8 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
 
 /**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
- * Mutates `bundle` in place. Errors are swallowed (the file is left as
- * ESM source); the facet's pre-compile loop will record the SyntaxError
- * into __compileFailures and __loadModule will surface it (Fix C).
+ * Mutates `bundle` in place. A module esbuild rejects becomes a diagnostic
+ * shim that throws the reason when required (`esbuildDiagnosticShim`).
  *
  * Candidate set is `isBundleModuleCandidate`; within it, files with no
  * top-level import/export are already CJS-shaped and left alone.
@@ -3469,13 +3474,16 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
  * A JavaScript cell is rewritten in place. A TypeScript source keeps its
  * bytes and gets a compiled cell beside it — see `compiledCellKey`.
  *
+ * When the service transforms in another isolate every cell goes in one
+ * `transformMany`, so a launch costs one round trip and this isolate never
+ * grows esbuild's heap. Transforms that run here are paced like any pass.
+ *
  * Returns the count of files transformed (for diagnostics).
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
-  isolatedTransform?: LargeEsmTransform,
 ): Promise<{ transformed: number; failed: number }> {
   let transformed = 0;
   let failed = 0;
@@ -3494,15 +3502,44 @@ async function transformEsmInBundle(
     }
     candidates.push(path);
   }
+  interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
+  const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
+    if ('error' in outcome) {
+      // A rejection is esbuild's verdict on this source, so it is cached with it.
+      const shim = esbuildDiagnosticShim(cell.path, outcome.error);
+      bundle[cell.target] = shim;
+      __esmTransformCacheSet(cell.key, shim);
+      failed++;
+      return;
+    }
+    const code = bindImportMetaResolve(outcome.code, cell.absUrl);
+    bundle[cell.target] = code;
+    __esmTransformCacheSet(cell.key, code);
+    transformed++;
+  };
+  const transformCells = async (cells: EsmCell[]): Promise<void> => {
+    let outcomes: EsbuildTransformOutcome[];
+    try {
+      outcomes = await esbuild.transformMany(cells.map((cell) => cell.request));
+    } catch (e) {
+      // The service failing is no verdict on any module: shim this launch, cache nothing.
+      const reason = errorText(e);
+      for (const cell of cells) {
+        bundle[cell.target] = esbuildDiagnosticShim(cell.path, reason);
+        failed++;
+      }
+      return;
+    }
+    cells.forEach((cell, i) => settle(cell, outcomes[i]));
+  };
+  const batch: EsmCell[] = [];
   for (const path of candidates) {
     const original = bundle[path];
     if (typeof original !== 'string') continue;
-    const src = bundleTypescriptLoader(path) === null ? rewriteProvidedCommonJsModules(original) : original;
+    const loader = bundleTypescriptLoader(path);
+    const src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
     // A TypeScript source keeps its bytes; its emit lands beside it.
-    const target = bundleTypescriptLoader(path) === null ? path : compiledCellKey(path);
-    // esbuild-wasm runs inside this isolate, so a transform is computation
-    // like any other pass — the await above it yields nothing on its own.
-    if (pacer) await pacer.spend(src.length);
+    const target = loader === null ? path : compiledCellKey(path);
     // `import.meta.url` substitution mirrors the sibling fix at
     // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
     // Without `define`, esbuild's CJS transform reduces `import.meta.url`
@@ -3525,57 +3562,33 @@ async function transformEsmInBundle(
       transformed++;
       continue;
     }
-    try {
-      const transformOptions: EsbuildTransformOptions = {
-        loader: bundleTypescriptLoader(path) ?? 'js',
-        format: 'cjs',
-        target: 'esnext',
-        define: importMetaDefines(absUrl),
-      };
-      const bounded = transformOptions.loader === 'js' && src.length >= ISOLATED_ESM_TRANSFORM_MIN_BYTES
-        ? rewriteBundledEsmToCjs(src, absUrl)
-        : null;
-      const t = bounded ?? (isolatedTransform && src.length >= ISOLATED_ESM_TRANSFORM_MIN_BYTES
-        ? await isolatedTransform(src, transformOptions)
-        : await esbuild.transform(src, transformOptions));
-      const code = bindImportMetaResolve(t.code, absUrl);
-      bundle[target] = code;
-      __esmTransformCacheSet(key, code);
-      transformed++;
-    } catch (e: any) {
-      // framework-fixes-F4 (2026-05-12): replace the source with a
-      // JS-valid module that throws an INFORMATIVE Error when require'd.
-      //
-      // Pre-fix this catch swallowed the failure silently. The pre-
-      // compile loop then re-saw the ESM source and emitted the
-      // SyntaxError "Cannot use import statement outside a module" into
-      // __compileFailures. __loadModule surfaced that as the user error
-      // — but it told the user nothing about WHY esbuild rejected the
-      // file (was it TLA at module scope? a TypeScript file mistyped
-      // as .js? an unsupported syntax? our esbuild service not init?).
-      //
-      // Post-fix the replacement source is parseable CJS that, when
-      // require()'d, throws a real Error carrying the esbuild reason.
-      // The pre-compile loop succeeds, the file lands in
-      // __compiledModules, and the failure surfaces at require time
-      // with FULL diagnostic context. Net effect for users: the same
-      // upstream tool still fails, but they now see WHY.
-      // Probe: tests/behavioral/npm-create/new/create-astro-diagnostic.mjs
-      // asserts the user-visible error contains "esbuild transform" so
-      // future diagnostic regressions are caught.
-      const reason = (e && e.message) ? String(e.message).replace(/\n/g, ' ') : String(e);
-      const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
-      // Build a valid CJS module that throws on load. Use IIFE to keep
-      // module-scope flat (no TLA, no top-level await). Esbuild-cache
-      // this so repeated submits don't re-run the same transform.
-      const diagnosticSrc =
-        '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
-        '(function () { throw new Error(' + escapedReason + '); })();\n';
-      bundle[target] = diagnosticSrc;
-      __esmTransformCacheSet(key, diagnosticSrc);
-      failed++;
+    const cell: EsmCell = {
+      path,
+      target,
+      key,
+      absUrl,
+      request: {
+        code: src,
+        options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) },
+      },
+    };
+    if (loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
+      // The bounded rewrite is computation in this isolate, however large.
+      if (pacer) await pacer.spend(src.length);
+      const rewritten = rewriteBundledEsmToCjs(src, absUrl);
+      if (rewritten) {
+        settle(cell, rewritten);
+        continue;
+      }
     }
+    if (esbuild.transformsInIsolate) {
+      if (pacer) await pacer.spend(src.length);
+      await transformCells([cell]);
+      continue;
+    }
+    batch.push(cell);
   }
+  if (batch.length > 0) await transformCells(batch);
   return { transformed, failed };
 }
 
@@ -3604,7 +3617,6 @@ export async function buildPrefetchBundle(
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
   pacer?: TurnBudget,
-  isolatedTransform?: LargeEsmTransform,
   maxBundleBytes?: number,
 ): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
@@ -3618,7 +3630,6 @@ export async function buildPrefetchBundle(
   try {
     return await _buildPrefetchBundle(
       vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
-      isolatedTransform,
       maxBundleBytes,
     );
   } finally {
@@ -3636,7 +3647,6 @@ async function _buildPrefetchBundle(
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
   pacer?: TurnBudget,
-  isolatedTransform?: LargeEsmTransform,
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
@@ -3773,7 +3783,7 @@ async function _buildPrefetchBundle(
   //     "not in this launch's module map" at request time.
   if (esbuild) {
     try {
-      await transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform);
+      await transformEsmInBundle(bundle, esbuild, pacer);
       // Recount bytes after the transform — CJS rebuilds can be larger
       // OR smaller than the ESM source. We don't try to thread totalBytes
       // through the transform because the eviction loop below recomputes
@@ -3922,7 +3932,6 @@ export interface FacetManagerHooks {
    * survives until someone reconnects to read it.
    */
   notify?: (line: string) => void;
-  transformLargeEsm?: LargeEsmTransform;
   /**
    * Resolve the launch inputs a journalled worker launch needs re-driven with.
    * Keyed by `recipe.owner`: the embedder's own record of the durable
@@ -4629,7 +4638,7 @@ export class FacetManager {
 
     const vfsState = await buildPrefetchBundle(
       vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild, profile,
-      this.residencyProfiles.get(key), pacer, this.hooks.transformLargeEsm,
+      this.residencyProfiles.get(key), pacer,
     );
     vfsState.bundleKey = key;
     vfsState.bundleSource = await buildFacetVfsBundleSource(
@@ -5268,7 +5277,7 @@ export class FacetManager {
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(
           processVfs, undefined, opts.cwd, '', this.esbuild || undefined,
-          DEFAULT_FACET_BUNDLE_PROFILE, undefined, undefined, this.hooks.transformLargeEsm,
+          DEFAULT_FACET_BUNDLE_PROFILE,
         )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
 

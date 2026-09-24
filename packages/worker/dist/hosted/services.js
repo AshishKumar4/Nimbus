@@ -5,7 +5,7 @@ import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { SqliteFilesystemAuthority } from "@nimbus-sh/core/runtime/filesystem-authority.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
-import { EsbuildService } from "@nimbus-sh/core/runtime/esbuild-service.js";
+import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import { CF_COMPAT_DATE } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
@@ -453,7 +453,7 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     if (!self.esbuildService) {
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = new EsbuildService(self.sqliteFs.as(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.sqliteFs.as(CRED_KERNEL));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval

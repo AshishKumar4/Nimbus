@@ -26,8 +26,8 @@
  * the session Durable Object was killed inside `tsc`'s spawn before the
  * facet existed. Spans hold the input, the output and a short array.
  *
- * Serialized by name: `generateEsbuildTransformRuntimeSource` embeds
- * this function's `.toString()` in the transform runtime, so every
+ * Serialized by name: `generateEsbuildFacetRuntimeSource` embeds
+ * this function's `.toString()` in the esbuild facet, so every
  * constant it reads is declared inside the body.
  */
 export function scanJsSource(src: string, literals: 'keep' | 'blank'): string {

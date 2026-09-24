@@ -1,20 +1,12 @@
 /**
  * EsbuildService — TypeScript/JSX transform + bundling via esbuild-wasm.
  *
- * Architecture:
- *   - esbuild-wasm is imported directly in the supervisor bundle
- *   - WASM is compiled during module evaluation (startup phase) — allowed
- *   - transform() runs in the supervisor's isolate (fast, no facet needed)
- *   - build() also runs in supervisor with a VFS resolver plugin
- *
- * Why not a facet? The esbuild-wasm WASM binary needs to be compiled
- * during module startup (not request time). Dynamic workers created via
- * LOADER.load() have the same restriction. Since esbuild-wasm is bundled
- * into the supervisor, it initializes once at startup and stays warm.
- *
- * Memory: esbuild-wasm uses ~15-20MB heap. Within the DO's 128MB budget
- * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
- * facet once wasm module passing to dynamic workers is stable.
+ * esbuild-wasm's linear memory is module-global: ~28 MiB at first use,
+ * growing with every module transformed or bundled and never released. A
+ * host whose isolate is memory-constrained passes a `transformHost` and a
+ * `buildHost` so esbuild runs in another isolate (the session's is the
+ * loader-backed esbuild facet); without them, esbuild runs here. build()'s
+ * VFS resolver plugin always runs here, over this service's view.
  */
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
@@ -134,16 +126,87 @@ export interface BuildResult {
      *  instead of guessing from output ordering. */
     metafile?: esbuild.Metafile;
 }
-/** Source needed by the slim Worker Loader transform isolate. */
-export declare function generateEsbuildTransformRuntimeSource(): string;
+/** Source the esbuild facet evaluates next to esbuild: its transform and build helpers. */
+export declare function generateEsbuildFacetRuntimeSource(): string;
+/** One transform a {@link EsbuildTransformHost} runs. */
+export interface EsbuildTransformRequest {
+    code: string;
+    options?: EsbuildTransformOptions;
+}
+/** A host's answer for one request: the output, or why esbuild rejected the module. */
+export type EsbuildTransformOutcome = TransformResult | {
+    error: string;
+};
+/**
+ * Runs transforms in another isolate: one call per batch, outcomes positional.
+ * esbuild-wasm's linear memory starts at ~28 MiB, grows with every module it
+ * transforms and is never released, so an isolate that is memory-constrained
+ * (a session supervisor) hands its transforms to one of these.
+ */
+export type EsbuildTransformHost = (requests: EsbuildTransformRequest[]) => Promise<EsbuildTransformOutcome[]>;
+/** esbuild's arguments to a resolve callback, as data another isolate can carry. */
+export interface EsbuildRemoteResolveArgs {
+    path: string;
+    importer: string;
+    namespace: string;
+    resolveDir: string;
+    kind: esbuild.ImportKind;
+    with: Record<string, string>;
+}
+/** esbuild's arguments to a load callback, as data another isolate can carry. */
+export interface EsbuildRemoteLoadArgs {
+    path: string;
+    namespace: string;
+    suffix: string;
+    with: Record<string, string>;
+}
+/**
+ * A plugin's resolve and load callbacks, answered where the plugin runs while
+ * esbuild runs elsewhere. `null` leaves the module to esbuild.
+ */
+export interface EsbuildRemotePlugin {
+    /** The plugin's own name, which esbuild's diagnostics cite. */
+    name: string;
+    resolve(args: EsbuildRemoteResolveArgs): Promise<esbuild.OnResolveResult | null>;
+    load(args: EsbuildRemoteLoadArgs): Promise<esbuild.OnLoadResult | null>;
+}
+/** Build options another isolate can carry: no plugins, and nothing written to disk. */
+export type EsbuildHostBuildOptions = Omit<esbuild.BuildOptions, 'plugins' | 'write'>;
+/** What one build produced, as data another isolate can carry. */
+export interface EsbuildBuildOutcome {
+    outputFiles: Array<{
+        path: string;
+        contents: Uint8Array;
+    }>;
+    errors: BuildResult['errors'];
+    warnings: BuildResult['warnings'];
+    metafile?: esbuild.Metafile;
+}
+/**
+ * Runs a build in another isolate. Every module is resolved and loaded
+ * through `plugin`, which stays with the caller and its filesystem view,
+ * while the esbuild heap, which grows with the module graph and is never
+ * released, lives in the host.
+ */
+export type EsbuildBuildHost = (options: EsbuildHostBuildOptions, plugin: EsbuildRemotePlugin) => Promise<EsbuildBuildOutcome>;
+export interface EsbuildServiceOptions {
+    /** Where transform() and transformMany() run. Absent: this isolate. */
+    transformHost?: EsbuildTransformHost;
+    /** Where build() runs. Absent: this isolate. */
+    buildHost?: EsbuildBuildHost;
+}
 export declare class EsbuildService {
     private vfs;
+    private readonly transformHost;
+    private readonly buildHost;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
     /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-    constructor(vfs?: CredentialedVfs);
+    constructor(vfs?: CredentialedVfs, options?: EsbuildServiceOptions);
+    /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
+    get transformsInIsolate(): boolean;
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
      * via `loadEsbuild()` (which itself is deferred) and caches it on
@@ -216,7 +279,16 @@ export declare class EsbuildService {
      */
     transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
     /**
-     * Bundle entry points from the VFS.
+     * Transform many modules in one round trip to the transform host (or in
+     * this isolate when there is none). Outcomes are positional, and a module
+     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
+     * bad module never costs the others their output.
+     */
+    transformMany(requests: readonly EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
+    /**
+     * Bundle entry points from the VFS. The VFS plugin runs here over this
+     * service's view either way; esbuild itself runs in the build host when
+     * one was given.
      */
     build(entryPoints: string[], options?: {
         bundle?: boolean;

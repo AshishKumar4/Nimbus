@@ -21,10 +21,11 @@
  *
  * What the factory owns and the host does not:
  *
- *   - `transformLargeEsm`: the isolated esbuild transform for module text
- *     past the in-isolate size bound. It needs `env.LOADER`, `env.ASSETS`
- *     and `ctx.facets` and nothing of any host, so it is the factory's
- *     default rather than every host's copy.
+ *   - the manager's esbuild, when the host shares none: its transforms run
+ *     in a loader-backed facet that owns the esbuild wasm heap, because that
+ *     heap is never released and the host's isolate is memory-constrained.
+ *     It needs `env.LOADER`, `env.ASSETS` and `ctx.facets` and nothing of
+ *     any host, so it is the factory's default rather than every host's copy.
  *   - `resolveWorkerLaunchFallback`: the durable image-store resolver a
  *     self-owned worker launch (the session's python/ruby residents, or an
  *     embedder spawn that let the manager persist its image) re-drives
@@ -38,6 +39,7 @@ import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contr
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { FacetManager, type FacetManagerHooks, type WorkerRecipe } from './manager.js';
 import { processHostFor } from '../loaders/process-host.js';
@@ -51,12 +53,7 @@ import {
   type PortVisibility,
 } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
-import {
-  ESBUILD_TRANSFORM_WORKER_ID,
-  esbuildTransformWorkerCode,
-  type EsbuildTransformFacetRpc,
-} from './esbuild-transform.js';
-import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import { supervisorEsbuildService } from './esbuild-transform.js';
 
 export type {
   FacetManagerHooks,
@@ -98,7 +95,10 @@ export interface FacetManagerDeps {
   vfs: SqliteVFS;
   /** The session's one authority — the manager never constructs a second. */
   filesystem: NimbusFilesystemAuthority;
-  /** A host's already-warm esbuild, shared so the wasm is initialized once. */
+  /**
+   * A host's esbuild, shared with the manager. Absent: one whose transforms
+   * run in the loader-backed transform facet, never in this isolate.
+   */
   esbuild?: EsbuildService;
   hooks: FacetManagerHostHooks;
 }
@@ -178,12 +178,11 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
     ...(deps.hooks.resolveWorkerLaunch !== undefined
       ? { resolveWorkerLaunch: deps.hooks.resolveWorkerLaunch }
       : {}),
-    transformLargeEsm: isolatedEsmTransform(ctx, env),
     resolveWorkerLaunchFallback: (recipe: WorkerRecipe) => resolveDurableWorkerImage(vfs, recipe),
   };
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, hooks);
   manager.setVfs(vfs, deps.filesystem);
-  if (deps.esbuild) manager.setEsbuildService(deps.esbuild);
+  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, vfs.as(CRED_KERNEL)));
   const { portRegistry } = deps;
   const capabilityHost = { ctx, portRegistry };
   return {
@@ -245,41 +244,5 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
         );
       },
     },
-  };
-}
-
-/**
- * The isolated esbuild transform: module text past the in-isolate bound is
- * transformed in a loader-backed facet that owns the esbuild wasm heap, so the
- * host isolate never pays for it. Session-independent by construction —
- * `env.LOADER`, `env.ASSETS` and `ctx.facets` are all it reads.
- */
-function isolatedEsmTransform(
-  ctx: DurableObjectState,
-  env: unknown,
-): NonNullable<FacetManagerHooks['transformLargeEsm']> {
-  return async (code, options) => {
-    const loader = Reflect.get(Object(env), 'LOADER');
-    if (!loader || typeof loader.get !== 'function') {
-      throw new Error('Nimbus: env.LOADER unavailable for isolated esbuild transform');
-    }
-    const assets = Reflect.get(Object(env), 'ASSETS');
-    if (!assets || typeof assets.fetch !== 'function') {
-      throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
-    }
-    const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => {
-      const assetsEnv = { ASSETS: assets };
-      const [wasmBytes, jsFnBody] = await Promise.all([
-        fetchEsbuildWasmBytes(assetsEnv),
-        fetchEsbuildJsFnBody(assetsEnv),
-      ]);
-      return esbuildTransformWorkerCode(wasmBytes, jsFnBody);
-    });
-    const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
-    const facet = ctx.facets.get<EsbuildTransformFacetRpc>(
-      `esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`,
-      async () => ({ class: transformClass }),
-    );
-    return facet.transform(code, options);
   };
 }
