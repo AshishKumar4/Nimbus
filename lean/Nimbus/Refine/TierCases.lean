@@ -2,7 +2,8 @@
   Nimbus.Refine.TierCases — `lean/fixtures/content-store-tier.json`: the
   content-store fixture's schema plus content-store P6's tiering. Operations run
   through the content-store model's transactions (`ContentStoreCases.exec`); the
-  cold set follows `Nimbus.ContentStore.Tier`'s rules at the store's granularity:
+  cold set follows `Nimbus.ContentStore.Tier`'s rules at the store's granularity.
+  Every file is a single piece (one chunk, the piece's identity; see `single`):
 
   - `tier` (tierColdChunks to done) colds every stored chunk some history row
     reaches, that no live row, open descriptor, staging content or hot snapshot
@@ -112,13 +113,22 @@ def checkT (t : TS) : Json :=
         (pathName p, readJson t (atRef s x.2 p) (s.snapView x.1 p)))))),
     ("fds", .arr (s.fds.map fun f => .arr (f.view.map Json.ofNat)))]
 
+/-- Tier cases use single-piece files only: a file of one piece is one chunk
+    whose identity is the piece's, while a multi-piece file is FastCDC-cut over
+    its bytes and its chunks are not its pieces (which the model's chunk ids do
+    not follow). -/
+def single : Op → Op
+  | .write p (h :: _) => .write p [h]
+  | .edit p _ h => .edit p 0 h
+  | op => op
+
 def genTOp (t : TS) : Gen TOp := do
   let k ← below 12
   if k < 2 then return .tier
   else if k < 3 then return .prepare (← below 3)
   else if k < 4 then return .release (← below 3)
   else if k < 6 then return .base (.delete (← below P))
-  else return .base (← genOp t.s)
+  else return .base (single (← genOp t.s))
 
 def finish (t : TS) (ops : Array Json) : Json :=
   let ops := ops.push (checkT t) |>.push (.obj [("op", .str "gc")]) |>.push (.obj [("op", .str "checkStore"),
@@ -165,8 +175,9 @@ def directed : List Json :=
       .base (.restore 0), .release 0, .tier, .base (.restore 0)],
     -- a write holding the bytes revives the chunk in place: the snapshot reads again
     run [.base (.write 0 [2]), .base (.snapshot 0), .base (.delete 0), .tier, .base (.write 1 [2])],
-    -- a deleted large file: its content row stays live, its chunks go cold
-    run [.base (.write 0 [1, 2, 3]), .base (.snapshot 1), .base (.delete 0), .tier, .base (.restore 1)],
+    -- a copy keeps the chunk live; deleting both lets it go cold
+    run [.base (.write 0 [1]), .base (.copy 0 1), .base (.snapshot 1), .base (.delete 0), .tier,
+      .base (.delete 1), .tier, .base (.restore 1)],
     -- an open descriptor pins against tier
     run [.base (.write 0 [4]), .base (.snapshot 0), .base (.detach 0 0), .tier, .base (.close 0), .tier] ]
 
