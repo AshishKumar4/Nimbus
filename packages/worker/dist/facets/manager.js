@@ -3260,7 +3260,6 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         if (typeof original !== 'string')
             continue;
         const loader = bundleTypescriptLoader(path);
-        const src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
         // A TypeScript source keeps its bytes; its emit lands beside it.
         const target = loader === null ? path : compiledCellKey(path);
         // `import.meta.url` substitution mirrors the sibling fix at
@@ -3278,28 +3277,42 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         // with identical source but different paths would otherwise share a
         // cache entry and the second file would get the first file's URL.
         const absUrl = 'file:///' + path.replace(/^\/+/, '');
-        const key = __cacheKey(src + '\0' + absUrl);
+        // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
+        const key = __cacheKey(original + '\0' + absUrl);
         const cached = __esmTransformCacheGet(key);
         if (cached !== undefined) {
             bundle[target] = cached;
             transformed++;
             continue;
         }
-        const cell = {
+        const cellFor = (code) => ({
             path,
             target,
             key,
             absUrl,
-            request: {
-                code: src,
-                options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) },
-            },
-        };
+            request: { code, options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) } },
+        });
+        let src;
+        try {
+            src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
+        }
+        catch (e) {
+            // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
+            settle(cellFor(original), { error: errorText(e) });
+            continue;
+        }
+        const cell = cellFor(src);
         if (loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
             // The bounded rewrite is computation in this isolate, however large.
             if (pacer)
                 await pacer.spend(src.length);
-            const rewritten = rewriteBundledEsmToCjs(src, absUrl);
+            let rewritten;
+            try {
+                rewritten = rewriteBundledEsmToCjs(src, absUrl);
+            }
+            catch (e) {
+                rewritten = { error: errorText(e) };
+            }
             if (rewritten) {
                 settle(cell, rewritten);
                 continue;

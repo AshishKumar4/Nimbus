@@ -67,4 +67,25 @@ function serviceWith(transform) {
   );
 }
 
+// transformMany is positional: a request the pre-pass cannot parse is its own
+// { error }, and the others still reach the host and keep their places.
+for (const hosted of [true, false]) {
+  const sent = [];
+  const transform = async (code) => { sent.push(code); return { code: `T(${code})`, map: '', warnings: [] }; };
+  const service = hosted
+    ? new EsbuildService(undefined, { transformHost: async (requests) => Promise.all(requests.map(({ code }) => transform(code))) })
+    : serviceWith(transform);
+  const options = { loader: 'js', format: 'cjs' };
+  const outcomes = await service.transformMany([
+    { code: 'export const a = 1;', options },
+    { code: 'export const b = 2;\nimport, and otherwise;', options },
+    { code: 'export const c = 3;', options },
+  ]);
+  assert.equal(outcomes.length, 3);
+  assert.equal(outcomes[0].code, 'T(export const a = 1;)');
+  assert.match(outcomes[1].error, /Unexpected token/);
+  assert.equal(outcomes[2].code, 'T(export const c = 3;)');
+  assert.deepEqual(sent, ['export const a = 1;', 'export const c = 3;'], `hosted=${hosted}`);
+}
+
 console.log('esbuild-transform-routing: ok');

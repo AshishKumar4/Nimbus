@@ -202,4 +202,33 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   assert.equal(back.bundle[`${downRoot}/dep.js`], '/* hosted-cjs */\n', 'the host failure was not cached');
 }
 
+// A cell the pre-pass cannot parse fails alone; the rest of the launch still transforms.
+{
+  const root = 'home/user/node_modules/prepass-esm';
+  const prepassFiles = {
+    'home/user/package.json': JSON.stringify({ name: 'prepass-test' }),
+    [`${root}/package.json`]: JSON.stringify({ name: 'prepass-esm', type: 'module' }),
+    [`${root}/cli.js`]: 'import "./unreadable.js";\nimport "./dep.js";\n',
+    [`${root}/unreadable.js`]: 'export const ok = 1;\nimport, and otherwise;\n',
+    [`${root}/dep.js`]: 'export const dep = 2;\n',
+  };
+  const sent = [];
+  const host = new EsbuildService(undefined, {
+    transformHost: async (requests) => {
+      sent.push(...requests.map(({ code }) => code));
+      return requests.map(() => ({ code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+    },
+  });
+  const state = await buildPrefetchBundle(
+    new FakeVfs(prepassFiles), `/${root}/cli.js`, 'home/user', prepassFiles[`${root}/cli.js`], host,
+  );
+  for (const cell of [`${root}/cli.js`, `${root}/dep.js`]) {
+    assert.equal(state.bundle[cell], '/* hosted-cjs */\n', `${cell} is transformed despite its unreadable sibling`);
+  }
+  assert.throws(() => new Function(state.bundle[`${root}/unreadable.js`])(),
+    /esbuild transform failed for .*unreadable\.js: Unexpected token/,
+    'the unreadable cell throws its own reason when required');
+  assert.ok(!sent.some((code) => code.includes('and otherwise')), 'the unreadable cell never reaches the host');
+}
+
 console.log('facet-bundle-esm-candidates: ok');
