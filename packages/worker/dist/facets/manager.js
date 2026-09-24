@@ -5586,6 +5586,7 @@ export class FacetManager {
         let record;
         let durableFacetName;
         let launchEnv;
+        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
         try {
             if (opts.durable) {
                 // A durable spawn on a declared port starts only when a reservation the
@@ -5703,7 +5704,7 @@ export class FacetManager {
             this.trackProcessRpcResources(entry.pid, [handle]);
             resourcesTracked = true;
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
-            const boot = await handle.booted();
+            const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
             if (record && this.launchJournal.has(entry.pid)) {
                 // Booted and running: the launch proved itself, so the resident
                 // starts its running life with a fresh re-drive budget.
@@ -5746,9 +5747,38 @@ export class FacetManager {
                 this.releaseProcessRpcResources(entry.pid);
             else
                 handle?.kill();
-            this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
+            // An interrupt already killed the process; it did not fail.
+            if (!opts.foreground?.signal.aborted)
+                this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
             throw e;
         }
+        finally {
+            foreground?.release();
+        }
+    }
+    _holdForeground(pid, launch) {
+        this.processes.setForeground(pid, true);
+        const unsubscribe = this.processes.subscribeLogs(pid, (chunk) => launch.write(chunk.stream, chunk.data));
+        let onAbort = () => { };
+        const interrupted = new Promise((_, reject) => {
+            onAbort = () => {
+                this.kill(pid);
+                reject(new DOMException('the launching command was interrupted', 'AbortError'));
+            };
+        });
+        interrupted.catch(() => { });
+        if (launch.signal.aborted)
+            onAbort();
+        else
+            launch.signal.addEventListener('abort', onAbort, { once: true });
+        return {
+            interrupted,
+            release: () => {
+                launch.signal.removeEventListener('abort', onAbort);
+                unsubscribe();
+                this.processes.setForeground(pid, false);
+            },
+        };
     }
     /**
      * A resident process announcing it bound `port`.

@@ -868,7 +868,7 @@ function shouldMirrorProcessOutputToShell(self: RpcHost, pid: number): boolean {
   // attached-TTY straggler would otherwise spray alternate-screen ANSI over
   // the prompt).
   if (!entry) return false;
-  return entry.attachedTty !== true;
+  return entry.attachedTty !== true && entry.foreground !== true;
 }
 
   /**

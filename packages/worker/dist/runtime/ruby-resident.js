@@ -35,7 +35,11 @@ export function rubyResidentStart(facetMgr) {
             // value may carry — so whichever host runs this process reads it itself.
             vfsWasmModules: { 'ruby+stdlib.wasm': args.wasmVfsPath },
             startArgs: args.startArgs,
+            foreground: { signal: args.signal, write: args.write },
         }).catch(() => null);
+        // Interrupted while it waited to bind or exit: the process is gone with it.
+        if (args.signal.aborted)
+            return { exitCode: 130, stdout: '', stderr: '' };
         if (!spawned) {
             return { exitCode: 1, stdout: '', stderr: 'ruby process boot failed\n' };
         }
@@ -187,6 +191,19 @@ export function buildRubySocketProcessWorker(preamble) {
         '  return true;',
         '};',
         '',
+        // What the process writes goes out as it is written: to the command that
+        // launched it while that command waits, to the process log after. One
+        // write at a time, in order; the runner's own markers are not output.
+        'globalThis.__nimbusRubyEmitChain = globalThis.__nimbusRubyEmitChain || Promise.resolve();',
+        'globalThis.__nimbusRubyEmit = function __nimbusRubyEmit(stream, text) {',
+        '  const supervisor = globalThis.__nimbusRubySupervisor;',
+        '  if (!supervisor) return;',
+        '  const clean = String(text).replace(/__NIMBUS_RESUMED_(true|false)_[^\\n]*\\n?/g, "").replace(/__NIMBUS_RUBY_EXIT_-?\\d+\\n?/g, "");',
+        '  if (!clean) return;',
+        '  const bytes = new TextEncoder().encode(clean);',
+        '  globalThis.__nimbusRubyEmitChain = globalThis.__nimbusRubyEmitChain.then(() => supervisor[stream](bytes)).catch(() => {});',
+        '};',
+        '',
         'async function __nimbusStartRubyProcess(args) {',
         '  if (!globalThis.__nimbusRubyProcessPromise) {',
         '    const stdoutStart = (globalThis.__nimbusRubyStdout || []).length;',
@@ -211,10 +228,14 @@ export function buildRubySocketProcessWorker(preamble) {
         '  const first = await Promise.race([listen, exit]);',
         '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
         '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
-        '  const stdout = (globalThis.__nimbusRubyStdout || []).slice(started.stdoutStart).join("");',
-        '  const stderr = (globalThis.__nimbusRubyStderr || []).slice(started.stderrStart).join("");',
+        // Streamed already, so the answer carries none of it.
+        '  await globalThis.__nimbusRubyEmitChain;',
+        '  const streamed = !!globalThis.__nimbusRubySupervisor;',
+        '  const stdout = streamed ? "" : (globalThis.__nimbusRubyStdout || []).slice(started.stdoutStart).join("");',
+        '  const stderr = streamed ? "" : (globalThis.__nimbusRubyStderr || []).slice(started.stderrStart).join("");',
         '  if (first.state === "listening") return { state: "listening", port: first.port, stdout, stderr };',
-        '  return { state: "exited", result: first.result, stdout, stderr };',
+        '  const result = streamed ? { ...first.result, stdout: "", stderr: "" } : first.result;',
+        '  return { state: "exited", result, stdout, stderr };',
         '}',
         '',
         // Only adopt a real binding: routed handleHttpRequest/fetch hops resolve

@@ -27,6 +27,8 @@ export interface ProcessEntry {
   longRunning?: boolean;
   /** Output is owned by a process-terminal attachment, not the parent shell. */
   attachedTty?: boolean;
+  /** Output is owned by the command that launched it, until its launch returns. */
+  foreground?: boolean;
 }
 
 export interface ProcessTableSpawnOptions {
@@ -133,6 +135,11 @@ export class ProcessTable {
   setAttachedTty(pid: number): void {
     const entry = this.processes.get(pid);
     if (entry) entry.attachedTty = true;
+  }
+
+  setForeground(pid: number, foreground: boolean): void {
+    const entry = this.processes.get(pid);
+    if (entry) entry.foreground = foreground;
   }
 
   /**

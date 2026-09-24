@@ -89,6 +89,11 @@ export class ProcessTable {
         if (entry)
             entry.attachedTty = true;
     }
+    setForeground(pid, foreground) {
+        const entry = this.processes.get(pid);
+        if (entry)
+            entry.foreground = foreground;
+    }
     /**
      * Mark a process as exited.
      *

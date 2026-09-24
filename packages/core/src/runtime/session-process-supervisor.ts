@@ -97,6 +97,10 @@ export class SessionProcessSupervisor {
     this.table.setAttachedTty(pid);
   }
 
+  setForeground(pid: number, foreground: boolean): void {
+    this.table.setForeground(pid, foreground);
+  }
+
   get(pid: number): ProcessEntry | undefined {
     return this.table.get(pid);
   }

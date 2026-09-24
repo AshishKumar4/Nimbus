@@ -673,12 +673,22 @@ export interface FacetManagerHooks {
      */
     resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
+export interface ForegroundLaunch {
+    signal: AbortSignal;
+    write(stream: 'stdout' | 'stderr', text: string): void;
+}
 export interface LongRunningWorkerSpawnOptions {
     /** Interpreter residents share Node's atomic derived-owner claim. */
     resident?: {
         runtime: 'ruby' | 'python';
         argv: string[];
     };
+    /**
+     * The command that launched the process, waiting on its boot: until the
+     * boot settles the process's output goes there instead of the shell
+     * mirror, and the command's interrupt kills the process.
+     */
+    foreground?: ForegroundLaunch;
     restart?: ResidentRestartPolicy;
     port?: number;
     /** Inline modules: source text, or small wasm carried by value. */
@@ -1366,6 +1376,7 @@ export declare class FacetManager {
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
     /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
     private _spawnWorker;
+    private _holdForeground;
     /**
      * A resident process announcing it bound `port`.
      *

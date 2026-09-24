@@ -69,6 +69,7 @@ export declare class SessionProcessSupervisor {
     setLongRunning(pid: number): void;
     /** Mark an existing entry as an attached terminal process. Idempotent. */
     setAttachedTty(pid: number): void;
+    setForeground(pid: number, foreground: boolean): void;
     get(pid: number): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];

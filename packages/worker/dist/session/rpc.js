@@ -666,7 +666,7 @@ function shouldMirrorProcessOutputToShell(self, pid) {
     // the prompt).
     if (!entry)
         return false;
-    return entry.attachedTty !== true;
+    return entry.attachedTty !== true && entry.foreground !== true;
 }
 /**
  * Called by facets from their `finally` block after I/O has drained.
