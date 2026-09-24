@@ -139,6 +139,8 @@ interface INode {
   size: number;
   atime: number;
   mtime: number;
+  /** Last content or metadata change; never settable by utimes. */
+  ctime: number;
   mode: number;
   uid: number;
   gid: number;
@@ -273,7 +275,7 @@ export type WriteBatchStreamResult =
       };
     });
 
-const INODE_ROW_COLUMNS = 12;
+const INODE_ROW_COLUMNS = 13;
 const CHUNK_ROW_COLUMNS = 3;
 const CONTENT_ID_ROW_COLUMNS = 2;
 const INODE_ROW_PLACEHOLDERS = `(${Array.from({ length: INODE_ROW_COLUMNS }, () => '?').join(',')})`;
@@ -307,6 +309,8 @@ interface StoredInodeEntry extends Omit<BatchInodeEntry, 'kind' | 'uid' | 'gid'>
   contentId: string | null;
   /** Set for rename sources; otherwise resolved at insert time. */
   ino?: number;
+  /** Carried by entries a move leaves unchanged; otherwise the commit time. */
+  ctime?: number;
 }
 
 interface NormalizedBatchInodeEntry extends Omit<BatchInodeEntry, 'uid' | 'gid'> {
@@ -918,6 +922,7 @@ export class SqliteVFS {
         size INTEGER NOT NULL DEFAULT 0,
         atime INTEGER NOT NULL DEFAULT 0,
         mtime INTEGER NOT NULL DEFAULT 0,
+        ctime INTEGER NOT NULL DEFAULT 0,
         mode INTEGER NOT NULL DEFAULT 0,
         uid INTEGER NOT NULL DEFAULT 1000,
         gid INTEGER NOT NULL DEFAULT 1000,
@@ -957,6 +962,9 @@ export class SqliteVFS {
       }
       if (!inodeColumns.has('gid')) {
         this.sql.exec("ALTER TABLE inodes ADD COLUMN gid INTEGER NOT NULL DEFAULT 1000");
+      }
+      if (!inodeColumns.has('ctime')) {
+        this.sql.exec("ALTER TABLE inodes ADD COLUMN ctime INTEGER NOT NULL DEFAULT 0");
       }
       const invalidKinds = [...this.sql.exec(
         'SELECT path, kind FROM inodes WHERE kind NOT IN (0, 1, 2) LIMIT 1',
@@ -1203,6 +1211,7 @@ export class SqliteVFS {
         size,
         atime: mtime,
         mtime,
+        ctime: mtime,
         mode,
         uid: 1000,
         gid: 1000,
@@ -1242,7 +1251,7 @@ export class SqliteVFS {
     this._totalFiles = 0;
     this._totalDirs = 0;
     this._usedBytes = 0;
-    const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id, ino FROM inodes")];
+    const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, chunk_count, content_id, ino FROM inodes")];
     for (const row of rows) {
       const mtime = Number(row.mtime);
       const atime = Number(row.atime) || mtime;
@@ -1258,6 +1267,8 @@ export class SqliteVFS {
         size: Number(row.size),
         atime,
         mtime,
+        // Rows written before ctime existed report their last known change.
+        ctime: Number(row.ctime) || mtime,
         mode: Number(row.mode),
         uid: Number(row.uid),
         gid: Number(row.gid),
@@ -1435,7 +1446,7 @@ export class SqliteVFS {
     };
     const stat = (): VfsStat => {
       const node = current();
-      return { dev: this.deviceId, ino: node.ino, nlink: opened.path === null ? 0 : 1, type: node.kind, size: node.size, atime: node.atime, ctime: node.mtime, mtime: node.mtime, mode: node.mode, uid: node.uid, gid: node.gid };
+      return { dev: this.deviceId, ino: node.ino, nlink: opened.path === null ? 0 : 1, type: node.kind, size: node.size, atime: node.atime, ctime: node.ctime, mtime: node.mtime, mode: node.mode, uid: node.uid, gid: node.gid };
     };
     const read = (offset: number, length: number): Uint8Array => {
       const node = current();
@@ -1477,7 +1488,7 @@ export class SqliteVFS {
         }
         this.sql.exec('DELETE FROM file_chunks WHERE content_id = ? AND chunk_id >= ?', contentId, count);
       });
-      node.size = size; node.chunkCount = count; node.mtime = this.now();
+      node.size = size; node.chunkCount = count; node.mtime = node.ctime = this.now();
       for (const other of this.openNodes) if (other.path === null && this.contentIdForInode(other.inode) === contentId) other.inode = node;
     };
     return {
@@ -1509,17 +1520,17 @@ export class SqliteVFS {
       chmod: mode => {
         if (cred.uid !== 0 && cred.uid !== current().uid) throw vfsError('EPERM', path);
         if (opened.path !== null) this.chmod(opened.path, mode, CRED_KERNEL);
-        else current().mode = mode & 0o7777;
+        else { current().mode = mode & 0o7777; current().ctime = this.now(); }
       },
       chown: (uid, gid) => {
         if (cred.uid !== 0) throw vfsError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
-        else { current().uid = uid; current().gid = gid; }
+        else { current().uid = uid; current().gid = gid; current().ctime = this.now(); }
       },
       utimes: (atime, mtime) => {
         if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsError('EPERM', path);
         if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
-        else { current().atime = atime; current().mtime = mtime; }
+        else { current().atime = atime; current().mtime = mtime; current().ctime = this.now(); }
       },
       close: () => { opened.closed = true; this.openNodes.delete(opened); },
     };
@@ -1929,7 +1940,7 @@ export class SqliteVFS {
       if (opened.path === null) continue;
       const live = this.inodes.get(opened.path);
       if (live) opened.inode = live;
-      else opened.path = null;
+      else { opened.path = null; opened.inode.ctime = this.now(); }
     }
     if (this.transactionPublication) {
       for (const path of paths) this.transactionPublication.paths.add(path);
@@ -2128,8 +2139,8 @@ export class SqliteVFS {
     this.transactionSync(() => {
       ino = this.inodes.get(path)?.ino ?? this.nextIno();
       this.sql.exec(
-        "INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id, ino) VALUES (?, ?, 1, 0, ?, ?, ?, ?, ?, 0, NULL, ?)",
-        path, pp, now, now, mode, cred.uid, cred.gid, ino,
+        "INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, chunk_count, content_id, ino) VALUES (?, ?, 1, 0, ?, ?, ?, ?, ?, ?, 0, NULL, ?)",
+        path, pp, now, now, now, mode, cred.uid, cred.gid, ino,
       );
     });
     const inode: INode = {
@@ -2140,6 +2151,7 @@ export class SqliteVFS {
       size: 0,
       atime: now,
       mtime: now,
+      ctime: now,
       mode,
       uid: cred.uid,
       gid: cred.gid,
@@ -3194,7 +3206,7 @@ export class SqliteVFS {
       type: inode.kind,
       size: inode.size,
       atime: inode.atime || inode.mtime,
-      ctime: inode.mtime,
+      ctime: inode.ctime,
       mtime: inode.mtime,
       mode: inode.mode,
       uid: inode.uid,
@@ -3220,9 +3232,11 @@ export class SqliteVFS {
     }
     const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
     const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
-    this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, inode.path);
+    const ctime = this.now();
+    this.sql.exec("UPDATE inodes SET atime = ?, mtime = ?, ctime = ? WHERE path = ?", atime, mtime, ctime, inode.path);
     inode.atime = atime;
     inode.mtime = mtime;
+    inode.ctime = ctime;
     this.bumpRevision([inode.path]);
     this.emitMutation('change', inode.path);
   }
@@ -3267,8 +3281,10 @@ export class SqliteVFS {
     }
     this.assertMutationsAllowed([inode.path]);
     const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
-    this.sql.exec("UPDATE inodes SET mode = ? WHERE path = ?", full, inode.path);
+    const ctime = this.now();
+    this.sql.exec("UPDATE inodes SET mode = ?, ctime = ? WHERE path = ?", full, ctime, inode.path);
     inode.mode = full;
+    inode.ctime = ctime;
     this.bumpRevision([inode.path]);
     this.emitMutation('change', inode.path);
   }
@@ -3296,16 +3312,19 @@ export class SqliteVFS {
     const nextUid = uid ?? inode.uid;
     const nextGid = gid ?? inode.gid;
     const nextMode = cred.uid === 0 ? inode.mode : inode.mode & ~0o6000;
+    const ctime = this.now();
     this.sql.exec(
-      'UPDATE inodes SET uid = ?, gid = ?, mode = ? WHERE path = ?',
+      'UPDATE inodes SET uid = ?, gid = ?, mode = ?, ctime = ? WHERE path = ?',
       nextUid,
       nextGid,
       nextMode,
+      ctime,
       inode.path,
     );
     inode.uid = nextUid;
     inode.gid = nextGid;
     inode.mode = nextMode;
+    inode.ctime = ctime;
     this.bumpRevision([inode.path]);
     this.emitMutation('change', inode.path);
   }
@@ -3640,6 +3659,8 @@ export class SqliteVFS {
         contentId: entry.isDir ? null : this.contentIdForInode(entry),
         // A rename keeps the inode: the number follows the entry, not the path.
         ino: entry.ino,
+        // Only the moved inode itself changes; its descendants keep their ctime.
+        ctime: entry.path === oldPath ? undefined : entry.ctime,
       };
       return { entry, stored };
     });
@@ -3670,6 +3691,7 @@ export class SqliteVFS {
     // published over it, exactly as the transaction deleted before inserting.
     if (destInode) {
       for (const opened of this.openNodes) if (opened.path === destInode.path) opened.path = null;
+      destInode.ctime = this.now();
       this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
       this.inodes.delete(destInode.path);
       this._totalFiles--;
@@ -3682,6 +3704,7 @@ export class SqliteVFS {
         path: stored.path,
         parentPath: stored.parentPath,
         contentId: stored.contentId,
+        ctime: stored.ctime!,
       };
       this.inodes.set(moved.path, moved);
       this._addToChildrenIndex(moved.parentPath, moved.path);
@@ -3744,7 +3767,7 @@ export class SqliteVFS {
         // The published row is the inode being removed; the in-memory index
         // has not adopted it yet, so the entry that was written is the one
         // the plan must account for.
-        builder.addDeletedPath(stored.path, { ...stored, atime: stored.atime ?? stored.mtime, ino: stored.ino ?? 0 });
+        builder.addDeletedPath(stored.path, { ...stored, atime: stored.atime ?? stored.mtime, ctime: stored.ctime ?? stored.mtime, ino: stored.ino ?? 0 });
       }
       flush();
     } catch { /* the source is intact; report the original failure */ }
@@ -3761,8 +3784,10 @@ export class SqliteVFS {
     const prior = this.inodes.get(path);
     const newUid = cred.uid === 0 ? (entry.uid ?? 1000) : cred.uid;
     const newGid = cred.uid === 0 ? (entry.gid ?? 1000) : cred.gid;
+    // ctime is the commit's clock, never the caller's.
+    const { ctime: _unsettable, ...fields } = entry as BatchInodeEntry & { ctime?: unknown };
     return {
-      ...entry,
+      ...fields,
       path,
       parentPath: this.storageKey(entry.parentPath, cred),
       mode: prior
@@ -4502,6 +4527,7 @@ export class SqliteVFS {
     onCommit?: () => void,
   ): void {
     const identities = new Map<StoredInodeEntry, number>();
+    const committedAt = this.now();
     this.executeMeasuredTransaction(plan, execution, () => {
       for (const path of plan.deletedPaths) {
         this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
@@ -4539,6 +4565,7 @@ export class SqliteVFS {
             inode.size,
             atime,
             inode.mtime,
+            inode.ctime ?? committedAt,
             inode.mode,
             inode.uid,
             inode.gid,
@@ -4548,7 +4575,7 @@ export class SqliteVFS {
           );
         }
         this.sql.exec(
-          `INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_count, content_id, ino) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, chunk_count, content_id, ino) VALUES ${placeholders}`,
           ...values,
         );
       }
@@ -4605,7 +4632,10 @@ export class SqliteVFS {
       }
       onCommit?.();
     });
-    for (const [inode, ino] of identities) inode.ino = ino;
+    for (const [inode, ino] of identities) {
+      inode.ino = ino;
+      inode.ctime ??= committedAt;
+    }
     if (plan.gcContentIds.length > 0) this.maintenancePending = true;
   }
 
@@ -5152,6 +5182,7 @@ export class SqliteVFS {
         size: entry.size,
         atime,
         mtime: entry.mtime,
+        ctime: entry.ctime!,
         mode: entry.mode,
         uid: entry.uid,
         gid: entry.gid,
