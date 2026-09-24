@@ -102,6 +102,17 @@ mock.module(new URL('runtime-catalog.generated.ts', WORKER_SRC).pathname, () => 
 }));
 
 const { fetchCatalog, fetchManifest, fetchBlob } = await import(CATALOG_SRC.pathname);
+const { seedRuntimePackage } = await import('../../packages/core/src/runtime/runtime-package.ts');
+const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
+const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+
+/** What `nimbus install` writes for `manifest`'s one blob, fetched from `env`. */
+async function installed(env, manifest) {
+  const harness = createSqliteVfsTestHarness();
+  const fs = new SqliteVFS(harness.sql, harness.ctx).as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const seeded = await seedRuntimePackage(fs, '/home/user', { manifest, readBlob: (file) => fetchBlob(env, file) });
+  return fs.readFile(`${seeded.root}/${manifest.files[0].path}`);
+}
 
 // ── Harness ────────────────────────────────────────────────────────────
 
@@ -117,6 +128,9 @@ function installCache() {
       async put(req, res) {
         const bytes = await res.arrayBuffer();
         store.set(req.url, new Response(bytes, { status: res.status, headers: res.headers }));
+      },
+      async delete(req) {
+        return store.delete(req.url);
       },
     },
   };
@@ -225,22 +239,44 @@ for (const url of Object.values(keys)) {
 }
 
 // ── 3. A poisoned blob in L2 is not served ─────────────────────────────
+//
+// A cached blob is read once, so a poisoned one is caught at its end rather
+// than before it is served: the stream errors instead of closing, and the
+// entry is evicted. The installer commits a blob only on a clean close and
+// reads a blob that failed its digest once more, which now comes from R2.
 
 {
   const store = installCache();
   const r2 = honestR2();
   poison(store, keys.blob, ATTACKER_BLOB);
 
-  const bytes = await readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]));
-
-  assert.equal(text(bytes), text(HONEST_BLOB), 'a poisoned L2 blob was executed');
-  assert.ok(r2.reads.includes(HONEST_BLOB_KEY), 'the rejected cache entry did not fall through to R2');
+  await assert.rejects(
+    async () => readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0])),
+    /sha256 mismatch for blob/,
+    'a poisoned L2 blob closed cleanly',
+  );
+  await fillSettled();
+  assert.equal(store.has(keys.blob), false, 'the poisoned entry was not evicted');
 }
 
-// ── 3b. An honest blob in L2 is served from L2 ─────────────────────────
+{
+  const store = installCache();
+  const r2 = honestR2();
+  poison(store, keys.blob, ATTACKER_BLOB);
+
+  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText));
+
+  assert.equal(text(bytes), text(HONEST_BLOB), 'a poisoned L2 blob was installed');
+  assert.ok(r2.reads.includes(HONEST_BLOB_KEY), 'the rejected cache entry did not fall through to R2');
+  await fillSettled();
+  assert.equal(sha(new Uint8Array(await store.get(keys.blob).clone().arrayBuffer())), sha(HONEST_BLOB),
+    'the evicted entry was not refilled from R2');
+}
+
+// ── 3b. An honest blob in L2 is served from L2, in one read ────────────
 //
-// The check that makes a poisoned entry a miss must not make every entry
-// one: a blob whose cached bytes hash to their key is served without R2.
+// The check that catches a poisoned entry must not cost every entry: a blob
+// whose cached bytes hash to their key is served without R2, read once.
 
 {
   const big = Uint8Array.from({ length: 3 * 1024 * 1024 + 17 }, (_, i) => (i * 131) & 0xff);
@@ -249,10 +285,15 @@ for (const url of Object.values(keys)) {
   const r2 = honestR2();
   poison(store, keys.blob.replace(sha(HONEST_BLOB), sha(big)), big);
 
+  const match = globalThis.caches.default.match;
+  let matches = 0;
+  globalThis.caches.default.match = (req) => { matches++; return match(req); };
   const served = await readAll(await fetchBlob(envWith(r2), file));
 
   assert.equal(sha(served), sha(big), 'an L2 entry was served altered');
   assert.deepEqual(r2.reads, [], 'a verified L2 entry was re-read from R2');
+  // Hashing an entry before serving it read every cached blob twice.
+  assert.equal(matches, 1, `a cached blob was read from the cache ${matches} times`);
 }
 
 // ── 4. A poisoned catalog in L2 is not served ──────────────────────────
@@ -289,7 +330,7 @@ for (const url of Object.values(keys)) {
   const catalog = await fetchCatalog(envWith(r2));
   const entry = catalog.runtimes.python.versions['1.0'];
   const manifest = await fetchManifest(envWith(r2), entry);
-  const bytes = await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
+  const bytes = await installed(envWith(r2), manifest);
 
   assert.equal(
     text(bytes),

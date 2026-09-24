@@ -97,11 +97,12 @@ export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCat
 export declare function fetchManifest(env: RuntimeCatalogEnv, entry: CatalogVersionEntry): Promise<RuntimeManifest>;
 /**
  * Stream the blob a manifest file entry points at, verified against the
- * digest that same entry carries. A colo-cache entry is verified whole
- * before any of it is served, so a poisoned one is a miss. An R2 read errors
- * at its end, rather than closing, when its bytes do not hash to the digest.
- * The consumer hashes what it reads as well (the installer does, before it
- * commits a blob), so no step holds a blob whole.
+ * digest that same entry carries: from the colo cache when it has it, else
+ * from R2, read once either way. The stream errors at its end, rather than
+ * closing, with a {@link RuntimeBlobDigestMismatch} when its bytes do not
+ * hash to the digest; a colo-cache entry that fails is evicted first, so the
+ * installer's second read of that blob comes from R2. The installer commits
+ * a blob only after that clean close, so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
  * a `ManifestFile` always has both, and it is the only thing this takes.

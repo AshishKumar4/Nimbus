@@ -117,6 +117,27 @@ const openVfs = () => {
   console.log('  ok  a blob that does not match its digest is refused, and leaves no install');
 }
 
+// ── A blob that fails its digest once is read again ─────────────────────────
+// A source fronted by a shared cache evicts an entry that fails and answers
+// the second read from its origin; the install then succeeds with the real
+// bytes, and the bad ones never reached the runtime's path.
+{
+  const vfs = openVfs();
+  const fs = vfs.as(KERNEL);
+  const pkg = fakePackage({ 'share/toy/toy.wasm': 'the real bytes\n' });
+  const target = pkg.manifest.files[0];
+  let reads = 0;
+  const cached = {
+    manifest: pkg.manifest,
+    readBlob: (file) => (++reads === 1 ? encoder.encode('poisoned cache entry\n') : pkg.readBlob(file)),
+  };
+
+  const seeded = await seedRuntimePackage(fs, HOME, cached);
+  assert.equal(reads, 2);
+  assert.equal(fs.readFileString(`${seeded.root}/${target.path}`), 'the real bytes\n');
+  console.log('  ok  a blob that fails its digest once is read again, and installs from the second read');
+}
+
 // ── A manifest that is not a manifest ───────────────────────────────────────
 {
   const vfs = openVfs();
