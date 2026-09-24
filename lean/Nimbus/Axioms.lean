@@ -12,6 +12,15 @@
 
 import Nimbus
 
+/-! ## Nimbus/ContentStore/Bugs.lean -/
+
+#print axioms Nimbus.ContentStore.Bugs.pinned_reachable
+#print axioms Nimbus.ContentStore.Bugs.an_in_place_rewrite_blind_to_pins_changes_a_descriptor
+#print axioms Nimbus.ContentStore.Bugs.snapped_reachable
+#print axioms Nimbus.ContentStore.Bugs.an_in_place_rewrite_a_snapshot_can_see_changes_the_snapshot
+#print axioms Nimbus.ContentStore.Bugs.lone_reachable
+#print axioms Nimbus.ContentStore.Bugs.dropping_a_pinned_queue_row_leaks
+
 /-! ## Nimbus/ContentStore/Frames.lean -/
 
 #print axioms Nimbus.ContentStore.base_ext

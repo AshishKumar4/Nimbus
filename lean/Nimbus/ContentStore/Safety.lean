@@ -13,7 +13,7 @@ variable (P : Nat)
 theorem init_inv : Inv P init := by
   refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
   all_goals first
-    | (intro x hx; cases x <;> simp [Exists, init] at hx; done)
+    | (intro x hx; cases x <;> simp [Stored, init] at hx; done)
     | (intros; rfl)
     | (intro j hj; simp [init] at hj)
     | (intros; simp_all [init, readRef, atRef]; try contradiction)

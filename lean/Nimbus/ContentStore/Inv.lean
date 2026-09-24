@@ -10,7 +10,7 @@ namespace Nimbus.ContentStore
 variable (P : Nat)
 
 /-- Whatever exists and nothing durable or in flight holds is queued. -/
-def Cov (s : St) : Prop := ∀ x, Exists s x → ¬ StrongRef s x → ¬ WriterHeld s x → x ∈ s.queue
+def Cov (s : St) : Prop := ∀ x, Stored s x → ¬ StrongRef s x → ¬ WriterHeld s x → x ∈ s.queue
 
 /-- The restore job's durable row names a live snapshot, and a clean job has
     restored exactly the snapshot below its cursor. -/
@@ -77,7 +77,7 @@ theorem not_writer_of_resolves {s : St} (hi : Base s) {x : Ref} (h : resolve s x
     obtain ⟨ct', hct', hs, _⟩ := hi.writerView w hw
     rw [hct] at hct'; cases hct'; rw [hl] at hs; cases hs
 
-theorem exists_of_resolves {s : St} {x : Ref} (h : resolve s x ≠ none) : Exists s x := by
+theorem exists_of_resolves {s : St} {x : Ref} (h : resolve s x ≠ none) : Stored s x := by
   cases x with
   | chunk k =>
     show s.chunks k ≠ none
@@ -188,8 +188,8 @@ theorem commit_queue_sub {s : St} {p : Path} {nr : Option Ref} {x : Ref} (h : x 
     the write starts from, as long as every object it can see existed or is
     referenced by the write itself. -/
 theorem commit_coverage {s : St} {p : Path} {nr : Option Ref}
-    (hcov : ∀ x, Exists s x → ¬ StrongRef s x → ¬ WriterHeld s x → x ∈ s.queue) :
-    ∀ x, Exists s x → ¬ StrongRef (commit s p nr) x → ¬ WriterHeld s x → x ∈ (commit s p nr).queue := by
+    (hcov : ∀ x, Stored s x → ¬ StrongRef s x → ¬ WriterHeld s x → x ∈ s.queue) :
+    ∀ x, Stored s x → ¬ StrongRef (commit s p nr) x → ¬ WriterHeld s x → x ∈ (commit s p nr).queue := by
   intro x hx hn hw
   by_cases hs : StrongRef s x
   · obtain ⟨r, hr, rfl, hne⟩ := commit_lost hs hn
@@ -297,8 +297,8 @@ theorem writerHeld_congr {s s' : St} (h : s'.writers = s.writers) {x : Ref} : Wr
   cases x <;> simp [WriterHeld, h]
 
 theorem exists_congr' {s s' : St} (hc : s'.chunks = s.chunks) (hk : s'.contents = s.contents) {x : Ref} :
-    Exists s' x ↔ Exists s x := by
-  cases x <;> simp [Exists, hc, hk]
+    Stored s' x ↔ Stored s x := by
+  cases x <;> simp [Stored, hc, hk]
 
 theorem pinGen_congr {s s' : St} (h : s'.snaps = s.snaps) : pinGen s' = pinGen s := by
   simp [pinGen, h]
@@ -315,7 +315,7 @@ theorem atRef_congr {s s' : St} (hh : s'.hist = s.hist) (hl : s'.live = s.live) 
     miss only what the write itself is about to reference. -/
 theorem commit_core {s1 : St} {p : Path} {nr : Option Ref} {v : Option (List Hash)}
     (hb : Base s1)
-    (hcov : ∀ x, Exists s1 x → ¬ StrongRef s1 x → ¬ WriterHeld s1 x → x ∈ s1.queue ∨ nr = some x)
+    (hcov : ∀ x, Stored s1 x → ¬ StrongRef s1 x → ¬ WriterHeld s1 x → x ∈ s1.queue ∨ nr = some x)
     (hv : readRef s1 nr = some v) :
     Base (setView (dirty (commit s1 p nr)) p v) ∧ Cov (setView (dirty (commit s1 p nr)) p v) := by
   obtain ⟨g1, g2, g3⟩ := commit_gens hb p nr
@@ -374,7 +374,7 @@ theorem commit_core {s1 : St} {p : Path} {nr : Option Ref} {v : Option (List Has
   · exact hb.digestOk
   · intro x hx hn hw
     simp only [setView_queue, dirty_queue]
-    have hx' : Exists s1 x := by cases x <;> exact hx
+    have hx' : Stored s1 x := by cases x <;> exact hx
     have hn' : ¬ StrongRef (commit s1 p nr) x := by
       intro h; apply hn
       rcases h with h | h | h
@@ -401,7 +401,7 @@ theorem dirty_eq_job (s : St) : dirty s = { s with job := s.job.map fun j => { j
     any) is no longer clean. -/
 theorem commit_inv {s1 : St} {p : Path} {nr : Option Ref} {v : Option (List Hash)}
     (hb : Base s1)
-    (hcov : ∀ x, Exists s1 x → ¬ StrongRef s1 x → ¬ WriterHeld s1 x → x ∈ s1.queue ∨ nr = some x)
+    (hcov : ∀ x, Stored s1 x → ¬ StrongRef s1 x → ¬ WriterHeld s1 x → x ∈ s1.queue ∨ nr = some x)
     (hv : readRef s1 nr = some v)
     (hjob : ∀ j, s1.job = some j → (j.name, j.g) ∈ s1.snaps ∧ j.cursor ≤ P) :
     Inv P (setView (dirty (commit s1 p nr)) p v) := by

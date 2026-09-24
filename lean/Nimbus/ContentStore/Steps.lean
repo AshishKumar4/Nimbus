@@ -39,8 +39,8 @@ theorem intern_base {s : St} (hb : Base s) {h k : Nat} (hk : InternOk s h k) : B
     · intro c ct d h1 h2 h3; exact mapM_mono he.1 (hb.digestOk c ct d h1 h2 h3)
 
 /-- Interning adds at most the chunk it names. -/
-theorem intern_exists {s : St} {h k : Nat} {x : Ref} (hx : Exists (intern s h k) x) :
-    Exists s x ∨ x = .chunk k := by
+theorem intern_exists {s : St} {h k : Nat} {x : Ref} (hx : Stored (intern s h k) x) :
+    Stored s x ∨ x = .chunk k := by
   unfold intern at hx
   split at hx
   · exact Or.inl hx
@@ -182,7 +182,7 @@ theorem beginLarge_inv {s : St} (hi : Inv P s) (p : Path) :
     | content c =>
       by_cases e : c = s.nextContent
       · subst e; exact absurd ⟨⟨p, s.nextContent, []⟩, by simp, rfl⟩ hw
-      · have hx' : Exists s (.content c) := by
+      · have hx' : Stored s (.content c) := by
           show s.contents c ≠ none
           have : upd s.contents s.nextContent _ c ≠ none := hx
           rwa [upd_ne _ _ e] at this
@@ -259,7 +259,7 @@ theorem appendLarge_inv {s : St} (hi : Inv P s) {w : Writer} {ct : Content} {h k
     · subst e; simp at hct; subst hct; rw [hst] at hl'; cases hl'
     · rw [upd_ne _ _ e] at hct; exact hS.digestOk c ct' d hct hl' hd
   · intro x hx hn hwh
-    have hx0 : Exists (intern s h k) x := by
+    have hx0 : Stored (intern s h k) x := by
       cases x with
       | chunk j => exact hx
       | content c =>
@@ -363,7 +363,7 @@ theorem publishNew_inv {s : St} (hi : Inv P s) {w : Writer} {ct : Content}
       · rw [upd_ne _ _ e] at hct; exact hi.digestOk c ct' d hct hl hd
   apply commit_inv P hb1
   · intro x hx hn hwh
-    have hx' : Exists s x := by
+    have hx' : Stored s x := by
       cases x with
       | chunk j => exact hx
       | content c =>
@@ -507,7 +507,7 @@ theorem dropHist_inv {s : St} (hi : Inv P s) {h : HRow} (hh : h ∈ s.hist)
   · intro c hq
     rcases mem_enq.mp hq with hq | hq
     · exact hi.queueBound c hq
-    · exact content_lt_of_exists hi.toBase (show Exists s (.content c) from hq ▸ exists_of_resolves hres)
+    · exact content_lt_of_exists hi.toBase (show Stored s (.content c) from hq ▸ exists_of_resolves hres)
   · intro x hx hn' hw
     by_cases hs : StrongRef s x
     · rcases hs with hl | ⟨h', hh', rfl⟩ | hm
@@ -730,7 +730,7 @@ theorem gcChunkDelete_inv {s : St} (hi : Inv P s) {k : Nat} (hn : ¬ StrongRef s
   · intro x hx hn' hw
     have hxk : x ≠ .chunk k := by
       rintro rfl; exact hx (by show upd s.chunks k none k = none; simp)
-    have hx' : Exists s x := by
+    have hx' : Stored s x := by
       cases x with
       | chunk j =>
         have : j ≠ k := fun e => hxk (e ▸ rfl)
@@ -1147,7 +1147,7 @@ theorem editLargeCow_inv {s : St} (hi : Inv P s) {p : Path} {r : Row} {c : Nat} 
     | chunk j =>
       left
       rw [show s1.queue = s.queue from hqS]
-      rcases intern_exists (show Exists S (.chunk j) from hx) with hx' | hx'
+      rcases intern_exists (show Stored S (.chunk j) from hx) with hx' | hx'
       · apply hi.coverage _ hx'
         · intro h'; apply hn
           rcases h' with h' | h' | ⟨d, cd, h1, h2⟩
@@ -1296,7 +1296,7 @@ theorem editLargeInPlace_inv {s : St} (hi : Inv P s) {p : Path} {r : Row} {c : N
         by_cases ej : j = ct.chunks.getD i 0
         · subst ej; exact mem_enq_self _ _
         apply mem_enq_of_mem
-        rcases intern_exists (show Exists S (.chunk j) from hx) with hx' | hx'
+        rcases intern_exists (show Stored S (.chunk j) from hx) with hx' | hx'
         · apply hi.coverage _ hx'
           · intro h'; apply hn
             rcases h' with h' | h' | ⟨d, cd, h1, h2⟩

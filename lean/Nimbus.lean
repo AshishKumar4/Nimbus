@@ -4,9 +4,9 @@
   every check.
 
   Vfs: RevisionFloor
-  ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc
+  ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs
   Refine (a separate root): the generators of `lean/fixtures/`
 -/
 
 import Nimbus.Vfs.RevisionFloor
-import Nimbus.ContentStore.Gc
+import Nimbus.ContentStore.Bugs

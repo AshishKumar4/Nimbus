@@ -201,7 +201,7 @@ theorem gc_drains : ∀ n (s : St), weight s ≤ n → Inv P s → Quiet s →
     state where every stored chunk and content is referenced by a live row, a
     history row (so by a snapshot) or a manifest. -/
 theorem no_garbage_after_quiescence {s : St} (h : Reachable P s) (hq : Quiet s) :
-    ∃ s', Star P s s' ∧ ∀ x, Exists s' x → StrongRef s' x := by
+    ∃ s', Star P s s' ∧ ∀ x, Stored s' x → StrongRef s' x := by
   have hi := reachable_inv P h
   obtain ⟨s', hs, hqe, hq'⟩ := gc_drains P (weight s) s (Nat.le_refl _) hi hq
   have hi' := star_inv P hi hs

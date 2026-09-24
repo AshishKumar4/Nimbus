@@ -161,7 +161,7 @@ def WriterHeld (s : St) : Ref → Prop
 /-- The durable references the probe-guarded DELETE checks (R3, R4). -/
 def StrongRef (s : St) (x : Ref) : Prop := LiveRef s x ∨ HistRef s x ∨ ManRef s x
 
-def Exists (s : St) : Ref → Prop
+def Stored (s : St) : Ref → Prop
   | .chunk k => s.chunks k ≠ none
   | .content c => s.contents c ≠ none
 

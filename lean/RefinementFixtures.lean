@@ -10,7 +10,8 @@ import Nimbus.Refine
 open Nimbus.Refine
 
 def fixtures : List (String × String) :=
-  [("revision-floor.json", RevisionFloorCases.fixture)]
+  [("revision-floor.json", RevisionFloorCases.fixture),
+   ("content-store.json", ContentStoreCases.fixture)]
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"

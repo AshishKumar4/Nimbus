@@ -159,7 +159,7 @@ theorem mem_stagingIds {s : St} {c : Nat} :
 /-- Queue rows a state can do without: dropping a row whose target something
     durable still holds keeps the invariant. -/
 theorem requeue_inv {s : St} (hi : Inv P s) (q' : List Ref) (hsub : ∀ y ∈ q', y ∈ s.queue)
-    (hheld : ∀ y ∈ s.queue, y ∉ q' → StrongRef s y ∨ ¬ Exists s y) : Inv P { s with queue := q' } := by
+    (hheld : ∀ y ∈ s.queue, y ∉ q' → StrongRef s y ∨ ¬ Stored s y) : Inv P { s with queue := q' } := by
   refine ⟨⟨hi.liveGen, hi.histGen, hi.snapGen, hi.histBelowLive, hi.freshChunk, hi.freshContent,
     hi.liveView, hi.histLive, hi.snapView, hi.fdView, hi.writerView, hi.writerUnique, hi.writerNodup,
     ?_, ?_, hi.digestOk⟩, ?_, hi.jobOk⟩
