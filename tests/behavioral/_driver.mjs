@@ -45,7 +45,7 @@ function describeSocketClose(code, reason) {
   const text = reason ? String(reason).slice(0, 200) : '';
   const known = code === 1000 ? 'normal'
     : code === 1001 ? 'going away'
-    : code === 1006 ? 'abnormal — no close frame'
+    : code === 1006 ? 'abnormal — no close frame; usually a session DO reset, named per AGENTS.md "Tails reset sessions"'
     : code === 1011 ? 'server error'
     : code === 1012 ? 'service restart'
     : null;

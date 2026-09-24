@@ -338,7 +338,12 @@ is self-inflicted. To name a real reset, read
 `durableObjectsPeriodicGroups` in the GraphQL analytics.
 `sum { exceededMemoryErrors exceededCpuErrors fatalInternalErrors }` per
 object and `datetime` names the cause, and `max { memoryUsageBytes }` is the
-peak over each 60 s window of the object's life.
+peak over each 60 s window of the object's life. A session's facets report
+under the session's name and id. The session's own rows are the ones with
+`max { activeWebsocketConnections }` of at least 1 and nonzero
+`rowsWritten`. A reset with no counter, no deploy and no tail is a platform
+shutdown (runtime update or host move). The DO lifecycle docs say such a
+shutdown terminates WebSockets.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes
