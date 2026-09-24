@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9d026f2326b7a91c61708489ce3c0b0c2c139074d15ac1b20bebcee67cd6cd57",
+  "fingerprint": "5ce7eca31460a2b23ce5f3ca1f76c5006cb39dd7ae732237af50ba951db0731d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1523,9 +1523,9 @@
     "packages/worker/dist/facets/ws-terminal.d.ts": "cd0de8deaa7c18eb949aa9dc8acb6bc22dc0602a8136271c941430deb1650583",
     "packages/worker/dist/facets/ws-terminal.d.ts.map": "709bab9c03df590f322eb43b14d313662b2b9e4516601f1e440f24092a4d5a64",
     "packages/worker/dist/facets/ws-terminal.js": "63922aec572806aaff92999ae6ecf7844e4a1ff642e7728ecd23ed2ceb804cf6",
-    "packages/worker/dist/git-bundle.generated.d.ts": "964a19b62f2d0f52a9860cf7ef385a1cb71d172ccb642dea5b67f9104120e450",
-    "packages/worker/dist/git-bundle.generated.d.ts.map": "09ec9e130b790c1356c5a93a9b7e3f851bb050f76ea1fccfb4ece1cb4ee9c2e8",
-    "packages/worker/dist/git-bundle.generated.js": "6f39a635ab5b5477833f9992a5628e7dbda4b93a90391baa1e54d5abf0064dd5",
+    "packages/worker/dist/git-bundle.generated.d.ts": "0da5cd327ab64fdcd40dc5c214a972f3efbbcfbc2affdf914c9112fbabb6830b",
+    "packages/worker/dist/git-bundle.generated.d.ts.map": "fc3da42f551166adcb25f1e0b25925141e27a5780a28a0b6df49a9c52c1f21f3",
+    "packages/worker/dist/git-bundle.generated.js": "e455666dc8ad55589f6da5dc500907c9201900d5078071c307a04e820c3c5179",
     "packages/worker/dist/git/commands.d.ts": "eade284cfb750704d9ad5494f423e088dde934f0051276f6ac98883d1f802612",
     "packages/worker/dist/git/commands.d.ts.map": "915681c4608ddf447468290b12c2827a9cdd2f2e802eb0214b6cb7a4b9f8fc0a",
     "packages/worker/dist/git/commands.js": "77df553e143fc5f6763cf71165b5ce6c037cb44c8f1417096f9a8abb5a30e711",
@@ -1838,7 +1838,7 @@
     "packages/worker/frontend/agent-chat/tokens.css": "04c37e4cc297bde14bf77860bc582a515876dfe95bad0f8ecca8256cbc235c3f",
     "packages/worker/frontend/tsconfig.json": "764850768081e7b37d216a43761c1d122da7b5883eab24d7ecee300e3d82b878",
     "packages/worker/package.json": "f848c4b2bdb59f55dd6dbf47de4fd5a1b8564ae19dbaecc0305c25556469a5bd",
-    "packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch": "2e0c0b3995f0d24e5005b11baea82d29c4ddfa6618b53097b0ab9ed17572db37",
+    "packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch": "fc38e84d3fc2a7469b80ec445a65fe58153d03fc06b1f0d9d21955f6924baa2f",
     "packages/worker/public/_assets/agent-chat/agent-chat.css": "7bde9e33b2b137754633315859f14919449dee3f8a7de448c7af3981a7a018d6",
     "packages/worker/public/_assets/agent-chat/agent-chat.js": "d5794b177864951a52df861820e0949aebcfc9c93626e9fedafa0cf8177aebee",
     "packages/worker/public/_assets/cirrus-npm-cjs-bundles.json": "f9913354f7dd4f2d1f7ea0d68e057d2e6296061f24a8fee62a758d6f0a70fb60",
@@ -1945,7 +1945,7 @@
     "packages/worker/src/facets/wasm-image-digest.ts": "61766b304869e37edfc2c8781b7d4583ff2e6b1a16ae270f8d285e932885ef45",
     "packages/worker/src/facets/wasm-swap-registry.ts": "40e84f0e6242a2cfc3a1fe9948ff9b626a3b8d1ea218ca30d39a3c7def6d9c5c",
     "packages/worker/src/facets/ws-terminal.ts": "ca779c2443a876a5416ba589914247494ddb701d3f4a741b3cad3cd811eeffc7",
-    "packages/worker/src/git-bundle.generated.ts": "6eeea03568534f3966e6f96789acb391be314617b55b91d023199f3e26a2397c",
+    "packages/worker/src/git-bundle.generated.ts": "914339a83f867a14caf428d707f73d320491981231e6316ad3fdc2c946554505",
     "packages/worker/src/git/commands.ts": "710c273daeecfd02fc8aa7ed14699c0c8a6e296f3b2b24e2ea5ca51f33a39f41",
     "packages/worker/src/git/network-facet.ts": "a5f2fab13d246a91cbfdd2c82ee572e0cdcc91e2e229b4ead5fee02e87658d5d",
     "packages/worker/src/hosted/commands.ts": "93b81b5dc26d2c4c31d0b3315abf67cb4917180897f871b8cdd432a4eaa1559f",
