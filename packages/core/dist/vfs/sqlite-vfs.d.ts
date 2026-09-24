@@ -357,6 +357,28 @@ export declare class SqliteVFS {
      * uid-0 only and a guest cannot provision its own.
      */
     confinePrincipal(uid: number, tmpRoot: string): void;
+    /**
+     * A confined principal owns its own triad and nothing else. Refusing chmod
+     * outright would be simpler and wrong: execution is gated on the x bit, so
+     * a guest that writes build.sh and cannot chmod it cannot run it. What
+     * must not happen is WIDENING past its own principal: the group and other
+     * triads and setuid/setgid may only lose bits, and sticky, which restricts
+     * others, may only gain one, while the owner triad moves freely. `u+x`,
+     * `700`, `600` and `go-w` work; `+x` and `777` do not.
+     *
+     * Refused, never clamped. Quietly narrowing a mutation to the part that
+     * was allowed reports success for something other than what was asked, so
+     * the refusal names the spelling that works instead. Every chmod, by path
+     * or by descriptor, goes through here with the caller's own credential.
+     */
+    private assertConfinedModeChange;
+    /**
+     * Permission bits a new inode is created with. umask never masks 07000, so
+     * a confined principal's creation drops setuid/setgid here, the one grant
+     * its umask cannot refuse. Sticky only restricts others and is kept.
+     */
+    private creationMode;
+    private isConfined;
     /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
     releasePrincipal(uid: number): void;
     /**
