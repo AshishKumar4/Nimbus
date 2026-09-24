@@ -86,6 +86,9 @@ const EXPORT_FRAME_BYTES = 8 * 1024 * 1024;
 /** An imported file with more chunks than this stages across transactions. */
 const IMPORT_INLINE_PIECES = 64;
 const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
+/** Chunks one tier pass moves, and chunk ids it examines. */
+const TIER_PAGE_CHUNKS = 64;
+const TIER_SCAN_ROWS = 4_096;
 /** Lookups one snapshot view caches. */
 const SNAPSHOT_VIEW_CACHE_ENTRIES = 4096;
 const DROP_PAGE_ROWS = 200;
@@ -112,6 +115,14 @@ const GC_CHUNK = 0;
 const GC_CONTENT = 1;
 /** vfs_contents states. */
 const CONTENT_STAGING = 0;
+/** vfs_chunks.state: bytes in `data`, or only in the cold store (P6). */
+const CHUNK_LOCAL = 0;
+const CHUNK_COLD = 1;
+/** SQL (over vfs_chunks AS c): no live row, live manifest or staging content names c. */
+const LIVE_CHUNK_UNREFERENCED = `
+  AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
+  AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks cc JOIN vfs_contents ct ON ct.id = cc.content_id
+    WHERE cc.chunk_id = c.id AND (ct.state = ${CONTENT_STAGING} OR EXISTS (SELECT 1 FROM vfs_inodes i WHERE i.content_id = ct.id)))`;
 const CONTENT_LIVE = 1;
 const CONTENT_DYING = 2;
 /**
@@ -556,6 +567,11 @@ export class SqliteVFS {
     _tombstoneFloor = 0;
     _tombstoneRows = null;
     tombstoneRetain;
+    coldStore;
+    /** Generations of snapshots prepareSnapshot hydrated: tiering leaves their chunks alone. */
+    hotSnapshotGens = new Map();
+    /** Where the next tier pass resumes its walk of vfs_chunks. */
+    tierCursor = 0;
     _invalidations = [];
     _invalidationBytes = 0;
     /**
@@ -693,6 +709,7 @@ export class SqliteVFS {
         }
         this.pathRevisionBudget = pathRevisionBytes;
         this.tombstoneRetain = options.tombstoneRows ?? TOMBSTONE_RETAIN_ROWS;
+        this.coldStore = options.coldStore ?? null;
         if (!Number.isSafeInteger(this.tombstoneRetain) || this.tombstoneRetain < 0) {
             throw vfsError('EINVAL', `tombstone retention must be a row count, not ${this.tombstoneRetain}`);
         }
@@ -872,6 +889,8 @@ export class SqliteVFS {
         gen INTEGER NOT NULL
       ) WITHOUT ROWID`);
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_tombstones_gen ON vfs_tombstones(gen)');
+            // Cold objects whose chunk GC deleted, for the next tier pass to delete.
+            this.sql.exec('CREATE TABLE IF NOT EXISTS vfs_cold_trash (hash BLOB PRIMARY KEY) WITHOUT ROWID');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_chunk ON vfs_inode_history(chunk_id) WHERE chunk_id IS NOT NULL');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_content ON vfs_inode_history(content_id) WHERE content_id IS NOT NULL');
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_gc_queue (
@@ -2054,7 +2073,9 @@ export class SqliteVFS {
             for (let i = 0; i < missing.length; i += KEYS_PER_SQL_EXEC) {
                 const page = missing.slice(i, i + KEYS_PER_SQL_EXEC);
                 this._sqlReads++;
-                for (const row of this.sql.exec(`SELECT id, data FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page)) {
+                for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page)) {
+                    if (Number(row.state) !== CHUNK_LOCAL)
+                        throw coldChunkError(ref.path);
                     const data = this.blobToUint8Array(row.data);
                     found.set(Number(row.id), data);
                     this.cacheSet(Number(row.id), data);
@@ -2073,8 +2094,11 @@ export class SqliteVFS {
                 const page = rows.slice(i, i + KEYS_PER_SQL_EXEC);
                 const byId = new Map();
                 this._sqlReads++;
-                for (const row of this.sql.exec(`SELECT id, data FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page.map((row) => row.chunkId)))
+                for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page.map((row) => row.chunkId))) {
+                    if (Number(row.state) !== CHUNK_LOCAL)
+                        throw coldChunkError(ref.path);
                     byId.set(Number(row.id), this.blobToUint8Array(row.data));
+                }
                 for (const row of page) {
                     const data = byId.get(row.chunkId);
                     if (!data)
@@ -2161,9 +2185,11 @@ export class SqliteVFS {
                 return hit;
         }
         this._sqlReads++;
-        const row = [...this.sql.exec('SELECT data FROM vfs_chunks WHERE id = ?', chunkId)][0];
+        const row = [...this.sql.exec('SELECT data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
         if (!row)
             throw new Error(`EIO: ${path}: missing chunk ${chunkId}`);
+        if (Number(row.state) !== CHUNK_LOCAL)
+            throw coldChunkError(path);
         const data = this.blobToUint8Array(row.data);
         if (cached)
             this.cacheSet(chunkId, data);
@@ -3533,6 +3559,8 @@ export class SqliteVFS {
     copyTree(src, dst, cred, options = {}) {
         this.assertMutationsAllowed([dst]);
         const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
+        if (atGen !== undefined)
+            this.assertSnapshotLocal(atGen, normalizeVfsPath(src), options.at);
         const tree = atGen === undefined ? this.inodes : { get: (path) => this.inodeAt(path, atGen) };
         const source = this.checkAccess(src, 0o4, cred, { followLeaf: false, tree });
         const root = source.inode;
@@ -3979,6 +4007,14 @@ export class SqliteVFS {
             this.assertMutationsAllowed([subtree]);
         else if (this.exclusiveMutationLeases.size > 0)
             throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+        this.assertSnapshotLocal(g, subtree, name);
+        // A restore a reset or a cold chunk stopped continues rather than starting over.
+        for (const row of [...this.sql.exec("SELECT id, args, start_gen FROM vfs_jobs WHERE kind = 'restore'")]) {
+            const pending = JSON.parse(String(row.args));
+            if (pending.name === name && pending.subtree === subtree) {
+                return { restored: this.runRestore(Number(row.id), pending, Number(row.start_gen)) };
+            }
+        }
         let id = 0;
         let startGen = 0;
         this.transactionSync(() => {
@@ -3988,6 +4024,7 @@ export class SqliteVFS {
         return { restored: this.runRestore(id, { name, g, subtree }, startGen) };
     }
     runRestore(id, job, startGen) {
+        this.assertSnapshotLocal(job.g, job.subtree, job.name);
         const range = subtreeRange(job.subtree);
         // Path filter for both tables, as SQL plus its parameters.
         const within = job.subtree === ''
@@ -4312,7 +4349,7 @@ export class SqliteVFS {
         const present = new Set();
         for (let i = 0; i < hashes.length; i += KEYS_PER_SQL_EXEC) {
             const batch = hashes.slice(i, i + KEYS_PER_SQL_EXEC);
-            for (const row of this.sql.exec(`SELECT hash FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex)))
+            for (const row of this.sql.exec(`SELECT hash FROM vfs_chunks WHERE state = ${CHUNK_LOCAL} AND hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex)))
                 present.add(hex(this.blobToUint8Array(row.hash)));
         }
         return hashes.filter((hash) => !present.has(hash));
@@ -4326,9 +4363,11 @@ export class SqliteVFS {
         let bytes = 0;
         let index = 0;
         for (; index < hashes.length; index++) {
-            const row = [...this.sql.exec('SELECT size, data FROM vfs_chunks WHERE hash = ?', unhex(hashes[index]))][0];
+            const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hashes[index]))][0];
             if (!row)
                 throw vfsError('ENOENT', `chunk ${hashes[index]}`);
+            if (Number(row.state) !== CHUNK_LOCAL)
+                throw coldChunkError(`chunk ${hashes[index]}`);
             if (chunks.length > 0 && bytes + Number(row.size) > maxBytes)
                 break;
             const data = this.blobToUint8Array(row.data);
@@ -4583,6 +4622,185 @@ export class SqliteVFS {
             gid: row.gid,
             content,
         };
+    }
+    // ── Cold tier: chunks only snapshots reference (P6) ───────────────────
+    //
+    // A chunk that no live row, live manifest or staging content names, only
+    // history, may move to the cold store: uploaded by hash, then its data
+    // emptied and state set cold in a transaction that probes the live
+    // references again. No live row ever names a cold chunk, so no synchronous
+    // read of the live tree can meet one. A snapshot's reads, a restore and a
+    // copyTree from it are preceded by prepareSnapshot, which brings its
+    // chunks back.
+    /**
+     * Move up to `maxChunks` snapshot-only chunks to the cold store, and
+     * delete the cold objects GC released. One pass walks the chunk table from
+     * where the last stopped. Returns what it moved.
+     */
+    async tierColdChunks(maxChunks = TIER_PAGE_CHUNKS) {
+        const store = this.requireColdStore();
+        const pinned = new Set();
+        for (const opened of this.openNodes)
+            if (opened.inode.chunkId !== null)
+                pinned.add(opened.inode.chunkId);
+        const pinnedContents = [...this.activeStagingContentIds];
+        for (const opened of this.openNodes)
+            if (opened.inode.contentId !== null)
+                pinnedContents.push(opened.inode.contentId);
+        const hot = [...this.hotSnapshotGens.values()];
+        const hotHistory = hot.length === 0 ? '' : `
+      AND NOT EXISTS (SELECT 1 FROM vfs_inode_history h WHERE (h.chunk_id = c.id
+            OR h.content_id IN (SELECT content_id FROM vfs_content_chunks WHERE chunk_id = c.id))
+          AND (${hot.map(() => '(h.gen_from <= ? AND ? < h.gen_to)').join(' OR ')}))`;
+        const pinnedContent = pinnedContents.length === 0 ? '' : `
+      AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks WHERE chunk_id = c.id AND content_id IN (${pinnedContents.map(() => '?').join(',')}))`;
+        // A window of chunk ids after the cursor; candidates in it up to maxChunks.
+        const window = [...this.sql.exec('SELECT MAX(id) AS id FROM (SELECT id FROM vfs_chunks WHERE id > ? ORDER BY id LIMIT ?)', this.tierCursor, TIER_SCAN_ROWS)][0];
+        const windowEnd = window?.id === null || window?.id === undefined ? null : Number(window.id);
+        const candidates = windowEnd === null ? [] : [...this.sql.exec(`SELECT c.id, c.hash, c.data FROM vfs_chunks c
+       WHERE c.id > ? AND c.id <= ? AND c.state = ${CHUNK_LOCAL}
+         AND (EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
+           OR EXISTS (SELECT 1 FROM vfs_content_chunks cc JOIN vfs_inode_history h ON h.content_id = cc.content_id WHERE cc.chunk_id = c.id))
+         ${LIVE_CHUNK_UNREFERENCED}${hotHistory}${pinnedContent}
+       ORDER BY c.id LIMIT ?`, this.tierCursor, windowEnd, ...hot.flatMap((g) => [g, g]), ...pinnedContents, maxChunks)];
+        const reachedEnd = candidates.length < maxChunks ? windowEnd : Number(candidates[candidates.length - 1].id);
+        let bytes = 0;
+        const uploaded = [];
+        for (const row of candidates) {
+            if (pinned.has(Number(row.id)))
+                continue;
+            const hash = this.blobToUint8Array(row.hash);
+            const data = this.blobToUint8Array(row.data);
+            await store.put(hex(hash), data);
+            uploaded.push({ id: Number(row.id), hash });
+            bytes += data.byteLength;
+        }
+        let tiered = 0;
+        for (let i = 0; i < uploaded.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = uploaded.slice(i, i + KEYS_PER_SQL_EXEC);
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+                // The probes again, inside the transaction: across the awaits a
+                // write may have named one of these chunks, or a prepareSnapshot
+                // claimed its snapshot.
+                const hotNow = [...this.hotSnapshotGens.values()];
+                const hotClause = hotNow.length === 0 ? '' : `
+            AND NOT EXISTS (SELECT 1 FROM vfs_inode_history h WHERE (h.chunk_id = c.id
+                  OR h.content_id IN (SELECT content_id FROM vfs_content_chunks WHERE chunk_id = c.id))
+                AND (${hotNow.map(() => '(h.gen_from <= ? AND ? < h.gen_to)').join(' OR ')}))`;
+                tiered += [...this.sql.exec(`UPDATE vfs_chunks AS c SET data = x'', state = ${CHUNK_COLD}
+             WHERE id IN (${batch.map(() => '?').join(',')}) AND state = ${CHUNK_LOCAL}${LIVE_CHUNK_UNREFERENCED}${hotClause}
+             RETURNING id`, ...batch.map((entry) => entry.id), ...hotNow.flatMap((g) => [g, g]))].length;
+            });
+            for (const entry of batch)
+                this.cacheEvict(entry.id);
+        }
+        this.tierCursor = reachedEnd ?? 0;
+        const deleted = await this.drainColdTrash();
+        return { tiered, bytes, deleted, done: reachedEnd === null };
+    }
+    /** Delete from the cold store what GC released, a page at a time. */
+    async drainColdTrash() {
+        const store = this.requireColdStore();
+        let deleted = 0;
+        for (;;) {
+            const page = [...this.sql.exec('SELECT hash FROM vfs_cold_trash LIMIT ?', KEYS_PER_SQL_EXEC)]
+                .map((row) => this.blobToUint8Array(row.hash));
+            if (page.length === 0)
+                return deleted;
+            await store.delete(page.map(hex));
+            this.transactionSync(() => {
+                this.sql.exec(`DELETE FROM vfs_cold_trash WHERE hash IN (${page.map(() => '?').join(',')})`, ...page);
+            });
+            deleted += page.length;
+        }
+    }
+    /**
+     * Bring back every cold chunk snapshot `name` references under `root`,
+     * and keep them local until releaseSnapshot(name): after this, at(name),
+     * restore(name) and copyTree(..., { at: name }) read synchronously.
+     * O(history rows covering the snapshot), since only those can be cold.
+     */
+    async prepareSnapshot(name, options = {}) {
+        const g = this.requireSnapshot(name);
+        this.hotSnapshotGens.set(name, g);
+        const root = normalizeVfsPath(options.root ?? '');
+        let hydrated = 0;
+        let bytes = 0;
+        for (;;) {
+            const cold = this.coldChunksAt(g, root, KEYS_PER_SQL_EXEC);
+            if (cold.length === 0)
+                return { hydrated, bytes };
+            const result = await this.hydrate(cold);
+            hydrated += result.hydrated;
+            bytes += result.bytes;
+        }
+    }
+    /** Let tiering move snapshot `name`'s chunks again. */
+    releaseSnapshot(name) {
+        this.hotSnapshotGens.delete(name);
+    }
+    /** Hashes of cold chunks the history rows covering `g` under `root` reference. */
+    coldChunksAt(g, root, limit) {
+        const range = subtreeRange(root);
+        const within = root === '' ? '' : ' AND (h.path = ? OR (h.path > ? AND h.path < ?))';
+        const bounds = root === '' ? [] : [root, range.lower, range.upper];
+        return [...this.sql.exec(`SELECT c.hash FROM vfs_chunks c WHERE c.state = ${CHUNK_COLD} AND c.id IN (
+         SELECT h.chunk_id FROM vfs_inode_history h WHERE h.chunk_id IS NOT NULL AND h.gen_from <= ? AND ? < h.gen_to${within}
+         UNION SELECT cc.chunk_id FROM vfs_inode_history h JOIN vfs_content_chunks cc ON cc.content_id = h.content_id
+           WHERE h.content_id IS NOT NULL AND h.gen_from <= ? AND ? < h.gen_to${within})
+       LIMIT ?`, g, g, ...bounds, g, g, ...bounds, limit)].map((row) => this.blobToUint8Array(row.hash));
+    }
+    /** Fetch cold chunks by hash, re-hash them, and store them local again. */
+    async hydrate(hashes) {
+        const store = this.requireColdStore();
+        const fetched = [];
+        for (const hash of hashes) {
+            const object = await store.get(hex(hash));
+            if (object === null)
+                throw vfsError('EIO', `cold chunk ${hex(hash)} is missing from the cold store`);
+            const data = new Uint8Array(await object.arrayBuffer());
+            if (hex(chunkHash(data)) !== hex(hash))
+                throw vfsError('EIO', `cold chunk ${hex(hash)} does not hash to its name`);
+            fetched.push({ hash, data });
+        }
+        let hydrated = 0;
+        let bytes = 0;
+        let group = [];
+        let groupBytes = 0;
+        const flush = () => {
+            if (group.length === 0)
+                return;
+            const rows = group;
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+                for (const row of rows) {
+                    hydrated += [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_COLD} RETURNING 1`, row.data, row.hash)].length;
+                }
+            });
+            for (const row of rows)
+                bytes += row.data.byteLength;
+            group = [];
+            groupBytes = 0;
+        };
+        for (const row of fetched) {
+            if (group.length > 0 && (groupBytes + row.data.byteLength > MAX_TX_BLOB_BYTES || group.length >= MAX_TX_SQL_EXECS - 4))
+                flush();
+            group.push(row);
+            groupBytes += row.data.byteLength;
+        }
+        flush();
+        return { hydrated, bytes };
+    }
+    /** Throw ENODATA if a restore or copy from generation `g` under `root` would publish a cold chunk. */
+    assertSnapshotLocal(g, root, name) {
+        if (this.coldStore === null)
+            return;
+        if (this.coldChunksAt(g, root, 1).length > 0)
+            throw coldChunkError(`snapshot ${name}`);
+    }
+    requireColdStore() {
+        if (this.coldStore === null)
+            throw vfsError('EINVAL', 'no cold store is configured');
+        return this.coldStore;
     }
     // ── Batch write (npm install fast path) ───────────────────────────────
     normalizeBatchInode(entry, cred) {
@@ -5438,17 +5656,30 @@ export class SqliteVFS {
                 for (const key of wanted.keys())
                     named.delete(key);
                 const lookup = new Map(named);
+                const remote = new Set();
                 for (const [key, piece] of wanted)
                     lookup.set(key, piece.hash);
                 const keys = [...lookup.keys()];
                 for (let i = 0; i < keys.length; i += KEYS_PER_SQL_EXEC) {
                     const batch = keys.slice(i, i + KEYS_PER_SQL_EXEC);
-                    for (const row of this.sql.exec(`SELECT id, hash FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => lookup.get(key))))
-                        chunkIds.set(hashKey(this.blobToUint8Array(row.hash)), Number(row.id));
+                    for (const row of this.sql.exec(`SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => lookup.get(key)))) {
+                        const key = hashKey(this.blobToUint8Array(row.hash));
+                        chunkIds.set(key, Number(row.id));
+                        if (Number(row.state) !== CHUNK_LOCAL)
+                            remote.add(key);
+                    }
                 }
                 for (const [key, hash] of named) {
-                    if (!chunkIds.has(key))
+                    if (!chunkIds.has(key) || remote.has(key))
                         throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
+                }
+                // A write whose bytes a cold chunk already names brings them back:
+                // no live row ever names a chunk that is not local.
+                for (const key of remote) {
+                    const piece = wanted.get(key);
+                    if (piece === undefined)
+                        continue;
+                    this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key));
                 }
                 // An unshared chunk is rewritten in place unless its new bytes
                 // already exist. A piece that deduplicated onto its old bytes must
@@ -5848,8 +6079,11 @@ export class SqliteVFS {
                  AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
                  AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks WHERE chunk_id = c.id)
                  AND NOT EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
-               RETURNING id`, ...collectable))
+               RETURNING id, hash, state`, ...collectable)) {
                         freed.push(Number(row.id));
+                        if (Number(row.state) !== CHUNK_LOCAL)
+                            this.sql.exec('INSERT OR IGNORE INTO vfs_cold_trash (hash) VALUES (?)', row.hash);
+                    }
                 }
                 // What something may still name goes on the queue: its last
                 // reference, when it goes, dereferences it again anyway.
@@ -5877,8 +6111,11 @@ export class SqliteVFS {
              AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
              AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks WHERE chunk_id = c.id)
              AND NOT EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
-           RETURNING id`, ...ids))
+           RETURNING id, hash, state`, ...ids)) {
                 freed.push(Number(row.id));
+                if (Number(row.state) !== CHUNK_LOCAL)
+                    this.sql.exec('INSERT OR IGNORE INTO vfs_cold_trash (hash) VALUES (?)', row.hash);
+            }
             this.sql.exec(`DELETE FROM vfs_gc_queue WHERE kind = ${GC_CHUNK} AND id IN (${list})`, ...ids);
         });
         for (const id of freed)
@@ -6573,6 +6810,9 @@ function vfsError(code, message) {
     return Object.assign(new Error(`${code}: ${message}`), { code });
 }
 const NO_BYTES = new Uint8Array(0);
+function coldChunkError(what) {
+    return vfsError('ENODATA', `${what}: its bytes are in cold storage; await prepareSnapshot() first`);
+}
 function unhex(text) {
     if (!/^[0-9a-f]{64}$/.test(text))
         throw vfsError('EINVAL', `not a sha256: ${text}`);

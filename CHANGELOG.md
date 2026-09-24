@@ -39,6 +39,14 @@ published independently in the `@nimbus-sh` npm scope.
   later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
   `storeStats()` reports chunks, history rows, the GC queue, snapshots and
   jobs.
+- Snapshot history can live in a cold store: with `coldStore` (an R2
+  bucket binding or anything with get/put/delete) `tierColdChunks()` moves
+  chunks that only snapshots reference out of the database, so the quota
+  bounds the live tree and history is unbounded. The live tree never names
+  a cold chunk and always reads synchronously. `await prepareSnapshot(name)`
+  brings a snapshot's chunks back before `at(name)` reads, `restore(name)`
+  or `copyTree(..., { at })`, which fail ENODATA otherwise; a write of a cold
+  chunk's bytes makes it local again; GC deletes cold objects too.
 - Trees move between databases by hash: `exportPage({ at, root, after })`
   lists a snapshot's rows with their chunk hashes, `wantChunks(page)` says
   which chunks the importer lacks, `exportChunks(hashes)` sends those in

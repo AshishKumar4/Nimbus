@@ -249,6 +249,19 @@ export interface SqliteVfsOptions {
      * poisons (the reader reconciles against list()).
      */
     readonly tombstoneRows?: number;
+    /**
+     * Where chunks only snapshots reference may be moved (P6): an R2 bucket
+     * or anything with its get/put/delete. Without it nothing is tiered.
+     */
+    readonly coldStore?: VfsColdStore;
+}
+/** An object store keyed by chunk hash (hex), such as an R2 bucket binding. */
+export interface VfsColdStore {
+    put(key: string, bytes: Uint8Array): Promise<unknown>;
+    get(key: string): Promise<{
+        arrayBuffer(): Promise<ArrayBuffer>;
+    } | null>;
+    delete(keys: string[]): Promise<unknown>;
 }
 export declare class SqliteVFS {
     private readonly openNodes;
@@ -277,6 +290,11 @@ export declare class SqliteVFS {
     private _tombstoneFloor;
     private _tombstoneRows;
     private readonly tombstoneRetain;
+    private readonly coldStore;
+    /** Generations of snapshots prepareSnapshot hydrated: tiering leaves their chunks alone. */
+    private readonly hotSnapshotGens;
+    /** Where the next tier pass resumes its walk of vfs_chunks. */
+    private tierCursor;
     private _invalidations;
     private _invalidationBytes;
     /**
@@ -1037,6 +1055,40 @@ export declare class SqliteVFS {
     private beginImport;
     private hasChildren;
     private importedEntry;
+    /**
+     * Move up to `maxChunks` snapshot-only chunks to the cold store, and
+     * delete the cold objects GC released. One pass walks the chunk table from
+     * where the last stopped. Returns what it moved.
+     */
+    tierColdChunks(maxChunks?: number): Promise<{
+        tiered: number;
+        bytes: number;
+        deleted: number;
+        done: boolean;
+    }>;
+    /** Delete from the cold store what GC released, a page at a time. */
+    private drainColdTrash;
+    /**
+     * Bring back every cold chunk snapshot `name` references under `root`,
+     * and keep them local until releaseSnapshot(name): after this, at(name),
+     * restore(name) and copyTree(..., { at: name }) read synchronously.
+     * O(history rows covering the snapshot), since only those can be cold.
+     */
+    prepareSnapshot(name: string, options?: {
+        root?: string;
+    }): Promise<{
+        hydrated: number;
+        bytes: number;
+    }>;
+    /** Let tiering move snapshot `name`'s chunks again. */
+    releaseSnapshot(name: string): void;
+    /** Hashes of cold chunks the history rows covering `g` under `root` reference. */
+    private coldChunksAt;
+    /** Fetch cold chunks by hash, re-hash them, and store them local again. */
+    private hydrate;
+    /** Throw ENODATA if a restore or copy from generation `g` under `root` would publish a cold chunk. */
+    private assertSnapshotLocal;
+    private requireColdStore;
     private normalizeBatchInode;
     private authorizeBatch;
     /**
