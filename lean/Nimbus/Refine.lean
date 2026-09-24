@@ -9,3 +9,4 @@ import Nimbus.Refine.Json
 import Nimbus.Refine.RevisionFloorCases
 import Nimbus.Refine.ContentStoreCases
 import Nimbus.Refine.NamespaceCases
+import Nimbus.Refine.FastCdcCases

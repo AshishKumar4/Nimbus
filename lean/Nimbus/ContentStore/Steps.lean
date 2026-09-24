@@ -405,7 +405,7 @@ theorem publishDedup_inv {s : St} (hi : Inv P s) {w : Writer} {ct : Content} {c2
     obtain ⟨hxw, hx'⟩ := (mem_erase_writers hi.toBase).mp hx
     exact hxw (hi.writerUnique x hx' w hw e)
   have hb1 : Base { s with writers := s.writers.erase w, queue := enq s.queue (.content w.content) } := by
-    refine base_ext hi.toBase (Ext.refl s) rfl rfl rfl rfl rfl rfl rfl hi.freshChunk hi.freshContent ?_ ?_ ?_ ?_ ?_ hi.digestOk
+    refine base_ext hi.toBase (ext_refl s) rfl rfl rfl rfl rfl rfl rfl hi.freshChunk hi.freshContent ?_ ?_ ?_ ?_ ?_ hi.digestOk
     · intro x hx; exact hi.writerView x (List.mem_of_mem_erase hx)
     · intro a ha b hb' e
       exact hi.writerUnique a (List.mem_of_mem_erase ha) b (List.mem_of_mem_erase hb') e
@@ -1042,7 +1042,7 @@ theorem editSmallInPlace_inv {s : St} (hi : Inv P s) {p : Path} {r : Row} {k h :
       show readRef s1 (atRef s x.2 q) = some (s.snapView x.1 q)
       rw [hrr]; exact hi.snapView x hx q
       intro e
-      rcases atRef_mem' e with ⟨r', h1, h2, h3⟩ | ⟨hh, h1, h2⟩
+      rcases atRef_mem_gen e with ⟨r', h1, h2, h3⟩ | ⟨hh, h1, h2⟩
       · by_cases eq : q = p
         · subst eq; rw [hl] at h1; cases h1
           have h4 := le_pinGen hx
@@ -1245,7 +1245,7 @@ theorem editLargeInPlace_inv {s : St} (hi : Inv P s) {p : Path} {r : Row} {c : N
       rw [hrr]
       · exact hS.snapView x hx q
       intro e
-      rcases atRef_mem' e with ⟨r', h1, h2, h3⟩ | ⟨hh, h1, h2⟩
+      rcases atRef_mem_gen e with ⟨r', h1, h2, h3⟩ | ⟨hh, h1, h2⟩
       · by_cases eq : q = p
         · subst eq; rw [hlI] at h1; cases h1
           have := le_pinGen hx

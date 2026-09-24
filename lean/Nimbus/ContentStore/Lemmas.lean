@@ -145,9 +145,9 @@ def Ext (s s' : St) : Prop :=
   (∀ k h, s.chunks k = some h → s'.chunks k = some h) ∧
   (∀ c ct, s.contents c = some ct → ct.state = .live → s'.contents c = some ct)
 
-theorem Ext.refl (s : St) : Ext s s := ⟨fun _ _ h => h, fun _ _ h _ => h⟩
+theorem ext_refl (s : St) : Ext s s := ⟨fun _ _ h => h, fun _ _ h _ => h⟩
 
-theorem Ext.trans {s1 s2 s3 : St} (h12 : Ext s1 s2) (h23 : Ext s2 s3) : Ext s1 s3 :=
+theorem ext_trans {s1 s2 s3 : St} (h12 : Ext s1 s2) (h23 : Ext s2 s3) : Ext s1 s3 :=
   ⟨fun k h hk => h23.1 k h (h12.1 k h hk), fun c ct hc hl => h23.2 c ct (h12.2 c ct hc hl) hl⟩
 
 theorem resolve_ext {s s' : St} (he : Ext s s') {r : Ref} {v : List Hash}
@@ -211,7 +211,7 @@ theorem intern_ext {s : St} {h k : Nat} (hf : s.chunks k = some h ∨ s.chunks k
     Ext s (intern s h k) := by
   unfold intern
   split
-  · exact Ext.refl s
+  · exact ext_refl s
   · rename_i hne
     refine ⟨fun k' x hk' => ?_, fun c ct hc _ => hc⟩
     show upd s.chunks k (some h) k' = some x

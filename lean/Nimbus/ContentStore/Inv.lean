@@ -249,9 +249,9 @@ theorem commit_gens {s : St} (hi : Base s) (p : Path) (nr : Option Ref) :
 @[simp] theorem dirty_snapView (s : St) : (dirty s).snapView = s.snapView := rfl
 @[simp] theorem dirty_view (s : St) : (dirty s).view = s.view := rfl
 
-@[simp] theorem commit_chunks' (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).chunks = s.chunks := rfl
-@[simp] theorem commit_contents' (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).contents = s.contents := rfl
-@[simp] theorem commit_snaps' (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).snaps = s.snaps := rfl
+@[simp] theorem commit_chunks_eq (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).chunks = s.chunks := rfl
+@[simp] theorem commit_contents_eq (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).contents = s.contents := rfl
+@[simp] theorem commit_snaps_eq (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).snaps = s.snaps := rfl
 @[simp] theorem commit_writers (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).writers = s.writers := rfl
 @[simp] theorem commit_fds (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).fds = s.fds := rfl
 @[simp] theorem commit_job (s : St) (p : Path) (nr : Option Ref) : (commit s p nr).job = s.job := rfl
@@ -296,7 +296,7 @@ theorem strongRef_congr {s s' : St} (hl : s'.live = s.live) (hh : s'.hist = s.hi
 theorem writerHeld_congr {s s' : St} (h : s'.writers = s.writers) {x : Ref} : WriterHeld s' x ↔ WriterHeld s x := by
   cases x <;> simp [WriterHeld, h]
 
-theorem exists_congr' {s s' : St} (hc : s'.chunks = s.chunks) (hk : s'.contents = s.contents) {x : Ref} :
+theorem stored_congr {s s' : St} (hc : s'.chunks = s.chunks) (hk : s'.contents = s.contents) {x : Ref} :
     Stored s' x ↔ Stored s x := by
   cases x <;> simp [Stored, hc, hk]
 
@@ -348,7 +348,7 @@ theorem commit_core {s1 : St} {p : Path} {nr : Option Ref} {v : Option (List Has
       exact resolve_ne_none hw
   · intro x hx q
     rw [hc]
-    simp only [setView_snaps, dirty_snaps, commit_snaps'] at hx
+    simp only [setView_snaps, dirty_snaps, commit_snaps_eq] at hx
     have e : atRef (setView (dirty (commit s1 p nr)) p v) x.2 q = atRef (commit s1 p nr) x.2 q :=
       atRef_congr rfl rfl x.2 q
     rw [e, commit_atRef (le_pinGen hx) (hb.snapGen x hx)]

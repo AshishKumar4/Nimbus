@@ -1,0 +1,454 @@
+# Machine-checked by check-traceability.mjs. The Lean models are maintained by
+# hand; a theorem proves its statement only inside the named abstract model. A
+# proved-and-refined requirement also names the fixture the model generates and
+# the unit test that runs the deployed TypeScript on it (scripts/verify-lean.sh
+# regenerates the fixtures and runs those tests).
+edition: 1.0.0
+formalScope: abstract-model-only
+requirements:
+  VFS-REV-001:
+    statement: A path's reported revision never falls below its own last mutation or below the revision of any path under it, and no report and no floor ever decreases.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.RevisionFloor.revision_ge_last
+      - Nimbus.Vfs.RevisionFloor.revision_watermark
+      - Nimbus.Vfs.RevisionFloor.revision_monotone
+      - Nimbus.Vfs.RevisionFloor.floor_monotone
+      - Nimbus.Vfs.RevisionFloor.reachable_inv
+      - Nimbus.Vfs.RevisionFloor.step_inv
+      - Nimbus.Vfs.RevisionFloor.walk_eq
+      - Nimbus.Vfs.RevisionFloor.walkAll_eq
+      - Nimbus.Refine.RevisionFloorCases.dropOnce_step
+      - Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
+      - Nimbus.Refine.RevisionFloorCases.execBump_reach
+      - Nimbus.Vfs.RevisionFloor.init_inv
+      - Nimbus.Vfs.RevisionFloor.under_refl
+      - Nimbus.Vfs.RevisionFloor.under_trans
+      - Nimbus.Vfs.RevisionFloor.under_ne_nil
+      - Nimbus.Vfs.RevisionFloor.under_cases
+      - Nimbus.Vfs.RevisionFloor.under_dropLast
+      - Nimbus.Vfs.RevisionFloor.under_length
+      - Nimbus.Vfs.RevisionFloor.walked_closed
+      - Nimbus.Vfs.RevisionFloor.bump_inv
+      - Nimbus.Vfs.RevisionFloor.drop_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.revision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.bumpRevision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.dropOldestPathRevisions
+    refinement:
+      - lean/fixtures/revision-floor.json :: tests/unit/revision-floor-refinement.mjs
+    remainingEvidence:
+      - Paths are component lists; normalizeVfsPath and a confined caller's storageKey are not modeled
+      - The code's cutoff rule is exercised by the fixtures; every theorem holds for any cutoff at or below the clock
+  VFS-REV-002:
+    statement: Reporting an unheld path at 0 rather than at the floor reports a path below its last write.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Vfs.RevisionFloor.a_zero_floor_reports_below_the_last_write
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
+    remainingEvidence:
+      - The witness is a two-step model trace; tests/unit/revision-floor-refinement.mjs goes red when the code's floor is replaced by 0
+  CS-001:
+    statement: In every reachable state of the content store, including after a DO reset at any transaction boundary, every path reads exactly what was last written to it, so no chunk or content a live path reads is ever collected or rewritten.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.live_reads_last_write
+      - Nimbus.ContentStore.reachable_inv
+      - Nimbus.ContentStore.step_inv
+      - Nimbus.ContentStore.init_inv
+      - Nimbus.ContentStore.commit_inv
+      - Nimbus.ContentStore.commit_core
+      - Nimbus.ContentStore.base_ext
+      - Nimbus.ContentStore.resolve_upd_chunk
+      - Nimbus.ContentStore.readRef_upd_chunk
+      - Nimbus.ContentStore.resolve_upd_content
+      - Nimbus.ContentStore.readRef_upd_content
+      - Nimbus.ContentStore.atRef_mem_gen
+      - Nimbus.ContentStore.atRef_of_live_le
+      - Nimbus.ContentStore.find_erase_of_false
+      - Nimbus.ContentStore.mem_replaceWriter
+      - Nimbus.ContentStore.mem_stagingIds
+      - Nimbus.ContentStore.requeue_inv
+      - Nimbus.ContentStore.not_dying_of_resolves
+      - Nimbus.ContentStore.nodup_append_single
+      - Nimbus.ContentStore.nodup_map_of_inj
+      - Nimbus.ContentStore.mem_erase_writers
+      - Nimbus.ContentStore.wsum_erase
+      - Nimbus.ContentStore.wsum_mono
+      - Nimbus.ContentStore.wsum_enq
+      - Nimbus.ContentStore.star_inv
+      - Nimbus.ContentStore.liveView_resolve
+      - Nimbus.ContentStore.resolve_content_live
+      - Nimbus.ContentStore.not_writer_of_resolves
+      - Nimbus.ContentStore.exists_of_resolves
+      - Nimbus.ContentStore.content_lt_of_exists
+      - Nimbus.ContentStore.chunk_lt_of_exists
+      - Nimbus.ContentStore.resolve_ne_none
+      - Nimbus.ContentStore.atRef_mem
+      - Nimbus.ContentStore.commit_live
+      - Nimbus.ContentStore.mem_commit_hist
+      - Nimbus.ContentStore.mem_commit_queue
+      - Nimbus.ContentStore.commit_liveRef
+      - Nimbus.ContentStore.commit_lost
+      - Nimbus.ContentStore.commit_queue_sub
+      - Nimbus.ContentStore.commit_coverage
+      - Nimbus.ContentStore.commit_gens
+      - Nimbus.ContentStore.setView_live
+      - Nimbus.ContentStore.setView_hist
+      - Nimbus.ContentStore.setView_snaps
+      - Nimbus.ContentStore.setView_chunks
+      - Nimbus.ContentStore.setView_contents
+      - Nimbus.ContentStore.setView_queue
+      - Nimbus.ContentStore.setView_writers
+      - Nimbus.ContentStore.setView_fds
+      - Nimbus.ContentStore.setView_job
+      - Nimbus.ContentStore.setView_gen
+      - Nimbus.ContentStore.setView_nextChunk
+      - Nimbus.ContentStore.setView_nextContent
+      - Nimbus.ContentStore.setView_snapView
+      - Nimbus.ContentStore.setView_view
+      - Nimbus.ContentStore.dirty_live
+      - Nimbus.ContentStore.dirty_hist
+      - Nimbus.ContentStore.dirty_snaps
+      - Nimbus.ContentStore.dirty_chunks
+      - Nimbus.ContentStore.dirty_contents
+      - Nimbus.ContentStore.dirty_queue
+      - Nimbus.ContentStore.dirty_writers
+      - Nimbus.ContentStore.dirty_fds
+      - Nimbus.ContentStore.dirty_gen
+      - Nimbus.ContentStore.dirty_nextChunk
+      - Nimbus.ContentStore.dirty_nextContent
+      - Nimbus.ContentStore.dirty_snapView
+      - Nimbus.ContentStore.dirty_view
+      - Nimbus.ContentStore.commit_chunks_eq
+      - Nimbus.ContentStore.commit_contents_eq
+      - Nimbus.ContentStore.commit_snaps_eq
+      - Nimbus.ContentStore.commit_writers
+      - Nimbus.ContentStore.commit_fds
+      - Nimbus.ContentStore.commit_job
+      - Nimbus.ContentStore.commit_gen
+      - Nimbus.ContentStore.commit_nextChunk
+      - Nimbus.ContentStore.commit_nextContent
+      - Nimbus.ContentStore.commit_snapView
+      - Nimbus.ContentStore.commit_view
+      - Nimbus.ContentStore.updContent_live
+      - Nimbus.ContentStore.updContent_hist
+      - Nimbus.ContentStore.updContent_snaps
+      - Nimbus.ContentStore.updContent_chunks
+      - Nimbus.ContentStore.updContent_contents
+      - Nimbus.ContentStore.updContent_queue
+      - Nimbus.ContentStore.updContent_writers
+      - Nimbus.ContentStore.updContent_fds
+      - Nimbus.ContentStore.updContent_job
+      - Nimbus.ContentStore.updContent_gen
+      - Nimbus.ContentStore.updContent_nextChunk
+      - Nimbus.ContentStore.updContent_nextContent
+      - Nimbus.ContentStore.updContent_view
+      - Nimbus.ContentStore.updContent_snapView
+      - Nimbus.ContentStore.liveRef_congr
+      - Nimbus.ContentStore.histRef_congr
+      - Nimbus.ContentStore.fdRef_congr
+      - Nimbus.ContentStore.manRef_congr
+      - Nimbus.ContentStore.strongRef_congr
+      - Nimbus.ContentStore.writerHeld_congr
+      - Nimbus.ContentStore.stored_congr
+      - Nimbus.ContentStore.pinGen_congr
+      - Nimbus.ContentStore.atRef_congr
+      - Nimbus.ContentStore.base_job
+      - Nimbus.ContentStore.dirty_eq_job
+      - Nimbus.ContentStore.upd_same
+      - Nimbus.ContentStore.upd_ne
+      - Nimbus.ContentStore.mem_enq
+      - Nimbus.ContentStore.mem_enq_of_mem
+      - Nimbus.ContentStore.mem_enq_self
+      - Nimbus.ContentStore.mem_foldl_enq
+      - Nimbus.ContentStore.mapM_mono
+      - Nimbus.ContentStore.mapM_congr
+      - Nimbus.ContentStore.mapM_some_mem
+      - Nimbus.ContentStore.mapM_append
+      - Nimbus.ContentStore.mapM_set
+      - Nimbus.ContentStore.mapM_length
+      - Nimbus.ContentStore.ext_refl
+      - Nimbus.ContentStore.ext_trans
+      - Nimbus.ContentStore.resolve_ext
+      - Nimbus.ContentStore.readRef_ext
+      - Nimbus.ContentStore.resolve_congr
+      - Nimbus.ContentStore.readRef_congr
+      - Nimbus.ContentStore.resolve_live_content
+      - Nimbus.ContentStore.resolve_chunk
+      - Nimbus.ContentStore.intern_ext
+      - Nimbus.ContentStore.intern_chunks_self
+      - Nimbus.ContentStore.commit_chunks
+      - Nimbus.ContentStore.commit_contents
+      - Nimbus.ContentStore.commit_snaps
+      - Nimbus.ContentStore.pinGen_ge
+      - Nimbus.ContentStore.le_pinGen
+      - Nimbus.ContentStore.commit_find_ne
+      - Nimbus.ContentStore.commit_live_ne
+      - Nimbus.ContentStore.internOk_fresh
+      - Nimbus.ContentStore.intern_base
+      - Nimbus.ContentStore.intern_exists
+      - Nimbus.ContentStore.intern_refs
+      - Nimbus.ContentStore.intern_view
+      - Nimbus.ContentStore.intern_snapView
+      - Nimbus.ContentStore.intern_gen
+      - Nimbus.ContentStore.intern_fds
+      - Nimbus.ContentStore.strongRef_intern
+      - Nimbus.ContentStore.writerHeld_intern
+      - Nimbus.ContentStore.intern_commit_inv
+      - Nimbus.ContentStore.jobOk_weak
+      - Nimbus.ContentStore.plain_commit_inv
+      - Nimbus.ContentStore.writeSmall_inv
+      - Nimbus.ContentStore.delete_inv
+      - Nimbus.ContentStore.copy_inv
+      - Nimbus.ContentStore.editSmallCow_inv
+      - Nimbus.ContentStore.beginLarge_inv
+      - Nimbus.ContentStore.appendLarge_inv
+      - Nimbus.ContentStore.manRef_upd_same
+      - Nimbus.ContentStore.publishNew_inv
+      - Nimbus.ContentStore.publishDedup_inv
+      - Nimbus.ContentStore.snapshot_inv
+      - Nimbus.ContentStore.dropSnapshot_inv
+      - Nimbus.ContentStore.dropHist_inv
+      - Nimbus.ContentStore.restoreStart_inv
+      - Nimbus.ContentStore.restoreFinish_inv
+      - Nimbus.ContentStore.close_inv
+      - Nimbus.ContentStore.detach_inv
+      - Nimbus.ContentStore.memoDigest_inv
+      - Nimbus.ContentStore.rename_inv
+      - Nimbus.ContentStore.noMan_of
+      - Nimbus.ContentStore.gcChunkDelete_inv
+      - Nimbus.ContentStore.gcChunkSkip_inv
+      - Nimbus.ContentStore.gcContentSkip_inv
+      - Nimbus.ContentStore.dying_unreferenced
+      - Nimbus.ContentStore.views_upd_content
+      - Nimbus.ContentStore.gcContentStart_inv
+      - Nimbus.ContentStore.gcContentPage_inv
+      - Nimbus.ContentStore.gcContentFinish_inv
+      - Nimbus.ContentStore.mem_set_self
+      - Nimbus.ContentStore.mem_set_of_ne
+      - Nimbus.ContentStore.setView_setView
+      - Nimbus.ContentStore.editSmallInPlace_inv
+      - Nimbus.ContentStore.editLargeCow_inv
+      - Nimbus.ContentStore.editLargeInPlace_inv
+      - Nimbus.Refine.ContentStoreCases.chunkFor_ok
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.writeRange
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.copyFile
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.rename
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - A file is its list of chunk hashes, one hash per chunk, collision-free; the real FastCDC cuts are not in this model
+      - Detached-descriptor writes (R8), copyTree jobs and directories are not modeled; copyTree is modeled as pages of copyFile
+      - A real transaction page is several model steps with nothing between them; every property proved for the finer steps holds for the pages
+  CS-002:
+    statement: A snapshot reads exactly the tree it captured, and what it reads never changes while it exists.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.snapshot_reads_its_tree
+      - Nimbus.ContentStore.snapshot_view_fixed
+      - Nimbus.ContentStore.commit_atRef
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.snapshot
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.at
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.dropSnapshot
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - pin_gen is taken to equal MAX(vfs_snapshots.gen) after every transaction, as BUILD-RULES R9 states
+  CS-003:
+    statement: A restore job that runs to its end with no other write in between leaves every path reading exactly what the snapshot reads, across DO resets during the job.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.restore_yields_the_snapshot
+      - Nimbus.ContentStore.restoreStep_inv
+      - Nimbus.ContentStore.restoreSkip_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.restore
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - The model walks paths by a durable cursor; the built job selects pages by predicate (gen between g and start_gen) and resumes by the same predicate, which is not yet modeled
+  CS-004:
+    statement: A detached descriptor keeps reading the bytes it read when its path was unlinked until it closes.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.descriptor_reads_what_it_opened
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.writeRange
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - Only unlinked descriptors pin; an attached descriptor reads through its path
+  CS-005:
+    statement: Once no large write is in flight and no detached descriptor is open, GC alone empties its queue, after which every stored chunk and content is referenced by a live row, a history row or a manifest.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.no_garbage_after_quiescence
+      - Nimbus.ContentStore.gc_drains
+      - Nimbus.ContentStore.gc_progress
+      - Nimbus.ContentStore.reset_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - The queue is popped in any order; the code's per-kind keyset order is one such order
+  CS-006:
+    statement: Three rules SPEC.md first wrote serve wrong bytes or leak, each from a reachable state where every other guard holds.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.ContentStore.Bugs.an_in_place_rewrite_blind_to_pins_changes_a_descriptor
+      - Nimbus.ContentStore.Bugs.an_in_place_rewrite_a_snapshot_can_see_changes_the_snapshot
+      - Nimbus.ContentStore.Bugs.dropping_a_pinned_queue_row_leaks
+      - Nimbus.ContentStore.Bugs.pinned_reachable
+      - Nimbus.ContentStore.Bugs.snapped_reachable
+      - Nimbus.ContentStore.Bugs.lone_reachable
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+    remainingEvidence:
+      - The as-built guards (BUILD-RULES R3, R5 and pin_gen < gen) are the model's; the fixture's directed cases replay each scenario
+  COH-001:
+    statement: In the resident-store coherence protocol every row a facet holds dated carries a value the authority held at some instant at or after the newest barrier answer the facet has admitted, under any interleaving of commits, answers, poisons, repairs, reads and write-backs.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.no_stale_read
+      - Nimbus.Coherence.Store.reachable_inv
+      - Nimbus.Coherence.Store.step_inv
+      - Nimbus.Coherence.Store.admit_inv
+      - Nimbus.Coherence.Store.admitDelta_inv
+      - Nimbus.Coherence.Store.admitMono_inv
+      - Nimbus.Coherence.Store.admitted_below_horizon
+      - Nimbus.Coherence.Store.valAt_fold
+      - Nimbus.Coherence.Store.valAt_spec
+      - Nimbus.Coherence.Store.noMut_valAt
+      - Nimbus.Coherence.Store.noMut_mono
+      - Nimbus.Coherence.Store.noMut_append
+      - Nimbus.Coherence.Store.noMut_join
+      - Nimbus.Coherence.Store.valAt_append_le
+      - Nimbus.Coherence.Store.repOf_ge
+      - Nimbus.Coherence.Store.init_inv
+      - Nimbus.Coherence.Store.fresh_ext
+      - Nimbus.Coherence.Store.commit_inv
+      - Nimbus.Coherence.Store.repOf_fold
+      - Nimbus.Coherence.Store.repOf_mem
+      - Nimbus.Coherence.Store.mem_map_eq
+      - Nimbus.Coherence.Store.covered
+      - Nimbus.Coherence.Store.admit_rows
+      - Nimbus.Coherence.Store.flush_rows
+    tsRefs:
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - Store mode only; the heap-mode barrier (__vfsBundleRevisions) is not modeled
+      - Own partial mutations under a lease (_ownMutation) are not modeled; whole-file write-back is
+      - fsList's per-path revision is taken to be at or above the path's last commit, which VFS-REV-001 proves of the code
+      - No refinement fixture yet drives the shims; the model names the shim functions in its header
+  COH-002:
+    statement: A cursor below the log's floor is always poisoned, and an answer that is not a poison names every commit between its base and its revision, with revisions that jump.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.below_floor_poisons
+      - Nimbus.Coherence.Store.delta_complete
+      - Nimbus.Coherence.Store.deltaFrom_covers
+      - Nimbus.Coherence.Store.deltaFrom_last
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - The floor rule is ContentStoreBuild's P2 rule (newest revision dropped, the clock at open); the model has one supervisor incarnation
+  COH-003:
+    statement: A read installed past a consumed report, a listing that reports an unheld path at 0, a poison rule without a floor on an emptied log, and a push admitted out of order each leave a stale dated row.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Coherence.Store.a_read_installed_past_a_report_is_stale
+      - Nimbus.Coherence.Store.a_listing_below_the_last_commit_keeps_a_stale_row
+      - Nimbus.Coherence.Store.an_empty_log_without_a_floor_serves_a_stale_row
+      - Nimbus.Coherence.Store.a_push_admitted_out_of_order_is_stale
+      - Nimbus.Coherence.Store.fetched_exists
+      - Nimbus.Coherence.Store.valAt_one
+      - Nimbus.Coherence.Store.valAt_two
+      - Nimbus.Coherence.Store.valAt_five
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - NodeNoMirrorBuild reproduced the out-of-order push as tests/unit/resident-pushed-content.mjs
+  COH-004:
+    statement: A facet's own write that committed before a peer's is served past a barrier reporting the peer until its acknowledgement lands, and waiting at the barrier for every in-flight own acknowledgement whose path carries a noted report removes that window.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
+      - Nimbus.Coherence.Store.own_fresh_when_acks_settled
+      - Nimbus.Coherence.Store.a_per_answer_wait_misses_an_earlier_report
+    tsRefs:
+      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    remainingEvidence:
+      - The fix is ResidentCoherenceLane's; its red-then-green unit test drives the reachable trace on the real resident body
+  COH-005:
+    statement: Before eb542b0b a resumption waiting on a refetch never runs while a peer rewrites the path faster than one read round trip; after it the wait ends within two read landings whatever the writer does.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Refetch.old_never_settles
+      - Nimbus.Coherence.Refetch.livelock_before_eb542b0b
+      - Nimbus.Coherence.Refetch.new_settles
+      - Nimbus.Coherence.Refetch.settles_after_eb542b0b
+    tsRefs:
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    remainingEvidence:
+      - Schedules are abstract; tests/unit/resident-store-provenance.mjs measures the same schedule on the real body (3031 ms before, 54-58 ms after)
+  COH-006:
+    statement: NodeNoMirror's pushed bytes keep every dated row fresh when they ride an admission that applies only entries above the cursor and never moves it back.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.admitPush_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - The per-answer byte budget is any subset of the named paths; a file over budget is simply not pushed
+      - The repair's fetch of push-root files changed during a poison window (a coverage property, not staleness) is not modeled
+  NS-001:
+    statement: A delta naming every path changed since the facet's cursor at its current entry, applied in any order with subtree drops, leaves the facet's namespace exactly the authority's, and without complete logging a removed-then-recreated directory leaves ghosts.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.Namespace.apply_exact
+      - Nimbus.Coherence.Namespace.applyEntry_self
+      - Nimbus.Coherence.Namespace.applyEntry_other
+      - Nimbus.Coherence.Namespace.closed_above
+      - Nimbus.Coherence.Namespace.nothing_below
+      - Nimbus.Coherence.Namespace.a_log_naming_only_the_removed_root_leaves_a_ghost
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/node-namespace.json :: tests/unit/node-namespace-refinement.mjs
+    remainingEvidence:
+      - Credential views and traversability relists are not modeled (tests/unit/resident-namespace.mjs covers them)
+      - Complete logging of every changed path is a hypothesis of the theorem; the fixture checks the code logs it
+  CDC-001:
+    statement: FastCDC tiles every buffer with chunks of at most max bytes, every chunk but the last longer than min, a cut depends only on the bytes from its chunk's start to at most max past it, and a cut found on a prefix of a stream is the cut of the whole.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.FastCdc.cutContent_tiles
+      - Nimbus.Vfs.FastCdc.cdcCut_local
+      - Nimbus.Vfs.FastCdc.cdcCut_prefix
+      - Nimbus.Vfs.FastCdc.cdcCut_final
+      - Nimbus.Vfs.FastCdc.scanFrom_bounds
+      - Nimbus.Vfs.FastCdc.scan_bounds
+      - Nimbus.Vfs.FastCdc.scanFrom_local
+      - Nimbus.Vfs.FastCdc.scanFrom_extend
+      - Nimbus.Vfs.FastCdc.cuts_tile
+    tsRefs:
+      - packages/core/src/vfs/content-chunking.ts#cdcCut
+      - packages/core/src/vfs/content-chunking.ts#cutContent
+      - packages/core/src/vfs/content-chunking.ts#ContentCutter
+    refinement:
+      - lean/fixtures/fastcdc.json :: tests/unit/fastcdc-refinement.mjs
+    remainingEvidence:
+      - The gear table and masks are parameters of every theorem; the fixture checks the deployed ones
+      - That an edit's re-cut stops exactly where old and new cuts rejoin follows from cdcCut_local but the edit loop itself is not modeled

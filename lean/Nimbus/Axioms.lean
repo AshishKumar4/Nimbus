@@ -11,6 +11,7 @@
 -/
 
 import Nimbus
+import Nimbus.Refine
 
 /-! ## Nimbus/Coherence/Namespace.lean -/
 
@@ -93,7 +94,7 @@ import Nimbus
 #print axioms Nimbus.ContentStore.readRef_upd_chunk
 #print axioms Nimbus.ContentStore.resolve_upd_content
 #print axioms Nimbus.ContentStore.readRef_upd_content
-#print axioms Nimbus.ContentStore.atRef_mem'
+#print axioms Nimbus.ContentStore.atRef_mem_gen
 #print axioms Nimbus.ContentStore.atRef_of_live_le
 #print axioms Nimbus.ContentStore.find_erase_of_false
 #print axioms Nimbus.ContentStore.mem_replaceWriter
@@ -132,13 +133,65 @@ import Nimbus
 #print axioms Nimbus.ContentStore.commit_queue_sub
 #print axioms Nimbus.ContentStore.commit_coverage
 #print axioms Nimbus.ContentStore.commit_gens
+#print axioms Nimbus.ContentStore.setView_live
+#print axioms Nimbus.ContentStore.setView_hist
+#print axioms Nimbus.ContentStore.setView_snaps
+#print axioms Nimbus.ContentStore.setView_chunks
+#print axioms Nimbus.ContentStore.setView_contents
+#print axioms Nimbus.ContentStore.setView_queue
+#print axioms Nimbus.ContentStore.setView_writers
+#print axioms Nimbus.ContentStore.setView_fds
+#print axioms Nimbus.ContentStore.setView_job
+#print axioms Nimbus.ContentStore.setView_gen
+#print axioms Nimbus.ContentStore.setView_nextChunk
+#print axioms Nimbus.ContentStore.setView_nextContent
+#print axioms Nimbus.ContentStore.setView_snapView
+#print axioms Nimbus.ContentStore.setView_view
+#print axioms Nimbus.ContentStore.dirty_live
+#print axioms Nimbus.ContentStore.dirty_hist
+#print axioms Nimbus.ContentStore.dirty_snaps
+#print axioms Nimbus.ContentStore.dirty_chunks
+#print axioms Nimbus.ContentStore.dirty_contents
+#print axioms Nimbus.ContentStore.dirty_queue
+#print axioms Nimbus.ContentStore.dirty_writers
+#print axioms Nimbus.ContentStore.dirty_fds
+#print axioms Nimbus.ContentStore.dirty_gen
+#print axioms Nimbus.ContentStore.dirty_nextChunk
+#print axioms Nimbus.ContentStore.dirty_nextContent
+#print axioms Nimbus.ContentStore.dirty_snapView
+#print axioms Nimbus.ContentStore.dirty_view
+#print axioms Nimbus.ContentStore.commit_chunks_eq
+#print axioms Nimbus.ContentStore.commit_contents_eq
+#print axioms Nimbus.ContentStore.commit_snaps_eq
+#print axioms Nimbus.ContentStore.commit_writers
+#print axioms Nimbus.ContentStore.commit_fds
+#print axioms Nimbus.ContentStore.commit_job
+#print axioms Nimbus.ContentStore.commit_gen
+#print axioms Nimbus.ContentStore.commit_nextChunk
+#print axioms Nimbus.ContentStore.commit_nextContent
+#print axioms Nimbus.ContentStore.commit_snapView
+#print axioms Nimbus.ContentStore.commit_view
+#print axioms Nimbus.ContentStore.updContent_live
+#print axioms Nimbus.ContentStore.updContent_hist
+#print axioms Nimbus.ContentStore.updContent_snaps
+#print axioms Nimbus.ContentStore.updContent_chunks
+#print axioms Nimbus.ContentStore.updContent_contents
+#print axioms Nimbus.ContentStore.updContent_queue
+#print axioms Nimbus.ContentStore.updContent_writers
+#print axioms Nimbus.ContentStore.updContent_fds
+#print axioms Nimbus.ContentStore.updContent_job
+#print axioms Nimbus.ContentStore.updContent_gen
+#print axioms Nimbus.ContentStore.updContent_nextChunk
+#print axioms Nimbus.ContentStore.updContent_nextContent
+#print axioms Nimbus.ContentStore.updContent_view
+#print axioms Nimbus.ContentStore.updContent_snapView
 #print axioms Nimbus.ContentStore.liveRef_congr
 #print axioms Nimbus.ContentStore.histRef_congr
 #print axioms Nimbus.ContentStore.fdRef_congr
 #print axioms Nimbus.ContentStore.manRef_congr
 #print axioms Nimbus.ContentStore.strongRef_congr
 #print axioms Nimbus.ContentStore.writerHeld_congr
-#print axioms Nimbus.ContentStore.exists_congr'
+#print axioms Nimbus.ContentStore.stored_congr
 #print axioms Nimbus.ContentStore.pinGen_congr
 #print axioms Nimbus.ContentStore.atRef_congr
 #print axioms Nimbus.ContentStore.commit_core
@@ -148,6 +201,8 @@ import Nimbus
 
 /-! ## Nimbus/ContentStore/Lemmas.lean -/
 
+#print axioms Nimbus.ContentStore.upd_same
+#print axioms Nimbus.ContentStore.upd_ne
 #print axioms Nimbus.ContentStore.mem_enq
 #print axioms Nimbus.ContentStore.mem_enq_of_mem
 #print axioms Nimbus.ContentStore.mem_enq_self
@@ -158,8 +213,8 @@ import Nimbus
 #print axioms Nimbus.ContentStore.mapM_append
 #print axioms Nimbus.ContentStore.mapM_set
 #print axioms Nimbus.ContentStore.mapM_length
-#print axioms Nimbus.ContentStore.Ext
-#print axioms Nimbus.ContentStore.Ext
+#print axioms Nimbus.ContentStore.ext_refl
+#print axioms Nimbus.ContentStore.ext_trans
 #print axioms Nimbus.ContentStore.resolve_ext
 #print axioms Nimbus.ContentStore.readRef_ext
 #print axioms Nimbus.ContentStore.resolve_congr
@@ -194,6 +249,10 @@ import Nimbus
 #print axioms Nimbus.ContentStore.intern_base
 #print axioms Nimbus.ContentStore.intern_exists
 #print axioms Nimbus.ContentStore.intern_refs
+#print axioms Nimbus.ContentStore.intern_view
+#print axioms Nimbus.ContentStore.intern_snapView
+#print axioms Nimbus.ContentStore.intern_gen
+#print axioms Nimbus.ContentStore.intern_fds
 #print axioms Nimbus.ContentStore.strongRef_intern
 #print axioms Nimbus.ContentStore.writerHeld_intern
 #print axioms Nimbus.ContentStore.intern_commit_inv
@@ -235,6 +294,28 @@ import Nimbus
 #print axioms Nimbus.ContentStore.editSmallInPlace_inv
 #print axioms Nimbus.ContentStore.editLargeCow_inv
 #print axioms Nimbus.ContentStore.editLargeInPlace_inv
+
+/-! ## Nimbus/Refine/ContentStoreCases.lean -/
+
+#print axioms Nimbus.Refine.ContentStoreCases.chunkFor_ok
+
+/-! ## Nimbus/Refine/RevisionFloorCases.lean -/
+
+#print axioms Nimbus.Refine.RevisionFloorCases.dropOnce_step
+#print axioms Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
+#print axioms Nimbus.Refine.RevisionFloorCases.execBump_reach
+
+/-! ## Nimbus/Vfs/FastCdc.lean -/
+
+#print axioms Nimbus.Vfs.FastCdc.scanFrom_bounds
+#print axioms Nimbus.Vfs.FastCdc.scan_bounds
+#print axioms Nimbus.Vfs.FastCdc.cdcCut_final
+#print axioms Nimbus.Vfs.FastCdc.scanFrom_local
+#print axioms Nimbus.Vfs.FastCdc.cdcCut_local
+#print axioms Nimbus.Vfs.FastCdc.scanFrom_extend
+#print axioms Nimbus.Vfs.FastCdc.cdcCut_prefix
+#print axioms Nimbus.Vfs.FastCdc.cuts_tile
+#print axioms Nimbus.Vfs.FastCdc.cutContent_tiles
 
 /-! ## Nimbus/Vfs/RevisionFloor.lean -/
 

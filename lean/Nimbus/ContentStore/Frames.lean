@@ -86,7 +86,7 @@ theorem readRef_upd_content {s : St} {c : Nat} (o : Option Content) {x : Option 
     rw [resolve_upd_content o (fun h => hx (h ▸ rfl))]
 
 /-- What `atRef` answers is the live row (when it predates `g`) or a history row. -/
-theorem atRef_mem' {s : St} {g : Nat} {p : Path} {x : Ref} (h : atRef s g p = some x) :
+theorem atRef_mem_gen {s : St} {g : Nat} {p : Path} {x : Ref} (h : atRef s g p = some x) :
     (∃ r, s.live p = some r ∧ r.gen ≤ g ∧ r.ref = x) ∨ (∃ hr ∈ s.hist, hr.ref = x) := by
   unfold atRef at h
   cases hf : s.hist.find? (covers g p) with

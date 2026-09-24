@@ -3,13 +3,14 @@
   `lean/traceability.yaml` is the inventory; `lean/README.md` says how to run
   every check.
 
-  Vfs: RevisionFloor
+  Vfs: RevisionFloor, FastCdc
   ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs
   Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Refetch, Namespace
   Refine (a separate root): the generators of `lean/fixtures/`
 -/
 
 import Nimbus.Vfs.RevisionFloor
+import Nimbus.Vfs.FastCdc
 import Nimbus.ContentStore.Bugs
 import Nimbus.Coherence.StoreBugs
 import Nimbus.Coherence.Refetch
