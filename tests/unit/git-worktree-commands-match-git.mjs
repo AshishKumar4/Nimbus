@@ -6,7 +6,9 @@
 // command in the same state. Symlinks, type changes and renames are part of
 // it. The edits are chosen so the minimal diff is unique; where it is not,
 // git's hunk placement is not a contract, and unified-diff-applies.mjs holds
-// the patches to `git apply` instead.
+// the patches to `git apply` instead. checkout, reset --hard, merge and pull
+// (through the network facet) across a link/directory type change must leave
+// the worktree and index real git leaves, and the link's target untouched.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -15,10 +17,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
+import { GIT_BUNDLE_CODE } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
+import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const GIT_ENV = {
@@ -118,6 +125,7 @@ const diskRoot = join(scratch, 'home');
 const vfsRoot = '/home/user/w';
 mkdirSync(diskRoot);
 
+let server;
 try {
   // ── A repository with every kind of change git diff and ls-files report ──
   const repo = join(diskRoot, 'repo');
@@ -404,6 +412,179 @@ try {
   assert.equal(user.readlink(`${linked.virtual}/link`), readlinkSync(join(links, 'link')));
   for (const args of [['ls-files', '-m'], ['diff', 'HEAD']]) await same(`links after checkout: ${args.join(' ')}`, linked, args);
 
+  // ── A path that is a link on one branch and a directory on the other ──
+  // git replaces the link with a real directory and never writes through a
+  // leading link (has_symlink_leading_path), so the link's target stays as it was.
+  const types = join(diskRoot, 'types');
+  const typed = { disk: types, virtual: `${vfsRoot}/types` };
+  const typedIn = (sub) => ({ disk: join(types, sub), virtual: `${typed.virtual}/${sub}` });
+  const outside = join(diskRoot, 'types-outside');
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'keep.txt'), 'keep\n');
+  mkdirSync(join(types, 'sub'), { recursive: true });
+  sh(types, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(types, 'f.txt'), 'f\n');
+  writeFileSync(join(types, 'sub/s'), 's\n');
+  symlinkSync('../types-outside', join(types, 'd'));
+  symlinkSync('nowhere', join(types, 'dangling'));
+  sh(types, ['add', '-A'], ['commit', '-q', '-m', 'links'], ['checkout', '-q', '-b', 'b']);
+  for (const name of ['d', 'dangling']) {
+    rmSync(join(types, name));
+    mkdirSync(join(types, name));
+  }
+  writeFileSync(join(types, 'd/x'), 'x\n');
+  writeFileSync(join(types, 'dangling/y'), 'y\n');
+  sh(types, ['add', '-A'], ['commit', '-q', '-m', 'directories']);
+  mirror(types, typed.virtual);
+  mirror(outside, `${vfsRoot}/types-outside`);
+  /** The worktree (its .git aside) as `path kind content-or-target` lines. */
+  const diskTree = (root, sub = '') => readdirSync(join(root, sub)).sort().flatMap((name) => {
+    const path = sub ? `${sub}/${name}` : name;
+    if (path === '.git') return [];
+    const st = lstatSync(join(root, path));
+    if (st.isSymbolicLink()) return [`${path} link ${readlinkSync(join(root, path))}`];
+    if (st.isDirectory()) return [`${path}/`, ...diskTree(root, path)];
+    return [`${path} file ${readFileSync(join(root, path), 'utf8')}`];
+  });
+  const vfsTree = (root, sub = '') => user.readdir(sub ? `${root}/${sub}` : root).map(({ name }) => name).sort().flatMap((name) => {
+    const path = sub ? `${sub}/${name}` : name;
+    if (path === '.git') return [];
+    const st = user.lstat(`${root}/${path}`);
+    if (st.type === 'symlink') return [`${path} link ${user.readlink(`${root}/${path}`)}`];
+    // A directory or file that replaced a link keeps none of the link's mode.
+    assert.notEqual(st.mode & 0o170000, 0o120000, `${root}/${path}: a ${st.type} with a link's mode`);
+    if (st.type === 'directory') return [`${path}/`, ...vfsTree(root, path)];
+    return [`${path} file ${new TextDecoder().decode(user.readFile(`${root}/${path}`))}`];
+  });
+  /** The same worktree (the link's target directory untouched) and the same index, as both gits list them. */
+  const sameWorktree = async (label, repo) => {
+    assert.deepEqual(vfsTree(repo.virtual), diskTree(repo.disk), `${label}: worktree`);
+    assert.deepEqual(vfsTree(`${vfsRoot}/types-outside`), ['keep.txt file keep\n'], `${label}: the link's target directory`);
+    assert.deepEqual(diskTree(outside), ['keep.txt file keep\n']);
+    for (const cmd of [['ls-files'], ['ls-files', '-m', '-d', '-o'], ['diff', 'HEAD'], ['diff', '--cached']]) {
+      await same(`${label}: ${cmd.join(' ')}`, repo, cmd);
+    }
+  };
+  /** Both gits run `args`, exit alike (stderr too, when asked), and leave the same worktree and index. */
+  const typeChange = async (label, args, { at = typed, stderr = false } = {}) => {
+    const expected = realGit(at.disk, args);
+    const actual = await nimbusGit(at.virtual, args);
+    assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+    if (stderr) assert.equal(actual.stderr, expected.stderr.split(diskRoot).join(vfsRoot), `${label}: stderr`);
+    await sameWorktree(label, typed);
+  };
+  await typeChange('checkout a branch where the directories are links', ['checkout', '-q', 'main']);
+  await typeChange('checkout back to the directories', ['checkout', '-q', 'b']);
+  await typeChange('checkout the links again', ['checkout', '-q', 'main']);
+  await typeChange('checkout -b at the links', ['checkout', '-q', '-b', 'r']);
+  await typeChange('reset --hard onto the directories', ['reset', '-q', '--hard', 'b']);
+  await typeChange('checkout the directories by name', ['checkout', '-q', 'b']);
+  // A pathspec restores a file from the index; a link where its directory belongs is replaced, not followed.
+  const relink = (name, target) => {
+    rmSync(join(types, name), { recursive: true });
+    symlinkSync(target, join(types, name));
+    for (const { name: child } of user.readdir(`${typed.virtual}/${name}`)) user.unlink(`${typed.virtual}/${name}/${child}`);
+    user.rmdir(`${typed.virtual}/${name}`);
+    user.symlink(target, `${typed.virtual}/${name}`);
+  };
+  relink('d', '../types-outside');
+  relink('dangling', 'nowhere');
+  await typeChange('checkout -- a path below a link', ['checkout', '--', 'd/x']);
+  await typeChange('checkout -- a path through ..', ['checkout', '--', 'sub/../dangling/y']);
+  relink('dangling', 'nowhere');
+  await typeChange('checkout -- from a subdirectory, up through ..', ['checkout', '--', '../dangling/y'], { at: typedIn('sub') });
+  await typeChange('checkout -- a path outside the repository', ['checkout', '--', '../types-outside/keep.txt'], { stderr: true });
+  await typeChange('checkout -- a path git does not know', ['checkout', '--', 'nope'], { stderr: true });
+  user.writeFile(`${typed.virtual}/f.txt`, 'changed\n');
+  writeFileSync(join(types, 'f.txt'), 'changed\n');
+  await typeChange('checkout -- a modified file', ['checkout', '--', 'f.txt']);
+  // A fast-forward merge moves the worktree the way a checkout does.
+  await typeChange('checkout the links to merge into', ['checkout', '-q', 'main']);
+  await typeChange('merge the directories in', ['merge', 'b']);
+
+  // pull runs in the network facet (the bundled cf-git over its buffered fs), from one smart-HTTP server.
+  const served = join(scratch, 'served');
+  mkdirSync(served);
+  sh(scratch, ['clone', '-q', '--bare', types, join(served, 'types.git')]);
+  const servedTypes = join(served, 'types.git');
+  const commitOf = (rev) => realGit(types, ['rev-parse', rev]).stdout.toString().trim();
+  sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf('b~1')]);
+  server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : null;
+      const child = Bun.spawn(['git', 'http-backend'], {
+        env: {
+          ...GIT_ENV,
+          GIT_PROJECT_ROOT: served,
+          GIT_HTTP_EXPORT_ALL: '1',
+          PATH_INFO: url.pathname,
+          QUERY_STRING: url.search.slice(1),
+          REQUEST_METHOD: request.method,
+          CONTENT_TYPE: request.headers.get('content-type') ?? '',
+          CONTENT_LENGTH: body ? String(body.length) : '',
+          HTTP_CONTENT_ENCODING: request.headers.get('content-encoding') ?? '',
+          GIT_PROTOCOL: request.headers.get('git-protocol') ?? '',
+        },
+        stdin: body ? new Blob([body]) : 'ignore',
+        stdout: 'pipe',
+        stderr: 'ignore',
+      });
+      const out = new Uint8Array(await new Response(child.stdout).arrayBuffer());
+      await child.exited;
+      const split = Buffer.from(out).indexOf('\r\n\r\n');
+      const headers = new Headers();
+      let status = 200;
+      for (const line of new TextDecoder().decode(out.subarray(0, split)).split('\r\n')) {
+        const colon = line.indexOf(':');
+        const name = line.slice(0, colon).trim();
+        const value = line.slice(colon + 1).trim();
+        if (name.toLowerCase() === 'status') status = parseInt(value, 10);
+        else headers.set(name, value);
+      }
+      return new Response(out.subarray(split + 4), { status, headers });
+    },
+  });
+  /** Real git as a child the event loop keeps serving: it fetches from this process's server. */
+  const realGitAsync = async (cwd, args) => {
+    const child = Bun.spawn(['git', ...args], { cwd, env: GIT_ENV, stdout: 'pipe', stderr: 'pipe' });
+    const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    assert.equal(code, 0, `real git ${args.join(' ')}: ${stderr}`);
+  };
+  const moduleDir = join(scratch, 'facet');
+  mkdirSync(moduleDir);
+  writeFileSync(join(moduleDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
+  writeFileSync(join(moduleDir, 'git-bundle.js'), GIT_BUNDLE_CODE);
+  const facet = await import(pathToFileURL(join(moduleDir, 'git-network-worker.mjs')).href);
+  const bridge = new SqliteRuntimeFsBridge(user, vfs);
+  const facetEnv = {
+    SUPERVISOR: {
+      stat: async (path) => bridge.stat(path),
+      lstat: async (path) => bridge.stat(path, { followSymlinks: false }),
+      hasLegacySymlinkUnder: async (path) => getSymlinkRegistry(vfs).hasAtOrBelow(path),
+      readdir: async (path) => bridge.readdir(path),
+      readFileBytes: async (path) => bridge.readFile(path),
+      fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
+      writeBatchStream: async (stream) => user.writeStream(stream),
+      async stdout() {},
+    },
+  };
+  const pulled = { disk: join(diskRoot, 'pulled'), virtual: `${vfsRoot}/pulled` };
+  await realGitAsync(diskRoot, ['clone', '-q', `http://127.0.0.1:${server.port}/types.git`, pulled.disk]);
+  mirror(pulled.disk, pulled.virtual);
+  await sameWorktree('a clone at the links', pulled);
+  sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf('b')]);
+  await realGitAsync(pulled.disk, ['pull', '-q', 'origin', 'main']);
+  const response = await facet.default.fetch(new Request('http://git/op', {
+    method: 'POST',
+    body: JSON.stringify({ op: 'pull', dir: pulled.virtual, remote: 'origin', ref: 'main', author: { name: 'a', email: 'a@example.com' } }),
+  }), facetEnv);
+  const pull = await response.json();
+  assert.equal(pull.success, true, `pull: ${pull.error}`);
+  await sameWorktree('pull the directories over the links', pulled);
+
   // ── An unborn repository: HEAD names no commit yet ──
   const unborn = join(diskRoot, 'unborn');
   mkdirSync(unborn);
@@ -439,5 +620,6 @@ try {
 
   console.log(`git-worktree-commands-match-git: ${checks} commands byte-identical to ${realGit(scratch, ['--version']).stdout.toString().trim()}`);
 } finally {
+  server?.stop(true);
   rmSync(scratch, { recursive: true, force: true });
 }

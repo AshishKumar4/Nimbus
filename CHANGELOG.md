@@ -59,6 +59,27 @@ published independently in the `@nimbus-sh` npm scope.
 - `git clone -b <tag>` and `git checkout <tag>` of an annotated tag detach
   HEAD at the commit the tag points to, as git does. HEAD used to name the
   tag object itself.
+- A path that is a symlink on one branch and a directory on the other
+  switches the way git switches it, through `checkout`, `reset --hard`,
+  `merge` and `pull`: the link is replaced by a real directory, and the
+  directory by the link. Nimbus used to keep the link and write the
+  directory's files into whatever it pointed at, outside the repository,
+  and a dangling link was never removed. Below the top of the worktree,
+  checkout never writes through a link, as git does not. A directory the
+  branch no longer has goes once its files have.
+- `git checkout [<tree-ish>] -- <path>...` restores files from the index
+  (or from `<tree-ish>`, staging them). Paths are relative to the working
+  directory and may climb with `..`. One outside the repository, or one
+  that names no tracked file, fails with git's message before anything is
+  written.
+- `git merge` updates the worktree and index to the merged commit. It used
+  to move the branch only. `git reset --hard` keeps HEAD on its branch; it
+  used to detach it.
+- `git pull` writes only below the top of the repository. It used to
+  rewrite every directory above it too, which fails with `EACCES` for a
+  user who does not own them.
+- `git ls-files --others` lists a file or link that sits where the index
+  has a directory.
 
 ### VFS
 

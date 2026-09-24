@@ -882,6 +882,8 @@ export const git = {
   assert.equal(globalThis.__cloneCalls, cloneCallsBeforeOrphan);
   legacySymlinks.delete('orphan-root/injected');
 
+  // A fetch runs in a repository that exists: the facet publishes what it writes below it, never the directory itself.
+  vfs.mkdir('mode');
   const modeResponse = await worker.default.fetch(
     new Request('http://git/op', {
       method: 'POST',
