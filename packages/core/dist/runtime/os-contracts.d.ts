@@ -287,10 +287,27 @@ export interface RuntimeFsBridge {
  * process that caused it: a caller holding the revision its own write
  * produced keeps that cell, while a peer's later write to the same path
  * reports a higher revision and still invalidates.
+ *
+ * Without either flag an entry covers `path` alone. With one, it covers
+ * `path` and everything under it, and a reader applies the same rule to
+ * every cell there: a cell stamped at or above `rev`, or holding the
+ * reader's own unacknowledged bytes, stays, and every other one goes.
  */
 export interface VfsInvalidatedPath {
     path: string;
     rev: number;
+    /**
+     * Something under `path` that the caller may not see changed. `path` is
+     * the nearest directory above it that the caller may see, reported in its
+     * place so that no name reaches a caller that could not list it.
+     */
+    subtree?: true;
+    /**
+     * `path` is a directory that was removed, renamed away, or given another
+     * mode, owner or group, so what is held under it may be stale, or no
+     * longer the caller's to read.
+     */
+    structural?: true;
 }
 /** Result of a {@link RuntimeFsBridge.acquire} barrier. */
 export interface VfsAcquireResult {

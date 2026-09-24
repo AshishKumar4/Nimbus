@@ -1529,6 +1529,42 @@ const __fsMod = (() => {
     if (live) for (const fill of live) if (rev > fill.reported) fill.reported = rev;
   }
 
+  /**
+   * Note one delta entry on everything in flight that it covers: its path,
+   * or, for a subtree-scoped or structural entry, every path at or under it.
+   * The ledger does the same for this facet's own writes and mutations.
+   */
+  function _noteReport(entry) {
+    if (!entry.subtree && !entry.structural) {
+      __nimbusNoteVfsReport(entry.path, entry.rev);
+      _noteFillReport(entry.path, entry.rev);
+      return;
+    }
+    __nimbusNoteVfsReportUnder(entry.path, entry.rev);
+    const under = entry.path + "/";
+    for (const k of [..._fillReports.keys()]) {
+      if (k === entry.path || k.startsWith(under)) _noteFillReport(k, entry.rev);
+    }
+  }
+
+  /**
+   * The resident cells a delta entry covers: its path, or, for a
+   * subtree-scoped or structural entry, every cell at or under it. Such an
+   * entry stands for changes it does not name (a directory that went, one
+   * whose mode, owner or group changed, or something beneath it this facet
+   * may not see), so each cell there is judged as a named one would be.
+   */
+  function _coveredCells(entry) {
+    if (!entry.subtree && !entry.structural) return [entry.path];
+    const under = entry.path + "/";
+    const cells = new Set();
+    for (const table of [__vfsBundle, __vfsBundleRevisions, _metadataTable()]) {
+      if (!table) continue;
+      for (const k of Object.keys(table)) if (k === entry.path || k.startsWith(under)) cells.add(k);
+    }
+    return [...cells];
+  }
+
   /** The cursor moved without a delta (a poison), so no read in flight can be dated. */
   function _spoilFills() {
     for (const live of _fillReports.values()) for (const fill of live) fill.reported = Infinity;
@@ -1800,10 +1836,7 @@ const __fsMod = (() => {
       // judges it against its own revision when that arrives, as it does for
       // a heap cell. A read in flight gets the same note.
       if (Array.isArray(result.paths)) {
-        for (const entry of result.paths) {
-          __nimbusNoteVfsReport(entry.path, entry.rev);
-          _noteFillReport(entry.path, entry.rev);
-        }
+        for (const entry of result.paths) _noteReport(entry);
       }
       const applied = __residentAdmit(result);
       _cursor.epoch = result.epoch;
@@ -1823,17 +1856,20 @@ const __fsMod = (() => {
       _spoilFills();
     } else if (Array.isArray(result.paths)) {
       for (const entry of result.paths) {
-        const k = entry.path;
         // This cursor is about to advance past the report, so a path with
         // one of this facet's own writes in flight keeps the number: only
         // that write's own revision, when it arrives, can say whether the
         // report was itself or a peer. Everything else ignores it.
-        __nimbusNoteVfsReport(k, entry.rev);
-        _noteFillReport(k, entry.rev);
-        if (__vfsBundleRevisions[k] >= entry.rev) { _stats.selfWrites++; continue; }
-        const held = !!(__vfsBundle && k in __vfsBundle);
-        if (_evictResident(k)) _stats.invalidations++;
-        if (held) wereResident.push(k);
+        _noteReport(entry);
+        for (const k of _coveredCells(entry)) {
+          if (__vfsBundleRevisions[k] >= entry.rev) {
+            if (k === entry.path) _stats.selfWrites++;
+            continue;
+          }
+          const held = !!(__vfsBundle && k in __vfsBundle);
+          if (_evictResident(k)) _stats.invalidations++;
+          if (held) wereResident.push(k);
+        }
       }
     }
     // A barrier with no answer has no cursor to adopt; the held one is still

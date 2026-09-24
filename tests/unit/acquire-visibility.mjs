@@ -1,17 +1,24 @@
 #!/usr/bin/env bun
-// An ACQUIRE delta names only what the caller could list, and never loses a
-// name it could.
+// An ACQUIRE delta names only what its caller may see, and still tells it of
+// every change to what it holds.
 //
-// A delta tells a resident store which of its rows changed. It named every
-// logged path that had a name for the caller, including the files in another
-// principal's private root and in any directory the caller cannot traverse,
-// so a delta was a way to learn names that list() refuses. The rule is now
-// list()'s own: a path is named only if every directory above it is
-// traversable. A delta is also about paths that are gone, and their
-// directories may be gone too, so a directory removed since the path changed
-// is judged by the mode it had when it went: removing, renaming or remaking a
-// private directory does not reveal what was in it. What the caller could
-// list is still named, deleted or not, so no row it filled goes stale.
+// A delta tells a resident store which of its rows changed, and the store
+// evicts exactly what the delta covers. Two rules make that both private and
+// coherent:
+//
+//  - A path the caller has a name for but may not see (a directory above it
+//    it cannot enter, or one whose place went after the change) is never
+//    dropped: it is reported as the nearest directory above it that the
+//    caller may see, `subtree`-scoped. Entries are merged, so a hidden
+//    `rm -rf` costs one entry and reveals no name inside it.
+//  - A directory that was removed, renamed away, or given another mode,
+//    owner or group is reported `structural`.
+//
+// A reader evicts every row at or under a subtree-scoped or structural entry.
+// Dropping hidden entries instead lost changes: a directory made private and
+// then removed hid its files' removal, so a store that had filled them kept
+// serving them. And a directory made private must stop its store serving
+// what it holds.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -48,169 +55,200 @@ root.chown('home/b', B.uid, B.gid);
 const a = raw.as(A);
 const b = raw.as(B);
 const plain = raw.as(PLAIN);
+const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
 
-/** Every name A's and PLAIN's deltas carry for the mutations `run` makes. */
-function named(run) {
+/** A's and PLAIN's deltas for the mutations `run` makes. */
+function deltas(run) {
   const cursor = raw.revision();
   run();
-  const names = {};
+  const out = {};
   for (const [who, view] of [['a', a], ['plain', plain]]) {
     const delta = view.invalidatedSince(raw.epoch, cursor);
     assert.equal(delta.poison, false, `${who}'s delta was poisoned`);
-    names[who] = delta.paths.map((entry) => entry.path).sort();
+    out[who] = delta.paths;
   }
-  return names;
+  return out;
 }
-/** Nothing inside `dir` was named: its own name is listable, what it holds is not. */
-const hidden = (names, dir) => {
-  for (const [who, paths] of Object.entries(names)) {
-    const leaked = paths.filter((path) => path.startsWith(`${dir}/`));
+/** No name inside `dir` reached anyone. */
+const hidden = (all, dir) => {
+  for (const [who, paths] of Object.entries(all)) {
+    const leaked = paths.map((entry) => entry.path).filter((path) => path.startsWith(`${dir}/`));
     assert.deepEqual(leaked, [], `${who} learned names inside ${dir}`);
   }
 };
-const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
+const at = (paths, path) => paths.filter((entry) => entry.path === path);
+
+// A resident store for A, over the real RPC handlers.
+const store = new Function(
+  FACET_RESIDENT_STORE_SOURCE
+    + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
+    + ' __residentAdmit, __residentCursor, __residentGet };',
+)();
+store.__residentBind({
+  storage: {
+    sql: (() => {
+      const db = new Database(':memory:');
+      return {
+        exec(query, ...params) {
+          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
+            db.query(query).run(...params);
+            return [];
+          }
+          return db.query(query).all(...params);
+        },
+        get databaseSize() { return 0; },
+      };
+    })(),
+  },
+});
+const processes = new SessionProcessSupervisor();
+const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
+const { pid } = processes.spawn('node', ['node'], '/', { cred: A });
+const supervisor = {
+  fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
+  fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
+  fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, pid),
+};
+async function barrier() {
+  const held = store.__residentCursor();
+  return store.__residentAdmit(await supervisor.fsAcquire(held.epoch, held.rev));
+}
+
+plain.mkdir('/home/user/d');
+plain.writeFile('/home/user/d/p', 'p v1');
+plain.mkdir('/home/user/e');
+plain.writeFile('/home/user/e/q', 'q v1');
+plain.mkdir('/home/user/work/lib', { recursive: true });
+plain.writeFile('/home/user/work/lib/index.js', 'export default 1;');
+plain.mkdir('/home/user/shelf');
+plain.writeFile('/home/user/shelf/book.txt', 'book');
+store.__residentAdoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+{
+  const filled = await store.__residentSynchronizeFromSupervisor(supervisor);
+  assert.equal(filled.failed, 0);
+  for (const path of ['home/user/d/p', 'home/user/e/q', 'home/user/work/lib/index.js', 'home/user/shelf/book.txt']) {
+    assert.ok(store.__residentGet(path) !== undefined, `the store did not fill ${path}`);
+  }
+}
+
+// ── A directory made private, then removed: its rows are evicted ─────────
+{
+  const cursor = raw.revision();
+  plain.chmod('/home/user/d', 0o700);
+  plain.removeRecursive('/home/user/d');
+  const paths = a.invalidatedSince(raw.epoch, cursor).paths;
+  assert.deepEqual(at(paths, 'home/user/d'), [{ path: 'home/user/d', rev: raw.revision(), subtree: true, structural: true }]);
+  hidden({ a: paths }, 'home/user/d');
+  const applied = await barrier();
+  assert.deepEqual(applied.dropped, ['home/user/d/p'], 'a row for a removed file was kept');
+  assert.equal(store.__residentGet('home/user/d/p'), undefined);
+}
+
+// ── A directory made private: its rows stop being served ─────────────────
+{
+  plain.chmod('/home/user/e', 0o700);
+  const applied = await barrier();
+  assert.deepEqual(applied.dropped, ['home/user/e/q'], 'a row under a directory A was locked out of was kept');
+  assert.equal(store.__residentGet('home/user/e/q'), undefined);
+  const [read] = await supervisor.fsReadBatch([{ path: 'home/user/e/q', offset: 0, length: 64 }]);
+  assert.equal(read.error?.code, 'EACCES', 'A read a file under a directory it may no longer enter');
+}
+
+// ── A private directory removed: one entry, and no name inside it ─────────
+{
+  b.mkdir('/home/b/private');
+  b.chmod('/home/b/private', 0o700);
+  b.mkdir('/home/b/private/sub');
+  for (const name of ['x', 'y', 'sub/z']) b.writeFile(`/home/b/private/${name}`, name);
+  const all = deltas(() => b.removeRecursive('/home/b/private'));
+  hidden(all, 'home/b/private');
+  for (const [who, paths] of Object.entries(all)) {
+    assert.deepEqual(
+      paths.filter((entry) => entry.path === 'home/b/private' || entry.path.startsWith('home/b/private/')),
+      [{ path: 'home/b/private', rev: raw.revision(), subtree: true, structural: true }],
+      `${who} did not get exactly one entry for the removed private directory`,
+    );
+  }
+}
 
 // ── Another principal's private /tmp ──────────────────────────────────────
 {
-  const names = named(() => {
+  const all = deltas(() => {
     b.writeFile('/tmp/b-secret', 'b');
     b.mkdir('/tmp/b-dir');
     b.writeFile('/tmp/b-dir/deeper', 'b');
   });
-  hidden(names, 'var/agents/b/tmp');
-  // B's /tmp/b-secret is not A's /tmp/b-secret either.
-  assert.ok(!names.a.some((path) => path.startsWith('tmp/')), 'B\'s file was named in A\'s /tmp');
+  hidden(all, 'var/agents/b/tmp');
+  assert.ok(!all.a.some((entry) => entry.path.startsWith('tmp/')), 'B\'s file was named in A\'s /tmp');
+  assert.deepEqual(at(all.a, 'var/agents/b/tmp').map((entry) => entry.subtree), [true]);
 }
 
-// ── A private directory elsewhere, while it stands and after it goes ──────
-b.mkdir('/home/b/private');
-b.chmod('/home/b/private', 0o700);
+// ── Renamed away, and remade readable: no name from the private one ───────
 {
-  const names = named(() => b.writeFile('/home/b/private/x', 'x'));
-  hidden(names, 'home/b/private');
-}
-{
-  // Removed: its children's names were never listable, so they stay hidden.
-  // The directory's own name was listable, in home/b, and is reported.
-  const names = named(() => b.removeRecursive('/home/b/private'));
-  hidden(names, 'home/b/private');
-  assert.ok(names.a.includes('home/b/private'), 'the removed directory itself is listable');
-}
-{
-  // Renamed away: the old names are judged by the directory they were in.
   b.mkdir('/home/b/private2');
   b.chmod('/home/b/private2', 0o700);
   b.writeFile('/home/b/private2/y', 'y');
-  const names = named(() => b.rename('/home/b/private2', '/home/b/moved'));
-  hidden(names, 'home/b/private2');
-  hidden(names, 'home/b/moved');
-  assert.ok(names.a.includes('home/b/moved') && names.a.includes('home/b/private2'), 'both names are listable');
+  const all = deltas(() => b.rename('/home/b/private2', '/home/b/moved'));
+  hidden(all, 'home/b/private2');
+  hidden(all, 'home/b/moved');
+  assert.ok(at(all.a, 'home/b/private2')[0]?.structural, 'the directory renamed away is structural');
 }
 {
-  // Removed and made again, readable this time: what was in the private one
-  // still is not the caller's to know.
   b.mkdir('/home/b/again');
   b.chmod('/home/b/again', 0o700);
   b.writeFile('/home/b/again/z', 'z');
   const cursor = raw.revision();
   b.removeRecursive('/home/b/again');
   b.mkdir('/home/b/again');
-  b.chmod('/home/b/again', 0o755);
   b.writeFile('/home/b/again/open', 'o');
   const names = a.invalidatedSince(raw.epoch, cursor).paths.map((entry) => entry.path);
-  assert.ok(!names.includes('home/b/again/z'), 'the old private file was named');
-  assert.ok(names.includes('home/b/again/open'), 'the new readable file was not');
+  assert.ok(!names.includes('home/b/again/z'), 'a file of the removed private directory was named');
+  assert.ok(names.includes('home/b/again/open'), 'a file A may see was not');
 }
 {
-  // Made private before the write: judged by the mode it has.
+  // Made private before the write: the write is reported at the directory.
   b.mkdir('/home/b/closing');
-  const names = named(() => {
+  const all = deltas(() => {
     b.chmod('/home/b/closing', 0o700);
     b.writeFile('/home/b/closing/w', 'w');
   });
-  hidden(names, 'home/b/closing');
+  hidden(all, 'home/b/closing');
+  assert.deepEqual(at(all.a, 'home/b/closing').map(({ subtree, structural }) => [subtree, structural]), [[true, true]]);
 }
 
-// ── What the caller could list is always named ────────────────────────────
+// ── What A may see is named, and a readable rm -rf is evicted whole ───────
 {
-  plain.mkdir('/home/user/proj/src', { recursive: true });
-  plain.writeFile('/home/user/proj/src/a.js', 'a');
-  plain.writeFile('/home/user/proj/top.js', 't');
-  const names = named(() => plain.removeRecursive('/home/user/proj'));
-  for (const path of ['home/user/proj', 'home/user/proj/src', 'home/user/proj/src/a.js', 'home/user/proj/top.js']) {
-    assert.ok(names.a.includes(path), `A was not told ${path} is gone`);
-    assert.ok(names.plain.includes(path), `PLAIN was not told ${path} is gone`);
+  const all = deltas(() => {
+    plain.writeFile('/home/user/shelf/book.txt', 'book v2');
+    plain.writeFile('/home/user/fresh.txt', 'f');
+  });
+  for (const path of ['home/user/shelf/book.txt', 'home/user/fresh.txt']) {
+    assert.deepEqual(at(all.a, path).map(({ subtree, structural }) => [subtree, structural]), [[undefined, undefined]], path);
   }
+  const applied = await barrier();
+  assert.deepEqual(applied.dropped, ['home/user/shelf/book.txt']);
+  await store.__residentSynchronizeFromSupervisor(supervisor);
+  assert.equal(asText(store.__residentGet('home/user/shelf/book.txt')), 'book v2');
 }
 {
-  plain.mkdir('/home/user/pub');
-  plain.writeFile('/home/user/pub/b.txt', 'b');
-  const names = named(() => plain.rename('/home/user/pub', '/home/user/pub2'));
-  for (const path of ['home/user/pub/b.txt', 'home/user/pub2/b.txt']) assert.ok(names.a.includes(path), path);
-}
-{
-  // A's own private /tmp, under its own names.
-  const names = named(() => a.writeFile('/tmp/mine', 'm'));
-  assert.ok(names.a.includes('tmp/mine'));
-  hidden({ plain: names.plain }, 'var/agents/a/tmp');
-}
-
-// ── A resident store's row for a removed file is evicted ──────────────────
-// The store evicts exactly the paths a delta names. A delta that dropped a
-// path because its directory was gone would leave the row, and the process
-// would go on reading a file `rm -rf` had removed.
-{
-  const sqlShim = () => {
-    const db = new Database(':memory:');
-    return {
-      exec(query, ...params) {
-        if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-          db.query(query).run(...params);
-          return [];
-        }
-        return db.query(query).all(...params);
-      },
-      get databaseSize() { return 0; },
-    };
-  };
-  const store = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-      + ' __residentAdmit, __residentCursor, __residentGet };',
-  )();
-  store.__residentBind({ storage: { sql: sqlShim() } });
-  const processes = new SessionProcessSupervisor();
-  const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
-  const { pid } = processes.spawn('node', ['node'], '/', { cred: A });
-  const supervisor = {
-    fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
-    fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
-    fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, pid),
-  };
-  plain.mkdir('/home/user/work/lib', { recursive: true });
-  plain.writeFile('/home/user/work/lib/index.js', 'export default 1;');
-  plain.mkdir('/home/user/shelf');
-  plain.writeFile('/home/user/shelf/book.txt', 'book');
-  store.__residentAdoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
-  const filled = await store.__residentSynchronizeFromSupervisor(supervisor);
-  assert.equal(filled.failed, 0);
-  for (const path of ['home/user/work/lib/index.js', 'home/user/shelf/book.txt']) {
-    assert.ok(store.__residentGet(path) !== undefined, `the store did not fill ${path}`);
-  }
   plain.removeRecursive('/home/user/work');
   plain.rename('/home/user/shelf', '/home/user/cupboard');
-  const held = store.__residentCursor();
-  const applied = store.__residentAdmit(await supervisor.fsAcquire(held.epoch, held.rev));
+  const applied = await barrier();
   assert.deepEqual(
     [...applied.dropped].sort(),
     ['home/user/shelf/book.txt', 'home/user/work/lib/index.js'],
     'a row for a file that is gone was kept',
   );
-  assert.equal(store.__residentGet('home/user/work/lib/index.js'), undefined);
-  assert.equal(store.__residentGet('home/user/shelf/book.txt'), undefined);
   const refilled = await store.__residentSynchronizeFromSupervisor(supervisor);
   assert.equal(refilled.failed, 0);
-  assert.equal(asText(store.__residentGet('home/user/cupboard/book.txt')), 'book');
+  assert.equal(asText(store.__residentGet('home/user/cupboard/book.txt')), 'book v2');
+}
+{
+  // A's own private /tmp, under its own names; PLAIN hears of it only as B's
+  // and A's roots, never by name.
+  const all = deltas(() => a.writeFile('/tmp/mine', 'm'));
+  assert.ok(all.a.some((entry) => entry.path === 'tmp/mine'));
+  hidden({ plain: all.plain }, 'var/agents/a/tmp');
 }
 
 console.log('acquire-visibility: ok');

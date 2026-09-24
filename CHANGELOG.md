@@ -134,21 +134,25 @@ published independently in the `@nimbus-sh` npm scope.
   as the shared `/tmp/x`, not at all. They named the storage key, so a peer's
   write to a confined process's `/tmp` file never evicted the copy the
   process held, and a write to the shared file evicted it instead.
-- An ACQUIRE delta names only the paths the caller could list: every
-  directory above them traversable, as `list()` requires. It named every
-  path the caller had a name for, so a resident process was told the names
-  of files in another principal's private root and in directories it cannot
-  read. A path whose directory has since been deleted, renamed or remade is
-  judged by the mode that directory had when it went, so removing a private
-  directory does not reveal what it held. A path the caller could list is
-  still named after `rm -rf`, so no resident row it filled goes stale. Those
-  modes are kept exactly as long as the invalidation log keeps the paths
-  they judge. `list()` checks a confined caller's own directories, not the
-  storage directories that hold its `/tmp`.
+- An ACQUIRE delta names only the paths its caller may see, and still
+  covers every change to what it holds. It named every path the caller had a
+  name for, so a resident process was told the names of files in another
+  principal's private `/tmp` and in directories it cannot read. Now a path
+  the caller may not see (below a directory it cannot enter, or in a
+  directory that has since been removed or renamed) is reported as the
+  nearest directory above it that the caller may see, marked `subtree`, and
+  a directory removed, renamed away, or given another mode, owner or group
+  is marked `structural`. The resident store and the Node shims evict
+  everything at or under an entry with either flag. So a directory made
+  private stops a store serving what it held there, a private `rm -rf`
+  costs one entry and names nothing inside it, and a directory made private
+  and then removed still evicts the files it held. `list()` checks a
+  confined caller's own directories, not the storage directories that hold
+  its `/tmp`.
 - A watch (`subscribe`, under `fs.watch`) follows the caller's view. A
   confined caller watching `/tmp/x` watched the shared `/tmp/x`: its own
   writes never fired, and the shared file's did. Events now carry the
-  caller's names, and only for paths it could list, by the ACQUIRE rule.
+  caller's names, and only for paths it may see.
 
 ### Runtimes
 
