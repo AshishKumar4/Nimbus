@@ -14,8 +14,10 @@ import { ESBUILD_CLI_PREAMBLE, type EsbuildCliArgs, type EsbuildCliOutput } from
 import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { hostRoute, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
+import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
@@ -132,10 +134,20 @@ async function esbuildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetc
   return ctx.facets.get<EsbuildFacetRpc>(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
 }
 
-/** The transform host a Durable Object's esbuild runs its transforms on: its esbuild facet. */
+/** Calls per slice: a slice whose call failed is sent once more. */
+const SLICE_ATTEMPTS = 2;
+
+/**
+ * The transform host a Durable Object's esbuild runs its transforms on: its
+ * esbuild facet, a slice per call. Transforms are pure, so a slice whose call
+ * failed (the facet reset, the connection dropped) is sent once more, to a
+ * freshly minted stub; an overloaded facet is not asked again. A slice that
+ * still fails answers each of its requests with a transient error, which is
+ * no verdict on the source, and the other slices keep their answers.
+ */
 export function esbuildTransformHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost {
   return async (requests) => {
-    const facet = await esbuildFacet(ctx, env);
+    let facet: Fetcher<EsbuildFacetRpc> | null = null;
     const outcomes: EsbuildTransformOutcome[] = [];
     for (let start = 0; start < requests.length;) {
       let end = start;
@@ -144,7 +156,25 @@ export function esbuildTransformHost(ctx: DurableObjectState, env: unknown): Esb
         bytes += requests[end].code.length;
         end++;
       }
-      for (const outcome of await facet.transformMany(requests.slice(start, end))) outcomes.push(outcome);
+      const slice = requests.slice(start, end);
+      let answered: EsbuildTransformOutcome[] | null = null;
+      let failure: unknown = null;
+      for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
+        try {
+          facet ??= await esbuildFacet(ctx, env);
+          answered = await facet.transformMany(slice);
+        } catch (error) {
+          // A stub that threw may be broken for good; the next call mints its own.
+          facet = null;
+          failure = error;
+          if (classifyDoCall(error) === 'overloaded') break;
+        }
+      }
+      if (answered === null) {
+        const error = `esbuild facet unavailable: ${errorText(failure)}`;
+        answered = slice.map(() => ({ error, transient: true as const }));
+      }
+      for (const outcome of answered) outcomes.push(outcome);
       start = end;
     }
     return outcomes;

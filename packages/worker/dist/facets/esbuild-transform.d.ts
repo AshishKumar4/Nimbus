@@ -10,7 +10,14 @@ export declare const ESBUILD_FACET_WORKER_ID: string;
  * each call of the factory is a separate esbuild.
  */
 export declare function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string): WorkerCode;
-/** The transform host a Durable Object's esbuild runs its transforms on: its esbuild facet. */
+/**
+ * The transform host a Durable Object's esbuild runs its transforms on: its
+ * esbuild facet, a slice per call. Transforms are pure, so a slice whose call
+ * failed (the facet reset, the connection dropped) is sent once more, to a
+ * freshly minted stub; an overloaded facet is not asked again. A slice that
+ * still fails answers each of its requests with a transient error, which is
+ * no verdict on the source, and the other slices keep their answers.
+ */
 export declare function esbuildTransformHost(ctx: DurableObjectState, env: unknown): EsbuildTransformHost;
 /**
  * The build host a Durable Object's esbuild runs its builds on: its esbuild

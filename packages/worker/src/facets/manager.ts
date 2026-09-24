@@ -3514,10 +3514,11 @@ async function transformEsmInBundle(
   interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
   const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
     if ('error' in outcome) {
-      // A rejection is esbuild's verdict on this source, so it is cached with it.
+      // esbuild's verdict on this source is cached with it; a host that could
+      // not run the transform this time has no verdict to cache.
       const shim = esbuildDiagnosticShim(cell.path, outcome.error);
       bundle[cell.target] = shim;
-      __esmTransformCacheSet(cell.key, shim);
+      if (!outcome.transient) __esmTransformCacheSet(cell.key, shim);
       failed++;
       return;
     }

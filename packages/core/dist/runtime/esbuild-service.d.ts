@@ -133,9 +133,14 @@ export interface EsbuildTransformRequest {
     code: string;
     options?: EsbuildTransformOptions;
 }
-/** A host's answer for one request: the output, or why esbuild rejected the module. */
+/**
+ * A host's answer for one request: the output, or why esbuild rejected the
+ * module. A `transient` error is no verdict on the source: the host could not
+ * run the transform this time.
+ */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
+    transient?: true;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.

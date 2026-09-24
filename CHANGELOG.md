@@ -25,6 +25,11 @@ published independently in the `@nimbus-sh` npm scope.
   files. Three React builds in a row used to take the session isolate to
   150-186 MiB, and on main one run in three reset. Now it peaks at
   101-109 MiB.
+- A launch sends its ESM modules to the esbuild facet in 4 MiB slices. A
+  slice whose call fails (the facet reset, the connection dropped) is sent
+  once more to a fresh facet. If it fails again, only its own modules fail,
+  and only for that launch. It used to fail every module of the launch,
+  including the ones already transformed.
 
 ## 2026-09-21
 
