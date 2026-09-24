@@ -24,6 +24,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly vfs;
     constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, getKernel?: (() => VFS | undefined) | undefined);
     private get kernel();
+    /**
+     * The legacy registry's key for one of this caller's names. Its entries are
+     * keyed by storage key, so a confined caller's /tmp/x is its own, and an
+     * entry in the shared tmp is not its to see, follow or remove.
+     */
+    private legacyKey;
     dispose(): void;
     /**
      * Where a path lives, decided only after confinement: a kernel mount is

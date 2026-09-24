@@ -62,6 +62,32 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### VFS
 
+- Security: a confined principal can no longer follow a symlink out of its
+  private `/tmp`. Its `/tmp` is stored at a private root such as
+  `var/agents/a/tmp`, and symlinks were resolved against that storage path.
+  So `/tmp/out -> ../../../../tmp/x` climbed out of the private root and read
+  or rewrote the shared `/tmp/x`. A link to `/`, or to a directory above the
+  root, let the rest of any path continue into the shared tree, and so did a
+  relative link someone else had left outside `/tmp`. In a check of 5 link
+  shapes and 21 operations, 39 of the 85 combinations reached the shared tree
+  or another user's directory: reads, `stat`, copies, opened descriptors,
+  in-place writes, and the creations described below. Links now resolve in
+  the caller's own view, relative targets against the link's directory as the
+  caller names it, so every link lands where naming its target directly
+  would. `realpath` and descriptor-relative (WASI) lookups report the caller's
+  names, so a confined process's links under a preopened `/tmp` no longer
+  fail `ENOTCAPABLE`. Legacy registry symlinks are looked up by storage key,
+  so a shared-`/tmp` entry is no longer visible to, or removable by, a
+  confined caller.
+- `mkdir` and `symlink` through a link to a directory now create inside that
+  directory. They put the new entry under the link itself, where no lookup
+  reached it, after checking permission on the link's target. A link in
+  another user's directory let any caller put entries there, though it could
+  not write that directory, and a symlink left that way made every later
+  `list()` page fail. A batch or stream write places each entry at its
+  literal path, so it now refuses a parent that is a link with `ENOTDIR`.
+  `readdir` and `rmdir` through a link act on the link's target, which is the
+  directory their permission checks already used.
 - Opening a filesystem no longer reads its inodes. `SqliteVFS` used to load
   every inode into memory at construction and scan the table three more
   times. In bun that took 15-32 ms and 4.8 MiB of heap at 10,000 files, and

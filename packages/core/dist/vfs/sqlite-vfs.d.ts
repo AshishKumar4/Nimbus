@@ -152,6 +152,13 @@ export interface CredentialedVfs {
      */
     invalidatedSince(epoch: string | null, cursor: number): VfsAcquireResult;
     /**
+     * The key storage holds `path` under for this credential: a confined
+     * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
+     * rather than by name, such as the legacy symlink registry. It is not a
+     * name the caller uses, so it is never reported back to one.
+     */
+    storageKey(path: string): string;
+    /**
      * This VFS incarnation's identity. Paired with `revision()` it is the
      * cache-coherence cursor a facet is stamped with when its bundle is built,
      * so the facet's first ACQUIRE is an ordinary delta. Without the pairing a
@@ -431,6 +438,15 @@ export declare class SqliteVFS {
      * that derive a key before handing it on cannot stack the rewrite.
      */
     private storageKey;
+    /** {@link storageKey} of a name already normalized, under a principal's private root. */
+    private keyOfName;
+    /**
+     * The name a credential uses for `path`, whichever spelling it came in: a
+     * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
+     * root's storage key. One name per file is what lets resolution walk the
+     * caller's view rather than storage.
+     */
+    private nameOf;
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
      * none. The inverse of {@link storageKey}, for the surfaces that report
@@ -445,6 +461,22 @@ export declare class SqliteVFS {
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
+    /**
+     * Walk `path` to its inode, following links, in the caller's own names.
+     *
+     * Every prefix is a name the caller could have written, and only its lookup
+     * goes to storage. A link's target is read the way the caller reads it: a
+     * relative one against the link's directory as the caller names it, an
+     * absolute one as a path of the caller's own. So whatever a link says, it
+     * lands where the caller naming that path directly would.
+     *
+     * Walking storage keys instead read a relative target against the key: a
+     * confined caller's `/tmp/out -> ../../../../tmp/x` climbed out of its
+     * private root (var/agents/<p>/tmp) and reached the SHARED tmp/x, and a link
+     * to `/` let the rest of any path continue into the shared tree.
+     *
+     * `path` is the storage key the walk ends at, `name` the caller's name for it.
+     */
     private resolvePath;
     private checkAccess;
     private checkParentAccess;
@@ -552,6 +584,7 @@ export declare class SqliteVFS {
     private writeFile;
     private symlink;
     private readlink;
+    /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
