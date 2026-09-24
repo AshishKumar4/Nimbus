@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, WasiImports } from './types.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
@@ -63,6 +63,39 @@ export declare const WASI_LISTEN_PATH_PREFIX = "/dev/nimbus/listen/";
 export declare const WASI_ACCEPTED_PATH_PREFIX = "/dev/nimbus/socket/";
 export declare function filesystemErrno(error: unknown): Errno;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
+/**
+ * Lookup answers (a stat, or its absence) held between the guest's
+ * resumptions, under the same ACQUIRE barrier a node facet's resident cells
+ * use. An answer is served from memory only while the barrier has reported
+ * no mutation anywhere since the cursor it was filled under, and this
+ * process has changed nothing itself.
+ *
+ * Absence is answered from the parent directory's listing, one round trip
+ * for every name the directory lacks: an interpreter searching its load
+ * path misses in each directory far more often than it hits.
+ *
+ * The owner of the guest's non-filesystem inputs (sockets, stdin, clocks
+ * that wake it) calls {@link resumed} whenever one of them returns: that
+ * input can carry a peer's write, so the next lookup takes the barrier
+ * before answering. A guest that only computes and reads files, like an
+ * interpreter loading its libraries, takes it once.
+ */
+export declare class AuthorityLookupCache {
+    private readonly answers;
+    private readonly listings;
+    private cursor;
+    private verified;
+    private resumptions;
+    private window;
+    resumed(): void;
+    forget(): void;
+    stat(fs: RuntimeFsBridge, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null>;
+    private cached;
+    private verify;
+    /** True only when a listing proves the name is missing, which is ENOENT with or without following. */
+    private absent;
+    private list;
+}
 export interface AuthorityFilesystemOptions {
     fs(): RuntimeFsBridge | null;
     memory(): WebAssembly.Memory;
@@ -81,6 +114,8 @@ export interface AuthorityFilesystemOptions {
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
+    /** Where lookups are answered between resumptions; see {@link AuthorityLookupCache}. Asynchronous guests only. */
+    lookups?: AuthorityLookupCache;
 }
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;

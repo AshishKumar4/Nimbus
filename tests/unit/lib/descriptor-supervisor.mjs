@@ -27,7 +27,7 @@ export function descriptorSupervisor(supervisor) {
   };
   const originalMkdir = supervisor.mkdir;
   if (originalMkdir) supervisor.mkdir = async value => { const name = path(value); const result = await originalMkdir.call(supervisor, name); directories.add(name); return result; };
-  for (const key of ['unlink', 'rmdir', 'readlink']) {
+  for (const key of ['unlink', 'rmdir', 'readlink', 'readdir']) {
     const fn = supervisor[key];
     if (fn) supervisor[key] = (value, ...args) => fn.call(supervisor, path(value), ...args);
   }
@@ -71,5 +71,8 @@ export function descriptorSupervisor(supervisor) {
     async fsReaddirHandle(id) { return supervisor.readdir(get(id).path); },
     async fsSync(id) { if (id !== undefined) get(id); },
     async access(value) { if (!await stat(value)) throw error('ENOENT'); },
+    // A double with no mutation log can only answer that nothing it held is
+    // known to be current.
+    fsAcquire: supervisor.fsAcquire ?? (async (epoch, cursor) => ({ epoch: 'double', rev: cursor + 1, paths: [], poison: true })),
   });
 }

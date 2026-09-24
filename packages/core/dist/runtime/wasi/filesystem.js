@@ -49,6 +49,116 @@ const num = (value) => {
         fail('EINVAL');
     return n;
 };
+/**
+ * Lookup answers (a stat, or its absence) held between the guest's
+ * resumptions, under the same ACQUIRE barrier a node facet's resident cells
+ * use. An answer is served from memory only while the barrier has reported
+ * no mutation anywhere since the cursor it was filled under, and this
+ * process has changed nothing itself.
+ *
+ * Absence is answered from the parent directory's listing, one round trip
+ * for every name the directory lacks: an interpreter searching its load
+ * path misses in each directory far more often than it hits.
+ *
+ * The owner of the guest's non-filesystem inputs (sockets, stdin, clocks
+ * that wake it) calls {@link resumed} whenever one of them returns: that
+ * input can carry a peer's write, so the next lookup takes the barrier
+ * before answering. A guest that only computes and reads files, like an
+ * interpreter loading its libraries, takes it once.
+ */
+export class AuthorityLookupCache {
+    answers = new Map();
+    // Directory → its entries' names; null when it could not be listed.
+    listings = new Map();
+    cursor = { epoch: null, rev: 0 };
+    verified = false;
+    // An RPC issued before a resumption, a forget or a barrier must not record its answer.
+    resumptions = 0;
+    window = 0;
+    resumed() {
+        this.verified = false;
+        this.resumptions++;
+    }
+    forget() {
+        this.answers.clear();
+        this.listings.clear();
+        this.window++;
+    }
+    stat(fs, target, followSymlinks) {
+        // Only root-anchored paths with no '..': a key must name one place, and a
+        // descriptor-relative path names wherever that descriptor points.
+        if (typeof target === 'string' || !('root' in target) || target.path.split('/').includes('..')) {
+            return fs.stat(target, { followSymlinks });
+        }
+        return after(this.verify(fs), () => this.cached(fs, target.root, target.path, followSymlinks));
+    }
+    cached(fs, root, path, followSymlinks) {
+        const key = `${followSymlinks ? 1 : 0}\0${root}\0${path}`;
+        const held = this.answers.get(key);
+        if (held !== undefined)
+            return held;
+        const window = this.window;
+        return after(this.absent(fs, root, path), absent => after(absent ? null : fs.stat({ root, path, beneath: true }, { followSymlinks }), st => {
+            if (this.window === window)
+                this.answers.set(key, st);
+            return st;
+        }));
+    }
+    verify(fs) {
+        if (this.verified)
+            return undefined;
+        const resumptions = this.resumptions;
+        return after(fs.acquire(this.cursor.epoch, this.cursor.rev), result => {
+            if (result.poison || result.paths.length > 0 || result.epoch !== this.cursor.epoch)
+                this.forget();
+            else
+                this.window++;
+            this.cursor = { epoch: result.epoch, rev: result.rev };
+            if (this.resumptions === resumptions)
+                this.verified = true;
+        });
+    }
+    /** True only when a listing proves the name is missing, which is ENOENT with or without following. */
+    absent(fs, root, path) {
+        const cut = path.lastIndexOf('/');
+        const name = path.slice(cut + 1);
+        if (name === '' || name === '.')
+            return false;
+        return after(this.list(fs, root, cut < 0 ? '' : path.slice(0, cut)), names => names !== null && !names.has(name));
+    }
+    list(fs, root, dir) {
+        const key = `${root}\0${dir}`;
+        const held = this.listings.get(key);
+        if (held !== undefined)
+            return held;
+        const window = this.window;
+        const settle = (names) => {
+            if (this.window === window)
+                this.listings.set(key, names);
+            return names;
+        };
+        // A listing answers for a name only where a stat of it would reach the
+        // directory: it exists, is one, and this credential may search and read
+        // it. Anything else is left to a real stat, whose errno (EACCES, ENOTDIR)
+        // a listing cannot reproduce. A missing directory has nothing in it.
+        const listed = () => after(this.cached(fs, root, dir, true), st => {
+            if (st === null)
+                return new Set();
+            if (st.type !== 'directory')
+                return null;
+            const target = { root, path: dir, beneath: true };
+            return after(fs.access(target, 5), () => after(fs.readdir(target), entries => new Set(entries.map(entry => entry.name))));
+        });
+        let result;
+        try {
+            result = listed();
+        }
+        catch {
+            return settle(null);
+        }
+        return result instanceof Promise ? result.then(settle, () => settle(null)) : settle(result);
+    }
+}
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export function installAuthorityFilesystem(imports, options) {
     const fds = options.fds;
@@ -96,6 +206,27 @@ export function installAuthorityFilesystem(imports, options) {
     // Content by inode, valid while the stat revision matches the one it was read at.
     const resident = new Map();
     const residentBytes = options.residentBytes ?? 0;
+    const lookups = options.synchronous ? undefined : options.lookups;
+    const lookupStat = (fs, target, followSymlinks) => lookups ? lookups.stat(fs, target, followSymlinks) : fs.stat(target, { followSymlinks });
+    // Forgotten before the change is issued and again once it lands, so no
+    // answer read in between is kept.
+    const mutation = (run) => {
+        if (!lookups)
+            return run();
+        lookups.forget();
+        let result;
+        try {
+            result = run();
+        }
+        catch (error) {
+            lookups.forget();
+            throw error;
+        }
+        if (result instanceof Promise)
+            return result.finally(() => lookups.forget());
+        lookups.forget();
+        return result;
+    };
     const residentContent = (fs, target, st) => {
         const key = `${st.dev}:${st.ino}`;
         const cached = resident.get(key);
@@ -264,7 +395,7 @@ export function installAuthorityFilesystem(imports, options) {
             data.set(memory().subarray(v.ptr, v.ptr + v.length), used);
             used += v.length;
         }
-        return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
+        return after(mutation(() => fs.write(e.handle.id, offset, data)), n => { u32(written, n); return 0; });
     };
     imports.path_open = guard(imports.path_open, (fs, fd, lookup, p, n, flags, rights, inherit, status, out) => {
         if (status & ~5)
@@ -285,9 +416,10 @@ export function installAuthorityFilesystem(imports, options) {
         // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
         // rights on every open, and a resident copy answers those itself.
         const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-        const open = () => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+        const opening = () => fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
             create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-            mode: creationMode(0o666) }), handle => after(fs.fstat(handle.id), st => {
+            mode: creationMode(0o666) });
+        const open = () => after(flags & 9 ? mutation(opening) : opening(), handle => after(fs.fstat(handle.id), st => {
             const id = options.allocateFd();
             fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
             u32(out, id);
@@ -295,7 +427,7 @@ export function installAuthorityFilesystem(imports, options) {
         }));
         if (!readOnly || residentBytes === 0)
             return open();
-        return after(fs.stat(target, { followSymlinks }), st => {
+        return after(lookupStat(fs, target, followSymlinks), st => {
             if (st === null)
                 fail('ENOENT');
             if (st.type !== 'file' || st.size > residentBytes)
@@ -311,7 +443,7 @@ export function installAuthorityFilesystem(imports, options) {
             });
         });
     }, args => !socketPath(args[0], args[2], args[3]));
-    imports.path_filestat_get = guard(imports.path_filestat_get, (fs, fd, flags, p, n, out) => { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
+    imports.path_filestat_get = guard(imports.path_filestat_get, (fs, fd, flags, p, n, out) => { pathRight(fd, 18); return after(lookupStat(fs, at(fd, path(p, n)), !!(flags & 1)), st => writeStat(out, st ?? fail('ENOENT'))); });
     imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs, fd, out) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
     imports.fd_read = guard(imports.fd_read, (fs, fd, p, n, out) => read(fs, fd, p, n, null, out), owns);
     imports.fd_pread = guard(imports.fd_pread, (fs, fd, p, n, off, out) => read(fs, fd, p, n, num(off), out), owns);
@@ -401,14 +533,14 @@ export function installAuthorityFilesystem(imports, options) {
         e.rightsInheriting = inheriting;
         return 0;
     }, owns);
-    imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs, fd, size) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
+    imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs, fd, size) => { right(fd, 22); return after(mutation(() => fs.ftruncate(handle(fd).handle.id, num(size))), () => 0); }, owns);
     imports.fd_sync = guard(imports.fd_sync, (fs, fd) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
     imports.fd_datasync = guard(imports.fd_datasync, (fs, fd) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
     // posix_fallocate(3): the file holds at least [offset, offset + len).
     imports.fd_allocate = guard(imports.fd_allocate, (fs, fd, offset, len) => {
         right(fd, 8);
         const e = handle(fd), end = num(offset) + num(len);
-        return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(fs.ftruncate(e.handle.id, end), () => 0));
+        return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(mutation(() => fs.ftruncate(e.handle.id, end)), () => 0));
     }, owns);
     // Advisory only; there is no cache here to steer.
     imports.fd_advise = guard(imports.fd_advise, (fs, fd) => { right(fd, 7); return 0; }, owns);
@@ -437,11 +569,11 @@ export function installAuthorityFilesystem(imports, options) {
             return 0;
         });
     }, owns);
-    imports.path_create_directory = guard(imports.path_create_directory, (fs, fd, p, n) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
-    imports.path_remove_directory = guard(imports.path_remove_directory, (fs, fd, p, n) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
-    imports.path_unlink_file = guard(imports.path_unlink_file, (fs, fd, p, n) => { pathRight(fd, 26); return after(fs.unlink(at(fd, path(p, n))), () => 0); });
-    imports.path_rename = guard(imports.path_rename, (fs, from, p, n, to, q, m) => { pathRight(from, 16); pathRight(to, 17); return after(fs.rename(at(from, path(p, n)), at(to, path(q, m))), () => 0); });
-    imports.path_symlink = guard(imports.path_symlink, (fs, p, n, fd, q, m) => { pathRight(fd, 24); return after(fs.symlink(path(p, n), at(fd, path(q, m))), () => 0); });
+    imports.path_create_directory = guard(imports.path_create_directory, (fs, fd, p, n) => { pathRight(fd, 9); const target = at(fd, path(p, n)); return after(mutation(() => fs.mkdir(target, { recursive: false, mode: creationMode(0o777) })), () => 0); });
+    imports.path_remove_directory = guard(imports.path_remove_directory, (fs, fd, p, n) => { pathRight(fd, 25); const target = at(fd, path(p, n)); return after(mutation(() => fs.rmdir(target)), () => 0); });
+    imports.path_unlink_file = guard(imports.path_unlink_file, (fs, fd, p, n) => { pathRight(fd, 26); const target = at(fd, path(p, n)); return after(mutation(() => fs.unlink(target)), () => 0); });
+    imports.path_rename = guard(imports.path_rename, (fs, from, p, n, to, q, m) => { pathRight(from, 16); pathRight(to, 17); const source = at(from, path(p, n)), target = at(to, path(q, m)); return after(mutation(() => fs.rename(source, target)), () => 0); });
+    imports.path_symlink = guard(imports.path_symlink, (fs, p, n, fd, q, m) => { pathRight(fd, 24); const value = path(p, n), target = at(fd, path(q, m)); return after(mutation(() => fs.symlink(value, target)), () => 0); });
     imports.path_readlink = guard(imports.path_readlink, (fs, fd, p, n, buf, cap, used) => {
         pathRight(fd, 15);
         return after(fs.readlink(at(fd, path(p, n))), value => {
@@ -467,7 +599,7 @@ export function installAuthorityFilesystem(imports, options) {
             return after(fs.stat(target, { followSymlinks: false }), existing => {
                 if (existing !== null)
                     fail('EEXIST');
-                return after(fs.copyFile(source, target), () => 0);
+                return after(mutation(() => fs.copyFile(source, target)), () => 0);
             });
         });
     });
@@ -479,11 +611,14 @@ export function installAuthorityFilesystem(imports, options) {
     };
     imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs, fd, a, m, flags) => {
         right(fd, 23);
-        return after(stat(fs, fd), st => after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0));
+        return after(stat(fs, fd), st => after(mutation(() => fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags))), () => 0));
     }, owns);
     imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs, fd, lookup, p, n, a, m, flags) => {
         pathRight(fd, 20);
         const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-        return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));
+        return after(fs.stat(target, { followSymlinks }), st => {
+            const value = times(st ?? fail('ENOENT'), a, m, flags);
+            return after(mutation(() => fs.utimes(target, ...value, { followSymlinks })), () => 0);
+        });
     });
 }

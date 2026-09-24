@@ -328,6 +328,7 @@ const nativeAssert = {
   fsReadRange: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRange'),
   fsReadRangeUncached: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRangeUncached'),
   fsRevision: (r) => assert.equal(typeof r, 'number', 'fsRevision'),
+  fsAcquire: (r) => assert.equal(r.poison, true, 'fsAcquire: a cursor under a foreign epoch cannot be repaired incrementally'),
   fsTruncate: async (r) => {
     assertReceipt(r, 'fsTruncate answers a mutation receipt');
     assert.equal(kernelVfs.readFile('home/user/trunc').length, size, 'fsTruncate sized');
