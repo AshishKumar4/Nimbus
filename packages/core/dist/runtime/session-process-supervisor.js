@@ -63,6 +63,9 @@ export class SessionProcessSupervisor {
     setAttachedTty(pid) {
         this.table.setAttachedTty(pid);
     }
+    setForeground(pid, foreground) {
+        this.table.setForeground(pid, foreground);
+    }
     get(pid) {
         return this.table.get(pid);
     }

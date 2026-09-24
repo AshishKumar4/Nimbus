@@ -24,6 +24,8 @@ export interface ProcessEntry {
     longRunning?: boolean;
     /** Output is owned by a process-terminal attachment, not the parent shell. */
     attachedTty?: boolean;
+    /** Output is owned by the command that launched it, until its launch returns. */
+    foreground?: boolean;
 }
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
@@ -60,6 +62,7 @@ export declare class ProcessTable {
     setLongRunning(pid: number): void;
     /** Mark an existing entry as an attached terminal process. Idempotent. */
     setAttachedTty(pid: number): void;
+    setForeground(pid: number, foreground: boolean): void;
     /**
      * Mark a process as exited.
      *

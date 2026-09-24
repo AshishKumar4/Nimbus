@@ -24,7 +24,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -832,6 +832,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
   async _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid, cred); }
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
+  async _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult> {
+    return _rpc._rpcFsAcquire(this as any, epoch, cursor, pid);
+  }
   async _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage> {
     return _rpc._rpcFsList(this as any, after, limit, pid);
   }

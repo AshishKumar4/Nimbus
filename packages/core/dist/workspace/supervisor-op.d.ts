@@ -144,7 +144,6 @@ declare const NATIVE_OPS: {
     lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsStat | null>;
     exists: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<boolean>;
     readdir: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
-    fsAcquire: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsAcquireResult>;
     readlink: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string | null>;
     fsReadRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     fsReadRangeUncached: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;

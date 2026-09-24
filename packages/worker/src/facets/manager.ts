@@ -3983,9 +3983,20 @@ export interface FacetManagerHooks {
   resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 
+export interface ForegroundLaunch {
+  signal: AbortSignal;
+  write(stream: 'stdout' | 'stderr', text: string): void;
+}
+
 export interface LongRunningWorkerSpawnOptions {
   /** Interpreter residents share Node's atomic derived-owner claim. */
   resident?: { runtime: 'ruby' | 'python'; argv: string[] };
+  /**
+   * The command that launched the process, waiting on its boot: until the
+   * boot settles the process's output goes there instead of the shell
+   * mirror, and the command's interrupt kills the process.
+   */
+  foreground?: ForegroundLaunch;
   restart?: ResidentRestartPolicy;
   port?: number;
   /** Inline modules: source text, or small wasm carried by value. */
@@ -6326,6 +6337,7 @@ export class FacetManager {
     let record: ResidentLaunchRecord | undefined;
     let durableFacetName: string | undefined;
     let launchEnv: Record<string, string> | undefined;
+    const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
     try {
       if (opts.durable) {
         // A durable spawn on a declared port starts only when a reservation the
@@ -6444,7 +6456,7 @@ export class FacetManager {
       this.trackProcessRpcResources(entry.pid, [handle]);
       resourcesTracked = true;
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
-      const boot = await handle.booted();
+      const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
       if (record && this.launchJournal.has(entry.pid)) {
         // Booted and running: the launch proved itself, so the resident
         // starts its running life with a fresh re-drive budget.
@@ -6484,9 +6496,35 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
-      this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
+      // An interrupt already killed the process; it did not fail.
+      if (!opts.foreground?.signal.aborted) this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
       throw e;
+    } finally {
+      foreground?.release();
     }
+  }
+
+  private _holdForeground(pid: number, launch: ForegroundLaunch): { interrupted: Promise<never>; release(): void } {
+    this.processes.setForeground(pid, true);
+    const unsubscribe = this.processes.subscribeLogs(pid, (chunk) => launch.write(chunk.stream, chunk.data));
+    let onAbort = (): void => {};
+    const interrupted = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        this.kill(pid);
+        reject(new DOMException('the launching command was interrupted', 'AbortError'));
+      };
+    });
+    interrupted.catch(() => {});
+    if (launch.signal.aborted) onAbort();
+    else launch.signal.addEventListener('abort', onAbort, { once: true });
+    return {
+      interrupted,
+      release: () => {
+        launch.signal.removeEventListener('abort', onAbort);
+        unsubscribe();
+        this.processes.setForeground(pid, false);
+      },
+    };
   }
 
   /**

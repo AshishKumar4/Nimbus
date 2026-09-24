@@ -107,14 +107,14 @@ function mockSupervisor(seed = {}) {
     async readdir(p) {
       log.push(['readdir', p]);
       const prefix = p === '' ? '' : p + '/';
-      const names = new Map();
+      const names = new Set();
       for (const key of store.keys()) {
         if (key.startsWith(prefix)) {
           const rest = key.substring(prefix.length);
-          if (rest) names.set(rest.split('/')[0], rest.includes('/') ? 'directory' : 'file');
+          if (rest && !rest.includes('/')) names.add(rest);
         }
       }
-      return [...names].map(([name, type]) => ({ name, type }));
+      return [...names].map((name) => ({ name, type: 'file' }));
     },
   });
 }
@@ -390,12 +390,10 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal((await h.read(3)).errno, EISDIR, 'and neither has the preopen root');
 }
 
-// ── 12. A read-only open is answered from memory until the guest resumes ────
-// The lookup and the bytes are held between resumptions: a second open costs
-// no round trip, and the descriptor calls in between (fstat, seek, read,
-// close) never reach the supervisor. Input from outside the filesystem can
-// carry a peer's write, so after it the next open revalidates and a moved
-// revision is read again. A writable open never uses the copy.
+// ── 12. A read-only open is answered from a resident copy, per revision ─────
+// One stat per open, one read per revision: the descriptor calls in between
+// (fstat, seek, read, close) never reach the supervisor. A rewrite moves the
+// stat revision, so the next open reads again; a writable open never uses it.
 {
   const RDONLY = 0x1fbffeben; // what wasi-libc requests for O_RDONLY
   const sup = mockSupervisor({ 'home/user/mod.py': 'first' });
@@ -411,66 +409,21 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal(first.errno, ESUCCESS);
   assert.equal(P.fdTable.get(first.fd).kind, 'resident', 'a read-only open of a small file is resident');
   assert.equal(await readAll(first.fd), 'first');
-  const held = sup.log.length;
   const second = await h.open('home/user/mod.py', { rights: RDONLY });
   assert.equal(await readAll(second.fd), 'first');
-  assert.deepEqual(sup.log.slice(held), [], 'a second open before any resumption reaches the supervisor not at all');
-  assert.equal(ops().filter((op) => op === 'readFileBytes').length, 1, 'two opens read the content once');
+  assert.deepEqual(ops().filter((op) => op !== 'stat' && op !== 'fsRevision'), ['readFileBytes'], 'two opens read the content once');
+  assert.equal(ops().filter((op) => op === 'stat').length, 2, 'each open costs one stat');
   assert.ok(!ops().some((op) => op === 'fsOpen' || op === 'fsRead' || op === 'fsClose'), 'no descriptor op crossed to the supervisor');
 
   sup.store.set('home/user/mod.py', enc.encode('second'));
   revisions.set('home/user/mod.py', 2);
-  assert.equal(await h.wasiImport.fd_read(0, 0x300, 0, 0x200), ESUCCESS, 'the guest reads its stdin');
   const third = await h.open('home/user/mod.py', { rights: RDONLY });
-  assert.equal(await readAll(third.fd), 'second', 'after input from outside, a moved revision is read again');
+  assert.equal(await readAll(third.fd), 'second', 'a moved revision is read again');
 
   const writable = await h.open('home/user/mod.py', { rights: RDONLY | (1n << 6n) });
   assert.equal(writable.errno, ESUCCESS);
   assert.equal(P.fdTable.get(writable.fd).kind, 'authority', 'a writable open holds a live descriptor');
   await h.wasiImport.fd_close(writable.fd);
-}
-
-// ── 13. Absence comes from the directory's listing; own changes show at once ─
-// An interpreter searching its load path misses in each directory far more
-// often than it hits. One listing answers every miss in that directory, and
-// in every directory below a name the listing lacks. Whatever this process
-// creates or removes is visible to its very next lookup, resumption or not.
-{
-  const sup = mockSupervisor({ 'home/user/lib/present.rb': 'x' });
-  const h = host(ROOT_INIT(), sup);
-  const ENOENT = 44;
-  const stats = () => sup.log.filter(([op]) => op === 'stat').length;
-
-  assert.equal((await h.stat('home/user/lib/a.rb')).errno, ENOENT);
-  const listed = sup.log.length;
-  for (const miss of ['home/user/lib/b.rb', 'home/user/lib/c.so', 'home/user/lib/nested/d.rb', 'home/user/lib/nested/deeper/e.rb']) {
-    assert.equal((await h.stat(miss)).errno, ENOENT, `${miss} is absent`);
-  }
-  assert.deepEqual(sup.log.slice(listed), [], 'misses in a listed directory and below a missing name cost no round trip');
-  const before = stats();
-  assert.equal((await h.stat('home/user/lib/present.rb')).errno, ESUCCESS, 'a name the listing holds is stat\'d for real');
-  assert.equal(stats(), before + 1);
-
-  const created = await h.open('home/user/lib/b.rb', { oflags: 1 /* O_CREAT */ });
-  assert.equal(created.errno, ESUCCESS);
-  assert.equal((await h.stat('home/user/lib/b.rb')).errno, ESUCCESS, 'a file this process created is visible to its next lookup');
-  assert.equal(await h.wasiImport.path_unlink_file(3, 0x100, (() => { const b = enc.encode('home/user/lib/present.rb'); h.u8().set(b, 0x100); return b.length; })()), ESUCCESS);
-  assert.equal((await h.stat('home/user/lib/present.rb')).errno, ENOENT, 'a file this process removed is gone for its next lookup');
-}
-
-// ── 14. Each entry into the process revalidates ────────────────────────────
-// A pooled interpreter runs one invocation after another in the same
-// isolate, and a resident is re-entered per request. Every entry adopts the
-// supervisor, and whatever happened outside since the last one — the shell
-// creating a file between two `ruby -e` runs — is seen by the next lookup.
-{
-  const sup = mockSupervisor({ 'home/user/keep.txt': 'x' });
-  const h = host(ROOT_INIT(), sup);
-  const ENOENT = 44;
-  assert.equal((await h.stat('home/user/made-by-shell.txt')).errno, ENOENT);
-  await sup.writeFile('home/user/made-by-shell.txt', 'y');
-  P.__wasiAdoptSupervisor(sup);
-  assert.equal((await h.stat('home/user/made-by-shell.txt')).errno, ESUCCESS, 'the next entry sees what the shell wrote in between');
 }
 
 console.log('wasi-live-fs: all assertions passed');

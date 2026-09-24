@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { SyscallResult, Errno, WasiImports } from './types.js';
 
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
@@ -114,109 +114,6 @@ const num = (value: number | bigint): number => {
   return n;
 };
 
-/**
- * Lookup answers (a stat, or its absence) held between the guest's
- * resumptions, under the same ACQUIRE barrier a node facet's resident cells
- * use. An answer is served from memory only while the barrier has reported
- * no mutation anywhere since the cursor it was filled under, and this
- * process has changed nothing itself.
- *
- * Absence is answered from the parent directory's listing, one round trip
- * for every name the directory lacks: an interpreter searching its load
- * path misses in each directory far more often than it hits.
- *
- * The owner of the guest's non-filesystem inputs (sockets, stdin, clocks
- * that wake it) calls {@link resumed} whenever one of them returns: that
- * input can carry a peer's write, so the next lookup takes the barrier
- * before answering. A guest that only computes and reads files, like an
- * interpreter loading its libraries, takes it once.
- */
-export class AuthorityLookupCache {
-  private readonly answers = new Map<string, RuntimeVfsStat | null>();
-  // Directory → its entries' names; null when it could not be listed.
-  private readonly listings = new Map<string, Set<string> | null>();
-  private cursor: { epoch: string | null; rev: number } = { epoch: null, rev: 0 };
-  private verified = false;
-  // An RPC issued before a resumption, a forget or a barrier must not record its answer.
-  private resumptions = 0;
-  private window = 0;
-
-  resumed(): void {
-    this.verified = false;
-    this.resumptions++;
-  }
-
-  forget(): void {
-    this.answers.clear();
-    this.listings.clear();
-    this.window++;
-  }
-
-  stat(fs: RuntimeFsBridge, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null> {
-    // Only root-anchored paths with no '..': a key must name one place, and a
-    // descriptor-relative path names wherever that descriptor points.
-    if (typeof target === 'string' || !('root' in target) || target.path.split('/').includes('..')) {
-      return fs.stat(target, { followSymlinks });
-    }
-    return after(this.verify(fs), () => this.cached(fs, target.root, target.path, followSymlinks));
-  }
-
-  private cached(fs: RuntimeFsBridge, root: string, path: string, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null> {
-    const key = `${followSymlinks ? 1 : 0}\0${root}\0${path}`;
-    const held = this.answers.get(key);
-    if (held !== undefined) return held;
-    const window = this.window;
-    return after(this.absent(fs, root, path), absent =>
-      after(absent ? null : fs.stat({ root, path, beneath: true }, { followSymlinks }), st => {
-        if (this.window === window) this.answers.set(key, st);
-        return st;
-      }));
-  }
-
-  private verify(fs: RuntimeFsBridge): Awaitable<void> {
-    if (this.verified) return undefined;
-    const resumptions = this.resumptions;
-    return after(fs.acquire(this.cursor.epoch, this.cursor.rev), result => {
-      if (result.poison || result.paths.length > 0 || result.epoch !== this.cursor.epoch) this.forget();
-      else this.window++;
-      this.cursor = { epoch: result.epoch, rev: result.rev };
-      if (this.resumptions === resumptions) this.verified = true;
-    });
-  }
-
-  /** True only when a listing proves the name is missing, which is ENOENT with or without following. */
-  private absent(fs: RuntimeFsBridge, root: string, path: string): Awaitable<boolean> {
-    const cut = path.lastIndexOf('/');
-    const name = path.slice(cut + 1);
-    if (name === '' || name === '.') return false;
-    return after(this.list(fs, root, cut < 0 ? '' : path.slice(0, cut)), names => names !== null && !names.has(name));
-  }
-
-  private list(fs: RuntimeFsBridge, root: string, dir: string): Awaitable<Set<string> | null> {
-    const key = `${root}\0${dir}`;
-    const held = this.listings.get(key);
-    if (held !== undefined) return held;
-    const window = this.window;
-    const settle = (names: Set<string> | null) => {
-      if (this.window === window) this.listings.set(key, names);
-      return names;
-    };
-    // A listing answers for a name only where a stat of it would reach the
-    // directory: it exists, is one, and this credential may search and read
-    // it. Anything else is left to a real stat, whose errno (EACCES, ENOTDIR)
-    // a listing cannot reproduce. A missing directory has nothing in it.
-    const listed = (): Awaitable<Set<string> | null> => after(this.cached(fs, root, dir, true), st => {
-      if (st === null) return new Set<string>();
-      if (st.type !== 'directory') return null;
-      const target = { root, path: dir, beneath: true } as const;
-      return after(fs.access(target, 5), () => after(fs.readdir(target), entries => new Set(entries.map(entry => entry.name))));
-    });
-    let result: Awaitable<Set<string> | null>;
-    try { result = listed(); } catch { return settle(null); }
-    return result instanceof Promise ? result.then(settle, () => settle(null)) : settle(result);
-  }
-}
-
 export interface AuthorityFilesystemOptions {
   fs(): RuntimeFsBridge | null;
   memory(): WebAssembly.Memory;
@@ -235,8 +132,6 @@ export interface AuthorityFilesystemOptions {
    * is fetched again on its next open. Zero keeps every open on the authority.
    */
   residentBytes?: number;
-  /** Where lookups are answered between resumptions; see {@link AuthorityLookupCache}. Asynchronous guests only. */
-  lookups?: AuthorityLookupCache;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -280,20 +175,6 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // Content by inode, valid while the stat revision matches the one it was read at.
   const resident = new Map<string, { revision: number; bytes: Uint8Array }>();
   const residentBytes = options.residentBytes ?? 0;
-  const lookups = options.synchronous ? undefined : options.lookups;
-  const lookupStat = (fs: Fs, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null> =>
-    lookups ? lookups.stat(fs as RuntimeFsBridge, target, followSymlinks) : fs.stat(target, { followSymlinks });
-  // Forgotten before the change is issued and again once it lands, so no
-  // answer read in between is kept.
-  const mutation = <T>(run: () => Awaitable<T>): Awaitable<T> => {
-    if (!lookups) return run();
-    lookups.forget();
-    let result: Awaitable<T>;
-    try { result = run(); } catch (error) { lookups.forget(); throw error; }
-    if (result instanceof Promise) return result.finally(() => lookups.forget());
-    lookups.forget();
-    return result;
-  };
   const residentContent = (fs: Fs, target: RuntimeFsPath, st: RuntimeVfsStat): Awaitable<Uint8Array> => {
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
@@ -421,7 +302,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const e = right(fd, 6), vectors = iovs(ptr, count), data = new Uint8Array(vectors.total); let used = 0;
     if (e.kind === 'resident') fail('ENOTCAPABLE');
     for (const v of vectors.result) { data.set(memory().subarray(v.ptr, v.ptr + v.length), used); used += v.length; }
-    return after(mutation(() => fs.write(e.handle.id, offset, data)), n => { u32(written, n); return 0; });
+    return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
   };
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
     if (status & ~5) fail('ENOTSUP');
@@ -438,17 +319,16 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-    const opening = () => fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+    const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
       create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-      mode: creationMode(0o666) });
-    const open = (): SyscallResult => after(flags & 9 ? mutation(opening) : opening(), handle =>
+      mode: creationMode(0o666) }), handle =>
       after(fs.fstat(handle.id), st => {
         const id = options.allocateFd();
         fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;
       }));
     if (!readOnly || residentBytes === 0) return open();
-    return after(lookupStat(fs, target, followSymlinks), st => {
+    return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
       if (st.type !== 'file' || st.size > residentBytes) return open();
       // A hit needs no permission check of its own: the copy was read under
@@ -462,7 +342,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     });
   }, args => !socketPath(args[0], args[2], args[3]));
   imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-    { pathRight(fd, 18); return after(lookupStat(fs, at(fd, path(p, n)), !!(flags & 1)), st => writeStat(out, st ?? fail('ENOENT'))); });
+    { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
   imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
   imports.fd_read = guard(imports.fd_read, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => read(fs, fd, p, n, null, out), owns);
   imports.fd_pread = guard(imports.fd_pread, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, off: bigint, out: number) => read(fs, fd, p, n, num(off), out), owns);
@@ -526,13 +406,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const e = entry(fd); if ((rights & ~e.rights) || (inheriting & ~e.rightsInheriting)) fail('ENOTCAPABLE');
     e.rights = rights; e.rightsInheriting = inheriting; return 0;
   }, owns);
-  imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, size: bigint) => { right(fd, 22); return after(mutation(() => fs.ftruncate(handle(fd).handle.id, num(size))), () => 0); }, owns);
+  imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, size: bigint) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
   imports.fd_sync = guard(imports.fd_sync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
   imports.fd_datasync = guard(imports.fd_datasync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
   // posix_fallocate(3): the file holds at least [offset, offset + len).
   imports.fd_allocate = guard(imports.fd_allocate, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, offset: bigint, len: bigint) => {
     right(fd, 8); const e = handle(fd), end = num(offset) + num(len);
-    return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(mutation(() => fs.ftruncate(e.handle.id, end)), () => 0));
+    return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(fs.ftruncate(e.handle.id, end), () => 0));
   }, owns);
   // Advisory only; there is no cache here to steer.
   imports.fd_advise = guard(imports.fd_advise, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { right(fd, 7); return 0; }, owns);
@@ -552,11 +432,11 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       u32(used, written); return 0;
     });
   }, owns);
-  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); const target = at(fd, path(p, n)); return after(mutation(() => fs.mkdir(target, { recursive: false, mode: creationMode(0o777) })), () => 0); });
-  imports.path_remove_directory = guard(imports.path_remove_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 25); const target = at(fd, path(p, n)); return after(mutation(() => fs.rmdir(target)), () => 0); });
-  imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 26); const target = at(fd, path(p, n)); return after(mutation(() => fs.unlink(target)), () => 0); });
-  imports.path_rename = guard(imports.path_rename, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, p: number, n: number, to: number, q: number, m: number) => { pathRight(from, 16); pathRight(to, 17); const source = at(from, path(p, n)), target = at(to, path(q, m)); return after(mutation(() => fs.rename(source, target)), () => 0); });
-  imports.path_symlink = guard(imports.path_symlink, (fs: RuntimeFsBridge | RuntimeSynchronousFs, p: number, n: number, fd: number, q: number, m: number) => { pathRight(fd, 24); const value = path(p, n), target = at(fd, path(q, m)); return after(mutation(() => fs.symlink(value, target)), () => 0); });
+  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
+  imports.path_remove_directory = guard(imports.path_remove_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
+  imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 26); return after(fs.unlink(at(fd, path(p, n))), () => 0); });
+  imports.path_rename = guard(imports.path_rename, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, p: number, n: number, to: number, q: number, m: number) => { pathRight(from, 16); pathRight(to, 17); return after(fs.rename(at(from, path(p, n)), at(to, path(q, m))), () => 0); });
+  imports.path_symlink = guard(imports.path_symlink, (fs: RuntimeFsBridge | RuntimeSynchronousFs, p: number, n: number, fd: number, q: number, m: number) => { pathRight(fd, 24); return after(fs.symlink(path(p, n), at(fd, path(q, m))), () => 0); });
   imports.path_readlink = guard(imports.path_readlink, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, buf: number, cap: number, used: number) => { pathRight(fd, 15); return after(fs.readlink(at(fd, path(p, n))), value => {
     if (value === null) fail('EINVAL'); const data = encoder.encode(value), count = Math.min(cap, data.length);
     memory().set(data.subarray(0, count), buf); u32(used, count); return 0;
@@ -571,7 +451,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       if (st.type === 'directory') fail('EPERM');
       return after(fs.stat(target, { followSymlinks: false }), existing => {
         if (existing !== null) fail('EEXIST');
-        return after(mutation(() => fs.copyFile(source, target)), () => 0);
+        return after(fs.copyFile(source, target), () => 0);
       });
     });
   });
@@ -581,12 +461,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       flags & 8 ? Date.now() : flags & 4 ? Number(m / 1000000n) : st.mtime];
   };
   imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
-    after(mutation(() => fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags))), () => 0)); }, owns);
+    after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-    return after(fs.stat(target, { followSymlinks }), st => {
-      const value = times(st ?? fail('ENOENT'), a, m, flags);
-      return after(mutation(() => fs.utimes(target, ...value, { followSymlinks })), () => 0);
-    });
+    return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));
   });
 }

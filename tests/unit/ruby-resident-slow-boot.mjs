@@ -28,6 +28,11 @@ const preamble = [
   'globalThis.__rubyRun = () => new Promise((resolve) => {',
   '  globalThis.__testBind = (port) => globalThis.__nimbusVirtualSockets.listen(port);',
   '  globalThis.__testExit = () => resolve({ exitCode: 0, stdout: "done\\n", stderr: "" });',
+  // What the runner's stdoutWrite/stderrWrite do with each write the program makes.
+  '  globalThis.__testWrite = (stream, text) => {',
+  '    (stream === "stdout" ? (globalThis.__nimbusRubyStdout ||= []) : (globalThis.__nimbusRubyStderr ||= [])).push(text);',
+  '    globalThis.__nimbusRubyEmit?.(stream, text);',
+  '  };',
   '});',
 ].join('\n');
 
@@ -39,11 +44,11 @@ globalThis.clearTimeout = () => {};
 const elapse = (ms) => { for (const t of timers.splice(0)) if (t.ms <= ms) t.fn(); else timers.push(t); };
 const settle = () => new Promise((resolve) => realSetTimeout(resolve, 0));
 
-const boot = async (stage) => {
+const boot = async (stage, env = {}) => {
   // One module instance is one process, and its state lives on globalThis.
   for (const key of Object.keys(globalThis)) if (key.startsWith('__nimbus')) delete globalThis[key];
   const { NimbusProcess } = await import(join(dir, `worker.mjs?${stage}`));
-  const proc = new NimbusProcess({}, {});
+  const proc = new NimbusProcess({}, env);
   const state = { boot: null };
   const booting = proc.startProcess({ userCode: 'run app', rbArgv: [], userEnv: {}, progName: 'rackup', cwd: '/home/user' })
     .then((value) => { state.boot = value; });
@@ -51,7 +56,7 @@ const boot = async (stage) => {
   elapse(60_000);
   await settle();
   assert.equal(state.boot, null, 'a program still loading has not booted yet, however long it has taken');
-  if (stage === 'bind') globalThis.__testBind(8126);
+  if (stage === 'bind' || stage === 'stream') globalThis.__testBind(8126);
   else globalThis.__testExit();
   await booting;
   return state.boot;
@@ -71,6 +76,25 @@ try {
   assert.equal(script.state, 'exited');
   assert.equal(script.result.stdout, 'done\n', 'a slow script that never binds answers with its own output');
   console.log('  ok  a script that runs past a minute and exits reports its result');
+
+  // With a supervisor, output leaves the process as it is written, in order,
+  // and the runner's own markers never do; the boot answer repeats none of it.
+  const sent = [];
+  const SUPERVISOR = {
+    stdout: async (bytes) => { sent.push(['stdout', new TextDecoder().decode(bytes)]); },
+    stderr: async (bytes) => { sent.push(['stderr', new TextDecoder().decode(bytes)]); },
+    registerPort: async () => {},
+  };
+  const streaming = boot('stream', { SUPERVISOR });
+  await settle();
+  globalThis.__testWrite('stdout', 'loading\n');
+  globalThis.__testWrite('stderr', '__NIMBUS_RESUMED_true_1_0_nil\n');
+  globalThis.__testWrite('stderr', 'Ignoring debug\n');
+  const streamed = await streaming;
+  assert.deepEqual(sent, [['stdout', 'loading\n'], ['stderr', 'Ignoring debug\n']], 'written output left the process before the boot answered');
+  assert.equal(streamed.stdout, '', 'and the boot answer does not repeat it');
+  assert.equal(streamed.stderr, '');
+  console.log('  ok  a booting process streams what it writes, markers excluded');
 } finally {
   globalThis.setTimeout = realSetTimeout;
   rmSync(dir, { recursive: true, force: true });

@@ -233,6 +233,8 @@ export function makeRubyRunnerFactory(deps: {
           cwd,
           command: formatRubyCommand(binName, argv),
           argv: [binName, ...argv],
+          signal: ctx.signal,
+          write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
         });
       } else {
         result = await dispatchRubyFacet(
@@ -589,6 +591,9 @@ export type RubyResidentStart = (spawn: {
   startArgs: RubyFacetCallArgs;
   cwd: string;
   command: string;
+  /** The launching command: what the program prints until it binds or exits, and its interrupt. */
+  signal: AbortSignal;
+  write(stream: 'stdout' | 'stderr', text: string): void;
 }) => Promise<RubyFacetResult>;
 
 const RubyFacetResultSchema = z.object({
@@ -836,8 +841,9 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     // instead of returning a Promise where the guest expects an errno.
     parking: __nimbusRubyParking,
     getMemory: () => memRef,
-    stdoutWrite: (s) => { globalThis.__nimbusRubyStdout.push(s); },
-    stderrWrite: (s) => { globalThis.__nimbusRubyStderr.push(s); },
+    // A resident process also streams what it writes; see ruby-resident.ts.
+    stdoutWrite: (s) => { globalThis.__nimbusRubyStdout.push(s); globalThis.__nimbusRubyEmit?.('stdout', s); },
+    stderrWrite: (s) => { globalThis.__nimbusRubyStderr.push(s); globalThis.__nimbusRubyEmit?.('stderr', s); },
   });
 
   // canonical_abi imports — 3 resource lifecycle fns. The Slab is

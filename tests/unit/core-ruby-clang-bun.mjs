@@ -98,6 +98,21 @@ const ws = await NimbusWorkspace.create({
   console.log('  ok  ruby reads a file .fs wrote and writes one .fs reads back');
 }
 
+// ── A sleeping program wakes to the filesystem as it is now ─────────────────
+// Ruby's sleep parks the main fiber and the host resumes it on a timer, with
+// no WASI call in between. The file a peer creates meanwhile has to be there
+// when the program looks again, not only after some unrelated input.
+{
+  const polling = ws.exec('ruby -e \'n = 0; until File.exist?("/home/user/ready"); n += 1; sleep 0.1; end; puts "ready after #{n > 0}"\'');
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  await ws.fs.writeFile('/home/user/ready', 'x');
+  const woke = await Promise.race([polling, new Promise((resolve) => setTimeout(() => resolve(null), 15_000))]);
+  assert.ok(woke, 'the polling program never saw the file a peer created while it slept');
+  assert.equal(woke.exitCode, 0, `ruby failed: ${woke.stderr}`);
+  assert.equal(woke.stdout, 'ready after true\n');
+  console.log('  ok  a program that sleeps and polls sees a file created while it slept');
+}
+
 // ── A capability the host does not have is named, not faked ─────────────────
 // A Ruby script may bind a port and keep serving, which needs an actor to hold
 // the process. A workspace owns none, so it is refused by name rather than run
