@@ -1516,15 +1516,62 @@ const __fsMod = (() => {
   const _owedRefetch = new Set();
 
   // An own-mutation lease can end in an eviction (a peer wrote inside the
-  // window). The ledger owning that decision is spliced AHEAD of this
-  // closure, so it is handed the one eviction path rather than keeping a
-  // second copy of it: content view, stat view, the invalidation count and
-  // the refetch debt move together here or not at all.
-  globalThis.__nimbusEvictResidentCell = (k) => {
+  // window), and so can a flush whose revision a barrier's report outran.
+  // The ledger owning those decisions is spliced AHEAD of this closure, so it
+  // is handed the one eviction path rather than keeping a second copy of it:
+  // content view, stat view, the invalidation count and the refetch debt
+  // move together here or not at all.
+  function _evictOwed(k) {
     if (!_evictResident(k)) return;
     _stats.invalidations++;
     _owedRefetch.add(k);
-  };
+  }
+  globalThis.__nimbusEvictResidentCell = _evictOwed;
+
+  /**
+   * Live reads in flight, per path: how many, and the highest revision a
+   * barrier reported for the path while any of them was outstanding.
+   *
+   * A barrier that reports a path nobody holds has nothing to evict and
+   * CONSUMES the report: the cursor moves past it and no later delta names it
+   * again. A read of that path already in flight may have been served before
+   * the mutation the report describes, and its bytes would then be installed
+   * behind the only message that could have evicted them. So the report is
+   * kept here until the read lands, and the read installs only if nothing
+   * newer than its cursor was reported under it (_installResident).
+   */
+  const _fillReports = new Map();
+
+  /**
+   * Begin a live read of \`k\`: the cursor it is issued under — every mutation
+   * at or below it is already in the bytes it returns — and its report record.
+   * Called after the read's barrier and before its RPC.
+   */
+  function _beginFill(k) {
+    let record = _fillReports.get(k);
+    if (!record) {
+      record = { pending: 0, reported: -1 };
+      _fillReports.set(k, record);
+    }
+    record.pending++;
+    return { k, record, rev: _cursor.rev };
+  }
+
+  function _endFill(fill) {
+    fill.record.pending--;
+    if (fill.record.pending === 0 && _fillReports.get(fill.k) === fill.record) _fillReports.delete(fill.k);
+  }
+
+  /** A barrier reported \`k\` at \`rev\`: remember it for any read of it in flight. */
+  function _noteFillReport(k, rev) {
+    const record = _fillReports.get(k);
+    if (record && rev > record.reported) record.reported = rev;
+  }
+
+  /** The cursor moved without a delta (a poison), so no read in flight can be dated. */
+  function _spoilFills() {
+    for (const record of _fillReports.values()) record.reported = Infinity;
+  }
 
   /**
    * Install bytes the supervisor just served as the resident cell for a
@@ -1538,30 +1585,43 @@ const __fsMod = (() => {
    * returned, so it has nothing to invalidate. The bytes are already paid
    * for; caching them costs one map insert.
    *
+   * \`fill\` (_beginFill) dates them, and it is also the reason an install can
+   * be declined: a barrier that reported the path above the read's cursor
+   * while the read was in flight may describe a mutation the bytes predate,
+   * and that report is gone once consumed. Declining costs the next sync
+   * read a miss; installing would cost a stale byte nothing ever evicts.
+   *
    * The parent's manifest entry gains the name too, so the existence view
    * cannot go on denying a file whose bytes this process is holding.
    */
-  function _installResident(absPath, bytes) {
+  function _installResident(absPath, bytes, fill) {
     if (!__vfsBundle) return;
     const k = _strip(absPath);
     if (k === "") return;
+    if (fill.record.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
     // A pending write is strictly newer than anything the authority can
     // report, and __vfsBundle is what sync reads consult first, so installing
     // over it would serve the program bytes older than its own write.
-    //
-    // A STAMPED cell is this facet's own flushed write, and the barrier this
-    // read passed on the way in reported nobody else has touched the path
-    // since — so the bytes are already what is being installed, and the only
-    // thing the install would change is to drop the stamp. It did: a
-    // speculative repair issued by an earlier refused read landed after the
-    // flush, unstamped the cell, and the next ACQUIRE evicted the facet's own
-    // output. Measured at selfWrites 0 / invalidations 1 / fills 2 for one
-    // written file, against 1 / 0 / 0 with the repair absent.
     if (__vfsWrites && k in __vfsWrites) return;
-    if (__vfsBundleRevisions[k] !== undefined) return;
-    __vfsBundle[k] = bytes;
+    if (_residentStorePresent()) {
+      // The store dates the row at the read's cursor, so the next delta that
+      // names the path above it evicts it. It declines, itself, to replace
+      // own bytes or a row dated later than this read can vouch for.
+      if (!__residentFill(k, bytes, fill.rev)) return;
+    } else {
+      // A STAMPED cell is this facet's own flushed write, and the barrier this
+      // read passed on the way in reported nobody else has touched the path
+      // since — so the bytes are already what is being installed, and the only
+      // thing the install would change is to drop the stamp. It did: a
+      // speculative repair issued by an earlier refused read landed after the
+      // flush, unstamped the cell, and the next ACQUIRE evicted the facet's own
+      // output. Measured at selfWrites 0 / invalidations 1 / fills 2 for one
+      // written file, against 1 / 0 / 0 with the repair absent.
+      if (__vfsBundleRevisions[k] !== undefined) return;
+      __vfsBundle[k] = bytes;
+    }
     // Keep the stat view consistent with the bytes now held. Without this
     // the content view is fresh while statSync still reports the
     // spawn-time length, so a program can read N bytes and be told the
@@ -1610,6 +1670,7 @@ const __fsMod = (() => {
   }
 
   async function _runResidentRepair(supervisor, result) {
+    const ownAtStart = __residentOwnPaths();
     let repaired;
     try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
     catch { repaired = null; }
@@ -1627,12 +1688,48 @@ const __fsMod = (() => {
     } else if (repaired.reconciled) {
       _stats.reconciles++;
     }
+    _settleSkippedReports(ownAtStart, repaired);
     if (!repaired || !repaired.cursor) return;
     _cursor.epoch = repaired.cursor.epoch;
     _cursor.rev = repaired.cursor.rev;
     _stats.invalidations += repaired.dropped;
     _stats.fills += repaired.filled;
     _stats.filledBytes += repaired.bytes;
+  }
+
+  /**
+   * Deliver the reports a repair moved the cursor over.
+   *
+   * A repair moves the cursor without a delta, so what a delta would have
+   * reported reaches nothing on its own. A dated row the pass kept is proven
+   * current by its listed revision and needs nothing more. A row of this
+   * facet's own bytes is kept whatever the listing says — and its report is
+   * exactly what the write or mutation that owns it needs, to judge its own
+   * acknowledgement against. The pass hands those back (\`own\`), and they are
+   * noted here as a delta's would have been; one acknowledged since the pass
+   * looked was dated by a receipt that could not see the report, so it is
+   * judged here directly.
+   *
+   * With nothing datable — across incarnations, against a short listing, or
+   * a pass that failed outright — every own row, and every row that was own
+   * when the repair began, is judged as though a peer wrote it last: an
+   * eviction and a refetch, never a stale byte.
+   */
+  function _settleSkippedReports(ownAtStart, repaired) {
+    const reports = new Map();
+    if (repaired && repaired.cursor && repaired.reconciled && Array.isArray(repaired.own)) {
+      for (const entry of repaired.own) reports.set(entry.path, entry.rev);
+    } else {
+      for (const k of ownAtStart) reports.set(k, Infinity);
+      if (repaired && Array.isArray(repaired.own)) for (const entry of repaired.own) reports.set(entry.path, Infinity);
+      for (const k of Object.keys(__vfsOwnLeases)) reports.set(k, Infinity);
+      for (const k of Object.keys(__vfsWrites)) reports.set(k, Infinity);
+    }
+    for (const [k, rev] of reports) {
+      __nimbusNoteVfsReport(k, rev);
+      const provenance = __residentProvenance(k);
+      if (provenance !== undefined && provenance !== -1 && provenance < rev) _evictOwed(k);
+    }
   }
 
   /**
@@ -1688,20 +1785,33 @@ const __fsMod = (() => {
     if (_residentStorePresent()) {
       if (result.poison) {
         _stats.poisons++;
+        _spoilFills();
         await _repairPoisonedStore(supervisor, result);
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
         return [];
       }
+      // The store keeps a row of this facet's own bytes over any report, so
+      // the report is noted first: the write or mutation that owns the row
+      // judges it against its own revision when that arrives, as it does for
+      // a heap cell. A read in flight gets the same note.
+      if (Array.isArray(result.paths)) {
+        for (const entry of result.paths) {
+          __nimbusNoteVfsReport(entry.path, entry.rev);
+          _noteFillReport(entry.path, entry.rev);
+        }
+      }
       const applied = __residentAdmit(result);
       _cursor.epoch = result.epoch;
       _cursor.rev = result.rev;
       _stats.invalidations += applied.dropped.length;
+      _stats.selfWrites += applied.kept;
       return applied.dropped;
     }
     if (result.poison) {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       _stats.poisons++;
+      _spoilFills();
     } else if (Array.isArray(result.paths)) {
       for (const entry of result.paths) {
         const k = entry.path;
@@ -1710,6 +1820,7 @@ const __fsMod = (() => {
         // that write's own revision, when it arrives, can say whether the
         // report was itself or a peer. Everything else ignores it.
         __nimbusNoteVfsReport(k, entry.rev);
+        _noteFillReport(k, entry.rev);
         if (__vfsBundleRevisions[k] >= entry.rev) { _stats.selfWrites++; continue; }
         const held = !!(__vfsBundle && k in __vfsBundle);
         if (_evictResident(k)) _stats.invalidations++;
@@ -1941,12 +2052,14 @@ const __fsMod = (() => {
    * effect while the lease still holds the cell, so the stamp the end
    * settles describes a cell that already carries the mutation.
    *
-   * Heap-side stamps do not describe rows in the resident store, so store
-   * mode has no lease to take and is left to the store's own provenance.
+   * The ledger takes the lease on whichever holds the stamp: a heap stamp,
+   * or the resident store's row. Without it a store row the mutation
+   * overlaid would be left as own bytes nobody ever dates, which the barrier
+   * keeps against every later write by anyone.
    */
   async function _ownMutation(absPath, rpc, apply) {
     const key = _strip(absPath);
-    const held = !_residentStorePresent() && __nimbusBeginOwnMutation(key);
+    const held = __nimbusBeginOwnMutation(key);
     let receipt;
     let landed = false;
     try { receipt = await rpc(); landed = true; }
@@ -2258,45 +2371,49 @@ const __fsMod = (() => {
     // fresh cursor, so re-acquiring here would be a redundant round trip
     // that always returns "still R". Every other caller acquires.
     if (!skipAcquire) await _acquireBarrier(supervisor);
-
-    if (typeof supervisor.fsReadRange === "function") {
-      // Chunked: the caller wants the whole file, but nothing upstream has
-      // to hold it all at once to produce it.
-      //
-      // A short chunk is the only signal the file ended, so this walk could
-      // only ever have one chunk in flight — 65 sequential round trips for a
-      // 4 MiB file, each costing far more than the read behind it. The FIRST
-      // chunk still costs exactly one trip and settles it for every file
-      // that fits in one. When it comes back full there is demonstrably
-      // more, and a stat says how much, so the remainder is issued together
-      // and the read batch carries it in a single trip.
-      const parts = [];
-      let total = 0;
-      for (;;) {
-        const chunk = await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
-        if (chunk === null) break;
-        parts.push(chunk);
-        total += chunk.byteLength;
-        if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
-        if (typeof supervisor.stat !== "function") continue;
-        for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
-          parts.push(rest);
-          total += rest.byteLength;
+    const fill = _beginFill(_strip(absPath));
+    try {
+      if (typeof supervisor.fsReadRange === "function") {
+        // Chunked: the caller wants the whole file, but nothing upstream has
+        // to hold it all at once to produce it.
+        //
+        // A short chunk is the only signal the file ended, so this walk could
+        // only ever have one chunk in flight — 65 sequential round trips for a
+        // 4 MiB file, each costing far more than the read behind it. The FIRST
+        // chunk still costs exactly one trip and settles it for every file
+        // that fits in one. When it comes back full there is demonstrably
+        // more, and a stat says how much, so the remainder is issued together
+        // and the read batch carries it in a single trip.
+        const parts = [];
+        let total = 0;
+        for (;;) {
+          const chunk = await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
+          if (chunk === null) break;
+          parts.push(chunk);
+          total += chunk.byteLength;
+          if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+          if (typeof supervisor.stat !== "function") continue;
+          for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
+            parts.push(rest);
+            total += rest.byteLength;
+          }
+          break;
         }
-        break;
+        const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
+        _installResident(absPath, bytes, fill);
+        return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
-      const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
-      _installResident(absPath, bytes);
-      return encoding ? _asString(bytes) : __BufferMod.from(bytes);
-    }
 
-    if (typeof supervisor.readFile === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
-      const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
-      if (text !== null && text !== undefined) {
-        _installResident(absPath, text);
-        return encoding ? _asString(text) : __BufferMod.from(text);
+      if (typeof supervisor.readFile === "function") {
+        await _flushLocalPathToSupervisor(absPath, supervisor);
+        const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
+        if (text !== null && text !== undefined) {
+          _installResident(absPath, text, fill);
+          return encoding ? _asString(text) : __BufferMod.from(text);
+        }
       }
+    } finally {
+      _endFill(fill);
     }
 
     throw _fsErr("ENOENT", "open", p);

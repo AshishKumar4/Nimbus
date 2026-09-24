@@ -150,24 +150,37 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   s.__residentAdmit(CURSOR);
   s.__residentPopulate('a.txt', 'A@7', 7);
   s.__residentPopulate('b.txt', 'B@7', 7);
-  s.__residentPopulate('c.txt', 'C@7', 7);
-  s.__residentStamp('c.txt', 9); // this facet's own flushed write
+  s.__residentPopulate('e.txt', 'E@7', 7);
+  s.bundle['c.txt'] = 'C-mine'; // this facet's own write…
+  s.__residentStamp('c.txt', 9); // …flushed at the revision it produced
+  s.__residentStamp('b.txt', 99); // an acknowledgement dates own bytes, never a row it did not write
+  s.bundle['d.txt'] = 'D-unflushed'; // own bytes the authority has not acknowledged
 
   const applied = s.__residentAdmit({
     poison: false,
     epoch: 'e1',
-    rev: 9,
-    paths: [{ path: 'a.txt', rev: 8 }, { path: 'c.txt', rev: 9 }],
+    rev: 10,
+    paths: [
+      { path: 'a.txt', rev: 8 },
+      { path: 'b.txt', rev: 10 },
+      { path: 'c.txt', rev: 9 },
+      { path: 'd.txt', rev: 10 },
+    ],
   });
 
-  assert.deepEqual(applied.dropped, ['a.txt'], 'a peer write evicts');
+  assert.deepEqual(applied.dropped.sort(), ['a.txt', 'b.txt'], 'a peer write evicts, whatever was stamped');
   assert.equal(s.bundle['a.txt'], undefined);
-  assert.equal(s.bundle['b.txt'], 'B@7', 'an unnamed path is untouched');
-  assert.equal(s.bundle['c.txt'], 'C@7', "the facet's own write survives its own invalidation");
-  assert.deepEqual(applied.cursor, { epoch: 'e1', rev: 9 });
+  assert.equal(s.bundle['e.txt'], 'E@7', 'an unnamed path is untouched');
+  assert.equal(s.bundle['c.txt'], 'C-mine', "the facet's own write survives its own report");
+  assert.equal(s.bundle['d.txt'], 'D-unflushed', 'unacknowledged own bytes survive any report');
+  assert.deepEqual(applied.cursor, { epoch: 'e1', rev: 10 });
 
   s.__residentAdmit({ poison: true, epoch: 'e2', rev: 0 });
-  assert.equal(s.__residentStats().files, 0, 'poison drops everything');
+  assert.deepEqual(
+    Object.keys(s.bundle),
+    ['d.txt'],
+    'a poison drops every row the authority dated, and none of the own bytes it never saw',
+  );
   assert.deepEqual(s.__residentCursor(), { epoch: 'e2', rev: 0 });
 }
 

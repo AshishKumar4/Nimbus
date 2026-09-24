@@ -283,6 +283,9 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
   return __nimbusQueueVfsMutation(snapshot.key, async () => {
     const value = await mutation(snapshot.content, snapshot);
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
+      // What the barriers reported for this path while the write was in
+      // flight. Read before the parked cell is retired below, which drops it.
+      const reported = __vfsParkedReports[snapshot.key];
       if (snapshot.append &&
           value === __nimbusVfsAppendRangeResult &&
           typeof __vfsBundle !== "undefined" &&
@@ -292,7 +295,7 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
                  typeof __vfsBundle !== "undefined" &&
                  __vfsBundle &&
                  !(snapshot.key in __vfsBundle) &&
-                 !(__vfsParkedReports[snapshot.key] > value)) {
+                 !(reported > value)) {
         // The barrier that evicted the resident copy was answered AHEAD of
         // this very write (see __nimbusBeginOwnMutation for why that
         // ordering is ordinary): it reported the path at the revision this
@@ -311,10 +314,23 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
         __vfsBundle[snapshot.key] = snapshot.content;
       }
       delete __vfsWrites[snapshot.key];
-      __nimbusStampFlushedCell(snapshot, value);
+      __nimbusStampFlushedCell(snapshot, value, reported);
     }
     return value;
   }, retainFailure);
+}
+
+/**
+ * Whether this facet's resident set is the SQLite store
+ * (vfs/facet-resident-store.ts), which the resident node body splices ahead
+ * of this ledger. Its rows carry their own revision, so a stamp is written
+ * into the row, and __vfsBundleRevisions — which describes heap cells — says
+ * nothing about them.
+ */
+function __nimbusResidentRows() {
+  return typeof __residentStamp === "function"
+    && typeof __residentReady !== "undefined"
+    && __residentReady === true;
 }
 
 /**
@@ -347,9 +363,26 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
  * it did to the file and nothing about the directory. Do not "finish" this
  * by stamping the parent.
  */
-function __nimbusStampFlushedCell(snapshot, revision) {
+function __nimbusStampFlushedCell(snapshot, revision, reported) {
   if (typeof revision !== "number") return;
   if (typeof __vfsBundle === "undefined" || !__vfsBundle) return;
+  if (__nimbusResidentRows()) {
+    // The row held this write's bytes as the store's own-write revision,
+    // which no barrier evicts, so every barrier inside the window KEPT it and
+    // consumed its report. Those reports are judged here, against the
+    // revision this write produced: at or below it is this write coming
+    // back, or a write it overwrote; above it, a peer wrote after, and the
+    // eviction those barriers could not perform is owed now. The store dates
+    // only a row still holding own bytes, which is the identity guard below
+    // in the form rows allow: a fill never replaces own bytes, and a later
+    // write of the path fails the generation test before this is reached.
+    if (reported > revision) {
+      __nimbusEvictLeasedCell(snapshot.key);
+      return;
+    }
+    __residentStamp(snapshot.key, revision);
+    return;
+  }
   if (__vfsBundle[snapshot.key] !== snapshot.content) return;
   __vfsBundleRevisions[snapshot.key] = revision;
 }
@@ -379,8 +412,21 @@ function __nimbusStampFlushedCell(snapshot, revision) {
  * An UNSTAMPED cell is not leased: it keeps today's evict-and-refetch, so a
  * mutation path that never stamps still costs a refetch and never a stale
  * byte. \`false\` says no lease was taken and the end is a no-op.
+ *
+ * In the resident store the row is the stamp, so the store holds the row as
+ * own bytes for the window (\`__residentLease\`, which the barrier keeps the
+ * way it keeps an Infinity stamp) and hands back the revision it was dated
+ * at; the lease record carries that revision exactly as it does here.
  */
 function __nimbusBeginOwnMutation(key) {
+  if (__nimbusResidentRows()) {
+    const open = __vfsOwnLeases[key];
+    if (open) { open.pending++; return true; }
+    const dated = __residentLease(key);
+    if (dated === undefined) return false;
+    __vfsOwnLeases[key] = { stamp: dated, pending: 1, peer: false, reported: -1 };
+    return true;
+  }
   const stamp = __vfsBundleRevisions[key];
   if (stamp === undefined) return false;
   const lease = __vfsOwnLeases[key]
@@ -444,7 +490,8 @@ function __nimbusNoteVfsReport(key, revision) {
  *
  * A cell that stopped being held during the window (a poison drop, a
  * parked sync write retiring the stamp) has nothing left to vouch for, so
- * no stamp is restored for it.
+ * no stamp is restored for it. In the resident store a write parked over
+ * the row inside the window owns it from then on, and its flush dates it.
  */
 function __nimbusEndOwnMutation(key, held, receipt) {
   if (!held) return;
@@ -460,6 +507,11 @@ function __nimbusEndOwnMutation(key, held, receipt) {
   if (lease.pending > 0) return;
   delete __vfsOwnLeases[key];
   const evict = lease.peer || lease.reported > lease.stamp;
+  if (__nimbusResidentRows()) {
+    if (evict) __nimbusEvictLeasedCell(key);
+    else if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) __residentStamp(key, lease.stamp);
+    return;
+  }
   const resident = typeof __vfsBundle !== "undefined" && __vfsBundle && key in __vfsBundle;
   if (evict || !resident) {
     delete __vfsBundleRevisions[key];
@@ -645,6 +697,8 @@ const __vfsWriteGenerations = Object.create(null);
 // so a mutation path that forgets to stamp costs a refetch and never a
 // stale byte. Infinity is not a revision: it is the lease below, held
 // while one of this facet's own mutations of the path is in flight.
+// Heap cells only: the resident store dates each row in the row itself
+// (__nimbusResidentRows), and this map says nothing about those.
 const __vfsBundleRevisions = Object.create(null);
 // Own mutations in flight per path: the stamp the first lease began with,
 // how many are outstanding, whether a receipt has already proven a peer
