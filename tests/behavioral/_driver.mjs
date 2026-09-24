@@ -95,12 +95,17 @@ const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] 
 const undeleted = new Map(); // sid → the headers it was minted with
 let exitHookArmed = false;
 
-function ledger(event, sid, status) {
+function ledger(event, sid, status, extra = {}) {
   // One appendFileSync per line, so parallel probes never interleave lines.
-  if (LEDGER) appendFileSync(LEDGER, `${JSON.stringify({ probe: PROBE, sid, event, status })}\n`);
+  if (LEDGER) appendFileSync(LEDGER, `${JSON.stringify({ probe: PROBE, sid, event, status, ...extra })}\n`);
 }
 
-function noteMinted(sid, status) {
+/**
+ * `reap: 'ttl'` marks a session the probe cannot delete: an anonymous demo
+ * session, whose DELETE answers 401 by design and which the demo's TTL reaps.
+ * run-all reports it as TTL-reaped rather than leaked (see _ledger.mjs).
+ */
+function noteMinted(sid, status, { reap } = {}) {
   if (!exitHookArmed) {
     exitHookArmed = true;
     process.on('exit', deleteUndeletedSync);
@@ -109,7 +114,7 @@ function noteMinted(sid, status) {
     }
   }
   undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
-  ledger('mint', sid, status);
+  ledger('mint', sid, status, reap ? { reap } : {});
 }
 
 // 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
@@ -211,7 +216,7 @@ export async function mintSession() {
     AUTH_TOKEN = token;
     const wsPath = new URL(body.wsUrl, BASE).pathname + new URL(body.wsUrl, BASE).search;
     sessionAttachPaths.set(body.sessionId, wsPath);
-    noteMinted(body.sessionId, created.status);
+    noteMinted(body.sessionId, created.status, { reap: 'ttl' });
     return body.sessionId;
   }
 
