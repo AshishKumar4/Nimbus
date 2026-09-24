@@ -1428,28 +1428,41 @@ export class EsbuildService {
     /**
      * Transform many modules in one round trip to the transform host (or in
      * this isolate when there is none). Outcomes are positional, and a module
-     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
-     * bad module never costs the others their output.
+     * the provided-module pre-pass or esbuild rejects is an `{ error }` outcome
+     * rather than a rejection, so one bad module never costs the others their
+     * output.
      */
     async transformMany(requests) {
-        if (requests.length === 0)
-            return [];
-        const prepared = requests.map(({ code, options }) => ({ code: withProvidedModuleRewrite(code, options), options }));
-        if (this.transformHost) {
-            const outcomes = await this.transformHost(prepared);
-            if (outcomes.length !== prepared.length) {
-                throw new Error(`esbuild transform host answered ${outcomes.length} of ${prepared.length} requests`);
+        const outcomes = new Array(requests.length);
+        const prepared = [];
+        const positions = [];
+        requests.forEach(({ code, options }, i) => {
+            try {
+                prepared.push({ code: withProvidedModuleRewrite(code, options), options });
+                positions.push(i);
             }
+            catch (e) {
+                outcomes[i] = { error: errorText(e) };
+            }
+        });
+        if (prepared.length === 0)
+            return outcomes;
+        if (this.transformHost) {
+            const hosted = await this.transformHost(prepared);
+            if (hosted.length !== prepared.length) {
+                throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
+            }
+            hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
             return outcomes;
         }
         await this.ensureInit();
-        const outcomes = [];
-        for (const { code, options } of prepared) {
+        for (let j = 0; j < prepared.length; j++) {
+            const { code, options } = prepared[j];
             try {
-                outcomes.push(await transformWithEsbuild(this._esbuild, code, options));
+                outcomes[positions[j]] = await transformWithEsbuild(this._esbuild, code, options);
             }
             catch (e) {
-                outcomes.push({ error: errorText(e) });
+                outcomes[positions[j]] = { error: errorText(e) };
             }
         }
         return outcomes;

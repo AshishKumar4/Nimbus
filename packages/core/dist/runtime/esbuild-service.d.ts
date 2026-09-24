@@ -281,8 +281,9 @@ export declare class EsbuildService {
     /**
      * Transform many modules in one round trip to the transform host (or in
      * this isolate when there is none). Outcomes are positional, and a module
-     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
-     * bad module never costs the others their output.
+     * the provided-module pre-pass or esbuild rejects is an `{ error }` outcome
+     * rather than a rejection, so one bad module never costs the others their
+     * output.
      */
     transformMany(requests: readonly EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
     /**

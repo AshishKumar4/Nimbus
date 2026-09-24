@@ -48,7 +48,7 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
-import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -3246,8 +3246,16 @@ async function addEntryAbsPathReads(
   return { added };
 }
 
-function looksLikeEsm(src: string): boolean {
-  return hasTopLevelModuleSyntax(src);
+function looksLikeEsm(path: string, src: string): boolean {
+  if (!hasTopLevelModuleSyntax(src)) return false;
+  if (vfsPathExtension(path) !== '') return true;
+  // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+  try {
+    parseJavaScriptModule(src);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -3332,7 +3340,7 @@ function _markBundleEsmAsFailed(
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
     const typescript = bundleTypescriptLoader(path) !== null;
-    if (!typescript && !looksLikeEsm(src)) continue;
+    if (!typescript && !looksLikeEsm(path, src)) continue;
     bundle[typescript ? compiledCellKey(path) : path] = esbuildDiagnosticShim(path, reason);
   }
 }
@@ -3358,7 +3366,8 @@ function esbuildDiagnosticShim(path: string, reason: string): string {
  * Extensionless entries are in the set for the same reason the pre-compile
  * loop takes them — that is the shape of nearly every npm `bin` script.
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
+ * and parses an extensionless file, which may be data rather than a script.
  */
 export function isBundleModuleCandidate(path: string): boolean {
   const ext = vfsPathExtension(path);
@@ -3497,7 +3506,7 @@ async function transformEsmInBundle(
     // esbuild.transform expect strings.
     if (typeof src !== 'string') continue;
     if (bundleTypescriptLoader(path) === null) {
-      const esm = looksLikeEsm(src);
+      const esm = looksLikeEsm(path, src);
       if (!esm) continue;
     }
     candidates.push(path);
@@ -3537,7 +3546,6 @@ async function transformEsmInBundle(
     const original = bundle[path];
     if (typeof original !== 'string') continue;
     const loader = bundleTypescriptLoader(path);
-    const src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
     // A TypeScript source keeps its bytes; its emit lands beside it.
     const target = loader === null ? path : compiledCellKey(path);
     // `import.meta.url` substitution mirrors the sibling fix at
@@ -3555,27 +3563,39 @@ async function transformEsmInBundle(
     // with identical source but different paths would otherwise share a
     // cache entry and the second file would get the first file's URL.
     const absUrl = 'file:///' + path.replace(/^\/+/, '');
-    const key = __cacheKey(src + '\0' + absUrl);
+    // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
+    const key = __cacheKey(original + '\0' + absUrl);
     const cached = __esmTransformCacheGet(key);
     if (cached !== undefined) {
       bundle[target] = cached;
       transformed++;
       continue;
     }
-    const cell: EsmCell = {
+    const cellFor = (code: string): EsmCell => ({
       path,
       target,
       key,
       absUrl,
-      request: {
-        code: src,
-        options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) },
-      },
-    };
+      request: { code, options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) } },
+    });
+    let src: string;
+    try {
+      src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
+    } catch (e) {
+      // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
+      settle(cellFor(original), { error: errorText(e) });
+      continue;
+    }
+    const cell = cellFor(src);
     if (loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
       // The bounded rewrite is computation in this isolate, however large.
       if (pacer) await pacer.spend(src.length);
-      const rewritten = rewriteBundledEsmToCjs(src, absUrl);
+      let rewritten: EsbuildTransformOutcome | null;
+      try {
+        rewritten = rewriteBundledEsmToCjs(src, absUrl);
+      } catch (e) {
+        rewritten = { error: errorText(e) };
+      }
       if (rewritten) {
         settle(cell, rewritten);
         continue;
@@ -3809,7 +3829,11 @@ async function _buildPrefetchBundle(
     const source = bundle[path];
     if (typeof source !== 'string') continue;
     await pacer?.spend(source.length);
-    bundle[path] = rewriteProvidedCommonJsModules(source);
+    try {
+      bundle[path] = rewriteProvidedCommonJsModules(source);
+    } catch {
+      // Unparseable, so not a module and no bundled records to bind: data such as a LICENSE.
+    }
   }
   await paceAfterPass();
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
