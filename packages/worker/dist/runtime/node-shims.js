@@ -436,6 +436,15 @@ function __nimbusWasmDigest(bytes) {
 
 let __nimbusLiveStdinPump = null;
 let __nimbusProcessExitReported = false;
+// Set when the program has exited: its timers are cleared and its writes refused.
+let __nimbusProgramStopped = false;
+let __nimbusExitEmitted = false;
+// 'exit' listeners run once, synchronously, before the program is stopped.
+function __nimbusEmitExit(code) {
+  if (__nimbusExitEmitted) return;
+  __nimbusExitEmitted = true;
+  try { __processEvents.emit("exit", code); } catch {}
+}
 let __nimbusProcessExitResolve = null;
 let __nimbusProcessExitCode = null;
 const __nimbusProcessExitPromise = new Promise((resolve) => {
@@ -6783,6 +6792,7 @@ function __makeProcessOutputStream(streamName) {
     errored: null,
     write(d, enc, cb) {
       if (typeof enc === "function") cb = enc;
+      if (__nimbusProgramStopped) return true;
       // The reported result is text; decode the bytes at this edge only.
       const s = __nimbusOutText(streamName, __nimbusOutBytes(d, enc));
       if (streamName === "stderr") stderr += s;
@@ -6828,6 +6838,8 @@ function __makeProcessOutputStream(streamName) {
 function __nimbusReportProcessExit(code, reason) {
   if (__nimbusProcessExitReported) return;
   __nimbusProcessExitCode = Number(code ?? 0);
+  __nimbusProgramStopped = true;
+  try { if (typeof globalThis.__nimbusStopProgramTimers === "function") globalThis.__nimbusStopProgramTimers(); } catch {}
   try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
   // Generated lifecycle owners defer the terminal supervisor report until
   // their durability boundary has drained. Reporting here would retire the
@@ -6867,7 +6879,7 @@ const __processMod = {
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
   exit: (code) => {
     exitCode = code ?? 0;
-    try { __processEvents.emit("exit", exitCode); } catch {}
+    __nimbusEmitExit(exitCode);
     __nimbusReportProcessExit(exitCode, "");
     throw new __ProcessExit(exitCode);
   },
