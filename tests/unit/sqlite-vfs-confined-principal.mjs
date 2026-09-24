@@ -100,7 +100,7 @@ assert.equal(a.readFileString('/tmp/link'), 'from A', 'the link never escapes to
   assert.throws(() => a.readdir('var/agents/b/tmp'), /EACCES/, 'the remap is not the isolation; the mode is');
 }
 
-// ── chmod: the owner triad moves; nothing else does ─────────────────────────
+// ── chmod: the owner triad moves; nothing else widens ───────────────────────
 a.writeFile('/tmp/build.sh', '#!/bin/sh\n');
 const before = a.stat('/tmp/build.sh').mode & 0o7777;
 
@@ -121,6 +121,39 @@ assert.equal(
   'a refused chmod changes nothing at all',
 );
 assert.throws(() => a.chmod('/tmp/build.sh', 0o777), /use u\+x/, 'the refusal names the spelling that works');
+
+// Narrowing is the owner making its own file more private, never a grant.
+a.writeFile('/tmp/run.sh', 'x', { mode: 0o755 });
+a.chmod('/tmp/run.sh', 0o700);
+assert.equal(a.stat('/tmp/run.sh').mode & 0o7777, 0o700, 'chmod 700 narrows group and other');
+a.writeFile('/tmp/key', 'k');
+assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o644);
+a.chmod('/tmp/key', 0o600);
+assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o600, 'chmod 600 makes a key private');
+a.writeFile('/tmp/shared', 's', { mode: 0o666 });
+a.chmod('/tmp/shared', 0o644);
+assert.equal(a.stat('/tmp/shared').mode & 0o7777, 0o644, 'go-w');
+assert.throws(() => a.chmod('/tmp/key', 0o640), /EPERM/, 'narrowed bits cannot come back');
+assert.throws(() => a.chmod('/tmp/shared', 0o654), /EPERM/, 'nor can one it never had');
+assert.equal(a.stat('/tmp/shared').mode & 0o7777, 0o644);
+
+// Special bits: setuid/setgid grant, so they may be dropped but not added;
+// sticky restricts others, so adding it narrows and dropping it would widen.
+root.writeFile('var/agents/a/tmp/suid', 'x', { mode: 0o6755 });
+root.chmod('var/agents/a/tmp/suid', 0o6755);
+root.chown('var/agents/a/tmp/suid', A.uid, A.gid);
+assert.throws(() => a.chmod('/tmp/run.sh', 0o2700), /EPERM/, 'setgid is a grant');
+a.chmod('/tmp/suid', 0o2755);
+assert.equal(a.stat('/tmp/suid').mode & 0o7777, 0o2755, 'dropping setuid narrows');
+a.chmod('/tmp/suid', 0o700);
+assert.equal(a.stat('/tmp/suid').mode & 0o7777, 0o700, 'dropping setgid narrows');
+assert.throws(() => a.chmod('/tmp/suid', 0o4700), /EPERM/, 'and setuid cannot come back');
+a.mkdir('/tmp/drop', { mode: 0o755 });
+a.chmod('/tmp/drop', 0o1755);
+assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1755, 'adding sticky restricts others');
+a.chmod('/tmp/drop', 0o1700);
+assert.throws(() => a.chmod('/tmp/drop', 0o700), /EPERM/, 'dropping sticky would let others delete entries');
+assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1700);
 
 // ── An unconfined principal is entirely unaffected ──────────────────────────
 root.mkdir('home/plain', { recursive: true, mode: 0o755 });

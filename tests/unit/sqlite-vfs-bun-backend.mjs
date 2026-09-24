@@ -149,6 +149,7 @@ try {
   first.user.rename(LARGE_PATH, RENAMED_PATH);
   assert.equal(first.user.exists(LARGE_PATH), false, 'rename moves the source away');
   assert.deepEqual(first.user.readFile(RENAMED_PATH), large, 'rename keeps every chunk');
+  const renamedCtime = first.user.stat(RENAMED_PATH).ctime;
 
   first.user.unlink(BINARY_PATH);
   assert.equal(first.user.exists(BINARY_PATH), false, 'unlink removes the file');
@@ -167,9 +168,11 @@ try {
   );
   assert.deepEqual(second.user.readFile(RENAMED_PATH), large, 'the multi-chunk file survived the reopen');
   assert.equal(second.user.exists(BINARY_PATH), false, 'the unlinked file stayed unlinked');
-  const { atime: reopenedAtime, ...reopenedStat } = second.user.stat(RENAMED_PATH);
-  const { atime: writtenAtime, ...writtenStat } = stat;
+  // A rename changes the inode's ctime, so that is compared to the moved file.
+  const { atime: reopenedAtime, ctime: reopenedCtime, ...reopenedStat } = second.user.stat(RENAMED_PATH);
+  const { atime: writtenAtime, ctime: writtenCtime, ...writtenStat } = stat;
   assert.deepEqual(reopenedStat, writtenStat, 'inode metadata survived the reopen');
+  assert.equal(reopenedCtime, renamedCtime, 'ctime survived the reopen');
   assert.ok(reopenedAtime >= writtenAtime, 'reading it again only moved atime forward');
   second.harness.db.close();
 } finally {
