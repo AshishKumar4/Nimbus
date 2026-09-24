@@ -233,6 +233,19 @@ const REJECTS = [
         suggest: 'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
         transitive: 'fail',
     },
+    // ── Rolldown (Vite 8's bundler): native shards plus a wasi-threads build ──
+    {
+        from: 'rolldown',
+        reason: 'Native Rust bundler that Vite 8 loads at startup. Its only non-native build, @rolldown/binding-wasm32-wasi, is a wasm32-wasip1-threads binary, and Workers run one thread per isolate with Atomics.wait disabled.',
+        suggest: 'no Workers-compatible target — rolldown publishes no single-threaded build, so tools that load Vite 8 themselves (Astro 7) cannot start here.',
+        transitive: 'fail',
+    },
+    {
+        from: '@rolldown/binding-wasm32-wasi',
+        reason: 'wasm32-wasip1-threads build of rolldown: it imports a shared memory and wasi thread-spawn, its Rust locks and thread parking execute memory.atomic.wait32, and its loader needs node:wasi and worker_threads. Workers run one thread per isolate with Atomics.wait disabled.',
+        suggest: 'no Workers-compatible target — rolldown publishes no single-threaded build.',
+        transitive: 'fail',
+    },
 ];
 /**
  * The single typed package-ABI policy (see `PackageAbiPolicy` in
