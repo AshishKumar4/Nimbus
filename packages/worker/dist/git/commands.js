@@ -286,6 +286,25 @@ function getAuthor(ctx) {
         email: ctx.env.GIT_AUTHOR_EMAIL || 'user@nimbus.dev',
     };
 }
+// ── Staging ──────────────────────────────────────────────────────────────
+/** `git add -A` under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
+async function stageAll(git, fs, dir) {
+    const cache = {};
+    const added = [];
+    const removed = [];
+    for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
+        if (head === workdir && workdir === stage)
+            continue;
+        if (workdir === 0)
+            removed.push(filepath);
+        else
+            added.push(filepath);
+    }
+    if (removed.length)
+        await git.remove({ fs, dir, filepath: removed, cache });
+    if (added.length)
+        await git.add({ fs, dir, filepath: added, parallel: false, cache });
+}
 // ── Git subcommand implementations ──────────────────────────────────────
 /**
  * The `git` command handler. Split out from registration so it can be
@@ -459,23 +478,10 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
             }
             case 'add': {
                 const paths = subArgs.filter(a => !a.startsWith('-'));
-                if (paths.length === 0 || paths.includes('.')) {
-                    // Add all
-                    const matrix = await git.statusMatrix({ fs, dir });
-                    for (const [filepath, head, workdir, stage] of matrix) {
-                        if (head !== workdir || workdir !== stage) {
-                            if (workdir === 0)
-                                await git.remove({ fs, dir, filepath });
-                            else
-                                await git.add({ fs, dir, filepath });
-                        }
-                    }
-                }
-                else {
-                    for (const filepath of paths) {
-                        await git.add({ fs, dir, filepath });
-                    }
-                }
+                if (paths.length === 0 || paths.includes('.'))
+                    await stageAll(git, fs, dir);
+                else
+                    await git.add({ fs, dir, filepath: paths, parallel: false });
                 return 0;
             }
             case 'commit': {
