@@ -49,6 +49,9 @@ function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK) {
   root.mkdir(PROJ, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
   root.writeFile(`${PROJ}/package-lock.json`, JSON.stringify(lock));
+  // What an earlier install left behind.
+  root.mkdir(`${NM}/stale`, { recursive: true });
+  root.writeFile(`${NM}/stale/index.js`, 'module.exports = 1;');
   const resolveAsked = [];
   const shardsSeen = [];
   const log = [];
@@ -77,6 +80,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.ok(!shardsSeen.includes('a-darwin') && !shardsSeen.includes('t'));
   assert.ok(root.exists(`${NM}/.bin/a-cli`), 'bins from the lock are linked');
   assert.equal(result.installed.length, 3);
+  assert.equal(root.exists(`${NM}/stale`), false, 'the previous node_modules is cleared');
 }
 
 // ── without --omit=dev the dev entry installs too ─────────────────────────
@@ -94,6 +98,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*a@\^2\.0\.0/);
   assert.deepEqual(resolveAsked, []);
   assert.equal(root.exists(`${NM}/a`), false, 'nothing installed from a stale lock');
+  assert.equal(root.exists(`${NM}/stale/index.js`), true, 'a rejected lock leaves the existing node_modules alone');
 
   const removed = { ...PACKAGE_JSON, dependencies: {} };
   await assert.rejects(makeInstaller(removed).installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*\ba\b.*package\.json does not declare/);
@@ -105,15 +110,17 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   await assert.rejects(makeInstaller(PACKAGE_JSON, v1).installer.install(PROJ, { pid: 1, fromLockfile: true }), /lockfileVersion 1/);
 }
 
-// ── the command: needs a lock, clears node_modules, then installs ─────────
+// ── the command: needs a lock, then hands the clean install to the host ──────
 {
   const harness = createSqliteVfsTestHarness();
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
   const calls = [];
+  let rejectLock = false;
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
     installer: {
       async install(spec) {
-        calls.push({ spec, staleSurvived: await ws.vfs.as(CRED_KERNEL).exists('/proj/node_modules/stale/index.js') });
+        calls.push({ spec });
+        if (rejectLock) throw new Error('`npm ci` can only install packages when your package.json and package-lock.json are in sync.');
         return { installed: ['a@1.0.0'], failed: [], totalFiles: 1 };
       },
     },
@@ -130,8 +137,15 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(calls.length, 1);
   assert.equal(calls[0].spec.fromLockfile, true);
   assert.equal(calls[0].spec.production, true);
-  assert.equal(calls[0].staleSurvived, false, 'node_modules is removed before the install');
   assert.doesNotMatch(r.stderr, /unknown command/);
+
+  // A lock the host rejects fails the command and leaves the project as it was.
+  rejectLock = true;
+  const rejected = await ws.exec('cd /proj && npm ci');
+  assert.equal(rejected.exitCode, 1);
+  assert.match(rejected.stderr, /in sync/);
+  assert.equal(await ws.vfs.as(CRED_KERNEL).exists('/proj/node_modules/stale/index.js'), true,
+    'node_modules is not touched before the lock is accepted');
 }
 
 console.log('npm-ci: ok');

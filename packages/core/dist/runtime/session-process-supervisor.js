@@ -23,6 +23,10 @@ import { ProcessTable } from './process-table.js';
 import { ProcessInputStore } from './process-input.js';
 import { ProcessLogStore, } from './process-logs.js';
 import { StreamTextDecoders } from '../_shared/bytes.js';
+/** Signals whose default action terminates the process, by number. */
+const DEFAULT_TERMINATING_SIGNALS = {
+    SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15,
+};
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     input = new ProcessInputStore();
@@ -39,6 +43,8 @@ export class SessionProcessSupervisor {
     logActivity = null;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
+    /** Ends a process by a signal's default action; see setDefaultSignalAction. */
+    defaultSignalAction = null;
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
@@ -182,8 +188,37 @@ export class SessionProcessSupervisor {
     resize(pid, columns, rows) {
         return this.input.resize(pid, columns, rows);
     }
+    /**
+     * Deliver a signal through the process's input channel. A process that has
+     * not yet read that channel has not run far enough to install a handler,
+     * so a terminating signal takes its default action now instead of waiting
+     * in the queue for however long the program takes to start.
+     */
     signal(pid, signal) {
+        const signo = DEFAULT_TERMINATING_SIGNALS[signal];
+        if (signo !== undefined && this.input.has(pid) && !this.input.hasReader(pid)
+            && this.table.get(pid)?.state === 'running') {
+            const code = 128 + signo;
+            if (this.defaultSignalAction) {
+                this.defaultSignalAction(pid, code, signal);
+            }
+            else {
+                this.exit(pid, code);
+                this.markExit(pid, code, signal);
+                this.terminate(pid);
+                this.input.close(pid);
+            }
+            return { ok: true };
+        }
         return this.input.signal(pid, signal);
+    }
+    /**
+     * How a signal's default action ends a process whose work lives outside
+     * this table (a facet being built or booted). One slot, owned by the
+     * FacetManager, like setOnTerminal.
+     */
+    setDefaultSignalAction(cb) {
+        this.defaultSignalAction = cb;
     }
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid) {

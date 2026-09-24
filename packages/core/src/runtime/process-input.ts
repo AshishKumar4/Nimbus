@@ -17,6 +17,8 @@ interface InputState {
   closed: boolean;
   bytes: number;
   waiters: InputWaiter[];
+  /** Set once the process has read its input: from then on it receives its signals. */
+  reading: boolean;
   columns: number;
   rows: number;
 }
@@ -40,7 +42,7 @@ export class ProcessInputStore {
   }
 
   private createState(): InputState {
-    return { packets: [], closed: false, bytes: 0, waiters: [], columns: 80, rows: 24 };
+    return { packets: [], closed: false, bytes: 0, waiters: [], reading: false, columns: 80, rows: 24 };
   }
 
   open(pid: number): void {
@@ -50,6 +52,11 @@ export class ProcessInputStore {
 
   has(pid: number): boolean {
     return this.pids.has(pid);
+  }
+
+  /** Whether the process behind `pid` has started reading its input channel. */
+  hasReader(pid: number): boolean {
+    return this.pids.get(pid)?.reading === true;
   }
 
   write(pid: number, data: string): { ok: boolean } {
@@ -125,6 +132,7 @@ export class ProcessInputStore {
     if (!isValidPid(pid)) return { data: '', ended: true };
     const state = this.pids.get(pid);
     if (!state) return { data: '', ended: true };
+    state.reading = true;
 
     const next = state.packets.shift();
     if (next !== undefined) {

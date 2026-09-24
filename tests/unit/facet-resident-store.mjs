@@ -281,7 +281,8 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 // ── a store that outlives its process ─────────────────────────────────────
 //
-// A slot's SQLite is kept for the next process under the same credential. Its
+// A store can outlive its process: a durable app-slot's, or one a new session
+// incarnation re-attaches. Its
 // authority rows are still dated and reconcile as usual, but the previous
 // process's unflushed writes never reached the authority: they are not files.
 {

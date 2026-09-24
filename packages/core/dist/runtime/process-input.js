@@ -9,7 +9,7 @@ export class ProcessInputStore {
         this.maxQueuedBytes = options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
     }
     createState() {
-        return { packets: [], closed: false, bytes: 0, waiters: [], columns: 80, rows: 24 };
+        return { packets: [], closed: false, bytes: 0, waiters: [], reading: false, columns: 80, rows: 24 };
     }
     open(pid) {
         if (!isValidPid(pid) || this.pids.has(pid))
@@ -18,6 +18,10 @@ export class ProcessInputStore {
     }
     has(pid) {
         return this.pids.has(pid);
+    }
+    /** Whether the process behind `pid` has started reading its input channel. */
+    hasReader(pid) {
+        return this.pids.get(pid)?.reading === true;
     }
     write(pid, data) {
         if (!isValidPid(pid))
@@ -94,6 +98,7 @@ export class ProcessInputStore {
         const state = this.pids.get(pid);
         if (!state)
             return { data: '', ended: true };
+        state.reading = true;
         const next = state.packets.shift();
         if (next !== undefined) {
             state.bytes -= next.data.length;

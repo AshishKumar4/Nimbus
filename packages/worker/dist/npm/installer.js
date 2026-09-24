@@ -1292,6 +1292,13 @@ export class NpmInstaller {
                 `Update the lock file with \`npm install\` before continuing.\n` +
                 mismatches.map((m) => `npm ERR! ${m}`).join('\n'));
         }
+        const unsupported = Object.keys(lock.packages).find((key) => key !== '' && !key.startsWith('node_modules/'));
+        if (unsupported !== undefined) {
+            throw new Error(`${lockName} entry "${unsupported}" is a workspace or linked package, which \`npm ci\` here does not install`);
+        }
+        // Only a lock that will be installed as written clears the old tree.
+        if (this.vfs.exists(`${projDir}/node_modules`))
+            this.vfs.removeRecursive(`${projDir}/node_modules`);
         const resolved = new Map();
         const nested = new Map();
         const unresolved = new Map();
@@ -1300,9 +1307,6 @@ export class NpmInstaller {
         for (const [key, entry] of Object.entries(lock.packages)) {
             if (key === '')
                 continue;
-            if (!key.startsWith('node_modules/')) {
-                throw new Error(`${lockName} entry "${key}" is a workspace or linked package, which \`npm ci\` here does not install`);
-            }
             if (production && entry.dev === true)
                 continue;
             const placement = key.slice('node_modules/'.length);

@@ -46,6 +46,9 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
     pid: entry.pid, attached: true, columns: 80, rows: 24,
   });
 
+  // The program starts reading its terminal (an empty poll).
+  assert.deepEqual(await processes.readInput(entry.pid, 0), { data: '', ended: false });
+
   // write → resize storm → signal arrive in order; resizes coalesce.
   assert.deepEqual(processes.writeInput(entry.pid, 'hello'), { ok: true });
   assert.deepEqual(processes.resize(entry.pid, 100, 30), { ok: true });
@@ -68,6 +71,41 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   processes.endInput(entry.pid);
   assert.deepEqual(await processes.readInput(entry.pid, 0), { data: '', ended: true });
   assert.deepEqual(processes.writeInput(entry.pid, 'late'), { ok: false });
+}
+
+// ── a signal before the program reads its terminal: default action ───
+{
+  const processes = new SessionProcessSupervisor();
+  const terminal = [];
+  processes.setOnTerminal((pid) => terminal.push(pid));
+  const booting = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
+  processes.openInput(booting.pid);
+  assert.deepEqual(processes.signal(booting.pid, 'SIGTERM'), { ok: true });
+  assert.equal(processes.get(booting.pid)?.state, 'exited', 'no handler can exist yet: SIGTERM ends it now');
+  assert.equal(processes.get(booting.pid)?.exitCode, 143);
+  assert.equal(processes.getExit(booting.pid)?.code, 143);
+  assert.deepEqual(terminal, [booting.pid]);
+  assert.equal(processes.hasInput(booting.pid), false, 'nothing is left queued for a program that never ran');
+
+  // A non-terminating signal before the first read still waits for the program.
+  const other = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
+  processes.openInput(other.pid);
+  assert.deepEqual(processes.signal(other.pid, 'SIGWINCH'), { ok: true });
+  assert.equal(processes.get(other.pid)?.state, 'running');
+  assert.equal((await processes.readInput(other.pid, 0)).signal, 'SIGWINCH');
+
+  // Once reading, SIGTERM is delivered to the program, which may handle it.
+  assert.deepEqual(processes.signal(other.pid, 'SIGTERM'), { ok: true });
+  assert.equal(processes.get(other.pid)?.state, 'running');
+  assert.equal((await processes.readInput(other.pid, 0)).signal, 'SIGTERM');
+
+  // The owner of the process's work decides how the default action ends it.
+  const ended = [];
+  processes.setDefaultSignalAction((pid, code, signal) => ended.push([pid, code, signal]));
+  const third = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
+  processes.openInput(third.pid);
+  processes.signal(third.pid, 'SIGINT');
+  assert.deepEqual(ended, [[third.pid, 130, 'SIGINT']]);
 }
 
 // ── output / exit ordering ───────────────────────────────────────────

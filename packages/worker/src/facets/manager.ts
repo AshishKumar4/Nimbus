@@ -4394,6 +4394,24 @@ export class FacetManager {
       this.residentBundleKeys.delete(pid);
       this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
     });
+    this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
+  }
+
+  /**
+   * A signal's default action: the process ends with 128+signo whether its
+   * facet is still being built (the launch stops at its next ownership gate)
+   * or already booted (its resources are released like a kill).
+   */
+  private _endBySignal(pid: number, code: number, signal: string): void {
+    if (this.processes.get(pid)?.state !== 'running') return;
+    this.portRegistry.unregisterByPid(pid);
+    this.releaseProcessRpcResources(pid);
+    this.revokeProcessVfsWriters(pid);
+    this.processes.exit(pid, code);
+    this.processes.markExit(pid, code, signal);
+    this.processes.closeInput(pid);
+    try { this.hooks.onExternalExit?.(pid, code, signal); } catch {}
+    this._teardownPairedServeFacet(pid);
   }
 
   /**
@@ -5581,7 +5599,6 @@ export class FacetManager {
       boot: ResidentBootSpec;
       startArgs?: unknown;
       facet?: { name: string; durable: boolean };
-      storeKey?: string;
     },
   ): Promise<ResidentProcessHandle> {
     const handle = await this.processFabric.startResidentProcess({
@@ -6135,11 +6152,9 @@ export class FacetManager {
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the
         // reservation's durability reaches this process's storage too.
-        // Otherwise the slot's filesystem mirror outlives the process, for
-        // the next resident of this session under the same credential.
         ...(durableFacetName !== undefined
           ? { facet: { name: durableFacetName, durable: true } }
-          : { storeKey: `${this.ctx.id.toString()}:${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}` }),
+          : {}),
         boot: {
           kind: 'code',
           code: {
@@ -6153,6 +6168,11 @@ export class FacetManager {
           },
         },
       });
+      // Ended while its facet was being created (a signal's default action).
+      if (this.processes.get(entry.pid)?.state !== 'running') {
+        handle.kill();
+        return;
+      }
       if (diagOn) {
         recordExecTelemetry({
           command,

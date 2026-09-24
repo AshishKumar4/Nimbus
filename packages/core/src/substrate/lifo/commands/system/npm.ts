@@ -60,7 +60,7 @@ export interface NpmInstallPort {
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
     registry: string;
     production?: boolean;
-    /** `npm ci`: place exactly what the project's package-lock.json records. */
+    /** `npm ci`: validate package-lock.json, remove node_modules, place exactly what the lock records. */
     fromLockfile?: boolean;
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
@@ -991,8 +991,9 @@ export function createNpmCommand(
 
 /**
  * `npm ci`: a clean install of exactly the tree package-lock.json (or
- * npm-shrinkwrap.json) records. node_modules is removed first; a lock that
- * disagrees with package.json fails the install instead of being re-resolved.
+ * npm-shrinkwrap.json) records. The host validates the lock and only then
+ * removes node_modules: a lock that disagrees with package.json fails the
+ * install with the project untouched, instead of being re-resolved.
  */
 async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number> {
 	const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
@@ -1020,7 +1021,6 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 		return 1;
 	}
 	const startTime = Date.now();
-	await ctx.vfs.remove(join(ctx.cwd, 'node_modules'), { recursive: true, force: true });
 	const npmLog: NpmLogEmitter | null = invocation.loglevel
 		? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
 		: null;

@@ -142,6 +142,12 @@ export declare class Shell {
     private handleStdinInput;
     private applyCompletion;
     private getPromptWidth;
+    /**
+     * An asynchronous notice. While a command runs it is ordinary output; at an
+     * idle prompt it goes above the prompt, which is redrawn with the line being
+     * edited, so the prompt stays the last thing on screen.
+     */
+    writeNotice(text: string): void;
     redrawLine(): void;
     /**
      * Replay buffered type-ahead through the line editor. Stops the moment a
