@@ -193,7 +193,8 @@ export interface NimbusFilesystemAuthority {
 
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire'>]:
+  // copyTree yields between slices, so it has no synchronous form.
+  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree'>]:
     RuntimeFsBridge[K] extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };

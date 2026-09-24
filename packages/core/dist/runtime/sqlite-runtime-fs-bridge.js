@@ -536,7 +536,7 @@ export class SqliteRuntimeFsBridge {
         const target = this.locateMutation(to, false, 'copyTree');
         if (source.mount || target.mount)
             throw fsError('EXDEV', 'copyTree', to);
-        return this.vfs.copyTree(source.path, target.path, options);
+        return this.vfs.copyTreeAsync(source.path, target.path, options);
     }
     writeBatch(payload) {
         return this.vfs.writeBatch(payload);

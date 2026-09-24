@@ -156,4 +156,53 @@ function seed(vfs, root, dirs, files) {
   assert.deepEqual([...vfs.readRange('b', 0, 4)], [1, 2, 3, random(200_000, 5)[3]]);
 }
 
+// ── A tree larger than one slice copies in slices with a yield between ───
+//
+// workerd resets an object whose storage writes have not settled for tens
+// of seconds, which a 1M-row copy in one synchronous turn did. The async
+// copy and the resume at open run slices of 200 transactions.
+{
+  const build = () => {
+    const opened = open();
+    opened.vfs.mkdir('src');
+    for (let d = 0; d < 520; d++) {
+      const dir = `src/d${d}`;
+      opened.vfs.mkdir(dir);
+      for (const half of [0, 50]) {
+        opened.vfs.writeBatch({
+          inodes: Array.from({ length: 50 }, (_, i) => ({ path: `${dir}/f${half + i}`, parentPath: dir, isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 })),
+          chunks: Array.from({ length: 50 }, (_, i) => ({ path: `${dir}/f${half + i}`, chunkId: 0, data: new Uint8Array([half + i]) })),
+        });
+      }
+    }
+    return opened;
+  };
+  const rows = 1 + 520 * 101;
+  const { harness, vfs } = build();
+  let yields = 0;
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { yields++; return realSetTimeout(fn, ms, ...rest); };
+  const start = harness.transactionCount;
+  let copied;
+  try { copied = await vfs.copyTreeAsync('src', 'dst'); } finally { globalThis.setTimeout = realSetTimeout; }
+  assert.equal(copied, rows);
+  const transactions = harness.transactionCount - start;
+  assert.ok(yields >= Math.floor(transactions / 200) - 1 && yields >= 1, `${yields} yields over ${transactions} transactions`);
+  const count = (prefix) => harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path = ? OR path LIKE ?', prefix, `${prefix}/%`)[0].n;
+  assert.equal(count('dst'), rows);
+
+  // A reset early in the copy: the open runs one slice, the rest follows asynchronously.
+  const second = build();
+  second.harness.failAfterTransaction({ transaction: second.harness.transactionCount + 5, error: new Error('reset') });
+  assert.throws(() => second.vfs.copyTree('src', 'dst'), /reset/);
+  second.harness.clearFault();
+  const reopened = open(createSqliteVfsTestHarness(second.harness.db));
+  const afterOpen = second.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_jobs')[0].n;
+  for (let i = 0; i < 50 && reopened.raw.jobs().length > 0; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(afterOpen, 1, 'the open did not run the whole job in its own turn');
+  assert.deepEqual(reopened.raw.jobs(), []);
+  const n = (prefix) => second.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path = ? OR path LIKE ?', prefix, `${prefix}/%`)[0].n;
+  assert.equal(n('dst'), rows, 'and the copy completed');
+}
+
 console.log('sqlite-vfs-copy-tree: all assertions passed');

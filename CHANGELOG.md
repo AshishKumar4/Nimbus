@@ -39,6 +39,11 @@ published independently in the `@nimbus-sh` npm scope.
   later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
   `storeStats()` reports chunks, history rows, the GC queue, snapshots and
   jobs.
+- Long filesystem jobs yield. `copyTreeAsync` (used by `cp -r` over RPC),
+  `restoreAsync` and `dropSnapshotAsync` run 200 transactions at a time
+  with a yield between, and a job a reset interrupted resumes the same way
+  at open. workerd reset an object that forked 1M files in one synchronous
+  turn; sliced, the same fork took 28 s (27.5 us a row).
 - Snapshot history can live in a cold store: with `coldStore` (an R2
   bucket binding or anything with get/put/delete) `tierColdChunks()` moves
   chunks that only snapshots reference out of the database, so the quota

@@ -91,7 +91,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void;
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
-    }): number;
+    }): Promise<number>;
     writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0]): {
         inodes: number;
         chunks: number;

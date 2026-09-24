@@ -130,6 +130,17 @@ export interface CredentialedVfs {
         preserve?: boolean;
         at?: string;
     }): number;
+    /**
+     * copyTree in slices of JOB_SLICE_PAGES transactions with a yield between,
+     * for trees too large for one synchronous turn (workerd resets an object
+     * whose storage writes do not settle for tens of seconds). A live source
+     * may change between slices: each page is consistent, the whole copy is
+     * point-in-time only with `at`.
+     */
+    copyTreeAsync(src: string, dest: string, options?: {
+        preserve?: boolean;
+        at?: string;
+    }): Promise<number>;
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
         chunks: number;
@@ -875,7 +886,8 @@ export declare class SqliteVFS {
      * the snapshot's rows never change while writers keep writing the source,
      * and a snapshot a job reads from cannot be dropped.
      */
-    private copyTree;
+    private planCopyTree;
+    private copyTreeInSlices;
     /** Every entry strictly under `root` as of generation `g`, a page at a time. */
     private subtreeAt;
     /**
@@ -884,8 +896,14 @@ export declare class SqliteVFS {
      * the transaction that copies the page. `id` resumes a recorded job.
      */
     private runCopyTree;
-    /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
+    /**
+     * Continue every job a reset interrupted, from its cursor: one slice now,
+     * at open, and the rest in slices with a yield between, so a job of any
+     * size never holds one synchronous turn.
+     */
     private resumeJobs;
+    /** One slice of job `id`; true once it is done (or gone, or failed). */
+    private resumeSlice;
     /** Every snapshot, oldest first. */
     snapshots(): SnapshotInfo[];
     /**
@@ -930,6 +948,14 @@ export declare class SqliteVFS {
     }): {
         restored: number;
     };
+    /** restore in slices with a yield between, for a restore of any size in workerd. */
+    restoreAsync(name: string, options?: {
+        subtree?: string;
+    }): Promise<{
+        restored: number;
+    }>;
+    /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
+    private restoreJob;
     private runRestore;
     /** The history row covering generation `g` at `path`, if any. */
     private historyAt;
@@ -942,6 +968,11 @@ export declare class SqliteVFS {
     dropSnapshot(name: string): {
         dropped: number;
     };
+    /** dropSnapshot in slices with a yield between. */
+    dropSnapshotAsync(name: string): Promise<{
+        dropped: number;
+    }>;
+    private dropJob;
     private runDrop;
     /**
      * What changed between two trees of this filesystem: snapshots by name, or

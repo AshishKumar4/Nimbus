@@ -246,6 +246,14 @@ export interface CredentialedVfs {
    * Returns the entries copied. See SqliteVFS.copyTree.
    */
   copyTree(src: string, dest: string, options?: { preserve?: boolean; at?: string }): number;
+  /**
+   * copyTree in slices of JOB_SLICE_PAGES transactions with a yield between,
+   * for trees too large for one synchronous turn (workerd resets an object
+   * whose storage writes do not settle for tens of seconds). A live source
+   * may change between slices: each page is consistent, the whole copy is
+   * point-in-time only with `at`.
+   */
+  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string }): Promise<number>;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   writeStream(
     stream: ReadableStream<Uint8Array>,
@@ -328,6 +336,13 @@ const EXPORT_FRAME_BYTES = 8 * 1024 * 1024;
 /** An imported file with more chunks than this stages across transactions. */
 const IMPORT_INLINE_PIECES = 64;
 const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
+/**
+ * Transactions one slice of a long job runs before yielding: about 50k rows
+ * of copyTree, a few seconds in workerd, well inside the time after which
+ * it resets an object whose storage writes have not settled (measured: a
+ * 1M-row copyTree in one turn was reset).
+ */
+const JOB_SLICE_PAGES = 200;
 /** Chunks one tier pass moves, and chunk ids it examines. */
 const TIER_PAGE_CHUNKS = 64;
 const TIER_SCAN_ROWS = 4_096;
@@ -1934,7 +1949,8 @@ export class SqliteVFS {
       removeRecursive: (path) => this.removeRecursive(path, bound),
       rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
-      copyTree: (src, dest, options) => this.copyTree(src, dest, bound, options),
+      copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
+      copyTreeAsync: (src, dest, options) => this.copyTreeInSlices(this.planCopyTree(src, dest, bound, options)),
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -4413,7 +4429,7 @@ export class SqliteVFS {
    * the snapshot's rows never change while writers keep writing the source,
    * and a snapshot a job reads from cannot be dropped.
    */
-  private copyTree(src: string, dst: string, cred: VfsCred, options: { preserve?: boolean; at?: string } = {}): number {
+  private planCopyTree(src: string, dst: string, cred: VfsCred, options: { preserve?: boolean; at?: string } = {}): CopyTreeJob {
     this.assertMutationsAllowed([dst]);
     const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
     if (atGen !== undefined) this.assertSnapshotLocal(atGen, normalizeVfsPath(src), options.at!);
@@ -4446,7 +4462,18 @@ export class SqliteVFS {
       preserveTimes: options.preserve === true,
       ...(atGen === undefined ? {} : { at: options.at, atGen }),
     };
-    return this.runCopyTree(job, null);
+    return job;
+  }
+
+  private async copyTreeInSlices(job: CopyTreeJob): Promise<number> {
+    let slice = this.runCopyTree(job, null, JOB_SLICE_PAGES);
+    let copied = slice.copied;
+    while (!slice.done) {
+      await yieldToStorage();
+      slice = this.runCopyTree(job, slice.id, JOB_SLICE_PAGES);
+      copied += slice.copied;
+    }
+    return copied;
   }
 
   /** Every entry strictly under `root` as of generation `g`, a page at a time. */
@@ -4469,7 +4496,7 @@ export class SqliteVFS {
    * first transaction, then one page per transaction, the cursor moving in
    * the transaction that copies the page. `id` resumes a recorded job.
    */
-  private runCopyTree(job: CopyTreeJob, id: number | null): number {
+  private runCopyTree(job: CopyTreeJob, id: number | null, maxPages = Infinity): { copied: number; id: number | null; done: boolean } {
     const range = subtreeRange(job.src);
     const columns = 'path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_id, content_id';
     // The rows copied: the live tree, or the snapshot's (live rows it still
@@ -4481,6 +4508,7 @@ export class SqliteVFS {
     let jobId = id;
     let cursor = jobId === null ? null : String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', jobId)][0]!.cursor);
     let copied = 0;
+    let pages = 0;
     for (;;) {
       const now = this.now();
       const page = cursor === null
@@ -4563,30 +4591,48 @@ export class SqliteVFS {
         if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
           // A file or symlink is its own whole tree: its job ends with it.
           this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId); });
-          return copied;
+          return { copied, id: jobId, done: true };
         }
         continue;
       }
-      if (done) return copied;
+      if (done) return { copied, id: jobId, done: true };
       cursor = last!;
+      if (++pages >= maxPages) return { copied, id: jobId, done: false };
     }
   }
 
-  /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
+  /**
+   * Continue every job a reset interrupted, from its cursor: one slice now,
+   * at open, and the rest in slices with a yield between, so a job of any
+   * size never holds one synchronous turn.
+   */
   private resumeJobs(): void {
-    for (const row of [...this.sql.exec('SELECT id, kind, args, start_gen FROM vfs_jobs ORDER BY id')]) {
+    const pending: number[] = [];
+    for (const row of [...this.sql.exec("SELECT id FROM vfs_jobs WHERE kind <> 'import' ORDER BY id")]) {
       const id = Number(row.id);
-      try {
-        const args = JSON.parse(String(row.args));
-        if (row.kind === 'copyTree') this.runCopyTree(args as CopyTreeJob, id);
-        else if (row.kind === 'restore') this.runRestore(id, args as RestoreJob, Number(row.start_gen));
-        else if (row.kind === 'drop') this.runDrop(id, Number((args as { g: number }).g));
-        // An import resumes when its importer sends the next page (importCursor).
-        else if (row.kind === 'import') continue;
-        else throw new Error(`unknown job kind ${String(row.kind)}`);
-      } catch (error) {
-        console.error(`[sqlite-vfs] job ${id} (${String(row.kind)}) failed to resume:`, this.errorMessage(error));
+      if (!this.resumeSlice(id)) pending.push(id);
+    }
+    if (pending.length === 0) return;
+    void (async () => {
+      for (const id of pending) {
+        do await yieldToStorage(); while (!this.resumeSlice(id));
       }
+    })();
+  }
+
+  /** One slice of job `id`; true once it is done (or gone, or failed). */
+  private resumeSlice(id: number): boolean {
+    const row = [...this.sql.exec('SELECT kind, args, start_gen FROM vfs_jobs WHERE id = ?', id)][0];
+    if (row === undefined) return true;
+    try {
+      const args = JSON.parse(String(row.args));
+      if (row.kind === 'copyTree') return this.runCopyTree(args as CopyTreeJob, id, JOB_SLICE_PAGES).done;
+      if (row.kind === 'restore') return this.runRestore(id, args as RestoreJob, Number(row.start_gen), JOB_SLICE_PAGES).done;
+      if (row.kind === 'drop') return this.runDrop(id, Number((args as { g: number }).g), JOB_SLICE_PAGES).done;
+      throw new Error(`unknown job kind ${String(row.kind)}`);
+    } catch (error) {
+      console.error(`[sqlite-vfs] job ${id} (${String(row.kind)}) failed to resume:`, this.errorMessage(error));
+      return true;
     }
   }
 
@@ -4855,6 +4901,7 @@ export class SqliteVFS {
       rename: readOnly,
       copyFile: readOnly,
       copyTree: readOnly,
+      copyTreeAsync: readOnly,
       writeBatch: readOnly,
       writeStream: readOnly,
       mkdirBatch: readOnly,
@@ -4879,6 +4926,24 @@ export class SqliteVFS {
    * mid-restore finishes at the next open. Returns the paths it changed.
    */
   restore(name: string, options: { subtree?: string } = {}): { restored: number } {
+    const { id, job, startGen } = this.restoreJob(name, options);
+    return { restored: this.runRestore(id, job, startGen).restored };
+  }
+
+  /** restore in slices with a yield between, for a restore of any size in workerd. */
+  async restoreAsync(name: string, options: { subtree?: string } = {}): Promise<{ restored: number }> {
+    const { id, job, startGen } = this.restoreJob(name, options);
+    let restored = 0;
+    for (;;) {
+      const slice = this.runRestore(id, job, startGen, JOB_SLICE_PAGES);
+      restored += slice.restored;
+      if (slice.done) return { restored };
+      await yieldToStorage();
+    }
+  }
+
+  /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
+  private restoreJob(name: string, options: { subtree?: string }): { id: number; job: RestoreJob; startGen: number } {
     const g = this.requireSnapshot(name);
     const subtree = options.subtree === undefined ? '' : normalizeVfsPath(options.subtree);
     if (subtree !== '') this.assertMutationsAllowed([subtree]);
@@ -4888,7 +4953,7 @@ export class SqliteVFS {
     for (const row of [...this.sql.exec("SELECT id, args, start_gen FROM vfs_jobs WHERE kind = 'restore'")]) {
       const pending = JSON.parse(String(row.args)) as RestoreJob;
       if (pending.name === name && pending.subtree === subtree) {
-        return { restored: this.runRestore(Number(row.id), pending, Number(row.start_gen)) };
+        return { id: Number(row.id), job: pending, startGen: Number(row.start_gen) };
       }
     }
     let id = 0;
@@ -4902,10 +4967,10 @@ export class SqliteVFS {
         this.now(),
       )][0]!.id);
     });
-    return { restored: this.runRestore(id, { name, g, subtree }, startGen) };
+    return { id, job: { name, g, subtree }, startGen };
   }
 
-  private runRestore(id: number, job: RestoreJob, startGen: number): number {
+  private runRestore(id: number, job: RestoreJob, startGen: number, maxPages = Infinity): { restored: number; done: boolean } {
     this.assertSnapshotLocal(job.g, job.subtree, job.name);
     const range = subtreeRange(job.subtree);
     // Path filter for both tables, as SQL plus its parameters.
@@ -4913,7 +4978,8 @@ export class SqliteVFS {
       ? { sql: '', params: [] as unknown[] }
       : { sql: ' AND (path = ? OR (path > ? AND path < ?))', params: [job.subtree, range.lower, range.upper] };
     let restored = 0;
-    for (;;) {
+    for (let pages = 0; ; pages++) {
+      if (pages >= maxPages) return { restored, done: false };
       const changed = [...this.sql.exec(
         `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE gen > ? AND gen < ?${within.sql} ORDER BY gen LIMIT ?`,
         job.g,
@@ -4935,7 +5001,7 @@ export class SqliteVFS {
         : [];
       if (changed.length === 0 && revived.length === 0) {
         this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
-        return restored;
+        return { restored, done: true };
       }
       const builder = this.newPlan();
       const deletedInodes: INode[] = [];
@@ -4985,6 +5051,27 @@ export class SqliteVFS {
    * copy reads from it. Returns the history rows removed.
    */
   dropSnapshot(name: string): { dropped: number } {
+    const { id, g } = this.dropJob(name);
+    const dropped = this.runDrop(id, g).dropped;
+    this.runContentMaintenanceSafely(2);
+    return { dropped };
+  }
+
+  /** dropSnapshot in slices with a yield between. */
+  async dropSnapshotAsync(name: string): Promise<{ dropped: number }> {
+    const { id, g } = this.dropJob(name);
+    let dropped = 0;
+    for (;;) {
+      const slice = this.runDrop(id, g, JOB_SLICE_PAGES);
+      dropped += slice.dropped;
+      if (slice.done) break;
+      await yieldToStorage();
+    }
+    this.runContentMaintenanceSafely(2);
+    return { dropped };
+  }
+
+  private dropJob(name: string): { id: number; g: number } {
     const g = this.requireSnapshot(name);
     for (const job of [...this.sql.exec("SELECT args FROM vfs_jobs WHERE kind IN ('restore', 'copyTree')")]) {
       const args = JSON.parse(String(job.args)) as { name?: string; at?: string };
@@ -5006,16 +5093,15 @@ export class SqliteVFS {
     this._pinGen = pinGen;
     this.snapshotGens?.delete(name);
     this.hotSnapshotGens.delete(name);
-    const dropped = this.runDrop(id, g);
-    this.runContentMaintenanceSafely(2);
-    return { dropped };
+    return { id, g };
   }
 
-  private runDrop(id: number, g: number): number {
+  private runDrop(id: number, g: number, maxPages = Infinity): { dropped: number; done: boolean } {
     let [afterGen, afterPath] = JSON.parse(String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]!.cursor)) as [number, string];
     const kept = this.snapshots().map((snap) => snap.gen);
     let dropped = 0;
-    for (;;) {
+    for (let pages = 0; ; pages++) {
+      if (pages >= maxPages) return { dropped, done: false };
       const page = [...this.sql.exec(
         `SELECT path, gen_to, gen_from, chunk_id, content_id FROM vfs_inode_history
          WHERE gen_to > ? OR (gen_to = ? AND path > ?) ORDER BY gen_to, path LIMIT ?`,
@@ -5059,7 +5145,7 @@ export class SqliteVFS {
       );
       dropped += dead.length;
       if (dead.length > 0) this.maintenancePending = true;
-      if (done) return dropped;
+      if (done) return { dropped, done: true };
     }
   }
 
@@ -7914,6 +8000,11 @@ function vfsError(code: string, message: string): Error & { code: string } {
 }
 
 const NO_BYTES = new Uint8Array(0);
+
+/** Let the host settle storage writes between slices of a long job. */
+function yieldToStorage(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 function coldChunkError(what: string): Error & { code: string } {
   return vfsError('ENODATA', `${what}: its bytes are in cold storage; await prepareSnapshot() first`);

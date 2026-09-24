@@ -200,7 +200,7 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
     this.guard();
     return this.target.copyFile(from, to);
   }
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number {
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
     this.guard();
     return this.target.copyTree(from, to, options);
   }
