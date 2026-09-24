@@ -102,15 +102,36 @@ mock.module(new URL('runtime-catalog.generated.ts', WORKER_SRC).pathname, () => 
 }));
 
 const { fetchCatalog, fetchManifest, fetchBlob } = await import(CATALOG_SRC.pathname);
+
+// The module keeps per-isolate state (the digests whose cached copy failed),
+// so a case about that state gets an instance of its own, as a new isolate.
+let instances = 0;
+const isolatedFetchBlob = async () => (await import(`${CATALOG_SRC.pathname}?isolate=${++instances}`)).fetchBlob;
+
+/** Every read of the honest blob, in order: from the colo cache or from R2. */
+function recordBlobReads(r2) {
+  const reads = [];
+  const match = globalThis.caches.default.match;
+  globalThis.caches.default.match = (req) => {
+    if (req.url === keys.blob) reads.push('l2');
+    return match(req);
+  };
+  const get = r2.get;
+  r2.get = (key) => {
+    if (key === HONEST_BLOB_KEY) reads.push('r2');
+    return get(key);
+  };
+  return reads;
+}
 const { seedRuntimePackage } = await import('../../packages/core/src/runtime/runtime-package.ts');
 const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
 const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
 
 /** What `nimbus install` writes for `manifest`'s one blob, fetched from `env`. */
-async function installed(env, manifest) {
+async function installed(env, manifest, fetch = fetchBlob) {
   const harness = createSqliteVfsTestHarness();
   const fs = new SqliteVFS(harness.sql, harness.ctx).as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
-  const seeded = await seedRuntimePackage(fs, '/home/user', { manifest, readBlob: (file) => fetchBlob(env, file) });
+  const seeded = await seedRuntimePackage(fs, '/home/user', { manifest, readBlob: (file) => fetch(env, file) });
   return fs.readFile(`${seeded.root}/${manifest.files[0].path}`);
 }
 
@@ -248,28 +269,32 @@ for (const url of Object.values(keys)) {
 // reads a blob that failed its digest once more, which now comes from R2.
 
 {
+  const fetch = await isolatedFetchBlob();
   const store = installCache();
   const r2 = honestR2();
   poison(store, keys.blob, ATTACKER_BLOB);
+  const reads = recordBlobReads(r2);
 
   await assert.rejects(
-    async () => readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0])),
+    async () => readAll(await fetch(envWith(r2), JSON.parse(honestManifestText).files[0])),
     /sha256 mismatch for blob/,
     'a poisoned L2 blob closed cleanly',
   );
-  await fillSettled();
-  assert.equal(store.has(keys.blob), false, 'the poisoned entry was not evicted');
+  assert.deepEqual(reads, ['l2'], 'the poisoned entry was not what was served');
+  assert.equal(store.has(keys.blob), false, 'the stream failed before the poisoned entry was evicted');
 }
 
 {
+  const fetch = await isolatedFetchBlob();
   const store = installCache();
   const r2 = honestR2();
   poison(store, keys.blob, ATTACKER_BLOB);
+  const reads = recordBlobReads(r2);
 
-  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText));
+  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText), fetch);
 
   assert.equal(text(bytes), text(HONEST_BLOB), 'a poisoned L2 blob was installed');
-  assert.ok(r2.reads.includes(HONEST_BLOB_KEY), 'the rejected cache entry did not fall through to R2');
+  assert.deepEqual(reads, ['l2', 'r2'], 'the install did not read the cache once and then R2');
   await fillSettled();
   assert.equal(sha(new Uint8Array(await store.get(keys.blob).clone().arrayBuffer())), sha(HONEST_BLOB),
     'the evicted entry was not refilled from R2');
@@ -278,14 +303,17 @@ for (const url of Object.values(keys)) {
 // A key poisoned again as soon as it is purged: the second read must not go
 // back to the cache at all.
 {
+  const fetch = await isolatedFetchBlob();
   const store = installCache();
   const r2 = honestR2();
   poison(store, keys.blob, ATTACKER_BLOB);
   globalThis.caches.default.delete = async () => true;
+  const reads = recordBlobReads(r2);
 
-  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText));
+  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText), fetch);
 
   assert.equal(text(bytes), text(HONEST_BLOB), 'a re-poisoned L2 blob refused or changed the install');
+  assert.deepEqual(reads, ['l2', 'r2'], 'the install did not read the cache once and then R2');
 }
 
 // ── 3b. An honest blob in L2 is served from L2, in one read ────────────
