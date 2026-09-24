@@ -1,6 +1,6 @@
 import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
     node: VfsOpenDescription;
@@ -80,7 +80,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     symlink(target: string, path: RuntimeFsPath): void;
     fsync(handleId?: number): void;
     revision(path?: RuntimeFsPath): number;
-    acquire(epoch: string | null, cursor: number): VfsAcquireResult;
+    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
     list(after?: string | null, limit?: number): VfsListPage;
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     realpath(path: RuntimeFsPath): string;

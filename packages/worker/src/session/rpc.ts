@@ -65,6 +65,7 @@ import {
   CRED_SESSION_USER,
   requireVfsCred,
   type RuntimeOpenFlags,
+  type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
   type VfsListPage,
@@ -438,6 +439,7 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
   epoch: z.string().max(64).nullable(),
   cursor: z.number().int().min(0),
+  options: z.object({ namespace: z.boolean().optional() }).strict().optional(),
 });
 
 // Also facet-supplied, so also untrusted. `after` is a resume key from a
@@ -525,10 +527,11 @@ export async function _rpcFsAcquire(
   self: RpcHost,
   epoch: string | null,
   cursor: number,
+  options?: VfsAcquireOptions | null,
   pid?: number,
 ): Promise<VfsAcquireResult> {
-  const args = FsAcquireArgsSchema.parse({ epoch, cursor });
-  return self.supervisorBridge(pid).acquire(args.epoch, args.cursor);
+  const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
+  return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
 }
 
 /**

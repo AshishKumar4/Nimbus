@@ -15,6 +15,7 @@ import {
   type RuntimeSynchronousFs,
   type RuntimeVfsDirEntry,
   type RuntimeVfsStat,
+  type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
   type VfsListPage,
@@ -173,9 +174,9 @@ class SqliteGuardedFsBridge implements RuntimeFsBridge {
     this.guard();
     return this.target.revision(path);
   }
-  acquire(epoch: string | null, cursor: number): VfsAcquireResult {
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
     this.guard();
-    return this.target.acquire(epoch, cursor);
+    return this.target.acquire(epoch, cursor, options);
   }
   list(after?: string | null, limit?: number): VfsListPage {
     this.guard();

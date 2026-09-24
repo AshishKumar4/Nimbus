@@ -215,8 +215,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * disposal, which targets the returned value. It only reads the
      * invalidation log, so a dropped call is repeated like any other read.
      */
-    async fsAcquire(epoch, cursor) {
-        return this._call(this._fsRead('fsAcquire', [epoch, cursor]));
+    async fsAcquire(epoch, cursor, options) {
+        return this._call(this._fsRead('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
     }
     async fsRevision(path) {
         return this._call(this._fsRead('fsRevision', [path]));

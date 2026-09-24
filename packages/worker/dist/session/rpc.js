@@ -318,6 +318,7 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
+    options: z.object({ namespace: z.boolean().optional() }).strict().optional(),
 });
 // Also facet-supplied, so also untrusted. `after` is a resume key from a
 // previous page and is bounded like any other path; `limit` is clamped rather
@@ -374,9 +375,9 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
  * survive structured clone across the RPC boundary, so a cursor carried that
  * way would silently arrive as undefined.
  */
-export async function _rpcFsAcquire(self, epoch, cursor, pid) {
-    const args = FsAcquireArgsSchema.parse({ epoch, cursor });
-    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor);
+export async function _rpcFsAcquire(self, epoch, cursor, options, pid) {
+    const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
+    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
 }
 /**
  * Enumerate the session filesystem for a process, one bounded page at a time.

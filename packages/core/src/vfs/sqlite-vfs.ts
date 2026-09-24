@@ -76,6 +76,8 @@ import {
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import {
   CRED_KERNEL,
+  type VfsAcquireOptions,
+  type VfsAcquireResult,
   type VfsCred,
   type VfsInvalidatedPath,
   type VfsListEntry,
@@ -225,6 +227,11 @@ export interface CredentialedVfs {
    * page at a time. `after` resumes past a previous page's `next`.
    */
   list(after?: string | null, limit?: number): VfsListPage;
+  /**
+   * The coherence barrier in this credential's path space: `invalidatedSince`
+   * with each entry's current stat when `options.namespace` asks for it.
+   */
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
   unlink(path: string): void;
   rmdir(path: string): void;
   /**
@@ -1948,6 +1955,7 @@ export class SqliteVFS {
         Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT),
         bound,
       ),
+      acquire: (epoch, cursor, options) => this.acquire(epoch, cursor, bound, options),
       unlink: (path) => this.unlink(path, bound),
       rmdir: (path) => this.rmdir(path, bound),
       removeRecursive: (path) => this.removeRecursive(path, bound),
@@ -3642,6 +3650,51 @@ export class SqliteVFS {
       if (rows.length <= limit) return { epoch, rev, entries, next: null };
       cursor = String(rows[rows.length - 1]!.path);
     }
+  }
+
+  private acquire(
+    epoch: string | null,
+    cursor: number,
+    cred: VfsCred,
+    options: VfsAcquireOptions | undefined,
+  ): VfsAcquireResult {
+    const delta = this.invalidatedSince(epoch, cursor);
+    if (!options?.namespace || delta.poison) return delta;
+    const paths: VfsInvalidatedPath[] = [];
+    // Visibility is list()'s: a name exists for this caller when every
+    // directory above it is searchable. Answered once per parent.
+    const reachable = new Map<string, boolean>();
+    for (const entry of delta.paths) {
+      const logical = this.logicalPath(entry.path, cred);
+      if (logical === null) continue;
+      const inode = this.inodes.get(entry.path);
+      let visible = inode !== undefined;
+      if (visible) {
+        const parent = this.parentPath(entry.path);
+        let ok = reachable.get(parent);
+        if (ok === undefined) {
+          try {
+            if (parent !== '') this.checkAccess(parent, 0o1, cred);
+            ok = true;
+          } catch {
+            ok = false;
+          }
+          reachable.set(parent, ok);
+        }
+        visible = ok;
+      }
+      if (!visible || inode === undefined) {
+        paths.push({ path: logical, rev: entry.rev, stat: null });
+        continue;
+      }
+      paths.push({
+        path: logical,
+        rev: entry.rev,
+        stat: { ...this.statOf(inode), revision: this.pathRevision(entry.path) },
+        ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
+      });
+    }
+    return { epoch: delta.epoch, rev: delta.rev, paths, poison: false, namespace: true };
   }
 
   private readdir(path: string, cred: VfsCred): { name: string; type: VfsInodeKind }[] {

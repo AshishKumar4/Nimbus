@@ -32,7 +32,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
@@ -118,7 +118,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * disposal, which targets the returned value. It only reads the
      * invalidation log, so a dropped call is repeated like any other read.
      */
-    fsAcquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
+    fsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Promise<VfsAcquireResult>;
     fsRevision(path?: string): Promise<number>;
     /**
      * Enumerate the session filesystem, one bounded page at a time.

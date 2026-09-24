@@ -198,7 +198,7 @@ export interface SupervisorOpTools {
  */
 export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, NativeOpName>, SupervisorOpRoute>> = {
   setUmask: { method: '_rpcSetUmask', args: [0,'pid'] },
-  fsAcquire: { method: '_rpcFsAcquire', args: [0,1,'pid'] },
+  fsAcquire: { method: '_rpcFsAcquire', args: [0,1,2,'pid'] },
   fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
   wsOpen: { method: '_rpcWsOpen', args: [0,1,'pid'] },
   wsPoll: { method: '_rpcWsPoll', args: [0,1,'pid'] },

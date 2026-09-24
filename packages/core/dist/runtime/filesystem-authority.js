@@ -144,9 +144,9 @@ class SqliteGuardedFsBridge {
         this.guard();
         return this.target.revision(path);
     }
-    acquire(epoch, cursor) {
+    acquire(epoch, cursor, options) {
         this.guard();
-        return this.target.acquire(epoch, cursor);
+        return this.target.acquire(epoch, cursor, options);
     }
     list(after, limit) {
         this.guard();

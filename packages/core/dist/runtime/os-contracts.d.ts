@@ -232,7 +232,7 @@ export interface RuntimeFsBridge {
      * the caller must drop its entire resident set. That costs a cold cache;
      * the alternative would be serving a stale byte.
      */
-    acquire(epoch: string | null, cursor: number): Awaitable<VfsAcquireResult>;
+    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Awaitable<VfsAcquireResult>;
     /**
      * Enumerate every path this bridge's credential can see, one bounded page at
      * a time, resuming past `after`.
@@ -291,6 +291,22 @@ export interface RuntimeFsBridge {
 export interface VfsInvalidatedPath {
     path: string;
     rev: number;
+    /**
+     * With {@link VfsAcquireOptions.namespace}: the path's stat (lstat, not
+     * following a final symlink) at the answer's `rev`, or null when the
+     * caller's credential sees nothing there. Absent otherwise.
+     */
+    stat?: RuntimeVfsStat | null;
+    linkTarget?: string;
+}
+/**
+ * What a caller holding a namespace wants from {@link RuntimeFsBridge.acquire}
+ * beyond names: each entry's stat at the answer's revision, in the caller's
+ * own path space, so a synchronous view of what EXISTS can move forward with
+ * the cursor instead of being re-listed.
+ */
+export interface VfsAcquireOptions {
+    namespace?: boolean;
 }
 /** Result of a {@link RuntimeFsBridge.acquire} barrier. */
 export interface VfsAcquireResult {
@@ -298,6 +314,8 @@ export interface VfsAcquireResult {
     rev: number;
     paths: VfsInvalidatedPath[];
     poison: boolean;
+    /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
+    namespace?: boolean;
 }
 /**
  * One path in a {@link RuntimeFsBridge.list} page.

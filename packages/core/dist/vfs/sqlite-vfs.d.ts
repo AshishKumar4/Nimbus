@@ -42,7 +42,7 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -125,6 +125,11 @@ export interface CredentialedVfs {
      * page at a time. `after` resumes past a previous page's `next`.
      */
     list(after?: string | null, limit?: number): VfsListPage;
+    /**
+     * The coherence barrier in this credential's path space: `invalidatedSince`
+     * with each entry's current stat when `options.namespace` asks for it.
+     */
+    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
     unlink(path: string): void;
     rmdir(path: string): void;
     /**
@@ -655,6 +660,7 @@ export declare class SqliteVFS {
      * has no permission to see.
      */
     private list;
+    private acquire;
     private readdir;
     private unlink;
     private rmdir;

@@ -727,6 +727,12 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
     // Also check writes
     if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
+    // The same bytes under the name they are held by: through a symlink, or
+    // under the old name of a rename this process has not seen land yet.
+    if (__vfsBundle && _nsActive()) {
+      const real = _nsRealKey(k);
+      if (real !== null && real !== k && real in __vfsBundle) return __vfsBundle[real];
+    }
     return undefined;
   }
 
@@ -744,7 +750,149 @@ const __fsMod = (() => {
     return typeof __residentAdmit === "function" && typeof __residentReady !== "undefined" && __residentReady;
   }
 
+  // ── The namespace (resident facets) ──
+  //
+  // A resident facet's store holds every name the credential can see, with
+  // its stat, exact at the cursor (vfs/facet-resident-store.ts). While it
+  // does, it answers every synchronous metadata question — stat, exists,
+  // readdir, realpath, access — and an absent name is known absent, so none
+  // of them records a miss or refuses. The spawn-time tables (__vfsMetadata,
+  // __vfsManifest) answer only when it does not.
+  //
+  // What the table cannot know is this process's own structural effects that
+  // the authority has not reported back yet, so those sit in an overlay, one
+  // entry per path: "absent" / "absentTree" (unlink, rmdir, rm), "dir"
+  // (mkdir; `hide` when nothing was there, so no stale child shows through)
+  // and "alias" (a rename: the new name denotes what the old one did). An
+  // entry retires once its mutation has settled AND a barrier begun after
+  // that has applied, because such a barrier's delta is answered after the
+  // mutation committed, so the table then shows it or anything later.
+  function _nsActive() {
+    return typeof __nsReady === "function" && __nsReady();
+  }
+  const _nsOwn = new Map();
+  let _nsFresh = [];
+  let _barrierBegins = 0;
+  function _nsOwnSet(k, state, extra) {
+    const entry = { state, from: extra?.from, hide: !!extra?.hide, settled: null };
+    _nsOwn.set(k, entry);
+    _nsFresh.push(entry);
+  }
+  /** Hand the overlay entries made since the last mutation to the one being queued. */
+  function _nsTakeFresh() {
+    const mine = _nsFresh;
+    _nsFresh = [];
+    return () => { for (const entry of mine) if (entry.settled === null) entry.settled = _barrierBegins; };
+  }
+  function _nsRetire(begin) {
+    for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) _nsOwn.delete(k);
+  }
+
+  /**
+   * The overlay's word on `k`: "absent", { alias } (look the table up at
+   * this key instead), { dir } (own directory), { hide } (the table knows
+   * nothing under an own fresh directory), or null (ask the table).
+   */
+  function _nsOwnView(k) {
+    if (_nsOwn.size === 0) return null;
+    const own = _nsOwn.get(k);
+    if (own) {
+      if (own.state === "absent" || own.state === "absentTree") return "absent";
+      if (own.state === "alias") return { alias: own.from };
+      return { dir: true };
+    }
+    for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) {
+      const above = _nsOwn.get(k.slice(0, i));
+      if (!above) continue;
+      if (above.state === "absent" || above.state === "absentTree") return "absent";
+      if (above.state === "alias") return { alias: above.from + k.slice(i) };
+      if (above.hide) return { hide: true };
+    }
+    return null;
+  }
+
+  /** The table key `k` denotes (overlay and symlinks applied), or null. */
+  function _nsRealKey(k) {
+    const own = _nsOwnView(k);
+    if (own === "absent" || (own && (own.dir || own.hide))) return null;
+    const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+    return found && found !== "ELOOP" ? found.path : null;
+  }
+
+  function _nsRowMeta(row) {
+    const kind = Number(row.kind);
+    return {
+      type: kind === 1 ? "directory" : kind === 2 ? "symlink" : "file",
+      size: Number(row.size), mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid),
+      atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
+    };
+  }
+
+  /**
+   * Everything the namespace says about `k`: a stat record, "absent", or
+   * "ELOOP". Own pending writes and directories first, then the overlay,
+   * then the table, then content this process wrote that the table has not
+   * caught up with.
+   */
+  function _nsMeta(k, follow) {
+    if (k === "") return _nsRowMeta(__nsResolve("", true).row);
+    if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
+      return { type: "file", size: _byteLen(__vfsWrites[k]), mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+    }
+    const own = _nsOwnView(k);
+    if (own === "absent") return "absent";
+    if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+    if (!own || own.alias !== undefined) {
+      const found = __nsResolve(own ? own.alias : k, follow);
+      if (found === "ELOOP") return "ELOOP";
+      if (found) return _nsRowMeta(found.row);
+    }
+    if (__vfsBundle && k in __vfsBundle) {
+      const cell = __vfsBundle[k];
+      if (_denialCode(cell) === null) return { type: "file", size: _byteLen(cell), mode: 0o100644, uid: cred.uid, gid: cred.gid, own: true };
+    }
+    return "absent";
+  }
+
+  /** Names directly under directory `k`: Map name → type. */
+  function _nsList(k) {
+    const names = new Map();
+    const own = _nsOwnView(k);
+    if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
+      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+      if (real && real !== "ELOOP") {
+        for (const child of __nsChildren(real.path)) {
+          names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : "file");
+        }
+      }
+    }
+    const prefix = k ? k + "/" : "";
+    if (__vfsWrites) {
+      for (const wk in __vfsWrites) {
+        if (!wk.startsWith(prefix)) continue;
+        const rest = wk.slice(prefix.length);
+        const slash = rest.indexOf("/");
+        if (rest) names.set(slash < 0 ? rest : rest.slice(0, slash), slash < 0 ? "file" : "directory");
+      }
+    }
+    for (const [ok, entry] of _nsOwn) {
+      if (!ok.startsWith(prefix) || ok.slice(prefix.length).includes("/")) continue;
+      const name = ok.slice(prefix.length);
+      if (entry.state === "absent" || entry.state === "absentTree") { if (!(__vfsWrites && ok in __vfsWrites)) names.delete(name); }
+      else if (entry.state === "dir") names.set(name, "directory");
+      else {
+        const meta = _nsMeta(ok, false);
+        if (meta !== "absent" && meta !== "ELOOP") names.set(name, meta.type);
+      }
+    }
+    return names;
+  }
+
   function _metadata(absPath) {
+    if (_nsActive()) {
+      const meta = _nsMeta(_strip(absPath), true);
+      return meta === "absent" || meta === "ELOOP" ? undefined : meta;
+    }
     const table = _metadataTable();
     return table ? table[_strip(absPath)] : undefined;
   }
@@ -760,6 +908,7 @@ const __fsMod = (() => {
   // the sync read path reports that file as merely non-resident.
   function _forgetSyncPath(k) {
     _announcedDirs.delete(k);
+    if (_nsActive()) _nsOwnSet(k, "absent");
     const metadata = _metadataTable();
     if (metadata) delete metadata[k];
     if (!__vfsManifest) return;
@@ -790,7 +939,7 @@ const __fsMod = (() => {
    * directory enumerated is honest.
    */
   function _announceSyncPath(k) {
-    if (!__vfsManifest || k === "") return;
+    if (_nsActive() || !__vfsManifest || k === "") return;
     const slash = k.lastIndexOf("/");
     const parent = slash >= 0 ? k.slice(0, slash) : "";
     const name = slash >= 0 ? k.slice(slash + 1) : k;
@@ -816,6 +965,7 @@ const __fsMod = (() => {
 
   function _forgetSyncTree(k) {
     const prefix = k + "/";
+    if (_nsActive()) _nsOwnSet(k, "absentTree");
     for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
     const metadata = _metadataTable();
     if (metadata) {
@@ -1033,6 +1183,7 @@ const __fsMod = (() => {
    * that used to end in "not found, so absent" goes through here first.
    */
   function _dirEnumerated(k) {
+    if (_nsActive()) return true;
     return (!!__vfsManifest && k in __vfsManifest) || (!!__vfsDirs && k in __vfsDirs);
   }
 
@@ -1052,7 +1203,7 @@ const __fsMod = (() => {
    * synchronously, so where there is no authority there is no gap.
    */
   function _absenceIsKnown(absPath) {
-    if (!_supervisor()) return true;
+    if (!_supervisor() || _nsActive()) return true;
     const k = _strip(absPath);
     if (k === "") return true;
     const segments = k.split("/");
@@ -1764,6 +1915,7 @@ const __fsMod = (() => {
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
+    const begin = ++_barrierBegins;
     let result = await _acquire(supervisor);
     // When the resident set lives in the facet's own SQLite, the STORE applies
     // the delta. That is not an optimisation, it is where provenance has to
@@ -1781,9 +1933,17 @@ const __fsMod = (() => {
           _spoilFills();
         }
         await (joining ? _residentRepair : _repairPoisonedStore(supervisor, result));
-        // Nothing is returned because a dropped cell is either refetched by
-        // the repair or gone from the authority too.
-        if (!joining) return [];
+        // A repair's listing is walked page by page at successive revisions,
+        // so even the barrier that started it asks once more: the delta from
+        // the listing's cursor leaves the namespace exact. Unanswered, it
+        // resumes on the repair's rows as they are, which the listing vouched
+        // for; the namespace then waits for the next barrier.
+        if (!joining) {
+          if (_storeRepairOwed) return [];
+          result = await _acquire(supervisor);
+          if (result === null || result.poison === true) { _nsRetire(begin); return []; }
+          continue;
+        }
         if (joins + 1 >= _REPAIR_JOINS_MAX) {
           // Every repair this barrier waited on was someone else's. Rather
           // than resume on rows none of them vouched for as of its own
@@ -1808,6 +1968,9 @@ const __fsMod = (() => {
       const applied = __residentAdmit(result);
       _cursor.epoch = result.epoch;
       _cursor.rev = result.rev;
+      // A directory that became searchable has descendants no delta names.
+      for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+      _nsRetire(begin);
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
       return applied.dropped;
@@ -1868,7 +2031,12 @@ const __fsMod = (() => {
     // .then never ran, no error, no output, intermittently, and never when a
     // pending timer happened to hold the program open.
     try {
-      const result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
+      const options = _residentStorePresent() && typeof __residentAcquireOptions === "function"
+        ? __residentAcquireOptions() : undefined;
+      const result = await __nimbusUseRpcResult(
+        options ? supervisor.fsAcquire(_cursor.epoch, _cursor.rev, options) : supervisor.fsAcquire(_cursor.epoch, _cursor.rev),
+        (r) => r,
+      );
       if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
@@ -2133,8 +2301,9 @@ const __fsMod = (() => {
   // `method` names the supervisor RPC when it differs from the syscall the
   // caller reports (lchown rides `chown`, rm rides `fsRemove`).
   function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method) {
+    const settle = _nsTakeFresh();
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor[method || syscall] !== "function") return null;
+    if (!supervisor || typeof supervisor[method || syscall] !== "function") { settle(); return null; }
     const queued = _hasVfsMutationQueue();
     const before = queued && after ? after() : null;
     const run = async () => {
@@ -2150,7 +2319,11 @@ const __fsMod = (() => {
       );
       _markVfsStale();
     };
-    return queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+    const out = queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+    // Settled either way: a failed mutation leaves the authority as it was,
+    // which the next barrier's table shows.
+    Promise.resolve(out).then(settle, settle);
+    return out;
   }
 
   /**
@@ -3067,6 +3240,10 @@ const __fsMod = (() => {
   function existsSync(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
+    if (_nsActive()) {
+      _residencySatisfied(absPath);
+      return _statLadder(absPath) !== undefined;
+    }
     if (_metadata(absPath) !== undefined) { _residencySatisfied(absPath); return true; }
     if (__vfsBundle && k in __vfsBundle) { _residencySatisfied(absPath); return true; }
     if (__vfsWrites && k in __vfsWrites) { _residencySatisfied(absPath); return true; }
@@ -3136,8 +3313,15 @@ const __fsMod = (() => {
    * MEANS — absence and ignorance are different answers and only one of them
    * is a condition a program can act on, so the callers classify.
    */
-  function _statLadder(absPath) {
+  function _statLadder(absPath, noFollow) {
     const k = _strip(absPath);
+    if (_nsActive()) {
+      const meta = _nsMeta(k, !noFollow);
+      if (meta === "absent" || meta === "ELOOP") return undefined;
+      return meta.own
+        ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
+        : _statObject(meta, k);
+    }
     // Content written this exec session is newer than the spawn-time
     // metadata snapshot, so it — not __vfsMetadata — is authoritative for
     // size. Without this, fstatSync/statSync on a file we just wrote report
@@ -3193,7 +3377,15 @@ const __fsMod = (() => {
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
-  function lstatSync(p, opts) { return statSync(p, opts); }
+  function lstatSync(p, opts) {
+    if (!_nsActive()) return statSync(p, opts);
+    const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "lstat", p);
+    const stat = _statLadder(absPath, true);
+    if (stat !== undefined) return stat;
+    if (opts && opts.throwIfNoEntry === false) return undefined;
+    throw _fsErr("ENOENT", "lstat", p);
+  }
 
   // ── readdirSync ──
   // W2.5b root-cause fix: prefer the uncapped __vfsManifest for directory
@@ -3206,6 +3398,16 @@ const __fsMod = (() => {
     const metadata = _metadata(absPath);
     if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
+    if (_nsActive()) {
+      const st = _statLadder(absPath);
+      if (st === undefined) throw _fsErr("ENOENT", "scandir", p);
+      if (!st.isDirectory()) throw _fsErr("ENOTDIR", "scandir", p);
+      _residencySatisfied(absPath);
+      const listed = _nsList(k);
+      const sorted = [...listed.keys()].sort();
+      if (!opts?.withFileTypes) return sorted;
+      return sorted.map((n) => _direntObject(n, listed.get(n), absPath));
+    }
     // A listing is the one answer with no way to express doubt: an array is a
     // complete enumeration by definition, so returning what happens to be
     // known asserts that nothing else is there. Only a directory the walk
@@ -3302,6 +3504,12 @@ const __fsMod = (() => {
       __vfsDirs[k] = true;
       created.push(k);
     }
+    if (_nsActive()) {
+      for (const dir of created) {
+        const was = _nsMeta(dir, true);
+        if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
+      }
+    }
     const queued = _queueStructuralMutation(absPath, "mkdir", p, (supervisor) => supervisor.mkdir(absPath));
     // Told, not merely known locally: _announceLocalDirs must not issue a
     // second mkdir for a directory whose own RPC is already in the queue.
@@ -3341,6 +3549,9 @@ const __fsMod = (() => {
     const newAbs = _resolve(newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
+    // The table still holds the old name until the rename is reported, so the
+    // new name reads through to it and the old one reads as gone.
+    const nsFrom = _nsActive() ? _nsRealKey(oldK) : null;
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     if (content !== undefined) {
       _parkWrite(newK, content);
@@ -3367,6 +3578,16 @@ const __fsMod = (() => {
         if (_announcedDirs.has(dk)) _announcedDirs.add(moved);
       }
       _forgetSyncTree(oldK);
+    }
+    if (_nsActive()) {
+      const prefix = oldK + "/";
+      for (const [ok, entry] of [..._nsOwn]) {
+        if ((ok === oldK || ok.startsWith(prefix)) && entry.state === "dir") {
+          _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
+        }
+      }
+      if (nsFrom !== null && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom });
+      _nsOwnSet(oldK, "absentTree");
     }
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
@@ -3534,7 +3755,16 @@ const __fsMod = (() => {
   // Sync realpath stays local and identity-resolves. Async symlink
   // operations use the live supervisor bridge below.
   // .native static is required by TypeScript's getNodeSystem at
-  function realpathSync(p, opts) { return _resolve(String(p)); }
+  function realpathSync(p, opts) {
+    const absPath = _resolve(String(p));
+    if (!_nsActive()) return absPath;
+    const k = _strip(absPath);
+    const meta = _nsMeta(k, true);
+    if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
+    if (meta === "absent") throw _fsErr("ENOENT", "realpath", p);
+    const real = _nsRealKey(k);
+    return real === null ? absPath : "/" + real;
+  }
   realpathSync.native = realpathSync;
 
   // ── Async variants (thin wrappers returning via callback) ──
@@ -9520,6 +9750,8 @@ function __readFileOr(path, fallback) {
 }
 function __fileExists(path) {
   const k = path.replace(/^\/+/, "");
+  // A resident facet's namespace answers exactly (vfs/facet-resident-store.ts).
+  if (typeof __nsReady === "function" && __nsReady()) return __fsMod.existsSync("/" + k);
   if (__vfsBundle && k in __vfsBundle) return true;
   if (__vfsWrites && k in __vfsWrites) return true;
   if (__vfsDirs && k in __vfsDirs) return true;
@@ -9549,6 +9781,10 @@ function __fileExists(path) {
 // the fastify ret/dist/types failure.
 function __pathIsFile(path) {
   const k = path.replace(/^\/+/, "");
+  if (typeof __nsReady === "function" && __nsReady()) {
+    const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
+    return !!st && st.isFile();
+  }
   if (__vfsBundle && k in __vfsBundle) return true;
   if (__vfsWrites && k in __vfsWrites) return true;
   // Consult the manifest as a strict-file probe: a name listed in its

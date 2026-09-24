@@ -479,8 +479,10 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ELOOP', 'revision', path);
         return located.mount ? 0 : this.rawVfs.revision(located.path);
     }
-    acquire(epoch, cursor) {
-        return this.rawVfs.invalidatedSince(epoch, cursor);
+    acquire(epoch, cursor, options) {
+        return options?.namespace
+            ? this.vfs.acquire(epoch, cursor, options)
+            : this.rawVfs.invalidatedSince(epoch, cursor);
     }
     list(after, limit) {
         return this.vfs.list(after ?? null, limit);

@@ -11,6 +11,7 @@ import type {
   RuntimeOpenFlags,
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
+  VfsAcquireOptions,
   VfsAcquireResult,
   VfsListPage,
   VfsMutationReceipt,
@@ -486,8 +487,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return located.mount ? 0 : this.rawVfs.revision(located.path);
   }
 
-  acquire(epoch: string | null, cursor: number): VfsAcquireResult {
-    return this.rawVfs.invalidatedSince(epoch, cursor);
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
+    return options?.namespace
+      ? this.vfs.acquire(epoch, cursor, options)
+      : this.rawVfs.invalidatedSince(epoch, cursor);
   }
 
   list(after?: string | null, limit?: number): VfsListPage {

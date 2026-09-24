@@ -120,7 +120,7 @@ const INPUTS = {
   unlink: [delPath],
   readlink: [linkPath],
   symlink: [target, symlinkPath],
-  fsAcquire: [epoch, cursor],
+  fsAcquire: [epoch, cursor, { namespace: true }],
   fsRevision: [path],
   fsList: [after, limit],
   wsOpen: [url, protocols],

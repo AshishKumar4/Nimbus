@@ -355,6 +355,17 @@ function __residentBind(ctx) {
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+  // The namespace: every name the process's credential can see, with its stat
+  // and no content. Keyed (parent, name) so a point lookup and a directory
+  // listing are both one index seek, and no path is stored twice.
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS ns (" +
+      "parent TEXT NOT NULL, name TEXT NOT NULL, kind INTEGER NOT NULL, size INTEGER NOT NULL, " +
+      "mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, atime REAL NOT NULL, " +
+      "mtime REAL NOT NULL, ctime REAL NOT NULL, ino INTEGER NOT NULL, rev INTEGER NOT NULL, target TEXT, " +
+      "PRIMARY KEY (parent, name)" +
+    ") WITHOUT ROWID"
+  );
   // A store can outlive its process. Own rows left by an earlier one are
   // writes that never reached the authority or cells whose acknowledgement it
   // never saw: neither can be dated, so neither is a file.
@@ -362,6 +373,9 @@ function __residentBind(ctx) {
   sql.exec("DELETE FROM file WHERE rev = ?", __RK_OWN_WRITE);
   __residentSql = sql;
   __residentReady = true;
+  __nsLoadLinks(sql);
+  __nsOk = false;
+  for (const row of sql.exec("SELECT v FROM meta WHERE k = 'ns'")) __nsOk = String(row.v) === "1";
   return sql;
 }
 
@@ -416,7 +430,21 @@ function __residentAdmit(result) {
   if (!__residentReady) throw new Error("Nimbus: __residentAdmit before __residentBind");
   const sql = __residentSql;
   const dropped = [];
+  const relist = [];
   let kept = 0;
+  const epoch = result && result.epoch != null ? String(result.epoch) : null;
+  const rev = result && result.rev != null ? Number(result.rev) : null;
+  if (epoch === null || rev === null) {
+    throw new Error(
+      "Nimbus: fsAcquire returned no cursor; the resident store stays sealed " +
+      "rather than serving rows it cannot date"
+    );
+  }
+  // The namespace moves with the cursor or not at all: a delta without stats,
+  // or a poison, leaves it describing a revision the cursor has left, so it
+  // stops answering until a listing restores it.
+  const namespaced = __nsOk && !!result && !result.poison && result.namespace === true;
+  if (!namespaced) __nsMarkReady(sql, false);
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
     // poison here means nothing the authority dated can be kept.
@@ -429,6 +457,10 @@ function __residentAdmit(result) {
   } else if (Array.isArray(result.paths)) {
     for (const entry of result.paths) {
       const path = entry.path;
+      if (namespaced) {
+        const again = __nsApplyEntry(sql, entry);
+        if (again !== null) relist.push(again);
+      }
       // A row at or above the reported revision already holds that mutation —
       // this facet's own write coming back, or bytes fetched after it; anything
       // else is someone else's and is dropped. A row of own bytes
@@ -447,18 +479,10 @@ function __residentAdmit(result) {
       dropped.push(path);
     }
   }
-  const epoch = result && result.epoch != null ? String(result.epoch) : null;
-  const rev = result && result.rev != null ? Number(result.rev) : null;
-  if (epoch === null || rev === null) {
-    throw new Error(
-      "Nimbus: fsAcquire returned no cursor; the resident store stays sealed " +
-      "rather than serving rows it cannot date"
-    );
-  }
   __residentWriteCursor(sql, { epoch, rev });
   __residentSealed = false;
   __residentSealReason = "";
-  return { dropped, kept, cursor: { epoch, rev } };
+  return { dropped, kept, relist, cursor: { epoch, rev } };
 }
 
 /**
@@ -648,7 +672,12 @@ function __residentProvenance(path) {
  * every later write to it by anyone.
  */
 function __residentStamp(path, rev) {
-  __residentRequire().exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, __RK_OWN_WRITE);
+  const sql = __residentRequire();
+  let size = null;
+  for (const row of sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, __RK_OWN_WRITE)) size = Number(row.size);
+  if (size === null) return;
+  sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, __RK_OWN_WRITE);
+  __nsNoteOwnFile(path, size, rev);
 }
 
 /**
@@ -777,6 +806,248 @@ function __residentHasUnder(prefix) {
   return false;
 }
 
+// ── The namespace ───────────────────────────────────────────────────────────
+//
+// Every name the credential can see, exact at the store's cursor: filled from
+// a complete listing, then moved forward by each ACQUIRE delta, whose entries
+// carry the path's stat at the answer's revision (null when it is gone). A
+// change of presence or stat is always a logged mutation of that path, except
+// what vanishes beneath a removed or replaced directory, which the delta
+// application drops by subtree. So a synchronous stat, exists or readdir is
+// answered exactly, and an absent name is known to be absent.
+//
+// This table holds the AUTHORITY's view only. The process's own pending
+// structural effects are an overlay kept by the shims, retired once a barrier
+// begun after they settled has applied.
+
+const __NS_FILE = 0;
+const __NS_DIR = 1;
+const __NS_LINK = 2;
+/** Symlink hops before a resolution is ELOOP, as Linux's MAXSYMLINKS. */
+const __NS_MAX_HOPS = 40;
+/** Paths of every symlink in the table: resolution walks only past these. */
+let __nsLinks = new Set();
+/** The credential names are judged traversable for. */
+let __nsCred = null;
+
+function __nsSetCred(cred) { __nsCred = cred || null; }
+
+function __nsSplit(k) {
+  const i = k.lastIndexOf("/");
+  return i < 0 ? ["", k] : [k.slice(0, i), k.slice(i + 1)];
+}
+
+function __nsKindCode(type) {
+  return type === "directory" ? __NS_DIR : type === "symlink" ? __NS_LINK : __NS_FILE;
+}
+
+function __nsLoadLinks(sql) {
+  __nsLinks = new Set();
+  for (const row of sql.exec("SELECT parent, name FROM ns WHERE kind = ?", __NS_LINK)) {
+    const parent = String(row.parent);
+    __nsLinks.add(parent ? parent + "/" + String(row.name) : String(row.name));
+  }
+}
+
+/** Whether the table describes the store's cursor. */
+function __nsReady() {
+  return __residentReady && !__residentSealed && __nsOk;
+}
+
+/** The persisted 'ns' flag, mirrored in heap because every stat asks it. */
+let __nsOk = false;
+
+function __nsMarkReady(sql, ready) {
+  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('ns', ?)", ready ? "1" : "0");
+  __nsOk = !!ready;
+}
+
+function __nsPut(sql, k, stat, rev, target) {
+  const [parent, name] = __nsSplit(k);
+  const kind = __nsKindCode(stat.type);
+  sql.exec(
+    "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    parent, name, kind, Number(stat.size) || 0, Number(stat.mode) || 0, Number(stat.uid) || 0,
+    Number(stat.gid) || 0, Number(stat.atime) || 0, Number(stat.mtime) || 0, Number(stat.ctime) || 0,
+    Number(stat.ino) || 0, Number(rev) || 0, kind === __NS_LINK ? String(target ?? "") : null,
+  );
+  if (kind === __NS_LINK) __nsLinks.add(k); else __nsLinks.delete(k);
+}
+
+/** Delete everything beneath \`k\`, and \`k\` itself when \`self\`. */
+function __nsDeleteTree(sql, k, self) {
+  if (k === "") {
+    sql.exec("DELETE FROM ns");
+    __nsLinks = new Set();
+    return;
+  }
+  const prefix = k + "/";
+  const end = __residentPrefixEnd(prefix);
+  sql.exec("DELETE FROM ns WHERE parent = ?", k);
+  if (end === null) sql.exec("DELETE FROM ns WHERE parent >= ?", prefix);
+  else sql.exec("DELETE FROM ns WHERE parent >= ? AND parent < ?", prefix, end);
+  if (self) {
+    const [parent, name] = __nsSplit(k);
+    sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
+    __nsLinks.delete(k);
+  }
+  for (const link of __nsLinks) if (link.startsWith(prefix)) __nsLinks.delete(link);
+}
+
+/** The row at exactly \`k\` (no symlink resolution), or undefined. */
+function __nsRowAt(sql, k) {
+  if (k === "") {
+    return { kind: __NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null };
+  }
+  const [parent, name] = __nsSplit(k);
+  for (const row of sql.exec(
+    "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target FROM ns WHERE parent = ? AND name = ?",
+    parent, name,
+  )) return row;
+  return undefined;
+}
+
+function __nsJoinTarget(linkPath, target) {
+  const t = String(target);
+  const parts = (t.startsWith("/") ? [] : __nsSplit(linkPath)[0].split("/").filter(Boolean));
+  for (const seg of t.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop(); else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Resolve \`k\` through the symlinks the namespace holds: { path, row } for the
+ * name it denotes, null when nothing is there, or "ELOOP". The leaf is
+ * followed only when \`followLeaf\`. Walks component by component only when a
+ * symlink sits on the path; otherwise it is one lookup.
+ */
+function __nsResolve(k, followLeaf) {
+  const sql = __residentRequire();
+  let path = k;
+  for (let hops = 0; hops <= __NS_MAX_HOPS; hops++) {
+    let redirected = false;
+    if (__nsLinks.size > 0) {
+      const segs = path.split("/");
+      for (let i = 1; i <= segs.length; i++) {
+        const prefix = segs.slice(0, i).join("/");
+        if (!__nsLinks.has(prefix)) continue;
+        if (i === segs.length && !followLeaf) break;
+        const row = __nsRowAt(sql, prefix);
+        if (!row || Number(row.kind) !== __NS_LINK) break;
+        const rest = segs.slice(i).join("/");
+        const target = __nsJoinTarget(prefix, row.target);
+        path = rest ? (target ? target + "/" + rest : rest) : target;
+        redirected = true;
+        break;
+      }
+    }
+    if (redirected) continue;
+    const row = __nsRowAt(sql, path);
+    return row === undefined ? null : { path, row };
+  }
+  return "ELOOP";
+}
+
+/** The entries directly under directory \`k\` (already resolved): [{ name, kind }]. */
+function __nsChildren(k) {
+  const out = [];
+  for (const row of __residentRequire().exec("SELECT name, kind FROM ns WHERE parent = ?", k)) {
+    out.push({ name: String(row.name), kind: Number(row.kind) });
+  }
+  return out;
+}
+
+/** Whether the credential may search directory \`row\` (POSIX x). */
+function __nsTraversable(row) {
+  const cred = __nsCred;
+  if (!row || Number(row.kind) !== __NS_DIR) return false;
+  const mode = Number(row.mode) & 0o777;
+  if (!cred) return true;
+  if (Number(cred.uid) === 0) return (mode & 0o111) !== 0;
+  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
+  const shift = Number(cred.uid) === Number(row.uid) ? 6
+    : (Number(cred.gid) === Number(row.gid) || groups.includes(Number(row.gid))) ? 3 : 0;
+  return ((mode >> shift) & 1) === 1;
+}
+
+/**
+ * Apply one delta entry that carries a stat. Returns a directory whose
+ * subtree must be relisted — one that just became searchable, whose
+ * descendants no delta names — or null.
+ */
+function __nsApplyEntry(sql, entry) {
+  const k = String(entry.path).replace(/^\\/+/, "");
+  if (k === "") return null;
+  if (entry.stat === null) { __nsDeleteTree(sql, k, true); return null; }
+  const before = __nsRowAt(sql, k);
+  __nsPut(sql, k, entry.stat, entry.rev, entry.linkTarget);
+  const after = __nsRowAt(sql, k);
+  if (Number(after.kind) !== __NS_DIR) { __nsDeleteTree(sql, k, false); return null; }
+  const was = before !== undefined && __nsTraversable(before);
+  const now = __nsTraversable(after);
+  if (was && !now) __nsDeleteTree(sql, k, false);
+  if (!was && now && before !== undefined) return k;
+  return null;
+}
+
+/**
+ * Bring the table to a complete listing: upsert what differs, delete what the
+ * listing no longer names. \`entries\` are VfsListEntry (path, stat, rev,
+ * linkTarget). Called once per enumeration, after its last page.
+ */
+function __nsReplace(sql, entries) {
+  const listed = new Set();
+  for (const entry of entries) {
+    const k = String(entry.path).replace(/^\\/+/, "");
+    if (k === "") continue;
+    listed.add(k);
+    const held = __nsRowAt(sql, k);
+    const s = entry.stat;
+    if (held !== undefined
+      && Number(held.kind) === __nsKindCode(s.type) && Number(held.size) === Number(s.size)
+      && Number(held.mode) === Number(s.mode) && Number(held.uid) === Number(s.uid)
+      && Number(held.gid) === Number(s.gid) && Number(held.mtime) === Number(s.mtime)
+      && Number(held.ctime) === Number(s.ctime) && Number(held.ino) === Number(s.ino)
+      && Number(held.rev) === Number(entry.rev)
+      && (held.target ?? null) === (entry.linkTarget ?? null)) continue;
+    __nsPut(sql, k, s, entry.rev, entry.linkTarget);
+  }
+  const stale = [];
+  for (const row of sql.exec("SELECT parent, name FROM ns")) {
+    const parent = String(row.parent);
+    const k = parent ? parent + "/" + String(row.name) : String(row.name);
+    if (!listed.has(k)) stale.push([parent, String(row.name), k]);
+  }
+  for (const [parent, name, k] of stale) {
+    sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
+    __nsLinks.delete(k);
+  }
+}
+
+/**
+ * Record this facet's own acknowledged write in the namespace before the
+ * delta that reports it: a file it created is then listed at once. Only
+ * when the table has nothing as new, so an authority stat already applied at
+ * or past \`rev\` is never overwritten by this approximation; the delta that
+ * reports the write replaces it with the authority's stat.
+ */
+function __nsNoteOwnFile(k, size, rev) {
+  if (!__nsReady()) return;
+  const sql = __residentSql;
+  const held = __nsRowAt(sql, k);
+  if (held !== undefined && Number(held.rev) >= rev) return;
+  const now = Date.now();
+  __nsPut(sql, k, {
+    type: "file", size, mode: held ? Number(held.mode) : 0o100644,
+    uid: held ? Number(held.uid) : Number(__nsCred?.uid ?? 0),
+    gid: held ? Number(held.gid) : Number(__nsCred?.gid ?? 0),
+    atime: now, mtime: now, ctime: now, ino: held ? Number(held.ino) : 0,
+  }, rev, null);
+}
+
 /**
  * Drop every cell AND the cursor, and re-seal.
  *
@@ -792,19 +1063,24 @@ function __residentClear() {
   const sql = __residentSql;
   sql.exec("DELETE FROM chunk");
   sql.exec("DELETE FROM file");
+  sql.exec("DELETE FROM ns");
   sql.exec("DELETE FROM meta");
+  __nsLinks = new Set();
+  __nsOk = false;
   __residentSeal("the store was cleared");
 }
 
 function __residentStats() {
   if (!__residentReady) throw new Error("Nimbus: __residentStats before __residentBind");
   const sql = __residentSql;
-  let files = 0, bytes = 0;
+  let files = 0, bytes = 0, names = 0;
   for (const row of sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file")) {
     files = Number(row.n); bytes = Number(row.b);
   }
+  for (const row of sql.exec("SELECT count(*) AS n FROM ns")) names = Number(row.n);
   return {
-    files, bytes,
+    files, bytes, names,
+    namespace: __nsReady(),
     databaseSize: Number(sql.databaseSize ?? 0),
     sealed: __residentSealed,
     undatedSnapshot: __residentUndated,
@@ -857,7 +1133,7 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
     let pass = null;
     try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
     catch (e) { failure = (e && e.message) || String(e); }
-    if (pass && pass.cursor) return { cursor: pass.cursor, failure: null };
+    if (pass && pass.cursor) return { cursor: await __residentCatchUp(supervisor, pass.cursor), failure: null };
     failure = "a kept store could not be reconciled ("
       + (failure || (pass && (pass.skipped || pass.incomplete)) || "the listing vouched for nothing")
       + "); it was emptied and this launch booted from its own snapshot";
@@ -872,7 +1148,80 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   let pass = null;
   try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
   catch (e) { failure = (e && e.message) || String(e); }
-  return { cursor: (pass && pass.cursor) || adopted, failure };
+  if (pass && pass.cursor) return { cursor: await __residentCatchUp(supervisor, pass.cursor), failure };
+  return { cursor: adopted, failure };
+}
+
+/** The acquire options this store asks for: stats with every delta entry. */
+function __residentAcquireOptions() {
+  return { namespace: true };
+}
+
+/**
+ * One delta from a listing's cursor, applied before the program runs. A
+ * listing's pages are walked at successive revisions, so the namespace it
+ * builds can mix states no single revision had (a rename seen on both sides
+ * or neither); the delta from its cursor names every path that moved during
+ * the walk, and leaves the table exact at the delta's revision. At boot there
+ * are no own writes, so nothing here needs the ledger's report notes.
+ */
+async function __residentCatchUp(supervisor, cursor) {
+  if (!supervisor || typeof supervisor.fsAcquire !== "function") return cursor;
+  let result;
+  try { result = await supervisor.fsAcquire(cursor.epoch, cursor.rev, __residentAcquireOptions()); }
+  catch { result = null; }
+  if (!result || result.poison || typeof result.rev !== "number" || typeof result.epoch !== "string") {
+    // Unanswered: the namespace keeps the listing's revision, which the
+    // program's first barrier brings forward like any other.
+    return cursor;
+  }
+  const applied = __residentAdmit(result);
+  for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+  // A dropped row was held, so it is wanted again at its new revision.
+  const refetch = [];
+  for (const path of applied.dropped) {
+    const found = __nsResolve(path, false);
+    if (!found || found === "ELOOP" || Number(found.row.kind) !== __NS_FILE) continue;
+    refetch.push({ path, size: Number(found.row.size), rev: Number(found.row.rev), epoch: applied.cursor.epoch });
+  }
+  if (refetch.length > 0) await __residentFetchFiles(supervisor, refetch);
+  return applied.cursor;
+}
+
+/**
+ * Re-read the names beneath \`dir\` from the authority: a directory that just
+ * became searchable, whose descendants no delta will ever name.
+ */
+async function __nsRelist(supervisor, dir) {
+  if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentSql, false); return; }
+  const sql = __residentSql;
+  const prefix = dir + "/";
+  let after = prefix;
+  for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES; page++) {
+    let listed;
+    try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
+    catch { __nsMarkReady(sql, false); return; }
+    if (!listed || !Array.isArray(listed.entries)) { __nsMarkReady(sql, false); return; }
+    for (const entry of listed.entries) {
+      const k = String(entry.path).replace(/^\\/+/, "");
+      if (!k.startsWith(prefix)) {
+        if (k > prefix) return;
+        continue;
+      }
+      if (entry.stat) __nsPut(sql, k, entry.stat, entry.rev, entry.linkTarget);
+    }
+    if (listed.next === null || listed.next === undefined) return;
+    after = listed.next;
+  }
+}
+
+/**
+ * The launch's data plan: the paths whose content a synchronous read may
+ * want, held from boot. Null holds every file.
+ */
+let __residentPlan = null;
+function __residentSetPlan(paths) {
+  __residentPlan = Array.isArray(paths) ? new Set(paths.map((p) => String(p).replace(/^\\/+/, ""))) : null;
 }
 
 /**
@@ -938,6 +1287,8 @@ function __residentAdoptModuleBundle(bundle, moduleCursor) {
  */
 async function __residentEnumerate(supervisor) {
   const entries = [];
+  // Every name, whatever its kind: the namespace is built from these.
+  const names = [];
   let after = null;
   let cursor = null;
   for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES; page++) {
@@ -948,13 +1299,14 @@ async function __residentEnumerate(supervisor) {
     if (cursor === null) {
       cursor = { epoch: String(listed.epoch), rev: Number(listed.rev) };
     } else if (String(listed.epoch) !== cursor.epoch) {
-      return { entries, cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
+      return { entries, names, cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
     }
     for (const entry of listed.entries) {
+      if (entry.stat) names.push(entry);
       // Directories carry no content, and a symlink's size is its TARGET's
       // length rather than the resolved file's — reading one by that size
-      // would store a truncated file and call it whole. Both are left to fall
-      // through to the supervisor, which is a miss, never a wrong answer.
+      // would store a truncated file and call it whole. Content is fetched
+      // by the path a symlink resolves to.
       if (entry.kind !== "file") continue;
       const path = String(entry.path).replace(/^\\/+/, "");
       if (!path) continue;
@@ -969,11 +1321,11 @@ async function __residentEnumerate(supervisor) {
       entries.push({ path, size, rev, epoch: cursor.epoch });
     }
     if (listed.next === null || listed.next === undefined) {
-      return { entries, cursor, complete: true, reason: null };
+      return { entries, names, cursor, complete: true, reason: null };
     }
     after = listed.next;
   }
-  return { entries, cursor, complete: false, reason: "the filesystem exceeded the enumeration page bound" };
+  return { entries, names, cursor, complete: false, reason: "the filesystem exceeded the enumeration page bound" };
 }
 
 /**
@@ -1223,15 +1575,24 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     }
   }
 
+  // What to hold: the launch's data plan (or every file, when there is none),
+  // plus every row this pass had to drop as stale — it was held for a reason.
+  const plan = __residentPlan;
+  const wanted = new Set(dropped);
   const fetch = [];
-  for (const file of listing.entries) if (!current.has(file.path)) fetch.push(file);
+  for (const file of listing.entries) {
+    if (current.has(file.path)) continue;
+    if (plan === null || plan.has(file.path) || wanted.has(file.path)) fetch.push(file);
+  }
   const filled = await __residentFetchFiles(supervisor, fetch);
 
   // The cursor may only advance to a state the rows actually describe, and
   // after a truncated listing they do not: a path in an unwalked page could
   // have moved since the held cursor and would never be reported again.
   if (judgeable) {
+    __nsReplace(sql, listing.names);
     __residentWriteCursor(sql, listing.cursor);
+    __nsMarkReady(sql, true);
     __residentUndated = false;
     __residentSealed = false;
     __residentSealReason = "";
