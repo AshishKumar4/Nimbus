@@ -43,6 +43,7 @@ import type {
 } from '@nimbus-sh/core/runtime/wasi/types.js';
 
 import {
+  AuthorityLookupCache,
   installAuthorityFilesystem,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
@@ -183,11 +184,17 @@ let __wasiThreads: WasiThreadScheduler | null = null;
 // files, and a file syscall answers EBADF.
 let __wasiSup: WasiSupervisorStub | null = null;
 
+// Lookups answered from memory between resumptions (AuthorityLookupCache).
+// Per process, like the stub: a fresh init drops them, and every adoption is
+// an entry from outside that the next lookup revalidates against.
+const __wasiLookups = new AuthorityLookupCache();
+
 // Adopting is idempotent and never downgrades. A resident process re-enters
 // through routed fetch/handleHttpRequest hops that resolve the entrypoint
 // WITHOUT a supervisor in env; clearing the live stub on those hops would
 // strand the process.
 export function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void {
+  __wasiLookups.resumed();
   if (sup) __wasiSup = sup;
 }
 
@@ -211,6 +218,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   // isolate across calls, so the previous tenant's stub must not answer the
   // next program's syscalls.
   __wasiSup = null;
+  __wasiLookups.forget();
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
     // Largest regular file the codec answers from a resident copy.
@@ -1510,7 +1518,30 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     abi: opts.abi,
     synchronous: opts.parking === 'none',
     residentBytes: __wasiFS.residentFileCap,
+    lookups: __wasiLookups,
   });
+
+  // Input that did not come from the filesystem can carry a peer's write, so
+  // the next lookup takes the barrier before answering from memory.
+  const fromOutside = (name: 'fd_read' | 'sock_recv' | 'sock_accept' | 'poll_oneoff', outside: (fd: number) => boolean) => {
+    const body: WasiSyscallFn = imports[name];
+    (imports as WasiParkableTable)[name] = function (this: unknown, ...args: never[]) {
+      const result = body.apply(this, args);
+      if (!outside(args[0])) return result;
+      if (result && typeof (result as Promise<Errno>).then === 'function') {
+        return (result as Promise<Errno>).finally(() => __wasiLookups.resumed());
+      }
+      __wasiLookups.resumed();
+      return result;
+    };
+  };
+  fromOutside('fd_read', fd => {
+    const kind = fdTable.get(fd)?.kind;
+    return kind !== 'authority' && kind !== 'resident' && kind !== 'preopen';
+  });
+  fromOutside('sock_recv', () => true);
+  fromOutside('sock_accept', () => true);
+  fromOutside('poll_oneoff', () => true);
 
   // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
   // fd_write can route socket fds through them (wasi-libc maps read(2)/

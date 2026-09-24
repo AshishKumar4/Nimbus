@@ -1274,20 +1274,12 @@ export class VirtualSocketKernel {
     return deferred.promise;
   }
 
-  async waitForListen(timeoutMs?: number): Promise<number | null> {
+  waitForListen(): Promise<number> {
     const existing = this.firstListeningPort();
-    if (existing) return existing;
+    if (existing) return Promise.resolve(existing);
     const waiter = new Deferred<number>();
     this.listenWaiters.push(waiter);
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), Math.max(1, timeoutMs ?? 5_000));
-    });
-    try {
-      return await Promise.race([waiter.promise, timeout]);
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-    }
+    return waiter.promise;
   }
 
   async handleHttpRequest(port: number, request: Request): Promise<Response> {

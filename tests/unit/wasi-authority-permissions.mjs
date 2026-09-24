@@ -106,5 +106,28 @@ function host({ dirs = [], files = {}, modes = {} }) {
   assert.equal(h.guest.read(mine.fd).text, 'mine');
 }
 
+// A guest that can park answers lookups from memory between resumptions, and
+// absence from a directory's listing. None of that may change an errno: each
+// answer matches what the authority gives a guest that asks every time.
+{
+  const session = makeSession({
+    dirs: ['home/user/locked', 'home/user/open'],
+    files: { 'home/user/locked/present.txt': 'present', 'home/user/open/file.txt': 'file' },
+  });
+  sessions.push(session);
+  session.root.chmod('home/user/locked', 0o600);
+  const init = { root: 'home/user', preopens: [{ wasiPath: '/', vfsPath: 'home/user' }] };
+  const paths = ['open/missing.txt', 'absent/child.txt', 'locked/missing.txt', 'locked/present.txt', 'open/file.txt/child', 'open/file.txt', 'open'];
+  const direct = makeGuest(P, session, init);
+  const expected = paths.map((path) => direct.stat(path, { lookup: 0 }).errno);
+  assert.deepEqual(expected.slice(0, 4), [ENOENT, ENOENT, EACCES, EACCES], 'the fixture exercises absence and denial');
+  const parked = makeGuest(P, session, init, { parking: 'jspi' });
+  for (let pass = 0; pass < 2; pass++) {
+    const seen = [];
+    for (const path of paths) seen.push((await parked.stat(path, { lookup: 0 })).errno);
+    assert.deepEqual(seen, expected, `pass ${pass + 1}: every errno is the authority's, an untraversable ancestor over a missing leaf included`);
+  }
+}
+
 for (const session of sessions) await session.dispose();
 console.log('wasi authority permissions: ok');

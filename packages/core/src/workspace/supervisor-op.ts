@@ -198,7 +198,6 @@ export interface SupervisorOpTools {
  */
 export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, NativeOpName>, SupervisorOpRoute>> = {
   setUmask: { method: '_rpcSetUmask', args: [0,'pid'] },
-  fsAcquire: { method: '_rpcFsAcquire', args: [0,1,'pid'] },
   fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
   wsOpen: { method: '_rpcWsOpen', args: [0,1,'pid'] },
   wsPoll: { method: '_rpcWsPoll', args: [0,1,'pid'] },
@@ -295,6 +294,8 @@ const NATIVE_OPS = {
   lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
   exists: async (e, t) => (await fsFor(e, t).stat(stringArg(e, 0))) !== null,
   readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0])),
+  // The cursor is the facet's own, so untrusted; a null epoch is a first call.
+  fsAcquire: (e, t) => fsFor(e, t).acquire(z.string().max(64).nullable().parse(e.args?.[0] ?? null), z.number().int().min(0).parse(e.args?.[1])),
   readlink: (e, t) => fsFor(e, t).readlink(FsPath.parse(e.args?.[0])),
   fsReadRange: (e, t) => readRange(e, t, {}),
   // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.

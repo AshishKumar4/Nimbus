@@ -308,12 +308,6 @@ const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
 });
-// A facet supplies its own cursor, so it is untrusted input. A null epoch is
-// the legitimate first call from a facet that has never acquired.
-const FsAcquireArgsSchema = z.object({
-    epoch: z.string().max(64).nullable(),
-    cursor: z.number().int().min(0),
-});
 // Also facet-supplied, so also untrusted. `after` is a resume key from a
 // previous page and is bounded like any other path; `limit` is clamped rather
 // than rejected, because an over-large ask is a caller wanting more of an
@@ -361,17 +355,6 @@ export async function _rpcWsSend(self, id, text, bytes, pid) {
 }
 export async function _rpcWsClose(self, id, code, reason, pid) {
     self._ensureWebSocketRelay().close(processPid(pid), Number(id), code, reason);
-}
-/**
- * The facet cache-coherence barrier: what changed since `cursor`.
- *
- * Returned as payload, never on an Error — custom Error properties do not
- * survive structured clone across the RPC boundary, so a cursor carried that
- * way would silently arrive as undefined.
- */
-export async function _rpcFsAcquire(self, epoch, cursor, pid) {
-    const args = FsAcquireArgsSchema.parse({ epoch, cursor });
-    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor);
 }
 /**
  * Enumerate the session filesystem for a process, one bounded page at a time.

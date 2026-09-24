@@ -12,7 +12,7 @@
 // live, that took an agent turn past the DO CPU limit.
 //
 // Nothing here is mocked below the RPC surface: a real `SqliteVFS` with a real
-// invalidation log, the real `_rpcFsList` / `_rpcFsReadBatch` / `_rpcFsAcquire`
+// invalidation log, the real `_rpcFsList` / `_rpcFsReadBatch` / `fsAcquire` op
 // handlers, and the store's real shipped source over a real SQLite. A fake
 // would let the reconcile pass with the revision comparison deleted.
 
@@ -21,7 +21,7 @@ import { Database } from 'bun:sqlite';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -89,7 +89,7 @@ function meteredSupervisor() {
       return _rpcFsReadBatch(host, requests);
     },
     async fsAcquire(epoch, cursor) {
-      return _rpcFsAcquire(host, epoch, cursor);
+      return host.supervisorOp({ op: 'fsAcquire', args: [epoch, cursor] });
     },
   };
 }
@@ -158,7 +158,7 @@ for (let i = 0; i < 4_000; i++) kfs.writeFile(CHURN, `churn-${i}-`.padEnd(64, 'x
 kfs.writeFile(MOVED, PEER_BYTES);
 
 const heldCursor = cold.store.__residentCursor();
-const poisoned = await _rpcFsAcquire(host, heldCursor.epoch, heldCursor.rev);
+const poisoned = await host.supervisorOp({ op: 'fsAcquire', args: [heldCursor.epoch, heldCursor.rev] });
 assert.equal(
   poisoned.poison,
   true,

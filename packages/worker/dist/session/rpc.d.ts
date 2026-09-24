@@ -24,7 +24,7 @@
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -128,14 +128,6 @@ export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string
 export declare function _rpcWsPoll(self: RpcHost, id: number, waitMs: number, pid?: number): Promise<unknown[]>;
 export declare function _rpcWsSend(self: RpcHost, id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
 export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, reason?: string, pid?: number): Promise<void>;
-/**
- * The facet cache-coherence barrier: what changed since `cursor`.
- *
- * Returned as payload, never on an Error — custom Error properties do not
- * survive structured clone across the RPC boundary, so a cursor carried that
- * way would silently arrive as undefined.
- */
-export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
 /**
  * Enumerate the session filesystem for a process, one bounded page at a time.
  *
