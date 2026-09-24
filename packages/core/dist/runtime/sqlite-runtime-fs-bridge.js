@@ -84,7 +84,7 @@ export class SqliteRuntimeFsBridge {
                 mode: 0o120777,
                 uid: 1000,
                 gid: 1000,
-                revision: this.rawVfs.revision(p),
+                revision: this.vfs.revision(p),
             };
         }
         try {
@@ -104,7 +104,7 @@ export class SqliteRuntimeFsBridge {
                 mode: type === 'symlink' ? 0o120000 | (st.mode & 0o777) : st.mode,
                 uid: st.uid,
                 gid: st.gid,
-                revision: this.rawVfs.revision(p),
+                revision: this.vfs.revision(p),
             };
         }
         catch (error) {
@@ -158,7 +158,7 @@ export class SqliteRuntimeFsBridge {
         }
         const p = located.path;
         if (options.expectedEpoch !== undefined && (options.expectedEpoch !== this.rawVfs.epoch
-            || options.expectedRevision !== this.rawVfs.revision(p))) {
+            || options.expectedRevision !== this.vfs.revision(p))) {
             throw fsError('ESTALE', 'read', path);
         }
         try {
@@ -471,16 +471,21 @@ export class SqliteRuntimeFsBridge {
             this.description(handleId);
         // SqliteVFS writes are synchronously durable before their calls return.
     }
+    /**
+     * Every per-path revision here is the caller's: `p` is its own name for a
+     * path, and a confined caller's /tmp/x is its private file, whose revision
+     * is not the shared tmp/x's. The global clock is everyone's.
+     */
     revision(path) {
         if (path === undefined)
             return this.rawVfs.revision();
         const located = this.locate(path, true);
         if (located === null)
             throw fsError('ELOOP', 'revision', path);
-        return located.mount ? 0 : this.rawVfs.revision(located.path);
+        return located.mount ? 0 : this.vfs.revision(located.path);
     }
     acquire(epoch, cursor) {
-        return this.rawVfs.invalidatedSince(epoch, cursor);
+        return this.vfs.invalidatedSince(epoch, cursor);
     }
     list(after, limit) {
         return this.vfs.list(after ?? null, limit);
@@ -689,12 +694,12 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ENOTDIR', syscall, path);
     }
     /**
-     * Run one mutation of storage path `p` and report its revision on either
-     * side, both read in the mutation's own synchronous turn: across an await
-     * either would report a peer's clock as ours.
+     * Run one mutation of path `p` and report its revision on either side,
+     * both read in the mutation's own synchronous turn: across an await either
+     * would report a peer's clock as ours.
      */
     receipted(p, mutate) {
-        const before = this.rawVfs.revision(p);
+        const before = this.vfs.revision(p);
         mutate();
         return { before, after: this.rawVfs.revision() };
     }
@@ -706,7 +711,7 @@ export class SqliteRuntimeFsBridge {
     assertExpectedRevision(path, expectedRevision) {
         if (expectedRevision === undefined)
             return;
-        if (expectedRevision !== this.rawVfs.revision(path)) {
+        if (expectedRevision !== this.vfs.revision(path)) {
             throw fsError('ESTALE', 'write', `revision ${expectedRevision}`);
         }
     }

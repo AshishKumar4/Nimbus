@@ -79,6 +79,11 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readlink(path: RuntimeFsPath): string | null;
     symlink(target: string, path: RuntimeFsPath): void;
     fsync(handleId?: number): void;
+    /**
+     * Every per-path revision here is the caller's: `p` is its own name for a
+     * path, and a confined caller's /tmp/x is its private file, whose revision
+     * is not the shared tmp/x's. The global clock is everyone's.
+     */
     revision(path?: RuntimeFsPath): number;
     acquire(epoch: string | null, cursor: number): VfsAcquireResult;
     list(after?: string | null, limit?: number): VfsListPage;
@@ -108,9 +113,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private ensureParent;
     private assertParentDirectory;
     /**
-     * Run one mutation of storage path `p` and report its revision on either
-     * side, both read in the mutation's own synchronous turn: across an await
-     * either would report a peer's clock as ours.
+     * Run one mutation of path `p` and report its revision on either side,
+     * both read in the mutation's own synchronous turn: across an await either
+     * would report a peer's clock as ours.
      */
     private receipted;
     /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */

@@ -42,7 +42,7 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type VfsCred, type VfsAcquireResult, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -145,6 +145,12 @@ export interface CredentialedVfs {
     }): Promise<WriteBatchStreamResult>;
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
+    /**
+     * The paths mutated since `cursor`, each under this credential's own name
+     * for it, and without the paths it has no name for (see
+     * SqliteVFS.invalidatedSince).
+     */
+    invalidatedSince(epoch: string | null, cursor: number): VfsAcquireResult;
     /**
      * This VFS incarnation's identity. Paired with `revision()` it is the
      * cache-coherence cursor a facet is stamped with when its bundle is built,
@@ -427,8 +433,8 @@ export declare class SqliteVFS {
     private storageKey;
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
-     * none. The inverse of {@link storageKey}, for the one surface that reports
-     * paths it was not asked about: {@link list}.
+     * none. The inverse of {@link storageKey}, for the surfaces that report
+     * paths they were not asked about: {@link list} and {@link invalidatedSince}.
      *
      * A confined caller has no name for the shared scratch tree — `/tmp` is its
      * own root — nor for another principal's, so both answer `null` and are
@@ -526,13 +532,14 @@ export declare class SqliteVFS {
      * later write to the same path reports a HIGHER revision and still
      * invalidates. A name alone cannot separate those two, and the difference
      * between them is a whole resident set thrown away on every flush.
+     *
+     * With a credential, each path is the caller's own name for it, the one
+     * `list()` reports it under: a confined caller's private /tmp/x is named
+     * tmp/x, and a path it has no name for, such as the shared tmp/x, is left
+     * out. The caller's cache is keyed on those names, so a storage key would
+     * evict nothing it holds, and the shared tmp/x would evict its own.
      */
-    invalidatedSince(epoch: string | null, cursor: number): {
-        epoch: string;
-        rev: number;
-        paths: VfsInvalidatedPath[];
-        poison: boolean;
-    };
+    invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult;
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;

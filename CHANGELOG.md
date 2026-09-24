@@ -99,9 +99,15 @@ published independently in the `@nimbus-sh` npm scope.
   repairing a poison refetches the rows dated below the floor.
   `getStats().pathRevisions` reports the paths and bytes held, the budget
   and the floor.
-- `list()` reports a confined caller's private `/tmp` entries at their own
-  revision. It looked the revision up under the listed name, which is the
-  shared `/tmp` file's, and so listed a private file just written at 0.
+- A confined caller's private `/tmp` files are dated by their own revisions:
+  in `list()`, in the filesystem bridge's `stat()` and `revision()`, in the
+  checks behind conditional reads and writes, and in mutation receipts. All
+  of these took the shared `/tmp` file's revision, looked up under the
+  caller's name for its own file. ACQUIRE deltas now name paths as the caller
+  does: its private `/tmp/x` as `tmp/x`, and a path it has no name for, such
+  as the shared `/tmp/x`, not at all. They named the storage key, so a peer's
+  write to a confined process's `/tmp` file never evicted the copy the
+  process held, and a write to the shared file evicted it instead.
 
 ### Runtimes
 
