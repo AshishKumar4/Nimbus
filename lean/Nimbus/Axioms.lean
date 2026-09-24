@@ -12,6 +12,50 @@
 
 import Nimbus
 
+/-! ## Nimbus/Coherence/StoreBugs.lean -/
+
+#print axioms Nimbus.Coherence.Store.no_stale_read
+#print axioms Nimbus.Coherence.Store.admitted_below_horizon
+#print axioms Nimbus.Coherence.Store.below_floor_poisons
+#print axioms Nimbus.Coherence.Store.delta_complete
+#print axioms Nimbus.Coherence.Store.fetched_exists
+#print axioms Nimbus.Coherence.Store.valAt_two
+#print axioms Nimbus.Coherence.Store.valAt_one
+#print axioms Nimbus.Coherence.Store.valAt_five
+#print axioms Nimbus.Coherence.Store.an_empty_log_without_a_floor_serves_a_stale_row
+#print axioms Nimbus.Coherence.Store.a_read_installed_past_a_report_is_stale
+#print axioms Nimbus.Coherence.Store.a_listing_below_the_last_commit_keeps_a_stale_row
+#print axioms Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
+
+/-! ## Nimbus/Coherence/StoreSafety.lean -/
+
+#print axioms Nimbus.Coherence.Store.valAt_fold
+#print axioms Nimbus.Coherence.Store.valAt_spec
+#print axioms Nimbus.Coherence.Store.noMut_valAt
+#print axioms Nimbus.Coherence.Store.noMut_mono
+#print axioms Nimbus.Coherence.Store.noMut_append
+#print axioms Nimbus.Coherence.Store.noMut_join
+#print axioms Nimbus.Coherence.Store.valAt_append_le
+#print axioms Nimbus.Coherence.Store.repOf_ge
+#print axioms Nimbus.Coherence.Store.deltaFrom_covers
+#print axioms Nimbus.Coherence.Store.init_inv
+#print axioms Nimbus.Coherence.Store.fresh_ext
+#print axioms Nimbus.Coherence.Store.commit_inv
+
+/-! ## Nimbus/Coherence/StoreSteps.lean -/
+
+#print axioms Nimbus.Coherence.Store.repOf_fold
+#print axioms Nimbus.Coherence.Store.repOf_mem
+#print axioms Nimbus.Coherence.Store.mem_map_eq
+#print axioms Nimbus.Coherence.Store.covered
+#print axioms Nimbus.Coherence.Store.admit_rows
+#print axioms Nimbus.Coherence.Store.admit_inv
+#print axioms Nimbus.Coherence.Store.admitDelta_inv
+#print axioms Nimbus.Coherence.Store.admitMono_inv
+#print axioms Nimbus.Coherence.Store.flush_rows
+#print axioms Nimbus.Coherence.Store.step_inv
+#print axioms Nimbus.Coherence.Store.reachable_inv
+
 /-! ## Nimbus/ContentStore/Bugs.lean -/
 
 #print axioms Nimbus.ContentStore.Bugs.pinned_reachable
