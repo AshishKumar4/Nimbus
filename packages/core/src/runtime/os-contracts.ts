@@ -27,6 +27,12 @@ export type SqlRow = Record<string, SqlValue>;
  */
 export interface SqlDatabase {
   exec(query: string, ...bindings: unknown[]): Iterable<SqlRow>;
+  /**
+   * Bytes the database occupies on the host, where the host reports it
+   * (workerd's `SqlStorage.databaseSize`). Read only for free space: a host
+   * without it gets free space reckoned from the bytes the filesystem stores.
+   */
+  readonly databaseSize?: number;
 }
 
 /**
@@ -180,6 +186,29 @@ export interface NimbusHostFilesystemLease {
   dispose(): Promise<void>;
 }
 
+/** Bytes on one mount: its capacity, what it holds, and what can still be written. */
+export interface NimbusMountUsage {
+  readonly size: number;
+  readonly used: number;
+  readonly available: number;
+}
+
+/**
+ * One entry of the mount table `df`, `mount` and `/proc/mounts` read.
+ *
+ * `source` is the device column (df's "Filesystem"), `type` the filesystem
+ * type, `options` the mount options (default `rw`). `usage` answers `null`
+ * for a mount with no meaningful capacity; `df` shows those only under `-a`
+ * or when a path on them is named.
+ */
+export interface NimbusMountEntry {
+  readonly mountPoint: string;
+  readonly source: string;
+  readonly type: string;
+  readonly options?: readonly string[];
+  usage(): Promise<NimbusMountUsage | null>;
+}
+
 export interface NimbusFilesystemAuthority {
   readonly namespace: string;
   bind(binding: NimbusFilesystemBinding): RuntimeFsBridge;
@@ -189,6 +218,12 @@ export interface NimbusFilesystemAuthority {
   revokeAppendWriter(pid: number, writerId: string): Promise<void>;
   revokeAppendWriters(pid: number): Promise<void>;
   revokeAppendWritersThrough(maxPid: number): Promise<void>;
+  /**
+   * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
+   * can read it; only usage is async. A wrapper exposing its own mounts
+   * overrides this and appends to `super.mounts(cred)`.
+   */
+  mounts?(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
 }
 
 /** A live view sharing namespace, credentials and descriptor state. */

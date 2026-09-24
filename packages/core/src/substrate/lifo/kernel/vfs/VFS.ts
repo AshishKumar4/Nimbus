@@ -18,7 +18,7 @@ function isMountProvider(p: VirtualProvider): p is MountProvider {
   );
 }
 
-interface MountEntry {
+export interface MountEntry {
   path: string;            // normalised absolute path, e.g. "/mnt/project"
   provider: VirtualProvider | MountProvider;
 }
@@ -152,6 +152,11 @@ export class VFS {
    */
   registerProvider(prefix: string, provider: VirtualProvider): void {
     this.mount(prefix, provider);
+  }
+
+  /** The mounts, ordered by path, for the authority's mount listing. */
+  mountTable(): readonly Readonly<MountEntry>[] {
+    return [...this.mounts].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   }
 
   getRoot(): INode {

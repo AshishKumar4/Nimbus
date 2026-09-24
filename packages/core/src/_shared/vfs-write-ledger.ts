@@ -4,6 +4,10 @@ const __nimbusPendingVfsMutations = new Set();
 let __nimbusPendingVfsMutationFailure;
 let __nimbusHasPendingVfsMutationFailure = false;
 const __vfsWriteClaims = new Map();
+// Per path: this facet's own writes and mutations the authority has been
+// asked to apply whose acknowledgement is not adjudicated yet
+// (__nimbusOwnAcknowledgement). Each entry settles, never rejects.
+const __vfsOwnAcks = new Map();
 const __nimbusVfsAppendRangeResult = {};
 // Operation sequences reset when this generated module is evaluated again.
 // The nonce namespaces those retries without pretending a new application
@@ -190,6 +194,91 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   return result;
 }
 
+/**
+ * Run \`work\` as an acknowledgement in flight for \`path\`: one of this
+ * facet's own writes or mutations of it, from being issued to the authority
+ * through adjudicating what the authority answered — the stamp that dates
+ * the cell, or the eviction when a barrier's report outran it.
+ *
+ * Until then the facet cannot tell whether the authority has applied it, or
+ * at which revision, and a barrier that reported the path cannot tell whether
+ * that report was this very write or a peer's after it. Served, the facet's
+ * own bytes would then be read past a peer that overwrote them — beside
+ * another path the same peer wrote afterwards, read new. So no resumption
+ * runs while such a report is outstanding against one of these
+ * (__nimbusReportedOwnAcknowledgements). A write that is only parked is not
+ * in flight: it has not reached the authority, cannot have been applied
+ * before any report, and will be applied after every one it has missed.
+ *
+ * \`generation\` is the parked cell a whole-file write-back carries
+ * (__vfsWriteGenerations): once a newer one is parked over it, that newer
+ * cell is what the facet serves, and this acknowledgement no longer says
+ * anything about the bytes a resumption would read.
+ */
+function __nimbusOwnAcknowledgement(path, work, generation) {
+  const key = __nimbusVfsPathKey(path);
+  const acked = work();
+  const ack = { settled: acked.then(() => undefined, () => undefined), generation };
+  let held = __vfsOwnAcks.get(key);
+  if (!held) {
+    held = new Set();
+    __vfsOwnAcks.set(key, held);
+  }
+  held.add(ack);
+  ack.settled.then(() => {
+    held.delete(ack);
+    if (held.size === 0 && __vfsOwnAcks.get(key) === held) __vfsOwnAcks.delete(key);
+  });
+  return acked;
+}
+
+/**
+ * The own acknowledgements in flight for every path that carries a report
+ * noted while its write or mutation was out (__nimbusNoteVfsReport) — by the
+ * barrier asking or by any before it — as of NOW, settling together; null
+ * when there are none. A barrier waits on these before its resumption runs.
+ *
+ * The reports an answer names are noted before it is admitted, so they are
+ * among them. So is one an earlier barrier noted and is still waiting on:
+ * that barrier moved the cursor past it, and an answer asked for from there
+ * does not name it again, but the own bytes are no fresher for that.
+ * Once an acknowledgement lands, its adjudication has decided — a report at
+ * or below its revision was this facet's own write coming back and the cell
+ * is dated; one above it was a peer writing after, and the cell is evicted
+ * and owed a refetch — and the report is retired with it.
+ *
+ * A write-back whose cell has been superseded is left out: a newer write of
+ * the path is parked over it, and no mutation of the path is out beside it.
+ * The facet serves that newer cell, which is only parked, so it will be
+ * applied above every report made so far. Waiting on the older one would
+ * stall a program that writes and yields in a loop on each of its own writes
+ * coming back, for nothing it reads.
+ */
+function __nimbusReportedOwnAcknowledgements() {
+  const pending = [];
+  for (const [key, held] of __vfsOwnAcks) {
+    const lease = __vfsOwnLeases[key];
+    if (__vfsParkedReports[key] === undefined && !(lease && lease.reported !== -1)) continue;
+    const parkedOver = lease === undefined && Object.prototype.hasOwnProperty.call(__vfsWrites, key);
+    for (const ack of held) {
+      if (parkedOver && ack.generation !== undefined && ack.generation !== __vfsWriteGenerations[key]) continue;
+      pending.push(ack.settled);
+    }
+  }
+  return pending.length === 0 ? null : Promise.all(pending);
+}
+
+/**
+ * Note a report no answer could name, on every path with an own
+ * acknowledgement in flight. A poison, a barrier with no answer, a repair
+ * that vouched for nothing: each moves on without saying what changed, so
+ * each of those writes is adjudicated as though a peer wrote after it — a
+ * refetch, never a stale byte.
+ */
+function __nimbusNoteUnnamedReports() {
+  for (const key of __vfsOwnAcks.keys()) __nimbusNoteVfsReport(key, Infinity);
+}
+
 async function __nimbusDrainVfsMutations() {
   while (__nimbusPendingVfsMutations.size > 0) {
     await Promise.allSettled([...__nimbusPendingVfsMutations]);
@@ -280,7 +369,7 @@ function __nimbusUnsupportedVfsAppend(path) {
 }
 
 function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
-  return __nimbusQueueVfsMutation(snapshot.key, async () => {
+  return __nimbusQueueVfsMutation(snapshot.key, () => __nimbusOwnAcknowledgement(snapshot.key, async () => {
     const value = await mutation(snapshot.content, snapshot);
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
       // What the barriers reported for this path while the write was in
@@ -317,7 +406,7 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
       __nimbusStampFlushedCell(snapshot, value, reported);
     }
     return value;
-  }, retainFailure);
+  }, snapshot.generation), retainFailure);
 }
 
 /**

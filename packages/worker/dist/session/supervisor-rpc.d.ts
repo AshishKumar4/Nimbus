@@ -34,7 +34,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
+import type { FsAcquireArgs, FsReadBatchEntry, FsReadBatchRequest, VfsDeliveredAcquire } from './rpc.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -348,7 +348,14 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         ok: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
-    cpReadStdin(childPid: number, waitMs: number): Promise<{
+    /**
+     * The three long polls that deliver to a process — its stdin, and a
+     * child's output and exit — carry the process's ACQUIRE arguments, and a
+     * reply that delivers anything carries the answer for them (`acquired`,
+     * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
+     * asking. The caller's pid names whose credential answers it.
+     */
+    cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         data: Uint8Array;
         ended: boolean;
         resize?: {
@@ -356,14 +363,16 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
             rows: number;
         };
         signal?: string;
+        acquired?: VfsDeliveredAcquire;
     }>;
-    cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
+    cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         chunks: {
             seq: number;
             data: Uint8Array;
         }[];
         closed: boolean;
         maxSeq: number;
+        acquired?: VfsDeliveredAcquire;
     }>;
     cpDrainOutput(childPid: number): Promise<{
         stdout: Uint8Array;
@@ -372,10 +381,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         stderrClosed: boolean;
     }>;
     cpKill(childPid: number, signal: string): Promise<boolean>;
-    cpWait(childPid: number, waitMs: number): Promise<{
+    cpWait(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         done: boolean;
         exitCode: number | null;
         signal: string | null;
+        acquired?: VfsDeliveredAcquire;
     }>;
     /**
      * child-process isolation gap #1: dispatch a single cp.spawn request inline using

@@ -26,6 +26,9 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertCfGitPatched } from './cf-git-patch.mjs';
+import { resolvePackageDir } from './resolve-package-dir.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
@@ -38,6 +41,9 @@ const ENTRY_CONTENTS = [
 const ENTRY_FILE = join(root, '.git-bundle-entry.js');
 
 async function main() {
+  // A copy patched by another revision of the tracked patch would bundle
+  // without its fixes, and nothing downstream would notice: refuse instead.
+  assertCfGitPatched(join(root, '..', '..'), [resolvePackageDir('isomorphic-git', { start: root })]);
   try {
     writeFileSync(ENTRY_FILE, ENTRY_CONTENTS);
 

@@ -126,6 +126,10 @@ export class VFS {
     registerProvider(prefix, provider) {
         this.mount(prefix, provider);
     }
+    /** The mounts, ordered by path, for the authority's mount listing. */
+    mountTable() {
+        return [...this.mounts].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    }
     getRoot() {
         return this.root;
     }

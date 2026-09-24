@@ -20,13 +20,13 @@ import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
       call = { path, options: { followSymlinks: false } };
       return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
     },
+    revision: () => 0,
   };
   const self = {
     ensureSqliteFs() {},
     processes: { cred: () => CRED_KERNEL },
     sqliteFs: {
       as: () => vfs,
-      revision: () => 0,
     },
   };
   const ops = buildSessionSupervisorOps(self);

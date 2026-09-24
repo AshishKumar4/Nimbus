@@ -19,6 +19,10 @@ import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-ru
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
+// The platform's timer, captured before the shims wrap setTimeout in the
+// resumption barrier: a wait that must not itself be a barriered resumption.
+const rawSetTimeout = globalThis.setTimeout;
+
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
@@ -179,6 +183,48 @@ assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored aga
     stats.fills, before.fills,
     `and nothing was refetched that never left (was ${stats.fills - before.fills})`,
   );
+}
+
+// A peer writes a path while this facet's own write of it is still being
+// acknowledged: the authority applied the write at r1 and holds the response,
+// then the peer wrote the path at r2 and another path after it. The facet
+// cannot tell until the response lands whether the r2 a barrier reports was
+// its own write or a later one, so a resumption behind that barrier must not
+// run on the parked bytes — it would read the peer's second path new and the
+// first one from before the peer (lean/Nimbus/Coherence/StoreBugs.lean,
+// own_committed_write_is_served_past_a_peer). The resident store served them
+// (resident-store-provenance.mjs); on the heap the reported cell is evicted and
+// its refetch queues behind the write, and this holds that line.
+{
+  const P = `${dir}/race.txt`;
+  const Q = `${dir}/q.txt`;
+  fs.writeFileSync(Q, 'q0');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const writeFile = supervisor.writeFile;
+  const gate = Promise.withResolvers();
+  const applied = Promise.withResolvers();
+  supervisor.writeFile = async (p, content) => {
+    const revision = await writeFile(p, content);
+    if (p.endsWith('/race.txt')) {
+      applied.resolve();
+      await gate.promise;
+    }
+    return revision;
+  };
+  fs.writeFileSync(P, 'MINE');
+  await applied.promise;
+  vfs.writeFile(P, enc.encode('PEER'));
+  vfs.writeFile(Q, enc.encode('q1'));
+
+  const resumed = new Promise((resolve) => {
+    out.setTimeout(() => resolve([P, Q].map((p) => fs.readFileSync(p, 'utf8'))), 5);
+  });
+  const early = await Promise.race([resumed, new Promise((resolve) => rawSetTimeout(() => resolve('still waiting'), 150))]);
+  assert.equal(early, 'still waiting', 'a resumption may not run on a parked write a peer may have overwritten');
+  gate.resolve();
+  assert.deepEqual(await resumed, ['PEER', 'q1'], 'the acknowledgement says the peer wrote last');
+  supervisor.writeFile = writeFile;
 }
 
 console.log('node-shims-self-write-coherence: all assertions passed');

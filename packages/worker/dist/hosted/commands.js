@@ -490,34 +490,6 @@ export async function registerHostedCommands(self, workspace) {
         registry.register('curl', createCurlCommand(kernel));
     }
     catch { }
-    // ── df with SQLite stats + cache + process metrics ──────────────────
-    registry.register('df', async (ctx) => {
-        const stats = sqliteFs.getStats();
-        const pstats = facetMgr.stats;
-        const used = stats.usedBytes;
-        const cap = stats.capacityBytes;
-        const avail = cap - used;
-        const pct = ((used / cap) * 100).toFixed(0);
-        const fmt = (b) => {
-            if (b >= 1e9)
-                return (b / 1e9).toFixed(1) + 'G';
-            if (b >= 1e6)
-                return (b / 1e6).toFixed(1) + 'M';
-            if (b >= 1e3)
-                return (b / 1e3).toFixed(1) + 'K';
-            return b + 'B';
-        };
-        ctx.stdout.write('Filesystem      Size  Used Avail Use% Mounted on\n');
-        ctx.stdout.write('sqlite         ' + fmt(cap).padStart(5) + ' ' + fmt(used).padStart(5) +
-            ' ' + fmt(avail).padStart(5) + ' ' + pct.padStart(3) + '% /\n');
-        ctx.stdout.write('\nCache: ' + stats.cache.entries + '/' + stats.cache.maxEntries +
-            ' slots | hit rate: ' + stats.cache.hitRate +
-            '% | evictions: ' + stats.cache.evictions + '\n');
-        ctx.stdout.write('Procs: ' + pstats.running + ' running, ' +
-            pstats.exited + ' exited, ' +
-            pstats.total + ' total (next PID: ' + pstats.nextPid + ')\n');
-        return 0;
-    });
     // ── esbuild: the real esbuild CLI, in the session's esbuild facet ─────
     // See @nimbus-sh/core runtime/esbuild-cli.ts.
     registry.register('esbuild', makeEsbuildCommand({

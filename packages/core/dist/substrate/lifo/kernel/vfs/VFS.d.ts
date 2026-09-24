@@ -2,7 +2,7 @@ import { INode, Stat, Dirent, VirtualProvider, MountProvider } from './types.js'
 import type { VFSWatchListener } from './types.js';
 import { ContentStore } from '../storage/ContentStore.js';
 import type { VfsCred } from '../../../../runtime/os-contracts.js';
-interface MountEntry {
+export interface MountEntry {
     path: string;
     provider: VirtualProvider | MountProvider;
 }
@@ -39,6 +39,8 @@ export declare class VFS {
      * Previously the only way to register a VirtualProvider at a root-level prefix.
      */
     registerProvider(prefix: string, provider: VirtualProvider): void;
+    /** The mounts, ordered by path, for the authority's mount listing. */
+    mountTable(): readonly Readonly<MountEntry>[];
     getRoot(): INode;
     loadFromSerialized(root: INode): void;
     /**
@@ -141,5 +143,4 @@ export declare class VFS {
      */
     rmdirRecursive(path: string): void;
 }
-export {};
 //# sourceMappingURL=VFS.d.ts.map

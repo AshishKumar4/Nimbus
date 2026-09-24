@@ -45,7 +45,7 @@ function withInvocationVfs(_sqliteVfs, factory) {
         return (await factory(ctx.vfs)(ctx));
     };
 }
-function fsErrorMessage(error) {
+export function fsErrorMessage(error) {
     if (error instanceof Error) {
         const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
         if (code === 'EACCES' || code === 'EPERM')
@@ -3630,10 +3630,11 @@ function mkStat(vfs, sqliteVfs) {
         };
         if (fileSystemMode) {
             const stats = sqliteVfs.getStats();
+            const usage = sqliteVfs.storageUsage();
             const facts = {
                 blockSize: STAT_IO_BLOCK_SIZE,
-                totalBlocks: Math.floor(stats.capacityBytes / STAT_IO_BLOCK_SIZE),
-                freeBlocks: Math.max(0, Math.floor((stats.capacityBytes - stats.usedBytes) / STAT_IO_BLOCK_SIZE)),
+                totalBlocks: Math.floor(usage.size / STAT_IO_BLOCK_SIZE),
+                freeBlocks: Math.floor(usage.available / STAT_IO_BLOCK_SIZE),
                 totalInodes: stats.files + stats.directories,
                 freeInodes: 0,
             };

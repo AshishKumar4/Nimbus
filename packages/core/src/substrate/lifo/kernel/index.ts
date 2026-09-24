@@ -83,6 +83,8 @@ export class Kernel {
 	networkStack: NetworkStack;
 	serviceManager: ServiceManager | null = null;
 	private persistence: PersistenceManager;
+	/** The /proc provider; a host adds files with `proc.register`. */
+	readonly proc = new ProcProvider();
 
 	constructor(backend?: PersistenceBackend) {
 		this.vfs = new VFS();
@@ -122,7 +124,7 @@ export class Kernel {
 		// filesystem tree itself, so they are registered here rather than in
 		// boot() — sessions that build the kernel by hand call initFilesystem()
 		// directly and must get the same namespace.
-		this.vfs.registerProvider('/proc', new ProcProvider());
+		this.vfs.registerProvider('/proc', this.proc);
 		this.vfs.registerProvider('/dev', new DevProvider());
 
 		const dirs = [

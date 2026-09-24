@@ -46,10 +46,27 @@ export interface PortEntry {
     capability: string;
 }
 export declare function createPortCapability(): string;
+/**
+ * The header a forwarded request carries its process's ACQUIRE in. An
+ * `x-nimbus-*` name, so one a client sent is stripped before the hop
+ * (`sanitizeUntrustedHeaders`), and the process removes it before its handler
+ * sees the request.
+ */
+export declare const DELIVERED_ACQUIRE_HEADER = "X-Nimbus-Vfs-Acquired";
 export declare class PortRegistry {
+    private readonly deliveredAcquire;
     private ports;
     private facetStubsByPid;
     private portWaitersByPid;
+    /**
+     * @param deliveredAcquire What the owner of the filesystem attaches to a
+     *   request routed to process `pid`: the ACQUIRE answer the process applies
+     *   before its handler runs, in place of asking for one — a request is a
+     *   resumption the supervisor delivers (session/rpc.ts
+     *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
+     *   request is forwarded bare; either way the process then asks.
+     */
+    constructor(deliveredAcquire?: ((pid: number) => Promise<unknown>) | null);
     /** Remember the available facet capabilities for a running process. */
     bindFacetStub(pid: number, facetStub: unknown): void;
     /**

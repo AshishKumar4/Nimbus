@@ -1,4 +1,5 @@
 import { VFS } from './vfs/index.js';
+import { ProcProvider } from './vfs/providers/ProcProvider.js';
 import type { PersistenceBackend } from './persistence/backends.js';
 import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { NetworkStack } from './network/NetworkStack.js';
@@ -28,6 +29,8 @@ export declare class Kernel {
     networkStack: NetworkStack;
     serviceManager: ServiceManager | null;
     private persistence;
+    /** The /proc provider; a host adds files with `proc.register`. */
+    readonly proc: ProcProvider;
     constructor(backend?: PersistenceBackend);
     boot(options?: {
         persist?: boolean;

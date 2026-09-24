@@ -1,4 +1,4 @@
-import type { MountProvider, Stat, Dirent } from '../types.js';
+import type { MountProvider, Stat, Dirent, KernelMountDescription } from '../types.js';
 import { VFSError, ErrorCode, S_IFCHR, S_IFDIR } from '../types.js';
 
 /**
@@ -71,6 +71,10 @@ const DEVICES: ReadonlyMap<string, DevNode> = new Map<string, DevNode>([
 ]);
 
 export class DevProvider implements MountProvider {
+  describeMount(): KernelMountDescription {
+    return { source: 'devtmpfs', type: 'devtmpfs', options: ['rw'] };
+  }
+
   private norm(subpath: string): string {
     return subpath.replace(/^\/+/, '').replace(/\/+$/, '');
   }

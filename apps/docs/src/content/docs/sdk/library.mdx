@@ -74,6 +74,41 @@ Cold starts, hibernation wakes, and resets all re-instantiate the class.
 The counter bumps once per instance, and the code uses the bumped value
 only after the `put` resolves.
 
+## Host mounts in df and mount
+
+`df`, `mount` and `/proc/mounts` read the filesystem authority's
+`mounts(cred)` listing: the SQLite store as `/` with its real usage, then each
+other kernel mount (`/proc`, `/dev`, yours). A wrapper that serves its own
+paths lists them by overriding `mounts` and calling `super`:
+
+```ts
+import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import type { NimbusMountEntry, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+
+class HostMounts extends SqliteFilesystemAuthority {
+  override mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
+    return [
+      ...super.mounts(cred),
+      {
+        mountPoint: '/shared',
+        source: 'r2:team-bucket',
+        type: 'r2',
+        options: ['rw'],
+        usage: async () => null, // or { size, used, available } in bytes
+      },
+    ];
+  }
+}
+
+const ws = await NimbusWorkspace.create({
+  sql, transactions, generation,
+  filesystem: (base) => new HostMounts((base as SqliteFilesystemAuthority).vfs),
+});
+```
+
+An entry whose `usage()` returns `null` shows in `df -a`, in `df <path>` for a
+path on it, and in `mount` and `/proc/mounts`.
+
 ## The hosted runtime in your Durable Object
 
 `composeHostedRuntime` from `@nimbus-sh/worker/workspace-host` adds the

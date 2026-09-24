@@ -1,9 +1,14 @@
-import type { VirtualProvider, Stat, Dirent } from '../types.js';
+import type { VirtualProvider, Stat, Dirent, KernelMountDescription } from '../types.js';
+import type { VfsCred } from '../../../../../runtime/os-contracts.js';
 import { VFSError, ErrorCode } from '../types.js';
 import { encode } from '../../../utils/encoding.js';
 
+/** A /proc file's content, for the credential of the process reading it. */
+export type ProcGenerator = (cred: VfsCred | undefined) => string;
+
 export class ProcProvider implements VirtualProvider {
-  private generators = new Map<string, () => string>();
+  private generators = new Map<string, ProcGenerator>();
+  private cred: VfsCred | undefined;
 
   constructor() {
     this.generators.set('cpuinfo', () => {
@@ -56,6 +61,22 @@ export class ProcProvider implements VirtualProvider {
     });
   }
 
+  /** Add or replace `/proc/<name>`. */
+  register(name: string, generator: ProcGenerator): void {
+    this.generators.set(name, generator);
+  }
+
+  /** The same files, generated for `cred`; shares the generator table. */
+  as(cred: VfsCred): ProcProvider {
+    const view = Object.create(this) as ProcProvider;
+    view.cred = cred;
+    return view;
+  }
+
+  describeMount(): KernelMountDescription {
+    return { source: 'proc', type: 'proc', options: ['ro'] };
+  }
+
   private isNetPath(subpath: string): boolean {
     return subpath === '/net' || subpath === '/net/info';
   }
@@ -88,7 +109,7 @@ export class ProcProvider implements VirtualProvider {
     if (!gen) {
       throw new VFSError(ErrorCode.ENOENT, `'/proc${subpath}': no such file`);
     }
-    return gen();
+    return gen(this.cred);
   }
 
   readFile(subpath: string): Uint8Array {

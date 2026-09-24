@@ -98,10 +98,29 @@ export function createPortCapability() {
     const bytes = crypto.getRandomValues(new Uint8Array(12));
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+/**
+ * The header a forwarded request carries its process's ACQUIRE in. An
+ * `x-nimbus-*` name, so one a client sent is stripped before the hop
+ * (`sanitizeUntrustedHeaders`), and the process removes it before its handler
+ * sees the request.
+ */
+export const DELIVERED_ACQUIRE_HEADER = 'X-Nimbus-Vfs-Acquired';
 export class PortRegistry {
+    deliveredAcquire;
     ports = new Map();
     facetStubsByPid = new Map();
     portWaitersByPid = new Map();
+    /**
+     * @param deliveredAcquire What the owner of the filesystem attaches to a
+     *   request routed to process `pid`: the ACQUIRE answer the process applies
+     *   before its handler runs, in place of asking for one — a request is a
+     *   resumption the supervisor delivers (session/rpc.ts
+     *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
+     *   request is forwarded bare; either way the process then asks.
+     */
+    constructor(deliveredAcquire = null) {
+        this.deliveredAcquire = deliveredAcquire;
+    }
     /** Remember the available facet capabilities for a running process. */
     bindFacetStub(pid, facetStub) {
         const target = routeableFacetTarget(facetStub);
@@ -284,6 +303,13 @@ export class PortRegistry {
             if (authorization)
                 headers.set('authorization', authorization);
             headers.set('X-Nimbus-Port', String(port));
+            // A request wakes the process it is routed to, so it carries the
+            // coherence answer the process applies before its handler runs (see
+            // the constructor). Set after the strip above, so a client cannot
+            // supply one.
+            const acquired = this.deliveredAcquire ? await this.deliveredAcquire(entry.pid) : undefined;
+            if (acquired !== undefined)
+                headers.set(DELIVERED_ACQUIRE_HEADER, JSON.stringify(acquired));
             // A Response cannot carry an encoded body across this hop, so the
             // target is asked for the one coding that survives it. See
             // `decodeContentCoding` for the server that compresses anyway.

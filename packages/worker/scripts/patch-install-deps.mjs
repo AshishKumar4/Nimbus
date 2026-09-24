@@ -8,76 +8,33 @@
  */
 
 import {
+  copyFileSync,
   existsSync,
   readFileSync,
-  readdirSync,
-  realpathSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  CF_GIT_PATCH,
+  cfGitState,
+  findCfGitDirs,
+  findNodeModules,
+  patchImages,
+  pristineIndexJs,
+  reinstallCommand,
+} from './cf-git-patch.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The script lives at packages/worker/scripts/. Walk up to the repo
 // root so we can patch every node_modules tree below it.
 const repoRoot = resolve(__dirname, '..', '..', '..');
-const cfGitPatch = resolve(
-  __dirname,
-  '..',
-  'patches',
-  '@ashishkumar472+cf-git+1.0.5.patch',
-);
-
-// Walk every node_modules tree and patch cf-git copies.
-function walkForNodeModules(base, depth = 0) {
-  if (depth > 5) return [];          // safety
-  if (!existsSync(base)) return [];
-  const out = [];
-  let entries;
-  try { entries = readdirSync(base, { withFileTypes: true }); }
-  catch { return []; }
-  for (const ent of entries) {
-    if (!ent.isDirectory()) continue;
-    if (ent.name === 'node_modules') {
-      out.push(join(base, ent.name));
-    } else if (ent.name === 'packages' || ent.name === 'apps') {
-      // recurse one level into packages/* and apps/*
-      for (const sub of readdirSync(join(base, ent.name), { withFileTypes: true })) {
-        if (sub.isDirectory()) {
-          out.push(...walkForNodeModules(join(base, ent.name, sub.name), depth + 1));
-        }
-      }
-    }
-  }
-  return out;
-}
-
-const nmDirs = walkForNodeModules(repoRoot);
-const cfGitDirs = new Set();
-
-for (const nm of nmDirs) {
-  for (const packagePath of [
-    join(nm, 'isomorphic-git', 'package.json'),
-    join(nm, '@ashishkumar472', 'cf-git', 'package.json'),
-    join(
-      nm,
-      '.bun',
-      '@ashishkumar472+cf-git@1.0.5',
-      'node_modules',
-      '@ashishkumar472',
-      'cf-git',
-      'package.json',
-    ),
-  ]) {
-    if (!existsSync(packagePath)) continue;
-    const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
-    if (pkg.name === '@ashishkumar472/cf-git' && pkg.version === '1.0.5') {
-      cfGitDirs.add(realpathSync(dirname(packagePath)));
-    }
-  }
-}
+const nmDirs = findNodeModules(repoRoot);
+const cfGitDirs = findCfGitDirs(repoRoot);
 
 for (const nm of nmDirs) {
   const igPkgPath = join(nm, 'isomorphic-git', 'package.json');
@@ -107,6 +64,8 @@ for (const nm of nmDirs) {
         };
       }
       pkg.main = './src/index.js';
+      // bun hardlinks package.json from its cache: a new file, never a write through the link.
+      unlinkSync(igPkgPath);
       writeFileSync(igPkgPath, JSON.stringify(pkg, null, 2) + '\n');
       console.log(`[patch] cf-git exports patched: ${igPkgPath}`);
     }
@@ -146,56 +105,50 @@ for (const nm of nmDirs) {
   }
 }
 
-if (!existsSync(cfGitPatch)) {
-  throw new Error(`Missing tracked cf-git patch: ${cfGitPatch}`);
-}
+const images = patchImages();
 if (cfGitDirs.size === 0) {
   throw new Error('No @ashishkumar472/cf-git@1.0.5 installation found to patch');
 }
 
-function runGitApply(cwd, args) {
-  return spawnSync(
-    'git',
-    ['apply', '--no-index', '--unidiff-zero', ...args, cfGitPatch],
-    {
-      cwd,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        GIT_CEILING_DIRECTORIES: dirname(cwd),
-      },
-    },
-  );
+function gitApply(cwd) {
+  const result = spawnSync('git', ['apply', '--no-index', '--unidiff-zero', CF_GIT_PATCH], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(cwd) },
+  });
+  if (result.status === 0) return;
+  const why = result.error?.message || result.stderr?.trim() || result.stdout?.trim() || 'unknown error';
+  throw new Error(`Failed to apply cf-git checkout repairs at ${cwd}: ${why}`);
 }
 
-function gitApplyFailure(result) {
-  return (
-    result.error?.message ||
-    result.stderr?.trim() ||
-    result.stdout?.trim() ||
-    'unknown error'
-  );
-}
-
+// Each copy's index.js is identified by its blob id against the patch's
+// `index <pre>..<post>` header. bun's isolated linker hardlinks installed
+// files from its cache, so nothing here writes into an existing index.js:
+// git apply writes its result as a new file in place of the old one (a new
+// inode; tests/unit/cf-git-patch-state.mjs holds it), and a restore unlinks the installed file before copying.
 for (const cfGitDir of cfGitDirs) {
-  const reverseCheck = runGitApply(cfGitDir, ['--reverse', '--check']);
-  if (reverseCheck.status === 0) {
+  const state = cfGitState(cfGitDir, images);
+  if (state === 'patched') {
     console.log(`[patch] cf-git checkout repairs already applied: ${cfGitDir}`);
     continue;
   }
-
-  const forwardCheck = runGitApply(cfGitDir, ['--check']);
-  if (forwardCheck.status !== 0) {
-    throw new Error(
-      `Cannot apply cf-git checkout repairs at ${cfGitDir}: ${gitApplyFailure(forwardCheck)}`,
-    );
+  if (state !== 'pristine') {
+    // Another revision of the patch (or a hand edit): start again from bun's cached copy.
+    const pristine = pristineIndexJs(images);
+    if (state === 'missing' || !pristine) {
+      throw new Error(
+        `cf-git at ${cfGitDir} is neither pristine nor patched with the tracked patch (index.js ${images.pre}..${images.post}), `
+          + `and bun's cache holds no pristine copy to restore. Reinstall it: ${reinstallCommand(cfGitDir, repoRoot)}`,
+      );
+    }
+    const indexJs = join(cfGitDir, 'index.js');
+    unlinkSync(indexJs);
+    copyFileSync(pristine, indexJs);
+    console.log(`[patch] cf-git index.js restored from bun's cache (${pristine}): ${cfGitDir}`);
   }
-
-  const apply = runGitApply(cfGitDir, []);
-  if (apply.status !== 0) {
-    throw new Error(
-      `Failed to apply cf-git checkout repairs at ${cfGitDir}: ${gitApplyFailure(apply)}`,
-    );
+  gitApply(cfGitDir);
+  if (cfGitState(cfGitDir, images) !== 'patched') {
+    throw new Error(`cf-git at ${cfGitDir} does not match the tracked patch's post-image ${images.post} after applying it`);
   }
   console.log(`[patch] cf-git checkout repairs applied: ${cfGitDir}`);
 }

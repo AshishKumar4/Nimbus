@@ -1,7 +1,16 @@
-import type { VirtualProvider, Stat, Dirent } from '../types.js';
+import type { VirtualProvider, Stat, Dirent, KernelMountDescription } from '../types.js';
+import type { VfsCred } from '../../../../../runtime/os-contracts.js';
+/** A /proc file's content, for the credential of the process reading it. */
+export type ProcGenerator = (cred: VfsCred | undefined) => string;
 export declare class ProcProvider implements VirtualProvider {
     private generators;
+    private cred;
     constructor();
+    /** Add or replace `/proc/<name>`. */
+    register(name: string, generator: ProcGenerator): void;
+    /** The same files, generated for `cred`; shares the generator table. */
+    as(cred: VfsCred): ProcProvider;
+    describeMount(): KernelMountDescription;
     private isNetPath;
     private getNetInfo;
     private generate;

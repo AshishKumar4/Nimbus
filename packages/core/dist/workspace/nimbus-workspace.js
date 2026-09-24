@@ -41,6 +41,7 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
+import { formatProcMounts, registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
@@ -135,6 +136,9 @@ export class NimbusWorkspace {
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
         registerUnixCommands(registry, vfs);
+        // df, mount and /proc/mounts all read the selected authority's listing.
+        registerMountCommands(registry, filesystem);
+        kernel.proc.register('mounts', (cred) => formatProcMounts(filesystem.mounts?.(cred ?? CRED_KERNEL) ?? []));
         const processes = options.processes ?? new SessionProcessSupervisor();
         // Only a supervisor this workspace created gets its pid base set here; a
         // host-supplied one keeps the base its owner configured.

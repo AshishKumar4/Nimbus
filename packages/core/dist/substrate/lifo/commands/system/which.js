@@ -6,7 +6,7 @@ const BUILTINS = new Set([
 const REGISTERED = new Set([
     'ls', 'cat', 'mkdir', 'rm', 'cp', 'mv', 'touch',
     'grep', 'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'sed', 'awk',
-    'find', 'tree', 'stat', 'ln', 'du', 'df', 'chmod', 'file',
+    'find', 'tree', 'stat', 'ln', 'du', 'df', 'mount', 'chmod', 'file',
     'tee', 'xargs', 'yes', 'printf',
     'env', 'uname', 'date', 'sleep', 'uptime', 'whoami', 'hostname', 'free', 'which',
     // Network

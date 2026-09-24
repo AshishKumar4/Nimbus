@@ -1,5 +1,6 @@
-import type { MountProvider, Stat, Dirent } from '../types.js';
+import type { MountProvider, Stat, Dirent, KernelMountDescription } from '../types.js';
 export declare class DevProvider implements MountProvider {
+    describeMount(): KernelMountDescription;
     private norm;
     private node;
     readFile(subpath: string): Uint8Array;

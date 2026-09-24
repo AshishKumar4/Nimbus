@@ -1,6 +1,6 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
-import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type RuntimeFsBridge, type VfsCred } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type VfsCred } from './os-contracts.js';
 /** The default authority owns descriptor scopes, not the host's database lifetime. */
 export declare class SqliteFilesystemAuthority implements NimbusFilesystemAuthority {
     readonly vfs: SqliteVFS;
@@ -21,6 +21,12 @@ export declare class SqliteFilesystemAuthority implements NimbusFilesystemAuthor
     revokeAppendWriter(pid: number, writerId: string): Promise<void>;
     revokeAppendWriters(pid: number): Promise<void>;
     revokeAppendWritersThrough(maxPid: number): Promise<void>;
+    /**
+     * The kernel's mount table. Its SQLite directories are one store, listed
+     * once as `/` (numbers: {@link SqliteVFS.storageUsage}); every other kernel
+     * mount (/proc, /dev, an embedder's) as its provider describes it.
+     */
+    mounts(_cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
     private closeScope;
     private view;
 }

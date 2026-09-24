@@ -460,7 +460,7 @@ export class NimbusSession extends CloudflareDurableObject {
         const ctxExports = ctx?.exports;
         if (ctxExports)
             adoptCtxExports(ctxExports);
-        this.portRegistry = new PortRegistry();
+        this.portRegistry = new PortRegistry((pid) => _rpc._acquireForRoutedRequest(this, pid));
         // Generation-unique pids + destroyed tombstone, BEFORE any event runs.
         // Pid-keyed state outlives instance resets (hibernatable process-log WS
         // attachments, persisted w9_proc_logs rows, named loader isolates, and
@@ -803,11 +803,11 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
     async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
     async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
-    async _rpcCpReadStdin(childPid, waitMs) { return _rpc._rpcCpReadStdin(this, childPid, waitMs); }
-    async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs); }
+    async _rpcCpReadStdin(childPid, waitMs, acquire, pid) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid); }
+    async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs, acquire, pid) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs, acquire, pid); }
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }
-    async _rpcCpWait(childPid, waitMs) { return _rpc._rpcCpWait(this, childPid, waitMs); }
+    async _rpcCpWait(childPid, waitMs, acquire, pid) { return _rpc._rpcCpWait(this, childPid, waitMs, acquire, pid); }
     // child-process isolation gap #1: per-spawn fresh-isolate dispatch.
     async _rpcCpDispatchInline(req, kind) { return _rpc._rpcCpDispatchInline(this, req, kind); }
     // Programmatic sandbox SDK RPC
