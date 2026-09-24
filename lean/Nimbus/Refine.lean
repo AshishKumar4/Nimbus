@@ -10,3 +10,4 @@ import Nimbus.Refine.RevisionFloorCases
 import Nimbus.Refine.ContentStoreCases
 import Nimbus.Refine.NamespaceCases
 import Nimbus.Refine.FastCdcCases
+import Nimbus.Refine.TierCases

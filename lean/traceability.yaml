@@ -474,7 +474,7 @@ requirements:
       - Every row write stamps the transaction's generation and every delete tombstones, as ContentStoreBuild states of executeTransactionPlan and copyTree
   CS-007:
     statement: With content-store P6 tiering, no live path ever references a cold chunk under any interleaving of writes, dedup links, snapshots, tier passes across their upload await, restore pages and resets; the tier's re-probe and the pre-check on a resumed restore are each necessary.
-    status: proved-in-abstract-model
+    status: proved-and-refined
     theorems:
       - Nimbus.ContentStore.Tier.live_never_cold
       - Nimbus.ContentStore.Tier.tier_without_reprobe_colds_a_live_chunk
@@ -483,7 +483,10 @@ requirements:
       - Nimbus.ContentStore.Tier.reachable_inv
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.restore
+    refinement:
+      - lean/fixtures/content-store-tier.json :: tests/unit/content-store-refinement.mjs
     remainingEvidence:
+      - The fixture applies Tier's rules at the store's granularity (content-store transactions from ContentStoreCases.exec plus a cold set, LIVE_CHUNK_UNREFERENCED as ContentStoreBuild defines it) rather than evaluating Tier.Step itself
       - P6 lives on work/content-store; its tier entry point is cited here once it lands on an integrated branch
       - A file is one chunk; staging, open descriptors and hot snapshots are further tier exclusions not modeled (they only make tier rarer)
       - Restore is taken to be synchronous within an isolate (no tier step mid-run), as ContentStoreBuild states; copyTree{at} and import are modeled as links that need the chunk local
