@@ -9,6 +9,9 @@
  * scope (one fetch per isolate), fronted by L2 (caches.default) keyed on each
  * source's content-hash build id, with ASSETS as the source of truth and a
  * sha-256 integrity check so a stale or partial asset can never reach a facet.
+ * L2 is written only with bytes that passed that check, and an entry that
+ * fails it is dropped and read from ASSETS again: an immutable entry is served
+ * to every later fetch in the colo for the build.
  *
  * Mirrors opencode-artifact.ts / sqlite-wasm-bytes.ts. ASSETS is already a
  * mandatory embed binding (it serves the shell, sqlite wasm, opencode

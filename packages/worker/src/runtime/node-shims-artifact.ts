@@ -9,6 +9,9 @@
  * scope (one fetch per isolate), fronted by L2 (caches.default) keyed on each
  * source's content-hash build id, with ASSETS as the source of truth and a
  * sha-256 integrity check so a stale or partial asset can never reach a facet.
+ * L2 is written only with bytes that passed that check, and an entry that
+ * fails it is dropped and read from ASSETS again: an immutable entry is served
+ * to every later fetch in the colo for the build.
  *
  * Mirrors opencode-artifact.ts / sqlite-wasm-bytes.ts. ASSETS is already a
  * mandatory embed binding (it serves the shell, sqlite wasm, opencode
@@ -89,40 +92,33 @@ async function fetchAndVerify(env: NodeShimsAssetEnv, source: StagedSource): Pro
 
   const l2Key = `https://nimbus-cache.invalid${source.entry}?build=${source.buildId}`;
   const cache = l2Cache();
-  let text: string | null = null;
 
-  try {
-    if (cache) {
+  if (cache) {
+    let cached: string | null = null;
+    try {
       const hit = await cache.match(new Request(l2Key));
-      if (hit && hit.ok) text = await hit.text();
+      if (hit && hit.ok) cached = await hit.text();
+    } catch { /* fall through to ASSETS */ }
+    if (cached !== null) {
+      if (await sha256Hex(cached) === source.sha256) return cached;
+      // A bad entry would fail every node launch in the colo: drop it and let ASSETS decide.
+      try { await cache.delete(new Request(l2Key)); } catch { /* the ASSETS read below still decides */ }
     }
-  } catch { /* fall through to ASSETS */ }
+  }
 
-  if (text === null) {
-    const res = await env.ASSETS.fetch(new Request(`https://nimbus-internal.invalid${source.entry}`));
-    try {
-      if (!res.ok) {
-        throw new Error(
-          `${source.label} asset fetch failed: ${res.status} ${res.statusText} for ` +
-            `${source.entry} — deploy is missing the staged source ` +
-            `(run scripts/bundle-node-shims.mjs)`,
-        );
-      }
-      text = await res.text();
-    } finally {
-      disposeRpcResource(res);
+  const res = await env.ASSETS.fetch(new Request(`https://nimbus-internal.invalid${source.entry}`));
+  let text: string;
+  try {
+    if (!res.ok) {
+      throw new Error(
+        `${source.label} asset fetch failed: ${res.status} ${res.statusText} for ` +
+          `${source.entry} — deploy is missing the staged source ` +
+          `(run scripts/bundle-node-shims.mjs)`,
+      );
     }
-
-    try {
-      if (cache) {
-        await cache.put(
-          new Request(l2Key),
-          new Response(text, {
-            headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
-          }),
-        );
-      }
-    } catch { /* silent */ }
+    text = await res.text();
+  } finally {
+    disposeRpcResource(res);
   }
 
   const digest = await sha256Hex(text);
@@ -130,9 +126,20 @@ async function fetchAndVerify(env: NodeShimsAssetEnv, source: StagedSource): Pro
     throw new Error(
       `${source.label} asset integrity mismatch for ${source.entry}: ` +
         `expected ${source.sha256.slice(0, 16)}…, got ${digest.slice(0, 16)}… — ` +
-        'the staged asset is stale; rerun scripts/bundle-node-shims.mjs and redeploy',
+        'the staged asset is stale or corrupt; rerun scripts/bundle-node-shims.mjs and redeploy',
     );
   }
+
+  try {
+    if (cache) {
+      await cache.put(
+        new Request(l2Key),
+        new Response(text, {
+          headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
+        }),
+      );
+    }
+  } catch { /* silent */ }
   return text;
 }
 
