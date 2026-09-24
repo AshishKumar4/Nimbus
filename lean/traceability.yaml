@@ -546,3 +546,4 @@ requirements:
     remainingEvidence:
       - Built by NodeNoMirrorBuild at 04cb9dd9 (work/node-nomirror, schema 2); ACQUIRE is served and admitted in one step and a repair lists and reconciles in one step here, the finer interleavings being Nimbus.Coherence.Store's
       - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
+      - NodeNoMirrorBuild confirms the code compares stored keys only against the authority's key at the answer's revision, stores null keys for own rows, and re-dates at the entry's or listed revision (at most the answer's); the model re-dates at the answer's revision, and any date at or below the horizon gives the same invariant
