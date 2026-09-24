@@ -128,6 +128,7 @@ export interface CredentialedVfs {
      */
     copyTree(src: string, dest: string, options?: {
         preserve?: boolean;
+        at?: string;
     }): number;
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
@@ -190,6 +191,17 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     readonly metrics: Readonly<TransactionPlanMetrics>;
     readonly code: "E2BIG";
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
+}
+export interface SnapshotInfo {
+    name: string;
+    /** The generation it pins: the tree as that transaction left it. */
+    gen: number;
+    createdAt: number;
+}
+export interface VfsDiffEntry {
+    path: string;
+    change: 'added' | 'removed' | 'modified';
+    type: VfsInodeKind;
 }
 export interface SqliteVfsOptions {
     /**
@@ -263,6 +275,10 @@ export declare class SqliteVFS {
     private _pinGen;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     private readonly manifestWindows;
+    /** Snapshot generations by name, loaded on first use. */
+    private snapshotGens;
+    /** writeStreams in flight, for snapshot's quiesce. */
+    private readonly activeStreams;
     /** Content keys computed for manifests whose digest could not be stored. */
     private readonly contentKeyMemo;
     private _activeTransaction;
@@ -770,8 +786,14 @@ export declare class SqliteVFS {
      * caller, and every directory searchable, before the first page commits.
      * A `vfs_jobs` row records the cursor, so a reset mid-copy resumes to the
      * complete tree at the next open.
+     *
+     * `at` copies from a snapshot instead of the live tree: lock-free, since
+     * the snapshot's rows never change while writers keep writing the source,
+     * and a snapshot a job reads from cannot be dropped.
      */
     private copyTree;
+    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
+    private subtreeAt;
     /**
      * Run a copyTree job to completion: the root row and the job row in the
      * first transaction, then one page per transaction, the cursor moving in
@@ -780,6 +802,98 @@ export declare class SqliteVFS {
     private runCopyTree;
     /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
     private resumeJobs;
+    /** Every snapshot, oldest first. */
+    snapshots(): SnapshotInfo[];
+    /**
+     * Pin the current tree under `name`: one row and pin_gen, in one
+     * transaction, whatever the tree's size. Every synchronous operation runs
+     * inside one turn, so it cannot interleave with one; a `writeStream` spans
+     * awaits, and without `quiesce` the snapshot holds its committed groups, the
+     * state a reset would leave. `quiesce` waits for every stream first.
+     */
+    snapshot(name: string): SnapshotInfo;
+    snapshot(name: string, options: {
+        quiesce: true;
+    }): Promise<SnapshotInfo>;
+    private pinSnapshot;
+    private snapshotGen;
+    private requireSnapshot;
+    /** The inode at `path` as of generation `g`: its live row if unchanged since, else the history row covering `g`. */
+    private inodeAt;
+    /** The children of `dir` as of generation `g`, in UTF-16 name order (readdir's). */
+    private childrenAt;
+    /** One keyset page of the tree as of `g`, in path order: live and history merged. */
+    private pageAt;
+    /**
+     * A read-only view of snapshot `name` for `cred`: the same methods, the
+     * same permission checks and symlink resolution, over the tree the
+     * snapshot pinned. Mutators throw EROFS; every call after the snapshot is
+     * dropped throws ESTALE (its history may already be collected).
+     */
+    at(name: string, cred?: VfsCred): CredentialedVfs;
+    /**
+     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
+     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * snapshot is replaced by the row the snapshot saw, or removed if the
+     * snapshot did not have it; every path the snapshot had and the live tree
+     * lost comes back. It is an ordinary write: new generations, revisions,
+     * events, before-images for any other snapshot. O(changes since the
+     * snapshot), not O(tree). A `vfs_jobs` row makes it resumable: a reset
+     * mid-restore finishes at the next open. Returns the paths it changed.
+     */
+    restore(name: string, options?: {
+        subtree?: string;
+    }): {
+        restored: number;
+    };
+    private runRestore;
+    /** The history row covering generation `g` at `path`, if any. */
+    private historyAt;
+    /**
+     * Drop snapshot `name`: its row and pin_gen in one transaction, then the
+     * history rows no remaining snapshot covers, a page per transaction, each
+     * page queuing the references it drops. Refused while a restore or a
+     * copy reads from it. Returns the history rows removed.
+     */
+    dropSnapshot(name: string): {
+        dropped: number;
+    };
+    private runDrop;
+    /**
+     * What changed between two trees of this filesystem: snapshots by name, or
+     * `null` for the live tree. Only paths some generation between the two
+     * wrote are examined — O(changes), not O(tree) — and content is compared by
+     * key, so an equal key proves equal bytes. One page in path order.
+     */
+    diff(from: string | null, to: string | null, options?: {
+        after?: string;
+        limit?: number;
+    }): {
+        entries: VfsDiffEntry[];
+        next: string | null;
+    };
+    /** Jobs in flight: what a reset would resume at the next open. */
+    jobs(): {
+        id: number;
+        kind: string;
+        args: unknown;
+        cursor: string;
+    }[];
+    /**
+     * The storage ledger (N18): what the store holds and what snapshots pin.
+     * Counts scan indexes, so this is for diagnostics and admission decisions,
+     * not a per-request poll (getStats stays O(1)).
+     */
+    storeStats(): {
+        chunks: number;
+        chunkBytes: number;
+        contents: number;
+        historyRows: number;
+        gcQueued: number;
+        snapshots: number;
+        jobs: number;
+        databaseBytes: number;
+    };
     private normalizeBatchInode;
     private authorizeBatch;
     /**
@@ -831,6 +945,7 @@ export declare class SqliteVFS {
      * stored exactly as the same bytes written any other way.
      */
     private writeStream;
+    private consumeStream;
     private _writeBatchWithRetry;
     /**
      * Estimate the byte cost of a writeBatch payload. Used by the W5

@@ -27,6 +27,18 @@ published independently in the `@nimbus-sh` npm scope.
   entry by entry. `cp -p` preserves mode and times, and a directory without
   `-r` is omitted with GNU cp's message. A reset mid-copy resumes to the
   complete tree the next time the filesystem opens.
+- Snapshots: `SqliteVFS.snapshot(name)` pins the current tree in one
+  row, whatever its size (0.07 ms at 100k files); `snapshot(name,
+  { quiesce: true })` waits for streamed writes first. `at(name)` is a
+  read-only view with the usual permission checks, `diff(a, b)` lists what
+  changed between two snapshots or the live tree, `restore(name,
+  { subtree })` puts the tree back and `dropSnapshot(name)` releases what
+  only it held. Restore, diff and drop cost the changes since the snapshot,
+  not the tree, and a reset during restore or drop finishes at the next
+  open. The first write to a path after a snapshot keeps its previous row;
+  later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
+  `storeStats()` reports chunks, history rows, the GC queue, snapshots and
+  jobs.
 - The revision clock is the durable generation, so revisions jump by more
   than one between publications. Existing filesystems start empty: the
   pre-v2 tables are ignored and deleted in bounded pages.

@@ -64,6 +64,13 @@ const KEYS_PER_SQL_EXEC = SQL_MAX_BOUND_PARAMETERS - 10;
  */
 const MANIFEST_KEPT_BYTES = 256 * CDC_MIN;
 const MANIFEST_WINDOWS = 64;
+/** A history row read as the inode it was: its generation is gen_from. */
+const HISTORY_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen_from AS gen, chunk_id, content_id';
+/** Paths one restore transaction changes, and history rows one drop transaction examines. */
+const RESTORE_PAGE_ROWS = 200;
+/** Lookups one snapshot view caches. */
+const SNAPSHOT_VIEW_CACHE_ENTRIES = 4096;
+const DROP_PAGE_ROWS = 200;
 /** Inode rows one copyTree transaction copies. */
 const COPY_PAGE_ROWS = 250;
 /** Manifest rows one copy transaction moves. */
@@ -543,6 +550,10 @@ export class SqliteVFS {
     _pinGen = 0;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     manifestWindows = new Map();
+    /** Snapshot generations by name, loaded on first use. */
+    snapshotGens = null;
+    /** writeStreams in flight, for snapshot's quiesce. */
+    activeStreams = new Set();
     /** Content keys computed for manifests whose digest could not be stored. */
     contentKeyMemo = new Map();
     // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
@@ -777,6 +788,12 @@ export class SqliteVFS {
         id INTEGER NOT NULL,
         PRIMARY KEY (kind, id)
       ) WITHOUT ROWID`);
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_snapshots (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        gen INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )`);
             // Operations of many transactions whose prefix is not a state a crash
             // may leave: the row records how to finish them.
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_jobs (
@@ -3339,10 +3356,16 @@ export class SqliteVFS {
      * caller, and every directory searchable, before the first page commits.
      * A `vfs_jobs` row records the cursor, so a reset mid-copy resumes to the
      * complete tree at the next open.
+     *
+     * `at` copies from a snapshot instead of the live tree: lock-free, since
+     * the snapshot's rows never change while writers keep writing the source,
+     * and a snapshot a job reads from cannot be dropped.
      */
     copyTree(src, dst, cred, options = {}) {
         this.assertMutationsAllowed([dst]);
-        const source = this.checkAccess(src, 0o4, cred, { followLeaf: false });
+        const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
+        const tree = atGen === undefined ? this.inodes : { get: (path) => this.inodeAt(path, atGen) };
+        const source = this.checkAccess(src, 0o4, cred, { followLeaf: false, tree });
         const root = source.inode;
         const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
         if (target.inode)
@@ -3352,7 +3375,10 @@ export class SqliteVFS {
             throw vfsError('EINVAL', `cannot copy ${source.path} into itself`);
         }
         if (cred.uid !== 0 && root.isDir) {
-            for (const inode of this.subtreeDescending(source.path, root, false)) {
+            const entries = atGen === undefined
+                ? this.subtreeDescending(source.path, root, false)
+                : this.subtreeAt(source.path, atGen);
+            for (const inode of entries) {
                 if (!this.accessInode(inode, inode.isDir ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
                     throw vfsError('EACCES', inode.path);
                 }
@@ -3366,8 +3392,25 @@ export class SqliteVFS {
             clearBits: options.preserve ? 0 : (cred.umask & 0o777) | 0o6000,
             preserveOwner: options.preserve === true && cred.uid === 0,
             preserveTimes: options.preserve === true,
+            ...(atGen === undefined ? {} : { at: options.at, atGen }),
         };
         return this.runCopyTree(job, null);
+    }
+    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
+    *subtreeAt(root, g) {
+        const range = subtreeRange(root);
+        let cursor = range.lower;
+        for (;;) {
+            const page = this.pageAt(g, cursor, SUBTREE_PAGE_ROWS);
+            for (const inode of page) {
+                if (range.upper !== null && inode.path >= range.upper)
+                    return;
+                yield inode;
+            }
+            if (page.length < SUBTREE_PAGE_ROWS)
+                return;
+            cursor = page[page.length - 1].path;
+        }
     }
     /**
      * Run a copyTree job to completion: the root row and the job row in the
@@ -3376,16 +3419,23 @@ export class SqliteVFS {
      */
     runCopyTree(job, id) {
         const range = subtreeRange(job.src);
+        const columns = 'path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_id, content_id';
+        // The rows copied: the live tree, or the snapshot's (live rows it still
+        // sees, plus the history rows covering it). Generations are integers.
+        const source = job.atGen === undefined
+            ? 'vfs_inodes'
+            : `(SELECT ${columns} FROM vfs_inodes WHERE gen <= ${job.atGen}
+          UNION ALL SELECT ${columns} FROM vfs_inode_history WHERE gen_to > ${job.atGen} AND gen_from <= ${job.atGen})`;
         let jobId = id;
         let cursor = jobId === null ? null : String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', jobId)][0].cursor);
         let copied = 0;
         for (;;) {
             const now = this.now();
             const page = cursor === null
-                ? [...this.sql.exec('SELECT path, kind, size FROM vfs_inodes WHERE path = ?', job.src)]
+                ? [...this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path = ?`, job.src)]
                 : [...(range.upper === null
-                        ? this.sql.exec('SELECT path, kind, size FROM vfs_inodes WHERE path > ? ORDER BY path LIMIT ?', cursor, COPY_PAGE_ROWS)
-                        : this.sql.exec('SELECT path, kind, size FROM vfs_inodes WHERE path > ? AND path < ? ORDER BY path LIMIT ?', cursor, range.upper, COPY_PAGE_ROWS))];
+                        ? this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path > ? ORDER BY path LIMIT ?`, cursor, COPY_PAGE_ROWS)
+                        : this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path > ? AND path < ? ORDER BY path LIMIT ?`, cursor, range.upper, COPY_PAGE_ROWS))];
             const last = page.length > 0 ? String(page[page.length - 1].path) : null;
             const done = cursor !== null && page.length < COPY_PAGE_ROWS;
             let gen = 0;
@@ -3405,7 +3455,7 @@ export class SqliteVFS {
                       CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE mode & ~? END,
                       CASE WHEN ? THEN uid ELSE ? END, CASE WHEN ? THEN gid ELSE ? END,
                       ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id
-               FROM vfs_inodes WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`, job.dst, tail, job.src, this.parentPath(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.clearBits, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last);
+               FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`, job.dst, tail, job.src, this.parentPath(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.clearBits, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last);
                     this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
                 }
                 if (jobId === null) {
@@ -3455,11 +3505,16 @@ export class SqliteVFS {
     }
     /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
     resumeJobs() {
-        for (const row of [...this.sql.exec('SELECT id, kind, args FROM vfs_jobs ORDER BY id')]) {
+        for (const row of [...this.sql.exec('SELECT id, kind, args, start_gen FROM vfs_jobs ORDER BY id')]) {
             const id = Number(row.id);
             try {
+                const args = JSON.parse(String(row.args));
                 if (row.kind === 'copyTree')
-                    this.runCopyTree(JSON.parse(String(row.args)), id);
+                    this.runCopyTree(args, id);
+                else if (row.kind === 'restore')
+                    this.runRestore(id, args, Number(row.start_gen));
+                else if (row.kind === 'drop')
+                    this.runDrop(id, Number(args.g));
                 else
                     throw new Error(`unknown job kind ${String(row.kind)}`);
             }
@@ -3467,6 +3522,491 @@ export class SqliteVFS {
                 console.error(`[sqlite-vfs] job ${id} (${String(row.kind)}) failed to resume:`, this.errorMessage(error));
             }
         }
+    }
+    // ── Snapshots, history, restore ───────────────────────────────────────
+    //
+    // A snapshot names a generation. Live rows with gen <= it, and history
+    // rows with gen_from <= it < gen_to, are its tree. The first write after
+    // the newest snapshot to a row it can see (gen <= pin_gen) keeps the old
+    // row as history in the same transaction; later writes to that path find
+    // gen > pin_gen and keep nothing. So a snapshot is one row, and history
+    // grows only with divergence.
+    /** Every snapshot, oldest first. */
+    snapshots() {
+        return [...this.sql.exec('SELECT name, gen, created_at FROM vfs_snapshots ORDER BY gen, id')]
+            .map((row) => ({ name: String(row.name), gen: Number(row.gen), createdAt: Number(row.created_at) }));
+    }
+    snapshot(name, options = {}) {
+        if (typeof name !== 'string' || name === '' || name.length > 256)
+            throw vfsError('EINVAL', 'invalid snapshot name');
+        if (!options.quiesce)
+            return this.pinSnapshot(name);
+        return (async () => {
+            while (this.activeStreams.size > 0)
+                await Promise.allSettled([...this.activeStreams]);
+            return this.pinSnapshot(name);
+        })();
+    }
+    pinSnapshot(name) {
+        if (this.snapshotGen(name) !== undefined)
+            throw vfsError('EEXIST', `snapshot ${name}`);
+        const createdAt = this.now();
+        let gen = 0;
+        this.transactionSync(() => {
+            gen = Number([...this.sql.exec('SELECT gen FROM vfs_state WHERE slot = 1')][0].gen);
+            this.sql.exec('INSERT INTO vfs_snapshots (name, gen, created_at) VALUES (?, ?, ?)', name, gen, createdAt);
+            this.sql.exec('UPDATE vfs_state SET pin_gen = ? WHERE slot = 1', gen);
+        });
+        this._pinGen = gen;
+        this.snapshotGens?.set(name, gen);
+        return { name, gen, createdAt };
+    }
+    snapshotGen(name) {
+        if (this.snapshotGens === null) {
+            this.snapshotGens = new Map(this.snapshots().map((snap) => [snap.name, snap.gen]));
+        }
+        return this.snapshotGens.get(name);
+    }
+    requireSnapshot(name) {
+        const gen = this.snapshotGen(name);
+        if (gen === undefined)
+            throw vfsError('ENOENT', `snapshot ${name}`);
+        return gen;
+    }
+    /** The inode at `path` as of generation `g`: its live row if unchanged since, else the history row covering `g`. */
+    inodeAt(path, g) {
+        const live = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path = ? AND gen <= ?`, path, g)][0];
+        if (live !== undefined)
+            return this.inodeFromRow(live);
+        const past = [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
+       WHERE path = ? AND gen_to > ? AND gen_from <= ? ORDER BY gen_to LIMIT 1`, path, g, g)][0];
+        return past === undefined ? undefined : this.inodeFromRow(past);
+    }
+    /** The children of `dir` as of generation `g`, in UTF-16 name order (readdir's). */
+    childrenAt(dir, g) {
+        const out = new Map();
+        for (const row of this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE parent_path = ? AND gen <= ?`, dir, g)) {
+            out.set(String(row.path), this.inodeFromRow(row));
+        }
+        for (const row of this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history WHERE parent_path = ? AND gen_to > ? AND gen_from <= ?`, dir, g, g))
+            out.set(String(row.path), this.inodeFromRow(row));
+        return [...out.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    }
+    /** One keyset page of the tree as of `g`, in path order: live and history merged. */
+    pageAt(g, after, limit) {
+        const live = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? AND gen <= ? ORDER BY path LIMIT ?`, after, g, limit)].map((row) => this.inodeFromRow(row));
+        const past = [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
+       WHERE path > ? AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?`, after, g, g, limit)].map((row) => this.inodeFromRow(row));
+        return [...live, ...past].sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit);
+    }
+    /**
+     * A read-only view of snapshot `name` for `cred`: the same methods, the
+     * same permission checks and symlink resolution, over the tree the
+     * snapshot pinned. Mutators throw EROFS; every call after the snapshot is
+     * dropped throws ESTALE (its history may already be collected).
+     */
+    at(name, cred = CRED_KERNEL) {
+        const g = this.requireSnapshot(name);
+        const bound = Object.freeze({
+            uid: cred.uid,
+            gid: cred.gid,
+            groups: Object.freeze([...cred.groups]),
+            umask: cred.umask & 0o777,
+        });
+        // A snapshot's rows never change, so the view caches lookups (bounded;
+        // directories dominate, since every resolution walks them).
+        const seen = new Map();
+        const tree = {
+            get: (path) => {
+                const hit = seen.get(path);
+                if (hit !== undefined)
+                    return hit ?? undefined;
+                const inode = this.inodeAt(path, g);
+                if (seen.size >= SNAPSHOT_VIEW_CACHE_ENTRIES)
+                    seen.clear();
+                seen.set(path, inode ?? null);
+                return inode;
+            },
+        };
+        const pinned = () => {
+            if (this.snapshotGen(name) !== g)
+                throw vfsError('ESTALE', `snapshot ${name} was dropped`);
+        };
+        const readOnly = () => { throw vfsError('EROFS', `snapshot ${name} is read-only`); };
+        const resolve = (path, want, followLeaf = true) => {
+            pinned();
+            return this.checkAccess(path, want, bound, { followLeaf, tree });
+        };
+        const probe = (path) => {
+            pinned();
+            try {
+                return this.checkAccess(path, 0, bound, { followLeaf: false, allowMissingLeaf: true, tree }).inode;
+            }
+            catch (error) {
+                const code = error.code;
+                if (code === 'ENOENT' || code === 'ENOTDIR')
+                    return undefined;
+                throw error;
+            }
+        };
+        const file = (path) => {
+            const resolved = resolve(path, 0o4);
+            const inode = resolved.inode;
+            if (inode.kind === 'directory')
+                throw vfsError('EISDIR', resolved.path);
+            if (inode.kind !== 'file')
+                throw vfsError('EINVAL', `${resolved.path} is not a regular file`);
+            return inode;
+        };
+        const range = (path, offset, length) => {
+            const inode = file(path);
+            const start = clampNonNegativeInt(offset);
+            const end = Math.min(inode.size, start + clampNonNegativeInt(length));
+            return this.readContent(inode, start, end, true);
+        };
+        const readlink = (path) => {
+            const inode = resolve(path, 0, false).inode;
+            if (inode.kind !== 'symlink')
+                throw vfsError('EINVAL', `${path} is not a symlink`);
+            return dec.decode(this.readContent(inode, 0, inode.size, true));
+        };
+        return {
+            cred: bound,
+            exists: (path) => probe(path) !== undefined,
+            isDirectory: (path) => probe(path)?.kind === 'directory',
+            isFile: (path) => probe(path)?.kind === 'file',
+            isSymlink: (path) => probe(path)?.kind === 'symlink',
+            access: (path, mode) => { resolve(path, mode); },
+            mkdir: readOnly,
+            writeFile: readOnly,
+            symlink: readOnly,
+            readlink,
+            resolveSymlink: (path) => {
+                pinned();
+                try {
+                    return this.resolvePath(path, bound, true, false, tree).path;
+                }
+                catch (error) {
+                    if (error.code === 'ELOOP')
+                        return null;
+                    throw error;
+                }
+            },
+            readFile: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, true); },
+            readFileUncached: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, false); },
+            readRange: range,
+            readRangeUncached: (path, offset, length) => {
+                const inode = file(path);
+                const start = clampNonNegativeInt(offset);
+                return this.readContent(inode, start, Math.min(inode.size, start + clampNonNegativeInt(length)), false);
+            },
+            writeRange: readOnly,
+            appendOnce: readOnly,
+            acknowledgeAppend: readOnly,
+            truncate: readOnly,
+            readFileString: (path) => { const inode = file(path); return dec.decode(this.readContent(inode, 0, inode.size, true)); },
+            stat: (path) => this.statOf(resolve(path, 0).inode),
+            lstat: (path) => this.statOf(resolve(path, 0, false).inode),
+            utimes: readOnly,
+            chmod: readOnly,
+            chown: readOnly,
+            readdir: (path) => {
+                const np = this.storageKey(path, bound);
+                if (np !== '') {
+                    const inode = resolve(np, 0o4).inode;
+                    if (inode.kind !== 'directory')
+                        throw vfsError('ENOTDIR', path);
+                }
+                else
+                    pinned();
+                return this.childrenAt(np, g).map((child) => ({
+                    name: child.path.slice(child.path.lastIndexOf('/') + 1),
+                    type: child.kind,
+                }));
+            },
+            list: (after, limit) => {
+                pinned();
+                const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
+                const from = after === null || after === undefined ? '' : this.storageKey(after, bound);
+                const entries = [];
+                const searchableDirs = new Map();
+                let cursor = from;
+                for (;;) {
+                    const page = this.pageAt(g, cursor, pageLimit + 1);
+                    for (const inode of page) {
+                        if (entries.length >= pageLimit)
+                            return { epoch: this._epoch, rev: g, entries, next: entries[entries.length - 1].path };
+                        const logical = this.logicalPath(inode.path, bound);
+                        if (logical === null)
+                            continue;
+                        const parent = this.parentPath(inode.path);
+                        if (parent !== '' && bound.uid !== 0) {
+                            let searchable = searchableDirs.get(parent);
+                            if (searchable === undefined) {
+                                try {
+                                    this.checkAccess(parent, 0o1, bound, { tree });
+                                    searchable = true;
+                                }
+                                catch {
+                                    searchable = false;
+                                }
+                                searchableDirs.set(parent, searchable);
+                            }
+                            if (!searchable)
+                                continue;
+                        }
+                        entries.push({
+                            path: logical,
+                            kind: inode.kind,
+                            size: inode.size,
+                            rev: g,
+                            stat: { ...this.statOf(inode), revision: g },
+                            ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
+                        });
+                    }
+                    if (page.length <= pageLimit)
+                        return { epoch: this._epoch, rev: g, entries, next: null };
+                    cursor = page[page.length - 1].path;
+                }
+            },
+            unlink: readOnly,
+            rmdir: readOnly,
+            removeRecursive: readOnly,
+            rename: readOnly,
+            copyFile: readOnly,
+            copyTree: readOnly,
+            writeBatch: readOnly,
+            writeStream: readOnly,
+            mkdirBatch: readOnly,
+            revision: () => g,
+            contentKey: (path) => {
+                const inode = resolve(path, 0o4).inode;
+                if (inode.kind === 'directory')
+                    throw vfsError('EISDIR', path);
+                return this.contentKeyOf(inode);
+            },
+            epoch: this._epoch,
+        };
+    }
+    /**
+     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
+     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * snapshot is replaced by the row the snapshot saw, or removed if the
+     * snapshot did not have it; every path the snapshot had and the live tree
+     * lost comes back. It is an ordinary write: new generations, revisions,
+     * events, before-images for any other snapshot. O(changes since the
+     * snapshot), not O(tree). A `vfs_jobs` row makes it resumable: a reset
+     * mid-restore finishes at the next open. Returns the paths it changed.
+     */
+    restore(name, options = {}) {
+        const g = this.requireSnapshot(name);
+        const subtree = options.subtree === undefined ? '' : normalizeVfsPath(options.subtree);
+        if (subtree !== '')
+            this.assertMutationsAllowed([subtree]);
+        else if (this.exclusiveMutationLeases.size > 0)
+            throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+        let id = 0;
+        let startGen = 0;
+        this.transactionSync(() => {
+            startGen = Number([...this.sql.exec('SELECT gen FROM vfs_state WHERE slot = 1')][0].gen) + 1;
+            id = Number([...this.sql.exec(`INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('restore', ?, '', ?, ?) RETURNING id`, JSON.stringify({ name, g, subtree }), startGen, this.now())][0].id);
+        });
+        return { restored: this.runRestore(id, { name, g, subtree }, startGen) };
+    }
+    runRestore(id, job, startGen) {
+        const range = subtreeRange(job.subtree);
+        // Path filter for both tables, as SQL plus its parameters.
+        const within = job.subtree === ''
+            ? { sql: '', params: [] }
+            : { sql: ' AND (path = ? OR (path > ? AND path < ?))', params: [job.subtree, range.lower, range.upper] };
+        let restored = 0;
+        for (;;) {
+            const changed = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE gen > ? AND gen < ?${within.sql} ORDER BY gen LIMIT ?`, job.g, startGen, ...within.params, RESTORE_PAGE_ROWS)].map((row) => this.inodeFromRow(row));
+            const revived = changed.length < RESTORE_PAGE_ROWS
+                ? [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history AS h
+           WHERE gen_to > ? AND gen_from <= ?${within.sql}
+             AND NOT EXISTS (SELECT 1 FROM vfs_inodes i WHERE i.path = h.path)
+           ORDER BY path LIMIT ?`, job.g, job.g, ...within.params, RESTORE_PAGE_ROWS - changed.length)].map((row) => this.inodeFromRow(row))
+                : [];
+            if (changed.length === 0 && revived.length === 0) {
+                this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
+                return restored;
+            }
+            const builder = this.newPlan();
+            const deletedInodes = [];
+            const restoredRow = (past) => ({
+                path: past.path,
+                parentPath: past.parentPath,
+                kind: past.kind,
+                isDir: past.isDir,
+                size: past.size,
+                atime: past.atime,
+                mtime: past.mtime,
+                mode: past.mode,
+                uid: past.uid,
+                gid: past.gid,
+                ino: past.ino,
+                content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
+            });
+            for (const live of changed) {
+                const past = this.historyAt(live.path, job.g);
+                if (past === undefined) {
+                    builder.addDeletedPath(live.path, live);
+                    deletedInodes.push(live);
+                }
+                else
+                    builder.addInode(restoredRow(past));
+            }
+            for (const past of revived)
+                builder.addInode(restoredRow(past));
+            this._writeBatchOnce({ plan: builder.build(), deletedInodes }, { source: 'content-publish', limitMode: 'bounded' });
+            restored += changed.length + revived.length;
+        }
+    }
+    /** The history row covering generation `g` at `path`, if any. */
+    historyAt(path, g) {
+        const row = [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
+       WHERE path = ? AND gen_to > ? AND gen_from <= ? ORDER BY gen_to LIMIT 1`, path, g, g)][0];
+        return row === undefined ? undefined : this.inodeFromRow(row);
+    }
+    /**
+     * Drop snapshot `name`: its row and pin_gen in one transaction, then the
+     * history rows no remaining snapshot covers, a page per transaction, each
+     * page queuing the references it drops. Refused while a restore or a
+     * copy reads from it. Returns the history rows removed.
+     */
+    dropSnapshot(name) {
+        const g = this.requireSnapshot(name);
+        for (const job of [...this.sql.exec("SELECT args FROM vfs_jobs WHERE kind IN ('restore', 'copyTree')")]) {
+            const args = JSON.parse(String(job.args));
+            if (args.name === name || args.at === name)
+                throw vfsError('EBUSY', `snapshot ${name} is in use by a job`);
+        }
+        let id = 0;
+        let pinGen = 0;
+        this.transactionSync(() => {
+            this.sql.exec('DELETE FROM vfs_snapshots WHERE name = ?', name);
+            pinGen = Number([...this.sql.exec('SELECT COALESCE(MAX(gen), 0) AS g FROM vfs_snapshots')][0].g);
+            this.sql.exec('UPDATE vfs_state SET pin_gen = ? WHERE slot = 1', pinGen);
+            id = Number([...this.sql.exec(`INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('drop', ?, ?, 0, ?) RETURNING id`, JSON.stringify({ g }), JSON.stringify([g, '']), this.now())][0].id);
+        });
+        this._pinGen = pinGen;
+        this.snapshotGens?.delete(name);
+        const dropped = this.runDrop(id, g);
+        this.runContentMaintenanceSafely(2);
+        return { dropped };
+    }
+    runDrop(id, g) {
+        let [afterGen, afterPath] = JSON.parse(String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0].cursor));
+        const kept = this.snapshots().map((snap) => snap.gen);
+        let dropped = 0;
+        for (;;) {
+            const page = [...this.sql.exec(`SELECT path, gen_to, gen_from, chunk_id, content_id FROM vfs_inode_history
+         WHERE gen_to > ? OR (gen_to = ? AND path > ?) ORDER BY gen_to, path LIMIT ?`, afterGen, afterGen, afterPath, DROP_PAGE_ROWS)];
+            const done = page.length < DROP_PAGE_ROWS;
+            // Only rows that covered the dropped generation can have lost their last snapshot.
+            const dead = page.filter((row) => {
+                const from = Number(row.gen_from);
+                const to = Number(row.gen_to);
+                return from <= g && !kept.some((s) => from <= s && s < to);
+            });
+            if (page.length > 0) {
+                const last = page[page.length - 1];
+                afterGen = Number(last.gen_to);
+                afterPath = String(last.path);
+            }
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: dead.length * 2 + 1, sqlExecs: 8, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+                for (let i = 0; i < dead.length; i += KEYS_PER_SQL_EXEC / 2) {
+                    const batch = dead.slice(i, i + KEYS_PER_SQL_EXEC / 2);
+                    this.sql.exec(`DELETE FROM vfs_inode_history WHERE (path, gen_to) IN (VALUES ${batch.map(() => '(?, ?)').join(',')})`, ...batch.flatMap((row) => [row.path, row.gen_to]));
+                }
+                const queue = new GcQueue();
+                for (const row of dead) {
+                    if (row.chunk_id !== null)
+                        queue.add(GC_CHUNK, Number(row.chunk_id));
+                    if (row.content_id !== null)
+                        queue.add(GC_CONTENT, Number(row.content_id));
+                }
+                this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queue.rows(), 'INSERT OR IGNORE');
+                if (done)
+                    this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id);
+                else
+                    this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', JSON.stringify([afterGen, afterPath]), id);
+            });
+            dropped += dead.length;
+            if (dead.length > 0)
+                this.maintenancePending = true;
+            if (done)
+                return dropped;
+        }
+    }
+    /**
+     * What changed between two trees of this filesystem: snapshots by name, or
+     * `null` for the live tree. Only paths some generation between the two
+     * wrote are examined — O(changes), not O(tree) — and content is compared by
+     * key, so an equal key proves equal bytes. One page in path order.
+     */
+    diff(from, to, options = {}) {
+        const ga = from === null ? this._gen : this.requireSnapshot(from);
+        const gb = to === null ? this._gen : this.requireSnapshot(to);
+        const lo = Math.min(ga, gb);
+        const hi = Math.max(ga, gb);
+        const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
+        const after = options.after ?? '';
+        const candidates = [...this.sql.exec(`SELECT path FROM (
+         SELECT path FROM vfs_inodes WHERE gen > ? AND gen <= ?
+         UNION SELECT path FROM vfs_inode_history WHERE gen_to > ? AND gen_to <= ?
+         UNION SELECT path FROM vfs_inode_history WHERE gen_from > ? AND gen_from <= ?
+       ) WHERE path > ? ORDER BY path LIMIT ?`, lo, hi, lo, hi, lo, hi, after, limit + 1)].map((row) => String(row.path));
+        const at = (path, g) => (g === this._gen ? this.inodes.get(path) : this.inodeAt(path, g));
+        const entries = [];
+        for (const path of candidates.slice(0, limit)) {
+            const a = at(path, ga);
+            const b = at(path, gb);
+            if (a === undefined && b === undefined)
+                continue;
+            if (a === undefined) {
+                entries.push({ path, change: 'added', type: b.kind });
+                continue;
+            }
+            if (b === undefined) {
+                entries.push({ path, change: 'removed', type: a.kind });
+                continue;
+            }
+            const sameMeta = a.kind === b.kind && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid && a.size === b.size;
+            const sameRef = a.chunkId === b.chunkId && a.contentId === b.contentId;
+            if (sameMeta && (sameRef || a.kind === 'directory' || this.contentKeyOf(a) === this.contentKeyOf(b)))
+                continue;
+            entries.push({ path, change: 'modified', type: b.kind });
+        }
+        return { entries, next: candidates.length > limit ? candidates[limit - 1] : null };
+    }
+    /** Jobs in flight: what a reset would resume at the next open. */
+    jobs() {
+        return [...this.sql.exec('SELECT id, kind, args, cursor FROM vfs_jobs ORDER BY id')].map((row) => ({
+            id: Number(row.id),
+            kind: String(row.kind),
+            args: JSON.parse(String(row.args)),
+            cursor: String(row.cursor),
+        }));
+    }
+    /**
+     * The storage ledger (N18): what the store holds and what snapshots pin.
+     * Counts scan indexes, so this is for diagnostics and admission decisions,
+     * not a per-request poll (getStats stays O(1)).
+     */
+    storeStats() {
+        const one = (query) => Number([...this.sql.exec(query)][0].n);
+        return {
+            chunks: one('SELECT COUNT(*) AS n FROM vfs_chunks'),
+            chunkBytes: one('SELECT COALESCE(SUM(size), 0) AS n FROM vfs_chunks'),
+            contents: one('SELECT COUNT(*) AS n FROM vfs_contents'),
+            historyRows: one('SELECT COUNT(*) AS n FROM vfs_inode_history'),
+            gcQueued: one('SELECT COUNT(*) AS n FROM vfs_gc_queue'),
+            snapshots: one('SELECT COUNT(*) AS n FROM vfs_snapshots'),
+            jobs: one('SELECT COUNT(*) AS n FROM vfs_jobs'),
+            databaseBytes: one('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()'),
+        };
     }
     // ── Batch write (npm install fast path) ───────────────────────────────
     normalizeBatchInode(entry, cred) {
@@ -3658,7 +4198,14 @@ export class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
-    async writeStream(stream, options = {}, cred) {
+    writeStream(stream, options = {}, cred) {
+        const run = this.consumeStream(stream, options, cred);
+        this.activeStreams.add(run);
+        const settled = () => { this.activeStreams.delete(run); };
+        run.then(settled, settled);
+        return run;
+    }
+    async consumeStream(stream, options, cred) {
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
         const decodeDrainToken = {};
         this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
