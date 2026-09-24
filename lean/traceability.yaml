@@ -501,3 +501,19 @@ requirements:
     remainingEvidence:
       - The rule is VfsLazyInodesLane's 7c53d244 (work/vfs-lazy-inodes); property (i), that no name reaches a principal that could not have listed it, is not modeled
       - A facet that drops a subtree when a directory's own entry reports it absent or untraversable is not affected; the resident store on integrate/0924 evicts exact names
+  COH-009:
+    statement: Under the rule that reports a path the caller cannot see as its nearest visible ancestor with subtree scope, and evicts under structural directory entries, the caller never receives a name it cannot see at answer time, and no row it filled survives a change to that path's content or visibility, chmod-only revocation included.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.VisibleDelta.no_leak
+      - Nimbus.Coherence.VisibleDelta.coherence
+      - Nimbus.Coherence.VisibleDelta.chmod_revokes_rows_below
+      - Nimbus.Coherence.VisibleDelta.nva_spec
+      - Nimbus.Coherence.VisibleDelta.visible_root
+      - Nimbus.Coherence.VisibleDelta.entry_evicts
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - The rule is Main's, to be built by VfsLazyInodesLane on work/vfs-lazy-inodes; the refinement fixture follows its commit
+      - Visibility is traversability of every directory above a name for one caller; symlinks, confined /tmp views and uid/gid are folded into that one bit
+      - Log completeness (every node change logged, structural when kind, existence or traversability changed) is a hypothesis

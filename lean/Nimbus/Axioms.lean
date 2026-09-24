@@ -90,6 +90,15 @@ import Nimbus.Refine
 
 #print axioms Nimbus.Coherence.Visibility.a_chmod_then_remove_hides_a_listed_path
 
+/-! ## Nimbus/Coherence/VisibleDelta.lean -/
+
+#print axioms Nimbus.Coherence.VisibleDelta.nva_spec
+#print axioms Nimbus.Coherence.VisibleDelta.visible_root
+#print axioms Nimbus.Coherence.VisibleDelta.no_leak
+#print axioms Nimbus.Coherence.VisibleDelta.entry_evicts
+#print axioms Nimbus.Coherence.VisibleDelta.coherence
+#print axioms Nimbus.Coherence.VisibleDelta.chmod_revokes_rows_below
+
 /-! ## Nimbus/ContentStore/Bugs.lean -/
 
 #print axioms Nimbus.ContentStore.Bugs.pinned_reachable
