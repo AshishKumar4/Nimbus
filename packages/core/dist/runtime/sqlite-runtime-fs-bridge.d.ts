@@ -24,6 +24,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly vfs;
     constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, getKernel?: (() => VFS | undefined) | undefined);
     private get kernel();
+    /**
+     * The legacy registry's key for one of this caller's names. Its entries are
+     * keyed by storage key, so a confined caller's /tmp/x is its own, and an
+     * entry in the shared tmp is not its to see, follow or remove.
+     */
+    private legacyKey;
     dispose(): void;
     /**
      * Where a path lives, decided only after confinement: a kernel mount is
@@ -79,9 +85,15 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readlink(path: RuntimeFsPath): string | null;
     symlink(target: string, path: RuntimeFsPath): void;
     fsync(handleId?: number): void;
+    /**
+     * Every per-path revision here is the caller's: `p` is its own name for a
+     * path, and a confined caller's /tmp/x is its private file, whose revision
+     * is not the shared tmp/x's. The global clock is everyone's.
+     */
     revision(path?: RuntimeFsPath): number;
     acquire(epoch: string | null, cursor: number): VfsAcquireResult;
     list(after?: string | null, limit?: number): VfsListPage;
+    /** A watch in the caller's view: its files, under its names, only those it could list. */
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     realpath(path: RuntimeFsPath): string;
     remove(path: RuntimeFsPath, options?: {
@@ -108,9 +120,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private ensureParent;
     private assertParentDirectory;
     /**
-     * Run one mutation of storage path `p` and report its revision on either
-     * side, both read in the mutation's own synchronous turn: across an await
-     * either would report a peer's clock as ours.
+     * Run one mutation of path `p` and report its revision on either side,
+     * both read in the mutation's own synchronous turn: across an await either
+     * would report a peer's clock as ours.
      */
     private receipted;
     /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */

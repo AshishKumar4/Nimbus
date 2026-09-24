@@ -112,6 +112,32 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### VFS
 
+- Security: a confined principal can no longer follow a symlink out of its
+  private `/tmp`. Its `/tmp` is stored at a private root such as
+  `var/agents/a/tmp`, and symlinks were resolved against that storage path.
+  So `/tmp/out -> ../../../../tmp/x` climbed out of the private root and read
+  or rewrote the shared `/tmp/x`. A link to `/`, or to a directory above the
+  root, let the rest of any path continue into the shared tree, and so did a
+  relative link someone else had left outside `/tmp`. In a check of 5 link
+  shapes and 21 operations, 39 of the 85 combinations reached the shared tree
+  or another user's directory: reads, `stat`, copies, opened descriptors,
+  in-place writes, and the creations described below. Links now resolve in
+  the caller's own view, relative targets against the link's directory as the
+  caller names it, so every link lands where naming its target directly
+  would. `realpath` and descriptor-relative (WASI) lookups report the caller's
+  names, so a confined process's links under a preopened `/tmp` no longer
+  fail `ENOTCAPABLE`. Legacy registry symlinks are looked up by storage key,
+  so a shared-`/tmp` entry is no longer visible to, or removable by, a
+  confined caller.
+- `mkdir` and `symlink` through a link to a directory now create inside that
+  directory. They put the new entry under the link itself, where no lookup
+  reached it, after checking permission on the link's target. A link in
+  another user's directory let any caller put entries there, though it could
+  not write that directory, and a symlink left that way made every later
+  `list()` page fail. A batch or stream write places each entry at its
+  literal path, so it now refuses a parent that is a link with `ENOTDIR`.
+  `readdir` and `rmdir` through a link act on the link's target, which is the
+  directory their permission checks already used.
 - Opening a filesystem no longer reads its inodes. `SqliteVFS` used to load
   every inode into memory at construction and scan the table three more
   times. In bun that took 15-32 ms and 4.8 MiB of heap at 10,000 files, and
@@ -149,9 +175,34 @@ published independently in the `@nimbus-sh` npm scope.
   repairing a poison refetches the rows dated below the floor.
   `getStats().pathRevisions` reports the paths and bytes held, the budget
   and the floor.
-- `list()` reports a confined caller's private `/tmp` entries at their own
-  revision. It looked the revision up under the listed name, which is the
-  shared `/tmp` file's, and so listed a private file just written at 0.
+- A confined caller's private `/tmp` files are dated by their own revisions:
+  in `list()`, in the filesystem bridge's `stat()` and `revision()`, in the
+  checks behind conditional reads and writes, and in mutation receipts. All
+  of these took the shared `/tmp` file's revision, looked up under the
+  caller's name for its own file. ACQUIRE deltas now name paths as the caller
+  does: its private `/tmp/x` as `tmp/x`, and a path it has no name for, such
+  as the shared `/tmp/x`, not at all. They named the storage key, so a peer's
+  write to a confined process's `/tmp` file never evicted the copy the
+  process held, and a write to the shared file evicted it instead.
+- An ACQUIRE delta names only the paths its caller may see, and still
+  covers every change to what it holds. It named every path the caller had a
+  name for, so a resident process was told the names of files in another
+  principal's private `/tmp` and in directories it cannot read. Now a path
+  the caller may not see (below a directory it cannot enter, or in a
+  directory that has since been removed or renamed) is reported as the
+  nearest directory above it that the caller may see, marked `subtree`, and
+  a directory removed, renamed away, or given another mode, owner or group
+  is marked `structural`. The resident store and the Node shims evict
+  everything at or under an entry with either flag. So a directory made
+  private stops a store serving what it held there, a private `rm -rf`
+  costs one entry and names nothing inside it, and a directory made private
+  and then removed still evicts the files it held. `list()` checks a
+  confined caller's own directories, not the storage directories that hold
+  its `/tmp`.
+- A watch (`subscribe`, under `fs.watch`) follows the caller's view. A
+  confined caller watching `/tmp/x` watched the shared `/tmp/x`: its own
+  writes never fired, and the shared file's did. Events now carry the
+  caller's names, and only for paths it may see.
 - The W7 write-batch checksums are computed by `node:zlib`'s `crc32` where
   the host has it (bun, node, workerd with `nodejs_compat`), for inputs of
   128 bytes or more, and by a slicing-by-8 table otherwise. The checksum

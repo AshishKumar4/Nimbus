@@ -48,6 +48,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   private get kernel(): VFS | undefined { return this.getKernel?.(); }
 
+  /**
+   * The legacy registry's key for one of this caller's names. Its entries are
+   * keyed by storage key, so a confined caller's /tmp/x is its own, and an
+   * entry in the shared tmp is not its to see, follow or remove.
+   */
+  private legacyKey(path: string): string {
+    return this.vfs.storageKey(path);
+  }
+
   dispose(): void {
     for (const id of this.scope.handles.keys()) this.close(id);
     this.scope.closed = true;
@@ -93,7 +102,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const p = located.path;
     if (p === '') return this.rootStat();
     if (!followSymlinks && !this.vfs.exists(p)) {
-      const target = this.legacySymlinks.readlink(p);
+      const target = this.legacySymlinks.readlink(this.legacyKey(p));
       if (target === null) return null;
       const now = Date.now();
       return {
@@ -108,7 +117,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         mode: 0o120777,
         uid: 1000,
         gid: 1000,
-        revision: this.rawVfs.revision(p),
+        revision: this.vfs.revision(p),
       };
     }
     try {
@@ -128,7 +137,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         mode: type === 'symlink' ? 0o120000 | (st.mode & 0o777) : st.mode,
         uid: st.uid,
         gid: st.gid,
-        revision: this.rawVfs.revision(p),
+        revision: this.vfs.revision(p),
       };
     } catch (error) {
       if (hasErrorCode(error, 'ENOENT')) return null;
@@ -185,7 +194,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }
     const p = located.path;
     if (options.expectedEpoch !== undefined && (options.expectedEpoch !== this.rawVfs.epoch
-      || options.expectedRevision !== this.rawVfs.revision(p))) {
+      || options.expectedRevision !== this.vfs.revision(p))) {
       throw fsError('ESTALE', 'read', path);
     }
     try {
@@ -385,9 +394,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           : 'file';
       entries.set(entry.name, { name: entry.name, type });
     }
-    const prefix = p ? `${p}/` : '';
+    const key = this.legacyKey(p);
+    const prefix = key ? `${key}/` : '';
     for (const link of this.legacySymlinks.list()) {
-      if (parentVfsPath(link.link) !== p) continue;
+      if (parentVfsPath(link.link) !== key) continue;
       const name = link.link.slice(prefix.length);
       if (!entries.has(name)) entries.set(name, { name, type: 'symlink' });
     }
@@ -409,16 +419,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const located = this.locateMutation(path, false, 'unlink');
     if (located.mount) { located.mount.unlink(located.path); return; }
     const p = located.path;
+    const key = this.legacyKey(p);
     if (this.vfs.exists(p)) {
-      const staleLegacy = this.legacySymlinks.isSymlink(p);
-      if (staleLegacy) this.legacySymlinks.assertMutable(p);
+      const staleLegacy = this.legacySymlinks.isSymlink(key);
+      if (staleLegacy) this.legacySymlinks.assertMutable(key);
       this.vfs.unlink(p);
-      if (staleLegacy) this.legacySymlinks.delete(p);
+      if (staleLegacy) this.legacySymlinks.delete(key);
       return;
     }
     // A registry-only symlink has no inode of its own; the name still exists.
-    if (!this.legacySymlinks.isSymlink(p)) throw fsError('ENOENT', 'unlink', path);
-    this.legacySymlinks.delete(p);
+    if (!this.legacySymlinks.isSymlink(key)) throw fsError('ENOENT', 'unlink', path);
+    this.legacySymlinks.delete(key);
   }
 
   rmdir(path: RuntimeFsPath): void {
@@ -432,26 +443,28 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   rename(from: RuntimeFsPath, to: RuntimeFsPath): void {
     const oldPath = this.sqlitePath(from, false, 'rename');
     const newPath = this.sqlitePath(to, false, 'rename');
+    const oldKey = this.legacyKey(oldPath);
+    const newKey = this.legacyKey(newPath);
     if (this.vfs.exists(oldPath)) {
-      const staleDestination = this.legacySymlinks.isSymlink(newPath);
-      if (staleDestination) this.legacySymlinks.assertMutable(newPath);
+      const staleDestination = this.legacySymlinks.isSymlink(newKey);
+      if (staleDestination) this.legacySymlinks.assertMutable(newKey);
       this.assertParentDirectory(newPath, 'rename');
       this.vfs.rename(oldPath, newPath);
-      if (staleDestination) this.legacySymlinks.delete(newPath);
+      if (staleDestination) this.legacySymlinks.delete(newKey);
       return;
     }
-    const linkTarget = this.legacySymlinks.readlink(oldPath);
+    const linkTarget = this.legacySymlinks.readlink(oldKey);
     if (linkTarget === null) throw fsError('ENOENT', 'rename', from);
-    const staleDestination = this.legacySymlinks.isSymlink(newPath);
-    this.legacySymlinks.assertMutable(oldPath, ...(staleDestination ? [newPath] : []));
+    const staleDestination = this.legacySymlinks.isSymlink(newKey);
+    this.legacySymlinks.assertMutable(oldKey, ...(staleDestination ? [newKey] : []));
     this.assertParentDirectory(newPath, 'rename');
     if (this.vfs.exists(newPath)) {
       if (this.vfs.isDirectory(newPath)) throw fsError('EISDIR', 'rename', to);
       this.vfs.unlink(newPath);
     }
     this.vfs.symlink(linkTarget, newPath);
-    this.legacySymlinks.delete(oldPath);
-    if (staleDestination) this.legacySymlinks.delete(newPath);
+    this.legacySymlinks.delete(oldKey);
+    if (staleDestination) this.legacySymlinks.delete(newKey);
   }
 
   readlink(path: RuntimeFsPath): string | null {
@@ -460,14 +473,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located.mount) return located.mount.readlink(located.path);
     const p = located.path;
     if (this.vfs.isSymlink(p)) return this.vfs.readlink(p);
-    return this.legacySymlinks.readlink(p);
+    return this.legacySymlinks.readlink(this.legacyKey(p));
   }
 
   symlink(target: string, path: RuntimeFsPath): void {
     const located = this.locateMutation(path, false, 'symlink');
     if (located.mount) { located.mount.symlink(target, located.path); return; }
     const p = located.path;
-    if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(p)) {
+    if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
       throw fsError('EEXIST', 'symlink', path);
     }
     this.ensureParent(p);
@@ -479,23 +492,29 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // SqliteVFS writes are synchronously durable before their calls return.
   }
 
+  /**
+   * Every per-path revision here is the caller's: `p` is its own name for a
+   * path, and a confined caller's /tmp/x is its private file, whose revision
+   * is not the shared tmp/x's. The global clock is everyone's.
+   */
   revision(path?: RuntimeFsPath): number {
     if (path === undefined) return this.rawVfs.revision();
     const located = this.locate(path, true);
     if (located === null) throw fsError('ELOOP', 'revision', path);
-    return located.mount ? 0 : this.rawVfs.revision(located.path);
+    return located.mount ? 0 : this.vfs.revision(located.path);
   }
 
   acquire(epoch: string | null, cursor: number): VfsAcquireResult {
-    return this.rawVfs.invalidatedSince(epoch, cursor);
+    return this.vfs.invalidatedSince(epoch, cursor);
   }
 
   list(after?: string | null, limit?: number): VfsListPage {
     return this.vfs.list(after ?? null, limit);
   }
 
+  /** A watch in the caller's view: its files, under its names, only those it could list. */
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
-    return this.rawVfs.events.onPath(normalizeVfsPath(path), listener);
+    return this.vfs.subscribe(path, listener);
   }
 
   realpath(path: RuntimeFsPath): string {
@@ -581,7 +600,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         target = this.vfs.resolveSymlink(candidate);
         if (target === null) return null;
       } else if (!this.vfs.exists(candidate)) {
-        const legacyTarget = this.legacySymlinks.readlink(candidate);
+        const legacyTarget = this.legacySymlinks.readlink(this.legacyKey(candidate));
         target = legacyTarget === null
           ? null
           : legacyTarget.startsWith('/')
@@ -674,12 +693,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /**
-   * Run one mutation of storage path `p` and report its revision on either
-   * side, both read in the mutation's own synchronous turn: across an await
-   * either would report a peer's clock as ours.
+   * Run one mutation of path `p` and report its revision on either side,
+   * both read in the mutation's own synchronous turn: across an await either
+   * would report a peer's clock as ours.
    */
   private receipted(p: string, mutate: () => void): VfsMutationReceipt {
-    const before = this.rawVfs.revision(p);
+    const before = this.vfs.revision(p);
     mutate();
     return { before, after: this.rawVfs.revision() };
   }
@@ -692,7 +711,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   private assertExpectedRevision(path: string, expectedRevision: number | undefined): void {
     if (expectedRevision === undefined) return;
-    if (expectedRevision !== this.rawVfs.revision(path)) {
+    if (expectedRevision !== this.vfs.revision(path)) {
       throw fsError('ESTALE', 'write', `revision ${expectedRevision}`);
     }
   }

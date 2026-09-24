@@ -40,9 +40,9 @@
  *   indexes it by path and by parent, so no walk needs the whole tree
  * - File content demand-paged through LRU cache
  */
-import { VfsEventEmitter } from './events.js';
+import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type VfsCred, type VfsAcquireResult, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -146,6 +146,26 @@ export interface CredentialedVfs {
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
     /**
+     * The paths mutated since `cursor`, each under this credential's own name
+     * for it, and without the paths it has no name for (see
+     * SqliteVFS.invalidatedSince).
+     */
+    invalidatedSince(epoch: string | null, cursor: number): VfsAcquireResult;
+    /**
+     * The key storage holds `path` under for this credential: a confined
+     * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
+     * rather than by name, such as the legacy symlink registry. It is not a
+     * name the caller uses, so it is never reported back to one.
+     */
+    storageKey(path: string): string;
+    /**
+     * Watch `path` and everything under it, in this credential's view: the
+     * watch is on the file its name means (a confined caller's /tmp/x is its
+     * own), and an event is delivered under the caller's name for its path,
+     * only if the caller could list that path (see SqliteVFS.invalidatedSince).
+     */
+    subscribe(path: string, listener: (event: VfsEvent) => void): () => void;
+    /**
      * This VFS incarnation's identity. Paired with `revision()` it is the
      * cache-coherence cursor a facet is stamped with when its bundle is built,
      * so the facet's first ACQUIRE is an ordinary delta. Without the pairing a
@@ -229,6 +249,7 @@ export declare class SqliteVFS {
     private _invalidations;
     private _invalidationBytes;
     private static readonly INVALIDATION_LOG_MAX_BYTES;
+    private removedForEvents;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch(): string;
     private readonly exclusiveMutationLeases;
@@ -425,20 +446,48 @@ export declare class SqliteVFS {
      * that derive a key before handing it on cannot stack the rewrite.
      */
     private storageKey;
+    /** {@link storageKey} of a name already normalized, under a principal's private root. */
+    private keyOfName;
+    /**
+     * The name a credential uses for `path`, whichever spelling it came in: a
+     * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
+     * root's storage key. One name per file is what lets resolution walk the
+     * caller's view rather than storage.
+     */
+    private nameOf;
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
-     * none. The inverse of {@link storageKey}, for the one surface that reports
-     * paths it was not asked about: {@link list}.
+     * none. The inverse of {@link storageKey}, for the surfaces that report
+     * paths they were not asked about: {@link list}, {@link invalidatedSince}
+     * and watches.
      *
-     * A confined caller has no name for the shared scratch tree — `/tmp` is its
-     * own root — nor for another principal's, so both answer `null` and are
-     * omitted. An unconfined caller sees storage as it is, which is what the
-     * kernel and the session user need.
+     * A confined caller has no name for the shared scratch tree: `/tmp` is its
+     * own root. Another principal's private root does have a name, its storage
+     * path, and what keeps what is inside it out of those reports is its mode,
+     * which the caller cannot traverse (hiddenBehind, watchedName). An
+     * unconfined caller sees storage as it is, which is what the kernel and the
+     * session user need.
      */
     private logicalPath;
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
+    /**
+     * Walk `path` to its inode, following links, in the caller's own names.
+     *
+     * Every prefix is a name the caller could have written, and only its lookup
+     * goes to storage. A link's target is read the way the caller reads it: a
+     * relative one against the link's directory as the caller names it, an
+     * absolute one as a path of the caller's own. So whatever a link says, it
+     * lands where the caller naming that path directly would.
+     *
+     * Walking storage keys instead read a relative target against the key: a
+     * confined caller's `/tmp/out -> ../../../../tmp/x` climbed out of its
+     * private root (var/agents/<p>/tmp) and reached the SHARED tmp/x, and a link
+     * to `/` let the rest of any path continue into the shared tree.
+     *
+     * `path` is the storage key the walk ends at, `name` the caller's name for it.
+     */
     private resolvePath;
     private checkAccess;
     private checkParentAccess;
@@ -526,13 +575,48 @@ export declare class SqliteVFS {
      * later write to the same path reports a HIGHER revision and still
      * invalidates. A name alone cannot separate those two, and the difference
      * between them is a whole resident set thrown away on every flush.
+     *
+     * A directory that was removed, renamed away, or given another mode, owner
+     * or group is reported `structural`: what a reader holds under it may be
+     * stale, or no longer the reader's to be served, so it evicts everything at
+     * or under it. That is also what stops a store serving the rows under a
+     * directory its reader has just been locked out of.
+     *
+     * With a credential, each path is the caller's own name for it, the one
+     * `list()` reports it under: a confined caller's private /tmp/x is tmp/x.
+     * A path it has no name for, such as the shared tmp/x, is outside its view
+     * and left out. A path it has a name for but may not see is never left
+     * out: it is reported as the nearest directory above it that the caller
+     * may see, `subtree`-scoped (hiddenBehind), and the reader evicts
+     * everything at or under that directory. So no name is reported that the
+     * caller could not list now, and no change to a row it could have filled
+     * goes unreported. Entries naming one path are merged, so a hidden
+     * `rm -rf` costs one entry.
      */
-    invalidatedSince(epoch: string | null, cursor: number): {
-        epoch: string;
-        rev: number;
-        paths: VfsInvalidatedPath[];
-        poison: boolean;
-    };
+    invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult;
+    /**
+     * The directory above `name` that stands between the caller and it, if
+     * any: the highest that the caller may not enter now, or whose place went
+     * at or after `rev` (removed or renamed away, so the entry names a path
+     * that is no longer there, whatever stands at that name now). Null when
+     * there is none: the caller may see `name` itself. The caller may see
+     * whatever is returned, since every directory above it passed.
+     */
+    private hiddenBehind;
+    /** The highest directory at or above `dir` that the caller may not enter now, or null. */
+    private closedAbove;
+    /**
+     * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
+     * cache, so an event it may not see is simply not delivered.
+     */
+    private subscribe;
+    /**
+     * The caller's name for an event's path, if it may see it: every
+     * directory above it enterable. A directory the same mutation removed is
+     * judged as it was, so a removed tree the caller could see into is heard
+     * entry by entry, and one it could not, only at its top.
+     */
+    private watchedName;
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
@@ -545,6 +629,7 @@ export declare class SqliteVFS {
     private writeFile;
     private symlink;
     private readlink;
+    /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     /** Read one chunk via cache → SQL, caching on miss. */
     private readChunk;
@@ -781,6 +866,12 @@ export declare class SqliteVFS {
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
+    /**
+     * Deliver a mutation's events while the directories it removed are still
+     * known by their modes (watchedName). Inside an embedder transaction the
+     * events wait for its publication, and so do the directories.
+     */
+    private deliverEvents;
     private emitMutation;
     private transactionSync;
     /**

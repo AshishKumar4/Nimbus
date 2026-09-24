@@ -196,15 +196,27 @@ function __residentAdmit(result) {
       // and is kept — read-your-writes survives a peer's mutation of the same
       // path, and the report is adjudicated when the write's own revision
       // arrives (the shims note it for the ledger before admitting).
-      let held = false, stamped = 0;
-      for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-        held = true; stamped = Number(row.rev);
+      //
+      // A subtree-scoped or structural entry covers every row at or under its
+      // path, each judged the same way: something beneath it this facet may
+      // not see changed, or the directory went, or who may enter it did. A
+      // row there may be stale, or no longer this facet's to be served.
+      const covered = entry.subtree || entry.structural
+        ? [...sql.exec(
+          "SELECT path, rev FROM file WHERE path = ? OR (path > ? AND path < ?)",
+          path, path + "/", path + "0",
+        )]
+        : [...sql.exec("SELECT path, rev FROM file WHERE path = ?", path)];
+      for (const row of covered) {
+        const stamped = Number(row.rev);
+        if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) {
+          if (row.path === path) kept++;
+          continue;
+        }
+        sql.exec("DELETE FROM chunk WHERE path = ?", row.path);
+        sql.exec("DELETE FROM file WHERE path = ?", row.path);
+        dropped.push(String(row.path));
       }
-      if (!held) continue;
-      if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) { kept++; continue; }
-      sql.exec("DELETE FROM chunk WHERE path = ?", path);
-      sql.exec("DELETE FROM file WHERE path = ?", path);
-      dropped.push(path);
     }
   }
   const epoch = result && result.epoch != null ? String(result.epoch) : null;

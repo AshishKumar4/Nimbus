@@ -611,6 +611,20 @@ function __nimbusNoteVfsReport(key, revision) {
 }
 
 /**
+ * `__nimbusNoteVfsReport` for a report that covers a subtree: a
+ * subtree-scoped or structural delta entry, which stands for changes at or
+ * under `prefix` that it does not name. Every path there that one of this
+ * facet's own writes or mutations is in flight for gets the report.
+ */
+function __nimbusNoteVfsReportUnder(prefix, revision) {
+  const under = prefix + "/";
+  const keys = new Set([...Object.keys(__vfsOwnLeases), ...Object.keys(__vfsWrites)]);
+  for (const key of keys) {
+    if (key === prefix || key.startsWith(under)) __nimbusNoteVfsReport(key, revision);
+  }
+}
+
+/**
  * End one own-mutation lease, and settle the stamp when it was the last.
  *
  * The receipt carries the path's revision on either side of the mutation,
