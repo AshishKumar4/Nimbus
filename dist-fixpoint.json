@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6bbced7f768d9889bec13c08077c4a04c62bb02150b48384af5c0d9076b0a1f4",
+  "fingerprint": "7d76d5e7bbd6c14f2d7f0e7d3ab7d2e2451202feeeed1a54c866cf1cec23e20b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -896,8 +896,8 @@
     "packages/core/dist/workspace/supervisor-op.d.ts": "6a2be659234147f605931b0a1ae5de7966ec567f187d8f7e23f768dae165667e",
     "packages/core/dist/workspace/supervisor-op.d.ts.map": "fe8946d94983982d831e8e1f5575b2b36ca1e0fcbb4bddf05aa84ff8fde143a1",
     "packages/core/dist/workspace/supervisor-op.js": "363e37d207b2f69ae3afaac51240bda9f91565a5662fda9c1dc491a6fb2f49df",
-    "packages/core/package.json": "6e7db789571d7696b614548bd2013ee0800e49ad33fa8d69b38e208ec308df45",
-    "packages/core/scripts/check-runtime-packages.mjs": "8dbee93d38837c5346429803ca53dad3a55099065b138680eed51e699884f394",
+    "packages/core/package.json": "753a0966339476e70a811a3aba5d3619cb7c6c94b6e2a01e07423b40df9f63cd",
+    "packages/core/scripts/check-runtime-packages.mjs": "609035cf8d54cf7f29ce62ead9cc5932ff41950da828786bc3d0d48a3bbfdae9",
     "packages/core/src/_shared/ai-egress.ts": "d44aa6cebc8a61218cc9067f6c74003110ffb02530c5f842d36d497b59f60ff8",
     "packages/core/src/_shared/byte-stream.ts": "21df7038a653460c45901a3a70af26a0baa00226eb58164a5bf245ee1c610538",
     "packages/core/src/_shared/bytes.ts": "a63447a99752a1a48dbd71e228a266be16fc1749fffdc49867c19cc24aeddb3e",

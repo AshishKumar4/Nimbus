@@ -174,6 +174,7 @@ runtime joins the npm set by gaining an `npm` entry in its spec
 because they are workerd's `nodejs_compat` rather than an artifact to ship.
 
 Release runtimes first, then core. Core's `prepublishOnly` runs
+`scripts/dist-integrity.mjs` (dist must be the fixpoint of src), then
 `packages/core/scripts/check-runtime-packages.mjs`, which builds each npm
 runtime package and refuses the core publish unless the registry has that
 version, with the same `manifest.json`, as `dist-tags.latest`, and the core

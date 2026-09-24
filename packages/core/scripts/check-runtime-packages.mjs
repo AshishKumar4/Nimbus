@@ -20,7 +20,8 @@
  *
  * Each failure prints the command that fixes it; the exit status is non-zero.
  * Run under node, `@nimbus-sh/core` resolves to dist — what the tarball
- * ships; under bun (the unit test) it resolves to src.
+ * ships, which `prepublishOnly` first proves is the committed fixpoint of src
+ * with scripts/dist-integrity.mjs. Under bun (the unit test) it resolves to src.
  */
 
 import { createHash } from 'node:crypto';
@@ -29,7 +30,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { gunzipSync } from 'node:zlib';
+import { readableStreamToAsyncIterable, streamPackageEntries } from '@nimbus-sh/core/_shared/tarball-stream.js';
 
 const WORKER = fileURLToPath(new URL('../../worker/', import.meta.url));
 
@@ -100,30 +101,13 @@ export function npmRegistry(base = 'https://registry.npmjs.org') {
     async manifestSha256(record) {
       const response = await fetch(record.dist.tarball);
       if (!response.ok) throw new Error(`GET ${record.dist.tarball}: HTTP ${response.status}`);
-      const tar = gunzipSync(Buffer.from(await response.arrayBuffer()));
-      return sha256(tarMember(tar, 'package/manifest.json'));
+      const tar = response.body.pipeThrough(new DecompressionStream('gzip'));
+      for await (const entry of streamPackageEntries(readableStreamToAsyncIterable(tar))) {
+        if (entry.name === 'manifest.json') return sha256(entry.data);
+      }
+      throw new Error(`${record.dist.tarball} carries no manifest.json`);
     },
   };
-}
-
-/** One regular file out of a ustar archive, by path. */
-function tarMember(tar, path) {
-  const text = (start, length) => {
-    const field = tar.subarray(start, start + length);
-    const end = field.indexOf(0);
-    return field.subarray(0, end < 0 ? length : end).toString('utf8');
-  };
-  for (let offset = 0; offset + 512 <= tar.length;) {
-    const name = text(offset, 100);
-    if (!name) break;
-    const size = Number.parseInt(text(offset + 124, 12).trim() || '0', 8);
-    const prefix = text(offset + 345, 155);
-    if ((prefix ? `${prefix}/${name}` : name) === path) {
-      return tar.subarray(offset + 512, offset + 512 + size);
-    }
-    offset += 512 + Math.ceil(size / 512) * 512;
-  }
-  throw new Error(`${path} is not in the tarball`);
 }
 
 /** Install the package at `dir` through the core `@nimbus-sh/core` resolves to. */
