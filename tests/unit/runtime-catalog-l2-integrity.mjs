@@ -129,7 +129,9 @@ function installCache() {
         const bytes = await res.arrayBuffer();
         store.set(req.url, new Response(bytes, { status: res.status, headers: res.headers }));
       },
+      // A purge lands some time after it is asked for, as the platform's does.
       async delete(req) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
         return store.delete(req.url);
       },
     },
@@ -271,6 +273,19 @@ for (const url of Object.values(keys)) {
   await fillSettled();
   assert.equal(sha(new Uint8Array(await store.get(keys.blob).clone().arrayBuffer())), sha(HONEST_BLOB),
     'the evicted entry was not refilled from R2');
+}
+
+// A key poisoned again as soon as it is purged: the second read must not go
+// back to the cache at all.
+{
+  const store = installCache();
+  const r2 = honestR2();
+  poison(store, keys.blob, ATTACKER_BLOB);
+  globalThis.caches.default.delete = async () => true;
+
+  const bytes = await installed(envWith(r2), JSON.parse(honestManifestText));
+
+  assert.equal(text(bytes), text(HONEST_BLOB), 'a re-poisoned L2 blob refused or changed the install');
 }
 
 // ── 3b. An honest blob in L2 is served from L2, in one read ────────────

@@ -166,8 +166,9 @@ export async function fetchManifest(env, entry) {
  * digest that same entry carries: from the colo cache when it has it, else
  * from R2, read once either way. The stream errors at its end, rather than
  * closing, with a {@link RuntimeBlobDigestMismatch} when its bytes do not
- * hash to the digest; a colo-cache entry that fails is evicted first, so the
- * installer's second read of that blob comes from R2. The installer commits
+ * hash to the digest; a colo-cache entry that fails is evicted and
+ * distrusted first, so the installer's second read of that blob comes from
+ * R2 whatever the cache holds by then. The installer commits
  * a blob only after that clean close, so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
@@ -180,10 +181,11 @@ export async function fetchBlob(env, file) {
     if (!address) {
         throw new Error(`manifest entry ${file.path} has no usable sha256 (${file.sha256})`);
     }
-    const cached = await l2GetBody(address);
+    const cached = l2Distrusted.has(address.sha256) ? null : await l2GetBody(address);
     if (cached) {
-        return verifiedRead(address, cached, null, (actual) => {
-            l2Evict(address);
+        return verifiedRead(address, cached, null, async (actual) => {
+            l2Distrusted.add(address.sha256);
+            await l2Evict(address);
             return `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, `
                 + `the colo cache held ${actual} and was evicted`;
         });
@@ -222,7 +224,7 @@ function verifiedRead(address, body, fill, mismatch) {
                 if (next.done) {
                     const actual = await digest.hex();
                     if (actual !== address.sha256)
-                        throw new RuntimeBlobDigestMismatch(mismatch(actual));
+                        throw new RuntimeBlobDigestMismatch(await mismatch(actual));
                     fill?.close().catch(() => { });
                     controller.close();
                     return;
@@ -372,7 +374,7 @@ async function l2Put(verified, contentType) {
 /**
  * The body of the blob entry at `address`, or null on a miss or a stripped
  * Cache API. Unverified: served only through {@link verifiedRead}, whose
- * mismatch evicts it. Hashing an entry before serving it would read every
+ * mismatch evicts it and sends later reads of that blob to R2. Hashing an entry before serving it would read every
  * blob from the cache twice, which was most of an install's time.
  */
 async function l2GetBody(address) {
@@ -387,11 +389,17 @@ async function l2GetBody(address) {
         return null;
     }
 }
-/** Drop the entry at `address`, so the next read of it goes to R2. */
-function l2Evict(address) {
+/**
+ * Blob digests whose colo-cache entry failed verification in this isolate.
+ * Their reads go to R2 from then on: a purge lands some time after it is
+ * asked for, and a shared cache can be poisoned again, so the installer's
+ * second read of a failed blob must not depend on either.
+ */
+const l2Distrusted = new Set();
+/** Drop the entry at `address` from the colo cache for other isolates. */
+async function l2Evict(address) {
     try {
-        const caches = globalThis.caches;
-        caches?.default?.delete(new Request(l2Url(address))).catch(() => { });
+        await globalThis.caches?.default?.delete(new Request(l2Url(address)));
     }
     catch { /* best-effort */ }
 }
