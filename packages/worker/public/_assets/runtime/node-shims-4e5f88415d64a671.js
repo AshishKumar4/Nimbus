@@ -1877,10 +1877,15 @@ const __fsMod = (() => {
    * arrive together — and both deltas name the same changed path. The first
    * to land evicts it and starts the refetch; the second finds no row and
    * would release its callback while that refetch is still in flight, onto
-   * a miss. So a barrier also refetches every path another barrier is still
-   * refetching, under its own cursor, and waits for it.
+   * a miss. So a barrier also waits for every refetch still in flight.
+   * It does not read those paths again. A refetch in flight installs its
+   * bytes unless a barrier has since reported the path above the cursor it
+   * was issued under, or a poison spoiled it (_installResident). Only then
+   * does a later barrier read the path itself, and only if nothing holds it
+   * by now. Re-reading every in-flight path at every resumption cost a dev
+   * server 50 reads per request while a peer's refetch of 50 files ran: 500
+   * reads over ten resumptions, and under steady load the set never drained.
    */
-  const _refetching = new Map();
   async function _acquireAndRefetch(supervisor) {
     const stale = await _acquireBarrier(supervisor);
     // Plus what an own-mutation lease dropped since the last resumption:
@@ -1890,18 +1895,38 @@ const __fsMod = (() => {
       for (const k of _owedRefetch) if (stale.indexOf(k) === -1) stale.push(k);
       _owedRefetch.clear();
     }
-    for (const k of _refetching.keys()) if (stale.indexOf(k) === -1) stale.push(k);
-    if (stale.length === 0) return;
-    for (const k of stale) _refetching.set(k, (_refetching.get(k) || 0) + 1);
-    try {
-      await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
-    } finally {
-      for (const k of stale) {
-        const left = _refetching.get(k) - 1;
-        if (left > 0) _refetching.set(k, left);
-        else _refetching.delete(k);
-      }
+    // Taken before this barrier's own refetches join the map.
+    const inFlight = [..._refetching];
+    const reads = stale.map(_refetch);
+    for (const [k, refetch] of inFlight) {
+      if (stale.indexOf(k) !== -1) continue;
+      if (!(refetch.fill.record.reported > refetch.fill.rev)) reads.push(refetch.done);
+      else if (!(__vfsBundle && k in __vfsBundle)) reads.push(_refetch(k));
     }
+    if (reads.length > 0) await Promise.all(reads);
+  }
+
+  /**
+   * Refetches in flight, per path: the newest read of it, and the fill
+   * ticket that read installs under — the cursor it was issued at, and the
+   * reports noted against it since.
+   */
+  const _refetching = new Map();
+
+  /**
+   * Read `k` live and install it, behind the barrier just taken. Settles
+   * either way: a refetch that fails leaves the path missing, which the next
+   * read of it answers.
+   */
+  function _refetch(k) {
+    const fill = _beginFill(k);
+    const refetch = { fill, done: null };
+    refetch.done = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).finally(() => {
+      _endFill(fill);
+      if (_refetching.get(k) === refetch) _refetching.delete(k);
+    });
+    _refetching.set(k, refetch);
+    return refetch.done;
   }
 
   /**
@@ -2401,16 +2426,17 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts, skipAcquire) {
+  async function _liveReadFile(p, opts, refetch) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
-    // The refetch step of _acquireAndRefetch has already acquired against a
-    // fresh cursor, so re-acquiring here would be a redundant round trip
-    // that always returns "still R". Every other caller acquires.
-    if (!skipAcquire) await _acquireBarrier(supervisor);
-    const fill = _beginFill(_strip(absPath));
+    // A refetch (_refetch) has already acquired against a fresh cursor and
+    // holds the fill ticket issued under it, so re-acquiring here would be a
+    // redundant round trip that always returns "still R". Every other caller
+    // acquires, and its fill ticket is its own.
+    if (!refetch) await _acquireBarrier(supervisor);
+    const fill = refetch || _beginFill(_strip(absPath));
     try {
       if (typeof supervisor.fsReadRange === "function") {
         // Chunked: the caller wants the whole file, but nothing upstream has
@@ -2452,7 +2478,7 @@ const __fsMod = (() => {
         }
       }
     } finally {
-      _endFill(fill);
+      if (!refetch) _endFill(fill);
     }
 
     throw _fsErr("ENOENT", "open", p);
