@@ -65,4 +65,17 @@ function createHost() {
   assert.equal(host.processes.allLogs(entry.pid)[0].data, 'first\nsecond\n');
 }
 
+// A process that has exited no longer owns the shell. Seen on staging: a
+// one-shot's spinner interval kept firing after process.exit(1), and its
+// frames reached the terminal after the prompt was drawn.
+{
+  const { host, writes } = createHost();
+  const entry = host.processes.spawn('node cli.js', [], '/home/user');
+  await _rpcStdout(host, entry.pid, bytes('Template copying...\n'));
+  host.processes.exit(entry.pid, 1);
+  await _rpcStdout(host, entry.pid, bytes('Template copying...\n'));
+  await _rpcStderr(host, entry.pid, bytes('late\n'));
+  assert.deepEqual(writes, ['Template copying...\r\n'], 'nothing after the exit reaches the shell');
+}
+
 console.log('process-terminal-line-endings: ok');

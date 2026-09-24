@@ -683,6 +683,10 @@ function shouldMirrorProcessOutputToShell(self, pid) {
     // the prompt).
     if (!entry)
         return false;
+    // An exited process's straggling writes (a timer still firing in its facet)
+    // would land after the shell's prompt.
+    if (entry.state !== 'running')
+        return false;
     return entry.attachedTty !== true && entry.foreground !== true;
 }
 /**

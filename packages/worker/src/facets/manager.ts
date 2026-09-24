@@ -450,6 +450,14 @@ const ENTRYPOINT_TIMER_TRACKER = `
     g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
     g.clearInterval = function(id){ if (iv.delete(id)) g.__nimbusPendingTimers--; return ci(id); };
   }
+  // process.exit: the program's pending timers and intervals never fire again.
+  g.__nimbusStopProgramTimers = function(){
+    for (const id of one) ct(id);
+    one.clear();
+    if (typeof ci === "function") for (const id of iv) ci(id);
+    iv.clear();
+    g.__nimbusPendingTimers = 0;
+  };
 })(globalThis);
 `;
 
@@ -660,13 +668,13 @@ ${RESIDENCY_MISS_REPORT}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
+      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
+      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -709,6 +717,12 @@ ${RESIDENCY_MISS_REPORT}
           try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
         }
       }
+    }
+    // A program that ended without process.exit still gets its 'exit' event.
+    if (__nimbusProcessExitCode === null) {
+      __nimbusEmitExit(exitCode);
+      if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+      __nimbusProgramStopped = true;
     }
 
     async function __drainPendingIO(maxPasses = 12) {
@@ -1087,13 +1101,13 @@ ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
 
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
+      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
+      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -1209,6 +1223,11 @@ ${RESIDENCY_MISS_REPORT}
           }
         } else {
           finalCode = Number(await __nimbusProcessExitPromise);
+        }
+        if (__nimbusProcessExitCode === null) {
+          __nimbusEmitExit(finalCode);
+          if (__nimbusProcessExitCode !== null) finalCode = __nimbusProcessExitCode;
+          __nimbusProgramStopped = true;
         }
         await __nimbusFlushRuntime();
         await __nimbusReportFinalExit(finalCode, "");
