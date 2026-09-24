@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a018201b770d2c1d16e5ba40a177a64f0cbd6040c27dd0d651cd5590b5a00282",
+  "fingerprint": "3763f76a94aef4e29a9fc48d062dcbbd2693569739ba2e0a1d01bbc7090f56b2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -144,8 +144,8 @@
     "packages/core/dist/runtime/esbuild-service.d.ts.map": "4382e1b578d505be27debf9fa8452d75e9f6722bf491b5d92fc03ce58c276e37",
     "packages/core/dist/runtime/esbuild-service.js": "3a15a93bdf5a56603d57ac507a836c6ee288b96f47435beb8ca83317612c1c3e",
     "packages/core/dist/runtime/exec-stream.d.ts": "0f32b7807fdbd07ba2a4e0a9772dea7cb83e1d4aea461dcffe910c72ed120631",
-    "packages/core/dist/runtime/exec-stream.d.ts.map": "015f67a0b130e2c6d8c6e50c22de9f26e2f5ed5b3efba9ca39de2be7c6fef1ad",
-    "packages/core/dist/runtime/exec-stream.js": "b1c493e088deae33b93ad5e08c7db31456e7e89178fb76f6d538c3a316e3a799",
+    "packages/core/dist/runtime/exec-stream.d.ts.map": "5fe33ddc93c275a5eccf22db37c59c8558f3f9737859e65c5421fc3d80c948dd",
+    "packages/core/dist/runtime/exec-stream.js": "1fd56d23e2ed50b2a9aed9148816f928ac6d56d796a4d4e230c93ff4f6edfad9",
     "packages/core/dist/runtime/facet-host.d.ts": "0374ef25d275f9d64f4d0b1e0a3d723e12f731798674635862867d661b5d3a0a",
     "packages/core/dist/runtime/facet-host.d.ts.map": "886ee5b8be1bc55453aa9c79a35eff076624e0380f059b56d2ddfc29fd6029d6",
     "packages/core/dist/runtime/facet-host.js": "9f65d1563fcf53b1e7e3db691a5db7332ef775d76e65f18cee0cd95dcabce2f5",
@@ -939,7 +939,7 @@
     "packages/core/src/runtime/esbuild-cli/preamble.ts": "e63b07576bf740add3a0dae17ea3c8b624efaa9ba1731da8b0ec5ac61c730deb",
     "packages/core/src/runtime/esbuild-cli/types.ts": "87316fb7937f8a0536be666f144f7319e4884540604dd02c7e8af07adac87599",
     "packages/core/src/runtime/esbuild-service.ts": "f549d726db1d11de94c98e3b3753d5593780fa9be20e9e6eced0f4bbf2aab9fa",
-    "packages/core/src/runtime/exec-stream.ts": "55d083ff371ee053d3fc357250ed990132e7140e1993ecb2b8bc259c62f1216f",
+    "packages/core/src/runtime/exec-stream.ts": "7d5d94eb140adeeb6f1afdeea016bf49d5d9b74fc698f5673a6ad268426231a9",
     "packages/core/src/runtime/facet-host.ts": "8516e0312228140c2b0ff7dfc5cc8d76e8b959a36fb2c7a2f8820a57b630ab39",
     "packages/core/src/runtime/filesystem-authority.ts": "1645803ca7f6ae05336a94d7755a25a6bd8399ebf1e8842b6f69a6d181dca3e1",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",

@@ -14,7 +14,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
+import { collectExecStream, decodeExecStream, encodeExecStream } from '../../packages/core/src/runtime/exec-stream.ts';
 import { rpcExec, rpcExecStream } from '../../packages/worker/src/session/programmatic.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
@@ -178,6 +178,21 @@ const SEQ_2M_BYTES = 14_888_896;
 
   await assert.rejects(box.execStream('pwd', { shellId: '!bad' }),
     'a refused call rejects execStream itself, before any stream exists');
+}
+
+// ── A malformed exit or error frame fails the stream; it never hangs ───────
+for (const [kind, payload] of [[3, '{"exitCode":'], [3, '{"exitCode":"0"}'], [4, 'not json'], [4, '{}']]) {
+  const body = new TextEncoder().encode(payload);
+  const bytes = new Uint8Array(5 + body.byteLength);
+  bytes[0] = kind;
+  new DataView(bytes.buffer).setUint32(1, body.byteLength);
+  bytes.set(body, 5);
+  const wire = new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } });
+  const outcome = await Promise.race([
+    collectExecStream(decodeExecStream(wire)).then(() => 'resolved', () => 'rejected'),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 1000)),
+  ]);
+  assert.equal(outcome, 'rejected', `frame kind ${kind} with payload ${payload}`);
 }
 
 console.log('exec-stream: all assertions passed');
