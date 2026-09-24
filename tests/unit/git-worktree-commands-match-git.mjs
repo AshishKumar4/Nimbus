@@ -3,10 +3,10 @@
 // git on this machine prints for the same repository: the same bytes on
 // stdout, the same exit code. Each scenario is built on disk with real git,
 // mirrored into a SqliteVFS (its .git included), and both gits run the same
-// command in the same state. Symlinks and type changes are part of it. The
-// edits are chosen so the minimal diff is unique; where it is not, git's
-// hunk placement is not a contract, and unified-diff-applies.mjs holds the
-// patches to `git apply` instead.
+// command in the same state. Symlinks, type changes and renames are part of
+// it. The edits are chosen so the minimal diff is unique; where it is not,
+// git's hunk placement is not a contract, and unified-diff-applies.mjs holds
+// the patches to `git apply` instead.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -285,6 +285,84 @@ try {
     await same(`diff --stat at ${columns} columns`, { disk: wide, virtual: `${vfsRoot}/wide` }, ['diff', '--stat'],
       { env: { COLUMNS: columns } });
   }
+
+  // ── Renames: exact (ties go to the same basename, then path order), unique basenames, then similarity ──
+  const moves = join(diskRoot, 'renames');
+  const moved = { disk: moves, virtual: `${vfsRoot}/renames` };
+  const write = (path, content, mode) => {
+    mkdirSync(join(moves, path, '..'), { recursive: true });
+    writeFileSync(join(moves, path), content);
+    if (mode) chmodSync(join(moves, path), mode);
+  };
+  const padded = (prefix, from, to) => Array.from({ length: to - from + 1 }, (_, i) => `${prefix} ${String(from + i).padStart(2, '0')}\n`).join('');
+  const binary = Buffer.concat(Array.from({ length: 50 }, () => Buffer.from('bin\0ary\0data')));
+  mkdirSync(moves);
+  sh(moves, ['init', '-q', '-b', 'main']);
+  write('old-name.txt', 'x\n');
+  write('moved.txt', seq(1, 30));
+  for (const path of ['a/dup.txt', 'b/dup.txt', 'c/other.txt']) write(path, 'same\n');
+  write('empty1', '');
+  symlinkSync('target', join(moves, 'lnk'));
+  write('mode.sh', 'm\n', 0o644);
+  write('sp ace.txt', 'spaces\n');
+  write('blob.bin', binary);
+  write('small.txt', seq(1, 10));
+  // src/util.js keeps 16 of lib/util.js's 20 lines (80%) and 19 of lib/helpers.js's (95%).
+  write('lib/util.js', padded('common', 1, 16) + padded('u-only', 1, 4));
+  write('lib/helpers.js', padded('common', 1, 16) + padded('h-only', 1, 4));
+  write('crlf.txt', padded('line', 1, 10).replaceAll('\n', '\r\n'));
+  sh(moves, ['add', '-A'], ['commit', '-q', '-m', 'seed']);
+  sh(moves, ['mv', 'old-name.txt', 'new-name.txt']);
+  mkdirSync(join(moves, 'sub'));
+  sh(moves, ['mv', 'moved.txt', 'sub/moved.txt']);
+  write('sub/moved.txt', seq(1, 29));
+  sh(moves, ['rm', '-q', 'a/dup.txt', 'b/dup.txt', 'c/other.txt', 'empty1', 'lnk', 'mode.sh', 'sp ace.txt',
+    'blob.bin', 'small.txt', 'lib/util.js', 'lib/helpers.js', 'crlf.txt']);
+  write('d/dup.txt', 'same\n');
+  write('e/x.txt', 'same\n');
+  write('empty2', '');
+  symlinkSync('target', join(moves, 'lnk2'));
+  write('mode2.sh', 'm\n', 0o755);
+  write('q"uote.txt', 'spaces\n');
+  write('blob2.bin', Buffer.concat([binary, Buffer.from('more')]));
+  write('small2.txt', seq(1, 3));
+  write('src/util.js', padded('common', 1, 16) + padded('h-only', 1, 3) + padded('s-only', 1, 1));
+  write('lf.txt', padded('line', 1, 10));
+  sh(moves, ['add', '-A']);
+  // In the worktree the renamed file keeps exactly half of its source: 50%, the default bar itself.
+  write('new-name.txt', 'x\ny\n');
+  mirror(moves, moved.virtual);
+  for (const args of [
+    ['diff', '--cached'],
+    ['diff', '--cached', '--name-status'],
+    ['diff', '--cached', '-z', '--name-status'],
+    ['diff', '--cached', '--name-only'],
+    ['diff', '--cached', '--stat'],
+    ['diff', 'HEAD'],
+    ['diff', 'HEAD', '--name-status'],
+    ['diff', 'HEAD', '--stat'],
+    ['diff', '--name-status'],
+    ['diff', '--cached', '--no-renames', '--name-status'],
+    ['diff', '--cached', '-M', '--name-status'],
+    ['diff', '--cached', '-M0', '--name-status'],
+    ['diff', '--cached', '-M7', '--name-status'],
+    ['diff', '--cached', '-M90%', '--name-status'],
+    ['diff', '--cached', '--find-renames=100%', '--name-status'],
+    ['diff', '--cached', '--name-status', '--', 'sub', 'lib', 'src'],
+  ]) await same(args.join(' '), moved, args);
+  await same('diff --cached --stat at 40 columns', moved, ['diff', '--cached', '--stat'], { env: { COLUMNS: '40' } });
+
+  // Past diff.renameLimit squared candidate pairs git skips the similarity pass, and says so.
+  const crowd = join(diskRoot, 'crowd');
+  mkdirSync(crowd);
+  sh(crowd, ['init', '-q', '-b', 'main']);
+  for (let i = 1; i <= 1001; i++) writeFileSync(join(crowd, `old${i}`), `old ${i}\n`);
+  sh(crowd, ['add', '-A'], ['commit', '-q', '-m', 'c'], ['rm', '-q', '-r', '.']);
+  for (let i = 1; i <= 1001; i++) writeFileSync(join(crowd, `new${i}`), `new ${i}\n`);
+  sh(crowd, ['add', '-A']);
+  mirror(crowd, `${vfsRoot}/crowd`);
+  await same('diff --cached --name-status past the rename limit', { disk: crowd, virtual: `${vfsRoot}/crowd` },
+    ['diff', '--cached', '--name-status'], { stderr: true });
 
   // ── Symlinks committed through Nimbus stay links: real git reads back the tree it would have made ──
   const links = join(diskRoot, 'links');

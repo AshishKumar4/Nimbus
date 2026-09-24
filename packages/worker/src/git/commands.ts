@@ -16,16 +16,20 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
+  DEFAULT_RENAME_SCORE,
   absentSpec,
   bytesFromBinary,
+  detectRenames,
   formatNameOnly,
   formatNameStatus,
   formatPatch,
   formatStat,
+  parseRenameScore,
   pathLine,
   statFile,
   type DiffPair,
   type DiffSpec,
+  type QueuedPair,
   type StatFile,
 } from './unified-diff.js';
 
@@ -710,16 +714,11 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, 
 }
 
 interface PendingSide {
+  path: string;
   oid: string;
   mode: number;
   /** Content lives in the worktree rather than the object store. */
   worktree: boolean;
-}
-
-interface PendingPair {
-  path: string;
-  one: PendingSide | null;
-  two: PendingSide | null;
 }
 
 /** What the worktree (or, `cached`, the index) is compared against. */
@@ -733,15 +732,15 @@ async function changedPairs(
   cache: object,
   base: DiffBase,
   specs: readonly string[],
-): Promise<PendingPair[]> {
-  const pairs: PendingPair[] = [];
-  const blob = async (entry: WalkerEntry | null, worktree: boolean): Promise<PendingSide | null> => (
-    entry && (await entry.type()) === 'blob' ? { oid: await entry.oid(), mode: await entry.mode(), worktree } : null
+): Promise<QueuedPair<PendingSide>[]> {
+  const pairs: QueuedPair<PendingSide>[] = [];
+  const blob = async (path: string, entry: WalkerEntry | null, worktree: boolean): Promise<PendingSide | null> => (
+    entry && (await entry.type()) === 'blob' ? { path, oid: await entry.oid(), mode: await entry.mode(), worktree } : null
   );
-  const record = (path: string, one: PendingSide | null, two: PendingSide | null) => {
+  const record = (one: PendingSide | null, two: PendingSide | null) => {
     if (!one && !two) return;
     if (one && two && one.oid === two.oid && one.mode === two.mode) return;
-    pairs.push({ path, one, two });
+    pairs.push({ one, two });
   };
   const trees = base.kind === 'index'
     ? [git.STAGE(), git.WORKDIR()]
@@ -752,18 +751,19 @@ async function changedPairs(
       const stageType = stage ? await stage.type() : undefined;
       if (stageType !== 'blob') return stageType === 'tree';
       // A missing file, or a directory where the file was, is a deletion.
-      record(path, await blob(stage, false), await blob(work, true));
+      record(await blob(path, stage, false), await blob(path, work, true));
       return false;
     }
     const [head, stage, work] = entries;
     const headType = head ? await head.type() : undefined;
     const stageType = stage ? await stage.type() : undefined;
     // diff-index: a path the index lacks is deleted whatever the worktree holds.
-    const two = stageType !== 'blob' ? null : base.cached ? await blob(stage, false) : await blob(work, true);
-    record(path, await blob(head, false), two);
+    const two = stageType !== 'blob' ? null : await blob(path, base.cached ? stage : work, !base.cached);
+    record(await blob(path, head, false), two);
     return headType === 'tree' || stageType === 'tree';
   });
-  return pairs.sort((a, b) => comparePaths(a.path, b.path));
+  const pathOf = (pair: QueuedPair<PendingSide>) => (pair.one ?? pair.two)!.path;
+  return pairs.sort((a, b) => comparePaths(pathOf(a), pathOf(b)));
 }
 
 type DiffFormat = 'patch' | 'stat' | 'name-only' | 'name-status';
@@ -847,12 +847,14 @@ async function diffNoIndex(
 
 const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
   + '   or: git diff --no-index [--] <path> <path>\n'
-  + 'options: --stat | --name-only | --name-status, -z, -U<n>\n';
+  + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 
 async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
   let cached = false;
   let noIndex = false;
   let dashdash = false;
+  // Renames are on by default, as with git's diff.renames; null turns them off.
+  let minimumScore: number | null = DEFAULT_RENAME_SCORE;
   const output: DiffOutput = {
     format: 'patch',
     z: false,
@@ -879,12 +881,23 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
       output.context = Number(context[1]);
       continue;
     }
+    const findRenames = /^(?:-M|--find-renames(?:=|$))(.*)$/.exec(arg);
+    if (findRenames) {
+      const score = parseRenameScore(findRenames[1]);
+      if (score === null) {
+        await ctx.stderr.write(`error: invalid argument to find-renames\n${DIFF_USAGE}`);
+        return 129;
+      }
+      minimumScore = score || DEFAULT_RENAME_SCORE;
+      continue;
+    }
     switch (arg) {
       case '--cached': case '--staged': cached = true; continue;
       case '--no-index': noIndex = true; continue;
       case '-z': output.z = true; continue;
-      // A patch is the default, and nothing here renames, colors or runs external tools.
-      case '-p': case '-u': case '--patch': case '--no-ext-diff': case '--no-renames': case '--no-color': continue;
+      case '--no-renames': minimumScore = null; continue;
+      // A patch is the default, and nothing here colors or runs external tools.
+      case '-p': case '-u': case '--patch': case '--no-ext-diff': case '--no-color': continue;
       case '--stat': case '--name-only': case '--name-status': {
         const format = arg.slice(2) as DiffFormat;
         if (output.format !== 'patch' && output.format !== format) {
@@ -942,21 +955,31 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
     ? { kind: 'tree', ref: revs[0] ?? 'HEAD', cached: true }
     : revs.length ? { kind: 'tree', ref: revs[0], cached: false } : { kind: 'index' };
   const pending = await changedPairs(git, fs, root, cache, base, repoPaths(pathArgs, ctx.cwd, root));
-  const withData = output.format === 'patch' || output.format === 'stat';
-  const read = async (path: string, side: PendingSide): Promise<Uint8Array> => {
+  const read = async (side: PendingSide): Promise<Uint8Array> => {
     if (!side.worktree) return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
-    const key = normalizeVfsPath(`${root}/${path}`);
+    const key = normalizeVfsPath(`${root}/${side.path}`);
     return side.mode === 0o120000 ? enc.encode(vfs.readlink(key)) : vfs.readFile(key);
   };
-  const load = async (path: string, pendingSide: PendingSide | null): Promise<DiffSpec> => {
-    if (!pendingSide) return absentSpec(path);
-    const data = withData ? await read(path, pendingSide) : new Uint8Array(0);
-    return { path, valid: true, oid: pendingSide.oid, mode: pendingSide.mode, data };
-  };
-  await writeDiff(ctx, pending.map(({ path, one, two }) => async () => ({
-    one: await load(path, one),
-    two: await load(path, two),
+  const { queue, neededRenameLimit } = minimumScore === null
+    ? { queue: pending, neededRenameLimit: 0 }
+    : await detectRenames(pending, read, { minimumScore });
+  const withData = output.format === 'patch' || output.format === 'stat';
+  const spec = async (side: PendingSide): Promise<DiffSpec> => ({
+    path: side.path,
+    valid: true,
+    oid: side.oid,
+    mode: side.mode,
+    data: withData ? await read(side) : new Uint8Array(0),
+  });
+  await writeDiff(ctx, queue.map(({ one, two, renameScore }) => async () => ({
+    one: one ? await spec(one) : absentSpec(two!.path),
+    two: two ? await spec(two) : absentSpec(one!.path),
+    renameScore,
   })), output);
+  if (neededRenameLimit) {
+    await ctx.stderr.write('warning: exhaustive rename detection was skipped due to too many files.\n'
+      + `warning: you may want to set your diff.renameLimit variable to at least ${neededRenameLimit} and retry the command.\n`);
+  }
   return 0;
 }
 

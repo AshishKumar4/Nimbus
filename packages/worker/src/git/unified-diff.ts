@@ -20,6 +20,8 @@ export interface DiffSpec {
 export interface DiffPair {
   one: DiffSpec;
   two: DiffSpec;
+  /** Set when rename detection paired `one` with `two`: similarity out of MAX_SCORE. */
+  renameScore?: number;
 }
 
 export function absentSpec(path: string): DiffSpec {
@@ -29,11 +31,12 @@ export function absentSpec(path: string): DiffSpec {
 const S_IFMT = 0o170000;
 
 /** diff_resolve_rename_copy's status letter. */
-export function pairStatus(pair: DiffPair): 'A' | 'D' | 'T' | 'M' {
+export function pairStatus(pair: DiffPair): 'A' | 'D' | 'T' | 'R' | 'M' {
   if (!pair.one.valid) return 'A';
   if (!pair.two.valid) return 'D';
   // A regular file and a symlink are different kinds of object: a type change.
-  return (pair.one.mode & S_IFMT) !== (pair.two.mode & S_IFMT) ? 'T' : 'M';
+  if ((pair.one.mode & S_IFMT) !== (pair.two.mode & S_IFMT)) return 'T';
+  return pair.renameScore === undefined ? 'M' : 'R';
 }
 
 // ── Binary strings ──────────────────────────────────────────────────────
@@ -276,7 +279,11 @@ export function formatPatch(pair: DiffPair, context = DEFAULT_CONTEXT): string {
   else if (!two.valid) header += `deleted file mode ${octal6(one.mode)}\n${index}`;
   else {
     if (one.mode !== two.mode) header += `old mode ${octal6(one.mode)}\nnew mode ${octal6(two.mode)}\n`;
-    else mustShowHeader = false;
+    else mustShowHeader = pair.renameScore !== undefined;
+    if (pair.renameScore !== undefined) {
+      header += `similarity index ${similarityIndex(pair.renameScore)}%\n`
+        + `rename from ${quotePath(one.path)}\nrename to ${quotePath(two.path)}\n`;
+    }
     header += index;
   }
   if (isBinary(one.data) || isBinary(two.data)) {
@@ -296,6 +303,12 @@ export function formatNameOnly(pair: DiffPair, z: boolean): string {
 
 export function formatNameStatus(pair: DiffPair, z: boolean): string {
   const status = pairStatus(pair);
+  if (status === 'R') {
+    const score = String(similarityIndex(pair.renameScore ?? 0)).padStart(3, '0');
+    return z
+      ? `R${score}\0${binaryPath(pair.one.path)}\0${binaryPath(pair.two.path)}\0`
+      : `R${score}\t${quotePath(pair.one.path)}\t${quotePath(pair.two.path)}\n`;
+  }
   const name = pair.one.mode ? pair.one.path : pair.two.path;
   return z ? `${status}\0${binaryPath(name)}\0` : `${status}\t${quotePath(name)}\n`;
 }
@@ -433,4 +446,263 @@ export function formatStat(files: readonly StatFile[], columns: number): string 
   if (insertions || deletions === 0) summary += `, ${insertions} insertion${insertions === 1 ? '' : 's'}(+)`;
   if (deletions || insertions === 0) summary += `, ${deletions} deletion${deletions === 1 ? '' : 's'}(-)`;
   return `${out}${summary}\n`;
+}
+
+// ── Renames (diffcore-rename.c, diffcore-delta.c) ───────────────────────
+
+export const MAX_SCORE = 60000;
+export const DEFAULT_RENAME_SCORE = 30000;
+const DEFAULT_RENAME_LIMIT = 1000;
+const NUM_CANDIDATE_PER_DST = 4;
+const HASHBASE = 107927;
+
+export function similarityIndex(score: number): number {
+  return Math.floor(score * 100 / MAX_SCORE);
+}
+
+/** parse_rename_score (`5`, `50%` and `.5` are all 50%), or null when anything follows the number. */
+export function parseRenameScore(text: string): number | null {
+  let num = 0;
+  let scale = 1;
+  let dot = false;
+  let i = 0;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (!dot && ch === '.') {
+      scale = 1;
+      dot = true;
+    } else if (ch === '%') {
+      scale = dot ? scale * 100 : 100;
+      i++;
+      break;
+    } else if (ch >= '0' && ch <= '9') {
+      if (scale < 100000) {
+        scale *= 10;
+        num = num * 10 + Number(ch);
+      }
+    } else {
+      break;
+    }
+  }
+  if (i < text.length) return null;
+  return num >= scale ? MAX_SCORE : Math.floor(MAX_SCORE * num / scale);
+}
+
+export interface RenameSide {
+  path: string;
+  oid: string;
+  mode: number;
+}
+
+export interface QueuedPair<S extends RenameSide> {
+  one: S | null;
+  two: S | null;
+  renameScore?: number;
+}
+
+const isRegular = (mode: number) => (mode & S_IFMT) === 0o100000;
+const basenameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+/** hash_chars: bytes per span (a line, or 64 bytes) keyed by the span's hash; CR before LF is skipped in text. */
+function spanCounts(data: Uint8Array): Map<number, number> {
+  const text = !isBinary(data);
+  const counts = new Map<number, number>();
+  let n = 0;
+  let accum1 = 0;
+  let accum2 = 0;
+  for (let i = 0; i < data.length; i++) {
+    const c = data[i];
+    if (text && c === 0x0d && i + 1 < data.length && data[i + 1] === 0x0a) continue;
+    const old1 = accum1;
+    accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
+    accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
+    if (++n < 64 && c !== 0x0a) continue;
+    const hash = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    counts.set(hash, (counts.get(hash) ?? 0) + n);
+    n = accum1 = accum2 = 0;
+  }
+  if (n > 0) {
+    const hash = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    counts.set(hash, (counts.get(hash) ?? 0) + n);
+  }
+  return counts;
+}
+
+interface Content { size: number; spans: Map<number, number> }
+
+/** estimate_similarity: how much of the larger side the source's spans account for, out of MAX_SCORE. */
+function estimateSimilarity(src: Content, dst: Content, minimumScore: number): number {
+  const maxSize = Math.max(src.size, dst.size);
+  const delta = maxSize - Math.min(src.size, dst.size);
+  // Edits that change the size this much are not considered.
+  if (maxSize * (MAX_SCORE - minimumScore) < delta * MAX_SCORE) return 0;
+  if (!dst.size) return 0;
+  let copied = 0;
+  for (const [hash, count] of src.spans) {
+    const other = dst.spans.get(hash);
+    if (other !== undefined) copied += Math.min(count, other);
+  }
+  return Math.floor(copied * MAX_SCORE / maxSize);
+}
+
+interface Candidate { dst: number; src: number; score: number; nameScore: number }
+
+/** score_compare: the unused slots last, then by score, then by a shared basename. */
+function scoreCompare(a: Candidate, b: Candidate): number {
+  if (a.dst < 0) return b.dst >= 0 ? 1 : 0;
+  if (b.dst < 0) return -1;
+  if (a.score === b.score) return b.nameScore - a.nameScore;
+  return b.score - a.score;
+}
+
+function recordIfBetter(slots: Candidate[], candidate: Candidate): void {
+  let worst = 0;
+  for (let i = 1; i < slots.length; i++) if (scoreCompare(slots[i], slots[worst]) > 0) worst = i;
+  if (scoreCompare(slots[worst], candidate) > 0) slots[worst] = candidate;
+}
+
+/**
+ * git diff's default rename detection over a path-ordered queue: exact
+ * renames, then unique basenames at a higher bar, then the similarity
+ * matrix, skipped (as git skips it) past `renameLimit` squared pairs. A
+ * rename takes its destination's place in the queue. `neededRenameLimit`
+ * is non-zero when the matrix was skipped.
+ */
+export async function detectRenames<S extends RenameSide>(
+  queue: readonly QueuedPair<S>[],
+  read: (side: S) => Promise<Uint8Array>,
+  { minimumScore = DEFAULT_RENAME_SCORE, renameLimit = DEFAULT_RENAME_LIMIT } = {},
+): Promise<{ queue: QueuedPair<S>[]; neededRenameLimit: number }> {
+  interface Src { side: S; used: boolean }
+  interface Dst { side: S; rename?: QueuedPair<S> }
+  const srcs: Src[] = [];
+  const dsts: Dst[] = [];
+  const srcOf = new Map<QueuedPair<S>, Src>();
+  const dstOf = new Map<QueuedPair<S>, Dst>();
+  for (const pair of queue) {
+    if (!pair.one && pair.two) {
+      const dst: Dst = { side: pair.two };
+      dsts.push(dst);
+      dstOf.set(pair, dst);
+    } else if (pair.one && !pair.two) {
+      const src: Src = { side: pair.one, used: false };
+      srcs.push(src);
+      srcOf.set(pair, src);
+    }
+  }
+  const contents = new Map<S, Content>();
+  const content = async (side: S): Promise<Content> => {
+    let known = contents.get(side);
+    if (!known) {
+      const data = await read(side);
+      contents.set(side, known = { size: data.length, spans: spanCounts(data) });
+    }
+    return known;
+  };
+  const similarity = async (src: S, dst: S, minimum: number) => (
+    isRegular(src.mode) && isRegular(dst.mode)
+      ? estimateSimilarity(await content(src), await content(dst), minimum)
+      : 0
+  );
+  const record = (dst: Dst, src: Src, score: number) => {
+    src.used = true;
+    dst.rename = { one: src.side, two: dst.side, renameScore: score };
+  };
+
+  let neededRenameLimit = 0;
+  match: {
+    if (!dsts.length || !srcs.length) break match;
+    // Exact: the first unused source with the same blob, one with the same basename first.
+    const byOid = new Map<string, Src[]>();
+    for (const src of srcs) {
+      const list = byOid.get(src.side.oid);
+      if (list) list.push(src);
+      else byOid.set(src.side.oid, [src]);
+    }
+    let renames = 0;
+    for (const dst of dsts) {
+      let best: Src | null = null;
+      let bestScore = -1;
+      let tries = 100;
+      for (const src of byOid.get(dst.side.oid) ?? []) {
+        // Only regular files may change mode across a rename.
+        if ((!isRegular(src.side.mode) || !isRegular(dst.side.mode)) && src.side.mode !== dst.side.mode) continue;
+        if (src.used) continue;
+        const score = 1 + (basenameOf(src.side.path) === basenameOf(dst.side.path) ? 1 : 0);
+        if (score > bestScore) {
+          best = src;
+          bestScore = score;
+          if (score === 2) break;
+        }
+        if (!--tries) break;
+      }
+      if (best) {
+        record(dst, best, MAX_SCORE);
+        renames++;
+      }
+    }
+    if (minimumScore === MAX_SCORE) break match;
+
+    // A basename unique among both sides pairs up if it clears the higher bar.
+    let pool = srcs.filter((src) => !src.used);
+    const minBasenameScore = minimumScore + Math.trunc(0.5 * (MAX_SCORE - minimumScore));
+    const srcBases = new Map<string, number>();
+    pool.forEach((src, i) => {
+      const base = basenameOf(src.side.path);
+      srcBases.set(base, srcBases.has(base) ? -1 : i);
+    });
+    const dstBases = new Map<string, Dst | null>();
+    for (const dst of dsts) {
+      if (dst.rename) continue;
+      const base = basenameOf(dst.side.path);
+      dstBases.set(base, dstBases.has(base) ? null : dst);
+    }
+    for (const [i, src] of pool.entries()) {
+      const base = basenameOf(src.side.path);
+      const dst = dstBases.get(base);
+      if (!dst || srcBases.get(base) !== i || dst.rename) continue;
+      const score = await similarity(src.side, dst.side, minBasenameScore);
+      if (score < minBasenameScore) continue;
+      record(dst, src, score);
+      renames++;
+    }
+    pool = pool.filter((src) => !src.used);
+
+    const remaining = dsts.length - renames;
+    if (!remaining || !pool.length) break match;
+    if (renameLimit > 0 && remaining * pool.length > renameLimit * renameLimit) {
+      neededRenameLimit = Math.max(pool.length, remaining);
+      break match;
+    }
+    for (const src of pool) if (isRegular(src.side.mode)) await content(src.side);
+    for (const dst of dsts) if (!dst.rename && isRegular(dst.side.mode)) await content(dst.side);
+    const matrix: Candidate[] = [];
+    for (const [d, dst] of dsts.entries()) {
+      if (dst.rename) continue;
+      const slots = Array.from({ length: NUM_CANDIDATE_PER_DST }, () => ({ dst: -1, src: -1, score: 0, nameScore: 0 }));
+      for (const [s, src] of pool.entries()) {
+        const score = isRegular(src.side.mode) && isRegular(dst.side.mode)
+          ? estimateSimilarity(contents.get(src.side)!, contents.get(dst.side)!, minimumScore)
+          : 0;
+        recordIfBetter(slots, { dst: d, src: s, score, nameScore: basenameOf(src.side.path) === basenameOf(dst.side.path) ? 1 : 0 });
+      }
+      matrix.push(...slots);
+    }
+    matrix.sort(scoreCompare);
+    for (const candidate of matrix) {
+      if (candidate.dst < 0 || candidate.score < minimumScore) break;
+      const dst = dsts[candidate.dst];
+      const src = pool[candidate.src];
+      if (dst.rename || src.used) continue;
+      record(dst, src, candidate.score);
+    }
+  }
+
+  const out: QueuedPair<S>[] = [];
+  for (const pair of queue) {
+    const dst = dstOf.get(pair);
+    if (dst) out.push(dst.rename ?? pair);
+    else if (!srcOf.get(pair)?.used) out.push(pair);
+  }
+  return { queue: out, neededRenameLimit };
 }
