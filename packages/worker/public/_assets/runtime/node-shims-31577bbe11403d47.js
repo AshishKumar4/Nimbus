@@ -1472,48 +1472,57 @@ const __fsMod = (() => {
   globalThis.__nimbusEvictResidentCell = _evictOwed;
 
   /**
-   * Live reads in flight, per path: how many, and the highest revision a
-   * barrier reported for the path while any of them was outstanding.
+   * Live reads in flight, per path: each one's fill ticket, which carries
+   * the highest revision a barrier reported for the path while that read was
+   * outstanding.
    *
    * A barrier that reports a path nobody holds has nothing to evict and
    * CONSUMES the report: the cursor moves past it and no later delta names it
    * again. A read of that path already in flight may have been served before
    * the mutation the report describes, and its bytes would then be installed
    * behind the only message that could have evicted them. So the report is
-   * kept here until the read lands, and the read installs only if nothing
+   * kept on the read until it lands, and the read installs only if nothing
    * newer than its cursor was reported under it (_installResident).
+   *
+   * One ticket per read, not one per path: a read that begins after a report
+   * or a poison is judged only by what is reported after it began. Sharing the
+   * earlier read's record condemned the read issued to replace it.
    */
   const _fillReports = new Map();
 
   /**
    * Begin a live read of `k`: the cursor it is issued under — every mutation
-   * at or below it is already in the bytes it returns — and its report record.
-   * Called after the read's barrier and before its RPC.
+   * at or below it is already in the bytes it returns — and what has been
+   * reported against it since, nothing yet. Called after the read's barrier
+   * and before its RPC.
    */
   function _beginFill(k) {
-    let record = _fillReports.get(k);
-    if (!record) {
-      record = { pending: 0, reported: -1 };
-      _fillReports.set(k, record);
+    const fill = { k, rev: _cursor.rev, reported: -1 };
+    let live = _fillReports.get(k);
+    if (!live) {
+      live = new Set();
+      _fillReports.set(k, live);
     }
-    record.pending++;
-    return { k, record, rev: _cursor.rev };
+    live.add(fill);
+    return fill;
   }
 
   function _endFill(fill) {
-    fill.record.pending--;
-    if (fill.record.pending === 0 && _fillReports.get(fill.k) === fill.record) _fillReports.delete(fill.k);
+    const live = _fillReports.get(fill.k);
+    if (!live) return;
+    live.delete(fill);
+    if (live.size === 0) _fillReports.delete(fill.k);
   }
 
-  /** A barrier reported `k` at `rev`: remember it for any read of it in flight. */
+  /** A barrier reported `k` at `rev`: remember it on every read of it in flight. */
   function _noteFillReport(k, rev) {
-    const record = _fillReports.get(k);
-    if (record && rev > record.reported) record.reported = rev;
+    const live = _fillReports.get(k);
+    if (live) for (const fill of live) if (rev > fill.reported) fill.reported = rev;
   }
 
   /** The cursor moved without a delta (a poison), so no read in flight can be dated. */
   function _spoilFills() {
-    for (const record of _fillReports.values()) record.reported = Infinity;
+    for (const live of _fillReports.values()) for (const fill of live) fill.reported = Infinity;
   }
 
   /**
@@ -1541,7 +1550,7 @@ const __fsMod = (() => {
     if (!__vfsBundle) return;
     const k = _strip(absPath);
     if (k === "") return;
-    if (fill.record.reported > fill.rev) return;
+    if (fill.reported > fill.rev) return;
     // Never over a cell this facet owns.
     //
     // A pending write is strictly newer than anything the authority can
@@ -1732,12 +1741,17 @@ const __fsMod = (() => {
    * The barrier itself never throws: the operation or callback behind it
    * runs either way, against rows that were vouched for or a colder cache.
    *
-   * A repair is single-flight, so a barrier that needs one while another
-   * barrier's is running joins it. That repair's listing may predate this
-   * barrier's own ACQUIRE — the rows it vouches for are the other barrier's
-   * answer, not this one's — so a joiner waits for it and then asks again:
-   * a delta from the repaired cursor names everything since. Only the barrier
-   * that started a repair resumes on it alone.
+   * A repair is single-flight, and while one runs no delta may be admitted
+   * at all: the repair has already dropped the rows it could not vouch for,
+   * so a report of one of them finds nothing to evict and is consumed, and
+   * the repair then installs it at its listing's revision and publishes the
+   * listing's cursor over the one the delta advanced. So any barrier answered
+   * while a repair runs joins it, whether its own answer needed a repair or
+   * was an ordinary delta, and the listing may predate that answer — the rows
+   * it vouches for are another barrier's answer, not this one's — so a joiner
+   * waits for it and then asks again: a delta from the repaired cursor names
+   * everything since. Only the barrier that started a repair resumes on it
+   * alone.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
@@ -1749,11 +1763,15 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
-      for (let joins = 0; result === null || result.poison === true || _storeRepairOwed; joins++) {
-        if (result !== null && result.poison === true) _stats.poisons++;
-        _spoilFills();
+      for (let joins = 0; ; joins++) {
         const joining = _residentRepair !== null;
-        await _repairPoisonedStore(supervisor, result);
+        const needsRepair = result === null || result.poison === true || _storeRepairOwed;
+        if (!joining && !needsRepair) break;
+        if (needsRepair) {
+          if (result !== null && result.poison === true) _stats.poisons++;
+          _spoilFills();
+        }
+        await (joining ? _residentRepair : _repairPoisonedStore(supervisor, result));
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
         if (!joining) return [];
@@ -1900,7 +1918,7 @@ const __fsMod = (() => {
     const reads = stale.map(_refetch);
     for (const [k, refetch] of inFlight) {
       if (stale.indexOf(k) !== -1) continue;
-      if (!(refetch.fill.record.reported > refetch.fill.rev)) reads.push(refetch.done);
+      if (!(refetch.fill.reported > refetch.fill.rev)) reads.push(refetch.done);
       else if (!(__vfsBundle && k in __vfsBundle)) reads.push(_refetch(k));
     }
     if (reads.length > 0) await Promise.all(reads);
@@ -1917,13 +1935,27 @@ const __fsMod = (() => {
    * Read `k` live and install it, behind the barrier just taken. Settles
    * either way: a refetch that fails leaves the path missing, which the next
    * read of it answers.
+   *
+   * A refetch whose install was declined — a barrier reported the path above
+   * its cursor, or a poison spoiled it — is not done while something else is
+   * filling the path: a newer refetch a barrier issued to replace it, or the
+   * repair that poison started. Everything waiting on it was waiting for the
+   * path, and settling on the declined install would release them onto the
+   * miss it left. Each wait is on an operation already in flight that no
+   * refetch holds up, so the waiting ends.
    */
   function _refetch(k) {
     const fill = _beginFill(k);
     const refetch = { fill, done: null };
-    refetch.done = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).finally(() => {
+    refetch.done = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).then(async () => {
       _endFill(fill);
       if (_refetching.get(k) === refetch) _refetching.delete(k);
+      while (!(__vfsBundle && k in __vfsBundle)) {
+        const newer = _refetching.get(k);
+        if (newer) await newer.done;
+        else if (_residentRepair !== null) await _residentRepair;
+        else return;
+      }
     });
     _refetching.set(k, refetch);
     return refetch.done;
