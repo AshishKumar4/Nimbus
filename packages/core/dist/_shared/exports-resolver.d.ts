@@ -66,14 +66,34 @@ export declare function resolveExports(exportsField: ExportsField | undefined, s
  * itself (caller probes filesystem with extension-list).
  */
 export declare function resolvePackageEntry(pkg: ResolvablePackageJson, subpath?: string, conditions?: string[]): string | null;
+/** The package.json fields Node's self-reference rule reads. */
+export interface SelfReferencingPackageJson {
+    name?: string;
+    exports?: ExportsField;
+}
+/**
+ * Node's LOAD_PACKAGE_SELF: from inside a package, a bare specifier whose
+ * package name is the enclosing package's own `name` resolves through that
+ * package's `exports` map — and only then. A package without `exports` does
+ * not self-reference (Node falls through to node_modules), and the scope is
+ * the NEAREST enclosing package.json: the caller finds it by walking up
+ * from the requiring file to the first package.json, and never past a
+ * nearer package of a different name to a matching ancestor.
+ *
+ * Returns the exports subpath to resolve (`'.'` for the bare name,
+ * `'./sub'` for `<name>/sub`), or null when the rule does not apply. The
+ * caller resolves that subpath against `pkg.exports` with its conditions.
+ */
+export declare function packageSelfReferenceSubpath(pkg: SelfReferencingPackageJson | null | undefined, specifier: string): string | null;
 /**
  * Returns the resolver source as plain JavaScript (no TypeScript syntax),
  * suitable for embedding into a generated worker preamble or shim string.
  *
- * The emitted source declares three top-level functions in scope:
+ * The emitted source declares four top-level functions in scope:
  *   - resolveExports(exports, subpath, conditions)
  *   - resolveConditionValue(target, conditions)        (helper)
  *   - resolvePackageEntry(pkg, subpath, conditions)
+ *   - packageSelfReferenceSubpath(pkg, specifier)
  *
  * It also declares two arrays:
  *   - DEFAULT_ESM_CONDITIONS

@@ -3,12 +3,16 @@
  * and native-artifact classification.
  *
  * The contract:
- *   - swaps  : name→name rewrite at the resolver/installer boundary.
- *              Only `compat: 'drop-in'` swaps qualify (the consumer's
- *              `require()` call site works unchanged). Different-
- *              require-name candidates (bcrypt → bcryptjs, argon2 →
- *              hash-wasm, …) are NOT swaps until the resolver supports
- *              `npm:` aliases. They live in `rejects` with a
+ *   - swaps  : an npm alias the policy declares on the user's behalf —
+ *              `esbuild` installs as `esbuild@npm:esbuild-wasm@<range>`,
+ *              so the swap target lands under the DECLARED name's
+ *              directory (`applySwaps` / `swapAliasRange`). Only
+ *              `compat: 'drop-in'` swaps qualify (the consumer's
+ *              `require()` call site works unchanged against the
+ *              target's API). Different-API candidates (bcrypt →
+ *              bcryptjs, argon2 → hash-wasm, …) are NOT swaps: aliasing
+ *              them would satisfy `require(originalName)` with a module
+ *              whose API differs. They live in `rejects` with a
  *              code-change suggestion.
  *
  *   - rejects: deny list with helpful messages. Every entry is
@@ -71,14 +75,32 @@ export declare function applyStagedArtifact(pkg: {
     optionalDependencies?: Record<string, string>;
 }, entry: PackageStagedArtifactEntry): void;
 /**
- * Pure: return a new specs map with every swap `from` key rewritten
- * to its swap target. Records the swaps actually performed.
+ * The npm alias range a swap declares on the user's behalf:
+ * `esbuild@^0.20` becomes `esbuild@npm:esbuild-wasm@^0.20`.
  *
- * Idempotent: running on already-swapped specs is a no-op.
+ * A swap IS an alias dependency. Expressing it as one means the installer's
+ * single alias path does the rest: the packument comes from the swap
+ * target, the package lands under the DECLARED name's directory
+ * (`node_modules/esbuild`), and require/import, bin links, the fs bundle
+ * and the lockfile all see the name the program asked for. Rewriting the
+ * KEY instead (`esbuild` → `esbuild-wasm`) is what left `require('esbuild')`
+ * unresolvable after `npm install esbuild`, and it collided with a sibling
+ * `esbuild-wasm` spec the project also declared.
  *
- * Range carry-over: the original spec range is preserved on the new key.
- * Future alias support may force pulling the current swap target version,
- * but for now we honour the user's requested range.
+ * Range carry-over: swap targets publish the same version numbers as the
+ * packages they stand in for, so the user's requested range is honoured
+ * against the target.
+ */
+export declare function swapAliasRange(swap: PackageSwapEntry, range: string): string;
+/**
+ * Pure: return a new specs map with every swap `from` key's range rewritten
+ * to the alias range of its swap target (see `swapAliasRange`). Keys are
+ * never renamed, so every spec the caller declared is still present under
+ * its own name. Records the swaps actually performed.
+ *
+ * Idempotent: a range that already names its registry package (`npm:…`)
+ * is left alone, whether the policy wrote it on a previous pass or the user
+ * typed an explicit alias — an explicit alias is authoritative.
  */
 export declare function applySwaps(specs: Record<string, string>): {
     specs: Record<string, string>;

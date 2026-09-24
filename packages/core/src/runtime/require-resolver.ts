@@ -31,9 +31,11 @@ import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import {
   resolvePackageEntry as sharedResolvePackageEntry,
   resolveExports as sharedResolveExports,
+  packageSelfReferenceSubpath,
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
   type ResolvablePackageJson,
+  type SelfReferencingPackageJson,
 } from '../_shared/exports-resolver.js';
 import {
   TYPESCRIPT_INDEX_CANDIDATES,
@@ -480,7 +482,46 @@ async function resolveRequireEx(vfs: CredentialedVfs, id: string, fromDir: strin
     const r = (await resolveImportsField(vfs, id, fromDir, sink));
     return r ? { resolved: r } : null;
   }
+  // The enclosing package's own name resolves through its exports map
+  // (Node's LOAD_PACKAGE_SELF), before the node_modules walk. Once the
+  // enclosing package claims the name, its map is the whole answer: a
+  // subpath it does not expose is not found, never a node_modules copy's.
+  // Mirrors node-shims.ts:__resolvePackageSelf.
+  const self = await resolvePackageSelf(vfs, id, fromDir, sink);
+  if (self) return self.resolved ? { resolved: self.resolved } : null;
   return (await resolveNodeModuleEx(vfs, id, fromDir, sink));
+}
+
+/**
+ * Node's "package scope" of a directory (`readPackageScope`): the nearest
+ * enclosing package.json walking up from `fromDir`. The FIRST one found is
+ * the scope, even when it lacks the field the caller wants — the imports
+ * field and the self-reference rule both belong to the importing module's
+ * own package, never to an ancestor past it. The walk never crosses a
+ * `node_modules` directory: a file that sits directly under one belongs to
+ * no package, not to the project above it. Mirrors
+ * node-shims.ts:__nearestPackageScope. The package.json is recorded with
+ * `sink` so the runtime can repeat the same lookup from the bundle.
+ */
+async function nearestPackageScope(
+  vfs: CredentialedVfs,
+  fromDir: string,
+  sink?: PkgJsonSink,
+): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
+  let dir = strip(fromDir);
+  while (true) {
+    if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
+    const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
+    if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
+      sink?.(pkgJsonPath);
+      let pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null = null;
+      try { pkg = JSON.parse((await vfs.readFileString(pkgJsonPath))); } catch { /* malformed */ }
+      return { dir, pkg };
+    }
+    if (!dir) return null;
+    const lastSlash = dir.lastIndexOf('/');
+    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
+  }
 }
 
 /**
@@ -494,35 +535,54 @@ async function resolveImportsField(
   fromDir: string,
   sink?: PkgJsonSink,
 ): Promise<string | null> {
-  let dir = strip(fromDir);
-  while (true) {
-    const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
-    if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
-      let pkg: ResolvablePackageJson | null = null;
-      try { pkg = JSON.parse((await vfs.readFileString(pkgJsonPath))); } catch { /* malformed */ }
-      // First package.json wins (Node spec), even if no imports field.
-      if (pkg && pkg.imports) {
-        const target = sharedResolveExports(pkg.imports, name, DEFAULT_CJS_CONDITIONS);
-        if (target && typeof target === 'string') {
-          // imports targets are relative to the package root (`dir`).
-          if (target.startsWith('./')) {
-            const base = (dir ? dir + '/' : '') + target.slice(2);
-            return (await resolveFile(vfs, normalizePath(base), sink));
-          }
-          if (target.startsWith('/')) {
-            return (await resolveFile(vfs, strip(target), sink));
-          }
-          // Bare specifier — re-resolve as a node_module from `dir`.
-          const r = (await resolveNodeModuleEx(vfs, target, dir, sink));
-          return r ? r.resolved : null;
-        }
-      }
-      return null;
-    }
-    if (!dir) return null;
-    const lastSlash = dir.lastIndexOf('/');
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
+  // First package.json wins (Node spec), even if no imports field.
+  const scope = await nearestPackageScope(vfs, fromDir, sink);
+  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
+  const dir = scope.dir;
+  const target = sharedResolveExports(scope.pkg.imports, name, DEFAULT_CJS_CONDITIONS);
+  if (!target || typeof target !== 'string') return null;
+  // imports targets are relative to the package root (`dir`).
+  if (target.startsWith('./')) {
+    const base = (dir ? dir + '/' : '') + target.slice(2);
+    return (await resolveFile(vfs, normalizePath(base), sink));
   }
+  if (target.startsWith('/')) {
+    return (await resolveFile(vfs, strip(target), sink));
+  }
+  // Bare specifier — re-resolve as a node_module from `dir`.
+  const r = (await resolveNodeModuleEx(vfs, target, dir, sink));
+  return r ? r.resolved : null;
+}
+
+/**
+ * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
+ * itself resolves through that package's own `exports` map — only when the
+ * nearest package.json has `exports` AND its `name` matches, and only
+ * through `exports` (no main/index probing). Same condition order as the
+ * node_modules walk: CJS first, ESM when the map exposes the subpath only
+ * under `import`. Mirrors node-shims.ts:__resolvePackageSelf.
+ *
+ * Tri-state, as in Node: `null` when the rule does not apply (the caller
+ * walks node_modules); `{ resolved: null }` when the enclosing package
+ * claims the name but its map does not expose the subpath or the target
+ * is missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
+ * there and never consults node_modules, so neither does the caller.
+ */
+async function resolvePackageSelf(
+  vfs: CredentialedVfs,
+  name: string,
+  fromDir: string,
+  sink?: PkgJsonSink,
+): Promise<{ resolved: string | null } | null> {
+  const scope = await nearestPackageScope(vfs, fromDir, sink);
+  if (!scope || !scope.pkg) return null;
+  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
+  if (subpath === null) return null;
+  let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
+  if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
+  if (entry == null) return { resolved: null };
+  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink);
+  return { resolved };
 }
 
 /**
