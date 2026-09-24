@@ -13,7 +13,10 @@
   held write-back (committed and acknowledged, in order); `{"facet":"acquire"}` a
   barrier. A read must return one of `expectAnyOf` (bytes, or "ENOENT"): the
   process's own pending effect when it has one, else a value the authority held
-  at some instant between the last barrier (or boot) and now.
+  at some instant between the last barrier (or boot) and now. An `acquire` never
+  comes while a pending own write's path was committed by a peer since the last
+  barrier: the code's barrier would wait for that write's acknowledgement, so the
+  generator flushes first.
 -/
 
 import Nimbus.Refine.VisibleDeltaCases
@@ -103,6 +106,13 @@ def genOverlayCase : Gen (Option Json) := do
       s := { s with own := [] }
       out := out.push (.obj [("facet", .str "flush")])
     else if k < 9 then
+      -- a barrier whose answer reports a path with a pending own write waits for
+      -- that write's acknowledgement (`_awaitReportedOwnWrites`): flush first
+      let raced := s.own.any fun x => s.hist.any fun y => y.1 == x.1 && decide (s.H < y.2.1)
+      if raced then
+        for (q, v) in s.own do s := commit s q v
+        s := { s with own := [] }
+        out := out.push (.obj [("facet", .str "flush")])
       s := { s with H := s.now }
       out := out.push (.obj [("facet", .str "acquire")])
     else
