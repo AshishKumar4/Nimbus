@@ -62,7 +62,7 @@ function createGitFs(vfs) {
                 vfs.mkdir(dir, { recursive: true });
         }
     }
-    // The inode as Node's fs.Stats; lstat reports a symlink as the link itself.
+    // The inode as Node's fs.Stats: git's stat cache compares ctime, ino, uid and gid too.
     function statsOf(filepath, follow) {
         const p = normalizePath(filepath);
         let st;
@@ -90,9 +90,9 @@ function createGitFs(vfs) {
             size: st.size,
             mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) | (st.mode & 0o7777),
             mtimeMs: st.mtime, mtime: new Date(st.mtime),
-            ctimeMs: st.mtime, ctime: new Date(st.mtime),
-            atimeMs: st.mtime, atime: new Date(st.mtime),
-            uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
+            ctimeMs: st.ctime, ctime: new Date(st.ctime),
+            atimeMs: st.atime, atime: new Date(st.atime),
+            uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
             type: isDir ? 'dir' : isLink ? 'symlink' : 'file',
         };
     }

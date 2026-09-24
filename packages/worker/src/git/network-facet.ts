@@ -1470,7 +1470,9 @@ function convertSupervisorStat(st) {
     mtimeMs, mtime: new Date(mtimeMs),
     ctimeMs, ctime: new Date(ctimeMs),
     atimeMs, atime: new Date(atimeMs),
-    uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
+    // The supervisor's git reports these same fields, so an index either side wrote stays warm.
+    uid: Number(st.uid) || 0, gid: Number(st.gid) || 0,
+    dev: Number(st.dev) || 0, ino: Number(st.ino) || 0, nlink: 1,
   };
 }
 
