@@ -4036,7 +4036,8 @@ export class SqliteVFS {
       ...fields,
       path,
       parentPath: this.storageKey(entry.parentPath, cred),
-      mode: prior
+      // A record replacing an inode of another kind (a directory over a link) takes none of its mode.
+      mode: prior && prior.kind === inodeKind(entry)
         ? prior.mode
         : inodeKind(entry) === 'symlink'
           ? inodeTypeBits('symlink') | 0o777

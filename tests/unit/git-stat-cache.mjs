@@ -116,6 +116,9 @@ try {
   await git(many, 'commit', '-qm', 'c');
   clock += 5000;
   for (let i = 0; i < 2000; i++) user.utimes(`home/user/many/f${i}.txt`, clock, clock);
+  // status runs a second after the touch. An index written in the touch's own
+  // second would leave every entry racily clean, and git rewrites such an index.
+  clock += 1000;
   indexWrites = 0;
   assert.equal(await git(many, 'status'), 'nothing to commit, working tree clean\n');
   assert.equal(indexWrites, 1, `status refreshing 2,000 entries wrote the index ${indexWrites} times`);
