@@ -798,12 +798,13 @@ ${VFS_CURSOR_SEED_SOURCE}
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
     // done once, here, so that no synchronous read after it ever has to wait.
     //
-    // A cold slot adopts this spawn's snapshot and fills the rest. A slot kept
-    // from the previous process is cheap — rows the absolute listing proves
-    // current are kept, and only what changed is fetched — and is SERVED only
-    // once that listing has vouched for it: rows it cannot vouch for are the
-    // last process's, of unknown age, so the kept store is emptied and this
-    // launch boots as a cold one does. See __residentBoot.
+    // A cold store adopts this spawn's snapshot and fills the rest. A store
+    // that outlived its process — a durable application's, relaunched or
+    // re-driven — is cheap to bring current: rows the absolute listing proves
+    // current are kept, and only what changed is fetched. It is SERVED only
+    // once that listing has vouched for it: rows it cannot vouch for are a
+    // previous process's, of unknown age, so the kept store is emptied and
+    // this launch boots as a cold one does. See __residentBoot.
     //
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
@@ -815,8 +816,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     );
     __MODULE_VFS_BUNDLE = null;
     // One cursor, not two. The seed above publishes the cursor this SPAWN
-    // staged at, which is right for a cold slot and stale for a kept one — the
-    // cursor the boot returns describes what the rows actually are.
+    // staged at, which is right for a cold store and stale for a kept one —
+    // the cursor the boot returns describes what the rows actually are.
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }

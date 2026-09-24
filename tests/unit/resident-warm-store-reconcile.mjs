@@ -1,18 +1,20 @@
 #!/usr/bin/env bun
-// A relaunch that is handed the previous process's store must not serve a row
-// of it that this launch has not validated.
+// A launch that is handed a previous process's store must not serve a row of
+// it that this launch has not validated.
 //
-// A released keyed slot keeps its SQLite for the next spawn under the same
-// credential (9401b6c9), and the boot reconcile brings it current: rows the
-// absolute listing proves current are kept, the rest refetched. That is what
-// makes a relaunch cost 2 files instead of 36,137. But the kept rows describe
+// A store can outlive its process. A durable application's facet keeps its
+// `app-slot-` name across launches and its release never deletes storage, so
+// every relaunch or re-drive of the application opens what its last process
+// left. The boot reconcile brings such a store current: rows the absolute
+// listing proves current are kept and the rest refetched, so a relaunch
+// fetches what changed rather than the filesystem. But the kept rows describe
 // the filesystem as of the LAST process, and only the reconcile says which of
 // them still do. When it cannot say — the supervisor cannot list, the listing
 // comes back short, there is no supervisor at all — those rows must not be
 // what the program's first synchronous reads are answered from. No ACQUIRE
 // has run yet at that point, so nothing else would catch them.
 //
-// Each scenario keeps a store the way a previous launch leaves one (the same
+// Each scenario keeps a store the way a previous process leaves one (the same
 // boot fill, over the same SQLite), changes files behind it, and boots the
 // REAL resident body on it (tests/unit/lib/resident-body.mjs).
 

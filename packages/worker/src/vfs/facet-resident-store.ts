@@ -809,17 +809,24 @@ function __residentStats() {
  * process's first block (§5.3); the first ACQUIRE's delta brings them the rest
  * of the way.
  *
- * A KEPT store — a released keyed slot handed to the next spawn under the
- * same credential — holds the LAST process's rows, dated against a cursor this
- * incarnation has never applied. They are the asset (a relaunch fetches what
- * changed, not the filesystem) and they are also arbitrarily old: only the
- * reconcile says which of them still describe the filesystem, and nothing
- * else runs before the program's first synchronous reads. So the store stays
- * SEALED through the reconcile, and a reconcile that cannot vouch for its rows
- * — the listing failed, came back short, or there is no supervisor to ask —
- * does not open it. The kept store is emptied instead and this launch boots
- * exactly as a cold one does: the rare failure costs a relaunch its speedup,
- * never a stale byte.
+ * A KEPT store holds a PREVIOUS process's rows, dated against a cursor this
+ * incarnation has never applied. A durable application's facet is one: it
+ * keeps its \`app-slot-\` name across launches and its release never deletes
+ * storage, so every relaunch or re-drive of the application opens what its
+ * last process left. The rows are the asset — inside one supervisor
+ * incarnation a relaunch fetches what changed, not the filesystem; across two,
+ * whose revisions are unrelated, the reconcile rebuilds every dated row — and
+ * they are also arbitrarily old: only the reconcile says which of them still
+ * describe the filesystem, and nothing else runs before the program's first
+ * synchronous reads. So the store stays SEALED through the reconcile, and a
+ * reconcile that cannot vouch for its rows — the listing failed, came back
+ * short, or there is no supervisor to ask — does not open it. The kept store
+ * is emptied instead and this launch boots exactly as a cold one does: the
+ * rare failure costs a relaunch its speedup, never a stale byte.
+ *
+ * The previous process's own unacknowledged rows are the one thing the
+ * reconcile cannot judge, since it keeps own rows whatever the listing says.
+ * \`__residentBind\` drops them before any of this runs.
  *
  * \`takeBundle\` hands over the module bundle and drops the module's own
  * reference to it. The parsed bundle is the largest allocation in the facet
