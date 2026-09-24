@@ -761,7 +761,8 @@ function __residentHasUnder(prefix) {
  * next tenant a filesystem, and dropping the rows while leaving a cursor behind
  * would leave the store claiming to be current at a revision it holds nothing
  * from. Clearing the cursor forces the next incarnation through
- * \`__residentAdmit\` from scratch.
+ * \`__residentAdmit\` from scratch. \`__residentBoot\` clears the same way when a
+ * kept store cannot be reconciled.
  */
 function __residentClear() {
   if (!__residentReady) throw new Error("Nimbus: __residentClear before __residentBind");
@@ -769,7 +770,7 @@ function __residentClear() {
   sql.exec("DELETE FROM chunk");
   sql.exec("DELETE FROM file");
   sql.exec("DELETE FROM meta");
-  __residentSeal("the store was cleared for slot reuse");
+  __residentSeal("the store was cleared");
 }
 
 function __residentStats() {
@@ -789,26 +790,76 @@ function __residentStats() {
 }
 
 /**
- * Adopt the module map's bundle into the store — the first fill, and the one
- * that costs nothing extra, because those bytes are already in the facet.
+ * Make this incarnation's store servable before the program's first
+ * instruction. The one boot path the resident body takes.
  *
- * Idempotent per SLOT, not per process: a warm slot already holds these rows
- * and re-adopting would rewrite 45 MB to reach the same state. The cursor the
- * bundle was read at is the store's cursor after a cold adopt; on a warm slot
- * the PERSISTED cursor wins, because it describes what the rows actually are
- * and the module's cursor only describes what this spawn happened to stage.
+ * A COLD store — no persisted cursor — adopts this spawn's own snapshot, the
+ * module bundle dated at the cursor it was read at, and then fills the rest of
+ * the filesystem from the authority. Its rows are current as of the spawn
+ * whether or not the fill completes, which is all the protocol asks of a
+ * process's first block (§5.3); the first ACQUIRE's delta brings them the rest
+ * of the way.
+ *
+ * A KEPT store — a released keyed slot handed to the next spawn under the
+ * same credential — holds the LAST process's rows, dated against a cursor this
+ * incarnation has never applied. They are the asset (a relaunch fetches what
+ * changed, not the filesystem) and they are also arbitrarily old: only the
+ * reconcile says which of them still describe the filesystem, and nothing
+ * else runs before the program's first synchronous reads. So the store stays
+ * SEALED through the reconcile, and a reconcile that cannot vouch for its rows
+ * — the listing failed, came back short, or there is no supervisor to ask —
+ * does not open it. The kept store is emptied instead and this launch boots
+ * exactly as a cold one does: the rare failure costs a relaunch its speedup,
+ * never a stale byte.
+ *
+ * \`takeBundle\` hands over the module bundle and drops the module's own
+ * reference to it. The parsed bundle is the largest allocation in the facet
+ * before the program starts, so a cold boot releases it the moment it is
+ * adopted, and a kept store that reconciles never adopts it at all.
+ *
+ * Returns the cursor to publish and, when the boot fell short of the whole
+ * filesystem, why.
+ */
+async function __residentBoot(takeBundle, moduleCursor, supervisor) {
+  if (!__residentReady) throw new Error("Nimbus: __residentBoot before __residentBind");
+  let failure = null;
+  if (__residentCursor() !== null) {
+    let pass = null;
+    try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
+    catch (e) { failure = (e && e.message) || String(e); }
+    if (pass && pass.cursor) return { cursor: pass.cursor, failure: null };
+    failure = "a kept store could not be reconciled ("
+      + (failure || (pass && (pass.skipped || pass.incomplete)) || "the listing vouched for nothing")
+      + "); it was emptied and this launch booted from its own snapshot";
+  }
+  // A store with no cursor holds nothing any incarnation can date.
+  __residentClear();
+  const adopted = __residentAdoptModuleBundle(takeBundle(), moduleCursor);
+  // The pass that just failed is not retried. The store now holds what a
+  // cold launch whose fill failed holds, and its first ACQUIRE's delta
+  // brings it current the same way.
+  if (failure !== null) return { cursor: adopted, failure };
+  let pass = null;
+  try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
+  catch (e) { failure = (e && e.message) || String(e); }
+  return { cursor: (pass && pass.cursor) || adopted, failure };
+}
+
+/**
+ * Adopt the module map's bundle into an EMPTY store — the first fill, and the
+ * one that costs nothing extra, because those bytes are already in the facet.
+ * The cursor the bundle was read at becomes the store's.
  *
  * Returns the cursor the caller should publish, so there is one answer to
  * "what state does this facet cache" rather than two that can disagree.
  */
 function __residentAdoptModuleBundle(bundle, moduleCursor) {
   if (!__residentReady) throw new Error("Nimbus: __residentAdoptModuleBundle before __residentBind");
-  const persisted = __residentCursor();
-  if (persisted) {
-    // Warm slot. Its rows are already dated; do not touch them.
-    __residentSealed = false;
-    __residentSealReason = "";
-    return persisted;
+  if (__residentCursor() !== null) {
+    // Adopting over a kept store would re-date its rows at this spawn's
+    // cursor without checking one of them. __residentBoot reconciles a kept
+    // store, or empties it first.
+    throw new Error("Nimbus: a module bundle is adopted only into an empty store");
   }
   if (!moduleCursor || moduleCursor.epoch == null || moduleCursor.rev == null) {
     // An undated snapshot. Adopt NOTHING and serve an empty store.
