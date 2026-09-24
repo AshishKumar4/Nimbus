@@ -134,6 +134,11 @@ const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
 // what makes every browser they launch identifiable as this run's.
 process.env.NIMBUS_PROBE_RUN_ID = RUN_ID;
 
+// _driver.mjs appends each session a probe mints, and each DELETE of it, here.
+const LEDGER_PATH = join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
+rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name
+process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
+
 // ── Run lock ─────────────────────────────────────────────────────────
 
 const LOCK_PATH = join(tmpdir(), 'nimbus-behavioral-run.lock');
@@ -477,4 +482,33 @@ if (fail > 0) {
     console.log(`  - ${r.probe}`);
   }
 }
-process.exit(fail === 0 ? 0 : 1);
+
+/** Per minted sid: the probe that minted it, and the DELETE (if any) that got a 2xx. */
+function readLedger() {
+  let text = '';
+  try { text = readFileSync(LEDGER_PATH, 'utf8'); } catch { /* no probe minted a session */ }
+  const sessions = new Map();
+  for (const line of text.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const s = sessions.get(e.sid) ?? { probe: e.probe, deletedBy: null, last: 'none' };
+    if (e.event !== 'mint') {
+      s.last = e.status;
+      if (typeof e.status === 'number' && e.status >= 200 && e.status < 300) s.deletedBy = e.event;
+    }
+    sessions.set(e.sid, s);
+  }
+  return sessions;
+}
+
+const sessions = readLedger();
+const leaks = [...sessions].filter(([, s]) => !s.deletedBy);
+const byExitHook = [...sessions.values()].filter((s) => s.deletedBy === 'exit-delete').length;
+console.log(`──── sessions: ${sessions.size} minted, ${sessions.size - leaks.length} deleted (${byExitHook} by the driver's exit hook)`);
+if (leaks.length > 0) {
+  console.log(`SESSION LEAKS: ${leaks.length} minted session${leaks.length === 1 ? '' : 's'} never got a 2xx DELETE (ledger: ${LEDGER_PATH})`);
+  for (const [sid, s] of leaks) console.log(`  - ${s.probe}: ${sid} (last DELETE: ${s.last})`);
+} else {
+  rmSync(LEDGER_PATH, { force: true });
+}
+process.exit(fail === 0 && leaks.length === 0 ? 0 : 1);

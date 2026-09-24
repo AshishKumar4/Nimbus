@@ -10,6 +10,10 @@
 // Each helper is a thin wrapper over fetch + ws. No /api/_diag/*,
 // no /api/_test/*, no /api/processes — those are white-box surfaces
 
+import { execFileSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
@@ -85,6 +89,58 @@ async function awaitSocketOpen(ws, timeoutMs, what) {
 
 const sessionAttachPaths = new Map();
 
+// Every minted session is DELETEd at exit unless deleteSession already did; only SIGKILL or a crash escapes.
+const LEDGER = process.env.NIMBUS_PROBE_LEDGER || '';
+const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] || '');
+const undeleted = new Map(); // sid → the headers it was minted with
+let exitHookArmed = false;
+
+function ledger(event, sid, status) {
+  // One appendFileSync per line, so parallel probes never interleave lines.
+  if (LEDGER) appendFileSync(LEDGER, `${JSON.stringify({ probe: PROBE, sid, event, status })}\n`);
+}
+
+function noteMinted(sid, status) {
+  if (!exitHookArmed) {
+    exitHookArmed = true;
+    process.on('exit', deleteUndeletedSync);
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      process.on(signal, () => process.exit(130));
+    }
+  }
+  undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
+  ledger('mint', sid, status);
+}
+
+// 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
+const DELETE_SESSIONS = `
+const { base, sessions } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+Promise.all(sessions.map(([sid, headers]) =>
+  fetch(base + '/s/' + encodeURIComponent(sid) + '/', { method: 'DELETE', headers })
+    .then((r) => r.status, (e) => 'error: ' + e.message)))
+  .then((statuses) => process.stdout.write(JSON.stringify(statuses)));
+`;
+
+function deleteUndeletedSync() {
+  // NIMBUS_PROBE_KEEP_SESSIONS=1 leaves them for forensics (a dead session's next incarnation holds its _diag).
+  if (undeleted.size === 0 || process.env.NIMBUS_PROBE_KEEP_SESSIONS === '1') return;
+  const sessions = [...undeleted];
+  let statuses;
+  try {
+    statuses = JSON.parse(execFileSync(process.execPath, ['-e', DELETE_SESSIONS], {
+      input: JSON.stringify({ base: BASE, sessions }),
+      encoding: 'utf8',
+      timeout: 60_000,
+    }));
+  } catch (e) {
+    statuses = sessions.map(() => `error: ${String(e?.message ?? e).split('\n')[0]}`);
+  }
+  sessions.forEach(([sid], i) => {
+    console.log(`deleteSession (exit hook): ${sid} → ${statuses[i]}`);
+    ledger('exit-delete', sid, statuses[i]);
+  });
+}
+
 /**
  * Why `POST /new` produced no session, in terms an operator can act on.
  *
@@ -125,6 +181,7 @@ export async function mintSession() {
     const m = loc.match(/\/s\/([^/]+)/);
     if (!m) throw new Error(`unexpected Location: ${loc}`);
     sessionAttachPaths.set(m[1], loc);
+    noteMinted(m[1], r.status);
     return m[1];
   }
 
@@ -154,6 +211,7 @@ export async function mintSession() {
     AUTH_TOKEN = token;
     const wsPath = new URL(body.wsUrl, BASE).pathname + new URL(body.wsUrl, BASE).search;
     sessionAttachPaths.set(body.sessionId, wsPath);
+    noteMinted(body.sessionId, created.status);
     return body.sessionId;
   }
 
@@ -175,6 +233,8 @@ export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
     headers: requestHeaders({ 'X-Nimbus-Cleanup-Reason': reason }),
   });
   const text = await r.text().catch(() => '');
+  ledger('delete', sid, r.status);
+  if (r.ok) undeleted.delete(sid);
   return { ok: r.ok, status: r.status, body: text };
 }
 
