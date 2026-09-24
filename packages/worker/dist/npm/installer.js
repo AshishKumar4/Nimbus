@@ -28,7 +28,7 @@ import { packageLockMismatches, parsePackageLock, stringList, stringRecord } fro
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
+import { applySwaps, findRejects, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { Fanout, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout.js';
@@ -1183,6 +1183,13 @@ export class NpmInstaller {
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
      * to a top-level spec map. Emits `[swap]` notices via onProgress.
      *
+     * A swap rewrites the spec's RANGE to an npm alias of the swap target
+     * (`esbuild` → `npm:esbuild-wasm@<range>`), never its key: the key names
+     * the install directory, so `resolved`, node_modules, the bin links, the
+     * lockfile and package.json all keep the name the user declared. The
+     * resolver facet treats the alias as authoritative and does not announce
+     * the swap a second time.
+     *
      * G2: rejects are advisories — a listed package stays in the spec map
      * and installs like any other (npm parity: it cannot run here, but
      * install is the wrong place to say so). Each gets one `[npm] note:`
@@ -1498,21 +1505,12 @@ export class NpmInstaller {
             if (!pkgJson.dependencies)
                 pkgJson.dependencies = {};
             for (const spec of explicitPackages) {
-                // Find the resolved package matching this spec
+                // `resolved` is keyed by the name the user typed — a swapped
+                // package resolves as an alias under that name (applySwaps), so
+                // `esbuild` is found as `esbuild` and package.json records the
+                // user's key, never the swap target.
                 const { name } = parseExplicitPackageSpec(spec);
-                // W6: if a swap fired, the user typed `name` but `resolved` is
-                // keyed by the swap target (e.g. user typed 'esbuild', resolved
-                // has 'esbuild-wasm'). Look up via lookupSwap to bridge the
-                // gap; write the user's original key into package.json so the
-                // file remains the user's source-of-truth and isn't silently
-                // mutated to the swap target (which would break cross-environment
-                // pushes).
-                let pkg = resolved.get(name);
-                if (!pkg) {
-                    const swap = lookupSwap(name);
-                    if (swap)
-                        pkg = resolved.get(swap.to);
-                }
+                const pkg = resolved.get(name);
                 if (pkg) {
                     pkgJson.dependencies[name] = '^' + pkg.version;
                 }

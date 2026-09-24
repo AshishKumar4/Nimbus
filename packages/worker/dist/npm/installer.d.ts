@@ -162,6 +162,13 @@ export declare class NpmInstaller {
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
      * to a top-level spec map. Emits `[swap]` notices via onProgress.
      *
+     * A swap rewrites the spec's RANGE to an npm alias of the swap target
+     * (`esbuild` → `npm:esbuild-wasm@<range>`), never its key: the key names
+     * the install directory, so `resolved`, node_modules, the bin links, the
+     * lockfile and package.json all keep the name the user declared. The
+     * resolver facet treats the alias as authoritative and does not announce
+     * the swap a second time.
+     *
      * G2: rejects are advisories — a listed package stays in the spec map
      * and installs like any other (npm parity: it cannot run here, but
      * install is the wrong place to say so). Each gets one `[npm] note:`
