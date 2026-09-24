@@ -148,5 +148,8 @@ export declare function seedRuntimePackage(vfs: CredentialedVfs, homeDir: string
     /** One line per payload file, as it lands. */
     onProgress?: (line: string) => void;
 }): Promise<SeededRuntime>;
+/** A blob in {@link RUNTIME_BLOB_PIECE_BYTES} pieces; a stream abandoned
+ *  partway is cancelled, so no read outlives the install that started it. */
+export declare function blobPieces(blob: RuntimeBlob): AsyncGenerator<Uint8Array>;
 export {};
 //# sourceMappingURL=runtime-package.d.ts.map

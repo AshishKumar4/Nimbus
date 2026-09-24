@@ -245,7 +245,7 @@ async function writeVerifiedBlob(vfs, manifest, runtimePackage, file, target) {
 }
 /** A blob in {@link RUNTIME_BLOB_PIECE_BYTES} pieces; a stream abandoned
  *  partway is cancelled, so no read outlives the install that started it. */
-async function* blobPieces(blob) {
+export async function* blobPieces(blob) {
     if (blob instanceof Uint8Array) {
         for (let at = 0; at < blob.length; at += RUNTIME_BLOB_PIECE_BYTES) {
             yield blob.subarray(at, at + RUNTIME_BLOB_PIECE_BYTES);
@@ -295,6 +295,11 @@ async function* chunkPieces(reader) {
                 break;
             }
             let chunk = next.value;
+            // A source already cut into whole pieces (the catalog's) is passed on, not copied.
+            if (filled === 0 && chunk.length === RUNTIME_BLOB_PIECE_BYTES) {
+                yield chunk;
+                continue;
+            }
             while (chunk.length > 0) {
                 const take = Math.min(chunk.length, piece.length - filled);
                 piece.set(chunk.subarray(0, take), filled);

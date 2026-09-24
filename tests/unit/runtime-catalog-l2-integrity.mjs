@@ -156,6 +156,8 @@ function honestR2() {
 const envWith = (r2) => ({ NIMBUS_RUNTIME_CACHE: r2 });
 const text = (bytes) => new TextDecoder().decode(bytes);
 const readAll = async (stream) => new Uint8Array(await new Response(stream).arrayBuffer());
+// The L2 fill runs beside the consumer and is not awaited by it.
+const fillSettled = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 function poison(store, url, bytes) {
   store.set(url, new Response(bytes, { headers: { 'Cache-Control': 'public, max-age=31536000' } }));
@@ -176,6 +178,7 @@ const keys = await (async () => {
   const entry = catalog.runtimes.python.versions['1.0'];
   const manifest = await fetchManifest(envWith(r2), entry);
   await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
+  await fillSettled();
 
   const urls = [...store.keys()];
   assert.equal(urls.length, 3, `expected catalog+manifest+blob in L2, got ${JSON.stringify(urls)}`);
@@ -303,6 +306,7 @@ for (const url of Object.values(keys)) {
   const catalog = await fetchCatalog(envWith(r2));
   const manifest = await fetchManifest(envWith(r2), catalog.runtimes.python.versions['1.0']);
   await readAll(await fetchBlob(envWith(r2), manifest.files[0]));
+  await fillSettled();
 
   assert.ok(store.size > 0, 'nothing was cached, so this proves nothing about what caching allows');
   for (const [url, res] of store) {
@@ -390,27 +394,41 @@ for (const url of Object.values(keys)) {
   assert.deepEqual(await snapshot(), before, 'an unverifiable manifest was written into the shared cache');
 }
 
-// ── 9b. The blob fill re-reads R2, and stores only what verifies ─────────
+// ── 9b. A cold blob is read from R2 once, and fills L2 only once verified ─
 //
-// A blob streams to its consumer and fills L2 from a second R2 read, so
-// neither holds it whole. That second read is checked on its own: R2
-// answering it with other bytes stores nothing, and the first read, which
-// verified, is still served.
+// The consumer's read is the fill's read: the bytes go to the install and
+// to the colo cache from one R2 body. The cache entry is committed only
+// after the whole body hashed to its key, so a body that does not, or one
+// the consumer abandons, stores nothing.
 
 {
   const store = installCache();
   const r2 = honestR2();
-  const get = r2.get;
-  r2.get = async (key) => {
-    const reads = r2.reads.filter((k) => k === HONEST_BLOB_KEY).length;
-    return key === HONEST_BLOB_KEY && reads === 1 ? get(ATTACKER_BLOB_KEY) : get(key);
-  };
-
   const bytes = await readAll(await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]));
+  await fillSettled();
 
   assert.equal(text(bytes), text(HONEST_BLOB));
-  assert.equal(r2.reads.filter((k) => k === ATTACKER_BLOB_KEY).length, 1, 'the fill never re-read R2');
-  assert.equal(store.has(keys.blob), false, 'bytes that did not hash to their key were stored in L2');
+  assert.deepEqual(r2.reads, [HONEST_BLOB_KEY], 'a cold blob was read from R2 more than once');
+  assert.ok(store.has(keys.blob), 'a verified cold blob did not fill L2');
+  assert.equal(sha(new Uint8Array(await store.get(keys.blob).clone().arrayBuffer())), sha(HONEST_BLOB));
+}
+
+{
+  const store = installCache();
+  const r2 = honestR2();
+  const file = { ...JSON.parse(honestManifestText).files[0], sha256: sha(ATTACKER_BLOB) };
+  await assert.rejects(async () => readAll(await fetchBlob(envWith(r2), file)), /sha256 mismatch for blob/);
+  await fillSettled();
+  assert.equal(store.size, 0, 'bytes that did not hash to their key were stored in L2');
+}
+
+{
+  const store = installCache();
+  const r2 = honestR2();
+  const stream = await fetchBlob(envWith(r2), JSON.parse(honestManifestText).files[0]);
+  await stream.cancel('install abandoned');
+  await fillSettled();
+  assert.equal(store.size, 0, 'a blob its consumer abandoned was stored in L2');
 }
 
 // ── 10. The Cache API is reachable only through the checked helpers ────
