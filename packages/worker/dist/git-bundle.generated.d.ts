@@ -8,8 +8,8 @@
  * Consumed by git-network-facet.ts: passed to LOADER.load()'s
  * `modules` record so the facet can `import` isomorphic-git.
  *
- * Size: 486.1 KiB
+ * Size: 487.5 KiB
  */
 export declare const GIT_BUNDLE_CODE: string;
-export declare const GIT_BUNDLE_SIZE = 497764;
+export declare const GIT_BUNDLE_SIZE = 499229;
 //# sourceMappingURL=git-bundle.generated.d.ts.map

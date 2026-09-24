@@ -1,11 +1,15 @@
 diff --git a/index.js b/index.js
-index 80a5167..3d5ac56 100644
+index 80a5167..8cda218 100644
 --- a/index.js
 +++ b/index.js
-@@ -969 +969 @@ class GitIndex {
+@@ -906,0 +907,3 @@ class GitIndex {
++      // Its stat data was taken from the file just now, as git's CE_UPTODATE marks an entry
++      // this process has checked: it is exempt from the racily-clean smudge when written.
++      uptodate: true,
+@@ -969 +972 @@ class GitIndex {
 -  async toObject() {
 +  async toObject({ entries = this.entries } = {}) {
-@@ -974 +974,6 @@ class GitIndex {
+@@ -974 +977,6 @@ class GitIndex {
 -    writer.writeUInt32BE(this.entriesFlat.length);
 +    writer.writeUInt32BE(entries.reduce(
 +      (count, entry) => count + (entry.stages.length > 1
@@ -13,22 +17,62 @@ index 80a5167..3d5ac56 100644
 +        : 1),
 +      0
 +    ));
-@@ -977 +982 @@ class GitIndex {
+@@ -977 +985 @@ class GitIndex {
 -    for (const entry of this.entries) {
 +    for (const entry of entries) {
-@@ -1075,0 +1081 @@ class GitIndexManager {
+@@ -1066,0 +1075,37 @@ async function isIndexStale(fs, filepath, cache) {
++/**
++ * read-cache.c is_racy_timestamp: an entry whose mtime is not older than the
++ * index file's own (as this process read or last wrote it) may have been
++ * rewritten, same size, in the second the index was written, so its matching
++ * stat data proves nothing and its content decides. The comparison is in
++ * whole seconds because compareStats compares mtime in whole seconds. An
++ * entry this process has checked (uptodate) and a gitlink are never racy.
++ */
++function isRacilyClean(cache, gitdir, entry) {
++  const indexStats = cache[IndexCache] && cache[IndexCache].stats.get(`${gitdir}/index`);
++  if (!indexStats || entry.uptodate || entry.mode === 0o160000) return false
++  const indexSeconds = normalizeStats(indexStats).mtimeSeconds;
++  return indexSeconds !== 0 && entry.mtimeSeconds >= indexSeconds
++}
++
++/**
++ * read-cache.c ce_smudge_racily_clean_entry, as the index is written: a racily
++ * clean entry whose stat still matches a file that no longer holds its blob
++ * gets size 0, so the rewrite stays visible once a later index write leaves
++ * the entry older than the index. Only a worktree at gitdir's parent is read.
++ */
++async function smudgeRacilyClean({ fs, gitdir, cache, index }) {
++  const dir = gitdir === '.git' ? '.' : gitdir.endsWith('/.git') ? gitdir.slice(0, -5) : null;
++  if (dir === null) return
++  for (const entry of index.entriesMap.values()) {
++    if (entry.stages.length > 1 || !isRacilyClean(cache, gitdir, entry)) continue
++    const filepath = join(dir, entry.path);
++    const stats = await fs.lstat(filepath);
++    // Gone, or already stat-dirty: the next look hashes it anyway.
++    if (!stats || compareStats(entry, stats)) continue
++    const object = stats.isSymbolicLink() ? await fs.readlink(filepath) : await fs.read(filepath);
++    if (object === null) continue
++    const oid = await shasum(GitObject.wrap({ type: 'blob', object }));
++    if (oid !== entry.oid) entry.size = 0;
++  }
++}
++
+@@ -1075,0 +1121 @@ class GitIndexManager {
 +   * @param {boolean} [opts.trustIndexCache=false] - Skip the stat check when the caller exclusively owns index mutation.
-@@ -1080 +1086,4 @@ class GitIndexManager {
+@@ -1080 +1126,4 @@ class GitIndexManager {
 -  static async acquire({ fs, gitdir, cache, allowUnmerged = true }, closure) {
 +  static async acquire(
 +    { fs, gitdir, cache, allowUnmerged = true, trustIndexCache = false },
 +    closure
 +  ) {
-@@ -1095 +1104,2 @@ class GitIndexManager {
+@@ -1095 +1144,2 @@ class GitIndexManager {
 -      if (await isIndexStale(fs, filepath, theIndexCache)) {
 +      if (!theIndexCache.map.has(filepath) ||
 +          (!trustIndexCache && await isIndexStale(fs, filepath, theIndexCache))) {
-@@ -1117,0 +1128,64 @@ class GitIndexManager {
+@@ -1105,0 +1156 @@ class GitIndexManager {
++        await smudgeRacilyClean({ fs, gitdir, cache, index });
+@@ -1117,0 +1169,64 @@ class GitIndexManager {
 +
 +  static async acquireFreshCheckout(
 +    { fs, gitdir, priorChunks, priorEntries, deferFragmentCleanup },
@@ -93,12 +137,12 @@ index 80a5167..3d5ac56 100644
 +    }
 +    return { result, indexEntries }
 +  }
-@@ -1809,0 +1884 @@ class GitConfig {
+@@ -1809,0 +1925 @@ class GitConfig {
 +    // The file's final newline ends its last line; it does not open another.
-@@ -1811 +1886 @@ class GitConfig {
+@@ -1811 +1927 @@ class GitConfig {
 -      ? text.split('\n').map(line => {
 +      ? text.replace(/\n$/, '').split('\n').map(line => {
-@@ -1916,2 +1991,14 @@ class GitConfig {
+@@ -1916,2 +2032,14 @@ class GitConfig {
 -            // Reuse existing section
 -            this.parsedConfig.splice(sectionIndex + 1, 0, newConfig);
 +            // As git does: after the last key of the section's last occurrence.
@@ -115,17 +159,17 @@ index 80a5167..3d5ac56 100644
 +              if (this.parsedConfig[i].name != null) insertAt = i + 1;
 +            }
 +            this.parsedConfig.splice(insertAt, 0, newConfig);
-@@ -1952 +2039,2 @@ class GitConfig {
+@@ -1952 +2080,2 @@ class GitConfig {
 -      .join('\n')
 +      .map(line => `${line}\n`)
 +      .join('')
-@@ -3175,0 +3264 @@ class GitPackIndex {
+@@ -3175,0 +3305 @@ class GitPackIndex {
 +        const oid = await shasum(GitObject.wrap({ type, object: data }));
-@@ -3178,0 +3268 @@ class GitPackIndex {
+@@ -3178,0 +3309 @@ class GitPackIndex {
 +          oid,
-@@ -3217 +3306,0 @@ class GitPackIndex {
+@@ -3217 +3347,0 @@ class GitPackIndex {
 -    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-@@ -3234 +3323,6 @@ class GitPackIndex {
+@@ -3234 +3364,6 @@ class GitPackIndex {
 -      if (o.oid) continue
 +      if (o.oid) {
 +        hashes.push(o.oid);
@@ -133,35 +177,35 @@ index 80a5167..3d5ac56 100644
 +        crcs[o.oid] = o.crc;
 +        continue
 +      }
-@@ -3236,2 +3329,0 @@ class GitPackIndex {
+@@ -3236,2 +3370,0 @@ class GitPackIndex {
 -        p.readDepth = 0;
 -        p.externalReadDepth = 0;
-@@ -3239 +3330,0 @@ class GitPackIndex {
+@@ -3239 +3371,0 @@ class GitPackIndex {
 -        objectsByDepth[p.readDepth] += 1;
-@@ -3264,0 +3356,5 @@ class GitPackIndex {
+@@ -3264,0 +3397,5 @@ class GitPackIndex {
 +    const fanout = new Uint32Array(256);
 +    for (const hash of this.hashes) {
 +      fanout[parseInt(hash.slice(0, 2), 16)]++;
 +    }
 +    let count = 0;
-@@ -3266,4 +3362 @@ class GitPackIndex {
+@@ -3266,4 +3403 @@ class GitPackIndex {
 -      let count = 0;
 -      for (const hash of this.hashes) {
 -        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
 -      }
 +      count += fanout[i];
-@@ -3307 +3400 @@ class GitPackIndex {
+@@ -3307 +3441 @@ class GitPackIndex {
 -  async read({ oid }) {
 +  async read({ oid, readContext = { depth: 0 } }) {
-@@ -3310 +3402,0 @@ class GitPackIndex {
+@@ -3310 +3443,0 @@ class GitPackIndex {
 -        this.externalReadDepth++;
-@@ -3317 +3409 @@ class GitPackIndex {
+@@ -3317 +3450 @@ class GitPackIndex {
 -    return this.readSlice({ start })
 +    return this.readSlice({ start, readContext })
-@@ -3320 +3412 @@ class GitPackIndex {
+@@ -3320 +3453 @@ class GitPackIndex {
 -  async readSlice({ start }) {
 +  async readSlice({ start, readContext = { depth: 0 } }) {
-@@ -3324,61 +3416,69 @@ class GitPackIndex {
+@@ -3324,61 +3457,69 @@ class GitPackIndex {
 -    this.readDepth++;
 -    const types = {
 -      0b0010000: 'commit',
@@ -292,9 +336,9 @@ index 80a5167..3d5ac56 100644
 +      return { type, format: 'content', object }
 +    } finally {
 +      readContext.depth--;
-@@ -3386 +3485,0 @@ class GitPackIndex {
+@@ -3386 +3526,0 @@ class GitPackIndex {
 -    return { type, format: 'content', object }
-@@ -3391,0 +3491,12 @@ const PackfileCache = Symbol('PackfileCache');
+@@ -3391,0 +3532,12 @@ const PackfileCache = Symbol('PackfileCache');
 +const packIndexCacheKey = (gitdir, filename) =>
 +  `${gitdir}/objects/pack/${filename}`;
 +
@@ -307,32 +351,45 @@ index 80a5167..3d5ac56 100644
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
-@@ -3440 +3551 @@ async function readObjectPacked({
+@@ -3440 +3592 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4486,0 +4598,2 @@ class GitWalkerFs {
+@@ -4486,0 +4639,2 @@ class GitWalkerFs {
 +    // Stat refreshes found during a walk, written in one index write when it ends.
 +    this._refreshed = [];
-@@ -4520,0 +4634,2 @@ class GitWalkerFs {
+@@ -4520,0 +4675,2 @@ class GitWalkerFs {
 +    // Only directories are entered: a symlink to one is a link, as git's lstat walk sees it.
 +    if ((await entry.type()) !== 'tree') return null
-@@ -4525 +4640,3 @@ class GitWalkerFs {
+@@ -4525 +4681,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -4571,0 +4689,3 @@ class GitWalkerFs {
+@@ -4571,0 +4730,3 @@ class GitWalkerFs {
 +      } else if ((await entry.mode()) === 0o120000) {
 +        // A symlink's blob is its target, not the file it points at.
 +        entry._content = new Uint8Array(await fs.readlink(`${dir}/${entry._fullpath}`));
-@@ -4621,5 +4741 @@ class GitWalkerFs {
+@@ -4604 +4765,4 @@ class GitWalkerFs {
+-        if (!stage || compareStats(stats, stage, filemode, trustino)) {
++        // Matching stat data is trusted only for an entry older than the index (read-cache.c ie_match_stat).
++        const statDirty = !!stage && compareStats(stats, stage, filemode, trustino);
++        const racy = !!stage && !statDirty && isRacilyClean(cache, gitdir, stage);
++        if (!stage || statDirty || racy) {
+@@ -4614 +4778,2 @@ class GitWalkerFs {
+-            // 2) and only if we need to (because other stats differ)
++            // 2) and only if we need to: other stats differ, or the entry is racily clean and an
++            //    index written now leaves it older than the index, as git's refresh rewrites one.
+@@ -4619 +4784 @@ class GitWalkerFs {
+-              compareStats(stats, stage, filemode, trustino)
++              (statDirty || racy)
+@@ -4621,5 +4786 @@ class GitWalkerFs {
 -              index.insert({
 -                filepath: entry._fullpath,
 -                stats,
 -                oid: oid,
 -              });
 +              self._refreshed.push({ filepath: entry._fullpath, stats, oid });
-@@ -4637,0 +4754,14 @@ class GitWalkerFs {
+@@ -4637,0 +4799,14 @@ class GitWalkerFs {
 +  async flush() {
 +    const refreshed = this._refreshed;
 +    if (refreshed.length === 0) return
@@ -347,26 +404,26 @@ index 80a5167..3d5ac56 100644
 +    });
 +  }
 +
-@@ -4831 +4961,5 @@ async function _walk({
+@@ -4831 +5006,5 @@ async function _walk({
 -  return walk(root)
 +  const result = await walk(root);
 +  for (const walker of walkers) {
 +    if (walker.flush) await walker.flush();
 +  }
 +  return result
-@@ -5394 +5528,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
+@@ -5394 +5573,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
 -let supportsCompressionStream = null;
 +// As for inflate: workerd's CompressionStream costs ~9 ms a call, pako a small object microseconds.
 +let supportsCompressionStream = false;
-@@ -5522 +5657 @@ async function addToIndex({
+@@ -5522 +5702 @@ async function addToIndex({
 -  const promises = filepath.map(async currentFilepath => {
 +  const addPath = async currentFilepath => {
-@@ -5565,0 +5701 @@ async function addToIndex({
+@@ -5565,0 +5746 @@ async function addToIndex({
 +      // Link text verbatim, as git stores it and as the workdir walker hashes it.
-@@ -5567 +5703 @@ async function addToIndex({
+@@ -5567 +5748 @@ async function addToIndex({
 -        ? await fs.readlink(join(dir, currentFilepath)).then(posixifyPathBuffer)
 +        ? await fs.readlink(join(dir, currentFilepath))
-@@ -5573 +5709,7 @@ async function addToIndex({
+@@ -5573 +5754,7 @@ async function addToIndex({
 -  });
 +  };
 +  // Without `parallel`, one path at a time: each holds its bytes and a deflate stream until written.
@@ -375,7 +432,7 @@ index 80a5167..3d5ac56 100644
 +    promises.push(addPath(currentFilepath));
 +    if (!parallel) await promises[promises.length - 1].catch(() => {});
 +  }
-@@ -6656,5 +6798,7 @@ const worthWalking = (filepath, root) => {
+@@ -6656,5 +6843,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -388,25 +445,25 @@ index 80a5167..3d5ac56 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -6811 +6955,4 @@ async function _checkout({
+@@ -6811 +7000,4 @@ async function _checkout({
 -            ([method]) => method === 'delete' || method === 'delete-index'
 +            ([method]) =>
 +              method === 'delete' ||
 +              method === 'delete-index' ||
 +              method === 'update-blob-to-tree'
-@@ -6813 +6960 @@ async function _checkout({
+@@ -6813 +7005 @@ async function _checkout({
 -          .map(async function([method, fullpath]) {
 +          .map(async function([method, fullpath, present]) {
-@@ -6815 +6962 @@ async function _checkout({
+@@ -6815 +7007 @@ async function _checkout({
 -            if (method === 'delete') {
 +            if (method === 'delete' || (method === 'update-blob-to-tree' && present)) {
-@@ -6833 +6980 @@ async function _checkout({
+@@ -6833 +7025 @@ async function _checkout({
 -        if (method === 'rmdir' || method === 'rmdir-index') {
 +        if (method === 'rmdir' || method === 'rmdir-index' || method === 'update-dir-to-blob') {
-@@ -6836 +6983 @@ async function _checkout({
+@@ -6836 +7028 @@ async function _checkout({
 -            if (method === 'rmdir') {
 +            if (method !== 'rmdir-index') {
-@@ -6862 +7009,6 @@ async function _checkout({
+@@ -6862 +7054,6 @@ async function _checkout({
 -        .filter(([method]) => method === 'mkdir' || method === 'mkdir-index')
 +        .filter(
 +          ([method]) =>
@@ -414,21 +471,21 @@ index 80a5167..3d5ac56 100644
 +            method === 'mkdir-index' ||
 +            method === 'update-blob-to-tree'
 +        )
-@@ -6882,0 +7035 @@ async function _checkout({
+@@ -6882,0 +7080 @@ async function _checkout({
 +          method === 'update-dir-to-blob' ||
-@@ -6924,0 +7078 @@ async function _checkout({
+@@ -6924,0 +7123 @@ async function _checkout({
 +                  method === 'update-dir-to-blob' ||
-@@ -7013,2 +7167,3 @@ async function _checkout({
+@@ -7013,2 +7212,3 @@ async function _checkout({
 -      // detached head
 -      await GitRefManager.writeRef({ fs, gitdir, ref: 'HEAD', value: oid });
 +      // detached head, at the commit: an annotated tag's own object is not one
 +      const { oid: commitOid } = await resolveCommit({ fs, cache, gitdir, oid });
 +      await GitRefManager.writeRef({ fs, gitdir, ref: 'HEAD', value: commitOid });
-@@ -7170 +7325,2 @@ async function analyze({
+@@ -7170 +7370,2 @@ async function analyze({
 -              return ['rmdir-index', fullpath]
 +              // The directory goes once its files have, as git removes an emptied one.
 +              return [(await workdir.type()) === 'tree' ? 'rmdir' : 'rmdir-index', fullpath]
-@@ -7270 +7426,7 @@ async function analyze({
+@@ -7270 +7471,7 @@ async function analyze({
 -              return ['update-dir-to-blob', fullpath, await commit.oid()]
 +              // The directory's files go first, then the directory, then the blob takes its place.
 +              return [
@@ -437,7 +494,7 @@ index 80a5167..3d5ac56 100644
 +                await commit.oid(),
 +                await commit.mode(),
 +              ]
-@@ -7273 +7435,6 @@ async function analyze({
+@@ -7273 +7480,6 @@ async function analyze({
 -              return ['update-blob-to-tree', fullpath]
 +              // A file or link where the commit has a directory: it goes, unless it holds local changes.
 +              const present = !!workdir && (await workdir.type()) !== 'tree';
@@ -445,11 +502,11 @@ index 80a5167..3d5ac56 100644
 +                return ['conflict', fullpath]
 +              }
 +              return ['update-blob-to-tree', fullpath, present]
-@@ -7298 +7465,2 @@ async function analyze({
+@@ -7298 +7510,2 @@ async function analyze({
 -      } else if (parent && parent[0] === 'rmdir') {
 +      } else if (parent && (parent[0] === 'rmdir' || parent[0] === 'update-dir-to-blob')) {
 +        // A directory is removed after everything in it.
-@@ -7310,9 +7478,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7523,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -464,7 +521,7 @@ index 80a5167..3d5ac56 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7521,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7357,6 +7566,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -484,7 +541,7 @@ index 80a5167..3d5ac56 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7534,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7364,7 +7579,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -492,12 +549,12 @@ index 80a5167..3d5ac56 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7535,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7372,4 +7580,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7537,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7377 +7582,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -509,7 +566,7 @@ index 80a5167..3d5ac56 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -7486,0 +7656,381 @@ async function checkout({
+@@ -7486,0 +7701,381 @@ async function checkout({
 +const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 +const freshCheckoutMaxDirectories = 20_000;
 +const freshCheckoutMaxDirectoryBytes = 4 * 1024 * 1024;
@@ -891,25 +948,25 @@ index 80a5167..3d5ac56 100644
 +  }
 +}
 +
-@@ -8155 +8705 @@ async function hasObjectPacked({
+@@ -8155 +8750 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +9443,3 @@ async function _fetch({
+@@ -8893 +9488,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -8933,0 +9486 @@ async function _init({
+@@ -8933,0 +9531 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9491 @@ async function _init({
+@@ -8938 +9536 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9493 @@ async function _init({
+@@ -8940,3 +9538 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9036 +9587,11 @@ async function _clone({
+@@ -9036 +9632,11 @@ async function _clone({
 -    if (fetchHead === null) return
 +    if (fetchHead === null) {
 +      // An empty remote: git still tracks the branch HEAD will be born on, and a
@@ -922,7 +979,7 @@ index 80a5167..3d5ac56 100644
 +      await GitConfigManager.save({ fs, gitdir, config });
 +      return
 +    }
-@@ -9052,0 +9614,14 @@ async function _clone({
+@@ -9052,0 +9659,14 @@ async function _clone({
 +    if (singleBranch) {
 +      // As git clone --single-branch: later fetches bring only the ref checked out.
 +      const fullref = await GitRefManager.expand({ fs, gitdir, ref });
@@ -937,21 +994,21 @@ index 80a5167..3d5ac56 100644
 +        await GitConfigManager.save({ fs, gitdir, config });
 +      }
 +    }
-@@ -9552 +10127 @@ async function expandOidPacked({
+@@ -9552 +10172 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -14732 +15307 @@ async function readTree({
+@@ -14732 +15352 @@ async function readTree({
 - * @param {string} args.filepath - The path to the file to remove from the index
 + * @param {string|string[]} args.filepath - The path to the file to remove from the index, or paths removed under one index write
-@@ -14757 +15332,3 @@ async function remove({
+@@ -14757 +15377,3 @@ async function remove({
 -        index.delete({ filepath });
 +        for (const path of Array.isArray(filepath) ? filepath : [filepath]) {
 +          index.delete({ filepath: path });
 +        }
-@@ -16512,0 +17090,2 @@ async function statusMatrix({
+@@ -16512,0 +17135,2 @@ async function statusMatrix({
 +    const config = await GitConfigManager.get({ fs, gitdir });
 +    const filemode = (await config.get('core.filemode')) !== false;
-@@ -16575 +17154,15 @@ async function statusMatrix({
+@@ -16575 +17199,15 @@ async function statusMatrix({
 -        const entry = [undefined, headOid, workdirOid, stageOid];
 +        // A mode change is a change, as in git; the exec bit only where core.filemode
 +        // trusts it, else a file keeps its index mode (ce_mode_from_stat).
@@ -968,6 +1025,6 @@ index 80a5167..3d5ac56 100644
 +          workdirOid === '42' ? workdirOid : key(workdirOid, workdirMode),
 +          key(stageOid, stageMode),
 +        ];
-@@ -17576 +18169 @@ export default index;
+@@ -17576 +18214 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };

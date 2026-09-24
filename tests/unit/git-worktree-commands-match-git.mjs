@@ -8,7 +8,8 @@
 // git's hunk placement is not a contract, and unified-diff-applies.mjs holds
 // the patches to `git apply` instead. checkout, reset --hard, merge and pull
 // (through the network facet) across a link/directory type change must leave
-// the worktree and index real git leaves, and the link's target untouched.
+// the worktree and index real git leaves, and the link's target untouched. A
+// same-size rewrite in the second of `git add` shows in both, as it does in git.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -566,6 +567,7 @@ try {
       hasLegacySymlinkUnder: async (path) => getSymlinkRegistry(vfs).hasAtOrBelow(path),
       readdir: async (path) => bridge.readdir(path),
       readFileBytes: async (path) => bridge.readFile(path),
+      readlink: async (path) => bridge.readlink(path),
       fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
       writeBatchStream: async (stream) => user.writeStream(stream),
       async stdout() {},
@@ -584,6 +586,73 @@ try {
   const pull = await response.json();
   assert.equal(pull.success, true, `pull: ${pull.error}`);
   await sameWorktree('pull the directories over the links', pulled);
+
+  // ── A same-size rewrite in the second the index was written ──
+  // Its stat still matches the index entry, so only git's racily-clean rule
+  // (read-cache.c is_racy_timestamp) sees it: an entry whose mtime is not older
+  // than the index file's is compared by content. The clock is never moved:
+  // each step starts on a fresh second, and one that crosses into the next is
+  // run again. Both gits see every step.
+  const racy = { disk: join(diskRoot, 'racy'), virtual: `${vfsRoot}/racy` };
+  mkdirSync(racy.disk);
+  sh(racy.disk, ['init', '-q', '-b', 'main']);
+  mirror(racy.disk, racy.virtual);
+  const rewrite = (name, content) => {
+    writeFileSync(join(racy.disk, name), content);
+    user.writeFile(`${racy.virtual.slice(1)}/${name}`, content);
+  };
+  const both = async (args) => {
+    const expected = realGit(racy.disk, args);
+    const actual = await nimbusGit(racy.virtual, args);
+    assert.equal(expected.code, 0, `git ${args.join(' ')}: ${expected.stderr}`);
+    assert.equal(actual.code, 0, `nimbus git ${args.join(' ')}: ${actual.stderr}`);
+  };
+  /** `step` inside one wall-clock second, from its start. */
+  const withinOneSecond = async (step) => {
+    for (;;) {
+      await Bun.sleep(1000 - (Date.now() % 1000));
+      const start = Math.floor(Date.now() / 1000);
+      await step();
+      if (Math.floor(Date.now() / 1000) === start) return;
+    }
+  };
+  const status = async () => {
+    const out = (await nimbusGit(racy.virtual, ['status'])).stdout.toString().replace(/\x1b\[[0-9;]*m/g, '');
+    return out === 'nothing to commit, working tree clean\n' ? '' : out;
+  };
+  const agree = async (label) => {
+    assert.equal(await status(), realGit(racy.disk, ['status', '--porcelain']).stdout.toString(), `${label}: status`);
+    for (const args of [['diff'], ['diff', '--cached'], ['ls-files', '-m'], ['diff', 'HEAD', '--name-status']]) {
+      await same(`${label}: ${args.join(' ')}`, racy, args);
+    }
+  };
+  rewrite('f', 'base\n');
+  await both(['add', 'f']);
+  await both(['commit', '-qm', 'base']);
+  // Rewritten to its committed bytes, staged, and rewritten again, all in one second.
+  await withinOneSecond(async () => {
+    rewrite('f', 'base\n');
+    await both(['add', 'f']);
+    rewrite('f', 'next\n');
+  });
+  await agree('a same-second rewrite after add');
+  assert.equal(realGit(racy.disk, ['status', '--porcelain']).stdout.toString(), ' M f\n');
+  await both(['commit', '-qam', 'next']);
+  await agree('commit -am of a same-second rewrite');
+  const committed = join(scratch, 'racy-from-nimbus');
+  copyOut(racy.virtual, committed);
+  assert.equal(realGit(committed, ['show', 'HEAD:f']).stdout.toString(), 'next\n', 'commit -am committed the rewrite');
+  // A later index write that never looks at the file keeps the rewrite visible:
+  // git smudges the racily clean entry as it writes (ce_smudge_racily_clean_entry).
+  await withinOneSecond(async () => {
+    rewrite('f', 'next\n');
+    await both(['add', 'f']);
+    rewrite('f', 'last\n');
+  });
+  await Bun.sleep(1000 - (Date.now() % 1000));
+  rewrite('g', 'g\n');
+  await both(['add', 'g']);
+  await agree('a same-second rewrite, then another file staged a second later');
 
   // ── An unborn repository: HEAD names no commit yet ──
   const unborn = join(diskRoot, 'unborn');

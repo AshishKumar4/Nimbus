@@ -80,6 +80,12 @@ published independently in the `@nimbus-sh` npm scope.
   user who does not own them.
 - `git ls-files --others` lists a file or link that sits where the index
   has a directory.
+- A file rewritten with the same size in the second it was staged shows in
+  `git diff`, `git status` and `git commit -am`. Its stat data still matched
+  the index entry, and Nimbus trusted it. Now, as in git, an entry whose
+  mtime is not older than the index file is compared by content, and writing
+  the index marks such an entry whose file no longer matches it, so a later
+  write cannot hide the change.
 
 ### VFS
 
