@@ -318,7 +318,13 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
-    options: z.object({ namespace: z.boolean().optional() }).strict().optional(),
+    options: z.object({
+        namespace: z.boolean().optional(),
+        push: z.object({
+            roots: z.array(z.string().max(4096)).max(64),
+            exclude: z.array(z.string().max(255)).max(64).optional(),
+        }).strict().optional(),
+    }).strict().optional(),
 });
 // Also facet-supplied, so also untrusted. `after` is a resume key from a
 // previous page and is bounded like any other path; `limit` is clamped rather

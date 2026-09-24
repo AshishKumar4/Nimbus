@@ -1567,7 +1567,7 @@ const __fsMod = (() => {
   // envelope — there is no reason to invent a second surface for it.
   const _stats = globalThis.__nimbusVfsCoherence
     || (globalThis.__nimbusVfsCoherence = {
-      fills: 0, filledBytes: 0, invalidations: 0, poisons: 0,
+      fills: 0, filledBytes: 0, invalidations: 0, poisons: 0, pushes: 0,
       reconciles: 0, selfWrites: 0, misses: 0,
       // ACQUIREs that got no answer (see _acquireBarrier), and the last reason.
       barrierFailures: 0, lastBarrierFailure: "",
@@ -1973,6 +1973,7 @@ const __fsMod = (() => {
       _nsRetire(begin);
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
+      _stats.pushes += applied.pushed || 0;
       return applied.dropped;
     }
     // Paths that held content before this eviction are the ones worth

@@ -25,6 +25,7 @@ import {
   runScenarios,
   sleep,
   until,
+  residentDataPlan,
 } from './lib/resident-body.mjs';
 
 const APP = '/home/user/app';
@@ -62,10 +63,16 @@ async function boot(files = {}, overrides = () => ({})) {
     authority.kfs.writeFile(`home/user/app/${path}`, text, { mode: 0o644 });
   }
   const { supervisor, log } = facetSupervisor(authority, overrides(authority));
+  // Run from outside the app, holding it by plan: its files are then not
+  // under the push roots, so a peer's change reaches a held row through
+  // eviction and refetch, the protocol this file is about. (Pushed content,
+  // which replaces a held row in place, is resident-pushed-content.mjs.)
   await launchResident({
     authority,
     program: PROGRAM,
     env: { SUPERVISOR: supervisor },
+    cwd: '/srv/elsewhere',
+    dataPlan: await residentDataPlan(authority, '/home/user/app'),
     cursor: authority.cursor(),
   });
   return { authority, log, probe: globalThis.__probe };

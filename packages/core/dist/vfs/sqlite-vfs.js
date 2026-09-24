@@ -42,7 +42,7 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
+import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
 import { CHUNK_SIZE, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, SQL_MAX_BOUND_PARAMETERS, } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -2893,6 +2893,13 @@ export class SqliteVFS {
         // Visibility is list()'s: a name exists for this caller when every
         // directory above it is searchable. Answered once per parent.
         const reachable = new Map();
+        const roots = (options.push?.roots ?? []).map((root) => normalizeVfsPath(root));
+        const exclude = new Set(options.push?.exclude ?? []);
+        // One answer carries at most what one batch read may: a bound on the
+        // message, not on the data — an omitted file is fetched by range.
+        let pushBudget = FS_READ_BATCH_REQUEST_BYTES;
+        const pushable = (logical) => roots.some((root) => ((root === '' || logical === root || logical.startsWith(root + '/'))
+            && !logical.slice(root.length).split('/').some((segment) => exclude.has(segment))));
         for (const entry of delta.paths) {
             const logical = this.logicalPath(entry.path, cred);
             if (logical === null)
@@ -2919,12 +2926,27 @@ export class SqliteVFS {
                 paths.push({ path: logical, rev: entry.rev, stat: null });
                 continue;
             }
-            paths.push({
+            const reported = {
                 path: logical,
                 rev: entry.rev,
                 stat: { ...this.statOf(inode), revision: this.pathRevision(entry.path) },
                 ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
-            });
+            };
+            if (inode.kind === 'file' && roots.length > 0 && pushable(logical)) {
+                if (inode.size > pushBudget) {
+                    reported.bytesOmitted = true;
+                }
+                else {
+                    try {
+                        reported.bytes = this.readFileUncached(logical, cred);
+                        pushBudget -= reported.bytes.byteLength;
+                    }
+                    catch {
+                        // Unreadable to this caller: the name and stat still stand.
+                    }
+                }
+            }
+            paths.push(reported);
         }
         return { epoch: delta.epoch, rev: delta.rev, paths, poison: false, namespace: true };
     }

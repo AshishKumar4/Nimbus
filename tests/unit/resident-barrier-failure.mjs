@@ -29,6 +29,7 @@ import {
   runScenarios,
   sleep,
   until,
+  residentDataPlan,
 } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
@@ -64,7 +65,17 @@ async function boot() {
   }
   const handle = facetSupervisor(authority, overrides);
   forward = handle.forward;
-  await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
+  // Run from outside the app, holding it by plan: its files are not under the
+  // push roots, so a changed row comes back through eviction and refetch,
+  // which is what a failed barrier has to get right.
+  await launchResident({
+    authority,
+    program: PROGRAM,
+    env: { SUPERVISOR: handle.supervisor },
+    cwd: '/srv/elsewhere',
+    dataPlan: await residentDataPlan(authority, '/home/user/app'),
+    cursor: authority.cursor(),
+  });
   const probe = globalThis.__probe;
   assert.equal(probe.read(F), 'v1', 'the boot fill holds the file');
   return { authority, fault, probe, log: handle.log, forward };

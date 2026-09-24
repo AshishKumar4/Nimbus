@@ -47,6 +47,7 @@ import {
   LRU_MAX_ENTRIES,
   BATCH_SIZE,
   FS_LIST_PAGE_LIMIT,
+  FS_READ_BATCH_REQUEST_BYTES,
   INODE_CACHE_MAX_ENTRIES,
 } from '../constants.js';
 import {
@@ -3664,6 +3665,15 @@ export class SqliteVFS {
     // Visibility is list()'s: a name exists for this caller when every
     // directory above it is searchable. Answered once per parent.
     const reachable = new Map<string, boolean>();
+    const roots = (options.push?.roots ?? []).map((root) => normalizeVfsPath(root));
+    const exclude = new Set(options.push?.exclude ?? []);
+    // One answer carries at most what one batch read may: a bound on the
+    // message, not on the data — an omitted file is fetched by range.
+    let pushBudget = FS_READ_BATCH_REQUEST_BYTES;
+    const pushable = (logical: string): boolean => roots.some((root) => (
+      (root === '' || logical === root || logical.startsWith(root + '/'))
+      && !logical.slice(root.length).split('/').some((segment) => exclude.has(segment))
+    ));
     for (const entry of delta.paths) {
       const logical = this.logicalPath(entry.path, cred);
       if (logical === null) continue;
@@ -3687,12 +3697,25 @@ export class SqliteVFS {
         paths.push({ path: logical, rev: entry.rev, stat: null });
         continue;
       }
-      paths.push({
+      const reported: VfsInvalidatedPath = {
         path: logical,
         rev: entry.rev,
         stat: { ...this.statOf(inode), revision: this.pathRevision(entry.path) },
         ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
-      });
+      };
+      if (inode.kind === 'file' && roots.length > 0 && pushable(logical)) {
+        if (inode.size > pushBudget) {
+          reported.bytesOmitted = true;
+        } else {
+          try {
+            reported.bytes = this.readFileUncached(logical, cred);
+            pushBudget -= reported.bytes.byteLength;
+          } catch {
+            // Unreadable to this caller: the name and stat still stand.
+          }
+        }
+      }
+      paths.push(reported);
     }
     return { epoch: delta.epoch, rev: delta.rev, paths, poison: false, namespace: true };
   }

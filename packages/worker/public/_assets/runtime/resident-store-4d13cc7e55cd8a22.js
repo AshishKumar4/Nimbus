@@ -191,7 +191,7 @@ function __residentAdmit(result) {
   const sql = __residentSql;
   const dropped = [];
   const relist = [];
-  let kept = 0;
+  let kept = 0, pushed = 0;
   const epoch = result && result.epoch != null ? String(result.epoch) : null;
   const rev = result && result.rev != null ? Number(result.rev) : null;
   if (epoch === null || rev === null) {
@@ -203,7 +203,9 @@ function __residentAdmit(result) {
   // The namespace moves with the cursor or not at all: a delta without stats,
   // or a poison, leaves it describing a revision the cursor has left, so it
   // stops answering until a listing restores it.
-  const namespaced = __nsOk && !!result && !result.poison && result.namespace === true;
+  // An answer naming no path changes no name, with or without stats.
+  const namespaced = __nsOk && !!result && !result.poison
+    && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0));
   if (!namespaced) __nsMarkReady(sql, false);
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
@@ -232,8 +234,15 @@ function __residentAdmit(result) {
       for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
         held = true; stamped = Number(row.rev);
       }
+      if (held && (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev))) { kept++; continue; }
+      // Pushed content: the file's bytes at the answer's revision, so dating
+      // them at the path's own revision cannot be newer than they are.
+      if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
+        __residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev));
+        pushed++;
+        continue;
+      }
       if (!held) continue;
-      if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) { kept++; continue; }
       sql.exec("DELETE FROM chunk WHERE path = ?", path);
       sql.exec("DELETE FROM file WHERE path = ?", path);
       dropped.push(path);
@@ -242,7 +251,7 @@ function __residentAdmit(result) {
   __residentWriteCursor(sql, { epoch, rev });
   __residentSealed = false;
   __residentSealReason = "";
-  return { dropped, kept, relist, cursor: { epoch, rev } };
+  return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
 }
 
 /**
@@ -912,9 +921,31 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   return { cursor: adopted, failure };
 }
 
-/** The acquire options this store asks for: stats with every delta entry. */
+/**
+ * The acquire options this store asks for: stats with every delta entry, and
+ * the content of files changed under the push roots — the process's working
+ * tree and /tmp, where what a peer writes after launch is what it goes on to
+ * read (build output, manifests, temp files), less dependencies and VCS state.
+ */
+let __residentPushRoots = [];
+/** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
+const __RESIDENT_PUSH_EXCLUDE = ["node_modules", ".git"];
+function __residentSetPushRoots(roots) {
+  __residentPushRoots = (Array.isArray(roots) ? roots : []).map((r) => String(r).replace(/^\/+|\/+$/g, ""));
+}
+/** Whether a changed file at `path` is one the push roots would carry. */
+function __residentPushable(path) {
+  for (const root of __residentPushRoots) {
+    if (root !== "" && path !== root && !path.startsWith(root + "/")) continue;
+    const rest = root === "" ? path : path.slice(root.length + 1);
+    if (!rest.split("/").some((seg) => __RESIDENT_PUSH_EXCLUDE.includes(seg))) return true;
+  }
+  return false;
+}
 function __residentAcquireOptions() {
-  return { namespace: true };
+  return __residentPushRoots.length > 0
+    ? { namespace: true, push: { roots: __residentPushRoots, exclude: __RESIDENT_PUSH_EXCLUDE } }
+    : { namespace: true };
 }
 
 /**
@@ -1336,14 +1367,17 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     }
   }
 
-  // What to hold: the launch's data plan, plus every row this pass had to
-  // drop as stale — it was held for a reason.
+  // What to hold: the launch's data plan, every row this pass had to drop as
+  // stale — it was held for a reason — and what the pushes a poison lost
+  // would have carried: files under the push roots changed since the cursor
+  // (all of them there, when the revisions are not comparable).
   const plan = __residentPlan;
   const wanted = new Set(dropped);
   const fetch = [];
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
-    if (plan.has(file.path) || wanted.has(file.path)) fetch.push(file);
+    if (plan.has(file.path) || wanted.has(file.path)
+      || (__residentPushable(file.path) && (!comparable || file.rev > held.rev))) fetch.push(file);
   }
   const filled = await __residentFetchFiles(supervisor, fetch);
 

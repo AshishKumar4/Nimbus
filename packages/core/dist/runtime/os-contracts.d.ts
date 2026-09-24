@@ -298,6 +298,14 @@ export interface VfsInvalidatedPath {
      */
     stat?: RuntimeVfsStat | null;
     linkTarget?: string;
+    /**
+     * With {@link VfsAcquireOptions.push}: the file's bytes at the answer's
+     * `rev`, for a regular file under one of the push roots. `bytesOmitted`
+     * marks one that qualified but did not fit the answer; it is never
+     * truncated.
+     */
+    bytes?: Uint8Array;
+    bytesOmitted?: true;
 }
 /**
  * What a caller holding a namespace wants from {@link RuntimeFsBridge.acquire}
@@ -307,6 +315,16 @@ export interface VfsInvalidatedPath {
  */
 export interface VfsAcquireOptions {
     namespace?: boolean;
+    /**
+     * Carry the content of changed regular files under `roots` (caller path
+     * space), skipping any path with a segment named in `exclude`. What a
+     * process wrote after another launched is then readable synchronously by
+     * it at its next resumption, without a round trip per file.
+     */
+    push?: {
+        roots: string[];
+        exclude?: string[];
+    };
 }
 /** Result of a {@link RuntimeFsBridge.acquire} barrier. */
 export interface VfsAcquireResult {
