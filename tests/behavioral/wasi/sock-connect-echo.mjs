@@ -20,34 +20,40 @@
 // service is down at probe time, this probe failing's — see
 // alternate endpoints (gopher.floodgap.com:70 is a documented fallback).
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
 
 const sid = await mintSession();
 console.log(`[wasi/sock-connect-echo] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+let exitCode = 1;
+try {
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
-await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-await t.run(writeStreamBFixtureCmd('sock-connect-echo', 'sc.wasm'), 30_000);
+  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
+  await t.run(writeStreamBFixtureCmd('sock-connect-echo', 'sc.wasm'), 30_000);
 
-// Sockets need extra time for handshake + echo. 90s budget covers
-// cold-start + DNS + TCP RTT + echo RTT.
-const r = await t.run('wasm-runner sc.wasm', 90_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-8).join('\n');
-const ok = /PING/.test(tail);
+  // Sockets need extra time for handshake + echo. 90s budget covers
+  // cold-start + DNS + TCP RTT + echo RTT.
+  const r = await t.run('wasm-runner sc.wasm', 90_000);
+  const out = stripAnsi(r.output);
+  const tail = out.split(/\r?\n/).slice(-8).join('\n');
+  const ok = /PING/.test(tail);
 
-await t.close();
+  console.log(JSON.stringify({ probe: 'wasi/sock-connect-echo', sid, base: BASE, tail, ok }, null, 2));
 
-console.log(JSON.stringify({ probe: 'wasi/sock-connect-echo', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['TCP echo via /dev/tcp/tcpbin.com/4242 round-trips "PING"', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi/sock-connect-echo] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  const checks = [['TCP echo via /dev/tcp/tcpbin.com/4242 round-trips "PING"', ok]];
+  let pass = 0;
+  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
+  const verdict = pass === checks.length ? 'passing' : 'failing';
+  console.log(`[wasi/sock-connect-echo] ${verdict} — ${pass}/${checks.length}`);
+  exitCode = verdict === 'passing' ? 0 : 1;
+} finally {
+  await t.close().catch(() => {});
+  const del = await deleteSession(sid, 'wasi/sock-connect-echo');
+  console.log(`deleteSession: ${del.status}`);
+}
+process.exit(exitCode);

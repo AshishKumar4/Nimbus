@@ -4,40 +4,46 @@
 // thrown sentinel into the supervisor's exit-code path; the shell
 // echoes `$?` if we run it after.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { writeFixtureCmd } from './_fixtures.mjs';
 
 const sid = await mintSession();
 console.log(`[wasi/exit] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+let exitCode = 1;
+try {
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
-await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
-await t.run(writeFixtureCmd('exit7', 'exit7.wasm'), 30_000);
+  await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
+  await t.run(writeFixtureCmd('exit7', 'exit7.wasm'), 30_000);
 
-// Run, then read $? via the shell `echo $?` convention.
-await t.run('wasm-runner exit7.wasm _start', 30_000);
-const ec = await t.run('echo "rc=$?"', 10_000);
-const ecOut = stripAnsi(ec.output);
-const tail = ecOut.split(/\r?\n/).slice(-5).join('\n');
-const codeOk = /\brc=7\b/.test(tail);
+  // Run, then read $? via the shell `echo $?` convention.
+  await t.run('wasm-runner exit7.wasm _start', 30_000);
+  const ec = await t.run('echo "rc=$?"', 10_000);
+  const ecOut = stripAnsi(ec.output);
+  const tail = ecOut.split(/\r?\n/).slice(-5).join('\n');
+  const codeOk = /\brc=7\b/.test(tail);
 
-await t.close();
+  const findings = { probe: 'wasi/exit', sid, base: BASE, tail, codeOk };
+  console.log(JSON.stringify(findings, null, 2));
 
-const findings = { probe: 'wasi/exit', sid, base: BASE, tail, codeOk };
-console.log(JSON.stringify(findings, null, 2));
-
-const checks = [
-  ['proc_exit(7) → shell rc=7', codeOk],
-];
-let pass = 0;
-for (const [name, ok] of checks) {
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
-  if (ok) pass++;
+  const checks = [
+    ['proc_exit(7) → shell rc=7', codeOk],
+  ];
+  let pass = 0;
+  for (const [name, ok] of checks) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
+    if (ok) pass++;
+  }
+  const verdict = pass === checks.length ? 'passing' : 'failing';
+  console.log(`[wasi/exit] ${verdict} — ${pass}/${checks.length}`);
+  exitCode = verdict === 'passing' ? 0 : 1;
+} finally {
+  await t.close().catch(() => {});
+  const del = await deleteSession(sid, 'wasi/exit');
+  console.log(`deleteSession: ${del.status}`);
 }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi/exit] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+process.exit(exitCode);

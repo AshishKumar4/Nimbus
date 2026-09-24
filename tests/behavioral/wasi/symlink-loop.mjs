@@ -13,34 +13,40 @@
 // Runtime-behavioral: pre-B3 path_open would either ENOSYS the symlink
 // or (worse) infinite-loop. ELOOP is the spec-mandated response.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
 
 const sid = await mintSession();
 console.log(`[wasi/symlink-loop] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+let exitCode = 1;
+try {
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
-await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-await t.run(writeStreamBFixtureCmd('symlink-loop', 'loop.wasm'), 30_000);
+  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
+  await t.run(writeStreamBFixtureCmd('symlink-loop', 'loop.wasm'), 30_000);
 
-const r = await t.run('wasm-runner loop.wasm', 60_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-6).join('\n');
-const lines = tail.split(/\r?\n/).map(s => s.trim());
-// ELOOP = 32 → last digit '2'.
-const ok = lines.some(s => s === '2');
+  const r = await t.run('wasm-runner loop.wasm', 60_000);
+  const out = stripAnsi(r.output);
+  const tail = out.split(/\r?\n/).slice(-6).join('\n');
+  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  // ELOOP = 32 → last digit '2'.
+  const ok = lines.some(s => s === '2');
 
-await t.close();
+  console.log(JSON.stringify({ probe: 'wasi/symlink-loop', sid, base: BASE, tail, ok }, null, 2));
 
-console.log(JSON.stringify({ probe: 'wasi/symlink-loop', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['path_open self-symlink → ELOOP (errno 32)', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi/symlink-loop] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  const checks = [['path_open self-symlink → ELOOP (errno 32)', ok]];
+  let pass = 0;
+  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
+  const verdict = pass === checks.length ? 'passing' : 'failing';
+  console.log(`[wasi/symlink-loop] ${verdict} — ${pass}/${checks.length}`);
+  exitCode = verdict === 'passing' ? 0 : 1;
+} finally {
+  await t.close().catch(() => {});
+  const del = await deleteSession(sid, 'wasi/symlink-loop');
+  console.log(`deleteSession: ${del.status}`);
+}
+process.exit(exitCode);
