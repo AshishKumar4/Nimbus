@@ -457,6 +457,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const argv = ['ruby', 'server.rb'];
   const started = await rubyResidentStart(first.fm)({
     argv, command: 'ruby server.rb', cwd: '/home/user', wasmVfsPath: 'ruby.wasm',
+    signal: new AbortController().signal, write: () => {},
     startArgs: { userCode: '# large boot input\n'.repeat(12000), rbArgv: ['server.rb'], progName: 'server.rb', cwd: '/home/user',
       userEnv: { LABEL: 'original' } },
   });
