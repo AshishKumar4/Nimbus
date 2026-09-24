@@ -1,0 +1,9 @@
+/-
+  Nimbus.Refine — the refinement fixtures. Each case module evaluates a model's
+  own definitions on generated inputs; `RefinementFixtures.lean` writes the
+  results to `lean/fixtures/`, and a unit test runs the deployed code on the
+  same inputs.
+-/
+
+import Nimbus.Refine.Json
+import Nimbus.Refine.RevisionFloorCases
