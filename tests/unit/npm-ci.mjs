@@ -148,6 +148,39 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(root.exists(`${NM}/esbuild`), false, 'nothing lands under the registry name');
 }
 
+// ── each swapped placement is its own: a nested copy at another version stays nested ──
+{
+  const pkgJson = { name: 'fixture', version: '1.0.0', dependencies: { esbuild: '^0.21.0', vite: '^5.0.0' } };
+  const lock = {
+    name: 'fixture',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0', dependencies: { esbuild: '^0.21.0', vite: '^5.0.0' } },
+      'node_modules/esbuild': { version: '0.21.5', resolved: tgz('esbuild', '0.21.5'), integrity: 'sha512-e21' },
+      'node_modules/vite': { version: '5.0.0', resolved: tgz('vite', '5.0.0'), integrity: 'sha512-v', dependencies: { esbuild: '^0.19.0' } },
+      'node_modules/vite/node_modules/esbuild': { version: '0.19.12', resolved: tgz('esbuild', '0.19.12'), integrity: 'sha512-e19' },
+    },
+  };
+  const specs = [];
+  const { installer, root, log } = makeInstaller(pkgJson, lock, (name, spec) => {
+    specs.push({ name, range: spec.range });
+    const version = spec.range.replace(/^npm:[^@]+@/, '');
+    const pkg = {
+      name, version, tarballUrl: tgz('esbuild-wasm', version), integrity: `sha512-w${version}`,
+      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+    };
+    return {
+      pkg, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+    };
+  });
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.deepEqual(specs.map(({ range }) => range).sort(), ['0.19.12', '0.21.5'], 'each placement resolved at its own locked version');
+  assert.equal(versionAt(root, 'esbuild'), '0.21.5');
+  assert.equal(versionAt(root, 'vite/node_modules/esbuild'), '0.19.12', 'the nested swap stays where the lock put it');
+}
+
 // ── the command: needs a lock, then hands the clean install to the host ──────
 {
   const harness = createSqliteVfsTestHarness();

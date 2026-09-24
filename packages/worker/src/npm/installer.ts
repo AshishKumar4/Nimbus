@@ -1523,7 +1523,8 @@ export class NpmInstaller {
     const nested = new Map<string, ResolvedPackage>();
     const unresolved = new Map<string, string>();
     const rejected: RejectedPackage[] = [];
-    const swapSpecs: Record<string, string> = {};
+    // Swapped lock entries by placement: each resolves its swap target at its own locked version.
+    const swapPlacements: { placement: string; folderName: string; spec: string }[] = [];
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (key === '') continue;
       if (production && entry.dev === true) continue;
@@ -1552,7 +1553,7 @@ export class NpmInstaller {
       // names: an aliased entry (`node_modules/build`, name `esbuild`) resolves as
       // the alias `build@npm:esbuild@<locked>`, so the swap target lands in build.
       if (lookupSwap(name)) {
-        if (!(folderName in swapSpecs)) swapSpecs[folderName] = folderName === name ? version : `npm:${name}@${version}`;
+        swapPlacements.push({ placement, folderName, spec: folderName === name ? version : `npm:${name}@${version}` });
         continue;
       }
       if (entry.link === true || typeof entry.resolved !== 'string' || !version) {
@@ -1582,10 +1583,24 @@ export class NpmInstaller {
       (placement.includes('/node_modules/') ? nested : resolved).set(placement, pkg);
     }
 
-    if (Object.keys(swapSpecs).length > 0) {
-      const swapped = await this.resolveTreeViaFanout(swapSpecs, log, { registry });
-      for (const [placement, pkg] of swapped.resolved) if (!resolved.has(placement)) resolved.set(placement, pkg);
-      for (const [placement, pkg] of swapped.nested) if (!nested.has(placement)) nested.set(placement, pkg);
+    // Root placements resolve together, as top-level specs. A nested one is its own
+    // resolution, rebased under its placement: its package there, anything it
+    // brings below it, unless the lock already placed that path.
+    const rootSwaps = swapPlacements.filter(({ placement }) => !placement.includes('/node_modules/'));
+    const batches: { at: string | null; specs: Record<string, string> }[] = [];
+    if (rootSwaps.length > 0) batches.push({ at: null, specs: Object.fromEntries(rootSwaps.map(({ folderName, spec }) => [folderName, spec])) });
+    for (const { placement, folderName, spec } of swapPlacements) {
+      if (placement.includes('/node_modules/')) batches.push({ at: placement, specs: { [folderName]: spec } });
+    }
+    for (const { at, specs } of batches) {
+      const swapped = await this.resolveTreeViaFanout(specs, log, { registry });
+      const [folder] = Object.keys(specs);
+      const rebase = (path: string) => (at === null ? path : path === folder ? at : `${at}/node_modules/${path}`);
+      for (const [path, pkg] of [...swapped.resolved, ...swapped.nested]) {
+        const target = rebase(path);
+        const into = target.includes('/node_modules/') ? nested : resolved;
+        if (!into.has(target)) into.set(target, pkg);
+      }
       for (const [name, reason] of swapped.unresolved) unresolved.set(name, reason);
       rejected.push(...swapped.rejected);
     }
