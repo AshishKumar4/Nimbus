@@ -40,11 +40,35 @@ def genNsCase : Gen (Option Json) := do
   return some (.obj [("setup", .arr setup.toList), ("window", .arr window.toList),
     ("atCursor", visibleJson t0), ("atAnswer", visibleJson t1)])
 
+/-- Cases where only an exact relist can drop a held name. -/
+def nsDirected : List Json :=
+  let d (setup window : List Op) : Json := Id.run do
+    let mut t : Tree := []
+    let mut v := 0
+    let mut s := #[]
+    for op in setup do
+      if let some t' := apply t (v + 1) op then
+        v := v + 1; t := t'; s := s.push (opJson op)
+    let t0 := t
+    let mut w := #[]
+    for op in window do
+      if let some t' := apply t (v + 1) op then
+        v := v + 1; t := t'; w := w.push (opJson op)
+    .obj [("setup", .arr s.toList), ("window", .arr w.toList), ("atCursor", visibleJson t0), ("atAnswer", visibleJson t)]
+  [ d [.mkdir ["d"] true, .mkdir ["d", "e"] true, .write ["d", "e", "x"]] [.chmod ["d", "e"] false],
+    d [.mkdir ["d"] true, .write ["d", "x"], .write ["d", "y"]] [.chmod ["d"] false, .rmrf ["d", "x"], .chmod ["d"] true],
+    d [.mkdir ["d"] true, .mkdir ["d", "e"] true, .write ["d", "e", "x"], .write ["d", "e", "y"]]
+      [.chmod ["d"] false, .rmrf ["d", "e", "x"], .chmod ["d"] true],
+    d [.mkdir ["d"] true, .mkdir ["d", "e"] true, .write ["d", "e", "x"]]
+      [.chmod ["d"] false, .rename ["d", "e"] ["d", "f"], .chmod ["d"] true],
+    d [.mkdir ["d"] true, .mkdir ["d", "e"] true, .write ["d", "e", "x"], .write ["q"]]
+      [.chmod ["d"] false, .write ["q"]] ]
+
 def nsFixture : String :=
   fixtureText [("fixture", .str "node-visible-namespace"), ("model", .str "Nimbus.Coherence.Relist.relist_exact"),
       ("reader", .obj [("uid", .ofNat 1000), ("gid", .ofNat 1000), ("groups", .arr [.ofNat 1000]), ("umask", .ofNat 18)]),
       ("note", .str "setup and window run as root; modes 493=0755, 448=0700; the reader facet boots after setup and ACQUIREs once after the window; paths have no leading slash")]
-    (runGen 0x4E5356 (casesOf 150 genNsCase))
+    (nsDirected ++ runGen 0x4E5356 (casesOf 150 genNsCase))
 
 /-! ## Own-effect overlay -/
 
