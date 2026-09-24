@@ -103,6 +103,25 @@ published independently in the `@nimbus-sh` npm scope.
   revision. It looked the revision up under the listed name, which is the
   shared `/tmp` file's, and so listed a private file just written at 0.
 
+### Runtimes
+
+- `NimbusWorkspace.create({ facets, runtimes })` throws when a supplied
+  runtime package names a runner this core does not register, and the error
+  names the package and version, the runner it needs and the runners core
+  provides. It used to install the package and leave its bins as "command not
+  found": core 0.11.0 and 0.12.0 with `@nimbus-sh/runtime-bash@5.2.37` (built
+  for `bash-runner`, while core registers `bash-runner@2`) answered every
+  `bash` with exit 127. A workspace without `facets` is unchanged, because its
+  host binds runners after create. So are `nimbus install`, which falls back
+  to the newest catalog version whose runners are registered, and
+  rehydration of installed trees.
+- `@nimbus-sh/core` no longer publishes ahead of its runtime packages.
+  `prepublishOnly` runs `scripts/check-runtime-packages.mjs`, which builds
+  every runtime package with `bundle-runtime.mjs --npm-package` and fails
+  unless each one is on npm at its version, with the same `manifest.json`,
+  as `dist-tags.latest`, and installs through the core being published. Each
+  failure prints the command that fixes it.
+
 ## 2026-09-23
 
 ### esbuild

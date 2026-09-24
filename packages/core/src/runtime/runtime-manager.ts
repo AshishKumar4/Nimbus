@@ -146,12 +146,19 @@ export class RuntimeManager {
     );
   }
 
-  private missingRunners(manifest: RuntimeManifest): string[] {
+  /** The runner keys `manifest`'s entrypoints name that this manager has no
+   *  factory for, deduplicated, in entrypoint order. */
+  missingRunners(manifest: RuntimeManifest): string[] {
     return [...new Set(
       runtimeEntrypoints(manifest)
         .map((ep) => ep.runner)
         .filter((key) => !this.runnerFactories.has(key)),
     )];
+  }
+
+  /** Every runner key registered so far. */
+  runnerKeys(): string[] {
+    return [...this.runnerFactories.keys()];
   }
 
   /**
