@@ -297,12 +297,20 @@ const __RK_BINARY = 1;
 const __RK_DENIED = 2;
 
 /**
- * The revision of a cell this facet wrote and has not flushed.
+ * The revision of a cell holding this facet's own bytes that the authority has
+ * not acknowledged yet: a write that has not flushed, or a cell one of its own
+ * mutations holds while that mutation is in flight (\`__residentLease\`).
  *
  * Read-your-writes: strictly newer than anything the authority could report,
  * so it is never evicted by a delta and never mistaken for something the
  * authority vouched for. A distinct sentinel rather than NULL, because NULL
  * would reintroduce the undated row the NOT NULL constraint exists to forbid.
+ *
+ * It is the ONE revision a delta cannot evict, so it must mean exactly that
+ * and nothing else. The acknowledgement dates the row (\`__residentStamp\`),
+ * and bytes the authority served are dated as they are installed
+ * (\`__residentFill\`). A row left here after either would hold its bytes
+ * against every later write by anyone, for the life of the store.
  */
 const __RK_OWN_WRITE = -1;
 
@@ -326,9 +334,10 @@ function __residentBind(ctx) {
   // be written. This is the r2-cache posture — an unverifiable key cannot be
   // constructed — moved to the only storage layer this store has.
   //
-  // __RK_OWN_WRITE is the one negative value: this facet's own unflushed
-  // bytes, which are strictly newer than anything the authority can report and
-  // are always readable. It is a real provenance, not an absence of one.
+  // __RK_OWN_WRITE is the one negative value: this facet's own bytes that the
+  // authority has not acknowledged, which are strictly newer than anything it
+  // can report and are always readable. It is a real provenance, not an
+  // absence of one.
   sql.exec(
     "CREATE TABLE IF NOT EXISTS file (" +
       "path TEXT PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL, " +
@@ -344,8 +353,9 @@ function __residentBind(ctx) {
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
-  // A store can outlive its process. Unflushed writes left by an earlier one
-  // never reached the authority, so they are not files.
+  // A store can outlive its process. Own rows left by an earlier one are
+  // writes that never reached the authority or cells whose acknowledgement it
+  // never saw: neither can be dated, so neither is a file.
   sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
   sql.exec("DELETE FROM file WHERE rev = ?", __RK_OWN_WRITE);
   __residentSql = sql;
@@ -397,38 +407,48 @@ function __residentWriteCursor(sql, cursor) {
  *
  * Returns the paths that WERE held and are now gone, which is what
  * \`_acquireAndRefetch\` re-reads live — the same contract \`_acquireBarrier\`
- * already has.
+ * already has — and how many named rows were kept because their revision
+ * already covers the report (this facet's own writes coming back).
  */
 function __residentAdmit(result) {
   if (!__residentReady) throw new Error("Nimbus: __residentAdmit before __residentBind");
   const sql = __residentSql;
   const dropped = [];
+  let kept = 0;
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
-    // poison here means nothing held can be kept. Two statements rather than a
-    // delete per path: a poison at pi scale is 7,141 rows, and eviction is on
-    // the hot path (measured 45 ms whole-store, vs a per-row walk).
+    // poison here means nothing the authority dated can be kept. Two
+    // statements rather than a delete per path: a poison at pi scale is 7,141
+    // rows, and eviction is on the hot path (measured 45 ms whole-store, vs a
+    // per-row walk).
+    //
+    // This facet's own bytes are not the authority's to vouch for, and stay:
+    // dropping a row a write or mutation still in flight owns would hand the
+    // next fill the pre-write bytes. Its acknowledgement dates it, or evicts
+    // it, when it lands.
     //
     // This is the LAST resort, not the poison policy.
     // \`__residentSynchronizeFromSupervisor\` repairs the same poison against
     // absolute per-path revisions and keeps every row it can prove current;
     // dropping the store is what made a poison cost a whole filesystem.
-    sql.exec("DELETE FROM chunk");
-    sql.exec("DELETE FROM file");
+    sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
+    sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
   } else if (Array.isArray(result.paths)) {
     for (const entry of result.paths) {
       const path = entry.path;
-      // A row at or above the reported revision is this facet's own write
-      // coming back; anything else is someone else's and is dropped. An
-      // unflushed own-write (__RK_OWN_WRITE) is newer than any authority
-      // revision by construction and is kept — read-your-writes survives a
-      // peer's mutation of the same path, exactly as it does in heap.
+      // A row at or above the reported revision already holds that mutation —
+      // this facet's own write coming back, or bytes fetched after it; anything
+      // else is someone else's and is dropped. A row of own bytes
+      // (__RK_OWN_WRITE) is newer than any authority revision by construction
+      // and is kept — read-your-writes survives a peer's mutation of the same
+      // path, and the report is adjudicated when the write's own revision
+      // arrives (the shims note it for the ledger before admitting).
       let held = false, stamped = 0;
       for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
         held = true; stamped = Number(row.rev);
       }
       if (!held) continue;
-      if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
+      if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) { kept++; continue; }
       sql.exec("DELETE FROM chunk WHERE path = ?", path);
       sql.exec("DELETE FROM file WHERE path = ?", path);
       dropped.push(path);
@@ -445,7 +465,7 @@ function __residentAdmit(result) {
   __residentWriteCursor(sql, { epoch, rev });
   __residentSealed = false;
   __residentSealReason = "";
-  return { dropped, cursor: { epoch, rev } };
+  return { dropped, kept, cursor: { epoch, rev } };
 }
 
 /** Re-seal — for a store whose backing is being replaced (slot handover). */
@@ -591,30 +611,96 @@ function __residentPopulate(path, cell, rev) {
 }
 
 /**
- * The revision a cell is known-good at — the same stamp __vfsBundleRevisions
- * held in heap, moved into the row it describes so the two cannot drift. Only
- * a flush of this facet's own bytes sets one; the ACQUIRE barrier is the only
- * reader; an unstamped cell is simply evicted. Preserved verbatim from
- * _shared/vfs-write-ledger.ts, because a store that dropped it would make every
- * flush evict the facet's own output.
+ * What a row is dated at: its revision, __RK_OWN_WRITE for this facet's own
+ * unacknowledged bytes, or undefined when the path is not held.
  */
-function __residentStamp(path, rev) {
-  __residentSql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
+function __residentProvenance(path) {
+  for (const row of __residentRequire().exec("SELECT rev FROM file WHERE path = ?", path)) return Number(row.rev);
+  return undefined;
 }
 
-function __residentRevision(path) {
+/**
+ * Date this facet's own bytes with the revision the authority acknowledged
+ * them at: the revision a flushed write produced, or the one an own mutation's
+ * receipt settles on. The store's half of the stamp \`__vfsBundleRevisions\`
+ * carries in heap (_shared/vfs-write-ledger.ts), kept in the row it describes
+ * so the two cannot drift.
+ *
+ * Only a row still holding own bytes is dated. One that was dropped or
+ * replaced meanwhile holds something this acknowledgement says nothing about.
+ *
+ * Without it nothing dates an own row, and __RK_OWN_WRITE is the revision a
+ * delta never evicts: a file this process wrote would serve its own bytes over
+ * every later write to it by anyone.
+ */
+function __residentStamp(path, rev) {
+  __residentRequire().exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, __RK_OWN_WRITE);
+}
+
+/**
+ * Hold a dated row as this facet's own for the window of one of its own
+ * mutations (a ranged write, a truncate, a chmod), and return the revision it
+ * was dated at: the mutation's receipt is judged against it when the window
+ * closes (\`__nimbusEndOwnMutation\`). Undefined when there is no dated row —
+ * an own row is held already, and an absent one has nothing to protect.
+ *
+ * The hold is what keeps a barrier that reports the mutation before its own
+ * response arrives from evicting the cell the mutation is about to overlay.
+ * The supervisor answers fsAcquire at once, while a write's response waits on
+ * the Durable Object's output gate, so that ordering is ordinary.
+ */
+function __residentLease(path) {
+  const sql = __residentRequire();
+  let rev;
+  for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) rev = Number(row.rev);
+  if (rev === undefined || rev === __RK_OWN_WRITE) return undefined;
+  sql.exec("UPDATE file SET rev = ? WHERE path = ?", __RK_OWN_WRITE, path);
+  return rev;
+}
+
+/**
+ * Install bytes a live read returned, dated \`rev\`: the cursor the read was
+ * issued under, so the bytes hold every mutation at or below it. An async read
+ * must write through, or the next synchronous read goes back in time relative
+ * to what the program was just handed (protocol §5.9).
+ *
+ * Refused over a row of own bytes, which are newer than anything a read can
+ * return, and over a row dated after \`rev\`, which is newer than this read can
+ * vouch for. Returns whether the bytes were installed.
+ */
+function __residentFill(path, cell, rev) {
+  if (typeof rev !== "number" || rev < 0) {
+    throw new Error(
+      "Nimbus: refusing to fill '" + path + "' with no authority revision. " +
+      "An undated row cannot be invalidated, so it would be served stale forever."
+    );
+  }
   const sql = __residentRequire();
   for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-    const rev = Number(row.rev);
-    return rev === __RK_OWN_WRITE ? undefined : rev;
+    const held = Number(row.rev);
+    if (held === __RK_OWN_WRITE || held > rev) return false;
   }
-  return undefined;
+  __residentPut(sql, path, cell, rev);
+  return true;
 }
 
 /** Every held path. Backs the Object.keys / for-in scans in the shims. */
 function __residentKeys() {
   const out = [];
   for (const row of __residentRequire().exec("SELECT path FROM file")) out.push(String(row.path));
+  return out;
+}
+
+/**
+ * Every path held as this facet's own unacknowledged bytes: the rows a
+ * poison's repair keeps without a revision to vouch for them, whose reports
+ * the shims deliver to their owners (\`_settleSkippedReports\`).
+ */
+function __residentOwnPaths() {
+  const out = [];
+  for (const row of __residentRequire().exec("SELECT path FROM file WHERE rev = ?", __RK_OWN_WRITE)) {
+    out.push(String(row.path));
+  }
   return out;
 }
 
@@ -684,7 +770,8 @@ function __residentHasUnder(prefix) {
  * next tenant a filesystem, and dropping the rows while leaving a cursor behind
  * would leave the store claiming to be current at a revision it holds nothing
  * from. Clearing the cursor forces the next incarnation through
- * \`__residentAdmit\` from scratch.
+ * \`__residentAdmit\` from scratch. \`__residentBoot\` clears the same way when a
+ * kept store cannot be reconciled.
  */
 function __residentClear() {
   if (!__residentReady) throw new Error("Nimbus: __residentClear before __residentBind");
@@ -692,7 +779,7 @@ function __residentClear() {
   sql.exec("DELETE FROM chunk");
   sql.exec("DELETE FROM file");
   sql.exec("DELETE FROM meta");
-  __residentSeal("the store was cleared for slot reuse");
+  __residentSeal("the store was cleared");
 }
 
 function __residentStats() {
@@ -712,26 +799,83 @@ function __residentStats() {
 }
 
 /**
- * Adopt the module map's bundle into the store — the first fill, and the one
- * that costs nothing extra, because those bytes are already in the facet.
+ * Make this incarnation's store servable before the program's first
+ * instruction. The one boot path the resident body takes.
  *
- * Idempotent per SLOT, not per process: a warm slot already holds these rows
- * and re-adopting would rewrite 45 MB to reach the same state. The cursor the
- * bundle was read at is the store's cursor after a cold adopt; on a warm slot
- * the PERSISTED cursor wins, because it describes what the rows actually are
- * and the module's cursor only describes what this spawn happened to stage.
+ * A COLD store — no persisted cursor — adopts this spawn's own snapshot, the
+ * module bundle dated at the cursor it was read at, and then fills the rest of
+ * the filesystem from the authority. Its rows are current as of the spawn
+ * whether or not the fill completes, which is all the protocol asks of a
+ * process's first block (§5.3); the first ACQUIRE's delta brings them the rest
+ * of the way.
+ *
+ * A KEPT store holds a PREVIOUS process's rows, dated against a cursor this
+ * incarnation has never applied. A durable application's facet is one: it
+ * keeps its \`app-slot-\` name across launches and its release never deletes
+ * storage, so every relaunch or re-drive of the application opens what its
+ * last process left. The rows are the asset — inside one supervisor
+ * incarnation a relaunch fetches what changed, not the filesystem; across two,
+ * whose revisions are unrelated, the reconcile rebuilds every dated row — and
+ * they are also arbitrarily old: only the reconcile says which of them still
+ * describe the filesystem, and nothing else runs before the program's first
+ * synchronous reads. So the store stays SEALED through the reconcile, and a
+ * reconcile that cannot vouch for its rows — the listing failed, came back
+ * short, or there is no supervisor to ask — does not open it. The kept store
+ * is emptied instead and this launch boots exactly as a cold one does: the
+ * rare failure costs a relaunch its speedup, never a stale byte.
+ *
+ * The previous process's own unacknowledged rows are the one thing the
+ * reconcile cannot judge, since it keeps own rows whatever the listing says.
+ * \`__residentBind\` drops them before any of this runs.
+ *
+ * \`takeBundle\` hands over the module bundle and drops the module's own
+ * reference to it. The parsed bundle is the largest allocation in the facet
+ * before the program starts, so a cold boot releases it the moment it is
+ * adopted, and a kept store that reconciles never adopts it at all.
+ *
+ * Returns the cursor to publish and, when the boot fell short of the whole
+ * filesystem, why.
+ */
+async function __residentBoot(takeBundle, moduleCursor, supervisor) {
+  if (!__residentReady) throw new Error("Nimbus: __residentBoot before __residentBind");
+  let failure = null;
+  if (__residentCursor() !== null) {
+    let pass = null;
+    try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
+    catch (e) { failure = (e && e.message) || String(e); }
+    if (pass && pass.cursor) return { cursor: pass.cursor, failure: null };
+    failure = "a kept store could not be reconciled ("
+      + (failure || (pass && (pass.skipped || pass.incomplete)) || "the listing vouched for nothing")
+      + "); it was emptied and this launch booted from its own snapshot";
+  }
+  // A store with no cursor holds nothing any incarnation can date.
+  __residentClear();
+  const adopted = __residentAdoptModuleBundle(takeBundle(), moduleCursor);
+  // The pass that just failed is not retried. The store now holds what a
+  // cold launch whose fill failed holds, and its first ACQUIRE's delta
+  // brings it current the same way.
+  if (failure !== null) return { cursor: adopted, failure };
+  let pass = null;
+  try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
+  catch (e) { failure = (e && e.message) || String(e); }
+  return { cursor: (pass && pass.cursor) || adopted, failure };
+}
+
+/**
+ * Adopt the module map's bundle into an EMPTY store — the first fill, and the
+ * one that costs nothing extra, because those bytes are already in the facet.
+ * The cursor the bundle was read at becomes the store's.
  *
  * Returns the cursor the caller should publish, so there is one answer to
  * "what state does this facet cache" rather than two that can disagree.
  */
 function __residentAdoptModuleBundle(bundle, moduleCursor) {
   if (!__residentReady) throw new Error("Nimbus: __residentAdoptModuleBundle before __residentBind");
-  const persisted = __residentCursor();
-  if (persisted) {
-    // Warm slot. Its rows are already dated; do not touch them.
-    __residentSealed = false;
-    __residentSealReason = "";
-    return persisted;
+  if (__residentCursor() !== null) {
+    // Adopting over a kept store would re-date its rows at this spawn's
+    // cursor without checking one of them. __residentBoot reconciles a kept
+    // store, or empties it first.
+    throw new Error("Nimbus: a module bundle is adopted only into an empty store");
   }
   if (!moduleCursor || moduleCursor.epoch == null || moduleCursor.rev == null) {
     // An undated snapshot. Adopt NOTHING and serve an empty store.
@@ -976,9 +1120,16 @@ async function __residentFetchFiles(supervisor, files) {
  * had, and a poisoned caller has already taken its cold cache through
  * \`__residentAdmit\`.
  *
- * A row stamped __RK_OWN_WRITE is this facet's own unflushed write — newer
- * than anything the authority can report — and is kept whether listed or not,
- * the same read-your-writes rule the delta path applies.
+ * A row stamped __RK_OWN_WRITE is this facet's own unacknowledged bytes —
+ * newer than anything the authority can report — and is kept whether listed
+ * or not, the same read-your-writes rule the delta path applies. But the
+ * pass moves the cursor without a delta, so the report a delta would have
+ * carried for such a path is returned instead (\`own\`): the listed revision,
+ * or the listing's own cursor for a path it no longer lists, which bounds
+ * whatever removed it. The write or mutation that owns the row adjudicates it
+ * when its revision arrives, exactly as it does a delta's report. Across
+ * incarnations, or against a short listing, no report can be dated and each
+ * comes back null.
  *
  * Writes landing DURING the pass are covered the way they always were: the
  * published cursor is the one read BEFORE the walk, so they report revisions
@@ -1027,11 +1178,18 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   }
   const current = new Set();
   const dropped = [];
+  const own = [];
   for (const row of rows) {
     const entry = listed.get(row.path);
-    const keep = row.rev === __RK_OWN_WRITE
-      || (comparable && entry !== undefined && row.rev >= entry.rev)
-      || !judgeable;
+    if (row.rev === __RK_OWN_WRITE) {
+      current.add(row.path);
+      own.push({
+        path: row.path,
+        rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev,
+      });
+      continue;
+    }
+    const keep = (comparable && entry !== undefined && row.rev >= entry.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     dropped.push(row.path);
   }
@@ -1073,6 +1231,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     ranges: filled.ranges,
     kept: current.size,
     dropped: dropped.length,
+    own,
     reconciled: comparable,
     complete: listing.complete,
     cursor: judgeable ? listing.cursor : null,

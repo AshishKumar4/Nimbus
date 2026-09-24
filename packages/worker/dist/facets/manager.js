@@ -726,6 +726,15 @@ let __nimbusStarting = null;
 let __nimbusRuntime = null;
 let __nimbusAttachedLifecycle = null;
 
+// The platform's timer, captured at module evaluation, before the shims wrap
+// setTimeout in the resumption barrier. The flush below yields turns for its
+// own bookkeeping; that is not a resumption of the program, and through the
+// wrapped timer it paid a hidden ACQUIRE per yield — the one an inbound
+// request relied on without saying so, and a second one after the response
+// on every request. The request's barrier is taken explicitly, in the shared
+// dispatch (__nimbusServeHttp), exactly once.
+const __nimbusPlatformSetTimeout = setTimeout;
+
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
@@ -745,7 +754,9 @@ async function __nimbusFlushRuntime() {
       rt.drainVfsMutations(),
     ]);
     for (let pass = 0; pass < 12; pass++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const turn = Promise.withResolvers();
+      __nimbusPlatformSetTimeout(turn.resolve, 0);
+      await turn.promise;
       if (rt.pendingIO.length <= rt.settledIO) break;
       const slice = rt.pendingIO.slice(rt.settledIO);
       rt.settledIO = rt.pendingIO.length;
@@ -783,40 +794,39 @@ ${VFS_CURSOR_SEED_SOURCE}
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
     // vfs/facet-resident-store.ts.
     __residentBind(workerCtx);
-    const __residentAdopted = __residentAdoptModuleBundle(__MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR);
-    // The store now holds these bytes; the parsed object is the duplicate.
+    // Bring the store to the authority's current state before the program's
+    // first instruction. This is what makes a first synchronous read of an
+    // untouched file succeed, and it is the ONLY blocking step: the waiting is
+    // done once, here, so that no synchronous read after it ever has to wait.
+    //
+    // A cold store adopts this spawn's snapshot and fills the rest. A store
+    // that outlived its process — a durable application's, relaunched or
+    // re-driven — is cheap to bring current: rows the absolute listing proves
+    // current are kept, and only what changed is fetched. It is SERVED only
+    // once that listing has vouched for it: rows it cannot vouch for are a
+    // previous process's, of unknown age, so the kept store is emptied and
+    // this launch boots as a cold one does. See __residentBoot.
+    //
+    // The thunk hands the parsed bundle over and drops this scope's reference,
+    // so a cold boot frees it the moment it is adopted rather than holding it
+    // through the fill. A kept store that reconciles never takes it.
+    const __residentBooted = await __residentBoot(
+      () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
+      __MODULE_VFS_CURSOR,
+      __supervisor,
+    );
     __MODULE_VFS_BUNDLE = null;
     // One cursor, not two. The seed above publishes the cursor this SPAWN
-    // staged at, which is right for a cold slot and stale for a warm one — the
-    // store's persisted cursor describes what the rows actually are, and it is
-    // the only one that survived the last incarnation.
-    if (__residentAdopted) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentAdopted.epoch, rev: __residentAdopted.rev };
+    // staged at, which is right for a cold store and stale for a kept one —
+    // the cursor the boot returns describes what the rows actually are.
+    if (__residentBooted.cursor) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
-    // Bring the store to the authority's current state. This is what makes a
-    // first synchronous read of an untouched file succeed, and it is the ONLY
-    // blocking step: the waiting is done once, here, before the program's
-    // first instruction, so that no synchronous read after it ever has to
-    // wait.
-    //
-    // Cheap on a warm slot, and no longer merely by assumption: rows the
-    // absolute listing proves current are kept, so the pass fetches what
-    // changed rather than trusting that nothing did. Run whether or not the
-    // adopt produced a cursor — a facet whose snapshot carried none holds an
-    // empty store, and filling it here is what stops its first ACQUIRE from
-    // asking about a null epoch and being answered with a poison.
-    if (__supervisor) {
-      try {
-        const __synced = await __residentSynchronizeFromSupervisor(__supervisor);
-        if (__synced.cursor) {
-          globalThis.__nimbusVfsCursor = { epoch: __synced.cursor.epoch, rev: __synced.cursor.rev };
-        }
-      } catch (__e) {
-        // A failed pass is a smaller resident set, not a dead process: every
-        // path it did not reach reads exactly as it would have without this
-        // store. Surfacing beats a silent capability loss.
-        try { globalThis.__nimbusResidentFillError = (__e && __e.message) || String(__e); } catch {}
-      }
+    if (__residentBooted.failure) {
+      // A boot that fell short is a smaller resident set, not a dead process:
+      // every path it did not reach reads exactly as it would have without this
+      // store. Surfacing beats a silent capability loss.
+      try { globalThis.__nimbusResidentFillError = __residentBooted.failure; } catch {}
     }
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
