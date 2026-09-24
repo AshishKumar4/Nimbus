@@ -3784,6 +3784,27 @@ export class FacetManager {
             this.residentBundleKeys.delete(pid);
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
+        this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
+    }
+    /**
+     * A signal's default action: the process ends with 128+signo whether its
+     * facet is still being built (the launch stops at its next ownership gate)
+     * or already booted (its resources are released like a kill).
+     */
+    _endBySignal(pid, code, signal) {
+        if (this.processes.get(pid)?.state !== 'running')
+            return;
+        this.portRegistry.unregisterByPid(pid);
+        this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
+        this.processes.exit(pid, code);
+        this.processes.markExit(pid, code, signal);
+        this.processes.closeInput(pid);
+        try {
+            this.hooks.onExternalExit?.(pid, code, signal);
+        }
+        catch { }
+        this._teardownPairedServeFacet(pid);
     }
     /**
      * The process is over. Every end-of-life passes through here: a clean
@@ -5409,6 +5430,11 @@ export class FacetManager {
                     },
                 },
             });
+            // Ended while its facet was being created (a signal's default action).
+            if (this.processes.get(entry.pid)?.state !== 'running') {
+                handle.kill();
+                return;
+            }
             if (diagOn) {
                 recordExecTelemetry({
                     command,

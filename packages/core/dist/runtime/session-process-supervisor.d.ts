@@ -63,6 +63,8 @@ export declare class SessionProcessSupervisor {
     private logActivity;
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     private onTerminalCb;
+    /** Ends a process by a signal's default action; see setDefaultSignalAction. */
+    private defaultSignalAction;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
     /** Mark an existing entry as long-running. Idempotent. */
@@ -127,9 +129,21 @@ export declare class SessionProcessSupervisor {
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
     };
+    /**
+     * Deliver a signal through the process's input channel. A process that has
+     * not yet read that channel has not run far enough to install a handler,
+     * so a terminating signal takes its default action now instead of waiting
+     * in the queue for however long the program takes to start.
+     */
     signal(pid: number, signal: ProcessSignalName): {
         ok: boolean;
     };
+    /**
+     * How a signal's default action ends a process whose work lives outside
+     * this table (a facet being built or booted). One slot, owned by the
+     * FacetManager, like setOnTerminal.
+     */
+    setDefaultSignalAction(cb: (pid: number, code: number, signal: ProcessSignalName) => void): void;
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid: number): ProcessTerminalDescriptor | null;
     appendOutput(pid: number, stream: LogStream, data: string): void;

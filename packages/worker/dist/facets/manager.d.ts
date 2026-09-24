@@ -961,6 +961,12 @@ export declare class FacetManager {
     private static readonly RESIDENCY_PROFILE_MAX_PATHS;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     /**
+     * A signal's default action: the process ends with 128+signo whether its
+     * facet is still being built (the launch stops at its next ownership gate)
+     * or already booted (its resources are released like a kill).
+     */
+    private _endBySignal;
+    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven

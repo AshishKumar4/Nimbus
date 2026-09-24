@@ -18,6 +18,8 @@ export declare class ProcessInputStore {
     private createState;
     open(pid: number): void;
     has(pid: number): boolean;
+    /** Whether the process behind `pid` has started reading its input channel. */
+    hasReader(pid: number): boolean;
     write(pid: number, data: string): {
         ok: boolean;
     };
