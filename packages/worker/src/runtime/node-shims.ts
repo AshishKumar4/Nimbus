@@ -1493,6 +1493,8 @@ const __fsMod = (() => {
     || (globalThis.__nimbusVfsCoherence = {
       fills: 0, filledBytes: 0, invalidations: 0, poisons: 0,
       reconciles: 0, selfWrites: 0, misses: 0,
+      // ACQUIREs that got no answer (see _acquireBarrier), and the last reason.
+      barrierFailures: 0, lastBarrierFailure: "",
     });
 
   /**
@@ -1694,6 +1696,19 @@ const __fsMod = (() => {
     return _residentRepair;
   }
 
+  /**
+   * Set while the store holds only what a repair could NOT vouch for: rows it
+   * had to drop rather than prove current. Nothing but another repair brings
+   * those back — a delta names what changed, not what this facet lost — so
+   * every barrier repairs until one vouches, however the ACQUIRE is answered.
+   */
+  let _storeRepairOwed = false;
+
+  /**
+   * \`result\` is the ACQUIRE answer that asked for the repair: a poison, a
+   * delta arriving while a repair is owed, or null for a barrier that got no
+   * answer at all.
+   */
   async function _runResidentRepair(supervisor, result) {
     const ownAtStart = __residentOwnPaths();
     let repaired;
@@ -1701,20 +1716,27 @@ const __fsMod = (() => {
     catch { repaired = null; }
     if (!repaired || !repaired.cursor) {
       // The pass could not vouch for a single row — a supervisor replaced
-      // mid-enumeration, an enumeration that came back short. A row that
-      // cannot be dated must not be served, so the cold cache the poison asked
-      // for is taken after all, and the pass runs once more to repopulate what
-      // it just dropped.
-      __residentAdmit(result);
-      _cursor.epoch = result.epoch;
-      _cursor.rev = result.rev;
+      // mid-enumeration, an enumeration that came back short, an authority it
+      // could not reach. A row that cannot be dated must not be served, so the
+      // cold cache is taken after all, and the pass runs once more to
+      // repopulate what it just dropped. An answer with a cursor is admitted as
+      // it would have been; a barrier with no answer drops every dated row and
+      // keeps the cursor it had, which the next delta is still owed from.
+      if (result) {
+        __residentAdmit(result);
+        _cursor.epoch = result.epoch;
+        _cursor.rev = result.rev;
+      } else {
+        __residentDropDated();
+      }
       try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
       catch { repaired = null; }
     } else if (repaired.reconciled) {
       _stats.reconciles++;
     }
     _settleSkippedReports(ownAtStart, repaired);
-    if (!repaired || !repaired.cursor) return;
+    _storeRepairOwed = !(repaired && repaired.cursor);
+    if (_storeRepairOwed) return;
     _cursor.epoch = repaired.cursor.epoch;
     _cursor.rev = repaired.cursor.rev;
     _stats.invalidations += repaired.dropped;
@@ -1782,10 +1804,21 @@ const __fsMod = (() => {
    * left. Comparing revisions rather than names keeps the peer case intact:
    * a peer writing the same path afterwards reports a HIGHER revision than
    * our stamp, so that invalidation still lands.
+   *
+   * An ACQUIRE that gets no answer is a poison too, never an empty delta. It
+   * has learned nothing about what changed, and the resumption behind it is
+   * about to serve every row it holds. The call is a pure read, so a dropped
+   * one is already retried where the supervisor makes it (SupervisorRPC,
+   * fabric's idempotent), and what arrives here failed those retries, came
+   * from a host that could not serve it, or answered without a cursor. The
+   * rows are repaired against the listing exactly as for a poison; with no
+   * cursor to adopt, the one held is kept and still owed every change since.
+   * The barrier itself never throws: the operation or callback behind it
+   * runs either way, against rows that were vouched for or a colder cache.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
-    let result;
+    let result = null;
     // Through the RPC helper like every other supervisor call, because it IS
     // one: the barrier is the first thing an async read issues, and while it
     // was uncounted __nimbusPendingOps read zero for a whole round trip. A
@@ -1793,9 +1826,17 @@ const __fsMod = (() => {
     // ended the program mid-read — measured as an fs.promises.readFile whose
     // .then never ran, no error, no output, intermittently, and never when a
     // pending timer happened to hold the program open.
-    try { result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r); }
-    catch { return []; }
-    if (!result || typeof result.rev !== "number") return [];
+    try {
+      result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
+      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
+        throw new Error("fsAcquire answered without a cursor");
+      }
+    } catch (error) {
+      result = null;
+      _stats.barrierFailures++;
+      _stats.lastBarrierFailure = (error && error.message) || String(error);
+    }
+    const poisoned = result === null || result.poison === true;
     // Paths that held content before this eviction are the ones worth
     // refetching at a resumption boundary — a later sync read of any of them
     // would otherwise miss. Collected before the delete so the membership
@@ -1808,8 +1849,8 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
-      if (result.poison) {
-        _stats.poisons++;
+      if (poisoned || _storeRepairOwed) {
+        if (result !== null && result.poison === true) _stats.poisons++;
         _spoilFills();
         await _repairPoisonedStore(supervisor, result);
         // Nothing is returned because a dropped cell is either refetched by
@@ -1833,9 +1874,9 @@ const __fsMod = (() => {
       _stats.selfWrites += applied.kept;
       return applied.dropped;
     }
-    if (result.poison) {
+    if (poisoned) {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
-      _stats.poisons++;
+      if (result !== null) _stats.poisons++;
       _spoilFills();
     } else if (Array.isArray(result.paths)) {
       for (const entry of result.paths) {
@@ -1852,8 +1893,12 @@ const __fsMod = (() => {
         if (held) wereResident.push(k);
       }
     }
-    _cursor.epoch = result.epoch;
-    _cursor.rev = result.rev;
+    // A barrier with no answer has no cursor to adopt; the held one is still
+    // owed every change since, and the next delta delivers them.
+    if (result !== null) {
+      _cursor.epoch = result.epoch;
+      _cursor.rev = result.rev;
+    }
     return wereResident;
   }
 

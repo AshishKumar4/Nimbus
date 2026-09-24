@@ -1,0 +1,159 @@
+#!/usr/bin/env bun
+// A barrier that could not ask the authority what changed has learned
+// nothing, and "nothing" is not the same answer as "nothing changed".
+//
+// Every resumption of a node process runs behind an ACQUIRE: the
+// authority's list of what changed since the process's cursor. When that
+// call fails — a supervisor call dropped after its retries, a host that
+// cannot answer it, a reply with no cursor — the process still resumes, and
+// its synchronous reads are answered from whatever it holds. A failed
+// barrier that is read as an empty delta serves every one of those rows,
+// each written before a change the process was never told about.
+//
+// A failed barrier is handled as a poison instead: the delta channel cannot
+// describe the distance from the cursor to now. The rows are reconciled
+// against the authority's absolute listing when it can give one, and dropped
+// when it cannot. A later barrier that succeeds brings the dropped rows back.
+// Each scenario ends on a peer's change that the next resumption must see,
+// or at least must not see as the old bytes.
+
+import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
+import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import {
+  coherenceStats,
+  createAuthority,
+  facetSupervisor,
+  launchResident,
+  runScenarios,
+  sleep,
+} from './lib/resident-body.mjs';
+
+const F = '/home/user/app/f.txt';
+const G = '/home/user/app/g.txt';
+const DROPPED = () => Promise.reject(new Error('Network connection lost.'));
+
+const PROGRAM = `
+const fs = require("fs");
+const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return "ERR:" + e.code; } };
+globalThis.__probe = {
+  read,
+  // One resumption, then synchronous reads of every path named.
+  resume: (...paths) => new Promise((resolve) => setTimeout(() => resolve(paths.map(read).join(",")), 0)),
+};
+require("http").createServer((q, s) => s.end("up")).listen(3000);
+`;
+
+/**
+ * A resident process holding f.txt at 'v1' and g.txt at 'g1', whose
+ * supervisor fails each op `fault` names while it is set, and answers it as
+ * the session does otherwise.
+ */
+async function boot() {
+  const authority = createAuthority();
+  authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+  authority.kfs.writeFile('home/user/app/f.txt', 'v1');
+  authority.kfs.writeFile('home/user/app/g.txt', 'g1');
+  const fault = { fsAcquire: null, fsList: null, fsReadBatch: null };
+  const overrides = {};
+  let forward;
+  for (const op of Object.keys(fault)) {
+    overrides[op] = (...args) => (fault[op] ? fault[op]() : forward(op, args));
+  }
+  const handle = facetSupervisor(authority, overrides);
+  forward = handle.forward;
+  await launchResident({ program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
+  const probe = globalThis.__probe;
+  assert.equal(probe.read(F), 'v1', 'the boot fill holds the file');
+  return { authority, fault, probe };
+}
+
+await runScenarios(import.meta.path, {
+  async 'a barrier whose ACQUIRE is dropped'() {
+    const { authority, fault, probe } = await boot();
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    fault.fsAcquire = DROPPED;
+    assert.equal(
+      await probe.resume(F),
+      'v2',
+      'a dropped ACQUIRE is not an empty delta: the rows are reconciled against the listing',
+    );
+    assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
+  },
+
+  async 'a barrier whose ACQUIRE answers with no cursor'() {
+    const { authority, fault, probe } = await boot();
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    fault.fsAcquire = async () => ({ poison: false, paths: [] });
+    assert.equal(await probe.resume(F), 'v2', 'an answer with no cursor dates nothing and is not an empty delta');
+  },
+
+  async 'a barrier that cannot reach the authority at all'() {
+    const { authority, fault, probe } = await boot();
+    fault.fsAcquire = DROPPED;
+    fault.fsList = DROPPED;
+    fault.fsReadBatch = DROPPED;
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    const during = await probe.resume(F);
+    assert.notEqual(during, 'v1', 'with nothing to validate it against, the old row must not be served');
+    assert.match(during, /^ERR:/, 'the read fails instead');
+    // The refused read put a live read in flight, and its own barrier a
+    // repair; both are let fail against the outage before it ends, so what
+    // follows is the next barrier's doing alone.
+    await sleep(50);
+
+    // The authority is back. The rows the failed barrier dropped come back
+    // with the next resumption: g.txt never changed and no delta will ever
+    // name it, so only the repair the failure left owed can restore it.
+    fault.fsAcquire = null;
+    fault.fsList = null;
+    fault.fsReadBatch = null;
+    authority.kfs.writeFile('home/user/app/f.txt', 'v3');
+    assert.equal(await probe.resume(F, G), 'v3,g1', 'the next barrier restores what the failed one dropped');
+  },
+
+  async 'a heap-held cell whose barrier ACQUIRE is dropped'() {
+    // The one-shot body and the opencode runner hold the resident set on the
+    // heap rather than in facet SQLite; the same barrier guards it.
+    const authority = createAuthority();
+    const { rawVfs, kfs } = authority;
+    kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+    kfs.writeFile('home/user/app/f.txt', 'V1');
+    const bridge = new SqliteRuntimeFsBridge(kfs, rawVfs);
+    const dec = new TextDecoder();
+    let dropped = false;
+    const supervisor = {
+      readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
+      writeFile: (p, c) => bridge.writeFile(p, c),
+      stat: (p) => bridge.stat(p),
+      lstat: (p) => bridge.stat(p, { followSymlinks: false }),
+      readdir: (p) => bridge.readdir(p),
+      exists: async (p) => (await bridge.stat(p)) !== null,
+      fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
+      fsAcquire: (epoch, cursor) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor)),
+    };
+    globalThis.__nimbusVfsCursor = authority.cursor();
+    const shims = new Function(
+      '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
+      'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+      + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
+    )(
+      { 'home/user/app/f.txt': 'V1' },
+      { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
+      {}, { 'home/user': ['app'], 'home/user/app': ['f.txt'] }, supervisor,
+      { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, `/home/user/app/s.js`, '/home/user/app',
+    );
+    assert.equal(shims.fs.readFileSync(F, 'utf8'), 'V1');
+    kfs.writeFile('home/user/app/f.txt', 'V2');
+    dropped = true;
+    const seen = Promise.withResolvers();
+    shims.setTimeout(() => {
+      try { seen.resolve(shims.fs.readFileSync(F, 'utf8')); } catch (error) { seen.resolve('ERR:' + error.code); }
+    }, 0);
+    assert.equal(await seen.promise, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
+  },
+}, { barrierFailures: true });
+
+console.log('resident-barrier-failure: ok');

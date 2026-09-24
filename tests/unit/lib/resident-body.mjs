@@ -139,17 +139,20 @@ export function facetSupervisor(authority, overrides = {}) {
   const envelope = (name, args) => (name === 'fsAppend' || name === 'fsAppendAck'
     ? { op: name, args, pid, writerId: WRITER_ID }
     : { op: name, args, pid });
+  const forward = (name, args) => host.supervisorOp(envelope(name, args));
   const supervisor = new Proxy({}, {
     get(_target, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;
       if (Object.hasOwn(own, name) && own[name] === undefined) return undefined;
       return (...args) => {
         log.calls[name] = (log.calls[name] ?? 0) + 1;
-        return Object.hasOwn(own, name) ? own[name](...args) : host.supervisorOp(envelope(name, args));
+        return Object.hasOwn(own, name) ? own[name](...args) : forward(name, args);
       };
     },
   });
-  return { supervisor, log };
+  // `forward` is the session's own answer to an op, for an override that
+  // decides per call whether to fail or pass through.
+  return { supervisor, log, forward };
 }
 
 /** workerd's `ctx.storage.sql` over a real SQLite: exec(query, ...params) → rows. */
@@ -214,14 +217,36 @@ export function coherenceStats() {
 }
 
 /**
+ * A scenario takes well under a second. One that runs this long is waiting
+ * on something that will not come — a resumption whose barrier rejected
+ * never runs its callback — and is reported as failed rather than left to
+ * hang the suite.
+ */
+const SCENARIO_TIMEOUT_MS = 60_000;
+
+/**
  * Run each scenario in its own child process, or — inside that child — run
  * the one it was started for. `file` is the calling test's own path.
+ *
+ * A barrier that gets no answer is repaired against the listing, so it can
+ * still produce the bytes a scenario expects. A scenario about the delta path
+ * would then pass without having exercised it, which is how a harness that
+ * could not serve fsAcquire read as stale bytes rather than as the missing
+ * route it was. Unless `barrierFailures` says the file fails barriers on
+ * purpose, a scenario in which any barrier failed fails, naming the reason.
  */
-export async function runScenarios(file, scenarios) {
+export async function runScenarios(file, scenarios, { barrierFailures = false } = {}) {
   const selected = realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO;
   if (selected) {
     try {
       await scenarios[selected]();
+      const stats = globalThis.__nimbusVfsCoherence;
+      if (!barrierFailures && stats && stats.barrierFailures > 0) {
+        throw new Error(
+          `${stats.barrierFailures} barrier(s) got no answer (last: ${stats.lastBarrierFailure}); `
+          + 'the scenario ran on the failure path, not the delta',
+        );
+      }
       realStdout(`SCENARIO-OK ${selected}\n`);
       realProcess.exit(0);
     } catch (error) {
@@ -237,13 +262,15 @@ export async function runScenarios(file, scenarios) {
       env: { ...realProcess.env, NIMBUS_RESIDENT_BODY_SCENARIO: name },
       stdout: 'pipe',
       stderr: 'pipe',
+      timeout: SCENARIO_TIMEOUT_MS,
     });
     const stdout = child.stdout.toString();
     const stderr = child.stderr.toString();
     if (child.exitCode === 0 && stdout.includes(`SCENARIO-OK ${name}`)) {
       realStdout(`  ok  ${name}\n`);
     } else {
-      realStdout(`  FAIL ${name}\n${stdout}${stderr}\n`);
+      const killed = child.exitCode === null ? `killed (${child.signalCode}) after ${SCENARIO_TIMEOUT_MS} ms\n` : '';
+      realStdout(`  FAIL ${name}\n${killed}${stdout}${stderr}\n`);
       failures.push(name);
     }
   }
