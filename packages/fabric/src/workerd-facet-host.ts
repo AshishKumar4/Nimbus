@@ -271,13 +271,8 @@ interface SlotBook {
  * Keyed weakly off `ctx`, and that is sound rather than lossy: a facet cannot
  * outlive the Durable Object hosting it, so a book that goes away with its
  * host describes nothing that still exists. A fresh incarnation restarts at
- * slot 0 and re-attaches to the SQLite a previous incarnation left there —
- * which is safe for the reason the store is sealed until it has reconciled.
- * Its persisted cursor is either datable against the current authority, in
- * which case the ACQUIRE delta brings it current, or it carries a different
- * VFS epoch, in which case `invalidatedSince` can only answer poison and the
- * whole store is dropped. A process therefore cannot boot onto a previous
- * tenant's filesystem even when release never ran.
+ * slot 0, and its first get of each name follows a delete, so a process never
+ * boots onto storage a previous incarnation left under that name.
  *
  * The book names only the `proc-slot-` space. Durable `app-slot-` names are
  * allocated against DO storage instead (their owner survives a reset), so a
