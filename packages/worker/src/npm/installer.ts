@@ -46,7 +46,7 @@ import {
   type NpmLogEmitter,
 } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import {
-  applySwaps, findRejects, lookupReject,
+  applySwaps, findRejects, lookupSwap, lookupReject,
   isOptionalNativeBinding,
   lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY,
   formatSwapNotice,

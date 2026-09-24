@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "117572404bcebcf1ca029a50f0ad5358df4bc1258e30e0ae4767745bc88f4e28",
+  "fingerprint": "c029f2164b87f680275cdc282b6e271bac983dad063d21eb974c6b765b8da6c7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1651,7 +1651,7 @@
     "packages/worker/dist/npm/install-facet.js": "673b299556efd7ba53882396dc81e22a53fffdbb49366c5811c4169a8d613f78",
     "packages/worker/dist/npm/installer.d.ts": "1f2ec42c165b2d3663dd61b7dd0db0e94d0c98983731dd9cdae1780c9de951cd",
     "packages/worker/dist/npm/installer.d.ts.map": "6264d4ebe5980a336512393d3e8dfa8b838c8aa50058175747211ea699274e67",
-    "packages/worker/dist/npm/installer.js": "fe2855d8994d8f46b8020d171f82dce59c81d0142746b09d7453dc04b4ba933a",
+    "packages/worker/dist/npm/installer.js": "528ff5092cc8d353caadaeacf115c625b0381550e35f694db9e8a260f4379765",
     "packages/worker/dist/npm/npx-install.d.ts": "f77de0886cb655feef90b15d79a8534abc619154cc66e869406c4c2b4e6a2f91",
     "packages/worker/dist/npm/npx-install.d.ts.map": "c1588998c77f502bba849979f4d55cba280bd657cd4174b49a1abb72f7adc395",
     "packages/worker/dist/npm/npx-install.js": "556cfe83feece2104dd808026749ea9401623c9479aac80aab9d9a9114516da9",
@@ -2041,7 +2041,7 @@
     "packages/worker/src/npm/cache.ts": "5d411bc17497e688e4b24cfe7443ccb99bfc41c57a2a320435bd8c5dfffb6464",
     "packages/worker/src/npm/install-batch-facet.ts": "f13deef8b4180f138184af2e5281fda610e8f0c1b31cf17307a3534e4d1cfe59",
     "packages/worker/src/npm/install-facet.ts": "8b64f36023ba7023307d367437eacf3aea542f00f7d7319e7e47836844885ae7",
-    "packages/worker/src/npm/installer.ts": "0dcee99002c35ab1a4592ada222e695e8c96a69cb8da43ee21695f26dfcc8faf",
+    "packages/worker/src/npm/installer.ts": "81fcfcc058f159c5d0b17f6708832f6061446e59e8d71739e0c30879ee3f198a",
     "packages/worker/src/npm/npx-install.ts": "1abc92487457ad98b19e8f340636109e8f3de7c44f8121886824f80be0492d8f",
     "packages/worker/src/npm/package-lock.ts": "0513a4071cca50c83f63476d824573b87dbd4350dd9b920d03d0285995a7a033",
     "packages/worker/src/npm/placement.ts": "e2f78c6aedc02718aceff365e363fc6cf10beeea366baf0e5051dfff2f8a2553",
