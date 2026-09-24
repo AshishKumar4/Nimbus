@@ -491,3 +491,13 @@ requirements:
       - A file is one chunk; staging, open descriptors and hot snapshots are further tier exclusions not modeled (they only make tier rarer)
       - Restore is taken to be synchronous within an isolate (no tier step mid-run), as ContentStoreBuild states; copyTree{at} and import are modeled as links that need the chunk local
       - P4 import resumption (importCursor = MAX(path) under dst) is not modeled
+  COH-008:
+    statement: The visibility rule for reported names withholds, from a reader that could list a path before its directory was made untraversable and removed, the removal's only entry for that path, so a store that evicts exact names keeps the reader's row.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Coherence.Visibility.a_chmod_then_remove_hides_a_listed_path
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - The rule is VfsLazyInodesLane's 7c53d244 (work/vfs-lazy-inodes); property (i), that no name reaches a principal that could not have listed it, is not modeled
+      - A facet that drops a subtree when a directory's own entry reports it absent or untraversable is not affected; the resident store on integrate/0924 evicts exact names

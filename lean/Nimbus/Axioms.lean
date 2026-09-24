@@ -86,6 +86,10 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.Store.step_inv
 #print axioms Nimbus.Coherence.Store.reachable_inv
 
+/-! ## Nimbus/Coherence/Visibility.lean -/
+
+#print axioms Nimbus.Coherence.Visibility.a_chmod_then_remove_hides_a_listed_path
+
 /-! ## Nimbus/ContentStore/Bugs.lean -/
 
 #print axioms Nimbus.ContentStore.Bugs.pinned_reachable

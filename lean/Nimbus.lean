@@ -5,7 +5,7 @@
 
   Vfs: RevisionFloor, FastCdc
   ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs, Tier
-  Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Refetch, Namespace, DurableDelta
+  Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Refetch, Namespace, DurableDelta, Visibility
   Refine (a separate root): the generators of `lean/fixtures/`
 -/
 
@@ -17,3 +17,4 @@ import Nimbus.Coherence.StoreBugs
 import Nimbus.Coherence.Refetch
 import Nimbus.Coherence.Namespace
 import Nimbus.Coherence.DurableDelta
+import Nimbus.Coherence.Visibility
