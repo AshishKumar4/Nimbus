@@ -27,6 +27,7 @@ import {
   facetSupervisor,
   launchResident,
   runScenarios,
+  residentDataPlan,
 } from './lib/resident-body.mjs';
 
 const PROGRAM = `
@@ -58,9 +59,10 @@ async function keptStore() {
   // What a previous launch leaves: the cold adopt, then the boot fill.
   const sql = facetSql();
   const previous = new Function(
-    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor };`,
+    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan };`,
   )();
   previous.__residentBind({ storage: { sql } });
+  previous.__residentSetPlan(await residentDataPlan(authority, '/home/user/app'));
   previous.__residentAdoptModuleBundle({}, authority.cursor());
   const filled = await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
   assert.equal(filled.filled, 3, 'the previous launch held every file');
@@ -84,7 +86,7 @@ await runScenarios(import.meta.path, {
     const { supervisor } = facetSupervisor(authority, {
       async fsList() { throw new Error('Network connection lost.'); },
     });
-    await launchResident({ program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
+    await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
     assertNothingStale(globalThis.__first);
   },
 
@@ -98,7 +100,7 @@ await runScenarios(import.meta.path, {
         return page++ === 0 ? { ...listed, next: listed.entries.at(-1).path } : { ...listed, epoch: 'a-new-incarnation' };
       },
     });
-    await launchResident({ program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
+    await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
     assertNothingStale(globalThis.__first);
   },
 
@@ -121,7 +123,7 @@ await runScenarios(import.meta.path, {
         return async (requests) => { for (const r of requests) fetched.push(r.path); return readBatch(requests); };
       },
     });
-    await launchResident({ program: PROGRAM, env: { SUPERVISOR: counting }, sql, bundle, cursor });
+    await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: counting }, sql, bundle, cursor });
     assert.deepEqual(globalThis.__first, { staged: 'NEW-STAGED', kept: 'NEW-KEPT', same: 'SAME' });
     assert.deepEqual(
       fetched.sort(),

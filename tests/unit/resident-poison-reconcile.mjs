@@ -50,10 +50,13 @@ function loadStore() {
     FACET_RESIDENT_STORE_SOURCE
       + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
       + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentStats,'
-      + ' __residentKeys, __residentGet, bundle: __nimbusResidentBundle };',
+      + ' __residentKeys, __residentGet, __residentSetPlan, bundle: __nimbusResidentBundle };',
   );
   const store = factory();
   store.__residentBind({ storage: { sql: sqlShim() } });
+  // The launch's data plan names every file here: this test is about how the
+  // store keeps what it holds, not about what it is asked to hold.
+  store.__residentSetPlan(Array.from({ length: FILES }, (_, i) => `app/d${Math.floor(i / 100)}/f${i}.dat`));
   return store;
 }
 

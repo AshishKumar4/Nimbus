@@ -31,6 +31,8 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
+import { planFacetData } from './data-plan.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -50,7 +52,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -807,6 +809,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // vfs/facet-resident-store.ts.
     __residentBind(workerCtx);
     __nsSetCred(cred);
+    __residentSetPlan(__startArgs && __startArgs.dataPlan);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -3768,6 +3771,10 @@ export class FacetManager {
      * already deliver for the case that matters: running the command again.
      */
     residencyProfiles = new Map();
+    /** Per module path: its static references at a revision (see _closureStaticRefs). */
+    staticRefsMemo = new Map();
+    /** Modules whose references are remembered: a few programs' closures. */
+    static STATIC_REFS_MEMO_MAX = 16_384;
     /**
      * What the prefetch cache holds right now, for /api/_diag/memory: each
      * entry's key, the revision it was built at, and its retained bytes, next
@@ -4081,6 +4088,94 @@ export class FacetManager {
         }
         return modules;
     }
+    /**
+     * Which contents a resident process holds from its first instruction,
+     * beyond its module map: data-plan.ts over this process's view of the
+     * namespace. A path the plan leaves out is still named and stat-able; a
+     * synchronous read of it is the one honest miss.
+     */
+    async _planResidentData(entry, vfsState, cwd, home, pacer) {
+        if (!this.vfs || !this.filesystem)
+            return [];
+        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
+        const plan = await planFacetData({
+            list: async (after) => {
+                const page = await vfs.authority.list(after, FS_LIST_PAGE_LIMIT);
+                return { entries: page.entries, next: page.next };
+            },
+            readText: async (path) => {
+                try {
+                    return await vfs.readFileString(path);
+                }
+                catch {
+                    return null;
+                }
+            },
+            stat: async (path) => {
+                try {
+                    const st = await vfs.stat(path);
+                    return { kind: st.type, size: st.size };
+                }
+                catch {
+                    return null;
+                }
+            },
+        }, {
+            cwd,
+            home: home || '/home/user',
+            closure: vfsState.bundlePaths ?? [],
+            refs: await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer),
+            spend: (units) => pacer.spend(units),
+        });
+        return plan.paths;
+    }
+    /**
+     * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
+     * read from the VFS as written rather than from the module map, whose ESM
+     * cells were rewritten and lost their import.meta. Each module is parsed once
+     * per revision of it, in this session.
+     */
+    async _closureStaticRefs(vfs, paths, pacer) {
+        const out = [];
+        for (const path of paths) {
+            if (!/\.(?:c|m)?js$/.test(path))
+                continue;
+            let rev;
+            try {
+                rev = await vfs.revision(path);
+            }
+            catch {
+                continue;
+            }
+            const memo = this.staticRefsMemo.get(path);
+            let refs;
+            if (memo && memo.rev === rev) {
+                refs = memo.refs;
+            }
+            else {
+                let source;
+                try {
+                    source = await vfs.readFileString(path);
+                }
+                catch {
+                    continue;
+                }
+                await pacer.spend(source.length);
+                refs = findStaticFsReferences(source, '/' + path);
+                this.staticRefsMemo.delete(path);
+                this.staticRefsMemo.set(path, { rev, refs });
+                for (const oldest of this.staticRefsMemo.keys()) {
+                    if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX)
+                        break;
+                    this.staticRefsMemo.delete(oldest);
+                }
+            }
+            if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
+                out.push(refs);
+            }
+        }
+        return out;
+    }
     async _buildProcessBundle(entry, spec, pacer) {
         if (!this.vfs) {
             return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
@@ -4119,6 +4214,7 @@ export class FacetManager {
         }
         const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, this.residencyProfiles.get(key), pacer);
         vfsState.bundleKey = key;
+        vfsState.bundlePaths = Object.keys(vfsState.bundle);
         vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
         vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
@@ -5387,6 +5483,7 @@ export class FacetManager {
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+        const dataPlan = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
         // rides on top of the recipe's env and is never journalled: it is
@@ -5461,7 +5558,7 @@ export class FacetManager {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                startArgs: { vfsCursor, ...(this.debugEnabled ? { diag: true } : {}) },
+                startArgs: { vfsCursor, dataPlan, ...(this.debugEnabled ? { diag: true } : {}) },
                 // A resident whose declared port is reserved binds the owner's
                 // durable slot — the same store a durable worker spawn takes — so the
                 // reservation's durability reaches this process's storage too.

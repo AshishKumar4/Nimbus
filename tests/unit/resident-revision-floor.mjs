@@ -42,10 +42,11 @@ function loadStore() {
   const factory = new Function(
     FACET_RESIDENT_STORE_SOURCE
       + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-      + ' __residentKeys, __residentGet, __residentProvenance };',
+      + ' __residentKeys, __residentGet, __residentProvenance, __residentSetPlan };',
   );
   const store = factory();
   store.__residentBind({ storage: { sql: sqlShim() } });
+  store.__residentSetPlan(Array.from({ length: 8 }, (_, i) => `app/f${i}.txt`));
   return store;
 }
 
@@ -114,9 +115,12 @@ assertNoStaleByte(store, 'after the floor rose');
 assert.ok(store.__residentProvenance(TARGET) >= writtenAt);
 
 // Untouched rows of dropped paths are refetched too: the floor rose past the
-// revision they were dated at. That is the cost, and all of it.
+// revision they were dated at. That is the cost, and all of it: the churn is
+// named by the namespace but not in the launch's data plan, so none of it is
+// fetched.
 assert.equal(repaired.dropped, 8, 'every row dated below the floor was dropped');
-assert.equal(repaired.filled, 8 + churn, 'and refetched with the churn it had not seen');
+assert.equal(repaired.filled, 8, 'and only those rows are refetched');
+assert.ok(churn > 0);
 
 // A second reconcile with nothing changed keeps every row: the floor did not
 // move, and each row is dated at the revision it was listed at.

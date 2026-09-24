@@ -1216,12 +1216,13 @@ async function __nsRelist(supervisor, dir) {
 }
 
 /**
- * The launch's data plan: the paths whose content a synchronous read may
- * want, held from boot. Null holds every file.
+ * The launch's data plan (facets/data-plan.ts): the paths whose content a
+ * synchronous read may want, held from boot beside the module map. A launch
+ * with none (a re-entry by an inbound request) holds what it already had.
  */
-let __residentPlan = null;
+let __residentPlan = new Set();
 function __residentSetPlan(paths) {
-  __residentPlan = Array.isArray(paths) ? new Set(paths.map((p) => String(p).replace(/^\\/+/, ""))) : null;
+  __residentPlan = new Set(Array.isArray(paths) ? paths.map((p) => String(p).replace(/^\\/+/, "")) : []);
 }
 
 /**
@@ -1575,14 +1576,14 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     }
   }
 
-  // What to hold: the launch's data plan (or every file, when there is none),
-  // plus every row this pass had to drop as stale — it was held for a reason.
+  // What to hold: the launch's data plan, plus every row this pass had to
+  // drop as stale — it was held for a reason.
   const plan = __residentPlan;
   const wanted = new Set(dropped);
   const fetch = [];
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
-    if (plan === null || plan.has(file.path) || wanted.has(file.path)) fetch.push(file);
+    if (plan.has(file.path) || wanted.has(file.path)) fetch.push(file);
   }
   const filled = await __residentFetchFiles(supervisor, fetch);
 

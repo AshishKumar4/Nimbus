@@ -47,6 +47,7 @@ async function boot(overrides = () => ({}), processEnv = {}) {
   authority.kfs.writeFile(F, 'v1');
   const { supervisor, log } = facetSupervisor(authority, overrides(authority));
   const { proc } = await launchResident({
+    authority,
     program: PROGRAM,
     env: { SUPERVISOR: supervisor },
     processEnv,

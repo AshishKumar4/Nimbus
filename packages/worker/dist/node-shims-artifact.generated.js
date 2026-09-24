@@ -16,6 +16,6 @@ export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-b180e89
 export const VFS_WRITE_LEDGER_BUILD_ID = "b180e89d094c8550";
 export const VFS_WRITE_LEDGER_SHA256 = "b180e89d094c855052b2a5779ba869c812d2b21d2c4ca1a08940b0bb2f88029b";
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-f145bdf00935aeb8.js";
-export const RESIDENT_STORE_BUILD_ID = "f145bdf00935aeb8";
-export const RESIDENT_STORE_SHA256 = "f145bdf00935aeb863bd4d38ea32aa9dd54598514a2ce691d868177e97c62e7c";
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-e6360999d518209b.js";
+export const RESIDENT_STORE_BUILD_ID = "e6360999d518209b";
+export const RESIDENT_STORE_SHA256 = "e6360999d518209ba64b05e6133a4d299b0d5532fd63e5118654c1e0586f845b";

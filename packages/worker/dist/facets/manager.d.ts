@@ -251,6 +251,8 @@ interface FacetVfsState {
      * which is what makes releasing it safe.
      */
     cacheRetained?: boolean;
+    /** Every path the module map carries: the closure a resident launch plans its data from. */
+    bundlePaths?: readonly string[];
 }
 /**
  * Drop the raw forms of everything that has been serialized, in place.
@@ -932,6 +934,10 @@ export declare class FacetManager {
      * already deliver for the case that matters: running the command again.
      */
     private residencyProfiles;
+    /** Per module path: its static references at a revision (see _closureStaticRefs). */
+    private staticRefsMemo;
+    /** Modules whose references are remembered: a few programs' closures. */
+    private static readonly STATIC_REFS_MEMO_MAX;
     /**
      * What the prefetch cache holds right now, for /api/_diag/memory: each
      * entry's key, the revision it was built at, and its retained bytes, next
@@ -1073,6 +1079,20 @@ export declare class FacetManager {
      * refusal, which names the module.
      */
     private _wasmModulesByValue;
+    /**
+     * Which contents a resident process holds from its first instruction,
+     * beyond its module map: data-plan.ts over this process's view of the
+     * namespace. A path the plan leaves out is still named and stat-able; a
+     * synchronous read of it is the one honest miss.
+     */
+    private _planResidentData;
+    /**
+     * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
+     * read from the VFS as written rather than from the module map, whose ESM
+     * cells were rewritten and lost their import.meta. Each module is parsed once
+     * per revision of it, in this session.
+     */
+    private _closureStaticRefs;
     private _buildProcessBundle;
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its

@@ -31,6 +31,8 @@ const FS_SINKS = new Set([
     'realpathSync', 'realpath', 'opendirSync', 'opendir', 'readlinkSync', 'readlink',
 ]);
 const LIST_SINKS = new Set(['readdirSync', 'readdir', 'opendirSync', 'opendir']);
+/** `pkg/sub/file.ext` or `@scope/pkg/sub/file.ext`: a bare specifier naming a file. */
+const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
 function parseAny(source) {
     for (const sourceType of ['module', 'script']) {
         try {
@@ -267,6 +269,14 @@ export function findStaticFsReferences(source, filename) {
     }
     full(ast, (raw) => {
         const node = raw;
+        if (node.type === 'Literal') {
+            // A package subpath spelled as data ("astro/runtime/client/x.js" in a
+            // bundler's include list) is read by whatever resolves it.
+            if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
+                refs.resolves.push({ from: dir, spec: node.value });
+            }
+            return;
+        }
         if (node.type === 'NewExpression') {
             const v = evaluate(node);
             if (v)
@@ -331,6 +341,13 @@ export function findStaticFsReferences(source, filename) {
         // segment is empty; a hole mid-segment names siblings in one directory.
         refs.patterns.push({ dir: base, prefix: prefix.slice(slash + 1), suffix });
     }
+    const seen = new Set();
+    refs.resolves = refs.resolves.filter((r) => !seen.has(r.spec) && seen.add(r.spec) !== undefined);
+    const patternKeys = new Set();
+    refs.patterns = refs.patterns.filter((q) => {
+        const key = q.dir + '\0' + q.prefix + '\0' + q.suffix;
+        return !patternKeys.has(key) && patternKeys.add(key) !== undefined;
+    });
     refs.exact = [...new Set(refs.exact)];
     refs.listed = [...new Set(refs.listed)];
     refs.cwdRelative = [...new Set(refs.cwdRelative)];

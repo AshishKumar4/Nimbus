@@ -63,6 +63,7 @@ async function boot(files = {}, overrides = () => ({})) {
   }
   const { supervisor, log } = facetSupervisor(authority, overrides(authority));
   await launchResident({
+    authority,
     program: PROGRAM,
     env: { SUPERVISOR: supervisor },
     cursor: authority.cursor(),

@@ -39,7 +39,7 @@ async function boot(setup) {
   authority.kfs.writeFile('opt/data/deep/x.json', '{"x":1}');
   if (setup) setup(authority);
   const { supervisor } = facetSupervisor(authority);
-  await launchResident({ program: PROGRAM, env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
+  await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
   return { authority, probe: globalThis.__probe };
 }
 

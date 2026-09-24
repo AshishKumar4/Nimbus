@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { generateLongRunningNodeCode } from '../../../packages/worker/src/facets/manager.ts';
+import { planFacetData } from '../../../packages/worker/src/facets/data-plan.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
 import { nodeFacetSources } from './node-facet-sources.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -186,6 +187,8 @@ export async function launchResident({
   manifest = {},
   metadata = {},
   cursor,
+  authority,
+  dataPlan,
 }) {
   const vfsState = {
     bundle,
@@ -208,8 +211,22 @@ export async function launchResident({
   const mod = await import(pathToFileURL(join(dir, 'worker.mjs')).href);
   const ctx = { storage: { sql }, waitUntil() {}, id: { toString: () => 'resident-body-test' } };
   const proc = new mod.NimbusProcess(ctx, env);
-  await proc.startProcess(cursor ? { vfsCursor: cursor } : {});
+  // The plan a resident launch is handed: data-plan.ts over the authority,
+  // as the manager computes it, unless the test names one.
+  const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
+  await proc.startProcess(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {});
   return { proc, sql };
+}
+
+/** data-plan.ts over `authority` as the process's credential sees it. */
+export async function residentDataPlan(authority, cwd, closure = []) {
+  const view = authority.rawVfs.as(CRED);
+  const plan = await planFacetData({
+    list: async (after) => { const page = view.list(after); return { entries: page.entries, next: page.next }; },
+    readText: async (path) => { try { return view.readFileString(path); } catch { return null; } },
+    stat: async (path) => { try { const st = view.stat(path); return { kind: st.type, size: st.size }; } catch { return null; } },
+  }, { cwd, home: '/home/user', closure, refs: [] });
+  return plan.paths;
 }
 
 /** The program's live coherence counters (the shims publish them on globalThis). */

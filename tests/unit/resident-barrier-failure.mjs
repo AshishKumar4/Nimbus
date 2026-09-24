@@ -64,7 +64,7 @@ async function boot() {
   }
   const handle = facetSupervisor(authority, overrides);
   forward = handle.forward;
-  await launchResident({ program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
+  await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
   const probe = globalThis.__probe;
   assert.equal(probe.read(F), 'v1', 'the boot fill holds the file');
   return { authority, fault, probe, log: handle.log, forward };
