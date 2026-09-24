@@ -14,6 +14,7 @@ import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
+import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import {
   literalStringValue,
@@ -1971,8 +1972,8 @@ export class EsbuildService {
     }
 
     function inferLoader(path: string): esbuild.Loader {
-      if (path.endsWith('.ts') || path.endsWith('.mts') || path.endsWith('.cts')) return 'ts';
-      if (path.endsWith('.tsx')) return 'tsx';
+      const typescript = typescriptLoader(path);
+      if (typescript !== null) return typescript;
       if (path.endsWith('.jsx')) return 'jsx';
       if (path.endsWith('.json')) return 'json';
       if (path.endsWith('.css')) return 'css';

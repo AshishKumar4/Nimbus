@@ -1,7 +1,9 @@
 /**
- * typescript-specifiers.ts — the one definition of how a module specifier
- * reaches a TypeScript source, shared by the install-time prefetch resolver
- * and the `require()` inside a running facet.
+ * typescript-specifiers.ts — the one definition of what a TypeScript source
+ * is: which extensions name one and the loader each takes, and how a module
+ * specifier reaches one. Shared by the install-time prefetch resolver, the
+ * launch bundle's ESM pass, a runtime's entry script and the `require()`
+ * inside a running facet.
  *
  * TypeScript's `"moduleResolution": "NodeNext"` requires authors to write the
  * OUTPUT extension in a specifier that names a TypeScript source:
@@ -39,6 +41,18 @@
  * compares it to this one over the whole table — because a "keep in sync"
  * comment has never once caught a drift.
  */
+import { vfsPathExtension } from '../vfs/path.js';
+/**
+ * The esbuild loader a TypeScript source takes, by its extension: `.ts`,
+ * `.mts` and `.cts` are TypeScript, `.tsx` is TypeScript with JSX. Null for
+ * any other file.
+ */
+export function typescriptLoader(path) {
+    const ext = vfsPathExtension(path);
+    if (ext === '.tsx')
+        return 'tsx';
+    return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
+}
 /** Files that are already a TypeScript source, or can never name one. */
 const NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
 /**

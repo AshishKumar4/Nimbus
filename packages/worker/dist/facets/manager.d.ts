@@ -573,7 +573,8 @@ export declare function addObservedReads(vfs: CredentialedVfs, observed: Readonl
 export declare function isBundleModuleCandidate(path: string): boolean;
 /**
  * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one.
+ * path does not name one. Which extensions are TypeScript is
+ * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: `new Function` on a type annotation is a SyntaxError whether or

@@ -40,6 +40,7 @@
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
 import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
+import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -443,22 +444,15 @@ export function buildRuntimeHandler(
     const needsEsmTransform =
       scriptExt === '.mjs' ||
       ((scriptExt === '.js' || scriptExt === '') && (await nearestPackageTypeIsModule(resolvedPath)));
+    // TypeScript by the same table the bundle's ESM pass reads.
+    const typescript = typescriptLoader(resolvedPath);
 
     // esbuild transform for TypeScript / TSX / JSX (both node and bun)
     // AND for ESM entry scripts (primitive ESM-detect).
-    if (
-      scriptExt === '.ts' ||
-      scriptExt === '.tsx' ||
-      scriptExt === '.jsx' ||
-      needsEsmTransform
-    ) {
+    if (typescript !== null || scriptExt === '.jsx' || needsEsmTransform) {
       try {
         const eb = await getEsbuild();
-        const loader =
-          scriptExt === '.tsx' ? 'tsx' :
-          scriptExt === '.jsx' ? 'jsx' :
-          scriptExt === '.ts' ? 'ts' :
-          'js';
+        const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
         // Substitute `import.meta.url` at compile-time so esbuild's
         // CJS output doesn't reduce it to `undefined` (its default
         // for unknown import.meta references). The substitution

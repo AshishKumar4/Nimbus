@@ -31,6 +31,13 @@ published independently in the `@nimbus-sh` npm scope.
   and only for that launch. It used to fail every module of the launch,
   including the ones already transformed.
 
+### Runtimes
+
+- `node main.mts` and `node main.cts` compile their entry as TypeScript, as
+  `.ts` and `.tsx` entries already did. A `.cts` entry is CommonJS TypeScript
+  even in a `"type": "module"` package. Both used to reach the facet
+  uncompiled and fail on their first type annotation or `import`.
+
 ## 2026-09-21
 
 core 0.11.0, worker 0.9.0, sdk 0.8.0, fabric 0.7.0, platform 0.5.0,

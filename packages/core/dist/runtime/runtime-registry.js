@@ -37,6 +37,7 @@
  *     observable behaviour, not implementation shape.
  */
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
+import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import { errorText } from '../_shared/error-text.js';
@@ -306,18 +307,14 @@ export function buildRuntimeHandler(spec, ctx0) {
         const scriptExt = vfsPathExtension(resolvedPath);
         const needsEsmTransform = scriptExt === '.mjs' ||
             ((scriptExt === '.js' || scriptExt === '') && (await nearestPackageTypeIsModule(resolvedPath)));
+        // TypeScript by the same table the bundle's ESM pass reads.
+        const typescript = typescriptLoader(resolvedPath);
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
         // AND for ESM entry scripts (primitive ESM-detect).
-        if (scriptExt === '.ts' ||
-            scriptExt === '.tsx' ||
-            scriptExt === '.jsx' ||
-            needsEsmTransform) {
+        if (typescript !== null || scriptExt === '.jsx' || needsEsmTransform) {
             try {
                 const eb = await getEsbuild();
-                const loader = scriptExt === '.tsx' ? 'tsx' :
-                    scriptExt === '.jsx' ? 'jsx' :
-                        scriptExt === '.ts' ? 'ts' :
-                            'js';
+                const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
                 // Substitute `import.meta.url` at compile-time so esbuild's
                 // CJS output doesn't reduce it to `undefined` (its default
                 // for unknown import.meta references). The substitution

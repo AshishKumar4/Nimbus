@@ -28,6 +28,7 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
+import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ExecutionFs, type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
 import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -3376,7 +3377,8 @@ export function isBundleModuleCandidate(path: string): boolean {
 
 /**
  * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one.
+ * path does not name one. Which extensions are TypeScript is
+ * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
@@ -3395,10 +3397,7 @@ export function isBundleModuleCandidate(path: string): boolean {
  * gone. So a declaration file is left exactly as it was staged.
  */
 export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
-  if (isTypescriptDeclarationFile(path)) return null;
-  const ext = vfsPathExtension(path);
-  if (ext === '.tsx') return 'tsx';
-  return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
+  return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
 }
 
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */

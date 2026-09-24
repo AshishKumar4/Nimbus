@@ -12,6 +12,7 @@ import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
+import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { scanJsSource } from './comment-strip.js';
@@ -1759,10 +1760,9 @@ export class EsbuildService {
             return null;
         }
         function inferLoader(path) {
-            if (path.endsWith('.ts') || path.endsWith('.mts') || path.endsWith('.cts'))
-                return 'ts';
-            if (path.endsWith('.tsx'))
-                return 'tsx';
+            const typescript = typescriptLoader(path);
+            if (typescript !== null)
+                return typescript;
             if (path.endsWith('.jsx'))
                 return 'jsx';
             if (path.endsWith('.json'))
