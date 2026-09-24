@@ -40,7 +40,7 @@
  *   indexes it by path and by parent, so no walk needs the whole tree
  * - File content demand-paged through LRU cache
  */
-import { VfsEventEmitter } from './events.js';
+import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsCred, type VfsAcquireResult, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
@@ -158,6 +158,13 @@ export interface CredentialedVfs {
      * name the caller uses, so it is never reported back to one.
      */
     storageKey(path: string): string;
+    /**
+     * Watch `path` and everything under it, in this credential's view: the
+     * watch is on the file its name means (a confined caller's /tmp/x is its
+     * own), and an event is delivered under the caller's name for its path,
+     * only if the caller could list that path (see SqliteVFS.invalidatedSince).
+     */
+    subscribe(path: string, listener: (event: VfsEvent) => void): () => void;
     /**
      * This VFS incarnation's identity. Paired with `revision()` it is the
      * cache-coherence cursor a facet is stamped with when its bundle is built,
@@ -451,8 +458,8 @@ export declare class SqliteVFS {
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
      * none. The inverse of {@link storageKey}, for the surfaces that report
-     * paths they were not asked about: {@link list} and
-     * {@link invalidatedSince}.
+     * paths they were not asked about: {@link list}, {@link invalidatedSince}
+     * and watches.
      *
      * A confined caller has no name for the shared scratch tree: `/tmp` is its
      * own root. Another principal's private root does have a name, its storage
@@ -589,6 +596,13 @@ export declare class SqliteVFS {
      * directories still standing.
      */
     private visibleName;
+    /**
+     * A watch in `cred`'s view (CredentialedVfs.subscribe). Events are emitted
+     * after the revision that published them, so `_revision` is the one each
+     * was mutated at, and a directory removed by the same mutation already has
+     * its record.
+     */
+    private subscribe;
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;

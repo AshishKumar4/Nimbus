@@ -512,8 +512,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.vfs.list(after ?? null, limit);
   }
 
+  /** A watch in the caller's view: its files, under its names, only those it could list. */
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
-    return this.rawVfs.events.onPath(normalizeVfsPath(path), listener);
+    return this.vfs.subscribe(path, listener);
   }
 
   realpath(path: RuntimeFsPath): string {

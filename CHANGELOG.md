@@ -145,6 +145,10 @@ published independently in the `@nimbus-sh` npm scope.
   modes are kept exactly as long as the invalidation log keeps the paths
   they judge. `list()` checks a confined caller's own directories, not the
   storage directories that hold its `/tmp`.
+- A watch (`subscribe`, under `fs.watch`) follows the caller's view. A
+  confined caller watching `/tmp/x` watched the shared `/tmp/x`: its own
+  writes never fired, and the shared file's did. Events now carry the
+  caller's names, and only for paths it could list, by the ACQUIRE rule.
 
 ### Runtimes
 

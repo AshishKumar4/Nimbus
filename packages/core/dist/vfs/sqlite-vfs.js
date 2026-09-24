@@ -1476,8 +1476,8 @@ export class SqliteVFS {
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
      * none. The inverse of {@link storageKey}, for the surfaces that report
-     * paths they were not asked about: {@link list} and
-     * {@link invalidatedSince}.
+     * paths they were not asked about: {@link list}, {@link invalidatedSince}
+     * and watches.
      *
      * A confined caller has no name for the shared scratch tree: `/tmp` is its
      * own root. Another principal's private root does have a name, its storage
@@ -1545,6 +1545,7 @@ export class SqliteVFS {
             revision: (path) => this.revision(path, bound),
             invalidatedSince: (epoch, cursor) => this.invalidatedSince(epoch, cursor, bound),
             storageKey: (path) => this.storageKey(path, bound),
+            subscribe: (path, listener) => this.subscribe(path, bound, listener),
             epoch: this._epoch,
         };
     }
@@ -1934,6 +1935,25 @@ export class SqliteVFS {
             return verdict ? name : null;
         }
         return name;
+    }
+    /**
+     * A watch in `cred`'s view (CredentialedVfs.subscribe). Events are emitted
+     * after the revision that published them, so `_revision` is the one each
+     * was mutated at, and a directory removed by the same mutation already has
+     * its record.
+     */
+    subscribe(path, cred, listener) {
+        return this.events.onPath(this.storageKey(path, cred), (event) => {
+            const standing = new Map();
+            const name = this.visibleName(event.path, cred, this._revision, standing);
+            if (!name)
+                return;
+            const oldPath = event.oldPath === undefined
+                ? undefined
+                : this.visibleName(event.oldPath, cred, this._revision, standing) ?? undefined;
+            const { oldPath: _stored, ...rest } = event;
+            listener(oldPath === undefined ? { ...rest, path: name } : { ...rest, path: name, oldPath });
+        });
     }
     acquireExclusiveMutation(path, options = {}) {
         let root = normalizeVfsPath(path);

@@ -93,6 +93,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     revision(path?: RuntimeFsPath): number;
     acquire(epoch: string | null, cursor: number): VfsAcquireResult;
     list(after?: string | null, limit?: number): VfsListPage;
+    /** A watch in the caller's view: its files, under its names, only those it could list. */
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     realpath(path: RuntimeFsPath): string;
     remove(path: RuntimeFsPath, options?: {

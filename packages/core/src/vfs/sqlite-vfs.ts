@@ -41,7 +41,7 @@
  * - File content demand-paged through LRU cache
  */
 
-import { VfsEventEmitter, type VfsEventType } from './events.js';
+import { VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
 import { normalizeVfsPath } from './path.js';
 import {
   LRU_MAX_ENTRIES,
@@ -254,6 +254,13 @@ export interface CredentialedVfs {
    * name the caller uses, so it is never reported back to one.
    */
   storageKey(path: string): string;
+  /**
+   * Watch `path` and everything under it, in this credential's view: the
+   * watch is on the file its name means (a confined caller's /tmp/x is its
+   * own), and an event is delivered under the caller's name for its path,
+   * only if the caller could list that path (see SqliteVFS.invalidatedSince).
+   */
+  subscribe(path: string, listener: (event: VfsEvent) => void): () => void;
   /**
    * This VFS incarnation's identity. Paired with `revision()` it is the
    * cache-coherence cursor a facet is stamped with when its bundle is built,
@@ -1921,8 +1928,8 @@ export class SqliteVFS {
   /**
    * Storage key -> the name this credential knows it by, or `null` when it has
    * none. The inverse of {@link storageKey}, for the surfaces that report
-   * paths they were not asked about: {@link list} and
-   * {@link invalidatedSince}.
+   * paths they were not asked about: {@link list}, {@link invalidatedSince}
+   * and watches.
    *
    * A confined caller has no name for the shared scratch tree: `/tmp` is its
    * own root. Another principal's private root does have a name, its storage
@@ -2005,6 +2012,7 @@ export class SqliteVFS {
       revision: (path) => this.revision(path, bound),
       invalidatedSince: (epoch, cursor) => this.invalidatedSince(epoch, cursor, bound),
       storageKey: (path) => this.storageKey(path, bound),
+      subscribe: (path, listener) => this.subscribe(path, bound, listener),
       epoch: this._epoch,
     };
   }
@@ -2394,6 +2402,25 @@ export class SqliteVFS {
       return verdict ? name : null;
     }
     return name;
+  }
+
+  /**
+   * A watch in `cred`'s view (CredentialedVfs.subscribe). Events are emitted
+   * after the revision that published them, so `_revision` is the one each
+   * was mutated at, and a directory removed by the same mutation already has
+   * its record.
+   */
+  private subscribe(path: string, cred: VfsCred, listener: (event: VfsEvent) => void): () => void {
+    return this.events.onPath(this.storageKey(path, cred), (event) => {
+      const standing = new Map<string, boolean>();
+      const name = this.visibleName(event.path, cred, this._revision, standing);
+      if (!name) return;
+      const oldPath = event.oldPath === undefined
+        ? undefined
+        : this.visibleName(event.oldPath, cred, this._revision, standing) ?? undefined;
+      const { oldPath: _stored, ...rest } = event;
+      listener(oldPath === undefined ? { ...rest, path: name } : { ...rest, path: name, oldPath });
+    });
   }
 
   acquireExclusiveMutation(
