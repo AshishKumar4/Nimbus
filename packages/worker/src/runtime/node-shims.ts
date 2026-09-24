@@ -1530,6 +1530,9 @@ const __fsMod = (() => {
       reconciles: 0, selfWrites: 0, misses: 0,
       // ACQUIREs that got no answer (see _acquireBarrier), and the last reason.
       barrierFailures: 0, lastBarrierFailure: "",
+      // Barriers that held their resumption on an own write's acknowledgement
+      // (_awaitReportedOwnWrites).
+      ownWriteWaits: 0,
     });
 
   /**
@@ -1877,6 +1880,13 @@ const __fsMod = (() => {
    * (_deliveredAnswer). Everything after is the same for an answer delivered
    * and one asked for, so a repair, a join or a poison follows exactly the
    * path it always has.
+   *
+   * Last, the barrier waits out every own write or mutation that a report —
+   * this answer's or an earlier one's — is outstanding against, until its
+   * acknowledgement says which came first (__nimbusReportedOwnAcknowledgements).
+   * Until then the resumption could run on own bytes the authority applied
+   * before a peer overwrote them. Nothing is waited on unless such a report
+   * exists.
    */
   async function _acquireBarrier(supervisor, delivered) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
@@ -1899,7 +1909,10 @@ const __fsMod = (() => {
         await (joining ? _residentRepair : _repairPoisonedStore(supervisor, result));
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
-        if (!joining) return [];
+        if (!joining) {
+          await _awaitReportedOwnWrites();
+          return [];
+        }
         if (joins + 1 >= _REPAIR_JOINS_MAX) {
           // Every repair this barrier waited on was someone else's. Rather
           // than resume on rows none of them vouched for as of its own
@@ -1907,6 +1920,8 @@ const __fsMod = (() => {
           // never a stale byte. Any repair still to finish lists after this.
           __residentDropDated();
           _storeRepairOwed = true;
+          __nimbusNoteUnnamedReports();
+          await _awaitReportedOwnWrites();
           return [];
         }
         result = await _acquire(supervisor);
@@ -1926,6 +1941,7 @@ const __fsMod = (() => {
       _cursor.rev = result.rev;
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
+      await _awaitReportedOwnWrites();
       return applied.dropped;
     }
     // Paths that held content before this eviction are the ones worth
@@ -1937,6 +1953,9 @@ const __fsMod = (() => {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       if (result !== null) _stats.poisons++;
       _spoilFills();
+      // Nothing says what changed, so a parked write the authority may have
+      // applied before some peer's is judged as though the peer came after.
+      __nimbusNoteUnnamedReports();
     } else if (Array.isArray(result.paths)) {
       for (const entry of result.paths) {
         const k = entry.path;
@@ -1958,7 +1977,22 @@ const __fsMod = (() => {
       _cursor.epoch = result.epoch;
       _cursor.rev = result.rev;
     }
+    await _awaitReportedOwnWrites();
     return wereResident;
+  }
+
+  /**
+   * Hold the resumption behind a barrier on every own write or mutation a
+   * report is outstanding against, until its acknowledgement says which came
+   * first (__nimbusReportedOwnAcknowledgements). Counted, because the wait is
+   * also paid when the report was the write itself coming back, which the
+   * facet cannot tell apart until the acknowledgement lands.
+   */
+  async function _awaitReportedOwnWrites() {
+    const acks = __nimbusReportedOwnAcknowledgements();
+    if (acks === null) return;
+    _stats.ownWriteWaits++;
+    await acks;
   }
 
   /**
@@ -2334,23 +2368,29 @@ const __fsMod = (() => {
    * or the resident store's row. Without it a store row the mutation
    * overlaid would be left as own bytes nobody ever dates, which the barrier
    * keeps against every later write by anyone.
+   *
+   * From lease to receipt it is an acknowledgement in flight
+   * (__nimbusOwnAcknowledgement): a barrier that reports the path waits for
+   * it, rather than resume on bytes the receipt may yet show a peer outran.
    */
-  async function _ownMutation(absPath, rpc, apply) {
+  function _ownMutation(absPath, rpc, apply) {
     const key = _strip(absPath);
-    const held = __nimbusBeginOwnMutation(key);
-    let receipt;
-    let landed = false;
-    try { receipt = await rpc(); landed = true; }
-    finally {
-      // The local effect follows the mutation landing, not the receipt: the
-      // receipt only settles the stamp, and a supervisor that answers
-      // without one still applied the bytes. The end runs even if applying
-      // throws: a lease left open pins its cell at Infinity, which is the one
-      // state in this protocol that can serve a stale byte forever.
-      try { if (landed && apply) apply(receipt); }
-      finally { __nimbusEndOwnMutation(key, held, receipt); }
-    }
-    return receipt;
+    return __nimbusOwnAcknowledgement(key, async () => {
+      const held = __nimbusBeginOwnMutation(key);
+      let receipt;
+      let landed = false;
+      try { receipt = await rpc(); landed = true; }
+      finally {
+        // The local effect follows the mutation landing, not the receipt: the
+        // receipt only settles the stamp, and a supervisor that answers
+        // without one still applied the bytes. The end runs even if applying
+        // throws: a lease left open pins its cell at Infinity, which is the one
+        // state in this protocol that can serve a stale byte forever.
+        try { if (landed && apply) apply(receipt); }
+        finally { __nimbusEndOwnMutation(key, held, receipt); }
+      }
+      return receipt;
+    });
   }
 
   // A sync caller has no frame to receive the outcome. The ledger already

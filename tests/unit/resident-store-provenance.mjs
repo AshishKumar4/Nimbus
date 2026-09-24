@@ -129,36 +129,110 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a peer write that lands while the own write is in flight'() {
-    // The authority applies the write at once and the response is held, the
-    // way a Durable Object's output gate holds it. A barrier inside that window
-    // reports the path while the row is still this process's own, so it must
-    // keep the row; the flush's revision then decides whose report it was.
+    // The model's trace (lean/Nimbus/Coherence/StoreBugs.lean,
+    // own_committed_write_is_served_past_a_peer). The authority commits this
+    // process's write of p at r1 and holds the response, the way a Durable
+    // Object's output gate holds it. A peer then commits p at r2, and q after
+    // it, and a resumption's barrier reports both. Until the response says r1,
+    // the process cannot tell whether r2 was its own write or a later one, so
+    // it may not resume on its own bytes of p: that would read q after the
+    // peer's write and p before it.
     const held = heldWriteFile();
-    const { authority, probe } = await boot({}, held.overrides);
+    const { authority, probe } = await boot({ 'q.txt': 'q0' }, held.overrides);
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
     authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
+    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    const resumed = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
     assert.equal(
-      await probe.resume(`${APP}/race.txt`),
-      'MINE',
-      'an unacknowledged own write still reads as the process wrote it',
+      await Promise.race([resumed, sleep(100).then(() => 'still waiting')]),
+      'still waiting',
+      'a resumption may not run on an own row whose acknowledgement could date it below the report',
     );
 
     held.release();
-    await probe.settle(20);
+    assert.deepEqual(await resumed, ['PEER', 'q1'], 'the acknowledgement says r1, below the report: the peer wrote last');
+    assert.deepEqual(await probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]), ['PEER', 'q1']);
+  },
+
+  async 'a later barrier while an earlier one waits on the acknowledgement'() {
+    // The same window, and a second resumption inside it. The first barrier's
+    // answer reported p and moved the cursor past it, so the second asks from
+    // there and hears nothing: p is not news any more. Its row is no fresher
+    // for that (lean/Nimbus/Coherence/StoreBugs.lean,
+    // a_per_answer_wait_misses_an_earlier_report).
+    const held = heldWriteFile();
+    const { authority, log, probe } = await boot({ 'q.txt': 'q0' }, held.overrides);
+
+    probe.write(`${APP}/race.txt`, 'MINE');
+    await held.wrote;
+    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
+    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    const acquired = log.calls.fsAcquire ?? 0;
+    const first = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
+    await until(() => (log.calls.fsAcquire ?? 0) > acquired, "the first resumption's barrier");
+    await sleep(20);
+    const second = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
     assert.equal(
-      await probe.resume(`${APP}/race.txt`),
-      'PEER',
-      'the peer wrote after it, so the flush must not date the row it kept over that report',
+      await Promise.race([second, sleep(100).then(() => 'still waiting')]),
+      'still waiting',
+      'a barrier whose answer names nothing still may not resume on the reported own row',
     );
+
+    held.release();
+    assert.deepEqual(await first, ['PEER', 'q1']);
+    assert.deepEqual(await second, ['PEER', 'q1']);
+  },
+
+  async 'a newer write parked over one being acknowledged'() {
+    // A program that writes and yields in a loop: its last write-back is still
+    // being acknowledged when the next write is parked over it, and a barrier
+    // reports the last one coming back. The facet serves the newer cell, which
+    // is only parked and will be applied above every report, so nothing it
+    // reads depends on the older acknowledgement and the resumption does not
+    // wait for it.
+    const held = heldWriteFile();
+    const { authority, probe } = await boot({ 'q.txt': 'q0' }, held.overrides);
+
+    probe.write(`${APP}/race.txt`, 'FIRST');
+    await held.wrote;
+    probe.write(`${APP}/race.txt`, 'SECOND');
+    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    const resumed = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
+    assert.deepEqual(
+      await Promise.race([resumed, sleep(100).then(() => 'still waiting')]),
+      ['SECOND', 'q1'],
+      'the resumption reads its newest write at once, with the older one still unacknowledged',
+    );
+
+    held.release();
+    await probe.settle(50);
+    assert.equal(authority.read('home/user/app/race.txt'), 'SECOND');
+    assert.deepEqual(await probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]), ['SECOND', 'q1']);
+  },
+
+  async 'an own write that lands after a peer write'() {
+    // The other order. The peer commits p first and this process's write
+    // after it: the report is below the acknowledgement, and the process's
+    // own bytes are the newest.
+    const held = heldWriteFile();
+    const { authority, probe } = await boot({}, held.overrides);
+    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
+    probe.write(`${APP}/race.txt`, 'MINE');
+    await held.wrote;
+    const resumed = probe.resume(`${APP}/race.txt`);
+    held.release();
+    assert.equal(await resumed, 'MINE');
+    assert.equal(authority.read('home/user/app/race.txt'), 'MINE');
   },
 
   async 'a poison while the own write is in flight'() {
     // The same window, but the report never arrives as a delta: write churn
     // trims the invalidation log past this process's cursor, and the repair
-    // moves the cursor to a listing instead. The listing still says who wrote
-    // last, and the flush must hear it.
+    // moves the cursor to a listing instead. A barrier that cannot name what
+    // changed waits for every own acknowledgement in flight, and the listing
+    // it repaired from says who wrote last.
     const held = heldWriteFile();
     const { authority, probe } = await boot({}, held.overrides);
 
@@ -166,14 +240,14 @@ await runScenarios(import.meta.path, {
     await held.wrote;
     authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
     for (let i = 0; i < 4_000; i++) authority.kfs.writeFile('home/user/app/churn.txt', `churn-${i}`);
-    assert.equal(await probe.resume(`${APP}/race.txt`), 'MINE');
+    const resumed = probe.resume(`${APP}/race.txt`);
+    assert.equal(await Promise.race([resumed, sleep(100).then(() => 'still waiting')]), 'still waiting');
     const stats = coherenceStats();
     assert.ok(stats.poisons >= 1 && stats.reconciles >= 1, 'the scenario is vacuous unless the barrier was poisoned and repaired');
 
     held.release();
-    await probe.settle(20);
     assert.equal(
-      await probe.resume(`${APP}/race.txt`),
+      await resumed,
       'PEER',
       'the repair skipped the report, so it must hand the listed revision to the write that owns the row',
     );
