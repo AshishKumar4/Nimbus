@@ -4,6 +4,28 @@ An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## 2026-09-23
+
+### esbuild
+
+- `esbuild` in the shell is the real esbuild CLI, 0.24.2's own Go program, run
+  in the session's esbuild facet (the one that already ran its transforms) as
+  the calling user from the working directory, with its output streamed back
+  as it is written. Its flags, defaults and messages are esbuild's: entry points,
+  `--outfile`, `--outdir` and `--tsconfig` resolve against the cwd, outputs
+  belong to the user, and a build with neither output flag writes to stdout.
+  It used to write `/dist/...` as root.
+- The build no longer runs in the session's isolate. esbuild-wasm's memory
+  (28 MiB at init, 76 MiB after one React bundle, never released) used to stay
+  there, and `nimbus install python` after a few bundles reset the session
+  with exceededMemory.
+- `--watch` and `--serve` are refused, because each invocation is one build.
+- `vite build` bundles in that facet too, each build with a fresh esbuild
+  that is dropped afterwards. Resolving and loading still read the session's
+  files. Three React builds in a row used to take the session isolate to
+  150-186 MiB, and on main one run in three reset. Now it peaks at
+  101-109 MiB.
+
 ## 2026-09-21
 
 core 0.11.0, worker 0.9.0, sdk 0.8.0, fabric 0.7.0, platform 0.5.0,
