@@ -3,13 +3,16 @@
 // git on this machine prints for the same repository: the same bytes on
 // stdout, the same exit code. Each scenario is built on disk with real git,
 // mirrored into a SqliteVFS (its .git included), and both gits run the same
-// command in the same state. The edits are chosen so the minimal diff is
-// unique; where it is not, git's hunk placement is not a contract, and
-// unified-diff-applies.mjs holds the patches to `git apply` instead.
+// command in the same state. Symlinks and type changes are part of it. The
+// edits are chosen so the minimal diff is unique; where it is not, git's
+// hunk placement is not a contract, and unified-diff-applies.mjs holds the
+// patches to `git apply` instead.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,6 +69,21 @@ function mirror(from, to) {
   }
 }
 
+/** Copy a VFS tree (its .git included) back to disk, links as links. */
+function copyOut(from, to) {
+  mkdirSync(to, { recursive: true });
+  for (const { name, type } of user.readdir(from)) {
+    const src = `${from}/${name}`;
+    const dst = join(to, name);
+    if (type === 'directory') copyOut(src, dst);
+    else if (type === 'symlink') symlinkSync(user.readlink(src), dst);
+    else {
+      writeFileSync(dst, user.readFile(src));
+      chmodSync(dst, user.lstat(src).mode & 0o777);
+    }
+  }
+}
+
 async function nimbusGit(cwd, args, env = {}) {
   const chunks = [];
   let stderr = '';
@@ -110,6 +128,10 @@ try {
     writeFileSync(join(repo, path), content);
     if (mode) chmodSync(join(repo, path), mode);
   };
+  const link = (path, target) => {
+    rmSync(join(repo, path), { force: true });
+    symlinkSync(target, join(repo, path));
+  };
   const lines = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => `line ${from + i}\n`).join('');
   put('a.txt', 'a\n');
   put('nonl.txt', 'x\ny');
@@ -125,6 +147,12 @@ try {
   put('long.c', `#include <stdio.h>\n\nint main(void) {\n${lines(1, 40)}  return 0;\n}\n\nstatic int helper(int v) {\n${lines(41, 60)}}\n`);
   put('many.txt', lines(1, 100));
   put('.gitignore', 'ign*\nbuild/\n');
+  link('link', 'a.txt');
+  link('dangling', 'missing-target');
+  link('dirlink', 'sub');
+  link('retarget', 'a.txt');
+  put('becomes-link', 'f\n');
+  link('becomes-file', 'a.txt');
   sh(repo, ['add', '-A'], ['commit', '-q', '-m', 'seed']);
 
   put('a.txt', 'a\nb\n');
@@ -153,6 +181,13 @@ try {
   mkdirSync(join(repo, 'nested'));
   sh(join(repo, 'nested'), ['init', '-q']);
   put('nested/z', 'z\n');
+  // A tracked link changes target, a file becomes a link and a link a file; the rest stay put.
+  link('retarget', 'nonl.txt');
+  link('becomes-link', 'a.txt');
+  rmSync(join(repo, 'becomes-file'));
+  put('becomes-file', 'now a file\n');
+  link('newlink', 'a.txt');
+  link('newdirlink', 'sub');
 
   mirror(repo, `${vfsRoot}/repo`);
   const at = (sub = '') => ({ disk: join(repo, sub), virtual: `${vfsRoot}/repo${sub ? `/${sub}` : ''}` });
@@ -250,6 +285,46 @@ try {
     await same(`diff --stat at ${columns} columns`, { disk: wide, virtual: `${vfsRoot}/wide` }, ['diff', '--stat'],
       { env: { COLUMNS: columns } });
   }
+
+  // ── Symlinks committed through Nimbus stay links: real git reads back the tree it would have made ──
+  const links = join(diskRoot, 'links');
+  const linked = { disk: links, virtual: `${vfsRoot}/links` };
+  mkdirSync(join(links, 'sub'), { recursive: true });
+  writeFileSync(join(links, 'a.txt'), 'a\n');
+  writeFileSync(join(links, 'target.txt'), 'target content\n');
+  writeFileSync(join(links, 'sub/f'), 'f\n');
+  symlinkSync('target.txt', join(links, 'link'));
+  symlinkSync('nowhere', join(links, 'dangling'));
+  symlinkSync('sub', join(links, 'dirlink'));
+  mirror(links, linked.virtual);
+  sh(links, ['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-q', '-m', 'c']);
+  for (const args of [['init', '-q'], ['add', '-A'], ['commit', '-qm', 'c']]) {
+    assert.equal((await nimbusGit(linked.virtual, args)).code, 0, `git ${args.join(' ')}`);
+  }
+  writeFileSync(join(links, 'a.txt'), 'a2\n');
+  user.writeFile(`${linked.virtual}/a.txt`, 'a2\n');
+  sh(links, ['commit', '-q', '-a', '-m', 'edit a.txt only']);
+  assert.equal((await nimbusGit(linked.virtual, ['commit', '-qam', 'edit a.txt only'])).code, 0);
+  for (const args of [['ls-files'], ['ls-files', '-m'], ['diff'], ['diff', 'HEAD']]) await same(`links: ${args.join(' ')}`, linked, args);
+  const copy = join(scratch, 'links-from-nimbus');
+  copyOut(linked.virtual, copy);
+  const lsTree = (cwd) => realGit(cwd, ['ls-tree', '-r', 'HEAD']).stdout.toString();
+  assert.equal(lsTree(copy), lsTree(links), 'the commit Nimbus made holds the tree real git makes');
+  assert.equal(realGit(copy, ['fsck', '--strict', '--no-progress']).code, 0);
+  assert.equal(realGit(copy, ['status', '--porcelain']).stdout.toString(), '');
+  checks++;
+  // Checking out a branch that points the link elsewhere, then back, rewrites the link in place.
+  sh(links, ['checkout', '-q', '-b', 'side']);
+  rmSync(join(links, 'link'));
+  symlinkSync('sub/f', join(links, 'link'));
+  sh(links, ['commit', '-q', '-a', '-m', 'retarget'], ['checkout', '-q', 'main']);
+  await nimbusGit(linked.virtual, ['checkout', '-q', '-b', 'side']);
+  user.unlink(`${linked.virtual}/link`);
+  user.symlink('sub/f', `${linked.virtual}/link`);
+  assert.equal((await nimbusGit(linked.virtual, ['commit', '-qam', 'retarget'])).code, 0);
+  assert.equal((await nimbusGit(linked.virtual, ['checkout', '-q', 'master'])).code, 0);
+  assert.equal(user.readlink(`${linked.virtual}/link`), readlinkSync(join(links, 'link')));
+  for (const args of [['ls-files', '-m'], ['diff', 'HEAD']]) await same(`links after checkout: ${args.join(' ')}`, linked, args);
 
   // ── An unborn repository: HEAD names no commit yet ──
   const unborn = join(diskRoot, 'unborn');

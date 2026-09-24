@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..94da29a 100644
+index 80a5167..4500071 100644
 --- a/index.js
 +++ b/index.js
 @@ -969 +969 @@ class GitIndex {
@@ -284,19 +284,31 @@ index 80a5167..94da29a 100644
 @@ -3440 +3537 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4525 +4622,3 @@ class GitWalkerFs {
+@@ -4520,0 +4618,2 @@ class GitWalkerFs {
++    // Only directories are entered: a symlink to one is a link, as git's lstat walk sees it.
++    if ((await entry.type()) !== 'tree') return null
+@@ -4525 +4624,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -5394 +5493,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
+@@ -4571,0 +4673,3 @@ class GitWalkerFs {
++      } else if ((await entry.mode()) === 0o120000) {
++        // A symlink's blob is its target, not the file it points at.
++        entry._content = new Uint8Array(await fs.readlink(`${dir}/${entry._fullpath}`));
+@@ -5394 +5498,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
 -let supportsCompressionStream = null;
 +// As for inflate: workerd's CompressionStream costs ~9 ms a call, pako a small object microseconds.
 +let supportsCompressionStream = false;
-@@ -5522 +5622 @@ async function addToIndex({
+@@ -5522 +5627 @@ async function addToIndex({
 -  const promises = filepath.map(async currentFilepath => {
 +  const addPath = async currentFilepath => {
-@@ -5573 +5673,7 @@ async function addToIndex({
+@@ -5565,0 +5671 @@ async function addToIndex({
++      // Link text verbatim, as git stores it and as the workdir walker hashes it.
+@@ -5567 +5673 @@ async function addToIndex({
+-        ? await fs.readlink(join(dir, currentFilepath)).then(posixifyPathBuffer)
++        ? await fs.readlink(join(dir, currentFilepath))
+@@ -5573 +5679,7 @@ async function addToIndex({
 -  });
 +  };
 +  // Without `parallel`, one path at a time: each holds its bytes and a deflate stream until written.
@@ -305,7 +317,7 @@ index 80a5167..94da29a 100644
 +    promises.push(addPath(currentFilepath));
 +    if (!parallel) await promises[promises.length - 1].catch(() => {});
 +  }
-@@ -6656,5 +6762,7 @@ const worthWalking = (filepath, root) => {
+@@ -6656,5 +6768,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -318,7 +330,7 @@ index 80a5167..94da29a 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -7310,9 +7418,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7424,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -333,7 +345,7 @@ index 80a5167..94da29a 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7461,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7357,6 +7467,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -353,7 +365,7 @@ index 80a5167..94da29a 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7474,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7364,7 +7480,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -361,12 +373,12 @@ index 80a5167..94da29a 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7475,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7372,4 +7481,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7477,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7377 +7483,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -378,7 +390,7 @@ index 80a5167..94da29a 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -7486,0 +7596,381 @@ async function checkout({
+@@ -7486,0 +7602,381 @@ async function checkout({
 +const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 +const freshCheckoutMaxDirectories = 20_000;
 +const freshCheckoutMaxDirectoryBytes = 4 * 1024 * 1024;
@@ -760,25 +772,25 @@ index 80a5167..94da29a 100644
 +  }
 +}
 +
-@@ -8155 +8645 @@ async function hasObjectPacked({
+@@ -8155 +8651 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +9383,3 @@ async function _fetch({
+@@ -8893 +9389,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -9552 +10044 @@ async function expandOidPacked({
+@@ -9552 +10050 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -14732 +15224 @@ async function readTree({
+@@ -14732 +15230 @@ async function readTree({
 - * @param {string} args.filepath - The path to the file to remove from the index
 + * @param {string|string[]} args.filepath - The path to the file to remove from the index, or paths removed under one index write
-@@ -14757 +15249,3 @@ async function remove({
+@@ -14757 +15255,3 @@ async function remove({
 -        index.delete({ filepath });
 +        for (const path of Array.isArray(filepath) ? filepath : [filepath]) {
 +          index.delete({ filepath: path });
 +        }
-@@ -17576 +18070 @@ export default index;
+@@ -17576 +18076 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };

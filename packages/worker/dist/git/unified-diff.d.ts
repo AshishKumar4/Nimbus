@@ -14,7 +14,8 @@ export interface DiffPair {
     two: DiffSpec;
 }
 export declare function absentSpec(path: string): DiffSpec;
-export declare function pairStatus(pair: DiffPair): 'A' | 'D' | 'M';
+/** diff_resolve_rename_copy's status letter. */
+export declare function pairStatus(pair: DiffPair): 'A' | 'D' | 'T' | 'M';
 export declare function binaryFromBytes(bytes: Uint8Array): string;
 export declare function bytesFromBinary(text: string): Uint8Array;
 /** A path's UTF-8 bytes as a binary string. */

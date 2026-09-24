@@ -82,6 +82,37 @@ function createGitFs(vfs: CredentialedVfs) {
     }
   }
 
+  // The inode as Node's fs.Stats; lstat reports a symlink as the link itself.
+  function statsOf(filepath: string, follow: boolean) {
+    const p = normalizePath(filepath);
+    let st: VfsStat;
+    if (!p) {
+      const now = Date.now();
+      st = { dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, atime: now, ctime: now, mtime: now, mode: 0o755, uid: 0, gid: 0 };
+    } else {
+      try { st = follow ? vfs.stat(p) : vfs.lstat(p); }
+      catch {
+        const err: any = new Error(`ENOENT: no such file or directory, ${follow ? 'stat' : 'lstat'} '${filepath}'`);
+        err.code = 'ENOENT'; err.errno = -2;
+        throw err;
+      }
+    }
+    const isDir = st.type === 'directory';
+    const isLink = st.type === 'symlink';
+    return {
+      isFile: () => st.type === 'file',
+      isDirectory: () => isDir,
+      isSymbolicLink: () => isLink,
+      size: st.size,
+      mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) | (st.mode & 0o7777),
+      mtimeMs: st.mtime, mtime: new Date(st.mtime),
+      ctimeMs: st.mtime, ctime: new Date(st.mtime),
+      atimeMs: st.mtime, atime: new Date(st.mtime),
+      uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
+      type: isDir ? 'dir' : isLink ? 'symlink' : 'file',
+    };
+  }
+
   return {
     promises: {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
@@ -124,58 +155,22 @@ function createGitFs(vfs: CredentialedVfs) {
         if (vfs.exists(p)) vfs.rmdir(p);
       },
       async stat(filepath: string): Promise<any> {
-        const p = normalizePath(filepath);
-        // Synthetic directory stat — used for root, '.', and known directories
-        function dirStat() {
-          const now = Date.now();
-          const d = new Date(now);
-          return {
-            isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false,
-            size: 0, mode: 0o755, type: 'dir',
-            mtimeMs: now, mtime: d, ctimeMs: now, ctime: d, atimeMs: now, atime: d,
-            uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
-          };
-        }
-        // Empty path (from '.', '/', etc.) = root directory
-        if (!p) return dirStat();
-        // Check if path is a known directory (even without VFS stat entry)
-        if (vfs.exists(p) && vfs.isDirectory(p)) return dirStat();
-        let st: any;
-        try { st = vfs.stat(p); }
-        catch {
-          const err: any = new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
-          err.code = 'ENOENT'; err.errno = -2;
-          throw err;
-        }
-        // isomorphic-git calls .valueOf() on mtime/ctime/atime — all must be Date objects
-        const mtimeMs = st.mtime || Date.now();
-        const mtime = new Date(mtimeMs);
-        return {
-          isFile: () => st.type === 'file',
-          isDirectory: () => st.type === 'directory',
-          isSymbolicLink: () => false,
-          size: st.size,
-          mode: st.mode || 0o644,
-          mtimeMs,
-          mtime,
-          ctimeMs: mtimeMs,
-          ctime: mtime,
-          atimeMs: mtimeMs,
-          atime: mtime,
-          uid: 1000,
-          gid: 1000,
-          dev: 0,
-          ino: 0,
-          nlink: 1,
-          type: st.type === 'directory' ? 'dir' : 'file',
-        };
+        return statsOf(filepath, true);
       },
       async lstat(filepath: string): Promise<any> {
-        return this.stat(filepath);
+        return statsOf(filepath, false);
       },
       async chmod(): Promise<void> { /* no-op */ },
-      async symlink(): Promise<void> { /* no-op */ },
-      async readlink(filepath: string): Promise<string> { return filepath; },
+      async symlink(target: string, filepath: string): Promise<void> {
+        const p = normalizePath(filepath);
+        ensureParent(p);
+        // Checkout retargets a link in place, as the clone facet's adapter does.
+        if (vfs.exists(p) && !vfs.isDirectory(p)) vfs.unlink(p);
+        vfs.symlink(target, p);
+      },
+      async readlink(filepath: string): Promise<string> {
+        return vfs.readlink(normalizePath(filepath));
+      },
     },
   };
 }
@@ -948,11 +943,14 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
     : revs.length ? { kind: 'tree', ref: revs[0], cached: false } : { kind: 'index' };
   const pending = await changedPairs(git, fs, root, cache, base, repoPaths(pathArgs, ctx.cwd, root));
   const withData = output.format === 'patch' || output.format === 'stat';
+  const read = async (path: string, side: PendingSide): Promise<Uint8Array> => {
+    if (!side.worktree) return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
+    const key = normalizeVfsPath(`${root}/${path}`);
+    return side.mode === 0o120000 ? enc.encode(vfs.readlink(key)) : vfs.readFile(key);
+  };
   const load = async (path: string, pendingSide: PendingSide | null): Promise<DiffSpec> => {
     if (!pendingSide) return absentSpec(path);
-    const data = !withData ? new Uint8Array(0)
-      : pendingSide.worktree ? vfs.readFile(normalizeVfsPath(`${root}/${path}`))
-      : (await git.readBlob({ fs, dir: root, oid: pendingSide.oid, cache })).blob;
+    const data = withData ? await read(path, pendingSide) : new Uint8Array(0);
     return { path, valid: true, oid: pendingSide.oid, mode: pendingSide.mode, data };
   };
   await writeDiff(ctx, pending.map(({ path, one, two }) => async () => ({

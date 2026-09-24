@@ -250,8 +250,12 @@ const cases = [
     assert.equal(internals.worthWalking('foo/bar', 'foo'), true);
   }],
   ['workdir walker prunes .git directories', async () => {
+    const directory = {
+      isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false,
+      mode: 0o40755, size: 0, mtimeMs: 0, ctimeMs: 0, dev: 0, ino: 0, uid: 0, gid: 0,
+    };
     const walker = new internals.GitWalkerFs({
-      fs: { readdir: async () => ['.git', 'src'] },
+      fs: { readdir: async () => ['.git', 'src'], lstat: async () => directory },
       dir: '/repo',
       gitdir: '/repo/.git',
       cache: {},

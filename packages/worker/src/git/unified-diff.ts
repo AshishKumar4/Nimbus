@@ -26,8 +26,14 @@ export function absentSpec(path: string): DiffSpec {
   return { path, valid: false, oid: ZERO_OID, mode: 0, data: EMPTY };
 }
 
-export function pairStatus(pair: DiffPair): 'A' | 'D' | 'M' {
-  return !pair.one.valid ? 'A' : !pair.two.valid ? 'D' : 'M';
+const S_IFMT = 0o170000;
+
+/** diff_resolve_rename_copy's status letter. */
+export function pairStatus(pair: DiffPair): 'A' | 'D' | 'T' | 'M' {
+  if (!pair.one.valid) return 'A';
+  if (!pair.two.valid) return 'D';
+  // A regular file and a symlink are different kinds of object: a type change.
+  return (pair.one.mode & S_IFMT) !== (pair.two.mode & S_IFMT) ? 'T' : 'M';
 }
 
 // ── Binary strings ──────────────────────────────────────────────────────
@@ -249,6 +255,11 @@ function labelLine(marker: string, label: string): string {
 /** One file's `diff --git` section, exactly as `git diff` prints it without color. */
 export function formatPatch(pair: DiffPair, context = DEFAULT_CONTEXT): string {
   const { one, two } = pair;
+  // run_diff: a change of kind is shown as the old one's deletion and the new one's creation.
+  if (pairStatus(pair) === 'T') {
+    return formatPatch({ one, two: absentSpec(two.path) }, context)
+      + formatPatch({ one: absentSpec(one.path), two }, context);
+  }
   // "Never use a non-valid filename anywhere if at all possible."
   const nameA = one.valid ? one.path : two.path;
   const nameB = two.valid ? two.path : nameA;
