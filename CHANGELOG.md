@@ -19,12 +19,25 @@ published independently in the `@nimbus-sh` npm scope.
 - `git diff` prints a unified patch of the worktree against the index,
   against a commit (`git diff HEAD --`), or of the index (`--cached`), and
   `git diff --no-index` compares two paths, either of them `/dev/null`.
-  `--stat`, `--name-only`, `--name-status`, `-z` and `-U<n>` work. It used
-  to print the first 50 lines of each changed file. Headers, hunk ranges,
+  `--stat`, `--name-only`, `--name-status`, `-z` and `-U<n>` work;
+  `--exit-code` and `--quiet` are refused. It used to print the first 50
+  lines of each changed file. Headers, hunk ranges,
   `\ No newline at end of file`, mode lines, binary files and `--stat`
   match git byte for byte. The hunks come from jsdiff's Myers diff, so where
   an edit has more than one minimal form, a hunk can sit somewhere else
   than git would put it. The patch still applies.
+- `git diff` finds renames the way git does by default: `R100 old new` in
+  `--name-status`, `old => new` in `--stat`, and `rename from`/`rename to`
+  in the patch. `--no-renames` turns it off and `-M<n>` sets the similarity
+  bar. Copies are not detected.
+- `git add`, `commit` and `diff` see a symlink as a link. It is committed
+  as mode 120000 holding its target, as git stores it, and checkout rewrites
+  a link in place. They used to commit the file a link pointed at and show
+  every link as modified, and a dangling link made `git diff` fail.
+- A file rewritten with the same size and its mtime set back shows in
+  `git diff`, `git status` and `git add -A`: git's stat cache now gets each
+  file's real ctime and inode number. The first `git status` in an existing
+  repository refreshes its index once, in one write.
 - `-q` works on `init`, `commit`, `checkout`, `fetch`, `pull` and `push`.
   `commit` reads bundled short options, so `git commit -qm msg` commits
   "msg". It used to commit with the message "commit". `commit -a` stages
