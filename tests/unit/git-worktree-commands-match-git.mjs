@@ -457,6 +457,20 @@ try {
     if (st.type === 'directory') return [`${path}/`, ...vfsTree(root, path)];
     return [`${path} file ${new TextDecoder().decode(user.readFile(`${root}/${path}`))}`];
   });
+  let copies = 0;
+  /** A disk copy of a VFS repository, for real git to read. */
+  const copyOf = (repo) => {
+    const to = join(scratch, `copy-${copies++}`);
+    copyOut(repo.virtual, to);
+    return to;
+  };
+  /** Write `path` in both worktrees of `repo`, parents made. */
+  const rewriteBoth = (repo, path, content) => {
+    mkdirSync(join(repo.disk, path, '..'), { recursive: true });
+    writeFileSync(join(repo.disk, path), content);
+    user.mkdir(`${repo.virtual}/${path}`.split('/').slice(0, -1).join('/'), { recursive: true });
+    user.writeFile(`${repo.virtual}/${path}`, content);
+  };
   /** The same worktree (the link's target directory untouched) and the same index, as both gits list them. */
   const sameWorktree = async (label, repo) => {
     assert.deepEqual(vfsTree(repo.virtual), diskTree(repo.disk), `${label}: worktree`);
@@ -502,6 +516,9 @@ try {
   // A fast-forward merge moves the worktree the way a checkout does.
   await typeChange('checkout the links to merge into', ['checkout', '-q', 'main']);
   await typeChange('merge the directories in', ['merge', 'b']);
+
+  // A branch without `d`, for a pull that removes the directory.
+  sh(types, ['checkout', '-q', '-b', 'nod'], ['rm', '-rq', 'd'], ['commit', '-q', '-m', 'no d'], ['checkout', '-q', 'main']);
 
   // pull runs in the network facet (the bundled cf-git over its buffered fs), from one smart-HTTP server.
   const served = join(scratch, 'served');
@@ -577,15 +594,25 @@ try {
   await realGitAsync(diskRoot, ['clone', '-q', `http://127.0.0.1:${server.port}/types.git`, pulled.disk]);
   mirror(pulled.disk, pulled.virtual);
   await sameWorktree('a clone at the links', pulled);
-  sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf('b')]);
-  await realGitAsync(pulled.disk, ['pull', '-q', 'origin', 'main']);
-  const response = await facet.default.fetch(new Request('http://git/op', {
-    method: 'POST',
-    body: JSON.stringify({ op: 'pull', dir: pulled.virtual, remote: 'origin', ref: 'main', author: { name: 'a', email: 'a@example.com' } }),
-  }), facetEnv);
-  const pull = await response.json();
-  assert.equal(pull.success, true, `pull: ${pull.error}`);
-  await sameWorktree('pull the directories over the links', pulled);
+  /** Both gits pull `rev` of the served repository; both succeed or both refuse, and the repositories agree. */
+  const pullBoth = async (label, rev) => {
+    sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf(rev)]);
+    const child = Bun.spawn(['git', 'pull', '-q', 'origin', 'main'], { cwd: pulled.disk, env: GIT_ENV, stdout: 'pipe', stderr: 'pipe' });
+    const [gitStderr, gitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    const response = await facet.default.fetch(new Request('http://git/op', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'pull', dir: pulled.virtual, remote: 'origin', ref: 'main', author: { name: 'a', email: 'a@example.com' } }),
+    }), facetEnv);
+    const pull = await response.json();
+    assert.equal(pull.success, gitCode === 0, `${label}: git exits ${gitCode} (${gitStderr}); nimbus: ${pull.error}`);
+    if (gitCode !== 0) assert.equal(`${pull.error}\n`, gitStderr.replace(/^error: /, ''), `${label}: the refusal`);
+    assert.equal(realGit(pulled.disk, ['rev-parse', 'HEAD']).stdout.toString(), realGit(copyOf(pulled), ['rev-parse', 'HEAD']).stdout.toString(), `${label}: HEAD`);
+    await sameWorktree(label, pulled);
+  };
+  await pullBoth('pull the directories over the links', 'b');
+  // A directory the pulled commit drops keeps the untracked files in it, as rmdir(2) keeps them.
+  rewriteBoth(pulled, 'd/u', 'untracked\n');
+  await pullBoth('pull a commit without the directory, an untracked file in it', 'nod');
 
   // ── A same-size rewrite in the second the index was written ──
   // Its stat still matches the index entry, so only git's racily-clean rule
