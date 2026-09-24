@@ -9,14 +9,14 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-62bd612d46604878.js";
-export const NODE_SHIMS_BUILD_ID: string = "62bd612d46604878";
-export const NODE_SHIMS_SHA256: string = "62bd612d4660487893638320e28ee8f778b6dfc88f82926668fa63cd8b5fad1a";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-942b88ab05c55807.js";
+export const NODE_SHIMS_BUILD_ID: string = "942b88ab05c55807";
+export const NODE_SHIMS_SHA256: string = "942b88ab05c558073a35e7995981bcc73f3d7fa8e5e54870fc2fd68b23826f1c";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-96e6ebaa221bd5a4.js";
-export const VFS_WRITE_LEDGER_BUILD_ID: string = "96e6ebaa221bd5a4";
-export const VFS_WRITE_LEDGER_SHA256: string = "96e6ebaa221bd5a486546103dbbcbb3d477caa24d17b6012a979e55dffab8caa";
+export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-bb250db47c95b50a.js";
+export const VFS_WRITE_LEDGER_BUILD_ID: string = "bb250db47c95b50a";
+export const VFS_WRITE_LEDGER_SHA256: string = "bb250db47c95b50a2a509e9dd9e254d63cb303af78b49bb94dba79f17f36e6ba";
 
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
 export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-eebab2a9acd9d1b1.js";
