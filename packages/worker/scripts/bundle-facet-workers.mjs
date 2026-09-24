@@ -39,17 +39,21 @@
  *       WASI_INSTANCE_BODY_SRC: string
  *   @nimbus-sh/core src/runtime/bash-runner.generated.ts — exports
  *       BASH_RUNNER_BODY_SRC: string
+ *   @nimbus-sh/core src/runtime/esbuild-cli.generated.ts — exports
+ *       ESBUILD_CLI_BODY_SRC: string
  *
  * Runs as a postinstall + predev + predeploy step via package.json.
  */
 
 import { build } from 'esbuild';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
 // script runs under plain node at postinstall, so nothing here is TypeScript.
 import { parse } from 'acorn';
+
+import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -298,6 +302,46 @@ async function bundleBashRunner() {
   return src;
 }
 
+/**
+ * The `esbuild` command's facet body: Go's own js/wasm glue from the installed
+ * esbuild-wasm (the package whose esbuild.wasm is staged to ASSETS, so the glue
+ * always matches the binary), wrapped so each run hands it its own global and
+ * `fs`, followed by the typed runner as an IIFE that installs
+ * globalThis.__esbuildCliRun. wasm_exec.js is spliced in verbatim, license
+ * header included.
+ */
+async function bundleEsbuildCli() {
+  const result = await build({
+    entryPoints: [join(coreRoot, 'src', 'runtime', 'esbuild-cli', 'preamble.ts')],
+    bundle: true,
+    format: 'iife',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/esbuild-cli] esbuild produced no output');
+  }
+  const runner = withoutComments(result.outputFiles[0].text);
+  if (!/^\s*globalThis\.__esbuildCliRun\s*=/m.test(runner)) {
+    throw new Error(
+      '[bundle-facet-workers/esbuild-cli] the bundle no longer assigns globalThis.__esbuildCliRun — ' +
+      'every esbuild command would answer "preamble missing"',
+    );
+  }
+  if (/^\s*(?:import|export)\b/m.test(runner)) {
+    throw new Error('[bundle-facet-workers/esbuild-cli] an import/export survived bundling');
+  }
+  const glue = readFileSync(join(resolvePackageDir('esbuild-wasm', { start: root }), 'wasm_exec.js'), 'utf8');
+  if (!/globalThis\.Go\s*=\s*class\b/.test(glue)) {
+    throw new Error('[bundle-facet-workers/esbuild-cli] esbuild-wasm/wasm_exec.js no longer defines globalThis.Go');
+  }
+  return `const __esbuildGoRuntime = function (globalThis, fs) {\n${glue}\nreturn globalThis.Go;\n};\n${runner}`;
+}
+
 async function main() {
   // 1. Tar-parser preamble (existing W2.5/W4 hot-path helpers).
   const tarStripped = await bundleAsPreamble(
@@ -418,6 +462,26 @@ async function main() {
     '',
   ].join('\n'));
 
+  const esbuildCliSrc = await bundleEsbuildCli();
+  const esbuildCliOutPath = join(coreRoot, 'src', 'runtime', 'esbuild-cli.generated.ts');
+  writeFileSync(esbuildCliOutPath, [
+    '/**',
+    ' * esbuild-cli.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - esbuild-wasm/wasm_exec.js (Go js/wasm glue, as __esbuildGoRuntime)',
+    ' *   - @nimbus-sh/core src/runtime/esbuild-cli/preamble.ts',
+    ' *',
+    ' * The `esbuild` command\'s facet preamble. esbuild-cli.ts re-exports it as',
+    ' * ESBUILD_CLI_PREAMBLE.',
+    ' *',
+    ` * Size: ${(esbuildCliSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const ESBUILD_CLI_BODY_SRC: string = ${JSON.stringify(esbuildCliSrc)};`,
+    '',
+  ].join('\n'));
+
   console.log(
     `[bundle-facet-workers] wrote ${kernelOutPath} ` +
     `(kernel=${(kernelSrc.length / 1024).toFixed(2)} KiB)`,
@@ -430,13 +494,17 @@ async function main() {
     `[bundle-facet-workers] wrote ${bashOutPath} ` +
     `(bash=${(bashSrc.length / 1024).toFixed(2)} KiB)`,
   );
+  console.log(
+    `[bundle-facet-workers] wrote ${esbuildCliOutPath} ` +
+    `(esbuild-cli=${(esbuildCliSrc.length / 1024).toFixed(2)} KiB)`,
+  );
 }
 
 // The bundle functions are exported so the parity test can re-derive the
 // generated files from source and compare, rather than restating the esbuild
 // settings — a second copy of those settings is exactly the drift such a test
 // exists to catch. main() therefore runs only when this file is the entry point.
-export { bundleWasiInstance, bundleBashRunner };
+export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli };
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((e) => {
