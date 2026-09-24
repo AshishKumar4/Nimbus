@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 
 import { generateLongRunningNodeCode } from '../../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
+import { nodeFacetSources } from './node-facet-sources.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -199,7 +200,7 @@ export async function launchResident({
     vfsState,
     { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv },
     false,
-    generateShimsCode(),
+    nodeFacetSources(generateShimsCode()),
   );
   const dir = mkdtempSync(join(tmpdir(), 'resident-body-'));
   writeFileSync(join(dir, 'worker.mjs'), generated.code);

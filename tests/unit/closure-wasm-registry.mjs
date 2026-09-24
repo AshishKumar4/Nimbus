@@ -18,6 +18,7 @@ import {
 import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -121,8 +122,8 @@ assert.deepEqual(imports, [
 
 const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const SHIMS = '/* __SHIMS_MARKER__ */';
-const oneShot = (await generateEntrypointCode('', state, false, SHIMS, imports)).code;
-const resident = (await generateLongRunningNodeCode('', state, { cred, wasmImports: imports }, false, SHIMS)).code;
+const oneShot = (await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS), imports)).code;
+const resident = (await generateLongRunningNodeCode('', state, { cred, wasmImports: imports }, false, nodeFacetSources(SHIMS))).code;
 for (const [label, code] of [['one-shot', oneShot], ['resident', resident]]) {
   for (const [index, image] of imports.entries()) {
     assert.ok(code.includes(`import __nimbusWasm${index} from ${JSON.stringify(image.moduleName)};`), `${label}: imports ${image.moduleName}`);

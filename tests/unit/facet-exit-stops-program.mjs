@@ -18,17 +18,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 // The generated module installs its own globals (process, console, timers).
 const realProcess = globalThis.process;
 const realSetTimeout = globalThis.setTimeout;
 const sleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
 const dir = mkdtempSync(join(tmpdir(), 'facet-exit-'));
-const shims = generateShimsCode();
+const sources = nodeFacetSources(generateShimsCode());
 let seq = 0;
 
 async function run(program, state = { bundle: {}, manifest: {}, metadata: {} }) {
-  const generated = await generateEntrypointCode(program, state, false, shims);
+  const generated = await generateEntrypointCode(program, state, false, sources);
   const file = join(dir, `entry-${seq++}.mjs`);
   writeFileSync(file, generated.code);
   const mod = await import(file);

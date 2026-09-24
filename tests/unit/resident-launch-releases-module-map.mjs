@@ -51,6 +51,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
@@ -73,7 +74,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
   // Generating first is the real order: the map is a total encoding of all
   // three, which is what makes releasing them a pure drop.
-  const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */');
+  const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
   assert.ok(generated.code.includes('module.exports = 1;'), 'the map carries the program');
 
   releaseGeneratedSources(state);
@@ -84,7 +85,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
     'the one field the rest of the launch reads survives the release');
 
   await assert.rejects(
-    () => generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */'),
+    () => generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */')),
     /released after its module map was generated/,
     'a released state refuses a second map rather than silently building an empty one',
   );

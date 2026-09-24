@@ -16,12 +16,10 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
-import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
+import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
-import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
@@ -387,7 +385,7 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, shims, wasmImports = []) {
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = []) {
     const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
@@ -470,11 +468,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${VFS_WRITE_LEDGER_SOURCE}
+${sources.ledger}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${shims}
+${sources.shims}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -678,7 +676,7 @@ function facetWasmImportsSource(wasmImports) {
     return `${lines.join('\n')}\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
-export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims, pacer) {
+export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
@@ -729,7 +727,7 @@ const __compileFailures = new Map();
 // here, off the module map. That is why code cannot come from the store.
 ${BUNDLE_PRECOMPILE_LOOP}
 
-${FACET_RESIDENT_STORE_SOURCE}
+${sources.residentStore}
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -867,11 +865,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${VFS_WRITE_LEDGER_SOURCE}
+${sources.ledger}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${shims}
+${sources.shims}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -4464,9 +4462,9 @@ export class FacetManager {
         // Answered by _buildProcessBundle while the raw cells were still in
         // hand; re-deriving it here is what forced them to be retained.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
-        const [sqliteModules, shims] = await Promise.all([
+        const [sqliteModules, sources] = await Promise.all([
             this.sqliteModuleEntry(usesSqlite),
-            fetchNodeShimsCode(this.env),
+            fetchNodeFacetSources(this.env),
         ]);
         const writerId = crypto.randomUUID();
         let writerActivated = false;
@@ -4502,7 +4500,7 @@ export class FacetManager {
                     // the map, and compiled by the loader like the sqlite sidecar.
                     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
                     const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
-                    const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims, wasmImports);
+                    const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, sources, wasmImports);
                     if (diagSink) {
                         diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
                         for (const source of Object.values(generatedWorker.modules)) {
@@ -5398,13 +5396,13 @@ export class FacetManager {
             : spawnEnv;
         // Answered by _buildProcessBundle while the raw cells were still in hand.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
-        const [sqliteModules, shims] = await Promise.all([
+        const [sqliteModules, sources] = await Promise.all([
             this.sqliteModuleEntry(usesSqlite),
-            fetchNodeShimsCode(this.env),
+            fetchNodeFacetSources(this.env),
         ]);
         // Each image is read by path when the facet loads, never by value here.
         const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-        let generatedWorker = await generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred, wasmImports }, usesSqlite, shims, pacer);
+        let generatedWorker = await generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred, wasmImports }, usesSqlite, sources, pacer);
         // Sized here, while the map is still in hand. Reading these after the load
         // would itself be what keeps the map alive, and the whole point of the
         // scoping below is that nothing does.

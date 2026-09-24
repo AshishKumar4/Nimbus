@@ -38,7 +38,7 @@
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
+import type { NodeFacetSources } from './node-shims-artifact.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,
@@ -47,10 +47,11 @@ import {
 } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
 
-// The ~230 KiB node-compat shim source is staged as a static asset
-// (scripts/bundle-node-shims.mjs) — promoted out of the worker bundle for the
-// ≤6 MiB gate. The caller (FacetManager.execStagedArtifact) awaits the
-// memoized fetchNodeShimsCode and threads it in via opts.shimsCode.
+// The node-compat layer's sources (the ~230 KiB shims and the VFS write ledger
+// they write through) are staged as static assets (scripts/bundle-node-shims.mjs),
+// promoted out of the worker bundle for its size gate. The caller
+// (opencode-staging.ts) awaits the memoized fetchNodeFacetSources and threads
+// them in via opts.sources.
 
 /** Map-module specifier for the opencode ESM bundle. */
 export const OPENCODE_BUNDLE_MODULE_NAME = 'opencode-bundle.js';
@@ -289,8 +290,8 @@ export interface OpencodeRunnerOptions {
   cred: { uid: number; gid: number; groups: readonly number[]; umask: number };
   cwd: string;
   stdin: string;
-  /** The node-compat shim source (fetchNodeShimsCode — the staged asset). */
-  shimsCode: string;
+  /** The node-compat layer's sources (fetchNodeFacetSources — the staged assets). */
+  sources: NodeFacetSources;
   /**
    * Serialized VFS snapshot bundle (the `_serializeBundleForFacet` IIFE
    * string). Provides sync VFS reads; async writes/mkdir flush live through
@@ -799,7 +800,7 @@ const __vfsManifest = ${opts.vfsManifest};
 const __vfsMetadata = ${opts.vfsMetadata};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
 ${VFS_CURSOR_SEED_SOURCE}
-${VFS_WRITE_LEDGER_SOURCE}
+${opts.sources.ledger}
 const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
@@ -828,7 +829,7 @@ class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
 }
 
-${opts.shimsCode}
+${opts.sources.shims}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
 // Capture workerd's real process.memoryUsage BEFORE the shim process takes over

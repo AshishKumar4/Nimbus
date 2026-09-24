@@ -23,9 +23,11 @@ import {
   generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
+import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const CURSOR = { epoch: 'epoch-under-test', rev: 4242 };
 const SHIMS = '/* __SHIMS_MARKER__ */';
+const SOURCES = nodeFacetSources(SHIMS);
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 const vfsState = {
@@ -47,17 +49,17 @@ const serializedSnapshot = {
 const bodies = [
   {
     label: 'one-shot node facet',
-    source: (await generateEntrypointCode('', vfsState, false, SHIMS)).code,
+    source: (await generateEntrypointCode('', vfsState, false, SOURCES)).code,
   },
   {
     label: 'long-running node facet',
-    source: (await generateLongRunningNodeCode('', vfsState, { cred: CRED }, false, SHIMS)).code,
+    source: (await generateLongRunningNodeCode('', vfsState, { cred: CRED }, false, SOURCES)).code,
   },
   {
     label: 'staged-artifact (opencode) facet',
     source: generateOpencodeRunnerCode({
       argv: [], env: {}, cred: CRED, cwd: '/home/user', stdin: '',
-      shimsCode: SHIMS, mode: 'oneshot', ...serializedSnapshot,
+      sources: SOURCES, mode: 'oneshot', ...serializedSnapshot,
     }),
   },
 ];
@@ -103,13 +105,13 @@ for (const { label, source } of bodies) {
 const otherCursor = { epoch: 'a-different-incarnation', rev: 9 };
 const at = (cursor) => ({ ...vfsState, cursor });
 assert.equal(
-  (await generateEntrypointCode('', at(CURSOR), false, SHIMS)).code,
-  (await generateEntrypointCode('', at(otherCursor), false, SHIMS)).code,
+  (await generateEntrypointCode('', at(CURSOR), false, SOURCES)).code,
+  (await generateEntrypointCode('', at(otherCursor), false, SOURCES)).code,
   'the one-shot body is addressed by its program, not by the cursor it runs at',
 );
 assert.equal(
-  generateLongRunningNodeCode('', at(CURSOR), { cred: CRED }, false, SHIMS).code,
-  generateLongRunningNodeCode('', at(otherCursor), { cred: CRED }, false, SHIMS).code,
+  (await generateLongRunningNodeCode('', at(CURSOR), { cred: CRED }, false, SOURCES)).code,
+  (await generateLongRunningNodeCode('', at(otherCursor), { cred: CRED }, false, SOURCES)).code,
   'the resident body is addressed by its program, not by the cursor it runs at',
 );
 

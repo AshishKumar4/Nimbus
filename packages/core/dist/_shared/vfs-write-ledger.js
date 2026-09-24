@@ -687,6 +687,11 @@ async function __nimbusDrainVfsWrites(supervisor) {
   if (failure) throw failure.reason;
 }
 `.trim();
+/**
+ * The write ledger every node facet splices ahead of the shims. It reaches the
+ * facet as a staged asset (@nimbus-sh/worker scripts/bundle-node-shims.mjs),
+ * not through the Worker bundle.
+ */
 export const VFS_WRITE_LEDGER_SOURCE = `
 const __vfsWriteGenerations = Object.create(null);
 // Per-path: the authority revision the resident cell in __vfsBundle is

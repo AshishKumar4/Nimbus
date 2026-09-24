@@ -216,6 +216,8 @@ export declare const RESIDENT_FILL_BATCH_BYTES: number;
  * The in-facet store. Spliced into the generated module ahead of the shims, in
  * the same way `VFS_WRITE_LEDGER_SOURCE` is (`facets/manager.ts`), because it
  * has to close over the same module scope the shims read `__vfsBundle` from.
+ * Like the ledger and the shims it reaches the facet as a staged asset
+ * (scripts/bundle-node-shims.mjs), not through the Worker bundle.
  *
  * It presents a Proxy rather than a new API on purpose. `_bundleLookup`,
  * `_writtenCell`, `__readFileOr`, `__fileExists` and the directory scans all

@@ -2,12 +2,9 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { NODE_SHIMS_ENTRY } from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -16,13 +13,6 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const shimsPath = path.resolve(
-  here,
-  `../../packages/worker/public${NODE_SHIMS_ENTRY}`,
-);
-const shims = readFileSync(shimsPath, 'utf8');
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -57,7 +47,10 @@ const env = {
     get() { throw new Error('unexpected keyed loader call'); },
   },
   ASSETS: {
-    async fetch() { return new Response(shims); },
+    async fetch(request) {
+      const staged = new URL(request.url).pathname.replace(/^\//, '');
+      return new Response(readFileSync(new URL(`../../packages/worker/public/${staged}`, import.meta.url)), { status: 200 });
+    },
   },
 };
 adoptCtxExports({ SupervisorRPC: () => ({ [Symbol.dispose]() {} }) });

@@ -34,6 +34,7 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   const { generateShimsCode } = await import(
     '../../packages/worker/src/runtime/node-shims.ts'
   );
+  const { nodeFacetSources } = await import('./lib/node-facet-sources.mjs');
 
   const mode = process.env.NIMBUS_GLOBAL_SCOPE_EVAL_MODE;
   let source = generateOpencodeRunnerCode({
@@ -42,7 +43,7 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     cwd: '/home/user',
     stdin: '',
-    shimsCode: generateShimsCode(),
+    sources: nodeFacetSources(generateShimsCode()),
     vfsBundle: '{}',
     vfsManifest: '{}',
     vfsMetadata: '{}',

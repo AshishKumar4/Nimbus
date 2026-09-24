@@ -35,6 +35,7 @@
  * map (see SQLITE_WASM_MODULE_NAME) and is booted before opencode opens the
  * DB at ~/.local/share/opencode/*.db.
  */
+import type { NodeFacetSources } from './node-shims-artifact.js';
 /** Map-module specifier for the opencode ESM bundle. */
 export declare const OPENCODE_BUNDLE_MODULE_NAME = "opencode-bundle.js";
 /**
@@ -75,8 +76,8 @@ export interface OpencodeRunnerOptions {
     };
     cwd: string;
     stdin: string;
-    /** The node-compat shim source (fetchNodeShimsCode — the staged asset). */
-    shimsCode: string;
+    /** The node-compat layer's sources (fetchNodeFacetSources — the staged assets). */
+    sources: NodeFacetSources;
     /**
      * Serialized VFS snapshot bundle (the `_serializeBundleForFacet` IIFE
      * string). Provides sync VFS reads; async writes/mkdir flush live through

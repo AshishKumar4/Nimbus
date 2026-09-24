@@ -17,6 +17,7 @@
  */
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
 import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -125,7 +126,7 @@ interface GeneratedNodeFacetCode {
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string, wasmImports?: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -162,7 +163,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     cred: ProcessEntry['cred'];
     /** Wasm images the generated main module imports and parks in the seam. */
     wasmImports?: readonly FacetWasmImport[];
-}, usesSqlite: boolean, shims: string, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
+}, usesSqlite: boolean, sources: NodeFacetSources, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
  *   - bundle:   path → content for the complete static require closure
@@ -1174,7 +1175,7 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'shimsCode' | 'mode'> & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'sources' | 'mode'> & {
         command?: string;
         attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;
