@@ -31,7 +31,7 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
-import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -2976,8 +2976,19 @@ async function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
     }
     return { added };
 }
-function looksLikeEsm(src) {
-    return hasTopLevelModuleSyntax(src);
+function looksLikeEsm(path, src) {
+    if (!hasTopLevelModuleSyntax(src))
+        return false;
+    if (vfsPathExtension(path) !== '')
+        return true;
+    // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+    try {
+        parseJavaScriptModule(src);
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 /**
  * W3.5 Fix B — module-level cache for ESM→CJS transform results, keyed
@@ -3061,7 +3072,7 @@ function _markBundleEsmAsFailed(bundle, reason) {
         // A TypeScript source is never runnable as staged, so it always needs
         // the emit it cannot get; a JavaScript file only if it is ESM.
         const typescript = bundleTypescriptLoader(path) !== null;
-        if (!typescript && !looksLikeEsm(src))
+        if (!typescript && !looksLikeEsm(path, src))
             continue;
         bundle[typescript ? compiledCellKey(path) : path] = esbuildDiagnosticShim(path, reason);
     }
@@ -3086,7 +3097,8 @@ function esbuildDiagnosticShim(path, reason) {
  * Extensionless entries are in the set for the same reason the pre-compile
  * loop takes them — that is the shape of nearly every npm `bin` script.
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
+ * and parses an extensionless file, which may be data rather than a script.
  */
 export function isBundleModuleCandidate(path) {
     const ext = vfsPathExtension(path);
@@ -3218,7 +3230,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         if (typeof src !== 'string')
             continue;
         if (bundleTypescriptLoader(path) === null) {
-            const esm = looksLikeEsm(src);
+            const esm = looksLikeEsm(path, src);
             if (!esm)
                 continue;
         }
@@ -3517,7 +3529,12 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         if (typeof source !== 'string')
             continue;
         await pacer?.spend(source.length);
-        bundle[path] = rewriteProvidedCommonJsModules(source);
+        try {
+            bundle[path] = rewriteProvidedCommonJsModules(source);
+        }
+        catch {
+            // Unparseable, so not a module and no bundled records to bind: data such as a LICENSE.
+        }
     }
     await paceAfterPass();
     // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape

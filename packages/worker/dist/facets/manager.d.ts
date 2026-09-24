@@ -567,7 +567,8 @@ export declare function addObservedReads(vfs: CredentialedVfs, observed: Readonl
  * Extensionless entries are in the set for the same reason the pre-compile
  * loop takes them — that is the shape of nearly every npm `bin` script.
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
+ * and parses an extensionless file, which may be data rather than a script.
  */
 export declare function isBundleModuleCandidate(path: string): boolean;
 /**
