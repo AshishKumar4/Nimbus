@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e32b3eb80fd54ed63f6ab72c4cf20fbf471b03bc2c2cd76cde511862f63702b5",
+  "fingerprint": "742c5170ed2f9a580006263e6aba2e1f0770fecbb9bc739de3656383afebf895",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1703,9 +1703,9 @@
     "packages/worker/dist/runtime/ruby-resident.d.ts": "0e05cc797389c4c49314e49adc52e58bb6b87d3e4d6b1370d326a4594430b464",
     "packages/worker/dist/runtime/ruby-resident.d.ts.map": "18c8a1f37abeabdfd39f932ecaca1f3f8c306fe7122d812c4e5e09a612223280",
     "packages/worker/dist/runtime/ruby-resident.js": "4215e466949562393cf97169e9c4ed78f63c27705eeb3d0d89d2b81a008a308c",
-    "packages/worker/dist/runtime/runtime-catalog.d.ts": "4dc41fc8de08f860c6f57261c457665abe2c49a641f613f51455e4f9de04a3fe",
-    "packages/worker/dist/runtime/runtime-catalog.d.ts.map": "b78367796717977c51749fc4c4e527d7ad66f0aca737212ba756de0ce312ea73",
-    "packages/worker/dist/runtime/runtime-catalog.js": "d41df2420d0c7e17564858c86e3cf774a1991a7ca23b468b96b62b09f02aa9b2",
+    "packages/worker/dist/runtime/runtime-catalog.d.ts": "7bf104baeb889a91169c50f2da85e7b25d4fe4ee723c2f24ee3dc85872451ff9",
+    "packages/worker/dist/runtime/runtime-catalog.d.ts.map": "c9f41f5acec42bb76c46282f2ce0937d8c7d94d6b6cddd7e268f274b0adfc62c",
+    "packages/worker/dist/runtime/runtime-catalog.js": "93acb7ff11b9bb2d448aa6189fe2340e19b5c449aee21b7730b518c7cfbf701a",
     "packages/worker/dist/runtime/sqlite-shim.d.ts": "b1fce1d23c50b75a5a6557683de527b6620c2ecc33fa1a1379dad5948ae49465",
     "packages/worker/dist/runtime/sqlite-shim.d.ts.map": "e920445ebf9b6d9a66aa7fe12930da87ae65d36df43bcdfe4f044bf7b3992f35",
     "packages/worker/dist/runtime/sqlite-shim.js": "f5ee55580b3d8fccbbfe81790f4e55228ed1af1a1e8b5b79bd0cd162edf57dc6",
@@ -2006,7 +2006,7 @@
     "packages/worker/src/runtime/repl-session.ts": "4775ba42cf7cc511e89135104102ff8ab215b3af207249a420a999b3af59076e",
     "packages/worker/src/runtime/ruby-repl.ts": "fcf13508c51ee7d391b68fe07ce0c8711da9986ee574c7e678663e339b74b7e8",
     "packages/worker/src/runtime/ruby-resident.ts": "35c015d5b3609a1484d0e9b2b215d4d585bd4c35f2d810024d11717119520cda",
-    "packages/worker/src/runtime/runtime-catalog.ts": "f8cf9062eee8b9691a571bdd7dc1b48a6aeb5add5e80b1fc867a540a818473b9",
+    "packages/worker/src/runtime/runtime-catalog.ts": "8fd0b916035084a37f51932f7691927f33ba2b08df521748d7849107da47a0d3",
     "packages/worker/src/runtime/sqlite-shim.ts": "a9d8d576e6367219f6ce31ad0d62662d8408e002a5a4ba3f00f066a53e1a541c",
     "packages/worker/src/runtime/sqlite-wasm-bytes.ts": "bdb0d29f07747941547d64709b1ff1fec9a66a29d0b8fc697b0ea8db8be0b298",
     "packages/worker/src/runtime/static-server.ts": "11c83172bd9b8045978bb2b949e0f0f6f8dd3a75f52719b3344bf9402b111560",

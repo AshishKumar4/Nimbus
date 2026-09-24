@@ -100,8 +100,9 @@ export declare function fetchManifest(env: RuntimeCatalogEnv, entry: CatalogVers
  * digest that same entry carries: from the colo cache when it has it, else
  * from R2, read once either way. The stream errors at its end, rather than
  * closing, with a {@link RuntimeBlobDigestMismatch} when its bytes do not
- * hash to the digest; a colo-cache entry that fails is evicted first, so the
- * installer's second read of that blob comes from R2. The installer commits
+ * hash to the digest; a colo-cache entry that fails is evicted and
+ * distrusted first, so the installer's second read of that blob comes from
+ * R2 whatever the cache holds by then. The installer commits
  * a blob only after that clean close, so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
