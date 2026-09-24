@@ -417,22 +417,13 @@ function __residentAdmit(result) {
   let kept = 0;
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
-    // poison here means nothing the authority dated can be kept. Two
-    // statements rather than a delete per path: a poison at pi scale is 7,141
-    // rows, and eviction is on the hot path (measured 45 ms whole-store, vs a
-    // per-row walk).
-    //
-    // This facet's own bytes are not the authority's to vouch for, and stay:
-    // dropping a row a write or mutation still in flight owns would hand the
-    // next fill the pre-write bytes. Its acknowledgement dates it, or evicts
-    // it, when it lands.
+    // poison here means nothing the authority dated can be kept.
     //
     // This is the LAST resort, not the poison policy.
     // \`__residentSynchronizeFromSupervisor\` repairs the same poison against
     // absolute per-path revisions and keeps every row it can prove current;
     // dropping the store is what made a poison cost a whole filesystem.
-    sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
-    sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+    __residentDropDated();
   } else if (Array.isArray(result.paths)) {
     for (const entry of result.paths) {
       const path = entry.path;
@@ -466,6 +457,27 @@ function __residentAdmit(result) {
   __residentSealed = false;
   __residentSealReason = "";
   return { dropped, kept, cursor: { epoch, rev } };
+}
+
+/**
+ * Drop every row the authority dated, and nothing else: what a poison does to
+ * the rows when nothing can vouch for them. The cursor is left alone, because
+ * a store that holds no dated row cannot hold a stale one whatever its cursor
+ * says.
+ *
+ * This facet's own bytes are not the authority's to vouch for, and stay:
+ * dropping a row a write or mutation still in flight owns would hand the next
+ * fill the pre-write bytes. Its acknowledgement dates it, or evicts it, when
+ * it lands.
+ *
+ * Two statements rather than a delete per path: at pi scale that is 7,141
+ * rows, and this is on the hot path (measured 45 ms whole-store, vs a per-row
+ * walk).
+ */
+function __residentDropDated() {
+  if (!__residentReady) throw new Error("Nimbus: __residentDropDated before __residentBind");
+  __residentSql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
+  __residentSql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
 }
 
 /** Re-seal — for a store whose backing is being replaced (slot handover). */
