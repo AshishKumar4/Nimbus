@@ -344,6 +344,21 @@ export class NimbusWorkspace {
           processes,
           runtimes,
         });
+        // With a facet host the workspace owns the runner table, and it is
+        // complete here: a supplied package naming a runner outside it would
+        // install and then answer "command not found" forever. Refused by
+        // name instead. Without facets the host binds runners after create,
+        // and catalog resolution and rehydration keep their own fallbacks.
+        for (const runtimePackage of options.runtimes ?? []) {
+          const missing = runtimes.missingRunners(runtimePackage.manifest);
+          if (missing.length === 0) continue;
+          const { name, version } = runtimePackage.manifest;
+          throw new Error(
+            `runtime package ${name}@${version} needs runner '${missing.join("', '")}', `
+            + `which this @nimbus-sh/core does not provide (it provides '${runtimes.runnerKeys().join("', '")}'). `
+            + 'Install the runtime package release built for this core.',
+          );
+        }
       }
       if (options.runtimeInstall === 'on-demand') {
         // Stubs only for bins nothing already answers: a coreutil never yields
