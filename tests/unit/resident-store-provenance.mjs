@@ -284,6 +284,59 @@ await runScenarios(import.meta.path, {
     assert.equal(await second, 'v3', 'the second resumption reads what its own delta reported');
     assert.match(await first, /^v[23]$/, 'the first reads its own refetch or a newer one');
   },
+
+  async 'a peer that keeps rewriting a held file'() {
+    // A log or a database another shell rewrites in a loop, faster than one
+    // read round trip. Every resumption's delta reports it, and each report
+    // outdates the refetch the resumption before it issued. A resumption
+    // waits on what is in flight while it waits, not on every refetch issued
+    // after it began, so one that never reads the file is not held until the
+    // writer stops.
+    const K = 'home/user/app/k.log';
+    const slow = { armed: false };
+    const { authority, probe } = await boot({ 'k.log': 'w0', 'other.txt': 'o1' }, (auth) => ({
+      async fsReadBatch(requests) {
+        const entries = await _rpcFsReadBatch(auth.host, requests);
+        if (slow.armed && requests.some((request) => request.path.endsWith('/k.log'))) await sleep(30);
+        return entries;
+      },
+    }));
+
+    slow.armed = true;
+    const stop = Date.now() + 3_000;
+    let writes = 0;
+    let writing = true;
+    const writer = (async () => {
+      while (writing && Date.now() < stop) {
+        authority.kfs.writeFile(K, `w${++writes}`);
+        await sleep(10);
+      }
+      writing = false;
+    })();
+    const started = Date.now();
+    const first = probe.resume(`${APP}/other.txt`);
+    const later = [];
+    const arrivals = (async () => {
+      while (writing) {
+        await sleep(10);
+        later.push(probe.resume(`${APP}/other.txt`));
+      }
+    })();
+
+    const seen = await first;
+    const elapsed = Date.now() - started;
+    const peerStillWriting = writing;
+    writing = false;
+    await writer;
+    await arrivals;
+    assert.ok(
+      peerStillWriting,
+      `a resumption that does not read k.log was held until the peer stopped writing it (${elapsed} ms, ${writes} writes)`,
+    );
+    assert.equal(seen, 'o1');
+    for (const other of await Promise.all(later)) assert.equal(other, 'o1');
+    assert.equal(await probe.resume(`${APP}/k.log`), `w${writes}`, 'once the peer stops, a resumption reads its last write');
+  },
 });
 
 /** A writeFile the authority applies at once but answers only on release(). */

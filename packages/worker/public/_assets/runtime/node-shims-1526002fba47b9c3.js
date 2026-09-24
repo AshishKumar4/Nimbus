@@ -1945,26 +1945,32 @@ const __fsMod = (() => {
    * either way: a refetch that fails leaves the path missing, which the next
    * read of it answers.
    *
-   * A refetch whose install was declined — a barrier reported the path above
-   * its cursor, or a poison spoiled it — is not done while something else is
-   * filling the path: a newer refetch a barrier issued to replace it, or the
-   * repair that poison started. Everything waiting on it was waiting for the
-   * path, and settling on the declined install would release them onto the
-   * miss it left. Each wait is on an operation already in flight that no
-   * refetch holds up, so the waiting ends.
+   * `read` settles once this read has landed and its install was made or
+   * declined. `done`, which the resumptions wait on, may wait once more. An
+   * install is declined when a barrier reported the path above this read's
+   * cursor, or a poison spoiled it, and settling there would release every
+   * waiter onto the miss it left while something else is already filling
+   * the path: the newer refetch a barrier issued to replace this one, or the
+   * repair that poison started. So `done` waits on what is in flight at the
+   * moment this read settles, that refetch's own read and install and that
+   * repair, and then settles whether or not the path is held. It never
+   * follows a refetch issued after that. A peer that rewrites the path
+   * faster than one read round trip outdates every refetch with the next
+   * resumption's report, and following them held every resumption, including
+   * those that never read the path, until the writer stopped (1528 ms against
+   * 33 ms). A path left unheld is read live by its next read.
    */
   function _refetch(k) {
     const fill = _beginFill(k);
-    const refetch = { fill, done: null };
-    refetch.done = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).then(async () => {
+    const refetch = { fill, read: null, done: null };
+    refetch.read = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).then(() => {
       _endFill(fill);
       if (_refetching.get(k) === refetch) _refetching.delete(k);
-      while (!(__vfsBundle && k in __vfsBundle)) {
-        const newer = _refetching.get(k);
-        if (newer) await newer.done;
-        else if (_residentRepair !== null) await _residentRepair;
-        else return;
-      }
+    });
+    refetch.done = refetch.read.then(() => {
+      if (__vfsBundle && k in __vfsBundle) return undefined;
+      const newer = _refetching.get(k);
+      return Promise.all([newer && newer.read, _residentRepair]);
     });
     _refetching.set(k, refetch);
     return refetch.done;
