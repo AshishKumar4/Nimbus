@@ -212,10 +212,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * SupervisorRPC runs in a different isolate from the DO that owns the
      * revision clock, so stamping here would cost its own round trip anyway,
      * and enveloping the existing returns would break `useRpcResource`
-     * disposal, which targets the returned value.
+     * disposal, which targets the returned value. It only reads the
+     * invalidation log, so a dropped call is repeated like any other read.
      */
     async fsAcquire(epoch, cursor) {
-        return this._call(this._fsOp('fsAcquire', [epoch, cursor]));
+        return this._call(this._fsRead('fsAcquire', [epoch, cursor]));
     }
     async fsRevision(path) {
         return this._call(this._fsRead('fsRevision', [path]));

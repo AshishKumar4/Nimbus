@@ -37,7 +37,9 @@ function host(failures, error) {
             calls.push(envelope.op);
             stubs.add(stub);
             if (calls.length <= failures) throw error();
-            return envelope.op === 'stat' ? { type: 'file', size: 3845898 } : 1;
+            if (envelope.op === 'stat') return { type: 'file', size: 3845898 };
+            if (envelope.op === 'fsAcquire') return { epoch: 'e1', cursor: 9, paths: [], poison: false };
+            return 1;
           },
         };
         return stub;
@@ -55,6 +57,16 @@ function host(failures, error) {
   assert.deepEqual(calls, ['stat', 'stat']);
   assert.equal(stubs.size, 2, 'the retry reused the stub that threw');
   console.log('  ok  a dropped read is answered on a fresh stub');
+}
+
+// A WASI guest's first file RPC after a resumption is the barrier, so a
+// dropped barrier fails the same interpreter start a dropped stat did.
+{
+  const { rpc, calls } = host(1, () => dropped());
+  const barrier = await rpc.fsAcquire('e1', 3);
+  assert.equal(barrier.cursor, 9, 'a barrier the platform dropped once did not answer');
+  assert.deepEqual(calls, ['fsAcquire', 'fsAcquire']);
+  console.log('  ok  a dropped barrier is answered on a fresh stub');
 }
 
 {

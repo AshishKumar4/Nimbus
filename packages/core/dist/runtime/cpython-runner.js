@@ -295,24 +295,6 @@ export function makeCPythonRunnerFactory(deps) {
             // about a missing bundle.
             if (!userEnv.SSL_CERT_FILE && cacertVfs)
                 userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
-            // Opened per invocation, not cached: the supervisor capability is bound
-            // to this process's pid when the facet opens, so one held across calls
-            // would hand every later caller the first caller's write credential.
-            const facet = deps.facets.open({
-                // The variant is in the tag because a host's constructor-time wasm
-                // fingerprint is name:length:first-byte:last-byte, not a content hash.
-                // Two variants differ by megabytes so they would not collide today, but
-                // a warm slot serving the wrong interpreter is not a failure worth
-                // leaving to a size coincidence.
-                tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
-                concurrency: 1,
-                // Never absent. Without the capability the facet reads its seed and can
-                // never write anything back — the program appears to run and its output
-                // never reaches the session.
-                syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
-                preamble: buildCPythonPreamble(),
-                wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
-            });
             const facetArgs = {
                 userCode: `${prelude}\n${userCode}`,
                 pyArgv,
@@ -331,7 +313,7 @@ export function makeCPythonRunnerFactory(deps) {
             // its facet rather than being driven by inbound requests.
             const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
             if (resident) {
-                facet.dispose();
+                // Its host reads the image by path; the one-shot facet below is never opened.
                 if (!deps.startResident) {
                     ctx.stderr.write(`${binName}: this program keeps running after it starts, and this host has no `
                         + 'process substrate to keep it on\n');
@@ -345,6 +327,24 @@ export function makeCPythonRunnerFactory(deps) {
                     ctx.stderr.write(spawnResult.stderr);
                 return spawnResult.exitCode;
             }
+            // Opened per invocation, not cached: the supervisor capability is bound
+            // to this process's pid when the facet opens, so one held across calls
+            // would hand every later caller the first caller's write credential.
+            const facet = deps.facets.open({
+                // The variant is in the tag because a host's constructor-time wasm
+                // fingerprint is name:length:first-byte:last-byte, not a content hash.
+                // Two variants differ by megabytes so they would not collide today, but
+                // a warm slot serving the wrong interpreter is not a failure worth
+                // leaving to a size coincidence.
+                tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
+                concurrency: 1,
+                // Never absent. Without the capability the facet reads its seed and can
+                // never write anything back — the program appears to run and its output
+                // never reaches the session.
+                syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+                preamble: buildCPythonPreamble(),
+                wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
+            });
             let result;
             try {
                 result = await facet.submit(cpythonRunFacetFn, facetArgs, {

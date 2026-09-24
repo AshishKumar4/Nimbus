@@ -50,7 +50,7 @@ import { sha256Hex, sha256HexOfStream, sha256Incremental } from '@nimbus-sh/core
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
 import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
-import { splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
+import { blobPieces, splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
 import { NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
 const CatalogVersionEntrySchema = z.object({
     manifest: z.string().min(1),
@@ -190,26 +190,58 @@ export async function fetchBlob(env, file) {
     if (!obj) {
         throw new Error(`blob ${file.content} not in R2 — manifest references a missing blob`);
     }
-    // L2 is filled from a second read once this one verifies: teeing this
-    // stream into the cache would buffer whatever the slower side lags by.
-    return obj.body.pipeThrough(digestChecked(address, (actual) => `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, R2 holds ${actual}`, () => l2PutStream(address, async () => (await r2.get(file.content))?.body ?? null)));
+    return readOnceFillingL2(address, obj.body, (actual) => `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, R2 holds ${actual}`);
 }
-/** Pass bytes through unchanged; at the end, error unless they hashed to
- *  `address`, and run `onVerified` before closing when they did. */
-function digestChecked(address, mismatch, onVerified) {
+/**
+ * `body` as a stream that errors at its end, rather than closing, unless it
+ * hashed to `address`, feeding L2 from the same read. Each piece reaches the
+ * cache before the consumer, and the cache entry is closed only after the
+ * digest matched: a mismatch, a failed read or an abandoned stream aborts it,
+ * and an aborted body stores nothing. The cache's own pace bounds the pair,
+ * so neither side buffers what the other lags by.
+ */
+function readOnceFillingL2(address, body, mismatch) {
+    const pieces = blobPieces(body);
     const digest = sha256Incremental();
-    return new TransformStream({
-        async transform(chunk, controller) {
-            controller.enqueue(chunk);
-            await digest.update(chunk);
+    let fill = l2FillWriter(address);
+    const drop = (reason) => {
+        fill?.abort(reason).catch(() => { });
+        fill = null;
+    };
+    return new ReadableStream({
+        async pull(controller) {
+            try {
+                const next = await pieces.next();
+                if (next.done) {
+                    const actual = await digest.hex();
+                    if (actual !== address.sha256)
+                        throw new Error(mismatch(actual));
+                    fill?.close().catch(() => { });
+                    controller.close();
+                    return;
+                }
+                await digest.update(next.value);
+                if (fill) {
+                    try {
+                        await fill.ready;
+                        fill.write(next.value).catch(() => { });
+                    }
+                    catch (error) {
+                        drop(error);
+                    }
+                }
+                controller.enqueue(next.value);
+            }
+            catch (error) {
+                drop(error);
+                throw error;
+            }
         },
-        async flush() {
-            const actual = await digest.hex();
-            if (actual !== address.sha256)
-                throw new Error(mismatch(actual));
-            await onVerified?.();
+        async cancel(reason) {
+            drop(reason);
+            await pieces.return(undefined);
         },
-    });
+    }, { highWaterMark: 0 });
 }
 // ── RuntimeSource ────────────────────────────────────────────────────
 export function runtimeAbiForCatalogName(name) {
@@ -354,25 +386,26 @@ async function l2GetStream(address) {
         return null;
     }
 }
-/** Store a stream under its own digest. It passes through a digest check
- *  that errors the body on a mismatch, and an errored body stores nothing. */
-async function l2PutStream(address, open) {
+/** A writer whose bytes become the L2 entry at `address` when it closes;
+ *  aborting it stores nothing. Null where there is no cache. */
+function l2FillWriter(address) {
     try {
         const caches = globalThis.caches;
         if (!caches?.default)
-            return;
-        const body = await open();
-        if (!body)
-            return;
-        const resp = new Response(body.pipeThrough(digestChecked(address, (actual) => `L2 fill read ${actual}`)), {
+            return null;
+        const { readable, writable } = new TransformStream();
+        const resp = new Response(readable, {
             headers: {
                 'Content-Type': 'application/octet-stream',
                 'Cache-Control': 'public, max-age=31536000, immutable',
             },
         });
-        await caches.default.put(new Request(l2Url(address)), resp);
+        caches.default.put(new Request(l2Url(address)), resp).catch(() => { });
+        return writable.getWriter();
     }
-    catch { /* best-effort */ }
+    catch {
+        return null;
+    }
 }
 function l2Url(address) {
     return `${L2_NS}/${address.scope}/${address.sha256}`;
