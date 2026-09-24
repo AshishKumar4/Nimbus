@@ -1815,33 +1815,17 @@ const __fsMod = (() => {
    * cursor to adopt, the one held is kept and still owed every change since.
    * The barrier itself never throws: the operation or callback behind it
    * runs either way, against rows that were vouched for or a colder cache.
+   *
+   * A repair is single-flight, so a barrier that needs one while another
+   * barrier's is running joins it. That repair's listing may predate this
+   * barrier's own ACQUIRE — the rows it vouches for are the other barrier's
+   * answer, not this one's — so a joiner waits for it and then asks again:
+   * a delta from the repaired cursor names everything since. Only the barrier
+   * that started a repair resumes on it alone.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
-    let result = null;
-    // Through the RPC helper like every other supervisor call, because it IS
-    // one: the barrier is the first thing an async read issues, and while it
-    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
-    // one-shot facet's event loop, which exits when no handle is live, then
-    // ended the program mid-read — measured as an fs.promises.readFile whose
-    // .then never ran, no error, no output, intermittently, and never when a
-    // pending timer happened to hold the program open.
-    try {
-      result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
-      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
-        throw new Error("fsAcquire answered without a cursor");
-      }
-    } catch (error) {
-      result = null;
-      _stats.barrierFailures++;
-      _stats.lastBarrierFailure = (error && error.message) || String(error);
-    }
-    const poisoned = result === null || result.poison === true;
-    // Paths that held content before this eviction are the ones worth
-    // refetching at a resumption boundary — a later sync read of any of them
-    // would otherwise miss. Collected before the delete so the membership
-    // test is against the pre-eviction bundle.
-    const wereResident = [];
+    let result = await _acquire(supervisor);
     // When the resident set lives in the facet's own SQLite, the STORE applies
     // the delta. That is not an optimisation, it is where provenance has to
     // live: a facet's SQLite outlives its module scope, so a new incarnation
@@ -1849,13 +1833,24 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
-      if (poisoned || _storeRepairOwed) {
+      for (let joins = 0; result === null || result.poison === true || _storeRepairOwed; joins++) {
         if (result !== null && result.poison === true) _stats.poisons++;
         _spoilFills();
+        const joining = _residentRepair !== null;
         await _repairPoisonedStore(supervisor, result);
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
-        return [];
+        if (!joining) return [];
+        if (joins + 1 >= _REPAIR_JOINS_MAX) {
+          // Every repair this barrier waited on was someone else's. Rather
+          // than resume on rows none of them vouched for as of its own
+          // answer, it drops them and leaves the repair owed: a colder cache,
+          // never a stale byte. Any repair still to finish lists after this.
+          __residentDropDated();
+          _storeRepairOwed = true;
+          return [];
+        }
+        result = await _acquire(supervisor);
       }
       // The store keeps a row of this facet's own bytes over any report, so
       // the report is noted first: the write or mutation that owns the row
@@ -1874,7 +1869,12 @@ const __fsMod = (() => {
       _stats.selfWrites += applied.kept;
       return applied.dropped;
     }
-    if (poisoned) {
+    // Paths that held content before this eviction are the ones worth
+    // refetching at a resumption boundary — a later sync read of any of them
+    // would otherwise miss. Collected before the delete so the membership
+    // test is against the pre-eviction bundle.
+    const wereResident = [];
+    if (result === null || result.poison === true) {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       if (result !== null) _stats.poisons++;
       _spoilFills();
@@ -1900,6 +1900,41 @@ const __fsMod = (() => {
       _cursor.rev = result.rev;
     }
     return wereResident;
+  }
+
+  /**
+   * Repairs someone else started that one barrier waits on, in a row, before
+   * it stops asking again and drops what it cannot vouch for. A bound on the
+   * barrier's own liveness, not a tuning knob: each join waits a whole repair,
+   * so the fourth means repairs keep being started under it.
+   */
+  const _REPAIR_JOINS_MAX = 4;
+
+  /**
+   * One ACQUIRE: the authority's answer, or null when there is none — the
+   * call failed past the supervisor's own retries, the host could not serve
+   * it, or the answer carried no cursor. A null is counted where the
+   * coherence stats are read, and is never an empty delta (_acquireBarrier).
+   */
+  async function _acquire(supervisor) {
+    // Through the RPC helper like every other supervisor call, because it IS
+    // one: the barrier is the first thing an async read issues, and while it
+    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
+    // one-shot facet's event loop, which exits when no handle is live, then
+    // ended the program mid-read — measured as an fs.promises.readFile whose
+    // .then never ran, no error, no output, intermittently, and never when a
+    // pending timer happened to hold the program open.
+    try {
+      const result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
+      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
+        throw new Error("fsAcquire answered without a cursor");
+      }
+      return result;
+    } catch (error) {
+      _stats.barrierFailures++;
+      _stats.lastBarrierFailure = (error && error.message) || String(error);
+      return null;
+    }
   }
 
   /**
