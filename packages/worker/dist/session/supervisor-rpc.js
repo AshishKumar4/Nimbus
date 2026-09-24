@@ -615,11 +615,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpStdinEnd(childPid) {
         return this._call(this._op('cpStdinEnd', [childPid]));
     }
-    async cpReadStdin(childPid, waitMs) {
-        return this._call(this._op('cpReadStdin', [childPid, waitMs]));
+    /**
+     * The three long polls that deliver to a process — its stdin, and a
+     * child's output and exit — carry the process's ACQUIRE arguments, and a
+     * reply that delivers anything carries the answer for them (`acquired`,
+     * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
+     * asking. The caller's pid names whose credential answers it.
+     */
+    async cpReadStdin(childPid, waitMs, acquire) {
+        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
     }
-    async cpReadOutput(childPid, fd, sinceSeq, waitMs) {
-        return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs]));
+    async cpReadOutput(childPid, fd, sinceSeq, waitMs, acquire) {
+        return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));
     }
     async cpDrainOutput(childPid) {
         return this._call(this._op('cpDrainOutput', [childPid]));
@@ -627,8 +634,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async cpKill(childPid, signal) {
         return this._call(this._op('cpKill', [childPid, signal]));
     }
-    async cpWait(childPid, waitMs) {
-        return this._call(this._op('cpWait', [childPid, waitMs]));
+    async cpWait(childPid, waitMs, acquire) {
+        return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
     }
     /**
      * child-process isolation gap #1: dispatch a single cp.spawn request inline using

@@ -29,6 +29,7 @@ import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { _acquireForRoutedRequest } from './rpc.js';
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
     cwd: z.string().startsWith('/'),
@@ -1172,7 +1173,7 @@ function successorGeneration(self) {
 function installEmptyProcessState(self, generation) {
     self.processes = new SessionProcessSupervisor();
     self.processes.setPidBase(generation * PID_GEN_STRIDE);
-    self.portRegistry = new PortRegistry();
+    self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
     self._w9PersistWired = false;
 }
 async function closeAcceptedWebSockets(self) {

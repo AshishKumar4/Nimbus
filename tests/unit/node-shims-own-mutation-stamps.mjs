@@ -70,6 +70,11 @@ const supervisor = {
 
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 
+// The platform's timer, captured before the shims wrap setTimeout in the
+// resumption barrier: a plain wait that is not itself a resumption.
+const rawSetTimeout = globalThis.setTimeout;
+const rawSleep = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
+
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
@@ -362,6 +367,18 @@ function deferAnswer(name) {
   return { arrived, release: () => release() };
 }
 
+// Take the barrier inside the gap `gate` holds open: its answer is in before
+// the held response. The barrier then holds its resumption until that
+// response says whose write the answer reported
+// (__nimbusReportedOwnAcknowledgements), so the response is released once the
+// answer has been admitted, and the barrier is awaited after.
+async function barrierInGap(gate) {
+  const taken = barrier();
+  await rawSleep(20);
+  gate.release();
+  await taken;
+}
+
 // (a) A ranged FileHandle write, with the barrier answered in the gap.
 // The lease is what keeps the cell: the barrier reports the path at the
 // revision this very write produced, and an eviction there is unrecoverable
@@ -374,8 +391,7 @@ function deferAnswer(name) {
   const write = fh.write('JELLO', 0);
   await gate.arrived;
   const before = snap();
-  await barrier();
-  gate.release();
+  await barrierInGap(gate);
   await write;
   await fh.close();
   assert.equal(syncRead(p), 'JELLO WORLD', 'race/range: the facet own bytes survive a barrier answered ahead of its write');
@@ -406,8 +422,7 @@ function deferAnswer(name) {
   const write = fs.promises.writeFile(p, 'SECOND');
   await gate.arrived;
   const before = snap();
-  await barrier();
-  gate.release();
+  await barrierInGap(gate);
   await write;
   assert.equal(syncRead(p), 'SECOND', 'race/whole: the flushed bytes survive a barrier answered ahead of the write');
   assert.equal(await supervisor.readFile(p), 'SECOND', 'race/whole: the authority holds them too');
@@ -432,8 +447,7 @@ function deferAnswer(name) {
   const write = fs.promises.writeFile(p, 'SECOND');
   await gate.arrived;
   vfs.writeFile(p, enc.encode('PEER'));
-  await barrier();
-  gate.release();
+  await barrierInGap(gate);
   await write;
   assert.match(syncRead(p), /^EAGAIN/, 'race/whole-peer: the evicted cell is not put back over a peer write');
   assert.equal(await fs.promises.readFile(p, 'utf8'), 'PEER', 'race/whole-peer: the refetch serves the peer bytes');
@@ -454,8 +468,7 @@ function deferAnswer(name) {
   await gate.arrived;
   const before = snap();
   vfs.writeFile(p, enc.encode('PEERPEERPEER'));
-  await barrier();
-  gate.release();
+  await barrierInGap(gate);
   await write;
   await fh.close();
   assert.ok(stats.invalidations > before.invalidations, 'race/peer: the cell was evicted rather than kept stale');
@@ -477,8 +490,7 @@ function deferAnswer(name) {
   const write = fh.write('X', 0);
   await gate.arrived;
   const before = snap();
-  await barrier();
-  gate.release();
+  await barrierInGap(gate);
   await write;
   await fh.close();
   assert.ok(stats.invalidations > before.invalidations, 'race/peer-first: the receipt alone ends the lease with an eviction');

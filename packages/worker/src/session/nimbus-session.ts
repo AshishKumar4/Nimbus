@@ -562,7 +562,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     // and facet-manager in prod as well as dev.
     const ctxExports = (ctx as any)?.exports;
     if (ctxExports) adoptCtxExports(ctxExports);
-    this.portRegistry = new PortRegistry();
+    this.portRegistry = new PortRegistry((pid) => _rpc._acquireForRoutedRequest(this, pid));
     // Generation-unique pids + destroyed tombstone, BEFORE any event runs.
     // Pid-keyed state outlives instance resets (hibernatable process-log WS
     // attachments, persisted w9_proc_logs rows, named loader isolates, and
@@ -940,11 +940,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
   async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
-  async _rpcCpReadStdin(childPid: number, waitMs: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs); }
-  async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs); }
+  async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid); }
+  async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
-  async _rpcCpWait(childPid: number, waitMs: number) { return _rpc._rpcCpWait(this as any, childPid, waitMs); }
+  async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid); }
   // child-process isolation gap #1: per-spawn fresh-isolate dispatch.
   async _rpcCpDispatchInline(req: any, kind: string) { return _rpc._rpcCpDispatchInline(this as any, req, kind); }
 

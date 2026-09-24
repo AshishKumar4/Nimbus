@@ -121,6 +121,10 @@ export type FsReadBatchEntry = {
     bytes?: undefined;
     error: FsReadBatchEntryError;
 };
+declare const FsAcquireArgsSchema: z.ZodObject<{
+    epoch: z.ZodNullable<z.ZodString>;
+    cursor: z.ZodNumber;
+}, z.core.$strip>;
 export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], pid?: number): Promise<{
     id: number;
     protocol: string;
@@ -136,6 +140,45 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  * way would silently arrive as undefined.
  */
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
+/** What a process passes to fsAcquire: the cursor its resident set is at. */
+export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;
+/** An ACQUIRE a delivery carries: fsAcquire's arguments and its answer to them. */
+export interface VfsDeliveredAcquire {
+    args: FsAcquireArgs;
+    answer: VfsAcquireResult;
+}
+/**
+ * The ACQUIRE a delivery carries, so the process it is delivered to applies
+ * it instead of asking.
+ *
+ * A stdin packet, a child's output or exit, a request routed to a port: the
+ * supervisor hands each of these to a process, and the process may not run
+ * the code they wake until it has applied everything written before them
+ * (protocol §3, §5.6). Asking costs a round trip per delivery, which an
+ * attached terminal pays on every keystroke. But the supervisor is already
+ * answering: `args` are what the process would pass to fsAcquire, and
+ * `answer` is exactly what fsAcquire answers for them, computed here, after
+ * the thing delivered was queued. Every write that preceded it is in the
+ * answer, and the delivery carries it, so it cannot be lost or reordered
+ * apart from it.
+ *
+ * One format with fsAcquire's own: the same arguments, checked by the same
+ * schema, answered by the same function. Undefined when there is no answer
+ * to carry — the process sent no arguments it can be answered for, or this
+ * one could not be computed — and the process then asks, as it always has,
+ * where a failure is counted and handled. It is never a reason to fail the
+ * delivery: that would lose a dequeued keystroke or a routed request.
+ */
+export declare function _acquireOnDelivery(self: RpcHost, args: unknown, pid?: number): Promise<VfsDeliveredAcquire | undefined>;
+/**
+ * The ACQUIRE a request routed to `pid`'s port carries. The supervisor, not
+ * the process, starts a request, so it holds no cursor of the process's to
+ * answer from, and answers from its own: "nothing since now". The process can
+ * use that only when it is already there, which is protocol §9.2's
+ * one-integer piggyback — true for any request no write preceded since the
+ * process last caught up — and otherwise asks.
+ */
+export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Promise<VfsDeliveredAcquire | undefined>;
 /**
  * Enumerate the session filesystem for a process, one bounded page at a time.
  *
@@ -296,11 +339,22 @@ export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: 
     ok: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
-export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number): Promise<any>;
-export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<any>;
+export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<{
+    data: Uint8Array;
+    ended: boolean;
+    resize?: {
+        columns: number;
+        rows: number;
+    };
+    signal?: string;
+} | {
+    signal: string;
+    ended: boolean;
+}>;
+export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
 export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
-export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number): Promise<any>;
+export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 /**
  * child-process isolation gap #1: dispatch a single cp.spawn request inline using the
  * existing pure-builtin / facet-direct logic, returning final stdout/
