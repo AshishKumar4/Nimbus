@@ -42,7 +42,7 @@ const LOCK = {
   },
 };
 
-function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK) {
+function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK, resolve = null) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
@@ -57,7 +57,11 @@ function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK) {
   const log = [];
   const env = makeFanoutEnv({
     root, NM, shardsSeen,
-    resultFor: (name) => { resolveAsked.push(name); throw new Error(`npm ci must not resolve ${name}`); },
+    resultFor: (name, spec) => {
+      resolveAsked.push(name);
+      if (resolve) return resolve(name, spec);
+      throw new Error(`npm ci must not resolve ${name}`);
+    },
   });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
@@ -108,6 +112,40 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 
   const v1 = { lockfileVersion: 1, dependencies: {} };
   await assert.rejects(makeInstaller(PACKAGE_JSON, v1).installer.install(PROJ, { pid: 1, fromLockfile: true }), /lockfileVersion 1/);
+}
+
+// ── a swapped package under an alias installs in the folder the lock names ──
+// The policy follows the registry identity (esbuild is swapped for its WASM
+// build) and placement the declared name: the lock's `node_modules/build`,
+// `name: "esbuild"` entry is resolved as the alias `build@npm:esbuild@<locked>`
+// and lands in node_modules/build, never node_modules/esbuild.
+{
+  const pkgJson = { name: 'fixture', version: '1.0.0', dependencies: { build: 'npm:esbuild@^0.21.0' } };
+  const lock = {
+    name: 'fixture',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0', dependencies: { build: 'npm:esbuild@^0.21.0' } },
+      'node_modules/build': { name: 'esbuild', version: '0.21.5', resolved: tgz('esbuild', '0.21.5'), integrity: 'sha512-e' },
+    },
+  };
+  const specs = [];
+  const { installer, root, log } = makeInstaller(pkgJson, lock, (name, spec) => {
+    specs.push({ name, range: spec.range });
+    const pkg = {
+      name, version: '0.21.5', tarballUrl: tgz('esbuild-wasm', '0.21.5'), integrity: 'sha512-w',
+      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+    };
+    return {
+      pkg, deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+    };
+  });
+  const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.deepEqual(specs, [{ name: 'build', range: 'npm:esbuild@0.21.5' }], 'resolved as an alias under the folder, at the locked version');
+  assert.equal(versionAt(root, 'build'), '0.21.5', 'installed where the lock placed it');
+  assert.equal(root.exists(`${NM}/esbuild`), false, 'nothing lands under the registry name');
 }
 
 // ── the command: needs a lock, then hands the clean install to the host ──────

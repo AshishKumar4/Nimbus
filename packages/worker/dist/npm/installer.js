@@ -1337,9 +1337,12 @@ export class NpmInstaller {
                 rejected.push({ name, reason: platformReject.reason, required: entry.optional !== true });
                 continue;
             }
+            // Policy follows the registry identity (`name`), placement the folder the lock
+            // names: an aliased entry (`node_modules/build`, name `esbuild`) resolves as
+            // the alias `build@npm:esbuild@<locked>`, so the swap target lands in build.
             if (lookupSwap(name)) {
-                if (!(name in swapSpecs))
-                    swapSpecs[name] = version;
+                if (!(folderName in swapSpecs))
+                    swapSpecs[folderName] = folderName === name ? version : `npm:${name}@${version}`;
                 continue;
             }
             if (entry.link === true || typeof entry.resolved !== 'string' || !version) {
