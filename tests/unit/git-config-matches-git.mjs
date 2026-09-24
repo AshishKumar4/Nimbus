@@ -3,10 +3,11 @@
 // for byte: `git init` through the supervisor's git, and clone through the
 // network facet running the bundled cf-git against `git http-backend`,
 // beside real git cloning the same URL. Nimbus clones one branch, shallow by
-// default, so its match is `git clone --depth 1 [--branch <ref>]`. On that
-// config (core.filemode = true) a chmod shows in status, diff and add -A as
-// it does in git, and a read-only command never stages it. A repository that
-// kept cf-git's old `filemode = false` ignores the exec bit, as git does.
+// default, so its match is `git clone --depth 1 [--branch <ref>]`; HEAD must
+// match too, detached at the commit for a tag. On that config
+// (core.filemode = true) a chmod shows in status, diff and add -A as it does
+// in git, and a read-only command never stages it. A repository that kept
+// cf-git's old `filemode = false` ignores the exec bit, as git does.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -127,7 +128,8 @@ try {
   realGit(work, 'commit', '-q', '-m', 'c');
   realGit(work, 'branch', 'dev');
   realGit(work, 'tag', 'v1');
-  realGit(work, 'push', '-q', 'origin', 'trunk', 'dev', 'v1');
+  realGit(work, 'tag', '-a', '-m', 'release', 'v2');
+  realGit(work, 'push', '-q', 'origin', 'trunk', 'dev', 'v1', 'v2');
   realGit(served, 'init', '-q', '--bare', '-b', 'main', 'empty.git');
   server = Bun.serve({
     hostname: '127.0.0.1',
@@ -214,6 +216,7 @@ try {
     ['default branch', 'full.git', undefined, []],
     ['a branch', 'full.git', 'dev', []],
     ['a tag', 'full.git', 'v1', []],
+    ['an annotated tag', 'full.git', 'v2', []],
     // cf-git speaks protocol v1, where an empty repository names no branch; v2 would name "main".
     ['an empty repository', 'empty.git', undefined, ['-c', 'protocol.version=1']],
   ]) {
@@ -285,7 +288,7 @@ try {
   await agree('filemode false, chmod -x, add -A');
   assert.equal(await git(repo, 'diff', 'HEAD'), '');
 
-  console.log(`git-config-matches-git: init, git config and 4 clones byte-identical to ${realGit(scratch, '--version').trim()}; chmod agrees with it under both core.filemode values`);
+  console.log(`git-config-matches-git: init, git config and 5 clones byte-identical to ${realGit(scratch, '--version').trim()}; chmod agrees with it under both core.filemode values`);
 } finally {
   server?.stop(true);
   rmSync(scratch, { recursive: true, force: true });

@@ -42,12 +42,12 @@ published independently in the `@nimbus-sh` npm scope.
   `commit` reads bundled short options, so `git commit -qm msg` commits
   "msg". It used to commit with the message "commit". `commit -a` stages
   tracked changes.
-- `git add -A` of 10,000 2 KiB files takes 15 s in a deployed session, and
-  1,000 take 1.7 s. It used to rewrite the whole index once per file: 1,000
-  files took 34.5 s, and 10,000 were cut off after 283 s with half of them
-  staged. The index is now written once, files are added one at a time, and
-  objects are deflated with pako instead of `CompressionStream`, which costs
-  about 9 ms a call in workerd.
+- `git add -A` of 10,000 2 KiB files takes 15 to 18 s in a deployed session,
+  and 1,000 take 1.4 to 1.7 s. It used to rewrite the whole index once per
+  file: 1,000 files took 34.5 s, and 10,000 were cut off after 283 s with
+  half of them staged. The index is now written once, files are added one at
+  a time, and objects are deflated with pako instead of `CompressionStream`,
+  which costs about 9 ms a call in workerd.
 - `git init` and `git clone` write the `.git/config` git writes, byte for
   byte: `core.filemode = true`, with no `symlinks = false` or
   `ignorecase = true`, and the remote and branch keys in git's order. A clone
@@ -56,6 +56,9 @@ published independently in the `@nimbus-sh` npm scope.
   stages it. Repositories made earlier keep their config. Where it says
   `filemode = false`, the exec bit is ignored, as git ignores it, and
   `git status` no longer stages a mode change by itself.
+- `git clone -b <tag>` and `git checkout <tag>` of an annotated tag detach
+  HEAD at the commit the tag points to, as git does. HEAD used to name the
+  tag object itself.
 
 ## 2026-09-23
 
