@@ -7,12 +7,13 @@ edition: 1.0.0
 formalScope: abstract-model-only
 requirements:
   VFS-REV-001:
-    statement: A path's reported revision never falls below its own last mutation or below the revision of any path under it, and no report and no floor ever decreases.
+    statement: A path's reported revision (content-store P5 rule) never falls below its own last mutation nor rises above the clock, a directory never reports below any path under it, so every report of a path made before a mutation of it is below every report made after, and the floor never decreases.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.RevisionFloor.revision_ge_last
       - Nimbus.Vfs.RevisionFloor.revision_watermark
-      - Nimbus.Vfs.RevisionFloor.revision_monotone
+      - Nimbus.Vfs.RevisionFloor.revision_increases_across_mutation
+      - Nimbus.Vfs.RevisionFloor.revision_le_clock
       - Nimbus.Vfs.RevisionFloor.floor_monotone
       - Nimbus.Vfs.RevisionFloor.reachable_inv
       - Nimbus.Vfs.RevisionFloor.step_inv
@@ -31,6 +32,8 @@ requirements:
       - Nimbus.Vfs.RevisionFloor.walked_closed
       - Nimbus.Vfs.RevisionFloor.bump_inv
       - Nimbus.Vfs.RevisionFloor.drop_inv
+      - Nimbus.Vfs.RevisionFloor.last_step
+      - Nimbus.Vfs.RevisionFloor.steps_facts
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.revision
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
@@ -41,6 +44,7 @@ requirements:
     remainingEvidence:
       - Paths are component lists; normalizeVfsPath and a confined caller's storageKey are not modeled
       - The code's cutoff rule is exercised by the fixtures; every theorem holds for any cutoff at or below the clock
+      - One bump is one operation at clock + 1; multi-transaction operations (a row's generation below the operation's revision) and jumping revisions are not modeled, and neither are deletes' tombstones (Nimbus.Coherence.DurableDelta covers those)
   VFS-REV-002:
     statement: Reporting an unheld path at 0 rather than at the floor reports a path below its last write.
     status: by-construction-witness

@@ -342,8 +342,11 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.RevisionFloor.step_inv
 #print axioms Nimbus.Vfs.RevisionFloor.reachable_inv
 #print axioms Nimbus.Vfs.RevisionFloor.revision_ge_last
+#print axioms Nimbus.Vfs.RevisionFloor.revision_le_clock
 #print axioms Nimbus.Vfs.RevisionFloor.revision_watermark
-#print axioms Nimbus.Vfs.RevisionFloor.revision_monotone
+#print axioms Nimbus.Vfs.RevisionFloor.last_step
+#print axioms Nimbus.Vfs.RevisionFloor.steps_facts
+#print axioms Nimbus.Vfs.RevisionFloor.revision_increases_across_mutation
 #print axioms Nimbus.Vfs.RevisionFloor.floor_monotone
 #print axioms Nimbus.Vfs.RevisionFloor.a_zero_floor_reports_below_the_last_write
 

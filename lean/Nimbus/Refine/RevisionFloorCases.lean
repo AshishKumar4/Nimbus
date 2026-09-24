@@ -6,7 +6,8 @@
   cutoff rule (`dropOldestPathRevisions`: drop at the stamp a quarter of the
   way up the sorted stamps, while over budget), which is one `Step.drop` per
   pass. `tests/unit/revision-floor-refinement.mjs` replays each case through
-  `SqliteVFS` and compares every report.
+  `SqliteVFS` and compares every report (with P5, a written file whose stamp
+  was dropped reports its row's generation).
 -/
 
 import Nimbus.Vfs.RevisionFloor
@@ -44,8 +45,8 @@ def dropWhileOver (budget : Nat) : Nat → Exec → Exec
   | 0, e => e
   | n + 1, e => if heldBytes e > budget then dropWhileOver budget n (dropOnce e) else e
 
-def execBump (budget : Nat) (e : Exec) (paths : List Path) : Exec :=
-  let st := bump e.st paths
+def execBump (budget : Nat) (e : Exec) (paths fs : List Path) : Exec :=
+  let st := bump e.st paths fs
   let keys := (paths.flatMap prefixes).foldl
     (fun ks q => if ks.contains q then ks else ks ++ [q]) e.keys
   dropWhileOver budget (keys.length + 1) { st, keys }
@@ -65,10 +66,12 @@ theorem dropWhileOver_reach (budget : Nat) :
     · exact ih _ (.step h (dropOnce_step e))
     · exact h
 
-/-- Every state a fixture reports is a reachable model state. -/
-theorem execBump_reach (budget : Nat) (e : Exec) (paths : List Path) (h : Reachable e.st) :
-    Reachable (execBump budget e paths).st :=
-  dropWhileOver_reach budget _ _ (.step h (.bump _ paths))
+/-- Every state a fixture reports is a reachable model state (the generator
+    never names a path below a file). -/
+theorem execBump_reach (budget : Nat) (e : Exec) (paths fs : List Path) (h : Reachable e.st)
+    (hfs : ∀ f ∈ fs, f ∈ paths) (hnest : ∀ p ∈ paths, ∀ a, Under a p → a ≠ p → e.st.files a = none) :
+    Reachable (execBump budget e paths fs).st :=
+  dropWhileOver_reach budget _ _ (.step h (.bump _ paths fs hfs hnest))
 
 inductive Op where
   | mkdir (p : Path)
@@ -108,7 +111,7 @@ def caseOf (ops : List Op) : Json := Id.run do
   let mut seen : List Path := []
   let mut out : Array Json := #[]
   for op in ops do
-    e := execBump budget e [op.path]
+    e := execBump budget e [op.path] (match op with | .mkdir _ => [] | .write p => [p])
     if !seen.contains op.path then seen := seen ++ [op.path]
     out := out.push (stepJson e seen op)
   return .obj [("steps", .arr out.toList)]
