@@ -18,10 +18,21 @@ import { cutContent, chunkHash, hex } from '../../packages/core/src/vfs/content-
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-const FIXTURE = 'lean/fixtures/content-store.json';
-const fixture = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', FIXTURE), 'utf8'));
-assert.equal(fixture.fixture, 'content-store');
-const PIECE = fixture.piece.bytes;
+// The store (Nimbus.ContentStore.Step) and its cold tier (Nimbus.ContentStore.Tier).
+const FIXTURES = ['lean/fixtures/content-store.json', 'lean/fixtures/content-store-tier.json'];
+const load = (path) => JSON.parse(readFileSync(join(import.meta.dir, '..', '..', path), 'utf8'));
+const PIECE = load(FIXTURES[0]).piece.bytes;
+
+/** An R2-shaped cold store over a Map. */
+function memoryColdStore() {
+  const objects = new Map();
+  return {
+    objects,
+    async put(key, bytes) { objects.set(key, new Uint8Array(bytes)); },
+    async get(key) { const bytes = objects.get(key); return bytes === undefined ? null : { arrayBuffer: async () => bytes.slice().buffer }; },
+    async delete(keys) { for (const key of keys) objects.delete(key); },
+  };
+}
 
 const pieceCache = new Map();
 /** The model's piece h: PIECE bytes of xorshift32 seeded (h * 2654435761 + 1) mod 2^32, never 0. */
@@ -58,19 +69,20 @@ const same = (actual, pieces, label) => {
   assert.ok(Buffer.from(actual).equals(Buffer.from(bytesOf(pieces))), `${label}: bytes`);
 };
 
-const snapshotsSupported = typeof SqliteVFS.prototype.snapshot === 'function';
+const counts = {};
+for (const FIXTURE of FIXTURES) {
+const fixture = load(FIXTURE);
+assert.equal(fixture.piece.bytes, PIECE);
+const tierFixture = fixture.fixture === 'content-store-tier';
 let ran = 0;
-let skipped = 0;
 for (const [index, testCase] of fixture.cases.entries()) {
-  if (!snapshotsSupported && testCase.ops.some((op) => ['snapshot', 'drop', 'restore'].includes(op.op))) {
-    skipped++;
-    continue;
-  }
   const harness = createSqliteVfsTestHarness();
-  let raw = new SqliteVFS(harness.sql, harness.ctx);
+  const coldStore = tierFixture ? memoryColdStore() : undefined;
+  const options = { coldStore };
+  let raw = new SqliteVFS(harness.sql, harness.ctx, undefined, options);
   let vfs = raw.as(CRED_KERNEL);
   let fds = [];
-  const where = (step, op) => `case ${index} op ${step} ${JSON.stringify(op)}`;
+  const where = (step, op) => `${fixture.fixture} case ${index} op ${step} ${JSON.stringify(op)}`;
   for (const [step, op] of testCase.ops.entries()) {
     const label = where(step, op);
     switch (op.op) {
@@ -96,7 +108,20 @@ for (const [index, testCase] of fixture.cases.entries()) {
         raw.dropSnapshot(op.name);
         break;
       case 'restore':
-        raw.restore(op.name);
+        if (op.error) {
+          const before = harness.sql.exec('SELECT path, gen FROM vfs_inodes ORDER BY path');
+          assert.throws(() => raw.restore(op.name), new RegExp(op.error), `${label}: refused`);
+          assert.deepEqual(harness.sql.exec('SELECT path, gen FROM vfs_inodes ORDER BY path'), before, `${label}: nothing changed`);
+        } else raw.restore(op.name);
+        break;
+      case 'tier':
+        for (let pass = 0; !(await raw.tierColdChunks()).done; pass++) assert.ok(pass < 1000, `${label}: tier did not finish`);
+        break;
+      case 'prepare':
+        await raw.prepareSnapshot(op.name);
+        break;
+      case 'release':
+        raw.releaseSnapshot(op.name);
         break;
       case 'open-unlink': {
         assert.equal(op.fd, fds.length, `${label}: fd ids are stack-ordered`);
@@ -109,7 +134,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
         fds.pop().close();
         break;
       case 'reset':
-        raw = new SqliteVFS(createSqliteVfsTestHarness(harness.db).sql, harness.ctx);
+        raw = new SqliteVFS(createSqliteVfsTestHarness(harness.db).sql, harness.ctx, undefined, options);
         vfs = raw.as(CRED_KERNEL);
         fds = [];
         break;
@@ -128,7 +153,8 @@ for (const [index, testCase] of fixture.cases.entries()) {
           const view = raw.at(name);
           for (const [path, pieces] of Object.entries(files)) {
             if (pieces === null) assert.equal(view.exists(path), false, `${label}: ${name}:${path} absent`);
-            else same(view.readFile(path), pieces, `${label}: ${name}:${path}`);
+            else if (!Array.isArray(pieces)) assert.throws(() => view.readFile(path), new RegExp(pieces.error), `${label}: ${name}:${path} cold`);
+            else { let got; try { got = view.readFile(path); } catch (error) { throw new Error(`${label}: ${name}:${path}: ${error.message}`); } same(got, pieces, `${label}: ${name}:${path}`); }
           }
         }
         assert.equal(fds.length, (op.fds ?? []).length, `${label}: open descriptors`);
@@ -143,6 +169,10 @@ for (const [index, testCase] of fixture.cases.entries()) {
         const lost = [...expected].filter((h) => !stored.has(h));
         const leaked = [...stored].filter((h) => !expected.has(h));
         assert.deepEqual(lost, [], `${label}: chunks lost`);
+        // A cold chunk's bytes are recoverable: its object is in the cold store.
+        for (const row of harness.sql.exec('SELECT hash FROM vfs_chunks WHERE state = 1')) {
+          assert.ok(coldStore?.objects.has(hex(new Uint8Array(row.hash))), `${label}: a cold chunk has no object`);
+        }
         assert.deepEqual(leaked, [], `${label}: chunks leaked`);
         assert.deepEqual(harness.sql.exec('SELECT id FROM vfs_contents WHERE state = 2'), [], `${label}: dying content left`);
         // Only what an open descriptor pins may still be queued (R3); the
@@ -158,6 +188,8 @@ for (const [index, testCase] of fixture.cases.entries()) {
   }
   ran++;
 }
-
 assert.ok(ran > 0);
-console.log(`content-store-refinement: ${ran} cases of ${FIXTURE} passed${skipped ? `, ${skipped} need snapshots` : ''}`);
+counts[FIXTURE] = ran;
+}
+
+console.log(`content-store-refinement: ${Object.entries(counts).map(([path, n]) => `${n} cases of ${path}`).join(', ')} passed`);

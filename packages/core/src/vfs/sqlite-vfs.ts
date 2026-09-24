@@ -5005,6 +5005,7 @@ export class SqliteVFS {
     });
     this._pinGen = pinGen;
     this.snapshotGens?.delete(name);
+    this.hotSnapshotGens.delete(name);
     const dropped = this.runDrop(id, g);
     this.runContentMaintenanceSafely(2);
     return { dropped };
