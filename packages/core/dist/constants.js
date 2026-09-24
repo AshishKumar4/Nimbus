@@ -68,6 +68,11 @@ export const OPENCODE_VERSION = '1.16.2';
 export const LRU_MAX_ENTRIES = 512; // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64; // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
+// Inode metadata held in memory. SQLite holds every inode and indexes it by
+// path and by parent, so this is a cache, not the tree: at ~214 B per inode in
+// V8, a whole 1M-file tree would need ~214 MB of a 128 MB isolate. 64k entries
+// is ~14 MB.
+export const INODE_CACHE_MAX_ENTRIES = 65_536;
 // ── Batched filesystem reads ────────────────────────────────────────────
 // A round trip costs an order of magnitude more than the SQLite lookup
 // behind it, so a program that touches many files pays for round trips and

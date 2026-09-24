@@ -5,7 +5,7 @@
  *
  * ┌─────────────────────────────────────────┐
  * │           Nimbus VFS (in-memory)           │
- * │  INode tree: always-resident metadata    │  ~10-20 MB for 50K files
+ * │  INode cache: bounded view of `inodes`   │  64k entries ≈ 14 MB (V8)
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
@@ -36,7 +36,8 @@
  *
  * Key design decisions:
  * - 64KB chunks (not 4KB): file access is sequential, fewer rows
- * - INode metadata always in memory (small: ~200B per file)
+ * - INode metadata demand-loaded by path through a bounded cache; SQLite
+ *   indexes it by path and by parent, so no walk needs the whole tree
  * - File content demand-paged through LRU cache
  */
 
@@ -46,6 +47,7 @@ import {
   LRU_MAX_ENTRIES,
   BATCH_SIZE,
   FS_LIST_PAGE_LIMIT,
+  INODE_CACHE_MAX_ENTRIES,
 } from '../constants.js';
 import {
   CHUNK_SIZE,
@@ -79,6 +81,7 @@ import {
   type VfsListEntry,
   type VfsListPage,
   type SqlDatabase,
+  type SqlRow,
   type TransactionHost,
 } from '../runtime/os-contracts.js';
 
@@ -95,7 +98,6 @@ const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
  * no `process`, so every member stays optional and every read stays guarded.
  */
 interface NodeProcessLike {
-  env?: Record<string, string | undefined>;
   memoryUsage?: () => { heapUsed: number };
 }
 
@@ -104,11 +106,6 @@ interface NodeProcessLike {
  * shape is declared here rather than assumed present.
  */
 const nodeHost = globalThis as { process?: NodeProcessLike };
-
-/** Single gate for the W2.5b install-pipeline diagnostics below. */
-function installPipelineDiagEnabled(): boolean {
-  return nodeHost.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1';
-}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 // VfsInodeKind and the writeBatch payload types (BatchInodeEntry,
@@ -292,6 +289,10 @@ export const VFS_APPEND_RECEIPT_LIMIT = 2048;
 const INODE_KIND_FILE = 0;
 const INODE_KIND_DIRECTORY = 1;
 const INODE_KIND_SYMLINK = 2;
+/** The inode columns `inodeFromRow` reads. */
+const INODE_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, chunk_count, content_id, ino';
+/** Rows one page of a subtree walk holds: a bound on its heap, not on the tree. */
+const SUBTREE_PAGE_ROWS = 4096;
 
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource =
@@ -609,18 +610,119 @@ interface CacheEntry {
   data: Uint8Array;
 }
 
+/** An open description's hold on an inode. */
+interface OpenedNode {
+  inode: INode;
+  path: string | null;
+  closed: boolean;
+}
+
+export interface SqliteVfsOptions {
+  /**
+   * Inodes held in memory; defaults to INODE_CACHE_MAX_ENTRIES. SQLite holds
+   * every inode, so this bounds the heap, not the filesystem.
+   */
+  readonly inodeCacheEntries?: number;
+  /**
+   * Bytes of per-path revisions held; defaults to 16 MiB. Past it the oldest
+   * are dropped, and a path without one reports the newest revision dropped.
+   */
+  readonly pathRevisionBytes?: number;
+}
+
+/**
+ * The inode cache: a bounded, write-through view of the `inodes` table.
+ *
+ * SQLite is the tree. `inodes` is keyed by path and indexed by parent, so any
+ * one lookup is one indexed read and nothing needs the whole table in memory;
+ * this saves the read for the paths in use. Absence here means "not cached",
+ * never ENOENT: `get` falls through to SQLite, which is the authority.
+ *
+ * It stays coherent the way the always-resident map it replaces did: every
+ * committed publication `set`s or `delete`s the paths it wrote.
+ *
+ * Two generations rather than a list: a hit in the young one is one Map
+ * lookup, a hit in the old one promotes the entry, and when the young one
+ * fills, the old one is dropped whole. At most `capacity` entries stay
+ * resident, plus what open descriptions hold.
+ *
+ * An inode an open description holds is never dropped. Descriptions share the
+ * canonical object, so a second descriptor sees chmod/chown/utimes at once and
+ * an unlink leaves every holder on the same retired inode. A reload would hand
+ * the next lookup a second object for the same file.
+ */
+class InodeTable {
+  private young = new Map<string, INode>();
+  private old = new Map<string, INode>();
+
+  constructor(
+    readonly capacity: number,
+    private readonly load: (path: string) => INode | undefined,
+    private readonly held: Iterable<OpenedNode>,
+  ) {}
+
+  get size(): number {
+    return this.young.size + this.old.size;
+  }
+
+  get(path: string): INode | undefined {
+    const young = this.young.get(path);
+    if (young !== undefined) return young;
+    const old = this.old.get(path);
+    if (old !== undefined) {
+      this.old.delete(path);
+      this.admit(path, old);
+      return old;
+    }
+    const loaded = this.load(path);
+    if (loaded !== undefined) this.admit(path, loaded);
+    return loaded;
+  }
+
+  /** The cached object, if any, without reading SQLite. */
+  peek(path: string): INode | undefined {
+    return this.young.get(path) ?? this.old.get(path);
+  }
+
+  set(path: string, inode: INode): void {
+    this.old.delete(path);
+    this.admit(path, inode);
+  }
+
+  delete(path: string): void {
+    this.young.delete(path);
+    this.old.delete(path);
+  }
+
+  clear(): void {
+    this.young = new Map();
+    this.old = new Map();
+  }
+
+  private admit(path: string, inode: INode): void {
+    this.young.set(path, inode);
+    if (this.young.size * 2 < this.capacity) return;
+    const dropped = this.old;
+    this.old = this.young;
+    this.young = new Map();
+    for (const opened of this.held) {
+      if (opened.path !== null && dropped.get(opened.path) === opened.inode) {
+        this.young.set(opened.path, opened.inode);
+      }
+    }
+  }
+}
+
 // ── SqliteVFS ───────────────────────────────────────────────────────────────
 
 export class SqliteVFS {
-  private readonly openNodes = new Set<{ inode: INode; path: string | null; closed: boolean }>();
+  private readonly openNodes = new Set<OpenedNode>();
   private sql: SqlDatabase;
   private ctx: TransactionHost | undefined;
   public readonly events: VfsEventEmitter;
 
-  // ── INode tree (always resident) ──────────────────────────────────────
-  private inodes = new Map<string, INode>();
-  /** Children index: parentPath → Set of child paths. O(1) readdir. */
-  private children = new Map<string, Set<string>>();
+  // ── INode cache (bounded; SQLite holds the tree) ──────────────────────
+  private readonly inodes: InodeTable;
 
   // ── Content cache (LRU, 512 × 64KB = 32MB) ───────────────────────────
   // Map iteration order = insertion order. Delete+re-insert to move to MRU.
@@ -647,10 +749,12 @@ export class SqliteVFS {
   private _lruShrinkRefcount: number = 0;
 
   // ── Running counters for O(1) getStats() (B3 / AUDIT M10 / M-S8) ──
-  // Replaces the triple scan of this.inodes on every /api/stats poll.
-  // Bootstrapped in loadInodes(); maintained at committed publication by
-  // mkdir, batch writes/deletes and rename. These match a fresh O(N)
-  // walk of this.inodes; rollback reloads them from the durable rows.
+  // Replaces a scan of every inode on every /api/stats poll. One aggregate
+  // over `inodes` loads them on the first read (ensureCounters); from then
+  // on mkdir, batch writes/deletes and rename maintain them at committed
+  // publication. Deltas applied before the load are overwritten by it.
+  // Rollback unloads them, and the next read aggregates the durable rows.
+  private _countersLoaded = false;
   private _totalFiles = 0;
   private _totalDirs = 0;
   private _usedBytes = 0;
@@ -664,7 +768,22 @@ export class SqliteVFS {
   // staleness checks) key on revision(path) instead of the global clock,
   // so unrelated writes no longer invalidate them. In-memory only — the
   // clock resets with the DO lifetime, exactly like the caches keyed on it.
+  //
+  // Bounded by bytes, like the invalidation log below: a million-file tree
+  // written in one lifetime would otherwise hold a revision per path. Past
+  // the budget the oldest quarter goes at once (dropOldestPathRevisions),
+  // and a path with no entry reports _revisionFloor, the newest revision
+  // dropped, which is at least the last revision of every path without an
+  // entry. It must never report less: a resident row, a write receipt or an
+  // expected revision compared against a smaller number would be vouched for
+  // by a revision older than the path's last change. The floor only rises,
+  // so a dropped path can report a higher revision with nothing under it
+  // changed, which costs its readers a refetch, never a stale byte.
   private _pathRevisions = new Map<string, number>();
+  private _pathRevisionBytes = 0;
+  private _revisionFloor = 0;
+  private readonly pathRevisionBudget: number;
+  private static readonly PATH_REVISIONS_MAX_BYTES = 16 * 1024 * 1024;
   private transactionPublication: {
     paths: Set<string>;
     events: { type: VfsEventType; path: string; oldPath?: string }[];
@@ -778,8 +897,20 @@ export class SqliteVFS {
    * `CREATE ... IF NOT EXISTS` is a no-op on an existing object; every row
    * seed is preceded by the read that decides it; the migration markers
    * are written only when the migration runs.
+   *
+   * Nor does it read the tree: no inode is loaded until a path asks for it,
+   * so opening costs the same at ten files and at a million.
    */
-  constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string) {
+  constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options: SqliteVfsOptions = {}) {
+    const inodeCacheEntries = options.inodeCacheEntries ?? INODE_CACHE_MAX_ENTRIES;
+    if (!Number.isSafeInteger(inodeCacheEntries) || inodeCacheEntries < 2) {
+      throw vfsError('EINVAL', `inode cache must hold at least 2 entries, not ${inodeCacheEntries}`);
+    }
+    const pathRevisionBytes = options.pathRevisionBytes ?? SqliteVFS.PATH_REVISIONS_MAX_BYTES;
+    if (!Number.isSafeInteger(pathRevisionBytes) || pathRevisionBytes < 0) {
+      throw vfsError('EINVAL', `per-path revision budget must be a byte count, not ${pathRevisionBytes}`);
+    }
+    this.pathRevisionBudget = pathRevisionBytes;
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
     if (namespace === undefined) {
       let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
@@ -803,9 +934,9 @@ export class SqliteVFS {
     this.sql = sql;
     this.ctx = ctx;
     this.events = new VfsEventEmitter();
+    this.inodes = new InodeTable(inodeCacheEntries, (path) => this.loadInode(path), this.openNodes);
     this.initSchema();
     this.resumeAppendMaintenance();
-    this.loadInodes();
     this.runContentMaintenanceSafely(2, true);
   }
 
@@ -939,13 +1070,22 @@ export class SqliteVFS {
         slot INTEGER PRIMARY KEY CHECK (slot = 1),
         next INTEGER NOT NULL
       )`);
+      let allocatorSeeded = false;
       if ([...this.sql.exec('SELECT 1 FROM vfs_ino_allocator WHERE slot = 1')].length === 0) {
         this.sql.exec('INSERT OR IGNORE INTO vfs_ino_allocator(slot, next) VALUES (1, 1)');
+        allocatorSeeded = true;
       }
+      let inoColumnAdded = false;
       if (!this.tableColumns('inodes').has('ino')) {
         this.sql.exec('ALTER TABLE inodes ADD COLUMN ino INTEGER NULL');
+        inoColumnAdded = true;
       }
-      this.backfillInoColumn();
+      // The backfill scans the whole table, so it runs only when this open
+      // created the column or the allocator it reconciles. Every insert since
+      // takes its ino in its own transaction; a row written without one, by
+      // code older than the column, is numbered when it is first read
+      // (repairIno).
+      if (inoColumnAdded || allocatorSeeded) this.backfillInoColumn();
 
       const inodeColumns = this.tableColumns('inodes');
       if (!inodeColumns.has('chunk_count')) {
@@ -966,14 +1106,25 @@ export class SqliteVFS {
       if (!inodeColumns.has('ctime')) {
         this.sql.exec("ALTER TABLE inodes ADD COLUMN ctime INTEGER NOT NULL DEFAULT 0");
       }
-      const invalidKinds = [...this.sql.exec(
-        'SELECT path, kind FROM inodes WHERE kind NOT IN (0, 1, 2) LIMIT 1',
-      )];
-      if (invalidKinds.length > 0) {
-        throw new Error(
-          `[sqlite-vfs] invalid durable inode kind ${String(invalidKinds[0].kind)} ` +
-          `at ${String(invalidKinds[0].path)}`,
-        );
+      // The triggers below reject a bad kind from every writer, whatever its
+      // version, and the scan that ran when they were created covered every
+      // row before them. Once both exist the scan is a whole-table read that
+      // cannot find anything.
+      const kindTriggers = [...this.sql.exec(
+        `SELECT COUNT(*) AS n FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name = 'inodes'
+           AND name IN ('trg_inodes_kind_insert', 'trg_inodes_kind_update')`,
+      )][0];
+      if (Number(kindTriggers?.n) !== 2) {
+        const invalidKinds = [...this.sql.exec(
+          'SELECT path, kind FROM inodes WHERE kind NOT IN (0, 1, 2) LIMIT 1',
+        )];
+        if (invalidKinds.length > 0) {
+          throw new Error(
+            `[sqlite-vfs] invalid durable inode kind ${String(invalidKinds[0].kind)} ` +
+            `at ${String(invalidKinds[0].path)}`,
+          );
+        }
       }
       this.sql.exec(`CREATE TRIGGER IF NOT EXISTS trg_inodes_kind_insert
         BEFORE INSERT ON inodes WHEN NEW.kind NOT IN (0, 1, 2)
@@ -1244,58 +1395,80 @@ export class SqliteVFS {
 
   // ── INode loading ─────────────────────────────────────────────────────
 
-  private loadInodes(): void {
-    this.inodes.clear();
-    this.children.clear();
-    // Reset counters before rescanning (B3).
-    this._totalFiles = 0;
-    this._totalDirs = 0;
-    this._usedBytes = 0;
-    const rows = [...this.sql.exec("SELECT path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, chunk_count, content_id, ino FROM inodes")];
-    for (const row of rows) {
-      const mtime = Number(row.mtime);
-      const atime = Number(row.atime) || mtime;
-      const kind = inodeKindFromCode(Number(row.kind));
-      if (row.ino === null || row.ino === undefined) {
-        throw new Error(`[sqlite-vfs] inode ${String(row.path)} has no ino after migration`);
+  /** The cache's loader: the inode at `path`, read from SQLite. */
+  private loadInode(path: string): INode | undefined {
+    const row = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path = ?`, path)][0];
+    return row === undefined ? undefined : this.inodeFromRow(row);
+  }
+
+  private inodeFromRow(row: SqlRow): INode {
+    const path = String(row.path);
+    const mtime = Number(row.mtime);
+    const kind = inodeKindFromCode(Number(row.kind));
+    return {
+      path,
+      parentPath: String(row.parent_path),
+      kind,
+      isDir: kind === 'directory',
+      size: Number(row.size),
+      atime: Number(row.atime) || mtime,
+      mtime,
+      // Rows written before ctime existed report their last known change.
+      ctime: Number(row.ctime) || mtime,
+      mode: Number(row.mode),
+      uid: Number(row.uid),
+      gid: Number(row.gid),
+      chunkCount: Number(row.chunk_count),
+      contentId: row.content_id === null ? null : String(row.content_id),
+      ino: row.ino === null || row.ino === undefined ? this.repairIno(path) : Number(row.ino),
+    };
+  }
+
+  /**
+   * Number a row that has no ino. Every writer since the column existed
+   * assigns one, and the backfill numbered every row older than the column,
+   * so only code from before the column, run against this database after a
+   * newer one had opened it, leaves one behind. The number comes from the
+   * allocator, which is past every ino in use, so it cannot collide.
+   */
+  private repairIno(path: string): number {
+    let ino = 0;
+    this.transactionSync(() => {
+      const row = [...this.sql.exec('SELECT ino FROM inodes WHERE path = ?', path)][0];
+      if (row !== undefined && row.ino !== null && row.ino !== undefined) {
+        ino = Number(row.ino);
+        return;
       }
-      const inode: INode = {
-        path: String(row.path),
-        parentPath: String(row.parent_path),
-        kind,
-        isDir: kind === 'directory',
-        size: Number(row.size),
-        atime,
-        mtime,
-        // Rows written before ctime existed report their last known change.
-        ctime: Number(row.ctime) || mtime,
-        mode: Number(row.mode),
-        uid: Number(row.uid),
-        gid: Number(row.gid),
-        chunkCount: Number(row.chunk_count),
-        contentId: row.content_id === null ? null : String(row.content_id),
-        ino: Number(row.ino),
-      };
-      this.inodes.set(inode.path, inode);
-      this._addToChildrenIndex(inode.parentPath, inode.path);
-      // Bootstrap the counters (B3).
-      if (inode.isDir) this._totalDirs++;
-      else { this._totalFiles++; this._usedBytes += inode.size; }
-    }
+      ino = this.nextIno();
+      this.sql.exec('UPDATE inodes SET ino = ? WHERE path = ? AND ino IS NULL', ino, path);
+    });
+    return ino;
   }
 
-  private _addToChildrenIndex(parentPath: string, childPath: string): void {
-    let set = this.children.get(parentPath);
-    if (!set) { set = new Set(); this.children.set(parentPath, set); }
-    set.add(childPath);
+  /**
+   * Load the running counters with one aggregate over `inodes`, the first
+   * time anything reads them. Opening does not pay for it; the first stats
+   * read does, once.
+   */
+  private ensureCounters(): void {
+    if (this._countersLoaded) return;
+    const durable = this.aggregateCounters();
+    this._totalFiles = durable.files;
+    this._totalDirs = durable.dirs;
+    this._usedBytes = durable.bytes;
+    this._countersLoaded = true;
   }
 
-  private _removeFromChildrenIndex(parentPath: string, childPath: string): void {
-    const set = this.children.get(parentPath);
-    if (set) {
-      set.delete(childPath);
-      if (set.size === 0) this.children.delete(parentPath);
-    }
+  /** Every non-directory counts as a file, symlinks included, as it always has. */
+  private aggregateCounters(): { files: number; dirs: number; bytes: number } {
+    const row = [...this.sql.exec(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(kind = ${INODE_KIND_DIRECTORY}), 0) AS dirs,
+              COALESCE(SUM(CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN 0 ELSE size END), 0) AS bytes
+       FROM inodes`,
+    )][0];
+    const dirs = Number(row?.dirs ?? 0);
+    return { files: Number(row?.total ?? 0) - dirs, dirs, bytes: Number(row?.bytes ?? 0) };
   }
 
   // ── Cache key ─────────────────────────────────────────────────────────
@@ -1438,7 +1611,7 @@ export class SqliteVFS {
     // Descriptions share the canonical inode object: a second descriptor
     // sees chmod/chown/utimes instantly, and unlink leaves every holder
     // pointing at the same retired inode rather than diverging copies.
-    const opened: { inode: INode; path: string | null; closed: boolean } = { inode: resolved.inode, path: resolved.path, closed: false };
+    const opened: OpenedNode = { inode: resolved.inode, path: resolved.path, closed: false };
     this.openNodes.add(opened);
     const current = (): INode => {
       if (opened.closed) throw vfsError('EBADF', path);
@@ -1942,9 +2115,11 @@ export class SqliteVFS {
 
   /**
    * Without a path: the global mutation clock. With a path: the clock
-   * value at the last mutation inside that path's subtree (0 if nothing
-   * under it changed in this DO lifetime). `revision('')` equals the
-   * global clock by construction (every mutation stamps all ancestors).
+   * value at the last mutation inside that path's subtree, or the revision
+   * floor if that is older than the revisions still held (0 if nothing under
+   * it changed in this DO lifetime and nothing has been dropped). Never less
+   * than the last mutation. `revision('')` equals the global clock by
+   * construction (every mutation stamps all ancestors).
    */
   revision(path?: string, cred?: VfsCred): number {
     if (path === undefined) return this._revision;
@@ -1952,9 +2127,13 @@ export class SqliteVFS {
     // after /tmp/x means its own file, so the counter must be that file's.
     const p = cred === undefined ? normalizeVfsPath(path) : this.storageKey(path, cred);
     if (p === '') return this._revision;
-    return this._pathRevisions.get(p) ?? 0;
+    return this.pathRevision(p);
   }
 
+  /** A storage key's revision: its own, or the floor once it was dropped. */
+  private pathRevision(key: string): number {
+    return this._pathRevisions.get(key) ?? this._revisionFloor;
+  }
 
   /**
    * Advance the clock once, stamp every path + its ancestors, and record
@@ -1989,6 +2168,10 @@ export class SqliteVFS {
       let p = normalizeVfsPath(path);
       const mutated = p;
       while (p !== '') {
+        const stamped = this._pathRevisions.get(p);
+        // Stamped by this bump already, and so was every ancestor.
+        if (stamped === rev) break;
+        if (stamped === undefined) this._pathRevisionBytes += SqliteVFS.entryBytes(p);
         this._pathRevisions.set(p, rev);
         p = this.parentPath(p);
       }
@@ -1997,6 +2180,7 @@ export class SqliteVFS {
       const parent = this.parentPath(mutated);
       if (parent !== '') this._record(rev, parent);
     }
+    if (this._pathRevisionBytes > this.pathRevisionBudget) this.dropOldestPathRevisions();
     if (this._invalidationBytes <= SqliteVFS.INVALIDATION_LOG_MAX_BYTES) return;
     let dropped = 0;
     while (
@@ -2007,6 +2191,29 @@ export class SqliteVFS {
       dropped++;
     }
     if (dropped > 0) this._invalidations = this._invalidations.slice(dropped);
+  }
+
+  /**
+   * Drop every per-path revision at or below the oldest quarter's newest,
+   * and raise the floor to it. A quarter at a time, so the sort is paid once
+   * per quarter of the budget, not once per mutation.
+   *
+   * Everything at or below one revision goes together, and a directory is
+   * stamped whenever anything under it is, so it is never older than what it
+   * holds: a dropped directory takes everything under it along, and
+   * revision(dir) stays at or above the revision of every path under it.
+   */
+  private dropOldestPathRevisions(): void {
+    while (this._pathRevisionBytes > this.pathRevisionBudget) {
+      const stamps = Float64Array.from(this._pathRevisions.values()).sort();
+      const cutoff = stamps[Math.floor(stamps.length / 4)]!;
+      for (const [path, stamped] of this._pathRevisions) {
+        if (stamped > cutoff) continue;
+        this._pathRevisions.delete(path);
+        this._pathRevisionBytes -= SqliteVFS.entryBytes(path);
+      }
+      this._revisionFloor = Math.max(this._revisionFloor, cutoff);
+    }
   }
 
   /** UTF-16 payload plus a flat allowance for the entry object itself. */
@@ -2198,7 +2405,6 @@ export class SqliteVFS {
       ino,
     };
     this.inodes.set(path, inode);
-    this._addToChildrenIndex(pp, path);
     this._totalDirs++; // B3
     this.bumpRevision([path]);
     this.emitMutation('addDir', path);
@@ -3239,6 +3445,11 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
+    return this.statOf(inode);
+  }
+
+  /** A linked inode's stat, for `stat` and for the entries `list` reports. */
+  private statOf(inode: INode): VfsStat {
     return {
       dev: this.deviceId, ino: inode.ino, nlink: 1,
       type: inode.kind,
@@ -3357,7 +3568,9 @@ export class SqliteVFS {
    *
    * Ordered by path so `after` is a stable resume key across pages. Ordering
    * by anything else would let an insert during pagination shift entries
-   * across the page boundary and drop them.
+   * across the page boundary and drop them. The order is the path index's
+   * own, so a page is one range read of it: nothing is sorted, and nothing
+   * beyond the page is read.
    *
    * Access is checked per path against the caller's credential, and a path it
    * cannot reach is OMITTED rather than reported. Omission is the safe
@@ -3375,44 +3588,60 @@ export class SqliteVFS {
     const epoch = this._epoch;
     const rev = this._revision;
     const from = after === null || after === undefined ? '' : this.storageKey(after, cred);
-    // this.inodes is insertion-ordered, not path-ordered, so the sort is what
-    // makes `after` a resume key at all. Paid once per page against a map the
-    // DO already holds whole.
-    const paths: string[] = [];
-    for (const path of this.inodes.keys()) {
-      if (path === '' || path <= from) continue;
-      paths.push(path);
-    }
-    paths.sort();
-
     const entries: VfsListEntry[] = [];
-    let next: string | null = null;
-    for (const path of paths) {
-      if (entries.length >= limit) { next = entries[entries.length - 1]!.path; break; }
-      const inode = this.inodes.get(path);
-      if (!inode) continue;
-      try {
-        this.checkAccess(path, 0, cred, { followLeaf: false });
-      } catch {
-        continue;
+    let cursor = from;
+    // Rows arrive in path order, so a run of entries in one directory shares
+    // one check of the directories above it.
+    let checkedParent: string | null = null;
+    let parentReachable = false;
+    for (;;) {
+      const rows = [...this.sql.exec(
+        `SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path > ? ORDER BY path LIMIT ?`,
+        cursor,
+        limit + 1,
+      )];
+      for (const row of rows) {
+        if (entries.length >= limit) return { epoch, rev, entries, next: entries[entries.length - 1]!.path };
+        const path = String(row.path);
+        // Reported in the caller's OWN path space. Enumerating raw storage keys
+        // would name a private root the caller cannot address and does not know
+        // it has, and a caller feeding such a path back would be asking about
+        // someone else's tree. `null` means the path has no name for this
+        // caller, which is the same OMIT the access check below performs.
+        const logical = this.logicalPath(path, cred);
+        if (logical === null) continue;
+        // What checkAccess(path, 0, cred, { followLeaf: false }) asks of an
+        // entry that exists: every directory above it is traversable.
+        const parent = this.parentPath(path);
+        if (parent !== checkedParent) {
+          checkedParent = parent;
+          try {
+            if (parent !== '') this.checkAccess(parent, 0o1, cred);
+            parentReachable = true;
+          } catch {
+            parentReachable = false;
+          }
+        }
+        if (!parentReachable) continue;
+        // Read from the row rather than through the cache: one page of an
+        // enumeration says nothing about which inodes will be used next.
+        const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
+        // The storage key's revision, the one revision() reports for the name
+        // this entry is listed under: a confined caller's /tmp/x is its own
+        // file, not the shared one at the same name.
+        const pathRevision = this.pathRevision(path);
+        entries.push({
+          path: logical,
+          kind: inode.kind,
+          size: inode.size,
+          rev: pathRevision,
+          stat: { ...this.statOf(inode), revision: pathRevision },
+          ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
+        });
       }
-      // Reported in the caller's OWN path space. Enumerating raw storage keys
-      // would name a private root the caller cannot address and does not know
-      // it has, and a caller feeding such a path back would be asking about
-      // someone else's tree. `null` means the path has no name for this
-      // caller, which is the same OMIT the access check above performs.
-      const logical = this.logicalPath(path, cred);
-      if (logical === null) continue;
-      entries.push({
-        path: logical,
-        kind: inode.kind,
-        size: inode.size,
-        rev: this._pathRevisions.get(logical) ?? 0,
-        stat: { ...this.stat(logical, cred, false), revision: this._pathRevisions.get(logical) ?? 0 },
-        ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
-      });
+      if (rows.length <= limit) return { epoch, rev, entries, next: null };
+      cursor = String(rows[rows.length - 1]!.path);
     }
-    return { epoch, rev, entries, next };
   }
 
   private readdir(path: string, cred: VfsCred): { name: string; type: VfsInodeKind }[] {
@@ -3420,50 +3649,18 @@ export class SqliteVFS {
     const resolved = np ? this.checkAccess(np, 0o4, cred) : { path: '', inode: undefined };
     const inode = resolved.inode;
     if (inode && inode.kind !== 'directory') throw vfsError('ENOTDIR', path);
-    const kids = this.children.get(np);
-    if (!kids) {
-      // W2.5b diagnostic: empty children-set for a directory we expected
-      // to be populated.
-      if (installPipelineDiagEnabled()) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          '[sqlite-vfs/W2.5b] readdir miss path=' + np +
-          ' kidsUndefined=true inodeExists=' + this.inodes.has(np),
-        );
-      }
-      return [];
-    }
+    // One seek of the parent index. The entries are read, not cached: naming
+    // a directory's entries says nothing about which of them will be used.
     const results: { name: string; type: VfsInodeKind }[] = [];
-    for (const childPath of kids) {
-      const inode = this.inodes.get(childPath);
-      if (inode) {
-        const name = inode.path.split('/').pop()!;
-        results.push({ name, type: inode.kind });
-      }
+    for (const row of this.sql.exec('SELECT path, kind FROM inodes WHERE parent_path = ?', np)) {
+      const child = String(row.path);
+      results.push({ name: child.slice(child.lastIndexOf('/') + 1), type: inodeKindFromCode(Number(row.kind)) });
     }
-    // W2.5b diagnostic: if children-set has entries but readdir returns
-    // fewer (some entries' inodes are missing from this.inodes), log it.
-    // This distinguishes (a) "children index broken" from (b) "inodes
-    // map lost entries".
-    if (
-      installPipelineDiagEnabled() &&
-      kids.size !== results.length
-    ) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        '[sqlite-vfs/W2.5b] readdir size mismatch path=' + np +
-        ' kidsSize=' + kids.size +
-        ' resultsLength=' + results.length +
-        ' missingInodes=' + (kids.size - results.length),
-      );
-    }
-    // W2.6a: sort lexicographically. Set-insertion order tracks
-    // writeBatch arrival order, which under concurrent npm install
-    // (pLimit=3) is non-deterministic. Sorting here removes a class
-    // of "works on Tuesday" bugs in any consumer that walks readdir
-    // results — buildPrefetchBundle, buildManifest, the kernel-VFS
-    // mount layer, etc. Cost is O(n log n) on dirs that already cost
-    // O(n) to assemble; negligible for typical npm package depths.
+    // W2.6a: sort lexicographically, by UTF-16 code unit. Consumers that
+    // walk readdir results — buildPrefetchBundle, buildManifest, the
+    // kernel-VFS mount layer — rely on a stable order, and this is the one
+    // they have always had. SQLite's byte order is not it: the two disagree
+    // on names outside the Basic Multilingual Plane.
     results.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     return results;
   }
@@ -3487,9 +3684,8 @@ export class SqliteVFS {
     const inode = this.inodes.get(np);
     if (!inode) throw vfsError('ENOENT', path);
     this.checkStickyParentMutation(resolved.path, inode, cred);
-    // Check if empty using children index (O(1) instead of O(N))
-    const kids = this.children.get(np);
-    if (kids && kids.size > 0) {
+    // Empty is one seek of the parent index.
+    if ([...this.sql.exec('SELECT 1 FROM inodes WHERE parent_path = ? LIMIT 1', np)].length > 0) {
       throw vfsError('ENOTEMPTY', path);
     }
     if (!inode.isDir) throw vfsError('ENOTDIR', path);
@@ -3508,9 +3704,10 @@ export class SqliteVFS {
    * together instead, closed on the entry before the one that would overflow
    * it, and the removal owes one maintenance pass rather than one per group.
    *
-   * Removal is group-atomic rather than path-atomic. Because entries go
-   * deepest first, every committed prefix is a consistent smaller tree —
-   * exactly the state an interrupted per-entry walk left behind.
+   * Removal is group-atomic rather than path-atomic. Because every entry goes
+   * before the directory holding it, every committed prefix is a consistent
+   * smaller tree — exactly the state an interrupted per-entry walk left
+   * behind. The subtree is read a page at a time, never held whole.
    */
   private removeRecursive(path: string, cred: VfsCred): number {
     this.assertMutationsAllowed([path]);
@@ -3519,14 +3716,12 @@ export class SqliteVFS {
     this.checkParentAccess(resolved.path, cred);
     this.checkStickyParentMutation(resolved.path, resolved.inode, cred);
 
-    const removable = this.collectSubtreeInodes([resolved.path]);
     // The directories the recursive walk used to enumerate are exactly the
     // directory inodes of the subtree, and enumerating one needed read
     // permission. Answering from the index would otherwise skip that check.
-    for (const inode of removable) {
-      if (inode.isDir && !this.accessInode(inode, 0o4, cred)) {
-        throw vfsError('EACCES', inode.path);
-      }
+    // All of them pass before the first group commits.
+    for (const inode of this.subtreeDescending(resolved.path, resolved.inode, true)) {
+      if (!this.accessInode(inode, 0o4, cred)) throw vfsError('EACCES', inode.path);
     }
 
     let removed = 0;
@@ -3543,7 +3738,7 @@ export class SqliteVFS {
       this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
       removed += paths.length;
     };
-    for (const inode of removable) {
+    for (const inode of this.subtreeDescending(resolved.path, resolved.inode, false)) {
       // Close the group before the entry that would overflow it. The estimate
       // only picks the boundary — the commit asserts the bound it writes.
       if (budget.wouldExceedDeletion(!inode.isDir) !== null) flush();
@@ -3554,6 +3749,37 @@ export class SqliteVFS {
     flush();
     this.runContentMaintenanceSafely(1);
     return removed;
+  }
+
+  /**
+   * The inodes under `root`, then `root` itself, in descending path order, a
+   * bounded page at a time. A path under a directory extends the directory's
+   * path, so it sorts after it: every entry comes before the directory that
+   * holds it. Each page starts below the last path read, so removing what
+   * was already yielded does not disturb the walk.
+   */
+  private *subtreeDescending(root: string, rootInode: INode, directoriesOnly: boolean): Generator<INode> {
+    const range = subtreeRange(root);
+    const kind = directoriesOnly ? ` AND kind = ${INODE_KIND_DIRECTORY}` : '';
+    let below = range.upper;
+    for (;;) {
+      const rows = [...(below === null
+        ? this.sql.exec(
+          `SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path > ?${kind} ORDER BY path DESC LIMIT ?`,
+          range.lower,
+          SUBTREE_PAGE_ROWS,
+        )
+        : this.sql.exec(
+          `SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path > ? AND path < ?${kind} ORDER BY path DESC LIMIT ?`,
+          range.lower,
+          below,
+          SUBTREE_PAGE_ROWS,
+        ))];
+      for (const row of rows) yield this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row);
+      if (rows.length < SUBTREE_PAGE_ROWS) break;
+      below = String(rows[rows.length - 1]!.path);
+    }
+    if (!directoriesOnly || rootInode.isDir) yield rootInode;
   }
 
   private rename(oldPath: string, newPath: string, cred: VfsCred): void {
@@ -3614,7 +3840,7 @@ export class SqliteVFS {
       moving.map((entry) => newPath + entry.path.substring(oldPath.length)),
     );
     for (const existing of this.collectSubtreeInodes([newPath])) {
-      if (movingPaths.has(existing.path) || existing === destInode) continue;
+      if (movingPaths.has(existing.path) || existing.path === destInode?.path) continue;
       if (targetPaths.has(existing.path) || existing.path.startsWith(`${newPath}/`)) {
         throw new Error(`ENOTEMPTY: rename target subtree conflicts at ${existing.path}`);
       }
@@ -3709,7 +3935,6 @@ export class SqliteVFS {
     if (destInode) {
       for (const opened of this.openNodes) if (opened.path === destInode.path) opened.path = null;
       destInode.ctime = this.now();
-      this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
       this.inodes.delete(destInode.path);
       this._totalFiles--;
       this._usedBytes -= destInode.size;
@@ -3724,7 +3949,6 @@ export class SqliteVFS {
         ctime: stored.ctime!,
       };
       this.inodes.set(moved.path, moved);
-      this._addToChildrenIndex(moved.parentPath, moved.path);
       if (moved.isDir) this._totalDirs++;
       else { this._totalFiles++; this._usedBytes += moved.size; }
     }
@@ -3734,22 +3958,27 @@ export class SqliteVFS {
     // Deepest-first, so every committed prefix leaves a smaller consistent
     // tree behind — the same property the batched removal relies on. No
     // content is collected here: the destination inodes published above
-    // reference it, so these paths orphan nothing.
+    // reference it, so these paths orphan nothing. Each group leaves the
+    // cache and the counters as it commits, so a group that fails leaves
+    // them describing the prefix that did.
     builder = new TransactionPlanBuilder();
-    for (const entry of retiring) {
-      if (builder.wouldExceedDeletion(false) !== null) {
-        commit(builder);
-        builder = new TransactionPlanBuilder();
+    let retired: INode[] = [];
+    const retire = (): void => {
+      commit(builder);
+      for (const entry of retired) {
+        this.inodes.delete(entry.path);
+        if (entry.isDir) this._totalDirs--;
+        else { this._totalFiles--; this._usedBytes -= entry.size; }
       }
-      builder.addDeletedPath(entry.path, entry);
-    }
-    commit(builder);
+      retired = [];
+      builder = new TransactionPlanBuilder();
+    };
     for (const entry of retiring) {
-      this._removeFromChildrenIndex(entry.parentPath, entry.path);
-      this.inodes.delete(entry.path);
-      if (entry.isDir) this._totalDirs--;
-      else { this._totalFiles--; this._usedBytes -= entry.size; }
+      if (builder.wouldExceedDeletion(false) !== null) retire();
+      builder.addDeletedPath(entry.path, entry);
+      retired.push(entry);
     }
+    retire();
 
     this.bumpRevision([...touchedPaths]);
     this.emitMutation('rename', newPath, oldPath);
@@ -4467,8 +4696,9 @@ export class SqliteVFS {
    * The callback may read its writes. Revisions and events publish only on
    * commit, once for the combined mutation. Existing credential checks apply.
    *
-   * Inodes are an always-resident cache (absence means ENOENT), so rollback
-   * discards cached chunks and rebuilds metadata/children/counters from SQL.
+   * Rollback discards the cached chunks and inodes and unloads the counters,
+   * so every later read answers from SQLite, which is back at the committed
+   * state; open descriptions return to the rows they described before.
    * No inode snapshot or undo log is retained. Recovery failure is surfaced
    * with both errors; the embedder must discard this VFS in that case.
    */
@@ -4499,8 +4729,8 @@ export class SqliteVFS {
       this.evictAll();
       this.maintenancePending = maintenancePending;
       try {
-        this.loadInodes();
-        const byIdentity = new Map([...this.inodes.values()].map(inode => [inode.ino, inode]));
+        this.inodes.clear();
+        this._countersLoaded = false;
         for (const opened of this.openNodes) {
           const previous = openBefore.get(opened);
           if (!previous) {
@@ -4508,7 +4738,10 @@ export class SqliteVFS {
             this.openNodes.delete(opened);
             continue;
           }
-          opened.inode = byIdentity.get(previous.inode.ino) ?? previous.inode;
+          // The committed row the description named, as the object every other
+          // lookup of that path now shares.
+          const live = previous.path === null ? undefined : this.inodes.get(previous.path);
+          opened.inode = live !== undefined && live.ino === previous.inode.ino ? live : previous.inode;
           opened.path = previous.path;
         }
       } catch (reloadError) {
@@ -4541,13 +4774,24 @@ export class SqliteVFS {
     this.ctx.storage.transactionSync(callback);
   }
 
+  /**
+   * `priors`, when the caller has them, holds what stood at each of
+   * `plan.inodes`' paths before this transaction, in the same order.
+   */
   private executeTransactionPlan(
     plan: TransactionPlan,
     execution: TransactionExecution,
     onCommit?: () => void,
+    priors?: readonly (INode | undefined)[],
   ): void {
     const identities = new Map<StoredInodeEntry, number>();
     const committedAt = this.now();
+    // Identity is decided by the state before this transaction, read before
+    // it deletes anything: a path it both deletes and republishes keeps its
+    // number, as it did when every inode was resident.
+    const prior = priors ?? plan.inodes.map((inode) => (
+      inode.ino === undefined ? this.inodes.get(inode.path) : undefined
+    ));
     this.executeMeasuredTransaction(plan, execution, () => {
       for (const path of plan.deletedPaths) {
         this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
@@ -4568,7 +4812,8 @@ export class SqliteVFS {
         const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
         const placeholders = batch.map(() => INODE_ROW_PLACEHOLDERS).join(',');
         const values: unknown[] = [];
-        for (const inode of batch) {
+        for (let k = 0; k < batch.length; k++) {
+          const inode = batch[k]!;
           const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
             ? inode.atime
             : inode.mtime;
@@ -4576,7 +4821,7 @@ export class SqliteVFS {
           // existing row at this path keeps its number (write preserves
           // identity, unlink+recreate allocates fresh); anything else takes
           // the counter. The bump and the row share this transaction.
-          const ino = inode.ino ?? this.inodes.get(inode.path)?.ino ?? this.nextIno();
+          const ino = inode.ino ?? prior[i + k]?.ino ?? this.nextIno();
           identities.set(inode, ino);
           values.push(
             inode.path,
@@ -5148,8 +5393,12 @@ export class SqliteVFS {
     onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     const { payload, plan, deletedInodes } = prepared;
+    // What stood at each published path before this transaction. Read now,
+    // while it is still true: after the commit, a lookup finds the row the
+    // commit wrote.
+    const priors = plan.inodes.map((entry) => this.inodes.get(entry.path));
     try {
-      this.executeTransactionPlan(plan, execution, onCommit);
+      this.executeTransactionPlan(plan, execution, onCommit, priors);
     } catch (error) {
       console.error('[sqlite-vfs] writeBatch failed:', this.errorMessage(error));
       throw error;
@@ -5161,9 +5410,9 @@ export class SqliteVFS {
     this.cacheInvalidateBatch(plan.affectedPaths);
 
     // 4. Publish the recursive deletions, then inode replacements.
+    const deleted = new Set<string>();
     for (const inode of deletedInodes) {
-      this._removeFromChildrenIndex(inode.parentPath, inode.path);
-      this.children.delete(inode.path);
+      deleted.add(inode.path);
       this.inodes.delete(inode.path);
       if (inode.isDir) {
         this._totalDirs--;
@@ -5173,22 +5422,14 @@ export class SqliteVFS {
       }
     }
 
-    // Update in-memory inode tree + children index (outside transaction — fast).
-    //    B3: also maintain running counters in sync. For each payload entry,
-    //    compute the delta against any pre-existing inode at that path.
-    //
-    // OUTSIDE the `prior === undefined` guard. Pre-W2.5a, ~37 of 46 packages
-    // per `npm install fastify` accumulated inodes in SQL but never reached
-    // the in-memory `this.children` index because some path's `prior` was
-    // unexpectedly defined when the package's writeBatch arrived (root
-    // cause unidentified — see §4.2 diagnostic plan in W2.5-plan.md).
-    // `_addToChildrenIndex` uses Set.add so repeated calls are idempotent;
-    // gating it on `prior === undefined` was the bug. Counters remain
-    // gated correctly so they don't double-count.
-    const __diag = installPipelineDiagEnabled();
+    // B3: the running counters move by each published inode's delta against
+    // what it replaced: nothing, for a path this batch deleted first, and the
+    // earlier entry, for a path the batch publishes twice.
     const replacedPaths = new Set<string>();
-    for (const entry of plan.inodes) {
-      const prior = this.inodes.get(entry.path);
+    const published = new Map<string, INode>();
+    for (let index = 0; index < plan.inodes.length; index++) {
+      const entry = plan.inodes[index]!;
+      const prior = published.get(entry.path) ?? (deleted.has(entry.path) ? undefined : priors[index]);
       if (prior !== undefined) replacedPaths.add(entry.path);
       const atime = entry.atime !== undefined && Number.isFinite(entry.atime) ? entry.atime : entry.mtime;
       if (entry.ino === undefined) {
@@ -5210,30 +5451,8 @@ export class SqliteVFS {
         contentId: entry.contentId,
         ino: entry.ino,
       };
-      if (prior && prior.parentPath !== entry.parentPath) {
-        this._removeFromChildrenIndex(prior.parentPath, entry.path);
-      }
       this.inodes.set(entry.path, node);
-
-      // ALWAYS re-affirm the children-index entry. Idempotent.
-      this._addToChildrenIndex(entry.parentPath, entry.path);
-
-      // W2.5b diagnostic: log every "stale prior" case where we'd have
-      // skipped the index call pre-W2.5a. Reveals which paths were
-      // pre-populated in this.inodes by a code path other than the
-      // current writeBatch — H5a / H8 candidate.
-      if (__diag && prior !== undefined) {
-        const indexed = this.children.get(entry.parentPath)?.has(entry.path) ?? false;
-        // eslint-disable-next-line no-console
-        console.warn(
-          '[sqlite-vfs/W2.5b] stale-prior path=' + entry.path +
-          ' parent=' + entry.parentPath +
-          ' priorParent=' + prior.parentPath +
-          ' priorIsDir=' + prior.isDir +
-          ' entryIsDir=' + entry.isDir +
-          ' indexedBefore=' + indexed,
-        );
-      }
+      published.set(entry.path, node);
 
       // Counter delta — gated on prior so we don't double-count.
       if (prior === undefined) {
@@ -5285,28 +5504,37 @@ export class SqliteVFS {
   /**
    * Every inode at or under each root, deepest first.
    *
-   * The children index answers "what is under this prefix?" in the size of
-   * the subtree. The scan it replaces answered it in the size of the whole
-   * filesystem, and every mutation resolved its deletions twice — once to
-   * preflight the plan, once to commit it — so removing a tree of N entries
-   * one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
+   * The path index answers "what is under this prefix?" in the size of the
+   * subtree (subtreeRange). The scan it replaces answered it in the size of
+   * the whole filesystem, and every mutation resolved its deletions twice —
+   * once to preflight the plan, once to commit it — so removing a tree of N
+   * entries one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
    * 19,429-file tree, on the object's only thread.
+   *
+   * The subtree is held whole, so only callers that commit it whole use this:
+   * a batch's deletions and a rename. A removal pages (subtreeDescending).
    */
   private collectSubtreeInodes(roots: readonly string[]): INode[] {
     if (roots.length === 0) return [];
     const collected: INode[] = [];
     const visited = new Set<string>();
-    const frontier: string[] = [];
     for (const root of roots) {
-      frontier.push(root);
-      while (frontier.length > 0) {
-        const path = frontier.pop()!;
+      const range = subtreeRange(root);
+      const rows = [
+        ...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path = ?`, root),
+        ...(range.upper === null
+          ? this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path > ?`, range.lower)
+          : this.sql.exec(
+            `SELECT ${INODE_SELECT_COLUMNS} FROM inodes WHERE path > ? AND path < ?`,
+            range.lower,
+            range.upper,
+          )),
+      ];
+      for (const row of rows) {
+        const path = String(row.path);
         if (visited.has(path)) continue;
         visited.add(path);
-        const inode = this.inodes.get(path);
-        if (inode) collected.push(inode);
-        const children = this.children.get(path);
-        if (children) for (const child of children) frontier.push(child);
+        collected.push(this.inodes.peek(path) ?? this.inodeFromRow(row));
       }
     }
     // A child's path is always longer than its parent's, so length order
@@ -5359,29 +5587,28 @@ export class SqliteVFS {
   // ── Stats ─────────────────────────────────────────────────────────────
 
   /**
-   * Debug-only: recompute counters from scratch and return any drift
-   * against the running counters. Returns null if consistent. Used by
-   * the B3 runtime test; production paths should never call this
-   * (the whole point of B3 is avoiding the O(N) walk).
+   * Debug-only: aggregate the counters from the durable rows and return any
+   * drift against the running counters. Returns null if consistent. Used by
+   * the B3 runtime test; production paths should never call this (the whole
+   * point of B3 is avoiding the O(N) read). Counters no read has loaded yet
+   * are loaded from the same aggregate, so they cannot drift.
    */
   _verifyCounters(): null | { expected: { files: number; dirs: number; bytes: number }; actual: { files: number; dirs: number; bytes: number } } {
-    let f = 0, d = 0, b = 0;
-    for (const inode of this.inodes.values()) {
-      if (inode.isDir) d++;
-      else { f++; b += inode.size; }
-    }
-    if (f === this._totalFiles && d === this._totalDirs && b === this._usedBytes) return null;
+    this.ensureCounters();
+    const durable = this.aggregateCounters();
+    if (durable.files === this._totalFiles && durable.dirs === this._totalDirs && durable.bytes === this._usedBytes) return null;
     return {
-      expected: { files: f, dirs: d, bytes: b },
+      expected: { files: durable.files, dirs: durable.dirs, bytes: durable.bytes },
       actual: { files: this._totalFiles, dirs: this._totalDirs, bytes: this._usedBytes },
     };
   }
 
   getStats() {
     // B3: O(1) — read the running counters. Previously three passes
-    // over this.inodes (two filter + one for-of); at 50K inodes that
+    // over every inode (two filter + one for-of); at 50K inodes that
     // was 150K iterations per poll, every 5 s, serialising on the
     // input gate alongside shell keystrokes (AUDIT M10 / M-S8).
+    this.ensureCounters();
     const totalFiles = this._totalFiles;
     const totalDirs = this._totalDirs;
     const usedBytes = this._usedBytes;
@@ -5521,12 +5748,25 @@ export class SqliteVFS {
       // Event stats
       events: this.events.stats,
 
-      // INode stats
+      // INode stats. `total` counts the filesystem's inodes; `resident` is
+      // how many of them the cache holds, bounded by `cacheCapacity` plus
+      // those open descriptions hold.
       inodes: {
-        total: this.inodes.size,
+        total: totalFiles + totalDirs,
         files: totalFiles,
         directories: totalDirs,
-        memoryEstimate: this.inodes.size * 200, // ~200 bytes per entry
+        resident: this.inodes.size,
+        cacheCapacity: this.inodes.capacity,
+        memoryEstimate: this.inodes.size * 200, // ~200 bytes per resident entry
+      },
+
+      // Per-path revisions held, against their byte budget. A path without
+      // one reports `floor`.
+      pathRevisions: {
+        paths: this._pathRevisions.size,
+        bytes: this._pathRevisionBytes,
+        maxBytes: this.pathRevisionBudget,
+        floor: this._revisionFloor,
       },
     };
   }
@@ -5574,6 +5814,16 @@ function pathsOverlap(left: string, right: string): boolean {
     || left === right
     || left.startsWith(`${right}/`)
     || right.startsWith(`${left}/`);
+}
+
+/**
+ * The paths strictly under `root`, as a range of the path index: `lower` <
+ * path < `upper`. A path under `root` extends it with '/', and '0' is the
+ * character after '/', so no other path falls between `root/` and `root0`.
+ * Every path is under the empty root, which has no upper bound.
+ */
+function subtreeRange(root: string): { lower: string; upper: string | null } {
+  return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
 }
 
 function vfsError(code: string, message: string): Error & { code: string } {

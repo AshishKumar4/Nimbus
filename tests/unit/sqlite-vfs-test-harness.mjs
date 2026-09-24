@@ -139,3 +139,22 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
     },
   };
 }
+
+/**
+ * Statements recorded since `from` whose query plan reads the whole `inodes`
+ * table, or a whole index of it, rather than seeking. Every such statement
+ * costs the size of the filesystem, whatever it was asked about. A bare
+ * `SEARCH inodes`, with no index named, is a MIN/MAX over an unindexed
+ * column: a scan by another name.
+ */
+export function inodeTableScans(harness, from = 0) {
+  const scans = [];
+  for (const statement of harness.statements.slice(from)) {
+    if (!/\binodes\b/.test(statement.sql)) continue;
+    for (const step of harness.db.query(`EXPLAIN QUERY PLAN ${statement.sql}`).all(...statement.params)) {
+      const detail = String(step.detail);
+      if (/^SCAN inodes\b/.test(detail) || detail === 'SEARCH inodes') scans.push(`${detail}: ${statement.sql}`);
+    }
+  }
+  return scans;
+}

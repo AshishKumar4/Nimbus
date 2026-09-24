@@ -18,10 +18,13 @@ import {
 } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now, so _verifyCounters judges how every later
+  // mutation maintained them rather than a fresh aggregate.
+  rawVfs.getStats();
   return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
@@ -123,29 +126,17 @@ function counters(rawVfs) {
 // Resolving what is under a path must cost the subtree, not the filesystem.
 // Deleting one entry at a time from a whole-inode scan made removing a tree of
 // N entries O(N²); at 19,429 files that was ~190 million comparisons on the
-// object's only thread. Counting iterations is the only way to see it — the
-// span is synchronous, and `Date.now()` does not advance across it.
+// object's only thread. The span is synchronous and `Date.now()` does not
+// advance across it, so the evidence is the query plan: nothing the removal
+// asks of SQLite reads the whole inode table.
 {
-  const { rawVfs, vfs } = openVfs();
+  const { harness, vfs } = openVfs();
   seedTree(vfs, 'big', 40, 20); // 40 × (2 dirs + 20 files) + root = 881 entries
   seedTree(vfs, 'small', 1, 4); // the tree actually removed: 7 entries
 
-  let walked = 0;
-  const inodes = rawVfs.inodes;
-  const whole = new Set(['values', 'keys', 'entries', Symbol.iterator]);
-  rawVfs.inodes = new Proxy(inodes, {
-    get(target, property) {
-      if (whole.has(property)) walked++;
-      const value = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  try {
-    assert.equal(vfs.removeRecursive('small'), 7);
-  } finally {
-    rawVfs.inodes = inodes;
-  }
-  assert.equal(walked, 0, 'removing a subtree walked the whole inode table');
+  const from = harness.statements.length;
+  assert.equal(vfs.removeRecursive('small'), 7);
+  assert.deepEqual(inodeTableScans(harness, from), [], 'removing a subtree read the whole inode table');
   assert.equal(vfs.exists('big/pkg-39/lib/file-19.js'), true);
 }
 

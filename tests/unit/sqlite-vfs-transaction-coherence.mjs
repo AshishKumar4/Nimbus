@@ -9,6 +9,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 function open() {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now, so _verifyCounters judges how every later
+  // mutation maintained them rather than a fresh aggregate.
+  raw.getStats();
   return { harness, raw, vfs: raw.as(CRED_KERNEL) };
 }
 
@@ -173,9 +176,11 @@ for (const [name, mutate] of [
 }
 
 // Recovery must preserve both errors, never mask the transaction failure.
+// What recovery reads back is the inode each open description returns to.
 {
   const { harness, raw, vfs } = open();
   vfs.writeFile('affected', 'before recovery failure');
+  const held = raw.openDescription('affected', CRED_KERNEL, { read: true, write: false });
   const fault = new Error('host transaction failed');
   const reloadFault = new Error('inode reload failed');
   assert.throws(() => raw.withTransaction(() => {
@@ -190,6 +195,7 @@ for (const [name, mutate] of [
     return true;
   });
   harness.clearFault();
+  held.close();
   assert.equal(new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL).readFileString('affected'), 'before recovery failure');
   harness.db.close();
 }

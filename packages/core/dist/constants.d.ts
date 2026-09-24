@@ -19,6 +19,7 @@ export declare const OPENCODE_VERSION = "1.16.2";
 export declare const LRU_MAX_ENTRIES = 512;
 export declare const BATCH_SIZE = 64;
 export declare const VFS_CAPACITY: number;
+export declare const INODE_CACHE_MAX_ENTRIES = 65536;
 export declare const FS_READ_BATCH_PATH_LIMIT = 1024;
 export declare const FS_READ_BATCH_REQUEST_BYTES: number;
 export declare const FS_LIST_PAGE_LIMIT = 8192;

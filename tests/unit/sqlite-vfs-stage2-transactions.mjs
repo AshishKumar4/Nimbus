@@ -19,6 +19,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 function openVfs() {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now: probes below read stats from inside a
+  // statement, where the first read's aggregate would re-enter them.
+  rawVfs.getStats();
   return {
     harness,
     rawVfs,
@@ -103,7 +106,12 @@ function assertBounded(stats) {
     chunks: chunks('over-bytes.bin', over),
   }), 'blobBytes');
   assert.equal(harness.transactionCount, before.transactions);
-  assert.equal(harness.statementCount, before.statements);
+  // Refused before any side effect: it may look up what exists, and it
+  // writes nothing.
+  assert.deepEqual(
+    harness.statements.slice(before.statements).filter((statement) => !/^\s*SELECT\b/i.test(statement.sql)),
+    [],
+  );
   assert.equal(vfs.revision(), before.revision);
   assert.equal(vfs.exists('over-bytes.bin'), false);
   assert.deepEqual(harness.sql.exec("SELECT path FROM inodes WHERE path = 'over-bytes.bin'"), []);
