@@ -2,6 +2,7 @@ import { VFSError, ErrorCode } from '../types.js';
 import { encode } from '../../../utils/encoding.js';
 export class ProcProvider {
     generators = new Map();
+    cred;
     constructor() {
         this.generators.set('cpuinfo', () => {
             const cores = typeof navigator !== 'undefined'
@@ -49,6 +50,19 @@ export class ProcProvider {
             return `Lifo 1.0.0 (${ua})\n`;
         });
     }
+    /** Add or replace `/proc/<name>`. */
+    register(name, generator) {
+        this.generators.set(name, generator);
+    }
+    /** The same files, generated for `cred`; shares the generator table. */
+    as(cred) {
+        const view = Object.create(this);
+        view.cred = cred;
+        return view;
+    }
+    describeMount() {
+        return { source: 'proc', type: 'proc', options: ['ro'] };
+    }
     isNetPath(subpath) {
         return subpath === '/net' || subpath === '/net/info';
     }
@@ -77,7 +91,7 @@ export class ProcProvider {
         if (!gen) {
             throw new VFSError(ErrorCode.ENOENT, `'/proc${subpath}': no such file`);
         }
-        return gen();
+        return gen(this.cred);
     }
     readFile(subpath) {
         return encode(this.readFileString(subpath));

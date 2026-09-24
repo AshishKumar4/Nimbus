@@ -87,6 +87,29 @@ published independently in the `@nimbus-sh` npm scope.
   the index marks such an entry whose file no longer matches it, so a later
   write cannot hide the change.
 
+### Mounts: df, mount, /proc/mounts
+
+- `NimbusFilesystemAuthority` gains an optional `mounts(cred)` listing of
+  `NimbusMountEntry` (`mountPoint`, `source`, `type`, `options`, async
+  `usage()` giving `{ size, used, available }` bytes or `null`).
+  `SqliteFilesystemAuthority` derives it from the kernel mount table: the
+  SQLite directories are one `/` entry, `/proc`, `/dev` and embedder kernel
+  mounts follow, described by the provider's optional `describeMount()`. A
+  wrapper adds its own mounts by overriding `mounts` and calling `super`.
+- The `/` entry's numbers are real: size is the Durable Object storage limit
+  (10,000,000,000 bytes), used is the file bytes stored, available is the
+  limit less `ctx.storage.sql.databaseSize` (less the stored bytes on a host
+  without it). `getStats().capacityBytes` and `stat -f` use the same limit;
+  they used 10 GiB.
+- One `df`, for hosted and local workspaces, reads the listing in GNU
+  coreutils' format, with `-a`, `-h`, `-T`, `-k` and `df FILE...` (the mount
+  a path lives on, by longest prefix). The hosted `df` printed one `sqlite`
+  row plus cache and process lines; the local one printed a fixed 256 MB
+  `vfs` after walking every file.
+- `mount` lists the same table in util-linux's format (`-t` filters by type);
+  it does not mount. `/proc/mounts` lists it in the kernel's format, for the
+  reading process's credential.
+
 ### VFS
 
 - Opening a filesystem no longer reads its inodes. `SqliteVFS` used to load

@@ -53,6 +53,9 @@ const DEVICES = new Map([
     ['tty', { unbounded: false, write: discard }],
 ]);
 export class DevProvider {
+    describeMount() {
+        return { source: 'devtmpfs', type: 'devtmpfs', options: ['rw'] };
+    }
     norm(subpath) {
         return subpath.replace(/^\/+/, '').replace(/\/+$/, '');
     }

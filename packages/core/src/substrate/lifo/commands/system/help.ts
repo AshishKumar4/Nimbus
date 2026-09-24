@@ -11,7 +11,7 @@ const CATEGORIES: Record<string, string[]> = {
   'Shell builtins': BUILTINS,
   'File system': [
     'ls', 'cat', 'mkdir', 'rm', 'cp', 'mv', 'touch', 'find', 'tree',
-    'stat', 'ln', 'du', 'df', 'chmod', 'file', 'rmdir', 'realpath',
+    'stat', 'ln', 'du', 'df', 'mount', 'chmod', 'file', 'rmdir', 'realpath',
     'basename', 'dirname', 'mktemp', 'chown',
   ],
   'Text processing': [

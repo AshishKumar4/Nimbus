@@ -47,7 +47,6 @@ export function createDefaultRegistry() {
     registry.registerLazy('stat', () => import('./fs/stat.js'));
     registry.registerLazy('ln', () => import('./fs/ln.js'));
     registry.registerLazy('du', () => import('./fs/du.js'));
-    registry.registerLazy('df', () => import('./fs/df.js'));
     registry.registerLazy('chmod', () => import('./fs/chmod.js'));
     registry.registerLazy('file', () => import('./fs/file.js'));
     // Text processing

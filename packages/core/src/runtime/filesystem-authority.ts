@@ -1,4 +1,4 @@
-import type { SqliteVFS, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { SqliteVFSProvider, type SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -7,6 +7,7 @@ import {
   type NimbusFilesystemAuthority,
   type NimbusFilesystemBinding,
   type NimbusHostFilesystemLease,
+  type NimbusMountEntry,
   type RuntimeFileHandle,
   type RuntimeFsBridge,
   type RuntimeFsPath,
@@ -327,6 +328,30 @@ export class SqliteFilesystemAuthority implements NimbusFilesystemAuthority {
   async revokeAppendWriter(pid: number, writerId: string): Promise<void> { this.vfs.revokeAppendWriter(pid, writerId); }
   async revokeAppendWriters(pid: number): Promise<void> { this.vfs.revokeAppendWriters(pid); }
   async revokeAppendWritersThrough(maxPid: number): Promise<void> { this.vfs.revokeAppendWritersThrough(maxPid); }
+
+  /**
+   * The kernel's mount table. Its SQLite directories are one store, listed
+   * once as `/` (numbers: {@link SqliteVFS.storageUsage}); every other kernel
+   * mount (/proc, /dev, an embedder's) as its provider describes it.
+   */
+  mounts(_cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
+    const vfs = this.vfs;
+    const entries: NimbusMountEntry[] = [
+      { mountPoint: '/', source: 'nimbus', type: 'nimbus-sqlite', options: ['rw'], usage: async () => vfs.storageUsage() },
+    ];
+    for (const { path, provider } of this.kernel?.mountTable() ?? []) {
+      if (provider instanceof SqliteVFSProvider) continue;
+      const described = provider.describeMount?.();
+      entries.push({
+        mountPoint: path,
+        source: described?.source ?? 'none',
+        type: described?.type ?? 'kernel',
+        options: described?.options,
+        usage: async () => (await described?.usage?.()) ?? null,
+      });
+    }
+    return entries;
+  }
 
   private closeScope(scope: SqliteDescriptorScope): void {
     if (scope.closed) return;
