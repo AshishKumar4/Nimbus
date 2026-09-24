@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "231a7f8b12f8e4b406f155b5e1cfa9667ca793555da2819394b09e2cba85c521",
+  "fingerprint": "d302b58d2ae09186d5490f001650ab5dc9deeb11d44832d9e9fdce04fc6c75de",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -940,7 +940,7 @@
     "packages/core/dist/workspace/supervisor-op.d.ts.map": "fe8946d94983982d831e8e1f5575b2b36ca1e0fcbb4bddf05aa84ff8fde143a1",
     "packages/core/dist/workspace/supervisor-op.js": "af599fe5dca7ed6d786c6703eb3295e7702abf9710fe944f265670d7c5c8f8cd",
     "packages/core/package.json": "bc53c603c57c2494e32566bb7d7a5ed17ae72444a9c5042212251f6e3e585252",
-    "packages/core/scripts/check-runtime-packages.mjs": "609035cf8d54cf7f29ce62ead9cc5932ff41950da828786bc3d0d48a3bbfdae9",
+    "packages/core/scripts/check-runtime-packages.mjs": "0820165ac164121725d7ea042c41909e486360f2fe4bfce2d5f19279ff9c00e5",
     "packages/core/src/_shared/ai-egress.ts": "d44aa6cebc8a61218cc9067f6c74003110ffb02530c5f842d36d497b59f60ff8",
     "packages/core/src/_shared/byte-stream.ts": "21df7038a653460c45901a3a70af26a0baa00226eb58164a5bf245ee1c610538",
     "packages/core/src/_shared/bytes.ts": "a63447a99752a1a48dbd71e228a266be16fc1749fffdc49867c19cc24aeddb3e",
@@ -1968,7 +1968,7 @@
     "packages/worker/scripts/bundle-opencode.mjs": "cfc4f730159ea7f1dd4592280eb05cd444868d317ff7a4d0ef078ee562aad521",
     "packages/worker/scripts/bundle-plugin-react.mjs": "fe16668909e911b4ad06e85b9b33545abb7803a200e0a6c4abb4b8a7fbd4836e",
     "packages/worker/scripts/bundle-real-vite.mjs": "9dec37042e380a0b5f191b8a39bffa58c7fa4a7e8b9eb44d6cc7045bed17ee08",
-    "packages/worker/scripts/bundle-runtime.mjs": "67884317e68042a2a4051095139102225a532b78e1baa839221ba4b00f969ce7",
+    "packages/worker/scripts/bundle-runtime.mjs": "ace72656dd71a8aed3043792c026afd2f7dfae90502d1a1399de89d237adf8cd",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "f5a7299e50c572a6f567a9bc6619f28d7d26af223600c557eff6865a99843f46",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "7e364d37acfd22db218e2f5717aa00a44c9e5d20d61ad96cc45ced67e9a17849",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",

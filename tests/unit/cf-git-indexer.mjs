@@ -25,22 +25,30 @@ const patchPath = resolve(
 );
 const fixturePath = resolve(repoRoot, 'tests/fixtures/cf-git-indexer/real.pack');
 const temporaryPaths = [];
+// Top-level setup below can fail before the cases' try: the exit hook removes what it staged.
+process.on('exit', () => {
+  for (const path of temporaryPaths.reverse()) rmSync(path, { force: true, recursive: true });
+});
 
 function pristineSourceFromPatch(source) {
+  // Called before the cases' try, so it removes its own directory, failed or not.
   const directory = mkdtempSync(join(tmpdir(), 'nimbus-cf-git-pristine-'));
-  temporaryPaths.push(directory);
-  writeFileSync(join(directory, 'index.js'), source);
-  const result = spawnSync(
-    'git',
-    ['apply', '--no-index', '--unidiff-zero', '--reverse', patchPath],
-    { cwd: directory, encoding: 'utf8' },
-  );
-  assert.equal(
-    result.status,
-    0,
-    `could not reconstruct pristine cf-git: ${result.stderr || result.stdout}`,
-  );
-  return readFileSync(join(directory, 'index.js'), 'utf8');
+  try {
+    writeFileSync(join(directory, 'index.js'), source);
+    const result = spawnSync(
+      'git',
+      ['apply', '--no-index', '--unidiff-zero', '--reverse', patchPath],
+      { cwd: directory, encoding: 'utf8' },
+    );
+    assert.equal(
+      result.status,
+      0,
+      `could not reconstruct pristine cf-git: ${result.stderr || result.stdout}`,
+    );
+    return readFileSync(join(directory, 'index.js'), 'utf8');
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 }
 
 function stageInternals(source, label) {
@@ -351,7 +359,7 @@ try {
     }
   }
 } finally {
-  for (const path of temporaryPaths.reverse()) rmSync(path, { force: true, recursive: true });
+  for (const path of temporaryPaths.splice(0).reverse()) rmSync(path, { force: true, recursive: true });
 }
 
 if (failures.length > 0) {

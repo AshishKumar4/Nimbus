@@ -41,6 +41,8 @@ const GIT_ENV = {
 };
 
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-git-match-'));
+// Setup before the try below can fail too: the exit hook removes the scratch tree however the test ends.
+process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = vfs.as(CRED_KERNEL);
