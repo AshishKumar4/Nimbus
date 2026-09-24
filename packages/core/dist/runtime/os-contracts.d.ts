@@ -142,7 +142,7 @@ export interface NimbusFilesystemAuthority {
 }
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -251,6 +251,15 @@ export interface RuntimeFsBridge {
         force?: boolean;
     }): Awaitable<void>;
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
+    /**
+     * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
+     * `-p`), returning the entries copied. Within one SQLite filesystem this
+     * copies inode rows, never bytes; across mounts it fails EXDEV and the
+     * caller copies entry by entry.
+     */
+    copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
+        preserve?: boolean;
+    }): Awaitable<number>;
     fstat(handleId: number): Awaitable<RuntimeVfsStat>;
     dup(handleId: number): Awaitable<RuntimeFileHandle>;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;
@@ -287,10 +296,27 @@ export interface RuntimeFsBridge {
  * process that caused it: a caller holding the revision its own write
  * produced keeps that cell, while a peer's later write to the same path
  * reports a higher revision and still invalidates.
+ *
+ * Without either flag an entry covers `path` alone. With one, it covers
+ * `path` and everything under it, and a reader applies the same rule to
+ * every cell there: a cell stamped at or above `rev`, or holding the
+ * reader's own unacknowledged bytes, stays, and every other one goes.
  */
 export interface VfsInvalidatedPath {
     path: string;
     rev: number;
+    /**
+     * Something under `path` that the caller may not see changed. `path` is
+     * the nearest directory above it that the caller may see, reported in its
+     * place so that no name reaches a caller that could not list it.
+     */
+    subtree?: true;
+    /**
+     * `path` is a directory that was removed, renamed away, or given another
+     * mode, owner or group, so what is held under it may be stale, or no
+     * longer the caller's to read.
+     */
+    structural?: true;
     /**
      * With {@link VfsAcquireOptions.namespace}: the path's stat (lstat, not
      * following a final symlink) at the answer's `rev`, or null when the
@@ -298,6 +324,8 @@ export interface VfsInvalidatedPath {
      */
     stat?: RuntimeVfsStat | null;
     linkTarget?: string;
+    /** With a stat, for a file: its content identity, as {@link VfsListEntry.contentKey}. */
+    contentKey?: string;
     /**
      * With {@link VfsAcquireOptions.push}: the file's bytes at the answer's
      * `rev`, for a regular file under one of the push roots. `bytesOmitted`
@@ -356,6 +384,8 @@ export interface VfsListEntry {
     rev: number;
     stat: RuntimeVfsStat;
     linkTarget?: string;
+    /** Files only: equal keys mean equal bytes (SqliteVFS.contentKey). */
+    contentKey?: string;
 }
 /**
  * One page of {@link RuntimeFsBridge.list}.

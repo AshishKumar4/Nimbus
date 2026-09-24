@@ -86,7 +86,7 @@ export interface SupervisorOpHost {
  *
  * An op absent here is not served, on any host.
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsRevision", "fsList", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay"];
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsRevision", "fsList", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -134,6 +134,7 @@ declare const NATIVE_OPS: {
     fsRealpath: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string>;
     fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsCopyTree: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<{
         root: string;
         owner: string;

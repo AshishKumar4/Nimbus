@@ -309,6 +309,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsCopyFile(...args) {
         return this._call(this._fsOp('fsCopyFile', args));
     }
+    async fsCopyTree(...args) {
+        return this._call(this._fsOp('fsCopyTree', args));
+    }
     async fsAcquireExclusiveMutation(...args) {
         return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
     }

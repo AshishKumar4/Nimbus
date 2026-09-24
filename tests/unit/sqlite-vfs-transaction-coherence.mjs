@@ -150,7 +150,11 @@ for (const [name, mutate] of [
     return 42;
   }), 42);
   assert.deepEqual(events, [['addDir', 'committed', false], ['add', 'committed', false]]);
-  assert.equal(vfs.revision(), revision + 1);
+  // One publication: the clock moves once, to the transaction's last
+  // generation, and every path it touched reports that one revision.
+  assert.ok(vfs.revision() > revision);
+  const published = raw.invalidatedSince(raw.epoch, revision);
+  assert.deepEqual(new Set(published.paths.map((entry) => entry.rev)), new Set([vfs.revision()]));
   assert.deepEqual(harness.sql.exec('SELECT path FROM host_index'), [{ path: 'new/file' }]);
   assert.equal(new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL).readFileString('new/file'), 'committed');
   harness.db.close();

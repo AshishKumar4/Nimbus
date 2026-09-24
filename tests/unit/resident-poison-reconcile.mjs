@@ -63,7 +63,8 @@ function loadStore() {
 // ── the authority ───────────────────────────────────────────────────────────
 
 const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+// No tombstones kept, so a deletion puts older cursors past the SQL answer.
+const rawVfs = new SqliteVFS(harness.sql, harness.ctx, undefined, { tombstoneRows: 0 });
 const kfs = rawVfs.as(CRED_KERNEL);
 const host = attachSupervisorOps({ sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
@@ -159,6 +160,10 @@ const PEER_BYTES = 'PEER-WROTE-THIS'.padEnd(FILE_BYTES, 'z');
 const CHURN = 'app/d0/f0.dat';
 for (let i = 0; i < 4_000; i++) kfs.writeFile(CHURN, `churn-${i}-`.padEnd(64, 'x'));
 kfs.writeFile(MOVED, PEER_BYTES);
+// Older than the log, a cursor is answered from rows and tombstones; one
+// deletion past the (empty) tombstone retention makes it unanswerable.
+kfs.writeFile('app/scratch', 'x');
+kfs.unlink('app/scratch');
 
 const heldCursor = cold.store.__residentCursor();
 const poisoned = await _rpcFsAcquire(host, heldCursor.epoch, heldCursor.rev);
@@ -219,11 +224,14 @@ assert.ok(
   `the reconcile must be more than 100x cheaper: ${keepBytes} B vs ${dropBytes} B`,
 );
 
-// ── a cross-epoch poison still takes the cold cache ─────────────────────────
+// ── a cross-epoch poison vouches by content, not by revision ────────────────
 //
-// Revisions from two incarnations are unrelated clocks, and after a restart an
-// untouched path lists at rev 0 — which would vouch for any stale row. The
-// comparison is refused there rather than trusted.
+// Revisions from two incarnations are unrelated clocks. A restart keeps the
+// database's incarnation (sqlite-vfs-durable-clock); a new one comes with a
+// new database or rotateIncarnation(), and the comparison is refused there
+// rather than trusted. Content keys are not a clock: equal keys are equal
+// bytes in any epoch, so a row whose key the new listing repeats is kept and
+// re-dated; a row whose content changed is rebuilt (resident-content-key).
 
 {
   // A fully populated store, so the sweep has real rows to reject — and one
@@ -234,6 +242,7 @@ assert.ok(
   assert.equal(store.__residentStats().files, FILES + 1);
 
   const restarted = new SqliteVFS(harness.sql, harness.ctx);
+  restarted.rotateIncarnation();
   const restartedHost = attachSupervisorOps({
     sqliteFs: restarted,
     processes: new SessionProcessSupervisor(),
@@ -246,7 +255,9 @@ assert.ok(
   };
   const result = await store.__residentSynchronizeFromSupervisor(supervisor);
   assert.equal(result.reconciled, false, 'revisions across epochs are not comparable');
-  assert.equal(result.dropped, FILES, 'so every row the authority vouches for is rebuilt');
+  assert.equal(result.rekeyed, FILES, 'a row whose content key is listed again is kept');
+  assert.equal(result.dropped, 0, 'so nothing is rebuilt');
+  assert.equal(result.filled, 0, 'and nothing is fetched');
   assert.equal(result.cursor.epoch, restarted.epoch, 'and the store re-dates to the new epoch');
   assert.equal(
     asText(store.__residentGet('app/d0/unflushed.txt')),

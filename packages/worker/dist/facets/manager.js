@@ -4120,7 +4120,7 @@ export class FacetManager {
         trace('static references');
         const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
         trace(`${refs.length} modules name paths; learned reads`);
-        const learned = await this._learnedReads(vfsState);
+        const learned = await this._learnedReads(vfsState, entry.cred);
         trace(`${learned.length} learned; listing`);
         let pages = 0;
         const plan = await planFacetData({
@@ -4163,7 +4163,7 @@ export class FacetManager {
      * loads. A learned path is planned only where the process's own listing
      * shows a regular file (data-plan.ts), and read through its own credential.
      */
-    async _learnedReads(vfsState) {
+    async _learnedReads(vfsState, cred) {
         const own = vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
         if (!this.readProfile)
             return own;
@@ -4176,18 +4176,36 @@ export class FacetManager {
         if (roots.size === 0)
             return own;
         try {
-            const integrities = this._installedIntegrities();
-            return [...own, ...await this.readProfile.lookup(roots, (root) => integrities.get(root) ?? null)];
+            return [...own, ...await this.readProfile.lookup(roots, this._packageIdentity(cred))];
         }
         catch {
             // The shared profile is an accelerator: unreachable, the launch plans without it.
             return own;
         }
     }
-    /** Installed package directory → the tarball integrity the session's lockfiles pin. */
-    _installedIntegrities() {
+    /**
+     * A package directory's identity for the shared read profile: the tarball
+     * integrity the session's lockfiles pin, or, for a package no lockfile
+     * pins (a link, a git or file dependency), the content key of its
+     * package.json as this credential reads it.
+     */
+    _packageIdentity(cred) {
         const sql = this.ctx.storage.sql;
-        return sql ? new NpmCache(sql).installedIntegrities() : new Map();
+        const integrities = sql ? new NpmCache(sql).installedIntegrities() : new Map();
+        const view = this.vfs?.as(cred) ?? null;
+        return (root) => {
+            const integrity = integrities.get(root);
+            if (integrity !== undefined)
+                return integrity;
+            if (view === null)
+                return null;
+            try {
+                return `pkgjson:${view.contentKey(root + '/package.json')}`;
+            }
+            catch {
+                return null;
+            }
+        };
     }
     /**
      * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
@@ -4421,12 +4439,11 @@ export class FacetManager {
     noteProcessReportedExit(pid, exitCode, residencyMisses) {
         // Filed before the exit marks the table: the terminal hook forgets the key.
         this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
-        if (this.readProfile && residencyMisses && residencyMisses.length > 0) {
+        const exiting = this.processes.get(pid);
+        if (this.readProfile && exiting && residencyMisses && residencyMisses.length > 0) {
             const profile = this.readProfile;
-            this.ctx.waitUntil((async () => {
-                const integrities = this._installedIntegrities();
-                await profile.record(residencyMisses, (root) => integrities.get(root) ?? null);
-            })().catch(() => 0));
+            const identity = this._packageIdentity(exiting.cred);
+            this.ctx.waitUntil(profile.record(residencyMisses, identity).catch(() => 0));
         }
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);

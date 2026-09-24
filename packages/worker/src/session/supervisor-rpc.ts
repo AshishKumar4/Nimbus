@@ -390,6 +390,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async fsCopyFile(...args: Parameters<RuntimeFsBridge['copyFile']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>> {
     return this._call(this._fsOp('fsCopyFile', args));
   }
+  async fsCopyTree(...args: Parameters<RuntimeFsBridge['copyTree']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyTree']>>> {
+    return this._call(this._fsOp('fsCopyTree', args));
+  }
   async fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>> {
     return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
   }

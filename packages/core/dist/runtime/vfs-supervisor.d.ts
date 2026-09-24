@@ -30,6 +30,7 @@ export declare const FILESYSTEM_RPC_METHODS: {
     readonly realpath: "fsRealpath";
     readonly remove: "fsRemove";
     readonly copyFile: "fsCopyFile";
+    readonly copyTree: "fsCopyTree";
     readonly fstat: "fsFstat";
     readonly dup: "fsDup";
     readonly seek: "fsSeek";

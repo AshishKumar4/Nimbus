@@ -529,6 +529,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     else { this.ensureParent(target.path); this.vfs.writeFile(target.path, bytes); }
   }
 
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
+    const source = this.locate(from, false);
+    if (source === null) throw fsError('ELOOP', 'copyTree', from);
+    const target = this.locateMutation(to, false, 'copyTree');
+    if (source.mount || target.mount) throw fsError('EXDEV', 'copyTree', to);
+    return this.vfs.copyTreeAsync(source.path, target.path, options);
+  }
+
   writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0]) {
     return this.vfs.writeBatch(payload);
   }

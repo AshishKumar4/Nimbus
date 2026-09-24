@@ -81,9 +81,18 @@ and common mutations (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rename`,
 `rmdir`, `symlink`, `readlink`, `truncate`), while merging live directory
 entries so child-process writes are visible inside long-running Node
 processes. `fs.promises.open` FileHandles and live appends use the stateless
-range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which rewrite only the
-touched 64 KiB chunks; VFS revisions are per-path subtree watermarks
-(`SqliteVFS.revision(path?)`).
+range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which re-cut and
+store only the chunks around the change; VFS revisions are per-path subtree
+watermarks (`SqliteVFS.revision(path?)`).
+
+The SQLite VFS is content-addressed (`packages/core/src/vfs/sqlite-vfs.ts`):
+every chunk is stored once per database by sha256, a file up to 64 KiB is one
+chunk named from its inode row, and a larger file is a FastCDC 16/32/64 KiB
+manifest. `copyFile`, `copyTree` (`cp -r`) and `rename` copy rows, never
+bytes; a write to shared content copies on write. Every committed transaction
+advances `vfs_state.gen`, which is also the revision clock, and every
+dereference is queued in `vfs_gc_queue` in the same transaction; GC deletes a
+queued id only after probing every reference.
 
 Every resident process (node servers, python/ruby socket servers, the opencode
 TUI and its headless server) is a DO Facet named `proc-<pid>`. **Which actor
@@ -168,9 +177,21 @@ published to npm: `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
 `NimbusWorkspace.create({ runtimes })` installs them into the workspace
 filesystem at the path `nimbus install` uses. One script builds them all:
 `bundle-runtime.mjs <name> <version> --npm-package <dir>` stages what the R2
-path stages, and lays the blobs out under the keys its own manifest names. A runtime joins the npm set by gaining an `npm` entry in its spec.
-`node` and `bun` have none, because they are workerd's `nodejs_compat` rather
-than an artifact to ship.
+path stages, and lays the blobs out under the keys its own manifest names. A
+runtime joins the npm set by gaining an `npm` entry in its spec
+(`packages/worker/scripts/runtime-specs.mjs`). `node` and `bun` have none,
+because they are workerd's `nodejs_compat` rather than an artifact to ship.
+
+Release runtimes first, then core. Core's `prepublishOnly` runs
+`scripts/dist-integrity.mjs --publish` (see Build And Deploy), then
+`packages/core/scripts/check-runtime-packages.mjs`, which builds each npm
+runtime package and refuses the core publish unless the registry has that
+version, with the same `manifest.json`, as `dist-tags.latest`, and the core
+being published runs it. It prints the fix for each failure. Publish runtime
+packages with `npm publish --tag latest --access public --auth-type=web`:
+`5.2.37-2` sorts below `5.2.37` and any range admitting one admits the other,
+so consumers get the new build only through `latest`. Deprecate the build it
+replaces.
 
 Current runtime substrate:
 
@@ -287,8 +308,15 @@ Useful commands:
 
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
-defensive-catch tests. Live probes that create sessions must delete those
-sessions in `finally` via the public cleanup path.
+defensive-catch tests. The driver owns session cleanup: every session
+`mintSession` creates is DELETEd through the public cleanup path when the
+probe process exits, however it exits, unless `deleteSession` already
+released it. Only SIGKILL or a runtime crash escapes, and `run-all` fails the
+suite on those: `_driver.mjs` records each mint and DELETE in a per-run
+ledger, and every minted session without a 2xx DELETE is named with its
+probe. A session created outside the driver (the remote SDK's
+`.sandbox(id)`, the anonymous demo launch) is the probe's to delete in
+`finally`. `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
 ### Probe targets
 
@@ -403,6 +431,11 @@ whose `dist` predates its `src` deploys a Worker missing changes its own
 source contains. The gate makes that a refusal rather than a silent no-op
 deploy. It adds ~6s. When it refuses, the tree it refused has already been
 rebuilt: review the diff, commit it, deploy again.
+
+Publishing works the same way. No package builds at pack time; every
+published package's `prepublishOnly` is `bun ../../scripts/dist-integrity.mjs
+--publish`, which also refuses a package directory that differs from HEAD, so
+the tarball holds the committed, verified dist. Build and commit first.
 
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own

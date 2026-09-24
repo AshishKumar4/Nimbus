@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// Per-path revisions are held under a byte budget. A path whose revision was
-// dropped reports the floor, the newest revision dropped, and never less than
-// its own last mutation: every consumer compares a revision it holds against
+// Per-path revisions are held under a byte budget. A file whose stamp was
+// dropped reports its row's generation; any other path the floor, the newest
+// revision dropped. Neither is ever less than the path's own last mutation: every consumer compares a revision it holds against
 // the one reported now, and a smaller report would call a stale copy current.
 
 import assert from 'node:assert/strict';
@@ -47,9 +47,10 @@ function ancestors(path) {
   assert.ok(stats.floor > 0, 'the scenario is vacuous unless revisions were dropped');
   assert.ok(stats.paths < lastWrite.size, 'every path still holds a revision');
 
-  // The earliest file was dropped: it reports the floor, and a directory
-  // stays at or above everything under it.
-  assert.equal(vfs.revision('pkg/d0/file-0.js'), stats.floor);
+  // The earliest file's stamp was dropped: it reports its row's generation,
+  // exactly its last write, and a directory stays at or above everything
+  // under it.
+  assert.equal(vfs.revision('pkg/d0/file-0.js'), lastWrite.get('pkg/d0/file-0.js'));
   for (const path of lastWrite.keys()) {
     for (const dir of ancestors(path)) {
       assert.ok(vfs.revision(dir) >= vfs.revision(path), `${dir} reports below ${path}`);

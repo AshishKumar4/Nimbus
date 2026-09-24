@@ -21,6 +21,7 @@
  */
 import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
+import type { RuntimeManifest } from './runtime-manifest.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';
 export interface RuntimeManagerOptions {
     vfs: CredentialedVfs;
@@ -82,7 +83,11 @@ export declare class RuntimeManager {
      * request and is refused rather than substituted.
      */
     private resolveRunnable;
-    private missingRunners;
+    /** The runner keys `manifest`'s entrypoints name that this manager has no
+     *  factory for, deduplicated, in entrypoint order. */
+    missingRunners(manifest: RuntimeManifest): string[];
+    /** Every runner key registered so far. */
+    runnerKeys(): string[];
     /**
      * Install a package the caller already holds — the workspace's eager seed
      * and a host's direct provisioning share this path with `install`. No

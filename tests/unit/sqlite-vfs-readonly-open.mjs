@@ -19,7 +19,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 // plus two backfill UPDATEs, on every open; a readonly handle died with
 // SQLITE_READONLY at the first of them.
 const WRITE_STATEMENT = /^\s*(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER)\b/i;
-const CREATE_STATEMENT = /^\s*CREATE\s+(TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\b/i;
+const CREATE_STATEMENT = /^\s*CREATE\s+(TABLE|(UNIQUE\s+)?INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\b/i;
 
 const dir = mkdtempSync(join(tmpdir(), 'sqlite-vfs-readonly-'));
 const path = join(dir, 'vfs.sqlite');

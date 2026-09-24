@@ -294,6 +294,7 @@ const __RESIDENT_MAX_LIST_PAGES = 4096;
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
+const __RESIDENT_SCHEMA = "2";
 const __RK_TEXT = 0;
 const __RK_BINARY = 1;
 const __RK_DENIED = 2;
@@ -340,12 +341,23 @@ function __residentBind(ctx) {
   // authority has not acknowledged, which are strictly newer than anything it
   // can report and are always readable. It is a real provenance, not an
   // absence of one.
+  // A store written by an earlier schema is dropped whole: it is a cache,
+  // and the boot that follows fills what this launch needs.
+  let schema = null;
+  for (const row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
+  if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
+  if (schema !== __RESIDENT_SCHEMA) {
+    for (const table of ["chunk", "file", "ns", "meta"]) sql.exec("DROP TABLE IF EXISTS " + table);
+  }
+  // 'ckey' is the authority's content identity for the bytes (equal keys,
+  // equal bytes), when it said so; null for bytes it did not describe.
   sql.exec(
     "CREATE TABLE IF NOT EXISTS file (" +
       "path TEXT PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL, " +
-      "chunks INTEGER NOT NULL, rev INTEGER NOT NULL CHECK (rev >= -1)" +
+      "chunks INTEGER NOT NULL, rev INTEGER NOT NULL CHECK (rev >= -1), ckey TEXT" +
     ")"
   );
+  sql.exec("CREATE INDEX IF NOT EXISTS file_ckey ON file (ckey) WHERE ckey IS NOT NULL");
   sql.exec(
     "CREATE TABLE IF NOT EXISTS chunk (" +
       "path TEXT NOT NULL, part INTEGER NOT NULL, txt TEXT, bin BLOB, " +
@@ -355,6 +367,7 @@ function __residentBind(ctx) {
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", __RESIDENT_SCHEMA);
   // The namespace: every name the process's credential can see, with its stat
   // and no content. Keyed (parent, name) so a point lookup and a directory
   // listing are both one index seek, and no path is stored twice.
@@ -481,15 +494,42 @@ function __residentAdmit(result) {
       // and is kept — read-your-writes survives a peer's mutation of the same
       // path, and the report is adjudicated when the write's own revision
       // arrives (the shims note it for the ledger before admitting).
-      let held = false, stamped = 0;
-      for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-        held = true; stamped = Number(row.rev);
+      // A subtree-scoped or structural entry covers every row at or under its
+      // path, each judged the same way: something beneath it this facet may
+      // not see changed, or the directory went, or who may enter it did. A
+      // row there may be stale, or no longer this facet's to be served.
+      if (entry.subtree || entry.structural) {
+        const end = __residentPrefixEnd(path + "/");
+        const covered = end === null
+          ? [...sql.exec("SELECT path, rev FROM file WHERE path >= ?", path + "/")]
+          : [...sql.exec("SELECT path, rev FROM file WHERE path >= ? AND path < ?", path + "/", end)];
+        for (const row of covered) {
+          const stamped = Number(row.rev);
+          if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
+          sql.exec("DELETE FROM chunk WHERE path = ?", row.path);
+          sql.exec("DELETE FROM file WHERE path = ?", row.path);
+          dropped.push(String(row.path));
+        }
+        // Names under it may have become hidden or visible without being
+        // named: the namespace relists that subtree.
+        if (namespaced && entry.subtree && entry.stat && entry.stat.type === "directory") relist.push(path);
+      }
+      let held = false, stamped = 0, heldKey = null;
+      for (const row of sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path)) {
+        held = true; stamped = Number(row.rev); heldKey = row.ckey == null ? null : String(row.ckey);
       }
       if (held && (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev))) { kept++; continue; }
+      // The same bytes under a newer revision (a chmod, a touch, a rewrite
+      // with identical content): kept, and dated at the report.
+      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
+        sql.exec("UPDATE file SET rev = ? WHERE path = ?", Number(entry.rev), path);
+        kept++;
+        continue;
+      }
       // Pushed content: the file's bytes at the answer's revision, so dating
       // them at the path's own revision cannot be newer than they are.
       if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
-        __residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev));
+        __residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev), entry.contentKey);
         pushed++;
         continue;
       }
@@ -594,7 +634,7 @@ function __residentBytes(value) {
  * (read-your-writes) and never mistaken for something the authority vouched
  * for. There is no third case: the column refuses one.
  */
-function __residentPut(sql, path, cell, rev) {
+function __residentPut(sql, path, cell, rev, ckey) {
   sql.exec("DELETE FROM chunk WHERE path = ?", path);
   const stamp = typeof rev === "number" ? rev : __RK_OWN_WRITE;
   if (cell && typeof cell === "object" && cell.error) {
@@ -618,8 +658,8 @@ function __residentPut(sql, path, cell, rev) {
     else sql.exec("INSERT INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, slice);
   }
   sql.exec(
-    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, ?, ?, ?)",
-    path, kind, size, chunks, stamp
+    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
+    path, kind, size, chunks, stamp, stamp === __RK_OWN_WRITE || ckey == null ? null : String(ckey)
   );
 }
 
@@ -637,11 +677,35 @@ function __residentPutChunk(sql, path, part, bytes) {
  * a large file leaves chunks nothing can read, never a short file something
  * can. Writing the head first would invert that into a truncated read.
  */
-function __residentPutHead(sql, path, kind, size, chunks, rev) {
+function __residentPutHead(sql, path, kind, size, chunks, rev, ckey) {
   sql.exec(
-    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, ?, ?, ?)",
-    path, kind, size, chunks, typeof rev === "number" ? rev : __RK_OWN_WRITE
+    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
+    path, kind, size, chunks, typeof rev === "number" ? rev : __RK_OWN_WRITE,
+    typeof rev === "number" && ckey != null ? String(ckey) : null
   );
+}
+
+/**
+ * Hold \`path\` with the bytes of a dated row whose content identity is
+ * \`ckey\`, by copying rows inside this store: equal keys are equal bytes, so
+ * no fetch is needed. Returns whether a source existed.
+ */
+function __residentCopyByKey(sql, path, ckey, rev) {
+  let source = null;
+  for (const row of sql.exec(
+    "SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", String(ckey), path,
+  )) source = row;
+  if (source === null) return false;
+  sql.exec("DELETE FROM chunk WHERE path = ?", path);
+  sql.exec(
+    "INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?",
+    path, String(source.path),
+  );
+  sql.exec(
+    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
+    path, Number(source.kind), Number(source.size), Number(source.chunks), rev, String(ckey),
+  );
+  return true;
 }
 
 function __residentDelete(sql, path) {
@@ -1238,8 +1302,10 @@ async function __nsRelist(supervisor, dir) {
   if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentSql, false); return; }
   const sql = __residentSql;
   const prefix = dir + "/";
+  const seen = [];
   let after = prefix;
-  for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES; page++) {
+  let done = false;
+  for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES && !done; page++) {
     let listed;
     try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
     catch { __nsMarkReady(sql, false); return; }
@@ -1247,14 +1313,19 @@ async function __nsRelist(supervisor, dir) {
     for (const entry of listed.entries) {
       const k = String(entry.path).replace(/^\\/+/, "");
       if (!k.startsWith(prefix)) {
-        if (k > prefix) return;
+        if (k > prefix) { done = true; break; }
         continue;
       }
-      if (entry.stat) __nsPut(sql, k, entry.stat, entry.rev, entry.linkTarget);
+      if (entry.stat) seen.push(entry);
     }
-    if (listed.next === null || listed.next === undefined) return;
-    after = listed.next;
+    if (listed.next === null || listed.next === undefined) done = true;
+    else after = listed.next;
   }
+  if (!done) { __nsMarkReady(sql, false); return; }
+  // Exactly what the listing has under the directory: a name it no longer
+  // shows (hidden now, or gone) leaves, one it shows is written.
+  __nsDeleteTree(sql, dir, false);
+  for (const entry of seen) __nsPut(sql, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget);
 }
 
 /**
@@ -1361,7 +1432,7 @@ async function __residentEnumerate(supervisor) {
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
         throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
       }
-      entries.push({ path, size, rev, epoch: cursor.epoch });
+      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey) });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, names, cursor, complete: true, reason: null };
@@ -1400,6 +1471,23 @@ async function __residentEnumerate(supervisor) {
  * whose path moved at that same revision.
  */
 async function __residentFetchFiles(supervisor, files) {
+  // Content already held under another path, or wanted twice in this batch,
+  // is fetched once: equal keys are equal bytes (the second copy is local).
+  const sql = __residentSql;
+  const requested = files.length;
+  let copied = 0;
+  const wanted = [];
+  const later = [];
+  const fetching = new Set();
+  for (const file of files) {
+    if (file.ckey != null) {
+      if (__residentCopyByKey(sql, file.path, file.ckey, file.rev)) { copied++; continue; }
+      if (fetching.has(file.ckey)) { later.push(file); continue; }
+      fetching.add(file.ckey);
+    }
+    wanted.push(file);
+  }
+  files = wanted;
   // One flat list of ranges across all files, so packing is a single pass and
   // a 25 MiB file and a 40-byte one are the same shape.
   const ranges = [];
@@ -1416,6 +1504,7 @@ async function __residentFetchFiles(supervisor, files) {
         offset,
         length: Math.min(__RESIDENT_CHUNK_BYTES, Math.max(0, file.size - offset)),
         size: file.size,
+        ckey: file.ckey ?? null,
       });
     }
   }
@@ -1469,7 +1558,7 @@ async function __residentFetchFiles(supervisor, files) {
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
-        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, range.rev);
+        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, range.rev, range.ckey);
         filled++;
       }
     }
@@ -1484,7 +1573,14 @@ async function __residentFetchFiles(supervisor, files) {
     __residentSql.exec("DELETE FROM file WHERE path = ?", path);
   }
 
-  return { requested: files.length, filled, failed, bytes: fetchedBytes, ranges: ranges.length };
+  for (const file of later) {
+    if (__residentCopyByKey(sql, file.path, file.ckey, file.rev)) copied++;
+    else failed++;
+  }
+  return {
+    requested, filled: filled + copied, failed,
+    bytes: fetchedBytes, ranges: ranges.length, copied,
+  };
 }
 
 /**
@@ -1582,12 +1678,13 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   for (const file of listing.entries) listed.set(file.path, file);
 
   const rows = [];
-  for (const row of sql.exec("SELECT path, rev FROM file")) {
-    rows.push({ path: String(row.path), rev: Number(row.rev) });
+  for (const row of sql.exec("SELECT path, rev, ckey FROM file")) {
+    rows.push({ path: String(row.path), rev: Number(row.rev), ckey: row.ckey == null ? null : String(row.ckey) });
   }
   const current = new Set();
   const dropped = [];
   const own = [];
+  let rekeyed = 0;
   for (const row of rows) {
     const entry = listed.get(row.path);
     if (row.rev === __RK_OWN_WRITE) {
@@ -1600,6 +1697,15 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     }
     const keep = (comparable && entry !== undefined && row.rev >= entry.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
+    // The listing names the same bytes (a revision moved, the content did
+    // not, or another epoch): kept and dated at the listing. Equal keys are
+    // equal bytes, so this needs no comparable clock.
+    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey) {
+      sql.exec("UPDATE file SET rev = ? WHERE path = ?", entry.rev, row.path);
+      current.add(row.path);
+      rekeyed++;
+      continue;
+    }
     dropped.push(row.path);
   }
   // Sweep what could not be vouched for. When NOTHING could — a new supervisor
@@ -1608,7 +1714,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // be ~32,000 statements in one turn against an object that has been observed
   // resetting under exactly that load. So it is a predicate there, and per path
   // where a reconcile has made the set small by construction.
-  if (dropped.length > 0 && !comparable) {
+  if (dropped.length > 0 && !comparable && rekeyed === 0) {
     sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", __RK_OWN_WRITE);
     sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
   } else {
@@ -1651,6 +1757,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     bytes: filled.bytes,
     ranges: filled.ranges,
     kept: current.size,
+    rekeyed,
     dropped: dropped.length,
     own,
     reconciled: comparable,

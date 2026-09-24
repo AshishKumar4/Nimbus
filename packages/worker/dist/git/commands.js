@@ -47,19 +47,54 @@ function wantsUtf8(options) {
  * Creates an isomorphic-git compatible `fs` object from SqliteVFS.
  * isomorphic-git requires: readFile, writeFile, unlink, readdir,
  * mkdir, rmdir, stat, lstat (all as promises).
+ *
+ * With a `worktree`, the adapter writes that worktree the way git's checkout
+ * does (entry.c create_directories, has_symlink_leading_path): below its top,
+ * `.git` aside, every leading component is lstat'd, and one that is not a real
+ * directory (a link, dangling or not, or a file) is replaced by one rather than
+ * followed, and a file replaces a link at its own path instead of writing
+ * through it. Components above the top are followed, as git follows them.
+ * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs) {
+function createGitFs(vfs, worktree = null) {
     // Path normalization is shared with esbuild-service via ./vfs-path.ts.
     // isomorphic-git constructs paths like `dir + '/' + filepath` which can
     // produce `/home/user/project/.` or paths with `..` segments — those are
     // collapsed before VFS lookup. The bounded `..` pop won't escape root.
     const normalizePath = normalizeVfsPath;
-    function ensureParent(p) {
-        const parts = normalizePath(p).split('/');
-        for (let i = 1; i < parts.length; i++) {
+    const top = worktree === null ? null : normalizePath(worktree);
+    const below = top ? `${top}/` : '';
+    const gitdir = `${below}.git`;
+    function lstatOrNull(p) {
+        try {
+            return vfs.lstat(p);
+        }
+        catch {
+            return null;
+        }
+    }
+    /** A path git's checkout owns: inside the worktree, not its top, not in its .git. */
+    function checkedOut(p) {
+        return top !== null && p.startsWith(below) && p !== gitdir && !p.startsWith(`${gitdir}/`);
+    }
+    /** `p`'s directories, down to `p` itself when `self`; see createGitFs for the worktree's rule. */
+    function ensureDirectories(p, self) {
+        const parts = p.split('/');
+        for (let i = 1; i <= (self ? parts.length : parts.length - 1); i++) {
             const dir = parts.slice(0, i).join('/');
-            if (dir && !vfs.exists(dir))
-                vfs.mkdir(dir, { recursive: true });
+            if (!dir)
+                continue;
+            if (!checkedOut(dir)) {
+                if (!vfs.exists(dir))
+                    vfs.mkdir(dir, { recursive: true });
+                continue;
+            }
+            const st = lstatOrNull(dir);
+            if (st?.type === 'directory')
+                continue;
+            if (st)
+                vfs.unlink(dir);
+            vfs.mkdir(dir);
         }
     }
     // The inode as Node's fs.Stats: git's stat cache compares ctime, ino, uid and gid too.
@@ -116,7 +151,9 @@ function createGitFs(vfs) {
             },
             async writeFile(filepath, data, opts) {
                 const p = normalizePath(filepath);
-                ensureParent(p);
+                ensureDirectories(p, false);
+                if (checkedOut(p) && lstatOrNull(p)?.type === 'symlink')
+                    vfs.unlink(p);
                 if (typeof data === 'string') {
                     vfs.writeFile(p, data);
                 }
@@ -126,7 +163,7 @@ function createGitFs(vfs) {
             },
             async unlink(filepath) {
                 const p = normalizePath(filepath);
-                if (vfs.exists(p))
+                if (lstatOrNull(p))
                     vfs.unlink(p);
             },
             async readdir(filepath) {
@@ -138,14 +175,18 @@ function createGitFs(vfs) {
                 return vfs.readdir(p).map(e => e.name);
             },
             async mkdir(filepath, opts) {
-                const p = normalizePath(filepath);
-                if (!vfs.exists(p))
-                    vfs.mkdir(p, { recursive: true });
+                ensureDirectories(normalizePath(filepath), true);
             },
             async rmdir(filepath) {
                 const p = normalizePath(filepath);
-                if (vfs.exists(p))
-                    vfs.rmdir(p);
+                const st = lstatOrNull(p);
+                if (!st)
+                    return;
+                // rmdir(2) of a link is ENOTDIR: it never removes the directory the link names.
+                if (st.type !== 'directory') {
+                    throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${filepath}'`), { code: 'ENOTDIR', errno: -20 });
+                }
+                vfs.rmdir(p);
             },
             async stat(filepath) {
                 return statsOf(filepath, true);
@@ -156,9 +197,10 @@ function createGitFs(vfs) {
             async chmod() { },
             async symlink(target, filepath) {
                 const p = normalizePath(filepath);
-                ensureParent(p);
+                ensureDirectories(p, false);
                 // Checkout retargets a link in place, as the clone facet's adapter does.
-                if (vfs.exists(p) && !vfs.isDirectory(p))
+                const st = lstatOrNull(p);
+                if (st && st.type !== 'directory')
                     vfs.unlink(p);
                 vfs.symlink(target, p);
             },
@@ -642,8 +684,13 @@ async function lsFiles(ctx, git, fs, vfs, args) {
         const workType = work ? await work.type() : undefined;
         if (stage) {
             const stageType = await stage.type();
-            if (stageType === 'tree')
+            if (stageType === 'tree') {
+                // A file or link where the index has a directory is untracked; the directory's files are deleted.
+                if (others && workType && workType !== 'tree'
+                    && !(excludeStandard && await git.isIgnored({ fs, dir: root, filepath: path })))
+                    untracked.push(path);
                 return true;
+            }
             const missing = readWorktree && !workType;
             let changed = missing;
             if (modified && !missing && stageType === 'blob') {
@@ -683,6 +730,76 @@ async function lsFiles(ctx, git, fs, vfs, args) {
             out += line;
     }
     await writeBinary(ctx.stdout, out);
+    return 0;
+}
+/**
+ * `git checkout [<tree-ish>] -- <pathspec>...`: every tracked file the
+ * pathspecs name, from the index, or from <tree-ish> into the index as well
+ * (overlay mode: a path the tree lacks stays). A pathspec naming nothing fails
+ * the command before any file is written, as in git. The files are written as
+ * git's checkout writes them: see createGitFs's worktree rule.
+ */
+async function checkoutPaths(ctx, git, vfs, source, pathArgs) {
+    const repo = discoverRepo(vfs, ctx.cwd);
+    if (!repo) {
+        await ctx.stderr.write(NOT_A_REPOSITORY);
+        return 128;
+    }
+    const root = repo.worktree;
+    if (!root) {
+        await ctx.stderr.write(NOT_A_WORK_TREE);
+        return 128;
+    }
+    const specs = repoPaths(pathArgs, ctx.cwd, root);
+    const fs = createGitFs(vfs, root);
+    const cache = {};
+    let tree = git.STAGE();
+    if (source !== null) {
+        const oid = await resolveRevision(git, fs, repo.gitdir, source, cache);
+        if (!oid) {
+            await ctx.stderr.write(`fatal: invalid reference: ${source}\n`);
+            return 128;
+        }
+        tree = git.TREE({ ref: oid });
+    }
+    const files = [];
+    const matched = new Set();
+    await walkScoped(git, fs, root, cache, [tree], specs, async (path, [entry]) => {
+        const type = entry ? await entry.type() : undefined;
+        if (type === 'tree')
+            return true;
+        // A gitlink is never checked out.
+        if (!entry || type !== 'blob')
+            return false;
+        for (const spec of specs)
+            if (spec === '' || path === spec || path.startsWith(`${spec}/`))
+                matched.add(spec);
+        files.push({ path, oid: await entry.oid(), mode: await entry.mode() });
+        return false;
+    });
+    let unmatched = '';
+    specs.forEach((spec, i) => {
+        if (!matched.has(spec))
+            unmatched += `error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`;
+    });
+    if (unmatched) {
+        await ctx.stderr.write(unmatched);
+        return 1;
+    }
+    for (const { path, oid, mode } of files) {
+        const file = `${root}/${path}`;
+        const { blob } = await git.readBlob({ fs, dir: root, oid, cache });
+        if (mode === 0o120000) {
+            await fs.promises.symlink(dec.decode(blob), file);
+        }
+        else {
+            await fs.promises.writeFile(file, blob);
+            vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
+        }
+    }
+    // The index takes each file's fresh stat data (and, from a tree, its blob).
+    if (files.length)
+        await git.add({ fs, dir: root, filepath: files.map(({ path }) => path), parallel: false, force: true, cache });
     return 0;
 }
 /** diff-files, diff-index and diff-index --cached, as file pairs in path order. */
@@ -1213,20 +1330,26 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'checkout': {
+                const dashdash = subArgs.indexOf('--');
+                if (dashdash >= 0) {
+                    const source = subArgs.slice(0, dashdash).find(a => !a.startsWith('-'));
+                    return await checkoutPaths(ctx, git, credentialedVfs, source ?? null, subArgs.slice(dashdash + 1));
+                }
                 const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
                 const ref = subArgs.find(a => !a.startsWith('-'));
                 if (!ref) {
                     ctx.stderr.write('error: specify a branch\n');
                     return 1;
                 }
+                const worktreeFs = createGitFs(credentialedVfs, dir);
                 if (subArgs.includes('-b')) {
                     await git.branch({ fs, dir, ref });
-                    await git.checkout({ fs, dir, ref });
+                    await git.checkout({ fs: worktreeFs, dir, ref });
                     if (!quiet)
                         ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
                 }
                 else {
-                    await git.checkout({ fs, dir, ref });
+                    await git.checkout({ fs: worktreeFs, dir, ref });
                     if (!quiet)
                         ctx.stdout.write(`Switched to branch '${ref}'\n`);
                 }
@@ -1356,6 +1479,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     fs, dir, theirs,
                     author: getAuthor(ctx),
                 });
+                // cf-git's merge moves the branch alone; the worktree follows it as pull's checkout makes it.
+                await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: await git.currentBranch({ fs, dir }) ?? 'HEAD' });
                 ctx.stdout.write(`Merged ${theirs}\n`);
                 return 0;
             }
@@ -1364,13 +1489,16 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 const soft = subArgs.includes('--soft');
                 const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
                 const oid = await git.resolveRef({ fs, dir, ref });
-                // Move the current branch to the target OID
+                // Move the current branch, or a detached HEAD, to the target OID
                 const branch = await git.currentBranch({ fs, dir });
-                if (branch) {
-                    await git.writeRef({ fs, dir, ref: `refs/heads/${branch}`, value: oid, force: true });
+                await git.writeRef({ fs, dir, ref: branch ? `refs/heads/${branch}` : 'HEAD', value: oid, force: true });
+                if (hard) {
+                    // The index and worktree become the target's, as a forced checkout from the old index
+                    // makes them (type changes included); HEAD stays where it is.
+                    await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
                 }
-                if (!soft) {
-                    // Reset index (--mixed behavior, also applies to --hard)
+                else if (!soft) {
+                    // Reset index (--mixed)
                     const matrix = await git.statusMatrix({ fs, dir });
                     for (const [filepath] of matrix) {
                         try {
@@ -1378,10 +1506,6 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                         }
                         catch { }
                     }
-                }
-                if (hard) {
-                    // Reset working tree to match the target
-                    await git.checkout({ fs, dir, ref: oid, force: true });
                 }
                 ctx.stdout.write(`HEAD is now at ${oid.slice(0, 7)}\n`);
                 return 0;

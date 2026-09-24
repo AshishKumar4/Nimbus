@@ -2,8 +2,8 @@
 // A path whose revision the supervisor dropped never vouches for a stale
 // resident row.
 //
-// SqliteVFS holds per-path revisions under a byte budget, and a path it
-// dropped reports the floor: the newest revision dropped. The resident
+// SqliteVFS holds per-path revisions under a byte budget; a file it dropped
+// reports its row's generation, anything else the floor. The resident
 // store's reconcile keeps a row dated at or above the revision fsList reports
 // for its path, so a dropped path reporting 0, or anything below its last
 // write, would keep the bytes that write replaced. Nothing is mocked below
@@ -100,10 +100,10 @@ assert.ok(writtenAt > heldAt);
 kfs.mkdir('churn', { mode: 0o755 });
 let churn = 0;
 while (rawVfs.getStats().pathRevisions.floor < writtenAt) kfs.writeFile(`churn/c${churn++}`, 'x');
-assert.equal(kfs.revision(TARGET), rawVfs.getStats().pathRevisions.floor, 'the target reports the floor');
+assert.equal(kfs.revision(TARGET), writtenAt, 'a dropped file reports its row generation: exactly its write');
 
-// The listing reports the dropped path at the floor: at or above its write,
-// so above the row's date. Reporting 0 there is what would keep the row.
+// The listing reports the dropped path at or above its write, so above the
+// row's date. Reporting 0 there is what would keep the row.
 const listedAt = await listedRevision(TARGET);
 assert.ok(listedAt >= writtenAt, `a dropped path listed at ${listedAt}, below its write at ${writtenAt}`);
 
@@ -114,12 +114,12 @@ assert.equal(asText(store.__residentGet(TARGET)), 'v2-peer', 'a floor-reported r
 assertNoStaleByte(store, 'after the floor rose');
 assert.ok(store.__residentProvenance(TARGET) >= writtenAt);
 
-// Untouched rows of dropped paths are refetched too: the floor rose past the
-// revision they were dated at. That is the cost, and all of it: the churn is
-// named by the namespace but not in the launch's data plan, so none of it is
-// fetched.
-assert.equal(repaired.dropped, 8, 'every row dated below the floor was dropped');
-assert.equal(repaired.filled, 8, 'and only those rows are refetched');
+// Untouched rows are kept: a file whose stamp was dropped lists at its row's
+// generation, the revision it was dated at. Only the rewritten one goes, and
+// only it is refetched: the churn is named by the namespace but not in the
+// launch's data plan.
+assert.equal(repaired.dropped, 1, 'only the rewritten row was dropped');
+assert.equal(repaired.filled, 1, 'and only it is refetched');
 assert.ok(churn > 0);
 
 // A second reconcile with nothing changed keeps every row: the floor did not

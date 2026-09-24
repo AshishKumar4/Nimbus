@@ -47,7 +47,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
-    "prepack": "bun run build",
+    "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

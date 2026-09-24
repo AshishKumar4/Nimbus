@@ -41,7 +41,9 @@ try {
   mkdirSync(join(root, 'scripts'), { recursive: true });
   mkdirSync(join(root, 'src'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
-  cpSync(join(WORKER, 'scripts/bundle-runtime.mjs'), join(root, 'scripts/bundle-runtime.mjs'));
+  for (const script of ['bundle-runtime.mjs', 'runtime-specs.mjs']) {
+    cpSync(join(WORKER, 'scripts', script), join(root, 'scripts', script));
+  }
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'runtime-contracts'), { recursive: true });
   // The script reads runner contracts from core; nothing else lives in this
   // node_modules, so wrangler still falls back to PATH below.

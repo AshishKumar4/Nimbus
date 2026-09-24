@@ -8,7 +8,9 @@
  * session — `dist/runtime/x.js` of one tarball is the same file for everyone —
  * so the miss is recorded under the package's integrity hash (the sha512 the
  * lockfile pins the tarball to), and every later launch that loads that exact
- * tarball holds the file from its first instruction.
+ * tarball holds the file from its first instruction. A package no lockfile
+ * pins (a link, a git or file dependency) is identified by the content key of
+ * its package.json instead.
  *
  * What a profile can do, and why a hostile one cannot do more:
  *   - It stores package-relative paths only, validated on the way in and on
@@ -32,7 +34,8 @@ const INDEX_TTL_MS = 60_000;
 export const READ_PROFILE_MAX_PATHS = 512;
 /** Bytes of one profile path. */
 export const READ_PROFILE_MAX_PATH_LENGTH = 512;
-const INTEGRITY = /^sha(?:256|384|512)-[A-Za-z0-9+/]+={0,2}$/;
+/** A tarball integrity (SRI), or the content key of an unpinned package's package.json. */
+const IDENTITY = /^(?:sha(?:256|384|512)-[A-Za-z0-9+/]+={0,2}|pkgjson:[0-9a-f]{32,128})$/;
 /** A package-relative path a profile may hold, or false. */
 export function validProfilePath(rel) {
     if (typeof rel !== 'string' || rel.length === 0 || rel.length > READ_PROFILE_MAX_PATH_LENGTH)
@@ -51,7 +54,7 @@ export class ReadProfile {
         this.now = now;
     }
     static key(integrity) {
-        return INTEGRITY.test(integrity) ? PREFIX + encodeURIComponent(integrity) : null;
+        return IDENTITY.test(integrity) ? PREFIX + encodeURIComponent(integrity) : null;
     }
     /**
      * File `paths` (namespace keys) that a process missed, each under the

@@ -56,8 +56,8 @@ require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
 /** A session holding `files`, and the resident process booted over it. */
-async function boot(files = {}, overrides = () => ({})) {
-  const authority = createAuthority();
+async function boot(files = {}, overrides = () => ({}), vfsOptions) {
+  const authority = createAuthority(vfsOptions);
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   for (const [path, text] of Object.entries(files)) {
     authority.kfs.writeFile(`home/user/app/${path}`, text, { mode: 0o644 });
@@ -164,16 +164,18 @@ await runScenarios(import.meta.path, {
 
   async 'a poison while the own write is in flight'() {
     // The same window, but the report never arrives as a delta: write churn
-    // trims the invalidation log past this process's cursor, and the repair
-    // moves the cursor to a listing instead. The listing still says who wrote
-    // last, and the flush must hear it.
+    // trims the invalidation log past this process's cursor, a deletion past
+    // the tombstones kept (none here) puts it out of reach of the SQL answer
+    // too, and the repair moves the cursor to a listing instead. The listing
+    // still says who wrote last, and the flush must hear it.
     const held = heldWriteFile();
-    const { authority, probe } = await boot({}, held.overrides);
+    const { authority, probe } = await boot({}, held.overrides, { tombstoneRows: 0 });
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
     authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
     for (let i = 0; i < 4_000; i++) authority.kfs.writeFile('home/user/app/churn.txt', `churn-${i}`);
+    authority.kfs.unlink('home/user/app/churn.txt');
     assert.equal(await probe.resume(`${APP}/race.txt`), 'MINE');
     const stats = coherenceStats();
     assert.ok(stats.poisons >= 1 && stats.reconciles >= 1, 'the scenario is vacuous unless the barrier was poisoned and repaired');

@@ -1099,8 +1099,13 @@ export declare class FacetManager {
      * shows a regular file (data-plan.ts), and read through its own credential.
      */
     private _learnedReads;
-    /** Installed package directory → the tarball integrity the session's lockfiles pin. */
-    private _installedIntegrities;
+    /**
+     * A package directory's identity for the shared read profile: the tarball
+     * integrity the session's lockfiles pin, or, for a package no lockfile
+     * pins (a link, a git or file dependency), the content key of its
+     * package.json as this credential reads it.
+     */
+    private _packageIdentity;
     /**
      * What the closure's JavaScript names by a foldable path (static-fs-refs.ts),
      * read from the VFS as written rather than from the module map, whose ESM

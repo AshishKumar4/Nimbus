@@ -129,7 +129,7 @@
     "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:agent-chat",
     "clean:dist": "node scripts/clean-dist.mjs",
     "build": "bun run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
-    "prepack": "bun run build",
+    "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
     "typecheck": "tsc --noEmit && tsc -p frontend --noEmit"
   },
   "dependencies": {

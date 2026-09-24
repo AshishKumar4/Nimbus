@@ -137,13 +137,10 @@ function authStep(authority, step) {
     case 'rmrf': kfs.removeRecursive(p); return;
     case 'rename': kfs.rename(p, at(step.to)); return;
     case 'trim': {
-      // Churn past the retained invalidation log, so the next delta is a poison.
-      kfs.mkdir(at('/.churn'), { recursive: true, mode: 0o755 });
-      const floor = rawVfs.revision();
-      for (let i = 0; rawVfs.invalidatedSince(rawVfs.epoch, floor).poison === false; i++) {
-        kfs.writeFile(at(`/.churn/${'c'.repeat(200)}${i}`), 'x');
-      }
-      kfs.removeRecursive(at('/.churn'));
+      // A cursor the delta channel cannot answer. The clock is durable and a
+      // trimmed log is answered from the rows, so the poison that remains is
+      // a new epoch: a restore to an earlier point in time.
+      rawVfs.rotateIncarnation();
       return;
     }
     default: throw new Error(`unknown authority step ${step.auth}`);

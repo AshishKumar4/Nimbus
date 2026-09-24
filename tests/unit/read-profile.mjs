@@ -98,4 +98,18 @@ const plan = await planFacetData(source, {
 });
 assert.deepEqual(plan.paths, ['home/user/app/node_modules/astro/ok.txt']);
 
+// A package no lockfile pins is identified by its package.json's content key.
+{
+  const linked = bucket();
+  const key = 'pkgjson:' + 'ab'.repeat(32);
+  const byKey = (root) => (root.endsWith('/linked') ? key : null);
+  assert.equal(await new ReadProfile(linked).record(['home/user/app/node_modules/linked/tpl/x.hbs'], byKey), 1);
+  assert.deepEqual(
+    await new ReadProfile(linked).lookup(['home/user/other/node_modules/linked'], byKey),
+    ['home/user/other/node_modules/linked/tpl/x.hbs'],
+  );
+  // Anything else as an identity is refused.
+  assert.equal(await new ReadProfile(linked).record(['home/user/app/node_modules/z/a.js'], () => 'name@1.0.0'), 0);
+}
+
 console.log('read-profile: ok');

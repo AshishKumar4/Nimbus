@@ -1177,7 +1177,7 @@ function emptyMetadataOverlayStats() {
  * Files + all their parent directories become inodes; file content is
  * chunked at CHUNK_SIZE boundaries to match sqlite-vfs.
  */
-function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritativeRoot) {
+function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritativeRoot, worktreeRoot) {
   const inodes = [];
   const chunks = [];
   const dirs = new Set();
@@ -1185,12 +1185,12 @@ function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritative
 
   // Collect all parent directories for files.
   for (const [path] of writeBuffer) {
-    collectDirectoryPaths(dirs, parentOf(path), authoritativeRoot);
+    collectDirectoryPaths(dirs, parentOf(path), authoritativeRoot, worktreeRoot);
   }
   // Explicit mkdir entries
   for (const d of dirBuffer) {
     if (!d) continue;
-    collectDirectoryPaths(dirs, d, authoritativeRoot);
+    collectDirectoryPaths(dirs, d, authoritativeRoot, worktreeRoot);
   }
 
   const orderedDirs = [...dirs].sort((left, right) => {
@@ -1265,12 +1265,19 @@ function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritative
   return { inodes, chunks, deletePaths };
 }
 
-function collectDirectoryPaths(paths, path, authoritativeRoot) {
+// A clone publishes the directories it creates, up to and including its
+// authoritative root. An operation in an existing worktree (worktreeRoot)
+// publishes only directories below its top: the top and everything above it
+// already exist, are followed as git follows them, and are not the worktree's
+// to rewrite — republishing home is EACCES for the session user, and would
+// replace a linked ancestor with an empty directory.
+function collectDirectoryPaths(paths, path, authoritativeRoot, worktreeRoot = null) {
   let current = path;
   while (current) {
     if (authoritativeRoot &&
         current !== authoritativeRoot &&
         !current.startsWith(authoritativeRoot + '/')) break;
+    if (worktreeRoot !== null && !current.startsWith(worktreeRoot + '/')) break;
     paths.add(current);
     if (current === authoritativeRoot) break;
     current = parentOf(current);
@@ -1280,6 +1287,14 @@ function collectDirectoryPaths(paths, path, authoritativeRoot) {
 /**
  * Create the buffered fs adapter isomorphic-git will use.
  * Writes buffer in-memory; reads check buffer then fall back to supervisor.
+ *
+ * With a worktreeRoot (fetch, pull, push in an existing repository) the
+ * adapter writes that worktree the way git's checkout does (entry.c
+ * create_directories, has_symlink_leading_path): below its top, .git
+ * aside, a leading component that is not a real directory (a link, dangling
+ * or not, or a file) is deleted and replaced by a directory rather than
+ * followed, and a file replaces a link at its own path rather than writing
+ * through it.
  */
 function createBufferedFs(
   supervisor,
@@ -1291,6 +1306,7 @@ function createBufferedFs(
   phaseDeadline = null,
   authoritativeFallbackPaths = [],
   authoritativeFallbackRoots = [],
+  worktreeRoot = null,
 ) {
   const writeBuffer = new Map(); // path → Uint8Array (insertion ordered = FIFO)
   const pendingWriteMetadata = new Map();
@@ -1483,16 +1499,16 @@ function createBufferedFs(
     const paths = new Set(deleteBuffer);
     for (const path of dirBuffer) {
       if (!path) continue;
-      collectDirectoryPaths(paths, path, authoritativeRoot);
+      collectDirectoryPaths(paths, path, authoritativeRoot, worktreeRoot);
     }
     for (const path of writeBuffer.keys()) {
       paths.add(path);
-      collectDirectoryPaths(paths, parentOf(path), authoritativeRoot);
+      collectDirectoryPaths(paths, parentOf(path), authoritativeRoot, worktreeRoot);
     }
     if (extraPath) {
       paths.add(extraPath);
       if (includeParents) {
-        collectDirectoryPaths(paths, parentOf(extraPath), authoritativeRoot);
+        collectDirectoryPaths(paths, parentOf(extraPath), authoritativeRoot, worktreeRoot);
       }
     }
     let pathBytes = 0;
@@ -1580,6 +1596,7 @@ function createBufferedFs(
         deleteBuffer,
         waveMetadata,
         authoritativeRoot,
+        worktreeRoot,
       );
     // Snapshot stats counters BEFORE clearing the buffers so the increments
     // below see the wave's true size, not zero.
@@ -2382,6 +2399,8 @@ export default {
         phase === 'clone-checkout'
           ? [normalizePath(opts.dir) + '/.git/nimbus-checkout-index']
           : [],
+        // fetch, pull and push work in a repository that already exists.
+        phase === 'operation' ? normalizePath(opts.dir) : null,
       );
       const fs = bufferedFs.fs;
       flushWave = bufferedFs.flushWave;

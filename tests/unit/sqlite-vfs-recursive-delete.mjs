@@ -52,26 +52,18 @@ function seedTree(vfs, root, dirs, perDir) {
 
 /**
  * Everything the durable store holds, so two runs can be compared whole.
- * Content ids are freshly minted per write, so they are relabelled by the path
- * that references them — what must match is which content survives, not the
- * random name it was given.
+ * Chunks are content-addressed, so they compare by hash: what must match is
+ * which content survives, not the ids it was given.
  */
 function durableState(harness) {
-  const inodes = harness.sql.exec(
-    'SELECT path, parent_path, kind, size, mode, uid, gid, chunk_count, content_id FROM inodes ORDER BY path',
-  );
-  const label = new Map(inodes.map((row) => [row.content_id, `content(${row.path})`]));
-  const relabel = (contentId) => label.get(contentId) ?? `unreferenced(${label.size})`;
   return {
-    inodes: inodes.map((row) => ({ ...row, content_id: relabel(row.content_id) })),
-    lifecycle: harness.sql
-      .exec('SELECT content_id, state FROM content_lifecycle')
-      .map((row) => ({ ...row, content_id: relabel(row.content_id) }))
-      .sort((a, b) => (a.content_id < b.content_id ? -1 : 1)),
-    chunks: harness.sql
-      .exec('SELECT content_id, chunk_id FROM file_chunks')
-      .map((row) => ({ ...row, content_id: relabel(row.content_id) }))
-      .sort((a, b) => (a.content_id < b.content_id ? -1 : a.content_id > b.content_id ? 1 : a.chunk_id - b.chunk_id)),
+    inodes: harness.sql.exec(
+      `SELECT i.path, i.parent_path, i.kind, i.size, i.mode, i.uid, i.gid, hex(c.hash) AS chunk
+       FROM vfs_inodes i LEFT JOIN vfs_chunks c ON c.id = i.chunk_id ORDER BY i.path`,
+    ),
+    chunks: harness.sql.exec('SELECT hex(hash) AS hash FROM vfs_chunks ORDER BY hash'),
+    contents: harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_contents')[0].n,
+    queued: harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_gc_queue')[0].n,
   };
 }
 
@@ -240,7 +232,7 @@ function counters(rawVfs) {
   assert.deepEqual(counters(grouped.rawVfs), counters(solo.rawVfs));
   assert.equal(grouped.rawVfs._verifyCounters(), null);
   assert.equal(
-    grouped.harness.sql.exec('SELECT COUNT(*) AS n FROM file_chunks')[0].n,
+    grouped.harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n,
     1,
     'only the surviving file keeps content',
   );
@@ -388,7 +380,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   let groups = 0;
   let groupTransaction = null;
   harness.setFaultInjector((statement) => {
-    if (!statement.sql.startsWith('DELETE FROM inodes WHERE path')) return null;
+    if (!statement.sql.startsWith('DELETE FROM vfs_inodes WHERE path')) return null;
     if (statement.transaction !== groupTransaction) {
       groupTransaction = statement.transaction;
       groups++;

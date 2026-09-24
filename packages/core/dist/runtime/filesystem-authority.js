@@ -171,6 +171,10 @@ class SqliteGuardedFsBridge {
         this.guard();
         return this.target.copyFile(from, to);
     }
+    copyTree(from, to, options) {
+        this.guard();
+        return this.target.copyTree(from, to, options);
+    }
     fstat(handleId) {
         this.guard();
         return this.target.fstat(handleId);

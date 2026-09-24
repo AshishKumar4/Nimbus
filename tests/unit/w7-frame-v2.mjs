@@ -326,4 +326,38 @@ async function expectDecodeFailure(value, pattern) {
   assert.equal(retained, true);
 }
 
+// The checks on the wire are plain CRC-32: each file-end carries the CRC of
+// the file's bytes, and batch-end the CRC of every record before it (header
+// and payload), computed here bit by bit, independent of the encoder's table.
+{
+  const reference = (value) => {
+    let crc = 0xffff_ffff;
+    for (let index = 0; index < value.length; index++) {
+      crc ^= value[index];
+      for (let bit = 0; bit < 8; bit++) crc = (crc & 1) !== 0 ? 0xedb8_8320 ^ (crc >>> 1) : crc >>> 1;
+    }
+    return (crc ^ 0xffff_ffff) >>> 0;
+  };
+  const { payload, one, many, link } = fixture();
+  const encoded = await collect(encodeWriteBatchStream(payload));
+  const records = frameRecords(encoded);
+  const json = (record) => JSON.parse(new TextDecoder().decode(
+    encoded.subarray(record.payloadOffset, record.payloadOffset + record.length),
+  ));
+  const fileEnds = records.filter((record) => record.tag === 6).map(json);
+  assert.deepEqual(
+    fileEnds.map((end) => end.check),
+    [reference(new Uint8Array()), reference(one), reference(many), reference(link)],
+  );
+  const batchEnd = records.at(-1);
+  assert.equal(batchEnd.tag, 7);
+  assert.equal(json(batchEnd).check, reference(encoded.subarray(4, batchEnd.offset)));
+  // And the decoder accepts exactly those values.
+  const { records: decoded } = await decodeAll(encoded, 3);
+  assert.deepEqual(
+    decoded.filter((record) => record.type === 'file-end').map((record) => record.check),
+    fileEnds.map((end) => end.check),
+  );
+}
+
 console.log('W7 v3 incremental protocol: ok');

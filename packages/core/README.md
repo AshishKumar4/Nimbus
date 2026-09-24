@@ -131,8 +131,12 @@ module map. That machinery lives in `@nimbus-sh/worker` and
 
 The workspace is a tenant in a database you own:
 
-- It creates and touches only its own tables (`inodes`, `file_chunks`,
-  `content_lifecycle`, `vfs_*`).
+- It creates and touches only its own tables, all named `vfs_*`. A database
+  still holding the pre-v2 filesystem (`inodes`, `file_chunks`,
+  `content_lifecycle`) opens empty, and those tables are deleted in bounded
+  pages once their columns show they are Nimbus's.
+- Core hashes file content with `node:crypto`'s synchronous sha256, so a
+  workerd host needs the `nodejs_compat` flag.
 - `destroy()` drops those tables and does not call `deleteAll()`.
 - `transactionSync` must be a real transaction. An implementation that only
   calls the callback turns every atomic write into a torn one.

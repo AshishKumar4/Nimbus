@@ -82,6 +82,8 @@ sessionFs.mkdir('home/user/hdir', { recursive: true });
 sessionFs.writeFile('home/user/hdir/child', 'c');
 sessionFs.mkdir('home/user/rm/inner', { recursive: true });
 sessionFs.writeFile('home/user/rm/inner/leaf', 'x');
+sessionFs.mkdir('home/user/tree-src');
+sessionFs.writeFile('home/user/tree-src/f', 'tree\n');
 const bytes = new Uint8Array([1, 2, 3]), content = 'written';
 const atimeMs = 100, mtimeMs = 200, mode = 0o640, size = 3;
 const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
@@ -141,6 +143,7 @@ const INPUTS = {
   fsRealpath: [linkPath],
   fsRemove: [removePath, { recursive: true }],
   fsCopyFile: [path, copyPath],
+  fsCopyTree: ['/home/user/tree-src', '/home/user/tree-copy'],
   fsAcquireExclusiveMutation: [mutationPath],
   fsReleaseExclusiveMutation: () => [mutationLease.owner],
   fsRead: () => [fileHandle.id, offset, length],
@@ -377,6 +380,10 @@ const nativeAssert = {
   fsRealpath: (r) => assert.equal(r, path, 'fsRealpath resolves the symlink'),
   fsRemove: () => assert.equal(kernelVfs.exists('home/user/rm'), false, 'fsRemove took the tree'),
   fsCopyFile: () => assert.equal(dec.decode(kernelVfs.readFile('home/user/copy')), 'seeded\n', 'fsCopyFile copied the bytes'),
+  fsCopyTree: (r) => {
+    assert.equal(r, 2, 'fsCopyTree reports the entries copied');
+    assert.equal(dec.decode(kernelVfs.readFile('home/user/tree-copy/f')), 'tree\n', 'fsCopyTree copied the tree');
+  },
   fsAcquireExclusiveMutation: async (r) => {
     mutationLease = r;
     assert.equal(r.root, 'home/user/mut', 'fsAcquireExclusiveMutation leases the root');

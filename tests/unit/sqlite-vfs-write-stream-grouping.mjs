@@ -176,15 +176,14 @@ function assertBounded(stats) {
       const stat = vfs.stat(entry.path);
       return { uid: stat.uid, gid: stat.gid, mode: stat.mode, size: stat.size };
     }),
-    liveContent: harness.sql
-      .exec("SELECT COUNT(*) AS n FROM content_lifecycle WHERE state = 'staging'")[0].n,
+    staged: harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_contents WHERE state = 0')[0].n,
   });
 
   const together = openVfs();
   seed(together.vfs);
-  const priorContent = together.harness.sql.exec(
-    "SELECT content_id FROM inodes WHERE path = 'owned/kept.txt'",
-  )[0].content_id;
+  const priorChunk = together.harness.sql.exec(
+    "SELECT chunk_id FROM vfs_inodes WHERE path = 'owned/kept.txt'",
+  )[0].chunk_id;
   assert.equal(
     (await together.vfs.writeStream(encodeWriteBatchStream(streamPayload([replaced, fresh])))).ok,
     true,
@@ -204,13 +203,8 @@ function assertBounded(stats) {
     describe(apart.harness, reopenVfs(apart.harness)),
   );
 
-  // The superseded generation is unreferenced rather than left pinned.
-  const live = new Set(
-    together.harness.sql
-      .exec('SELECT content_id FROM inodes WHERE content_id IS NOT NULL')
-      .map((row) => row.content_id),
-  );
-  assert.equal(live.has(priorContent), false);
+  // The superseded content is collected rather than left pinned.
+  assert.deepEqual(together.harness.sql.exec('SELECT id FROM vfs_chunks WHERE id = ?', priorChunk), []);
 }
 
 // A file larger than one transaction is alone in its group: it stages across
@@ -233,10 +227,7 @@ function assertBounded(stats) {
   assertBounded(rawVfs.getStats());
   // Nothing is left staged: every content row the stream created is either
   // referenced by an inode or gone.
-  assert.equal(
-    harness.sql.exec("SELECT COUNT(*) AS n FROM content_lifecycle WHERE state = 'staging'")[0].n,
-    0,
-  );
+  assert.equal(harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_contents WHERE state = 0')[0].n, 0);
 }
 
 // A fault at any statement of the group's transaction leaves nothing from
@@ -304,7 +295,7 @@ function assertBounded(stats) {
     assert.deepEqual(reconstructed.readFile(entry.path), entry.data);
   }
   assert.equal(
-    harness.sql.exec("SELECT COUNT(*) AS n FROM inodes WHERE path LIKE 'idem/%'")[0].n,
+    harness.sql.exec("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path LIKE 'idem/%'")[0].n,
     entries.length,
   );
   assert.equal(reconstructed.readdir('idem').length, entries.length);

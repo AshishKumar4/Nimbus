@@ -304,4 +304,21 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   assert.deepEqual(sql.exec("SELECT path FROM chunk WHERE path = 'tmp/unflushed.txt'"), [], 'with its bytes');
 }
 
+// ── a subtree-scoped or structural report covers everything under it ───────
+{
+  const s = loadStore();
+  s.__residentAdmit({ poison: false, paths: [], epoch: 'e1', rev: 5 });
+  s.__residentPopulate('d/a.txt', 'A', 4);
+  s.__residentPopulate('d/sub/b.txt', 'B', 6);
+  s.__residentPopulate('dx.txt', 'X', 4);
+  s.bundle['d/own.txt'] = 'mine';
+  const applied = s.__residentAdmit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], epoch: 'e1', rev: 6 });
+  assert.deepEqual(applied.dropped.sort(), ['d/a.txt'], 'a row under it stamped below the report goes');
+  assert.equal(s.bundle['d/sub/b.txt'], 'B', 'a row stamped at the report stays');
+  assert.equal(s.bundle['d/own.txt'], 'mine', "the facet's own bytes stay");
+  assert.equal(s.bundle['dx.txt'], 'X', 'a sibling that only shares the prefix is not covered');
+  s.__residentAdmit({ poison: false, paths: [{ path: 'd', rev: 7, structural: true }], epoch: 'e1', rev: 7 });
+  assert.equal(s.bundle['d/sub/b.txt'], undefined, 'a structural report covers the subtree too');
+}
+
 console.log('facet-resident-store: ok');

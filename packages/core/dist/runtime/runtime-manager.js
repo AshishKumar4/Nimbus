@@ -99,10 +99,16 @@ export class RuntimeManager {
         throw new Error(`${name}@${version}: runner${missing.length === 1 ? '' : 's'} `
             + `'${missing.join("', '")}' not registered in this workspace`);
     }
+    /** The runner keys `manifest`'s entrypoints name that this manager has no
+     *  factory for, deduplicated, in entrypoint order. */
     missingRunners(manifest) {
         return [...new Set(runtimeEntrypoints(manifest)
                 .map((ep) => ep.runner)
                 .filter((key) => !this.runnerFactories.has(key)))];
+    }
+    /** Every runner key registered so far. */
+    runnerKeys() {
+        return [...this.runnerFactories.keys()];
     }
     /**
      * Install a package the caller already holds — the workspace's eager seed

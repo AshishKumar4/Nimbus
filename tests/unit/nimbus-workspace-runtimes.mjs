@@ -10,7 +10,8 @@ import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { BASH_RUNNER, CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 const encoder = new TextEncoder();
@@ -88,6 +89,35 @@ const openWorkspace = (options = {}) => {
 
   const listed = await ws.exec('nimbus install --list');
   assert.match(listed.stdout + listed.stderr, /no runtimes installed/i);
+}
+
+// ── A supplied package this core cannot run is refused at create ──────────
+// With `facets` the workspace owns the runner table, so a package naming a
+// runner outside it can only ever install as a missing command: `bash`
+// built for a runner contract this core predates, or one it has retired.
+for (const runtimeInstall of ['eager', 'on-demand']) {
+  const refused = await openWorkspace({
+    runtimeInstall,
+    facets: localFacetHost(),
+    runtimes: [fakePackage({ 'bin/toy': '# t\n' }, { version: '1.0.0-3', runner: 'retired-runner' })],
+  }).then(
+    async (ws) => {
+      const ran = await ws.exec('toy');
+      return `created; toy exited ${ran.exitCode}: ${ran.stderr.trim()}`;
+    },
+    (error) => error,
+  );
+  assert.ok(refused instanceof Error, `${runtimeInstall}: ${refused}`);
+  assert.match(refused.message, /toy@1\.0\.0-3/);
+  assert.match(refused.message, /'retired-runner'/);
+  assert.ok(refused.message.includes(`'${BASH_RUNNER}'`), `provided keys not named: ${refused.message}`);
+}
+
+// Without facets the host binds runners after create (the on-demand case
+// above), so an unknown key is not refused there.
+{
+  const ws = await openWorkspace({ runtimes: [fakePackage({ 'bin/toy': '# t\n' }, { runner: 'retired-runner' })] });
+  assert.ok(ws.vfs.as(CRED_KERNEL).exists('home/user/.nimbus/runtimes/toy/1.0.0/manifest.json'));
 }
 
 // ── A remote source's alias resolves as a lazy command ────────────────────

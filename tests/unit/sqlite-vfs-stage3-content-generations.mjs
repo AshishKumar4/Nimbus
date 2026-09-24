@@ -54,40 +54,6 @@ function chunks(path, data) {
   return result;
 }
 
-function contentId(harness, path) {
-  const rows = harness.sql.exec('SELECT content_id FROM inodes WHERE path = ?', path);
-  assert.equal(rows.length, 1, `expected one inode for ${path}`);
-  return rows[0].content_id;
-}
-
-function contentChunkIds(harness, id) {
-  return harness.sql.exec(
-    'SELECT chunk_id FROM file_chunks WHERE content_id = ? ORDER BY chunk_id',
-    id,
-  ).map((row) => Number(row.chunk_id));
-}
-
-function contentMaintenanceScanCount(harness, fromStatement = 0) {
-  return harness.statements.slice(fromStatement).filter((statement) => (
-    /FROM\s+file_chunks\s+AS\s+chunks/i.test(statement.sql)
-    && /NOT\s+EXISTS/i.test(statement.sql)
-  )).length;
-}
-
-function standaloneContentIdLookupCount(harness, fromStatement = 0) {
-  return harness.statements.slice(fromStatement).filter((statement) => (
-    /^\s*SELECT\s+(?:content_id|path)\s+FROM\s+(?:file_chunks|content_lifecycle|inodes)/i.test(statement.sql)
-  )).length;
-}
-
-function contentIdAllocationGuardCount(harness, fromStatement = 0) {
-  return harness.statements.slice(fromStatement).filter((statement) => (
-    /SELECT\s+1\s+AS\s+collision\s+FROM\s+file_chunks/i.test(statement.sql)
-    && /UNION\s+ALL[\s\S]+FROM\s+content_lifecycle/i.test(statement.sql)
-    && /UNION\s+ALL[\s\S]+FROM\s+inodes/i.test(statement.sql)
-  )).length;
-}
-
 function transactionGroups(harness, fromStatement = 0) {
   const groups = new Map();
   for (const statement of harness.statements.slice(fromStatement)) {
@@ -98,59 +64,6 @@ function transactionGroups(harness, fromStatement = 0) {
   }
   return groups;
 }
-
-function createStage1Fixture(entries) {
-  const harness = createSqliteVfsTestHarness();
-  harness.sql.exec(`CREATE TABLE vfs_schema_migrations (
-    id TEXT PRIMARY KEY,
-    applied_at INTEGER NOT NULL
-  )`);
-  harness.sql.exec(`CREATE TABLE inodes (
-    path TEXT PRIMARY KEY,
-    parent_path TEXT NOT NULL DEFAULT '',
-    is_dir INTEGER NOT NULL DEFAULT 0,
-    size INTEGER NOT NULL DEFAULT 0,
-    atime INTEGER NOT NULL DEFAULT 0,
-    mtime INTEGER NOT NULL DEFAULT 0,
-    mode INTEGER NOT NULL DEFAULT 0,
-    chunk_count INTEGER NOT NULL DEFAULT 0
-  )`);
-  harness.sql.exec('CREATE INDEX idx_inodes_parent ON inodes(parent_path)');
-  harness.sql.exec(`CREATE TABLE file_chunks (
-    path TEXT NOT NULL,
-    chunk_id INTEGER NOT NULL,
-    data BLOB NOT NULL,
-    PRIMARY KEY (path, chunk_id)
-  )`);
-  for (const entry of entries) {
-    const data = entry.data ?? new Uint8Array(0);
-    const isDir = entry.isDir === true;
-    const count = isDir || data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
-    harness.sql.exec(
-      `INSERT INTO inodes
-       (path, parent_path, is_dir, size, atime, mtime, mode, chunk_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      entry.path,
-      entry.parentPath ?? (entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''),
-      isDir ? 1 : 0,
-      data.length,
-      1,
-      1,
-      isDir ? 0o755 : 0o644,
-      count,
-    );
-    for (const chunk of chunks(entry.path, data)) {
-      harness.sql.exec(
-        'INSERT INTO file_chunks (path, chunk_id, data) VALUES (?, ?, ?)',
-        chunk.path,
-        chunk.chunkId,
-        chunk.data,
-      );
-    }
-  }
-  return harness;
-}
-
 function captureTransactionMetrics(rawVfs, harness, afterTransaction) {
   const captured = new Map();
   harness.setFaultInjector(({ transaction }) => {
@@ -167,473 +80,10 @@ function captureTransactionMetrics(rawVfs, harness, afterTransaction) {
   return captured;
 }
 
-function assertBounded(metrics, label) {
-  assert.ok(metrics.blobBytes <= MAX_TX_BLOB_BYTES, `${label}: blob byte bound`);
-  assert.ok(metrics.logicalRows <= MAX_TX_LOGICAL_ROWS, `${label}: logical row bound`);
-  assert.ok(metrics.sqlExecs <= MAX_TX_SQL_EXECS, `${label}: SQL execution bound`);
-}
-
-// Fresh/new schema creation is complete, constrained, and idempotent.
-{
-  const { harness, vfs } = openVfs();
-  const inodeColumns = harness.sql.exec('PRAGMA table_info(inodes)');
-  const contentColumn = inodeColumns.find((column) => column.name === 'content_id');
-  assert.ok(contentColumn);
-  assert.equal(contentColumn.notnull, 0);
-  assert.deepEqual(
-    harness.sql.exec('PRAGMA table_info(file_chunks)').map((column) => [column.name, column.pk]),
-    [['content_id', 1], ['chunk_id', 2], ['data', 0]],
-  );
-  assert.deepEqual(
-    harness.sql.exec('PRAGMA table_info(content_lifecycle)').map((column) => column.name),
-    ['content_id', 'state', 'created_at'],
-  );
-  assert.throws(
-    () => harness.sql.exec(
-      "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ('bad', 'invalid', 1)",
-    ),
-    /CHECK constraint failed/,
-  );
-  assert.deepEqual(
-    harness.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'content_generations_v1'"),
-    [{ id: 'content_generations_v1' }],
-  );
-
-  vfs.writeFile('new-schema.txt', 'new-schema');
-  const firstId = contentId(harness, 'new-schema.txt');
-  assert.equal(typeof firstId, 'string');
-  assert.match(firstId, /^\/content:/);
-  // No flush/barrier is necessary: a fresh VFS must observe the write as soon
-  // as the synchronous write call returns.
-  const reopened = reopenVfs(harness);
-  assert.equal(reopened.readFileString('new-schema.txt'), 'new-schema');
-  assert.equal(contentId(harness, 'new-schema.txt'), firstId);
-  reopenVfs(harness);
-  assert.equal(
-    harness.sql.exec("SELECT COUNT(*) AS count FROM vfs_schema_migrations WHERE id = 'content_generations_v1'")[0].count,
-    1,
-  );
-}
-
-// A non-empty Stage-1 path-keyed database migrates in place, remains readable,
-// reopens idempotently, and converts lazily to an opaque generation on rewrite.
-{
-  const legacy = bytes(CHUNK_SIZE * 2 + 17, 11);
-  const harness = createStage1Fixture([{ path: 'legacy.bin', data: legacy }]);
-  const { vfs } = openVfs(harness);
-  assert.equal(contentId(harness, 'legacy.bin'), null);
-  assert.deepEqual(vfs.readFile('legacy.bin'), legacy);
-  assert.deepEqual(contentChunkIds(harness, 'legacy.bin'), [0, 1, 2]);
-  assert.deepEqual(reopenVfs(harness).readFile('legacy.bin'), legacy);
-
-  const replacement = bytes(CHUNK_SIZE + 9, 31);
-  vfs.writeFile('legacy.bin', replacement);
-  const opaque = contentId(harness, 'legacy.bin');
-  assert.equal(typeof opaque, 'string');
-  assert.match(opaque, /^\/content:/);
-  assert.notEqual(opaque, 'legacy.bin');
-  assert.deepEqual(reopenVfs(harness).readFile('legacy.bin'), replacement);
-  vfs.writeFile('legacy.bin', replacement);
-  assert.notEqual(contentId(harness, 'legacy.bin'), opaque, 'every full rewrite gets a fresh generation');
-}
-
-// Clean writes do not run the orphan-maintenance scan. Content allocation uses
-// one combined indexed uniqueness guard rather than three separate lookups.
-// Replacing content enqueues GC, performs one maintenance pass, and reclaims
-// the superseded generation before returning.
-{
-  const { harness, vfs } = openVfs();
-  const cleanStart = harness.statements.length;
-  for (let index = 0; index < 12; index++) {
-    vfs.writeFile(`clean-${index}.txt`, `value-${index}`);
-  }
-  assert.equal(contentMaintenanceScanCount(harness, cleanStart), 0);
-  assert.equal(contentIdAllocationGuardCount(harness, cleanStart), 12);
-  assert.equal(standaloneContentIdLookupCount(harness, cleanStart), 0);
-  const generatedIds = new Set(
-    Array.from({ length: 12 }, (_, index) => contentId(harness, `clean-${index}.txt`)),
-  );
-  assert.equal(generatedIds.size, 12);
-
-  const oldId = contentId(harness, 'clean-0.txt');
-  const replacementStart = harness.statements.length;
-  vfs.writeFile('clean-0.txt', 'replacement');
-  assert.equal(contentMaintenanceScanCount(harness, replacementStart), 1);
-  assert.deepEqual(contentChunkIds(harness, oldId), []);
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', oldId),
-    [],
-  );
-  const postGcStart = harness.statements.length;
-  vfs.writeFile('post-gc-clean.txt', 'clean');
-  assert.equal(contentMaintenanceScanCount(harness, postGcStart), 0);
-  assert.equal(reopenVfs(harness).readFileString('clean-0.txt'), 'replacement');
-}
-
-// A repeated random UUID inside one multi-file plan is detected before staging
-// can alias its generations. The allocator retries once and both files remain
-// independently durable across reconstruction.
-{
-  const { harness, vfs } = openVfs();
-  const firstUuid = '11111111-1111-4111-8111-111111111111';
-  const secondUuid = '22222222-2222-4222-8222-222222222222';
-  const generatedUuids = [firstUuid, firstUuid, secondUuid];
-  const originalDescriptor = Object.getOwnPropertyDescriptor(crypto, 'randomUUID');
-  Object.defineProperty(crypto, 'randomUUID', {
-    configurable: true,
-    value: () => {
-      const next = generatedUuids.shift();
-      assert.ok(next, 'unexpected extra content ID allocation attempt');
-      return next;
-    },
-  });
-  const statementStart = harness.statements.length;
-  const firstData = bytes(9, 17);
-  const secondData = bytes(11, 73);
-  try {
-    vfs.writeBatch({
-      inodes: [
-        fileInode('collision-first.bin', firstData),
-        fileInode('collision-second.bin', secondData),
-      ],
-      chunks: [
-        ...chunks('collision-first.bin', firstData),
-        ...chunks('collision-second.bin', secondData),
-      ],
-    });
-  } finally {
-    if (originalDescriptor) Object.defineProperty(crypto, 'randomUUID', originalDescriptor);
-    else delete crypto.randomUUID;
-  }
-  assert.equal(contentId(harness, 'collision-first.bin'), `/content:${firstUuid}`);
-  assert.equal(contentId(harness, 'collision-second.bin'), `/content:${secondUuid}`);
-  assert.equal(generatedUuids.length, 0, 'allocator must consume the retry UUID');
-  assert.equal(contentIdAllocationGuardCount(harness, statementStart), 2);
-  const reconstructed = reopenVfs(harness);
-  assert.deepEqual(reconstructed.readFile('collision-first.bin'), firstData);
-  assert.deepEqual(reconstructed.readFile('collision-second.bin'), secondData);
-}
-
-// Unlink enqueues GC through writeBatch and runs exactly one effective
-// maintenance pass, which removes both the chunks and lifecycle row.
-{
-  const { harness, rawVfs, vfs } = openVfs();
-  vfs.writeFile('unlink-once.txt', 'gone');
-  const oldId = contentId(harness, 'unlink-once.txt');
-  const runMaintenance = rawVfs.runContentMaintenanceSafely.bind(rawVfs);
-  let maintenanceInvocations = 0;
-  rawVfs.runContentMaintenanceSafely = (...args) => {
-    maintenanceInvocations++;
-    return runMaintenance(...args);
-  };
-  const unlinkStart = harness.statements.length;
-  vfs.unlink('unlink-once.txt');
-  assert.equal(maintenanceInvocations, 1);
-  assert.equal(contentMaintenanceScanCount(harness, unlinkStart), 1);
-  assert.deepEqual(contentChunkIds(harness, oldId), []);
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', oldId),
-    [],
-  );
-}
-
-// The zero-copy migration may expose pre-existing orphan chunk keys. Boot
-// maintenance discovers them without scanning/copying their BLOBs, enrolls
-// them as GC, and reclaims them through the same bounded deletion path.
-{
-  const harness = createStage1Fixture([{ path: 'owned.bin', data: bytes(3, 2) }]);
-  harness.sql.exec(
-    'INSERT INTO file_chunks (path, chunk_id, data) VALUES (?, ?, ?)',
-    'legacy-orphan',
-    0,
-    bytes(9, 17),
-  );
-  const transactionStart = harness.transactionCount;
-  const { vfs } = openVfs(harness);
-  assert.deepEqual(vfs.readFile('owned.bin'), bytes(3, 2));
-  assert.deepEqual(contentChunkIds(harness, 'legacy-orphan'), []);
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', 'legacy-orphan'),
-    [],
-  );
-  for (const [transaction, statements] of transactionGroups(harness)) {
-    if (transaction <= transactionStart || transaction === transactionStart + 1) continue;
-    assert.ok(statements.length <= MAX_TX_SQL_EXECS, `legacy orphan transaction ${transaction}`);
-  }
-}
-
-// Every SQL fault in the versioned Stage-1 schema migration rolls back the
-// column rename, inode column, lifecycle table, indexes, and marker together.
-const schemaMigrationStatementCount = (() => {
-  const harness = createStage1Fixture([{ path: 'count-legacy.bin', data: bytes(3, 1) }]);
-  openVfs(harness);
-  return harness.statements.filter((statement) => statement.transaction === 1).length;
-})();
-for (let statement = 1; statement <= schemaMigrationStatementCount; statement++) {
-  const legacy = bytes(CHUNK_SIZE + 2, statement);
-  const harness = createStage1Fixture([{ path: 'rollback-legacy.bin', data: legacy }]);
-  harness.failOnTransactionStatement(statement);
-  assert.throws(() => openVfs(harness), /injected SQL fault/);
-  assert.equal(
-    harness.sql.exec('PRAGMA table_info(inodes)').some((column) => column.name === 'content_id'),
-    false,
-  );
-  assert.deepEqual(
-    harness.sql.exec('PRAGMA table_info(file_chunks)').map((column) => column.name),
-    ['path', 'chunk_id', 'data'],
-  );
-  assert.deepEqual(
-    harness.sql.exec("SELECT id FROM vfs_schema_migrations WHERE id = 'content_generations_v1'"),
-    [],
-  );
-  harness.clearFault();
-  const { vfs } = openVfs(harness);
-  assert.deepEqual(vfs.readFile('rollback-legacy.bin'), legacy);
-}
-
-// A durable marker with the old shape is impossible after an atomic migration
-// and therefore signals corruption; initialization must not silently heal it.
-{
-  const harness = createStage1Fixture([{ path: 'marker-mismatch.bin', data: bytes(3, 9) }]);
-  harness.sql.exec(
-    "INSERT INTO vfs_schema_migrations (id, applied_at) VALUES ('content_generations_v1', 1)",
-  );
-  assert.throws(
-    () => openVfs(harness),
-    /content generation marker does not match the durable schema/,
-  );
-  assert.deepEqual(
-    harness.sql.exec('PRAGMA table_info(file_chunks)').map((column) => column.name),
-    ['path', 'chunk_id', 'data'],
-  );
-}
-
-// The loaded inode is the content-resolution cache: an uncached multi-chunk
-// read performs chunk queries only, never an inode lookup per chunk. The
-// stat loads the inode, the one lookup a path costs.
-{
-  const data = bytes(CHUNK_SIZE * 3 + 5, 47);
-  const harness = createStage1Fixture([{ path: 'cached-resolver.bin', data }]);
-  const { vfs } = openVfs(harness);
-  vfs.stat('cached-resolver.bin');
-  const offset = harness.statements.length;
-  assert.deepEqual(vfs.readFile('cached-resolver.bin'), data);
-  const reads = harness.statements.slice(offset);
-  assert.equal(
-    reads.filter((statement) => /FROM\s+inodes/i.test(statement.sql)).length,
-    0,
-    'chunk reads must not query inode content_id repeatedly',
-  );
-  assert.equal(
-    reads.filter((statement) => /FROM\s+file_chunks/i.test(statement.sql)).length,
-    4,
-  );
-  const hotOffset = harness.statements.length;
-  assert.deepEqual(vfs.readFile('cached-resolver.bin'), data);
-  assert.equal(
-    harness.statements.slice(hotOffset).filter((statement) => /FROM\s+file_chunks/i.test(statement.sql)).length,
-    0,
-  );
-}
-
-// Range writes and truncate retain the inode generation and touch only the
-// current generation's chunks.
-{
-  const { harness, vfs } = openVfs();
-  const original = bytes(CHUNK_SIZE * 3 + 100, 59);
-  vfs.writeFile('range.bin', original);
-  const id = contentId(harness, 'range.bin');
-  const patch = bytes(10, 91);
-  vfs.writeRange('range.bin', CHUNK_SIZE - 5, patch);
-  assert.equal(contentId(harness, 'range.bin'), id);
-  const expected = original.slice();
-  expected.set(patch, CHUNK_SIZE - 5);
-  assert.deepEqual(reopenVfs(harness).readFile('range.bin'), expected);
-
-  vfs.truncate('range.bin', CHUNK_SIZE + 23);
-  assert.equal(contentId(harness, 'range.bin'), id);
-  assert.deepEqual(contentChunkIds(harness, id), [0, 1]);
-  assert.deepEqual(reopenVfs(harness).readFile('range.bin'), expected.slice(0, CHUNK_SIZE + 23));
-}
-
-// Rename changes only the logical inode namespace. Legacy-null files
-// materialize their old resolved key before their path changes.
-{
-  const data = bytes(CHUNK_SIZE + 3, 73);
-  const harness = createStage1Fixture([
-    { path: 'legacy-dir', isDir: true },
-    { path: 'legacy-dir/file.bin', parentPath: 'legacy-dir', data },
-  ]);
-  const { vfs } = openVfs(harness);
-  const offset = harness.statements.length;
-  vfs.rename('legacy-dir', 'renamed-dir');
-  assert.equal(contentId(harness, 'renamed-dir/file.bin'), 'legacy-dir/file.bin');
-  assert.deepEqual(contentChunkIds(harness, 'legacy-dir/file.bin'), [0, 1]);
-  assert.deepEqual(vfs.readFile('renamed-dir/file.bin'), data);
-  assert.equal(vfs.exists('legacy-dir/file.bin'), false);
-  assert.equal(
-    harness.statements.slice(offset).filter((statement) => (
-      /(?:INSERT|UPDATE|DELETE).*file_chunks/i.test(statement.sql)
-    )).length,
-    0,
-    'rename must not rewrite immutable chunk rows',
-  );
-  assert.deepEqual(reopenVfs(harness).readFile('renamed-dir/file.bin'), data);
-}
-
-// Rename fails before mutation when an inconsistent target subtree would
-// collide with a moved descendant; INSERT OR REPLACE must never hide the
-// collision or leak the overwritten generation from counters/GC ownership.
-{
-  const { harness, vfs } = openVfs();
-  vfs.mkdir('source', { recursive: true });
-  vfs.writeFile('source/file.txt', 'source');
-  vfs.mkdir('target');
-  vfs.writeFile('target/file.txt', 'target');
-  // Remove only the target root to model durable corruption while retaining
-  // a descendant that must not be silently overwritten.
-  harness.sql.exec("DELETE FROM inodes WHERE path = 'target'");
-  const reconstructed = reopenVfs(harness);
-  assert.throws(
-    () => reconstructed.rename('source', 'target'),
-    /rename target subtree conflicts/,
-  );
-  assert.equal(reconstructed.exists('source/file.txt'), true);
-  assert.deepEqual(
-    harness.sql.exec("SELECT path FROM inodes WHERE path = 'target/file.txt'"),
-    [{ path: 'target/file.txt' }],
-  );
-}
-
-// Referenced lifecycle rows are never GC authority. Unreferenced staging is
-// reclaimed in bounded windows, independently of age.
-{
-  const { harness, rawVfs, vfs } = openVfs();
-  const live = bytes(CHUNK_SIZE + 1, 101);
-  vfs.writeFile('referenced.bin', live);
-  const liveId = contentId(harness, 'referenced.bin');
-  harness.sql.exec(
-    "INSERT OR REPLACE INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'gc', ?)",
-    liveId,
-    -1,
-  );
-  rawVfs.runContentMaintenance(8);
-  assert.deepEqual(vfs.readFile('referenced.bin'), live);
-  assert.deepEqual(contentChunkIds(harness, liveId), [0, 1]);
-
-  const abandoned = 'test:abandoned';
-  harness.sql.exec(
-    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)",
-    abandoned,
-    Number.MAX_SAFE_INTEGER,
-  );
-  for (let chunkId = 0; chunkId < MAX_TX_LOGICAL_ROWS + 44; chunkId++) {
-    harness.sql.exec(
-      'INSERT INTO file_chunks (content_id, chunk_id, data) VALUES (?, ?, ?)',
-      abandoned,
-      chunkId,
-      new Uint8Array([chunkId % 251]),
-    );
-  }
-  const transactionStart = harness.transactionCount;
-  const captured = captureTransactionMetrics(rawVfs, harness, transactionStart);
-  const result = rawVfs.runContentMaintenance(16);
-  harness.clearFault();
-  assert.ok(result.transactions >= 10, 'GC must use SQL-bind-safe bounded windows');
-  assert.deepEqual(contentChunkIds(harness, abandoned), []);
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', abandoned),
-    [],
-  );
-  assert.ok(captured.size >= 3);
-  for (const [transaction, metrics] of captured) {
-    assertBounded(metrics, `GC transaction ${transaction}`);
-  }
-}
-
-// A directory at the same logical path is not a content reference. This is
-// essential when a legacy-null file (whose resolved ID is its path) is
-// replaced by a directory.
-{
-  const harness = createStage1Fixture([{ path: 'legacy-flip', data: bytes(7, 4) }]);
-  const { rawVfs, vfs } = openVfs(harness);
-  vfs.writeBatch({
-    inodes: [{
-      path: 'legacy-flip', parentPath: '', isDir: true, size: 0,
-      mtime: 2, mode: 0o755, chunkCount: 0,
-    }],
-    chunks: [],
-  });
-  rawVfs.runContentMaintenance(4);
-  assert.equal(vfs.isDirectory('legacy-flip'), true);
-  assert.deepEqual(contentChunkIds(harness, 'legacy-flip'), []);
-}
-
-// Opportunistic maintenance in the same isolate skips an actively streamed
-// generation. The durable lifecycle row remains the ownership source and a
-// reset would intentionally lose only this in-memory liveness exemption.
-{
-  const { harness, vfs } = openVfs();
-  const data = bytes(CHUNK_SIZE + 3, 21);
-  const entries = chunks('active-stage.bin', data);
-  const result = await vfs.writeStream(encodeWriteBatchStream({
-    inodes: [fileInode('active-stage.bin', data)],
-    chunks: entries,
-  }));
-  assert.equal(result.ok, true);
-  assert.deepEqual(reopenVfs(harness).readFile('active-stage.bin'), data);
-}
-
-// A full discovery page of active staging rows cannot hide a later abandoned
-// generation and clear the dirty flag. Once the active rows finish, subsequent
-// hot-path maintenance converts and reclaims the abandoned generation.
-{
-  const { harness, rawVfs, vfs } = openVfs();
-  vfs.writeFile('maintenance-trigger.txt', 'old');
-  const activeIds = Array.from(
-    { length: 50 },
-    (_, index) => `/test:active:${String(index).padStart(2, '0')}`,
-  );
-  for (const [index, activeId] of activeIds.entries()) {
-    harness.sql.exec(
-      "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)",
-      activeId,
-      index,
-    );
-    rawVfs.activeStagingContentIds.add(activeId);
-  }
-  const abandonedId = '/test:abandoned-after-active-page';
-  harness.sql.exec(
-    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES (?, 'staging', ?)",
-    abandonedId,
-    100,
-  );
-  harness.sql.exec(
-    'INSERT INTO file_chunks (content_id, chunk_id, data) VALUES (?, ?, ?)',
-    abandonedId,
-    0,
-    bytes(7, 83),
-  );
-
-  vfs.writeFile('maintenance-trigger.txt', 'new');
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', abandonedId),
-    [{ state: 'staging' }],
-  );
-  for (const activeId of activeIds) {
-    harness.sql.exec('DELETE FROM content_lifecycle WHERE content_id = ?', activeId);
-    rawVfs.activeStagingContentIds.delete(activeId);
-  }
-
-  const cleanupStart = harness.statements.length;
-  vfs.writeFile('maintenance-progress-1.txt', 'one');
-  vfs.writeFile('maintenance-progress-2.txt', 'two');
-  assert.ok(contentMaintenanceScanCount(harness, cleanupStart) >= 2);
-  assert.deepEqual(contentChunkIds(harness, abandonedId), []);
-  assert.deepEqual(
-    harness.sql.exec('SELECT state FROM content_lifecycle WHERE content_id = ?', abandonedId),
-    [],
-  );
+function contentId(harness, path) {
+  const rows = harness.sql.exec('SELECT content_id FROM vfs_inodes WHERE path = ?', path);
+  assert.equal(rows.length, 1, `expected one inode for ${path}`);
+  return rows[0].content_id;
 }
 
 function createLargeReplacementFixture() {
@@ -644,35 +94,29 @@ function createLargeReplacementFixture() {
   return { ...opened, oldData, newData, transactionStart: opened.harness.transactionCount };
 }
 
+/** Classify a large write's transactions: staging (manifest rows, no inode), publish (the inode), gc. */
 function replacementTransactions(harness, statementStart) {
   const groups = transactionGroups(harness, statementStart);
   const stage = [];
   let publish = null;
   let gc = null;
   for (const [transaction, statements] of groups) {
-    if (
-      statements.some((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
-      || (
-        statements.some((statement) => /INSERT INTO content_lifecycle/i.test(statement.sql))
-        && statements.some((statement) => /staging/i.test(statement.sql))
-        && !statements.some((statement) => /INSERT OR REPLACE INTO inodes/i.test(statement.sql))
-      )
-    ) {
+    const publishes = statements.some((statement) => /INTO vfs_inodes/i.test(statement.sql));
+    if (!publishes && statements.some((statement) => /INSERT INTO vfs_content(s|_chunks)\b/i.test(statement.sql))) {
       stage.push({ transaction, statements });
     }
-    if (
-      statements.some((statement) => /INSERT OR REPLACE INTO inodes/i.test(statement.sql))
-      && statements.some((statement) => /DELETE FROM content_lifecycle/i.test(statement.sql))
-    ) {
-      publish = { transaction, statements };
-    }
-    if (statements.some((statement) => (
-      /DELETE FROM file_chunks/i.test(statement.sql) && /NOT EXISTS/i.test(statement.sql)
-    ))) {
+    if (publishes) publish = { transaction, statements };
+    if (statements.some((statement) => /^\s*(DELETE FROM vfs_chunks|UPDATE vfs_contents SET state = 2)/i.test(statement.sql))) {
       gc = { transaction, statements };
     }
   }
   return { groups, stage, publish, gc };
+}
+
+function assertBounded(metrics, label) {
+  assert.ok(metrics.blobBytes <= MAX_TX_BLOB_BYTES, `${label}: blob byte bound`);
+  assert.ok(metrics.logicalRows <= MAX_TX_LOGICAL_ROWS, `${label}: logical row bound`);
+  assert.ok(metrics.sqlExecs <= MAX_TX_SQL_EXECS, `${label}: SQL execution bound`);
 }
 
 // Establish the exact Stage-3 transaction shape without assuming constructor
@@ -685,7 +129,7 @@ let replacementBaseline;
   fixture.vfs.writeFile('atomic-large.bin', fixture.newData);
   fixture.harness.clearFault();
   const classified = replacementTransactions(fixture.harness, statementStart);
-  assert.ok(classified.stage.length >= 4, 'large content must have a marker and span bounded chunk transactions');
+  assert.ok(classified.stage.length >= 2, `large content spans bounded staging transactions (${classified.stage.length})`);
   assert.ok(classified.publish, 'replacement must have one inode-pointer publish transaction');
   assert.ok(classified.gc, 'replacement must schedule bounded old-content GC');
   for (const [transaction, metrics] of captured) {
@@ -917,7 +361,7 @@ function streamFromBytes(bytes) {
   ];
   const payload = streamPayload(entries);
   harness.setFaultInjector(({ sql, params }) => (
-    /INSERT OR REPLACE INTO inodes/i.test(sql) && params.includes('prefix-b.bin')
+    /INSERT OR REPLACE INTO vfs_inodes/i.test(sql) && params.includes('prefix-b.bin')
       ? new Error('injected publish failure')
       : null
   ));
@@ -949,7 +393,7 @@ function streamFromBytes(bytes) {
     { path: 'group-b.bin', data: bytes(MAX_TX_BLOB_BYTES + 1, 20) },
   ];
   harness.setFaultInjector(({ sql, params }) => (
-    /INSERT OR REPLACE INTO inodes/i.test(sql) && params.includes('group-b.bin')
+    /INSERT OR REPLACE INTO vfs_inodes/i.test(sql) && params.includes('group-b.bin')
       ? new Error('injected second-group publish failure')
       : null
   ));
@@ -1030,161 +474,6 @@ function streamFromBytes(bytes) {
     chunks: chunks(duplicate.path, data),
   }), /duplicate path ownership/);
   assert.equal(vfs.exists('duplicate.bin'), false);
-}
-
-// Every durable content-reference probe must SEEK inodes. SQLite cannot seek
-// an expression index from a correlated subquery, so the historical
-// COALESCE(content_id, path) predicate degraded to a per-outer-row SCAN of
-// inodes and made the orphan scan O(chunks × inodes).
-{
-  const { harness, rawVfs, vfs } = openVfs();
-  const probeStart = harness.statements.length;
-  vfs.mkdir('plan');
-  vfs.writeFile('plan/live.bin', bytes(8, 3));
-  harness.sql.exec(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
-     VALUES ('plan/legacy.bin', 'plan', 0, 3, 1, 420, 1)`,
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('plan/legacy.bin', 0, ?)",
-    bytes(3, 5),
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:plan-a', 0, ?)",
-    bytes(3, 6),
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:plan-b', 0, ?)",
-    bytes(3, 7),
-  );
-  harness.sql.exec(
-    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ('stale:plan', 'staging', 0)",
-  );
-  // maximum=2 consumes the orphan-insert and staging-convert transactions and
-  // leaves a GC backlog, so the backlog probe executes; the follow-up drain
-  // covers the GC pick, chunk-delete, and lifecycle-delete probes.
-  rawVfs.runContentMaintenance(2);
-  rawVfs.runContentMaintenance(16);
-  const probeStatements = harness.statements.slice(probeStart).filter((statement) => (
-    statement.sql.includes('inodes')
-    && (/NOT\s+EXISTS/i.test(statement.sql) || statement.sql.includes('AS collision'))
-  ));
-  assert.ok(probeStatements.length >= 9,
-    `expected all reference-probe shapes to execute, saw ${probeStatements.length}`);
-  for (const statement of probeStatements) {
-    const plan = harness.db.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`)
-      .all(...statement.params)
-      .map((row) => String(row.detail));
-    assert.ok(
-      plan.every((detail) => !/SCAN inodes/.test(detail)),
-      `reference probe scans inodes instead of seeking:\n${statement.sql}\n${plan.join('\n')}`,
-    );
-  }
-}
-
-// The orphan scan and the forced cold-start maintenance run stay flat in VFS
-// size: 15k fully referenced generations (worst case — every candidate must
-// be proven referenced) complete within a strict bound, and the run is
-// visible in getStats().sql.phases.maintenanceMs.
-{
-  const { harness, rawVfs } = openVfs();
-  const insertInode = harness.db.prepare(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count, content_id)
-     VALUES (?, 'perf', 0, 4, 1, 420, 1, ?)`,
-  );
-  const insertChunk = harness.db.prepare(
-    'INSERT INTO file_chunks (content_id, chunk_id, data) VALUES (?, 0, ?)',
-  );
-  const payload = bytes(4, 9);
-  harness.db.transaction(() => {
-    for (let index = 0; index < 15_000; index++) {
-      const generated = `/content:perf-${String(index).padStart(8, '0')}`;
-      insertInode.run(`perf/file-${index}`, generated);
-      insertChunk.run(generated, payload);
-    }
-  })();
-  const scanStart = performance.now();
-  rawVfs.runContentMaintenance(4);
-  const scanMs = performance.now() - scanStart;
-  assert.ok(scanMs < 50, `orphan scan over 15k referenced generations took ${scanMs}ms`);
-
-  const reopened = openVfs(createSqliteVfsTestHarness(harness.db));
-  const maintenance = reopened.rawVfs.getStats().sql.phases.maintenanceMs;
-  assert.equal(maintenance.count, 1, 'constructor must run exactly one forced maintenance pass');
-  assert.ok(maintenance.last < 50,
-    `forced cold-start maintenance took ${maintenance.last}ms at 15k generations`);
-}
-
-// The seekable scan flags exactly the set the historical COALESCE predicate
-// defined: content referenced by content_id or by a legacy path-keyed
-// non-directory inode is never an orphan, lifecycle-owned content is never
-// scanned, and directory paths are not references.
-{
-  const { harness, rawVfs, vfs } = openVfs();
-  const live = bytes(6, 31);
-  vfs.mkdir('equiv');
-  vfs.writeFile('equiv/referenced.bin', live);
-  const liveId = contentId(harness, 'equiv/referenced.bin');
-  harness.sql.exec(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
-     VALUES ('equiv/legacy.bin', 'equiv', 0, 3, 1, 420, 1)`,
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('equiv/legacy.bin', 0, ?)",
-    bytes(3, 32),
-  );
-  harness.sql.exec(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count)
-     VALUES ('equiv/dir-flip', 'equiv', 1, 0, 1, 493, 0)`,
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('equiv/dir-flip', 0, ?)",
-    bytes(3, 33),
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('orphan:equiv', 0, ?)",
-    bytes(3, 34),
-  );
-  harness.sql.exec(
-    `INSERT INTO inodes (path, parent_path, kind, size, mtime, mode, chunk_count, content_id)
-     VALUES ('equiv/staged.bin', 'equiv', 0, 3, 1, 420, 1, 'stg:equiv')`,
-  );
-  harness.sql.exec(
-    "INSERT INTO content_lifecycle (content_id, state, created_at) VALUES ('stg:equiv', 'staging', 1)",
-  );
-  harness.sql.exec(
-    "INSERT INTO file_chunks (content_id, chunk_id, data) VALUES ('stg:equiv', 0, ?)",
-    bytes(3, 35),
-  );
-  const referenceOrphans = harness.db.prepare(
-    `SELECT chunks.content_id
-     FROM file_chunks AS chunks
-     WHERE NOT EXISTS (
-         SELECT 1 FROM content_lifecycle AS lifecycle
-         WHERE lifecycle.content_id = chunks.content_id
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM inodes
-         WHERE inodes.kind != 1
-           AND COALESCE(inodes.content_id, inodes.path) = chunks.content_id
-       )
-     GROUP BY chunks.content_id
-     ORDER BY chunks.content_id`,
-  ).all().map((row) => String(row.content_id));
-  assert.deepEqual(referenceOrphans, ['equiv/dir-flip', 'orphan:equiv']);
-  rawVfs.runContentMaintenance(1);
-  const scheduled = harness.sql
-    .exec("SELECT content_id FROM content_lifecycle WHERE state = 'gc' ORDER BY content_id")
-    .map((row) => String(row.content_id));
-  assert.deepEqual(scheduled, referenceOrphans,
-    'seekable orphan scan diverged from the reference COALESCE predicate');
-  rawVfs.runContentMaintenance(16);
-  assert.deepEqual(vfs.readFile('equiv/referenced.bin'), live);
-  assert.deepEqual(contentChunkIds(harness, liveId), [0]);
-  assert.deepEqual(contentChunkIds(harness, 'equiv/legacy.bin'), [0]);
-  assert.deepEqual(contentChunkIds(harness, 'stg:equiv'), [0]);
-  assert.deepEqual(contentChunkIds(harness, 'equiv/dir-flip'), []);
-  assert.deepEqual(contentChunkIds(harness, 'orphan:equiv'), []);
 }
 
 console.log('sqlite-vfs-stage3-content-generations: all assertions passed');
