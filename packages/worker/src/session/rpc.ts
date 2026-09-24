@@ -25,7 +25,7 @@
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
+import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -212,9 +212,6 @@ export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: numbe
   return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred }) as Promise<Uint8Array | null>;
 }
 
-/** Inner-DO facet names each incarnation has opened; keyed off ctx, so a new incarnation starts empty. */
-const innerDoFacetsOpened = new WeakMap<DurableObjectState, Set<string>>();
-
   /**
    * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
    * from the inner Worker via the env.NIMBUS_SESSION loopback. We
@@ -253,12 +250,9 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     }
     const facetName = 'innerDO-' + req.bindingName + '-' + req.id;
     const ctx: DurableObjectState = self.ctx;
-    let opened = innerDoFacetsOpened.get(ctx);
-    if (!opened) innerDoFacetsOpened.set(ctx, opened = new Set());
-    if (!opened.has(facetName)) {
-      // Each incarnation's inner worker is a new class; get() with it on a facet an earlier incarnation left running resets this object.
-      ctx.facets.abort(facetName, new Error('Nimbus: a new incarnation takes this inner Durable Object'));
-      opened.add(facetName);
+    if (noteInnerDoFacetOpened(ctx, req.bindingName, facetName)) {
+      // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
+      ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
     }
     const facet = ctx.facets.get(facetName, async () => ({
       class: cls,
