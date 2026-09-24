@@ -192,6 +192,47 @@ theorem own_fresh_when_acks_settled {s : St} (h : Reachable s) (hs : AcksSettled
   · rw [hs g hg hp] at h'; omega
   · exact h'
 
+/-- What a node process reads for a path: its own unflushed write (the
+    own-effect overlay) over the admitted row, else nothing (a fill). -/
+inductive Served where
+  | own (w : Nat)
+  | dated (v r : Nat)
+  | miss
+
+def served (s : St) (p : Path) : Served :=
+  match s.parked p with
+  | some w => .own w
+  | none =>
+    match s.rows p with
+    | some ⟨v, .dated r⟩ => .dated v r
+    | _ => .miss
+
+/-- The overlay serves nothing stale at a resumption: an admitted row holds a
+    value the authority had at or after the horizon; the process's own write
+    either has not reached the authority (read-your-writes) or was committed at a
+    revision the authority still held at or after the horizon. -/
+theorem overlay_no_stale {s : St} (h : Reachable s) (hs : AcksSettled s) (p : Path) :
+    (∀ v r, served s p = .dated v r → ∃ t, s.H ≤ t ∧ t ≤ s.rev ∧ valAt s.muts p t = v) ∧
+    (∀ w, served s p = .own w → ∀ g ∈ s.flights, g.path = p → g.w = w → ∀ r, g.committed = some r →
+      Fresh s p r r) := by
+  refine ⟨fun v r hv => ?_, fun w hw g hg hgp hgw r hr => ?_⟩
+  · unfold served at hv
+    cases hp : s.parked p with
+    | some w => rw [hp] at hv; cases hv
+    | none =>
+      rw [hp] at hv
+      simp only at hv
+      split at hv
+      · cases hv; exact no_stale_read h (by assumption)
+      · cases hv
+  · unfold served at hw
+    cases hp : s.parked p with
+    | none => rw [hp] at hw; simp only at hw; split at hw <;> cases hw
+    | some w' =>
+      rw [hp] at hw; cases hw
+      subst hgp
+      exact own_fresh_when_acks_settled h hs hg hr (by rw [hp, hgw])
+
 /-- A wait snapshotted per barrier, over only the paths THIS answer names, is not
     enough: after `ownRace` (whose resumption waits), a second barrier from the
     advanced cursor names nothing, so its resumption would not wait, and serves

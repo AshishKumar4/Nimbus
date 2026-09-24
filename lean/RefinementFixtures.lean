@@ -15,7 +15,9 @@ def fixtures : List (String × String) :=
    ("node-namespace.json", NamespaceCases.fixture),
    ("fastcdc.json", FastCdcCases.fixture),
    ("content-store-tier.json", TierCases.fixture),
-   ("vfs-visible-delta.json", VisibleDeltaCases.fixture)]
+   ("vfs-visible-delta.json", VisibleDeltaCases.fixture),
+   ("node-visible-namespace.json", NodeCases.nsFixture),
+   ("node-overlay.json", NodeCases.overlayFixture)]
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"

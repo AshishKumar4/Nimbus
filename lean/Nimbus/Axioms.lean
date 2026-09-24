@@ -28,6 +28,16 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.ContentKey.no_stale_read
 #print axioms Nimbus.Coherence.ContentKey.a_colliding_key_keeps_a_stale_row
 
+/-! ## Nimbus/Coherence/ContentKeyAsync.lean -/
+
+#print axioms Nimbus.Coherence.ContentKeyAsync.lastRev_append
+#print axioms Nimbus.Coherence.ContentKeyAsync.entryOf_spec
+#print axioms Nimbus.Coherence.ContentKeyAsync.entryOf_none
+#print axioms Nimbus.Coherence.ContentKeyAsync.answer_append
+#print axioms Nimbus.Coherence.ContentKeyAsync.step_inv
+#print axioms Nimbus.Coherence.ContentKeyAsync.reachable_inv
+#print axioms Nimbus.Coherence.ContentKeyAsync.no_stale_read
+
 /-! ## Nimbus/Coherence/DurableDelta.lean -/
 
 #print axioms Nimbus.Coherence.DurableDelta.init_inv
@@ -52,6 +62,12 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.Refetch.livelock_before_eb542b0b
 #print axioms Nimbus.Coherence.Refetch.settles_after_eb542b0b
 
+/-! ## Nimbus/Coherence/Relist.lean -/
+
+#print axioms Nimbus.Coherence.Relist.tv_below_none
+#print axioms Nimbus.Coherence.Relist.relist_exact
+#print axioms Nimbus.Coherence.Relist.overlay_exact
+
 /-! ## Nimbus/Coherence/StoreBugs.lean -/
 
 #print axioms Nimbus.Coherence.Store.no_stale_read
@@ -68,6 +84,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.Store.a_push_admitted_out_of_order_is_stale
 #print axioms Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
 #print axioms Nimbus.Coherence.Store.own_fresh_when_acks_settled
+#print axioms Nimbus.Coherence.Store.overlay_no_stale
 #print axioms Nimbus.Coherence.Store.a_per_answer_wait_misses_an_earlier_report
 
 /-! ## Nimbus/Coherence/StoreSafety.lean -/

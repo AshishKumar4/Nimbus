@@ -12,3 +12,4 @@ import Nimbus.Refine.NamespaceCases
 import Nimbus.Refine.FastCdcCases
 import Nimbus.Refine.TierCases
 import Nimbus.Refine.VisibleDeltaCases
+import Nimbus.Refine.NodeCases

@@ -547,3 +547,36 @@ requirements:
       - Built by NodeNoMirrorBuild at 04cb9dd9 (work/node-nomirror, schema 2); ACQUIRE is served and admitted in one step and a repair lists and reconciles in one step here, the finer interleavings being Nimbus.Coherence.Store's
       - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
       - NodeNoMirrorBuild confirms the code compares stored keys only against the authority's key at the answer's revision, stores null keys for own rows, and re-dates at the entry's or listed revision (at most the answer's); the model re-dates at the answer's revision, and any date at or below the horizon gives the same invariant
+  COH-011:
+    statement: NodeNoMirror's content-key rules stay stale-free when ACQUIRE is served and admitted as separate events in any order (an answer at or below the horizon changing nothing), and a repair's listing is served and reconciled apart, interleaving with commits, answers, fills and copies by key.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.ContentKeyAsync.no_stale_read
+      - Nimbus.Coherence.ContentKeyAsync.lastRev_append
+      - Nimbus.Coherence.ContentKeyAsync.entryOf_spec
+      - Nimbus.Coherence.ContentKeyAsync.entryOf_none
+      - Nimbus.Coherence.ContentKeyAsync.answer_append
+      - Nimbus.Coherence.ContentKeyAsync.step_inv
+      - Nimbus.Coherence.ContentKeyAsync.reachable_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
+      - An answer arriving while a repair runs is dropped (the barrier joins the repair), as the code does
+  NS-002:
+    statement: Under the visibility rule, applying the reported delta with exact relists for subtree and structural entries, in any order, leaves the reader's namespace exactly its visible tree at answer time; the own-effect overlay serves a process's pending effects over it, and every byte the overlay serves is its own pending write, a write of its committed at a revision the authority still held, or a value the authority held at or after the last barrier.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.Relist.relist_exact
+      - Nimbus.Coherence.Relist.overlay_exact
+      - Nimbus.Coherence.Store.overlay_no_stale
+      - Nimbus.Coherence.Relist.tv_below_none
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    refinement:
+      - lean/fixtures/node-visible-namespace.json :: tests/unit/node-visible-namespace-refinement.mjs
+      - lean/fixtures/node-overlay.json :: tests/unit/node-overlay-refinement.mjs
+    remainingEvidence:
+      - A relist is read at the answer's instant (one exchange); a relist served later is fresher but not modeled
+      - The overlay fixture's flush commits and acknowledges together, so the committed-but-unacknowledged window (COH-004) is covered by the proof, not by that fixture
