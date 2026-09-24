@@ -120,14 +120,19 @@ const bootBefore = started.output.match(/boot=([^\s]+)/)?.[1] ?? '';
 
 // ── 2. a real isolate reset; the app is re-driven, capability unchanged ─────
 {
-  // The abort: 204 means the DO accepted the reset — the isolate unwinds
-  // right after the response leaves.
+  // A request sent right after the 204 can still reach the pre-reset instance.
   const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, {
     method: 'POST',
     headers: requestHeaders(),
   });
   a.check('_diag/abort answers the reset', abort.status === 204,
     `status=${abort.status}`);
+
+  // The reset ends every WebSocket of the instance: this terminal's close marks it.
+  const resetDeadline = Date.now() + 10_000;
+  while (!t.closed && Date.now() < resetDeadline) await sleep(50);
+  a.check('the reset ended the instance (its terminal socket dropped)', t.closed,
+    `closed=${t.closed} detail=${t.closeDetail}`);
 
   // Bounded poll until the session's recovery has re-driven the resident:
   // the capability URL answers again, against the same port, still the app.

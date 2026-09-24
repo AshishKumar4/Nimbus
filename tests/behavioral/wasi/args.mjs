@@ -5,38 +5,44 @@
 // the program sees its own filename as argv[0]. We don't pass extra
 // args here, so argc should be 1 → output "1\n".
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { writeFixtureCmd } from './_fixtures.mjs';
 
 const sid = await mintSession();
 console.log(`[wasi/args] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+let exitCode = 1;
+try {
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
-await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
-await t.run(writeFixtureCmd('args', 'args.wasm'), 30_000);
+  await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
+  await t.run(writeFixtureCmd('args', 'args.wasm'), 30_000);
 
-const result = await t.run('wasm-runner args.wasm _start', 30_000);
-const out = stripAnsi(result.output);
-const tail = out.split(/\r?\n/).slice(-6).join('\n');
-const argcOk = /^\s*1\s*$/m.test(tail);
+  const result = await t.run('wasm-runner args.wasm _start', 30_000);
+  const out = stripAnsi(result.output);
+  const tail = out.split(/\r?\n/).slice(-6).join('\n');
+  const argcOk = /^\s*1\s*$/m.test(tail);
 
-await t.close();
+  const findings = { probe: 'wasi/args', sid, base: BASE, tail, argcOk };
+  console.log(JSON.stringify(findings, null, 2));
 
-const findings = { probe: 'wasi/args', sid, base: BASE, tail, argcOk };
-console.log(JSON.stringify(findings, null, 2));
-
-const checks = [
-  ['argc (no extra args) → "1"', argcOk],
-];
-let pass = 0;
-for (const [name, ok] of checks) {
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
-  if (ok) pass++;
+  const checks = [
+    ['argc (no extra args) → "1"', argcOk],
+  ];
+  let pass = 0;
+  for (const [name, ok] of checks) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
+    if (ok) pass++;
+  }
+  const verdict = pass === checks.length ? 'passing' : 'failing';
+  console.log(`[wasi/args] ${verdict} — ${pass}/${checks.length}`);
+  exitCode = verdict === 'passing' ? 0 : 1;
+} finally {
+  await t.close().catch(() => {});
+  const del = await deleteSession(sid, 'wasi/args');
+  console.log(`deleteSession: ${del.status}`);
 }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi/args] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+process.exit(exitCode);

@@ -17,33 +17,39 @@
 // Runtime-behavioral: validates the multi-subscription drain logic
 // (Promise.race winner + microtask-sentinel probe of others).
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
 import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
 
 const sid = await mintSession();
 console.log(`[wasi/poll-multi-mixed] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+let exitCode = 1;
+try {
+  await t.connect();
+  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
-await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-await t.run(writeStreamBFixtureCmd('poll-multi-mixed', 'pm.wasm'), 30_000);
+  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
+  await t.run(writeStreamBFixtureCmd('poll-multi-mixed', 'pm.wasm'), 30_000);
 
-const r = await t.run('wasm-runner pm.wasm', 30_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-6).join('\n');
-const lines = tail.split(/\r?\n/).map(s => s.trim());
-const ok = lines.some(s => s === '1');
+  const r = await t.run('wasm-runner pm.wasm', 30_000);
+  const out = stripAnsi(r.output);
+  const tail = out.split(/\r?\n/).slice(-6).join('\n');
+  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const ok = lines.some(s => s === '1');
 
-await t.close();
+  console.log(JSON.stringify({ probe: 'wasi/poll-multi-mixed', sid, base: BASE, tail, ok }, null, 2));
 
-console.log(JSON.stringify({ probe: 'wasi/poll-multi-mixed', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['poll_oneoff(clock+file+clock) drains always-ready file event', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi/poll-multi-mixed] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  const checks = [['poll_oneoff(clock+file+clock) drains always-ready file event', ok]];
+  let pass = 0;
+  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
+  const verdict = pass === checks.length ? 'passing' : 'failing';
+  console.log(`[wasi/poll-multi-mixed] ${verdict} — ${pass}/${checks.length}`);
+  exitCode = verdict === 'passing' ? 0 : 1;
+} finally {
+  await t.close().catch(() => {});
+  const del = await deleteSession(sid, 'wasi/poll-multi-mixed');
+  console.log(`deleteSession: ${del.status}`);
+}
+process.exit(exitCode);
