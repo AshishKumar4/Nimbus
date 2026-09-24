@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
@@ -130,9 +131,13 @@ a.writeFile('/tmp/key', 'k');
 assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o644);
 a.chmod('/tmp/key', 0o600);
 assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o600, 'chmod 600 makes a key private');
-a.writeFile('/tmp/shared', 's', { mode: 0o666 });
+// A's umask would mask 0666, so the kernel provisions the writable file.
+root.writeFile('var/agents/a/tmp/shared', 's');
+root.chmod('var/agents/a/tmp/shared', 0o666);
+root.chown('var/agents/a/tmp/shared', A.uid, A.gid);
 a.chmod('/tmp/shared', 0o644);
-assert.equal(a.stat('/tmp/shared').mode & 0o7777, 0o644, 'go-w');
+assert.equal(a.stat('/tmp/shared').mode & 0o7777, 0o644, 'go-w drops group and other write');
+assert.throws(() => a.chmod('/tmp/shared', 0o664), /EPERM/, 'and the dropped write cannot come back');
 assert.throws(() => a.chmod('/tmp/key', 0o640), /EPERM/, 'narrowed bits cannot come back');
 assert.throws(() => a.chmod('/tmp/shared', 0o654), /EPERM/, 'nor can one it never had');
 assert.equal(a.stat('/tmp/shared').mode & 0o7777, 0o644);
@@ -154,6 +159,47 @@ assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1755, 'adding sticky restricts
 a.chmod('/tmp/drop', 0o1700);
 assert.throws(() => a.chmod('/tmp/drop', 0o700), /EPERM/, 'dropping sticky would let others delete entries');
 assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1700);
+
+// ── The same rule through an open descriptor (fchmod) ───────────────────────
+//
+// The bash runtime's fchmod import and the esbuild CLI reach chmod through a
+// handle, not a path.
+const aFs = new SqliteFilesystemAuthority(raw).bind({ pid: 5001, cred: A });
+const keyFd = aFs.open('/tmp/key', { read: true });
+assert.throws(() => aFs.fchmod(keyFd.id, 0o6777), /EPERM/, 'fchmod cannot widen either');
+assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o600);
+aFs.fchmod(keyFd.id, 0o400);
+assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o400, 'fchmod narrows');
+aFs.fchmod(keyFd.id, 0o600);
+assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o600, 'and the owner triad moves freely');
+a.unlink('/tmp/key');
+assert.throws(() => aFs.fchmod(keyFd.id, 0o666), /EPERM/, 'nor on a file that is already unlinked');
+aFs.fchmod(keyFd.id, 0o400);
+assert.equal(aFs.fstat(keyFd.id).mode & 0o7777, 0o400);
+assert.equal(aFs.fstat(keyFd.id).mode & 0o170000, 0o100000, 'an unlinked file stays a regular file');
+aFs.close(keyFd.id);
+const dropFd = aFs.open('/tmp/drop', { read: true, directory: true });
+assert.throws(() => aFs.fchmod(dropFd.id, 0o700), /EPERM/, 'fchmod cannot drop sticky');
+assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1700);
+aFs.close(dropFd.id);
+
+// ── Creation cannot grant setuid or setgid ──────────────────────────────────
+//
+// umask never masks 07000, so a confined creation masks it here; sticky only
+// restricts others and is kept.
+a.writeFile('/tmp/made-suid', 'x', { mode: 0o6777 });
+assert.equal(a.stat('/tmp/made-suid').mode & 0o7777, 0o755, 'writeFile');
+a.mkdir('/tmp/made-dir', { mode: 0o7777 });
+assert.equal(a.stat('/tmp/made-dir').mode & 0o7777, 0o1755, 'mkdir');
+aFs.close(aFs.open('/tmp/made-open', { write: true, create: true, mode: 0o6755 }).id);
+assert.equal(a.stat('/tmp/made-open').mode & 0o7777, 0o755, 'open O_CREAT');
+a.writeBatch({
+  inodes: [{ path: '/tmp/made-batch', parentPath: '/tmp', isDir: false, size: 1, mtime: 1, mode: 0o6755, chunkCount: 1 }],
+  chunks: [{ path: '/tmp/made-batch', chunkId: 0, data: new Uint8Array([1]) }],
+});
+assert.equal(a.stat('/tmp/made-batch').mode & 0o7777, 0o755, 'writeBatch');
+root.writeFile('var/agents/a/tmp/kernel-suid', 'x', { mode: 0o4755 });
+assert.equal(root.stat('var/agents/a/tmp/kernel-suid').mode & 0o7777, 0o4755, 'the kernel still can');
 
 // ── An unconfined principal is entirely unaffected ──────────────────────────
 root.mkdir('home/plain', { recursive: true, mode: 0o755 });

@@ -1122,13 +1122,15 @@ export class SqliteVFS {
                 return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
             },
             chmod: mode => {
-                if (cred.uid !== 0 && cred.uid !== current().uid)
+                const node = current();
+                if (cred.uid !== 0 && cred.uid !== node.uid)
                     throw vfsError('EPERM', path);
+                this.assertConfinedModeChange(node, mode, cred, opened.path ?? path);
                 if (opened.path !== null)
                     this.chmod(opened.path, mode, CRED_KERNEL);
                 else {
-                    current().mode = mode & 0o7777;
-                    current().ctime = this.now();
+                    node.mode = inodeTypeBits(node.kind) | (mode & 0o7777);
+                    node.ctime = this.now();
                 }
             },
             chown: (uid, gid) => {
@@ -1244,6 +1246,41 @@ export class SqliteVFS {
         if (root === '')
             throw vfsError('EINVAL', 'a private /tmp root cannot be the filesystem root');
         this.confinedTmpRoots.set(uid, root);
+    }
+    /**
+     * A confined principal owns its own triad and nothing else. Refusing chmod
+     * outright would be simpler and wrong: execution is gated on the x bit, so
+     * a guest that writes build.sh and cannot chmod it cannot run it. What
+     * must not happen is WIDENING past its own principal: the group and other
+     * triads and setuid/setgid may only lose bits, and sticky, which restricts
+     * others, may only gain one, while the owner triad moves freely. `u+x`,
+     * `700`, `600` and `go-w` work; `+x` and `777` do not.
+     *
+     * Refused, never clamped. Quietly narrowing a mutation to the part that
+     * was allowed reports success for something other than what was asked, so
+     * the refusal names the spelling that works instead. Every chmod, by path
+     * or by descriptor, goes through here with the caller's own credential.
+     */
+    assertConfinedModeChange(inode, mode, cred, path) {
+        if (!this.isConfined(cred))
+            return;
+        const current = inode.mode & 0o7777;
+        const granted = (mode & 0o6077) & ~current;
+        const unstuck = current & ~mode & 0o1000;
+        if (granted === 0 && unstuck === 0)
+            return;
+        throw vfsError('EPERM', `${path}: mode change would grant permission outside your own principal; use u+x`);
+    }
+    /**
+     * Permission bits a new inode is created with. umask never masks 07000, so
+     * a confined principal's creation drops setuid/setgid here, the one grant
+     * its umask cannot refuse. Sticky only restricts others and is kept.
+     */
+    creationMode(requested, cred) {
+        return requested & ~cred.umask & (this.isConfined(cred) ? 0o1777 : 0o7777);
+    }
+    isConfined(cred) {
+        return cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid);
     }
     /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
     releasePrincipal(uid) {
@@ -1711,7 +1748,7 @@ export class SqliteVFS {
     _mkdirSingle(path, requestedMode, cred) {
         const pp = this.parentPath(path);
         const now = this.now();
-        const mode = (requestedMode ?? 0o777) & ~cred.umask & 0o7777;
+        const mode = this.creationMode(requestedMode ?? 0o777, cred);
         let ino = 0;
         this.transactionSync(() => {
             ino = this.inodes.get(path)?.ino ?? this.nextIno();
@@ -1779,7 +1816,7 @@ export class SqliteVFS {
             mtime: now,
             mode: prior?.kind === 'file'
                 ? prior.mode
-                : (options?.mode ?? 0o666) & ~cred.umask & 0o7777,
+                : this.creationMode(options?.mode ?? 0o666, cred),
             uid: prior?.uid ?? cred.uid,
             gid: prior?.gid ?? cred.gid,
             chunkCount,
@@ -2543,25 +2580,7 @@ export class SqliteVFS {
             throw vfsError('ENOENT', path);
         if (cred.uid !== 0 && cred.uid !== inode.uid)
             throw vfsError('EPERM', resolved.path);
-        // A confined principal owns its own triad and nothing else. Refusing chmod
-        // outright would be simpler and wrong: execution is gated on the x bit, so
-        // a guest that writes build.sh and cannot chmod it cannot run it. What
-        // must not happen is WIDENING past its own principal: the group and other
-        // triads and setuid/setgid may only lose bits, and sticky, which restricts
-        // others, may only gain one, while the owner triad moves freely. `u+x`,
-        // `700`, `600` and `go-w` work; `+x` and `777` do not.
-        //
-        // Refused, never clamped. Quietly narrowing a mutation to the part that
-        // was allowed reports success for something other than what was asked, so
-        // the refusal names the spelling that works instead.
-        if (cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid)) {
-            const current = inode.mode & 0o7777;
-            const granted = (mode & 0o6077) & ~current;
-            const unstuck = current & ~mode & 0o1000;
-            if (granted !== 0 || unstuck !== 0) {
-                throw vfsError('EPERM', `${resolved.path}: mode change would grant permission outside your own principal; use u+x`);
-            }
-        }
+        this.assertConfinedModeChange(inode, mode, cred, resolved.path);
         this.assertMutationsAllowed([inode.path]);
         const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
         const ctime = this.now();
@@ -3079,7 +3098,7 @@ export class SqliteVFS {
                 ? prior.mode
                 : inodeKind(entry) === 'symlink'
                     ? inodeTypeBits('symlink') | 0o777
-                    : entry.mode & ~cred.umask & 0o7777,
+                    : this.creationMode(entry.mode, cred),
             uid: prior?.uid ?? newUid,
             gid: prior?.gid ?? newGid,
         };
@@ -3124,14 +3143,17 @@ export class SqliteVFS {
             else
                 checkParent(entry.path);
         }
-        for (const chunk of payload.chunks) {
+        // Chunks name their inode by path, so they take the inodes' storage keys.
+        const chunks = payload.chunks.map((chunk) => {
             const path = this.storageKey(chunk.path, cred);
             if (!pending.has(path))
                 this.checkAccess(path, 0o2, cred, { followLeaf: false });
-        }
+            return path === chunk.path ? chunk : { ...chunk, path };
+        });
         return {
             ...payload,
             inodes,
+            chunks,
             deletePaths: payload.deletePaths?.map((path) => this.storageKey(path, cred)),
         };
     }
