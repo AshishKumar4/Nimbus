@@ -579,4 +579,5 @@ requirements:
       - lean/fixtures/node-overlay.json :: tests/unit/node-overlay-refinement.mjs
     remainingEvidence:
       - A relist is read at the answer's instant (one exchange); a relist served later is fresher but not modeled
+      - NodeNoMirrorBuild's bridges pass 155/155 (namespace) and go red with the directory-closed subtree drop reverted. The relist's own deletion is a backstop the fixtures cannot make necessary. For the reader to have held a name that is hidden at answer time under a visible directory, some directory on the path must have changed traversability, and the code drops that subtree directly.
       - The overlay fixture's flush commits and acknowledges together, so the committed-but-unacknowledged window (COH-004) is covered by the proof, not by that fixture
