@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ffc660d625adcc5b4cc37a57a4661ecae9c6ee070e7c511422bc13936c80e1c0",
+  "fingerprint": "665ca7f137afa4d3180a6bb9ba3d5c63bcc76e728e171924383f70abb0d48631",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -240,8 +240,8 @@
     "packages/core/dist/runtime/runtime-registry.d.ts.map": "ac8b1f6e2ba8d425eb1104b654b69a3d15101f832a88d61ee78ae4b9dbca7d4e",
     "packages/core/dist/runtime/runtime-registry.js": "13300dc386c9df3e13a2ce76381f0b52fe05ef732fcc86e3f7ff2cf53b8f8a26",
     "packages/core/dist/runtime/session-process-supervisor.d.ts": "e43b87d18f6acb03b24b0ac160ac8d02f1064b730108b90ee73dfa3e96ca1d5e",
-    "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "1b75801033f1d5021e09faed5f51c9b20ec661ff405a8bdc30cbd4345522ccb9",
-    "packages/core/dist/runtime/session-process-supervisor.js": "70096adff2415245b93d5c3d5dda5a7c65d23ffc5a19056a76bebd597d867a31",
+    "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "b53e77ce05c6091b517999cd25799b09e9ea3bb1cc9340ce66f308d4682a10fd",
+    "packages/core/dist/runtime/session-process-supervisor.js": "fda251b42cc27b4549bfc4282601bea7fa39f663ead176a12104059aed38cb31",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts": "20ea792f1b30ed3b593dc30f46ac8cada2bcd21c96b77bdd39bd4b0cbb648e83",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "f5afe1e335fb143fb13e2e5684f10e97554e18891ff7746fd29a9e9ff15689d6",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "3394097570ea5051d59b29e4435311d62d85cb24d0a8568241f271ec5c35aa96",
@@ -971,7 +971,7 @@
     "packages/core/src/runtime/runtime-manifest.ts": "e39d00e3bb1cf4f56a7fcf37cd80fd1ff042c78919168a5d7eaed6f750fcc46f",
     "packages/core/src/runtime/runtime-package.ts": "78d058d2a1b128778ebc5dba8c3fab67a9f72bb56eb86d2da08240b5f45eb8c5",
     "packages/core/src/runtime/runtime-registry.ts": "0401c5e7babbe5b39ca5788f5640966737306c2e662f97b5c4222c0db62a771d",
-    "packages/core/src/runtime/session-process-supervisor.ts": "53c616912e906f53b64f81dd9cf859035d9cc85d518b57d3da967644ec4b2bf5",
+    "packages/core/src/runtime/session-process-supervisor.ts": "c7047e42a72862d7807d0bcb6730b04699f37ba4f2f58d00746c737851318352",
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "c3ce99b399af9de5bc44a4f1e53b543db6f346e7ce7ccc58176aeb9999589411",
     "packages/core/src/runtime/streams.ts": "e90175a35d58024738925e53b92867e47c00b118bd2592fa1b682ee9f3c6c425",
     "packages/core/src/runtime/undici-shim.ts": "ae4be60f9001fe8db5426b8e96aea30b37e3abfb931b622fe4cf7676e88dfd93",

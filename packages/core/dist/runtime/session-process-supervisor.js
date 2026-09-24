@@ -199,16 +199,20 @@ export class SessionProcessSupervisor {
      */
     signal(pid, signal) {
         const signo = DEFAULT_TERMINATING_SIGNALS[signal];
-        if (signo !== undefined && this.input.has(pid) && !this.input.hasReader(pid)
-            && this.table.get(pid)?.state === 'running') {
+        const entry = this.table.get(pid);
+        // Only an attached program reads its signals from this channel; a job
+        // that never reads it is not "not yet started".
+        if (signo !== undefined && entry?.state === 'running' && entry.attachedTty === true
+            && this.input.has(pid) && !this.input.hasReader(pid)) {
             const code = 128 + signo;
+            // Stop the work first: exit() drops the terminator without running it.
+            this.terminate(pid);
             if (this.defaultSignalAction) {
                 this.defaultSignalAction(pid, code, signal);
             }
             else {
                 this.exit(pid, code);
                 this.markExit(pid, code, signal);
-                this.terminate(pid);
                 this.input.close(pid);
             }
             return { ok: true };

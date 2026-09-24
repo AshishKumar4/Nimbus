@@ -14,6 +14,7 @@ import {
   rpcExec,
   rpcKillProcess,
   rpcProcessLogs,
+  rpcSignalProcess,
   rpcStartProcess,
 } from '../../packages/worker/src/session/programmatic.ts';
 
@@ -178,6 +179,20 @@ function makeHost() {
   assert.equal(viaRing.stdout, 'child of three\n');
   const childPid = Math.max(...host.processes.getAll().map((p) => p.pid));
   assert.deepEqual(loads, [childPid], 'the only hydrate is the ring write, not the collect');
+}
+
+// A signal to a background job is not the default action for a launch that
+// never started: the job's input channel is simply never read. The job must
+// not be reported exited while its work runs on, and kill still ends it.
+{
+  const host = makeHost();
+  const started = await rpcStartProcess(host, 'sleep 30');
+  const signalled = await rpcSignalProcess(host, started.pid, 'SIGTERM');
+  assert.equal(signalled.ok, true);
+  assert.equal(host.processes.get(started.pid)?.state, 'running', 'no 143 is recorded for a job still running');
+  const killed = await rpcKillProcess(host, started.pid);
+  assert.equal(killed.ok, true, 'kill still reaches the job');
+  await Promise.all(host.held);
 }
 
 console.log('programmatic background process: ok');
