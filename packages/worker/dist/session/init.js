@@ -18,6 +18,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { hasSeededProject, SEED_PROJECT_DIR, SEED_PROJECT_NAME, SEED_PROJECT_TILDE } from '@nimbus-sh/core/vfs/seed-project.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
+import { takeLegacyResetNotice } from './legacy-reset.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, loadScrollback } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
@@ -49,6 +50,8 @@ export async function initSession(self, ws, options = {}) {
     // later phases.
     setPhase(self, 'rehydrate', 'init-session');
     ensureSessionStateSchema(self.ctx);
+    // Files a pre-v2 Nimbus wrote are not read: say so, and start cold.
+    const legacyNotice = takeLegacyResetNotice(self.sqliteFs, self.ctx);
     const persisted = loadShellState(self.ctx);
     // [B'.4] Phase W (early-wire) — construct WebSocketTerminal with
     // the B'.3 scrollback tee. Marked as 'wire' here even though
@@ -377,6 +380,8 @@ export async function initSession(self, ws, options = {}) {
             self.terminal.write(motd + '\r\n');
         }
         catch { }
+        if (legacyNotice)
+            self.terminal.write(`\x1b[33m${legacyNotice}\x1b[0m\r\n\r\n`);
         // ── Starter-app hint (only if seed sentinel still exists) ──
         // We check the live VFS, not a static file, so that if the user
         // deletes ~/.nimbus-seeded (or the project dir) the hint stops

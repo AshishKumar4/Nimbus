@@ -39,6 +39,12 @@ published independently in the `@nimbus-sh` npm scope.
   later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
   `storeStats()` reports chunks, history rows, the GC queue, snapshots and
   jobs.
+- A session whose files a pre-v2 Nimbus wrote now says so. Schema v2
+  does not read that filesystem, so the session starts in a fresh tree, and
+  its terminal prints "This session's files were created by an older Nimbus
+  and were reset" once. The persisted shell state (a cwd into the lost
+  tree) is dropped with it. The notice is recorded durably at the first v2
+  open, so a restart before a terminal attaches still shows it.
 - Long filesystem jobs yield. `copyTreeAsync` (used by `cp -r` over RPC),
   `restoreAsync` and `dropSnapshotAsync` run 200 transactions at a time
   with a yield between, and a job a reset interrupted resumes the same way

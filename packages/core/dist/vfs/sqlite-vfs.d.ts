@@ -343,6 +343,7 @@ export declare class SqliteVFS {
     private auditCursor;
     /** Legacy tables still holding rows, until the janitor drops them. */
     private legacyTables;
+    private _legacyReset;
     /** Last committed generation: every committed VFS transaction advances it. */
     private _gen;
     /** MAX(vfs_snapshots.gen), 0 without a snapshot. */
@@ -405,6 +406,16 @@ export declare class SqliteVFS {
      */
     constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options?: SqliteVfsOptions);
     private initSchema;
+    /** Tables a pre-v2 Nimbus filesystem left here, recognised by their columns. */
+    private presentLegacyTables;
+    /**
+     * True while a pre-v2 filesystem this database held has not been told
+     * about: schema v2 does not read it, so the session starts empty, and a
+     * host should say so (and drop state that pointed into it) before
+     * calling acknowledgeLegacyReset(). Survives restarts until then.
+     */
+    get legacyReset(): boolean;
+    acknowledgeLegacyReset(): void;
     /**
      * After a restart no operation is assembling anything, so every state-0
      * content is an abandoned write: queue them all. Read first, so a store
@@ -1216,6 +1227,19 @@ export declare class SqliteVFS {
      */
     private executeTransactionPlan;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
+    /**
+     * Chunk rows as (id, hash, data) triples; size is length(data), so a row
+     * binds three parameters, not four: 33 rows a statement instead of 25.
+     * The statement count is what an unshared large write pays per
+     * transaction (measured in workerd, where it dominated).
+     */
+    private insertChunkRows;
+    /**
+     * Manifest rows as (content_id, off, len, chunk_id) quadruples, a run of
+     * one content binding its id once: 33 rows a statement for one file's
+     * manifest, and never fewer than 25.
+     */
+    private insertManifestRows;
     private insertRows;
     private executeMeasuredTransaction;
     /**

@@ -1197,6 +1197,7 @@ export class SqliteVFS {
   private auditCursor: { kind: typeof GC_CHUNK | typeof GC_CONTENT; id: number } | null = { kind: GC_CHUNK, id: 0 };
   /** Legacy tables still holding rows, until the janitor drops them. */
   private legacyTables: string[] = [];
+  private _legacyReset = false;
   /** Last committed generation: every committed VFS transaction advances it. */
   private _gen = 0;
   /** MAX(vfs_snapshots.gen), 0 without a snapshot. */
@@ -1377,14 +1378,18 @@ export class SqliteVFS {
         next_ino INTEGER NOT NULL,
         next_chunk INTEGER NOT NULL,
         next_content INTEGER NOT NULL,
-        tomb_floor INTEGER NOT NULL
+        tomb_floor INTEGER NOT NULL,
+        legacy_reset INTEGER NOT NULL
       )`);
       const state = [...this.sql.exec('SELECT schema FROM vfs_state WHERE slot = 1')][0];
       if (!state) {
+        // The first v2 open: a pre-v2 filesystem here is not read, so its
+        // loss is recorded, to be told until acknowledgeLegacyReset().
         this.sql.exec(
-          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor) VALUES (1, ?, ?, 0, 0, 1, 1, 1, 0)',
+          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 1, 1, 1, 0, ?)',
           VFS_SCHEMA,
           crypto.randomUUID(),
+          this.presentLegacyTables().length > 0 ? 1 : 0,
         );
       } else if (Number(state.schema) !== VFS_SCHEMA) {
         throw new Error(`[sqlite-vfs] unsupported filesystem schema ${String(state.schema)}`);
@@ -1502,13 +1507,33 @@ export class SqliteVFS {
     // clock at open: a directory or a missing path reports it.
     this._revisionFloor = this._gen;
     this._invalidationFloor = this._gen;
-    this.legacyTables = LEGACY_TABLES
+    this.legacyTables = this.presentLegacyTables();
+    if (this.legacyTables.length > 0) this.maintenancePending = true;
+    this._legacyReset = Number([...this.sql.exec('SELECT legacy_reset FROM vfs_state WHERE slot = 1')][0]!.legacy_reset) === 1;
+  }
+
+  /** Tables a pre-v2 Nimbus filesystem left here, recognised by their columns. */
+  private presentLegacyTables(): string[] {
+    return LEGACY_TABLES
       .filter(({ name, columns }) => {
         const present = this.tableColumns(name);
         return columns.every((column) => present.has(column));
       })
       .map(({ name }) => name);
-    if (this.legacyTables.length > 0) this.maintenancePending = true;
+  }
+
+  /**
+   * True while a pre-v2 filesystem this database held has not been told
+   * about: schema v2 does not read it, so the session starts empty, and a
+   * host should say so (and drop state that pointed into it) before
+   * calling acknowledgeLegacyReset(). Survives restarts until then.
+   */
+  get legacyReset(): boolean { return this._legacyReset; }
+
+  acknowledgeLegacyReset(): void {
+    if (!this._legacyReset) return;
+    this.transactionSync(() => { this.sql.exec('UPDATE vfs_state SET legacy_reset = 0 WHERE slot = 1'); });
+    this._legacyReset = false;
   }
 
   /**
@@ -6618,15 +6643,23 @@ export class SqliteVFS {
     const published: StagingContent[] = [];
     try {
       this.executeMeasuredTransaction(plan, execution, () => {
+        // One statement for the generation and every id this transaction
+        // may allocate: it reserves as many as the plan could use, and an
+        // unused one is a gap, never a reuse.
+        const reserve = planIdReservation(plan);
         const state = [...this.sql.exec(
-          'UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen, pin_gen, next_ino, next_chunk, next_content',
+          `UPDATE vfs_state SET gen = gen + 1, next_ino = next_ino + ?, next_chunk = next_chunk + ?, next_content = next_content + ?
+           WHERE slot = 1 RETURNING gen, pin_gen, next_ino, next_chunk, next_content`,
+          reserve.inos,
+          reserve.chunks,
+          reserve.contents,
         )][0]!;
         gen = Number(state.gen);
         pinGen = Number(state.pin_gen);
-        let nextIno = Number(state.next_ino);
-        let nextChunk = Number(state.next_chunk);
-        let nextContent = Number(state.next_content);
-        const counters = `${nextIno}:${nextChunk}:${nextContent}`;
+        let nextIno = Number(state.next_ino) - reserve.inos;
+        let nextChunk = Number(state.next_chunk) - reserve.chunks;
+        let nextContent = Number(state.next_content) - reserve.contents;
+        const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
         const queue = new GcQueue();
         for (const ref of plan.gcRefs) queue.add(ref.kind, ref.id);
 
@@ -6757,9 +6790,9 @@ export class SqliteVFS {
           if (chunkIds.has(key)) continue;
           const id = nextChunk++;
           chunkIds.set(key, id);
-          inserts.push(id, piece.hash, piece.data.byteLength, piece.data);
+          inserts.push(id, piece.hash, piece.data);
         }
-        this.insertRows('vfs_chunks (id, hash, size, data)', CHUNK_ROW_COLUMNS, inserts);
+        this.insertChunkRows(inserts);
         const chunkOf = (piece: Piece): number => chunkIds.get(hashKey(piece.hash))!;
 
         // ── Manifests ─────────────────────────────────────────────────────
@@ -6897,7 +6930,7 @@ export class SqliteVFS {
           entry.contentId = contentId;
         }
         this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, contentRows);
-        this.insertRows('vfs_content_chunks (content_id, off, len, chunk_id)', MANIFEST_ROW_COLUMNS, manifest);
+        this.insertManifestRows(manifest);
 
         // ── Inodes ────────────────────────────────────────────────────────
         const rows: unknown[] = [];
@@ -6949,13 +6982,8 @@ export class SqliteVFS {
         this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
         if (queued.length > 0) this.maintenancePending = true;
         onCommit?.();
-        if (`${nextIno}:${nextChunk}:${nextContent}` !== counters) {
-          this.sql.exec(
-            'UPDATE vfs_state SET next_ino = ?, next_chunk = ?, next_content = ? WHERE slot = 1',
-            nextIno,
-            nextChunk,
-            nextContent,
-          );
+        if (nextIno > limits.ino || nextChunk > limits.chunk || nextContent > limits.content) {
+          throw new Error('[sqlite-vfs] a transaction allocated more ids than it reserved');
         }
       });
     } catch (error) {
@@ -6969,6 +6997,54 @@ export class SqliteVFS {
   }
 
   /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
+  /**
+   * Chunk rows as (id, hash, data) triples; size is length(data), so a row
+   * binds three parameters, not four: 33 rows a statement instead of 25.
+   * The statement count is what an unshared large write pays per
+   * transaction (measured in workerd, where it dominated).
+   */
+  private insertChunkRows(values: readonly unknown[]): void {
+    const perExec = Math.floor(SQL_MAX_BOUND_PARAMETERS / 3) * 3;
+    for (let i = 0; i < values.length; i += perExec) {
+      const batch = values.slice(i, i + perExec);
+      const rows: string[] = [];
+      for (let k = 0; k < batch.length; k += 3) rows.push(`(?${k + 1}, ?${k + 2}, length(?${k + 3}), ?${k + 3})`);
+      this.sql.exec(`INSERT INTO vfs_chunks (id, hash, size, data) VALUES ${rows.join(',')}`, ...batch);
+    }
+  }
+
+  /**
+   * Manifest rows as (content_id, off, len, chunk_id) quadruples, a run of
+   * one content binding its id once: 33 rows a statement for one file's
+   * manifest, and never fewer than 25.
+   */
+  private insertManifestRows(values: readonly unknown[]): void {
+    let params: unknown[] = [];
+    let rows: string[] = [];
+    let shared = 0;
+    let sharedId: unknown;
+    const flush = (): void => {
+      if (rows.length === 0) return;
+      this.sql.exec(`INSERT INTO vfs_content_chunks (content_id, off, len, chunk_id) VALUES ${rows.join(',')}`, ...params);
+      params = [];
+      rows = [];
+      shared = 0;
+    };
+    for (let i = 0; i < values.length; i += 4) {
+      const reuse = shared > 0 && values[i] === sharedId;
+      if (params.length + (reuse ? 3 : 4) > SQL_MAX_BOUND_PARAMETERS) flush();
+      if (shared === 0 || values[i] !== sharedId) {
+        params.push(values[i]);
+        shared = params.length;
+        sharedId = values[i];
+      }
+      params.push(values[i + 1], values[i + 2], values[i + 3]);
+      const n = params.length;
+      rows.push(`(?${shared}, ?${n - 2}, ?${n - 1}, ?${n})`);
+    }
+    flush();
+  }
+
   private insertRows(target: string, columns: number, values: readonly unknown[], verb = 'INSERT'): void {
     const perExec = Math.floor(SQL_MAX_BOUND_PARAMETERS / columns) * columns;
     const row = `(${Array.from({ length: columns }, () => '?').join(',')})`;
@@ -8009,6 +8085,27 @@ function vfsError(code: string, message: string): Error & { code: string } {
 }
 
 const NO_BYTES = new Uint8Array(0);
+
+/** Upper bounds on the inode numbers, chunk ids and content ids one plan allocates. */
+function planIdReservation(plan: TransactionPlan): { inos: number; chunks: number; contents: number } {
+  let chunks = 0;
+  let contents = plan.stagingCreated.length;
+  for (const staged of plan.staged) if (!staged.named) chunks++;
+  for (const entry of plan.inodes) {
+    const content = entry.content;
+    switch (content.type) {
+      case 'small': case 'rewrite': chunks++; break;
+      case 'large': chunks += content.pieces.length; contents++; break;
+      case 'edit': chunks += content.pieces.length; break;
+      case 'imported':
+        for (const piece of content.pieces) if (piece.data !== null) chunks++;
+        if (content.manifest) contents++;
+        break;
+      default: break;
+    }
+  }
+  return { inos: plan.inodes.length, chunks, contents };
+}
 
 /** Let the host settle storage writes between slices of a long job. */
 function yieldToStorage(): Promise<void> {

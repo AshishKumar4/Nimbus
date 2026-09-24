@@ -5,6 +5,7 @@ import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/co
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { routeRuntimeLoopback } from '../session/loopback.js';
@@ -51,6 +52,7 @@ class RuntimeOwner {
     flushScheduled = false;
     janitorScheduled = false;
     recoveryNotice = false;
+    legacyNotice = null;
     scheduling = new Set();
     fileLeases = new Map();
     services;
@@ -103,6 +105,8 @@ class RuntimeOwner {
     ensureRuntimeReady() {
         this.assertOpen();
         this.readyPromise ??= (async () => {
+            // Files a pre-v2 Nimbus wrote are not read: say so, and start cold.
+            this.legacyNotice = takeLegacyResetNotice(this.sqliteFs, this.ctx);
             const saved = loadShellState(this.ctx);
             this.recoveryNotice = saved.hasPersistedState;
             if (saved.cwd)
@@ -232,6 +236,10 @@ class RuntimeOwner {
         if (this.recoveryNotice) {
             this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
             this.recoveryNotice = false;
+        }
+        if (this.legacyNotice) {
+            this.terminal.write(`\r\n[${this.legacyNotice}]\r\n`);
+            this.legacyNotice = null;
         }
         if (!this.shell.running)
             this.shell.printPrompt();
