@@ -343,7 +343,12 @@ under the session's name and id. The session's own rows are the ones with
 `max { activeWebsocketConnections }` of at least 1 and nonzero
 `rowsWritten`. A reset with no counter, no deploy and no tail is a platform
 shutdown (runtime update or host move). The DO lifecycle docs say such a
-shutdown terminates WebSockets.
+shutdown terminates WebSockets. `fatalInternalErrors` is also what a
+deliberate `ctx.abort()` counts as. `durable/eviction-survival` and
+`durable/universal-scoped-survival` call `POST /api/_diag/abort`, about 4-5
+minutes into a suite run. Their tail events end `aborted` with "Application
+called abort() to reset Durable Object.". Such a row is the probe working,
+not a session death.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes
