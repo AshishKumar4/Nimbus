@@ -299,8 +299,15 @@ Useful commands:
 
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
-defensive-catch tests. Live probes that create sessions must delete those
-sessions in `finally` via the public cleanup path.
+defensive-catch tests. The driver owns session cleanup: every session
+`mintSession` creates is DELETEd through the public cleanup path when the
+probe process exits, however it exits, unless `deleteSession` already
+released it. Only SIGKILL or a runtime crash escapes, and `run-all` fails the
+suite on those: `_driver.mjs` records each mint and DELETE in a per-run
+ledger, and every minted session without a 2xx DELETE is named with its
+probe. A session created outside the driver (the remote SDK's
+`.sandbox(id)`, the anonymous demo launch) is the probe's to delete in
+`finally`. `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
 ### Probe targets
 
