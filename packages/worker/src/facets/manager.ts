@@ -28,6 +28,7 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
+import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ExecutionFs, type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
 import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -48,7 +49,7 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
-import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -60,7 +61,7 @@ import {
   type FencedWorkRecord,
 } from '@nimbus-sh/fabric/fenced-work.js';
 import {
-  EsbuildService,
+  type EsbuildService,
   rewriteBundledEsmToCjs,
   rewriteProvidedCommonJsModules,
   type EsbuildTransformOutcome,
@@ -3246,8 +3247,16 @@ async function addEntryAbsPathReads(
   return { added };
 }
 
-function looksLikeEsm(src: string): boolean {
-  return hasTopLevelModuleSyntax(src);
+function looksLikeEsm(path: string, src: string): boolean {
+  if (!hasTopLevelModuleSyntax(src)) return false;
+  if (vfsPathExtension(path) !== '') return true;
+  // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+  try {
+    parseJavaScriptModule(src);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -3332,7 +3341,7 @@ function _markBundleEsmAsFailed(
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
     const typescript = bundleTypescriptLoader(path) !== null;
-    if (!typescript && !looksLikeEsm(src)) continue;
+    if (!typescript && !looksLikeEsm(path, src)) continue;
     bundle[typescript ? compiledCellKey(path) : path] = esbuildDiagnosticShim(path, reason);
   }
 }
@@ -3358,7 +3367,8 @@ function esbuildDiagnosticShim(path: string, reason: string): string {
  * Extensionless entries are in the set for the same reason the pre-compile
  * loop takes them — that is the shape of nearly every npm `bin` script.
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
+ * and parses an extensionless file, which may be data rather than a script.
  */
 export function isBundleModuleCandidate(path: string): boolean {
   const ext = vfsPathExtension(path);
@@ -3367,7 +3377,8 @@ export function isBundleModuleCandidate(path: string): boolean {
 
 /**
  * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one.
+ * path does not name one. Which extensions are TypeScript is
+ * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
@@ -3386,10 +3397,7 @@ export function isBundleModuleCandidate(path: string): boolean {
  * gone. So a declaration file is left exactly as it was staged.
  */
 export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
-  if (isTypescriptDeclarationFile(path)) return null;
-  const ext = vfsPathExtension(path);
-  if (ext === '.tsx') return 'tsx';
-  return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
+  return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
 }
 
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
@@ -3497,7 +3505,7 @@ async function transformEsmInBundle(
     // esbuild.transform expect strings.
     if (typeof src !== 'string') continue;
     if (bundleTypescriptLoader(path) === null) {
-      const esm = looksLikeEsm(src);
+      const esm = looksLikeEsm(path, src);
       if (!esm) continue;
     }
     candidates.push(path);
@@ -3505,10 +3513,11 @@ async function transformEsmInBundle(
   interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
   const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
     if ('error' in outcome) {
-      // A rejection is esbuild's verdict on this source, so it is cached with it.
+      // esbuild's verdict on this source is cached with it; a host that could
+      // not run the transform this time has no verdict to cache.
       const shim = esbuildDiagnosticShim(cell.path, outcome.error);
       bundle[cell.target] = shim;
-      __esmTransformCacheSet(cell.key, shim);
+      if (!outcome.transient) __esmTransformCacheSet(cell.key, shim);
       failed++;
       return;
     }
@@ -3537,7 +3546,6 @@ async function transformEsmInBundle(
     const original = bundle[path];
     if (typeof original !== 'string') continue;
     const loader = bundleTypescriptLoader(path);
-    const src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
     // A TypeScript source keeps its bytes; its emit lands beside it.
     const target = loader === null ? path : compiledCellKey(path);
     // `import.meta.url` substitution mirrors the sibling fix at
@@ -3555,27 +3563,39 @@ async function transformEsmInBundle(
     // with identical source but different paths would otherwise share a
     // cache entry and the second file would get the first file's URL.
     const absUrl = 'file:///' + path.replace(/^\/+/, '');
-    const key = __cacheKey(src + '\0' + absUrl);
+    // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
+    const key = __cacheKey(original + '\0' + absUrl);
     const cached = __esmTransformCacheGet(key);
     if (cached !== undefined) {
       bundle[target] = cached;
       transformed++;
       continue;
     }
-    const cell: EsmCell = {
+    const cellFor = (code: string): EsmCell => ({
       path,
       target,
       key,
       absUrl,
-      request: {
-        code: src,
-        options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) },
-      },
-    };
+      request: { code, options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) } },
+    });
+    let src: string;
+    try {
+      src = loader === null ? rewriteProvidedCommonJsModules(original) : original;
+    } catch (e) {
+      // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
+      settle(cellFor(original), { error: errorText(e) });
+      continue;
+    }
+    const cell = cellFor(src);
     if (loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
       // The bounded rewrite is computation in this isolate, however large.
       if (pacer) await pacer.spend(src.length);
-      const rewritten = rewriteBundledEsmToCjs(src, absUrl);
+      let rewritten: EsbuildTransformOutcome | null;
+      try {
+        rewritten = rewriteBundledEsmToCjs(src, absUrl);
+      } catch (e) {
+        rewritten = { error: errorText(e) };
+      }
       if (rewritten) {
         settle(cell, rewritten);
         continue;
@@ -3799,17 +3819,20 @@ async function _buildPrefetchBundle(
       _markBundleEsmAsFailed(bundle, `esbuild service unavailable: ${reason}`);
     }
   } else {
-    // framework-fixes-F4 (2026-05-12): no esbuild service available at
-    // all (lazy-init failed or never wired). Same diagnostic-shim
-    // treatment so users see WHY the ESM file couldn't be transformed.
-    _markBundleEsmAsFailed(bundle, 'esbuild service not initialized (likely lazy-init failure)');
+    // No esbuild service was given: the ESM cells stage as diagnostics that
+    // say so, rather than as source `new Function` rejects without a reason.
+    _markBundleEsmAsFailed(bundle, 'no esbuild service was given to this launch');
   }
   for (const path of Object.keys(bundle)) {
     if (compiledCellPath(path) === null && (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null)) continue;
     const source = bundle[path];
     if (typeof source !== 'string') continue;
     await pacer?.spend(source.length);
-    bundle[path] = rewriteProvidedCommonJsModules(source);
+    try {
+      bundle[path] = rewriteProvidedCommonJsModules(source);
+    } catch {
+      // Unparseable, so not a module and no bundled records to bind: data such as a LICENSE.
+    }
   }
   await paceAfterPass();
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
@@ -4217,11 +4240,9 @@ export class FacetManager {
   // stage into the next launch of the same entry, as a one-shot's do.
   private readonly residentBundleKeys = new Map<number, string>();
   /**
-   * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
-   * over the prefetch bundle. Created on first exec where vfs is set;
-   * shared across subsequent execs (warm wasm).  Optional setter
-   * `setEsbuildService` lets NimbusSession share its existing instance
-   * to avoid double-init.
+   * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
+   * sets it: the host's own, or one whose transforms run in the session's
+   * esbuild facet. Never one of this isolate: esbuild-wasm's heap only grows.
    */
   private esbuild: EsbuildService | null = null;
 
@@ -4510,11 +4531,7 @@ export class FacetManager {
     }
     return vfs;
   }
-  /**
-   * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
-   * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
-   * for the user-shell `node` runtime; sharing avoids paying init twice.
-   */
+  /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
@@ -4599,12 +4616,6 @@ export class FacetManager {
     if (!this.vfs) {
       return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     }
-    // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so ESM
-    // source files (e.g. tldts/dist/es6/index.js, @remix-run/react,
-    // @tailwindcss/vite, react-remove-scroll, astro) get transformed to CJS
-    // before they hit the facet's `new Function` pre-compile loop. Lazy-create
-    // one if NimbusSession didn't share its own.
-    if (!this.esbuild) this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
     this.imageStore.ensureDir();
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
@@ -4637,7 +4648,7 @@ export class FacetManager {
     }
 
     const vfsState = await buildPrefetchBundle(
-      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild, profile,
+      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
       this.residencyProfiles.get(key), pacer,
     );
     vfsState.bundleKey = key;

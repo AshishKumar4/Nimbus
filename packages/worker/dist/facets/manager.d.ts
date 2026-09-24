@@ -23,7 +23,7 @@ import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contr
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -567,12 +567,14 @@ export declare function addObservedReads(vfs: CredentialedVfs, observed: Readonl
  * Extensionless entries are in the set for the same reason the pre-compile
  * loop takes them — that is the shape of nearly every npm `bin` script.
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
+ * and parses an extensionless file, which may be data rather than a script.
  */
 export declare function isBundleModuleCandidate(path: string): boolean;
 /**
  * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one.
+ * path does not name one. Which extensions are TypeScript is
+ * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
@@ -884,11 +886,9 @@ export declare class FacetManager {
     private _pairedServeFacet;
     private readonly residentBundleKeys;
     /**
-     * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
-     * over the prefetch bundle. Created on first exec where vfs is set;
-     * shared across subsequent execs (warm wasm).  Optional setter
-     * `setEsbuildService` lets NimbusSession share its existing instance
-     * to avoid double-init.
+     * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
+     * sets it: the host's own, or one whose transforms run in the session's
+     * esbuild facet. Never one of this isolate: esbuild-wasm's heap only grows.
      */
     private esbuild;
     /**
@@ -1004,11 +1004,7 @@ export declare class FacetManager {
      * `.nimbus/images/<sha256>` is session kernel data, not user content.
      */
     private _imageVfs;
-    /**
-     * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
-     * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
-     * for the user-shell `node` runtime; sharing avoids paying init twice.
-     */
+    /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**
      * The pacer every launch is built under: the session's alarm-driven turn

@@ -133,9 +133,14 @@ export interface EsbuildTransformRequest {
     code: string;
     options?: EsbuildTransformOptions;
 }
-/** A host's answer for one request: the output, or why esbuild rejected the module. */
+/**
+ * A host's answer for one request: the output, or why esbuild rejected the
+ * module. A `transient` error is no verdict on the source: the host could not
+ * run the transform this time.
+ */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
+    transient?: true;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
@@ -281,8 +286,9 @@ export declare class EsbuildService {
     /**
      * Transform many modules in one round trip to the transform host (or in
      * this isolate when there is none). Outcomes are positional, and a module
-     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
-     * bad module never costs the others their output.
+     * the provided-module pre-pass or esbuild rejects is an `{ error }` outcome
+     * rather than a rejection, so one bad module never costs the others their
+     * output.
      */
     transformMany(requests: readonly EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
     /**

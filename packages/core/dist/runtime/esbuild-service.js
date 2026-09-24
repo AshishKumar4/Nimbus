@@ -12,6 +12,7 @@ import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
+import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { scanJsSource } from './comment-strip.js';
@@ -1428,28 +1429,41 @@ export class EsbuildService {
     /**
      * Transform many modules in one round trip to the transform host (or in
      * this isolate when there is none). Outcomes are positional, and a module
-     * esbuild rejects is an `{ error }` outcome rather than a rejection, so one
-     * bad module never costs the others their output.
+     * the provided-module pre-pass or esbuild rejects is an `{ error }` outcome
+     * rather than a rejection, so one bad module never costs the others their
+     * output.
      */
     async transformMany(requests) {
-        if (requests.length === 0)
-            return [];
-        const prepared = requests.map(({ code, options }) => ({ code: withProvidedModuleRewrite(code, options), options }));
-        if (this.transformHost) {
-            const outcomes = await this.transformHost(prepared);
-            if (outcomes.length !== prepared.length) {
-                throw new Error(`esbuild transform host answered ${outcomes.length} of ${prepared.length} requests`);
+        const outcomes = new Array(requests.length);
+        const prepared = [];
+        const positions = [];
+        requests.forEach(({ code, options }, i) => {
+            try {
+                prepared.push({ code: withProvidedModuleRewrite(code, options), options });
+                positions.push(i);
             }
+            catch (e) {
+                outcomes[i] = { error: errorText(e) };
+            }
+        });
+        if (prepared.length === 0)
+            return outcomes;
+        if (this.transformHost) {
+            const hosted = await this.transformHost(prepared);
+            if (hosted.length !== prepared.length) {
+                throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
+            }
+            hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
             return outcomes;
         }
         await this.ensureInit();
-        const outcomes = [];
-        for (const { code, options } of prepared) {
+        for (let j = 0; j < prepared.length; j++) {
+            const { code, options } = prepared[j];
             try {
-                outcomes.push(await transformWithEsbuild(this._esbuild, code, options));
+                outcomes[positions[j]] = await transformWithEsbuild(this._esbuild, code, options);
             }
             catch (e) {
-                outcomes.push({ error: errorText(e) });
+                outcomes[positions[j]] = { error: errorText(e) };
             }
         }
         return outcomes;
@@ -1746,10 +1760,9 @@ export class EsbuildService {
             return null;
         }
         function inferLoader(path) {
-            if (path.endsWith('.ts') || path.endsWith('.mts') || path.endsWith('.cts'))
-                return 'ts';
-            if (path.endsWith('.tsx'))
-                return 'tsx';
+            const typescript = typescriptLoader(path);
+            if (typescript !== null)
+                return typescript;
             if (path.endsWith('.jsx'))
                 return 'jsx';
             if (path.endsWith('.json'))

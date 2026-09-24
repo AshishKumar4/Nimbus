@@ -199,6 +199,28 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.transforms[0].opts.loader, 'ts');
 }
 
+// ── .mts and .cts are TypeScript as well: ESM and CommonJS TypeScript ──
+//
+// The handler listed .ts and .tsx itself, so `node main.mts` reached the facet
+// as TypeScript ("Missing initializer in const declaration", or "Cannot use
+// import statement outside a module"), and so did `node main.cts`. It now
+// asks the table the bundle's ESM pass asks. `.cts` compiles even inside a
+// type:module package, where `.cjs` (above) is left alone.
+for (const [entry, source] of [
+  ['home/user/main.mts', 'import { x } from "./x.mjs";\nconst n: number = x;\n'],
+  ['home/user/main.cts', 'const x = require("./x.cjs");\nconst n: number = x;\n'],
+]) {
+  const r = await runScript({
+    'home/user/package.json': JSON.stringify({ name: 'app', type: 'module' }),
+    [entry]: source,
+  }, `/${entry}`);
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.equal(r.transforms.length, 1, `${entry} must be compiled before it runs`);
+  assert.equal(r.transforms[0].opts.loader, 'ts');
+  assert.equal(r.transforms[0].opts.format, 'cjs');
+  assert.ok(r.code.startsWith(TRANSFORM_MARKER), `${entry} reaches the runner as its CommonJS emit`);
+}
+
 // ── `-` runs the program on stdin, with its arguments after argv[1] ──
 //
 // Pi's installer validates its managed install with
