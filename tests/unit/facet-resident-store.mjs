@@ -266,28 +266,4 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   assert.ok(meter.contentBytes > 0, 'which is what makes the assertion above non-vacuous');
 }
 
-// ── a store that outlives its process ─────────────────────────────────────
-//
-// A slot's SQLite is kept for the next process under the same credential. Its
-// authority rows are still dated and reconcile as usual, but the previous
-// process's unflushed writes never reached the authority: they are not files.
-{
-  const sql = sqlShim();
-  const make = () => new Function(
-    FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentPopulate, bundle: __nimbusResidentBundle };',
-  )();
-  const first = make();
-  first.__residentBind({ storage: { sql } });
-  first.__residentAdmit(CURSOR);
-  first.__residentPopulate('lib/x.js', 'X', 5);
-  first.bundle['tmp/unflushed.txt'] = 'never written back';
-  const paths = () => sql.exec('SELECT path FROM file ORDER BY path').map((r) => r.path);
-  assert.deepEqual(paths(), ['lib/x.js', 'tmp/unflushed.txt']);
-
-  const next = make();
-  next.__residentBind({ storage: { sql } });
-  assert.deepEqual(paths(), ['lib/x.js'], 'the dead process\'s unflushed write is dropped; dated rows stay');
-  assert.deepEqual(sql.exec("SELECT path FROM chunk WHERE path = 'tmp/unflushed.txt'"), [], 'with its bytes');
-}
-
 console.log('facet-resident-store: ok');

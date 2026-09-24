@@ -31,8 +31,9 @@ function makeCtx(id = 'session-under-test') {
   const everCreated = [];
   const seen = new Set();
   const live = new Set();
-  // name → what is stored under it; `delete` is the only thing that drops it.
-  const stores = new Map();
+  // Names whose SQLite exists: get creates it, abort keeps it, delete drops it.
+  const stored = new Set();
+  const reopenedStores = [];
   return {
     id: { toString: () => id },
     // The lifetime ledger persists its high-water through here; this test's
@@ -40,10 +41,12 @@ function makeCtx(id = 'session-under-test') {
     storage: { async get() { return undefined; }, async put() {} },
     everCreated,
     live,
-    stores,
+    reopenedStores,
     facets: {
       get(name) {
         if (!seen.has(name)) { seen.add(name); everCreated.push(name); }
+        if (stored.has(name)) reopenedStores.push(name);
+        stored.add(name);
         live.add(name);
         return {
           async startProcess() { return { ok: true }; },
@@ -51,7 +54,7 @@ function makeCtx(id = 'session-under-test') {
         };
       },
       abort(name) { live.delete(name); },
-      delete(name) { live.delete(name); stores.delete(name); },
+      delete(name) { live.delete(name); stored.delete(name); },
     },
   };
 }
@@ -59,11 +62,11 @@ function makeCtx(id = 'session-under-test') {
 const env = { LOADER: { get: () => ({ getDurableObjectClass: () => class {} }) } };
 const disk = () => ({});
 
-function open(ctx, pid, storeKey) {
+function open(ctx, pid) {
   return processes(ctx, env).spawn(
     disk,
     { doId: ctx.id.toString(), pid, writerId: `w${pid}` },
-    { pid, writerId: `w${pid}`, startArgs: {}, boot: { kind: 'code', code: {} }, ...(storeKey ? { storeKey } : {}) },
+    { pid, writerId: `w${pid}`, startArgs: {}, boot: { kind: 'code', code: {} } },
   );
 }
 
@@ -133,50 +136,25 @@ const ctx3 = makeCtx('other-session');
 const elsewhere = open(ctx3, 9000);
 assert.equal(elsewhere.slot, 0, 'a different Durable Object has its own slot space');
 
-// ── A keyed slot keeps its store, and only for the same key ─────────────────
+// ── An ephemeral slot never reopens a store a previous process left ─────────
 //
-// A resident's filesystem mirror lives in its slot's SQLite. Rebuilding it on
-// every launch copied 36,137 files (368 MB) through the session before a
-// hello-world server could start. Keeping it is only sound for the same key:
-// another credential may not read what the store holds.
+// Re-getting an aborted facet's preserved SQLite reset the whole session DO
+// ("Internal error in Durable Object storage caused object to be reset") on
+// ~1-2% of reuses; with release deleting the store, 0 in 480 launches. So a
+// released ephemeral slot is always handed out empty, whatever the spawn
+// carries (the manager used to pass a per-credential store key).
 {
-  const k = makeCtx('keyed');
-  const alice = 'session:1000:1000:1000';
-  const root = 'session:0:0:0';
-  // A name minted by this incarnation may carry storage an earlier one left.
-  k.stores.set('proc-slot-0', 'left by a previous incarnation');
-  const first = open(k, 1, alice);
-  assert.equal(k.stores.has('proc-slot-0'), false, 'a newly minted name starts from empty storage');
-  k.stores.set(first.name, 'alice mirror');
-  await first.release();
-  assert.equal(k.stores.get('proc-slot-0'), 'alice mirror', 'a keyed release keeps the store');
-
-  const again = open(k, 2, alice);
-  assert.equal(again.name, 'proc-slot-0', 'the same key gets its slot back');
-  assert.equal(k.stores.get('proc-slot-0'), 'alice mirror', 'and its store with it');
-  await again.release();
-
-  const other = open(k, 3, root);
-  assert.equal(other.name, 'proc-slot-0', 'another key may reuse the name');
-  assert.equal(k.stores.has('proc-slot-0'), false, 'but never the store');
-  k.stores.set(other.name, 'root mirror');
-
-  // With two kept slots, a key finds its own even when it is not the lowest.
-  const busy = open(k, 4, alice);
-  k.stores.set(busy.name, 'alice mirror 2');
-  await other.release();
-  await busy.release();
-  const back = open(k, 5, alice);
-  assert.equal(back.name, busy.name, 'the same key is preferred over a lower free slot');
-  assert.equal(k.stores.get(back.name), 'alice mirror 2');
-  assert.equal(k.stores.get('proc-slot-0'), 'root mirror', 'the other key\'s store is untouched');
-  await back.release();
-
-  // Unkeyed processes keep the old rule: release deletes.
-  const plain = open(k, 6);
-  k.stores.set(plain.name, 'scratch');
-  await plain.release();
-  assert.equal(k.stores.has(plain.name), false, 'an unkeyed release deletes its store');
+  const ctx4 = makeCtx('fresh-stores');
+  for (let i = 0; i < 20; i++) {
+    const p = 4000 + i;
+    const facet = processes(ctx4, env).spawn(
+      disk,
+      { doId: 'fresh-stores', pid: p, writerId: `w${p}` },
+      { pid: p, writerId: `w${p}`, startArgs: {}, boot: { kind: 'code', code: {} }, storeKey: 'fresh-stores:1000:1000:1000' },
+    );
+    await facet.release();
+  }
+  assert.deepEqual(ctx4.reopenedStores, [], 'every ephemeral grant starts from empty storage');
 }
 
 console.log('resident-facet-slot-pool: ok');

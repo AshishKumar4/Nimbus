@@ -344,10 +344,6 @@ function __residentBind(ctx) {
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
-  // A store can outlive its process. Unflushed writes left by an earlier one
-  // never reached the authority, so they are not files.
-  sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
-  sql.exec("DELETE FROM file WHERE rev = ?", __RK_OWN_WRITE);
   __residentSql = sql;
   __residentReady = true;
   return sql;

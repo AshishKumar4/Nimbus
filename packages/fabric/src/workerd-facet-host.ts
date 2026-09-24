@@ -256,22 +256,12 @@ export const DURABLE_FACET_NAME_PREFIX = 'app-slot-';
 
 /** One hosting actor's slot book. */
 interface SlotBook {
-  /**
-   * Returned slots, lowest reused first so the high-water mark stays low.
-   * `key` is the store key whose SQLite the slot still holds, or null when
-   * release deleted it.
-   */
-  free: Array<{ slot: number; key: string | null }>;
+  /** Returned slots, lowest reused first so the high-water mark stays low. */
+  free: number[];
   /** The next never-yet-issued slot. */
   next: number;
   /** Slot held by each live pid, so release can find it. */
   held: Map<number, number>;
-}
-
-/** A slot for one spawn, and whether its storage must be deleted first. */
-interface SlotGrant {
-  slot: number;
-  wipe: boolean;
 }
 
 /**
@@ -305,42 +295,28 @@ function slotBook(ctx: DurableObjectState): SlotBook {
   return book;
 }
 
-/**
- * Take a slot for `pid`: one whose storage was kept under `key`, else the
- * lowest returned slot, else a new name.
- *
- * Only a same-key slot keeps its storage. Every other grant is wiped: a slot
- * kept under another key holds another tenant's files, and a new name may
- * re-attach storage a previous incarnation of this actor left behind.
- */
-function acquireSlot(ctx: DurableObjectState, pid: number, key: string | undefined): SlotGrant {
+/** Take a slot for `pid`, reusing a returned one before minting a new name. */
+function acquireSlot(ctx: DurableObjectState, pid: number): number {
   const book = slotBook(ctx);
   const existing = book.held.get(pid);
-  if (existing !== undefined) return { slot: existing, wipe: false };
-  let index = key === undefined ? -1 : book.free.findIndex((entry) => entry.key === key);
-  const warm = index >= 0;
-  if (!warm && book.free.length > 0) index = 0;
-  let slot: number;
-  if (index >= 0) {
-    slot = book.free.splice(index, 1)[0]!.slot;
-  } else {
-    slot = book.next++;
-    // A fresh name is a permanently consumed facet ID; the durable count lives
-    // in the budgets ledger (see budgets.ts).
-    recordFacetNameMinted(ctx, book.next);
-  }
+  if (existing !== undefined) return existing;
+  const reused = book.free.length > 0;
+  const slot = reused ? book.free.shift()! : book.next++;
   book.held.set(pid, slot);
-  return { slot, wipe: !warm };
+  // A fresh name is a permanently consumed facet ID; the durable count lives
+  // in the budgets ledger (see budgets.ts).
+  if (!reused) recordFacetNameMinted(ctx, book.next);
+  return slot;
 }
 
-/** Return `pid`'s slot to the free list, noting whose storage it still holds. */
-function releaseSlot(ctx: DurableObjectState, pid: number, key: string | null): void {
+/** Return `pid`'s slot to the free list. */
+function releaseSlot(ctx: DurableObjectState, pid: number): void {
   const book = slotBook(ctx);
   const slot = book.held.get(pid);
   if (slot === undefined) return;
   book.held.delete(pid);
-  book.free.push({ slot, key });
-  book.free.sort((a, b) => a.slot - b.slot);
+  book.free.push(slot);
+  book.free.sort((a, b) => a - b);
 }
 
 /**
@@ -440,12 +416,8 @@ function spawnResident(
         + `prefix, got '${explicit.name}'`,
     );
   }
-  const grant = explicit ? undefined : acquireSlot(ctx, params.pid, params.storeKey);
-  const slot = grant?.slot;
+  const slot = explicit ? undefined : acquireSlot(ctx, params.pid);
   const name = explicit ? explicit.name : residentFacetName(slot!);
-  if (grant?.wipe) {
-    try { facets.delete(name); } catch { /* nothing stored under this name */ }
-  }
   // The start callback is the ONLY way this facet is ever created, and it
   // fires AT MOST ONCE. Every later use goes through the stub below, so the
   // callback running a second time means the facet was released or died —
@@ -471,7 +443,7 @@ function spawnResident(
   try {
     facet = facets.get(name, start);
   } catch (error) {
-    if (slot !== undefined) releaseSlot(ctx, params.pid, null);
+    if (slot !== undefined) releaseSlot(ctx, params.pid);
     throw withFacetBudgetNamed(facetNameCount(ctx), error);
   }
 
@@ -481,17 +453,17 @@ function spawnResident(
     disposed = true;
     released = true;
     try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-    // The release classes: a durable facet's SQLite is the application
-    // itself, so abort ends the process and the data stays. A keyed
-    // ephemeral facet keeps its store for the next same-key spawn, which
-    // acquireSlot alone may hand it to. Any other ephemeral store is deleted.
-    const kept = !!explicit?.durable || params.storeKey !== undefined;
-    if (!kept) {
+    // The two release classes: an ephemeral facet's SQLite is slot-reuse
+    // hygiene — the name is handed out again, so the store must not be — and
+    // a durable one's is the application itself: abort ends the process, the
+    // data stays for the next boot, and only removeDurableApp's explicit
+    // deleteFacetStorage call ever drops it.
+    if (!explicit?.durable) {
       try { facets.delete(name); } catch { /* already gone */ }
     }
     // Only after the facet is gone. A slot handed out while its previous
     // tenant were still being torn down would have two processes on one name.
-    if (slot !== undefined) releaseSlot(ctx, params.pid, params.storeKey ?? null);
+    if (slot !== undefined) releaseSlot(ctx, params.pid);
   };
 
   let started: Promise<unknown>;

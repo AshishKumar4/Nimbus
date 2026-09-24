@@ -253,13 +253,6 @@ export interface ProcessHostParams {
         name: string;
         durable: boolean;
     };
-    /**
-     * Ephemeral only. A released slot keeps its SQLite for the next spawn with
-     * the same key, so a resident's filesystem mirror is refreshed rather than
-     * rebuilt. Any other reuse of the slot starts from empty storage. Absent,
-     * release deletes the storage as it always has.
-     */
-    storeKey?: string;
 }
 /**
  * One resident process, as its coordinator sees it. Identical in meaning on
@@ -531,13 +524,6 @@ export interface ResidentProcessSpawn {
         name: string;
         durable: boolean;
     };
-    /**
-     * Ephemeral only. A released slot keeps its SQLite for the next spawn with
-     * the same key, so a resident's filesystem mirror is refreshed rather than
-     * rebuilt. Any other reuse of the slot starts from empty storage. Absent,
-     * release deletes the storage as it always has.
-     */
-    storeKey?: string;
     /**
      * Called before any concrete host capability can expose this writer.
      * A spawn must not proceed unless the supervisor accepts the authority.
