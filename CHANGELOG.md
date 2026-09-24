@@ -102,6 +102,15 @@ published independently in the `@nimbus-sh` npm scope.
 - `list()` reports a confined caller's private `/tmp` entries at their own
   revision. It looked the revision up under the listed name, which is the
   shared `/tmp` file's, and so listed a private file just written at 0.
+- The W7 write-batch checksums are computed by `node:zlib`'s `crc32` where
+  the host has it (bun, node, workerd with `nodejs_compat`), for inputs of
+  128 bytes or more, and by a slicing-by-8 table otherwise. The checksum
+  loop used to iterate each byte with `for..of`. Encoding plus decoding
+  5,000 files of 4 KiB in bun went from 760-860 ms to 100 ms, and in
+  workerd from 916 ms to 375 ms. With 512-byte files workerd is unchanged.
+  The checksums on the wire are the same values. Zip archives
+  (`createZip`) use the same function, `@nimbus-sh/platform/crc32.js`, and
+  core has no CRC-32 of its own.
 
 ### Runtimes
 

@@ -2,6 +2,7 @@
  * W7 v3 — incremental typed records for streamed bulk filesystem writes.
  * The format is internal: every producer and consumer deploys together.
  */
+import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 const ENCODER_QUEUE_HWM = 0;
@@ -101,7 +102,7 @@ export async function decodeWriteBatchStream(stream, options = {}) {
         }
         const beginPayload = await buffer.readExact(beginEnvelope.length, 'batch-begin payload');
         const begin = parseBatchBegin(beginPayload);
-        const initialCheck = updateRecordCheck(CRC_SEED, beginEnvelope.header, beginPayload);
+        const initialCheck = updateRecordCheck(0, beginEnvelope.header, beginPayload);
         handedOff = true;
         return {
             batchId: begin.id,
@@ -180,7 +181,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
                     throwIfAborted(options.signal);
                     const data = await buffer.readExact(dataLength, 'file-chunk data');
                     batchCheck = updateRecordCheck(batchCheck, envelope.header, headerPayload, data);
-                    active.check = crc32Update(active.check, data);
+                    active.check = crc32(data, active.check);
                     active.nextChunkId++;
                     active.receivedBytes += dataLength;
                     summary.recordCount++;
@@ -242,7 +243,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
                         inode,
                         nextChunkId: 0,
                         receivedBytes: 0,
-                        check: CRC_SEED,
+                        check: 0,
                     };
                     yield { type: 'file-begin', streamContentId: metadata.contentId, inode };
                     break;
@@ -251,7 +252,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
                     if (!active)
                         throw new Error('w7-frame: file-end without active file');
                     const metadata = parseFileEnd(payload);
-                    const actualCheck = crc32Finish(active.check);
+                    const actualCheck = active.check;
                     if (metadata.contentId !== active.metadata.contentId) {
                         throw new Error(`w7-frame: file-end content id mismatch for ${active.inode.path}`);
                     }
@@ -281,7 +282,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
                     if (active)
                         throw new Error(`w7-frame: batch-end while file ${active.inode.path} is active`);
                     const actual = parseBatchEnd(payload);
-                    const expected = { ...summary, check: crc32Finish(batchCheck) };
+                    const expected = { ...summary, check: batchCheck };
                     if (!sameSummary(actual, expected)) {
                         throw new Error(`w7-frame: batch-end summary mismatch; expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
                     }
@@ -315,7 +316,7 @@ async function* decodeRecords(stream, reader, buffer, options, initialCheck) {
 }
 function* encodeRecords(batchId, deletes, directories, files) {
     const state = {
-        batchCheck: CRC_SEED,
+        batchCheck: 0,
         summary: {
             recordCount: 0,
             pathCount: 0,
@@ -350,7 +351,7 @@ function* encodeRecords(batchId, deletes, directories, files) {
             size: file.inode.size,
             chunkCount: file.inode.chunkCount,
         }, state);
-        let fileCheck = CRC_SEED;
+        let fileCheck = 0;
         for (const chunk of file.chunks) {
             const data = chunk.data;
             const contentBytes = new TextEncoder().encode(file.contentId);
@@ -364,19 +365,19 @@ function* encodeRecords(batchId, deletes, directories, files) {
             state.summary.recordCount++;
             state.summary.chunkCount++;
             state.summary.byteCount += data.byteLength;
-            fileCheck = crc32Update(fileCheck, data);
+            fileCheck = crc32(data, fileCheck);
             yield [concatBytes(header, prefix), data];
         }
         yield encodeMetadataRecord(RecordTag.FileEnd, {
             contentId: file.contentId,
             size: file.inode.size,
             chunkCount: file.inode.chunkCount,
-            check: crc32Finish(fileCheck),
+            check: fileCheck,
         }, state);
     }
     const end = {
         ...state.summary,
-        check: crc32Finish(state.batchCheck),
+        check: state.batchCheck,
     };
     yield encodeMetadataRecord(RecordTag.BatchEnd, end);
 }
@@ -718,32 +719,8 @@ function readU32LE(bytes, offset) {
 function updateRecordCheck(seed, ...parts) {
     let check = seed;
     for (const part of parts)
-        check = crc32Update(check, part);
+        check = crc32(part, check);
     return check;
-}
-const CRC_SEED = 0xffff_ffff;
-let crcTable = null;
-function crc32Update(check, bytes) {
-    crcTable ??= createCrcTable();
-    const table = crcTable;
-    let value = check;
-    for (const byte of bytes)
-        value = table[(value ^ byte) & 0xff] ^ (value >>> 8);
-    return value >>> 0;
-}
-function crc32Finish(check) {
-    return (check ^ 0xffff_ffff) >>> 0;
-}
-function createCrcTable() {
-    const table = new Uint32Array(256);
-    for (let index = 0; index < table.length; index++) {
-        let value = index;
-        for (let bit = 0; bit < 8; bit++) {
-            value = (value & 1) !== 0 ? 0xedb8_8320 ^ (value >>> 1) : value >>> 1;
-        }
-        table[index] = value >>> 0;
-    }
-    return table;
 }
 function noopRetention(bytes) {
     return { bytes, release() { } };
