@@ -994,7 +994,9 @@ const __fsMod = (() => {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
       // nothing is learned, and the miss stands.
-      try { meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r); }
+      // Queued on the path: the program's own later mutations of it must not overtake the stat.
+      const observe = () => __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r);
+      try { meta = await (_hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, observe, false) : observe()); }
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
       if (meta.type === "directory") return;
