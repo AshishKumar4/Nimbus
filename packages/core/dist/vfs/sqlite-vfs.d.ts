@@ -197,6 +197,11 @@ export interface SqliteVfsOptions {
      * every inode, so this bounds the heap, not the filesystem.
      */
     readonly inodeCacheEntries?: number;
+    /**
+     * Bytes of per-path revisions held; defaults to 16 MiB. Past it the oldest
+     * are dropped, and a path without one reports the newest revision dropped.
+     */
+    readonly pathRevisionBytes?: number;
 }
 export declare class SqliteVFS {
     private readonly openNodes;
@@ -215,6 +220,10 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
+    private _pathRevisionBytes;
+    private _revisionFloor;
+    private readonly pathRevisionBudget;
+    private static readonly PATH_REVISIONS_MAX_BYTES;
     private transactionPublication;
     private readonly _epoch;
     private _invalidations;
@@ -437,11 +446,15 @@ export declare class SqliteVFS {
     private isSymlink;
     /**
      * Without a path: the global mutation clock. With a path: the clock
-     * value at the last mutation inside that path's subtree (0 if nothing
-     * under it changed in this DO lifetime). `revision('')` equals the
-     * global clock by construction (every mutation stamps all ancestors).
+     * value at the last mutation inside that path's subtree, or the revision
+     * floor if that is older than the revisions still held (0 if nothing under
+     * it changed in this DO lifetime and nothing has been dropped). Never less
+     * than the last mutation. `revision('')` equals the global clock by
+     * construction (every mutation stamps all ancestors).
      */
     revision(path?: string, cred?: VfsCred): number;
+    /** A storage key's revision: its own, or the floor once it was dropped. */
+    private pathRevision;
     /**
      * Advance the clock once, stamp every path + its ancestors, and record
      * the mutation in the invalidation log.
@@ -460,6 +473,17 @@ export declare class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     private bumpRevision;
+    /**
+     * Drop every per-path revision at or below the oldest quarter's newest,
+     * and raise the floor to it. A quarter at a time, so the sort is paid once
+     * per quarter of the budget, not once per mutation.
+     *
+     * Everything at or below one revision goes together, and a directory is
+     * stamped whenever anything under it is, so it is never older than what it
+     * holds: a dropped directory takes everything under it along, and
+     * revision(dir) stays at or above the revision of every path under it.
+     */
+    private dropOldestPathRevisions;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     private static entryBytes;
     private _record;
@@ -948,6 +972,12 @@ export declare class SqliteVFS {
             resident: number;
             cacheCapacity: number;
             memoryEstimate: number;
+        };
+        pathRevisions: {
+            paths: number;
+            bytes: number;
+            maxBytes: number;
+            floor: number;
         };
     };
 }

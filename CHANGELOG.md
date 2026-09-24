@@ -40,28 +40,44 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Opening a filesystem no longer reads its inodes. `SqliteVFS` used to load
   every inode into memory at construction and scan the table three more
-  times. In bun that took 17-32 ms and 4.8 MiB of heap at 10,000 files, and
-  1.5-1.7 s and 440 MiB at 1,000,000. It now opens in 2.5-4.2 ms (10 ms on a
-  cold page cache) with 0.3 MiB of heap at every size. Inodes load by path
+  times. In bun that took 15-32 ms and 4.8 MiB of heap at 10,000 files, and
+  1.45-1.65 s and 440 MiB at 1,000,000. It now opens in 2.2-5.3 ms (10 ms on
+  a cold page cache) with 0.3 MiB of heap at every size. Inodes load by path
   through a cache of at most 65,536 entries (`inodeCacheEntries` in a new
   options argument). An inode that an open file description holds stays
   cached, so descriptions still share one inode object.
 - A `list()` page of 8,192 entries is a range read of the path index and
-  takes 8-19 ms at every size. At 1,000,000 files it took 271-307 ms, most of
+  takes 8-19 ms at every size. At 1,000,000 files it took 243-329 ms, most of
   it sorting every path. `readdir` of 100 entries reads SQLite and takes
-  51-63 µs, up from 32-44 µs.
+  36-61 µs up to 500,000 files and 49-78 µs at 1,000,000, against 32-43 µs
+  with every inode in memory.
 - `removeRecursive` reads its subtree 4,096 rows at a time, in descending
   path order, so each entry still goes before the directory holding it.
 - The stats counters load with one aggregate on the first `getStats()`
-  (105 ms at 1,000,000 files) and are kept by delta after that.
+  (67-113 ms at 1,000,000 files, over a second on a cold page cache) and are
+  kept by delta after that.
   `getStats().inodes` gains `resident` and `cacheCapacity`; `total` still
   counts every inode in the filesystem.
-- An npm-shaped `writeStream` of 6,188 files is 5-8% slower, because it
-  reads SQLite for the paths it creates. Medians of five interleaved runs:
-  1,556 to 1,630 ms over 10,000 files, 1,237 to 1,334 ms over 1,000,000.
+- An npm-shaped `writeStream` of 6,188 files is 4-8% slower, because it
+  reads SQLite for the paths it creates. Medians of interleaved runs:
+  1,007 to 1,052 ms and 1,556 to 1,630 ms over 10,000 files, and 1,575 to
+  1,637 ms and 1,237 to 1,334 ms over 1,000,000, on a loaded machine.
 - When a `rename` fails partway through retiring its source, the counters
   and the cache now describe the groups that committed. They used to keep
   every source entry, so the counters overstated what SQLite held.
+- Per-path revisions are held under a 16 MiB budget (`pathRevisionBytes`).
+  Past it the oldest quarter is dropped, and a dropped path reports the
+  newest revision dropped: never 0, and never below its own last change.
+  Writing 300,000 files in one lifetime used to keep a revision for every
+  path, and held 81.6-98 MiB of bun heap even with the inode cache bounded;
+  it now holds 69.6 MiB, 91,718 revisions of them. A dropped path can report
+  a higher revision with nothing under it changed, so a resident store
+  repairing a poison refetches the rows dated below the floor.
+  `getStats().pathRevisions` reports the paths and bytes held, the budget
+  and the floor.
+- `list()` reports a confined caller's private `/tmp` entries at their own
+  revision. It looked the revision up under the listed name, which is the
+  shared `/tmp` file's, and so listed a private file just written at 0.
 
 ## 2026-09-23
 

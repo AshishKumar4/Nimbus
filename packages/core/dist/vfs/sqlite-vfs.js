@@ -408,7 +408,22 @@ export class SqliteVFS {
     // staleness checks) key on revision(path) instead of the global clock,
     // so unrelated writes no longer invalidate them. In-memory only — the
     // clock resets with the DO lifetime, exactly like the caches keyed on it.
+    //
+    // Bounded by bytes, like the invalidation log below: a million-file tree
+    // written in one lifetime would otherwise hold a revision per path. Past
+    // the budget the oldest quarter goes at once (dropOldestPathRevisions),
+    // and a path with no entry reports _revisionFloor, the newest revision
+    // dropped, which is at least the last revision of every path without an
+    // entry. It must never report less: a resident row, a write receipt or an
+    // expected revision compared against a smaller number would be vouched for
+    // by a revision older than the path's last change. The floor only rises,
+    // so a dropped path can report a higher revision with nothing under it
+    // changed, which costs its readers a refetch, never a stale byte.
     _pathRevisions = new Map();
+    _pathRevisionBytes = 0;
+    _revisionFloor = 0;
+    pathRevisionBudget;
+    static PATH_REVISIONS_MAX_BYTES = 16 * 1024 * 1024;
     transactionPublication = null;
     // ── Invalidation log (facet cache coherence) ──────────────────────────
     // A facet's resident set is a cache of this VFS, and it learns what to
@@ -511,6 +526,11 @@ export class SqliteVFS {
         if (!Number.isSafeInteger(inodeCacheEntries) || inodeCacheEntries < 2) {
             throw vfsError('EINVAL', `inode cache must hold at least 2 entries, not ${inodeCacheEntries}`);
         }
+        const pathRevisionBytes = options.pathRevisionBytes ?? SqliteVFS.PATH_REVISIONS_MAX_BYTES;
+        if (!Number.isSafeInteger(pathRevisionBytes) || pathRevisionBytes < 0) {
+            throw vfsError('EINVAL', `per-path revision budget must be a byte count, not ${pathRevisionBytes}`);
+        }
+        this.pathRevisionBudget = pathRevisionBytes;
         sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
         if (namespace === undefined) {
             let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
@@ -1601,9 +1621,11 @@ export class SqliteVFS {
     }
     /**
      * Without a path: the global mutation clock. With a path: the clock
-     * value at the last mutation inside that path's subtree (0 if nothing
-     * under it changed in this DO lifetime). `revision('')` equals the
-     * global clock by construction (every mutation stamps all ancestors).
+     * value at the last mutation inside that path's subtree, or the revision
+     * floor if that is older than the revisions still held (0 if nothing under
+     * it changed in this DO lifetime and nothing has been dropped). Never less
+     * than the last mutation. `revision('')` equals the global clock by
+     * construction (every mutation stamps all ancestors).
      */
     revision(path, cred) {
         if (path === undefined)
@@ -1613,7 +1635,11 @@ export class SqliteVFS {
         const p = cred === undefined ? normalizeVfsPath(path) : this.storageKey(path, cred);
         if (p === '')
             return this._revision;
-        return this._pathRevisions.get(p) ?? 0;
+        return this.pathRevision(p);
+    }
+    /** A storage key's revision: its own, or the floor once it was dropped. */
+    pathRevision(key) {
+        return this._pathRevisions.get(key) ?? this._revisionFloor;
     }
     /**
      * Advance the clock once, stamp every path + its ancestors, and record
@@ -1654,6 +1680,12 @@ export class SqliteVFS {
             let p = normalizeVfsPath(path);
             const mutated = p;
             while (p !== '') {
+                const stamped = this._pathRevisions.get(p);
+                // Stamped by this bump already, and so was every ancestor.
+                if (stamped === rev)
+                    break;
+                if (stamped === undefined)
+                    this._pathRevisionBytes += SqliteVFS.entryBytes(p);
                 this._pathRevisions.set(p, rev);
                 p = this.parentPath(p);
             }
@@ -1664,6 +1696,8 @@ export class SqliteVFS {
             if (parent !== '')
                 this._record(rev, parent);
         }
+        if (this._pathRevisionBytes > this.pathRevisionBudget)
+            this.dropOldestPathRevisions();
         if (this._invalidationBytes <= SqliteVFS.INVALIDATION_LOG_MAX_BYTES)
             return;
         let dropped = 0;
@@ -1674,6 +1708,29 @@ export class SqliteVFS {
         }
         if (dropped > 0)
             this._invalidations = this._invalidations.slice(dropped);
+    }
+    /**
+     * Drop every per-path revision at or below the oldest quarter's newest,
+     * and raise the floor to it. A quarter at a time, so the sort is paid once
+     * per quarter of the budget, not once per mutation.
+     *
+     * Everything at or below one revision goes together, and a directory is
+     * stamped whenever anything under it is, so it is never older than what it
+     * holds: a dropped directory takes everything under it along, and
+     * revision(dir) stays at or above the revision of every path under it.
+     */
+    dropOldestPathRevisions() {
+        while (this._pathRevisionBytes > this.pathRevisionBudget) {
+            const stamps = Float64Array.from(this._pathRevisions.values()).sort();
+            const cutoff = stamps[Math.floor(stamps.length / 4)];
+            for (const [path, stamped] of this._pathRevisions) {
+                if (stamped > cutoff)
+                    continue;
+                this._pathRevisions.delete(path);
+                this._pathRevisionBytes -= SqliteVFS.entryBytes(path);
+            }
+            this._revisionFloor = Math.max(this._revisionFloor, cutoff);
+        }
     }
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     static entryBytes(path) {
@@ -2790,7 +2847,10 @@ export class SqliteVFS {
                 // Read from the row rather than through the cache: one page of an
                 // enumeration says nothing about which inodes will be used next.
                 const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
-                const pathRevision = this._pathRevisions.get(logical) ?? 0;
+                // The storage key's revision, the one revision() reports for the name
+                // this entry is listed under: a confined caller's /tmp/x is its own
+                // file, not the shared one at the same name.
+                const pathRevision = this.pathRevision(path);
                 entries.push({
                     path: logical,
                     kind: inode.kind,
@@ -4721,6 +4781,14 @@ export class SqliteVFS {
                 resident: this.inodes.size,
                 cacheCapacity: this.inodes.capacity,
                 memoryEstimate: this.inodes.size * 200, // ~200 bytes per resident entry
+            },
+            // Per-path revisions held, against their byte budget. A path without
+            // one reports `floor`.
+            pathRevisions: {
+                paths: this._pathRevisions.size,
+                bytes: this._pathRevisionBytes,
+                maxBytes: this.pathRevisionBudget,
+                floor: this._revisionFloor,
             },
         };
     }
