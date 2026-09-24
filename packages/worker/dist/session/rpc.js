@@ -151,6 +151,8 @@ export async function _rpcReadFile(self, path, pid, cred) {
 export async function _rpcReadFileBytes(self, path, pid, cred) {
     return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred });
 }
+/** Inner-DO facet names each incarnation has opened; keyed off ctx, so a new incarnation starts empty. */
+const innerDoFacetsOpened = new WeakMap();
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
  * from the inner Worker via the env.NIMBUS_SESSION loopback. We
@@ -174,7 +176,16 @@ export async function _rpcInnerDoFetch(self, req) {
         };
     }
     const facetName = 'innerDO-' + req.bindingName + '-' + req.id;
-    const facet = self.ctx.facets.get(facetName, async () => ({
+    const ctx = self.ctx;
+    let opened = innerDoFacetsOpened.get(ctx);
+    if (!opened)
+        innerDoFacetsOpened.set(ctx, opened = new Set());
+    if (!opened.has(facetName)) {
+        // Each incarnation's inner worker is a new class; get() with it on a facet an earlier incarnation left running resets this object.
+        ctx.facets.abort(facetName, new Error('Nimbus: a new incarnation takes this inner Durable Object'));
+        opened.add(facetName);
+    }
+    const facet = ctx.facets.get(facetName, async () => ({
         class: cls,
         id: req.id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
     }));

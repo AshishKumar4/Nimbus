@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "936cb537f191f76d48a23415ffe8b7c7c65e902a490dd0c5966928ca467c44a7",
+  "fingerprint": "800da82a9dc2aac7848d5ba8c4ffeef2e42b0fb9dfbe89e834a4c853e29a2d71",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1773,8 +1773,8 @@
     "packages/worker/dist/session/routes.d.ts.map": "bd8369fc9a9910285dffdf9b7256b88828a376663e3eecb7e8c9187ac74b82c8",
     "packages/worker/dist/session/routes.js": "4e4f1623353d1ac1028ffc1ca6f0f4ffb6705a6cdaf9e9cefd700d2366560d7e",
     "packages/worker/dist/session/rpc.d.ts": "eb8e7435722a75b1870dd3d79c37daf66a2ac8b47460ba79ca9ce25f27f3f6bb",
-    "packages/worker/dist/session/rpc.d.ts.map": "0cbc84e6f843982baeea75330efca09619d87e5d68131ce5cbdcdecb71423471",
-    "packages/worker/dist/session/rpc.js": "a0f1b8568099edf68c709c9c12d66457f6c00fa3605842cc2b09daf615513b63",
+    "packages/worker/dist/session/rpc.d.ts.map": "e6da5c70f6d262212dead0bf0901b3811952235a01664553813ec87d76f18b3e",
+    "packages/worker/dist/session/rpc.js": "dae569a76f7a5544655fbd3e67a7dfb6094a5913b3aaaa13d9498cf216259ce9",
     "packages/worker/dist/session/serving-port.d.ts": "ec9d9c2602f15453ff5868d6a7b2c5b87a5341a72202ed9e08a34a5c98cc0312",
     "packages/worker/dist/session/serving-port.d.ts.map": "247068cf1b20d4476b0fd231216bc75b20b82903d31cfeb7731a3961e090ec02",
     "packages/worker/dist/session/serving-port.js": "6061b804f3f35e8c1fcb72f19b0ee86e5446b457e8e6d3fcbc1275a6b20da5b7",
@@ -2030,7 +2030,7 @@
     "packages/worker/src/session/programmatic.ts": "91c9d841d6d6ccc8c2e39a9a908c10fade1a3703ffd81260448b256e30adc7fe",
     "packages/worker/src/session/replica-routes.ts": "1a580a14d3558f404d78c7d60b8ea6294690b14551b8e86280446d3373c08797",
     "packages/worker/src/session/routes.ts": "81e4f8a8371e8cdd6f88aadc7c95b892d97ab43bc4c821ba6e5da4be275eb72c",
-    "packages/worker/src/session/rpc.ts": "7c8b56fc85e4a664a9bb671ac55805fba74d4e973915034cbe98d253c2870abb",
+    "packages/worker/src/session/rpc.ts": "fd77abd1286bf77d6c34b99f1ead45db3478eeb4db8b25a4bd6ea4627fbe91ef",
     "packages/worker/src/session/serving-port.ts": "e232266119cbf85e8d60a73e0eeb1acfa929a195d865f4d6699ef7c597ba2f12",
     "packages/worker/src/session/shell-socket.ts": "72eac5d4c71842938ddb1e25264135a401c12222e273d5755ab692061b65e6aa",
     "packages/worker/src/session/start-real-vite.ts": "4f02ff7e189555a0acb96d1c52903c4738a596f9b3a4024cbb82c6411e402c02",
