@@ -1732,12 +1732,17 @@ const __fsMod = (() => {
    * The barrier itself never throws: the operation or callback behind it
    * runs either way, against rows that were vouched for or a colder cache.
    *
-   * A repair is single-flight, so a barrier that needs one while another
-   * barrier's is running joins it. That repair's listing may predate this
-   * barrier's own ACQUIRE — the rows it vouches for are the other barrier's
-   * answer, not this one's — so a joiner waits for it and then asks again:
-   * a delta from the repaired cursor names everything since. Only the barrier
-   * that started a repair resumes on it alone.
+   * A repair is single-flight, and while one runs no delta may be admitted
+   * at all: the repair has already dropped the rows it could not vouch for,
+   * so a report of one of them finds nothing to evict and is consumed, and
+   * the repair then installs it at its listing's revision and publishes the
+   * listing's cursor over the one the delta advanced. So any barrier answered
+   * while a repair runs joins it, whether its own answer needed a repair or
+   * was an ordinary delta, and the listing may predate that answer — the rows
+   * it vouches for are another barrier's answer, not this one's — so a joiner
+   * waits for it and then asks again: a delta from the repaired cursor names
+   * everything since. Only the barrier that started a repair resumes on it
+   * alone.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
@@ -1749,11 +1754,15 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
-      for (let joins = 0; result === null || result.poison === true || _storeRepairOwed; joins++) {
-        if (result !== null && result.poison === true) _stats.poisons++;
-        _spoilFills();
+      for (let joins = 0; ; joins++) {
         const joining = _residentRepair !== null;
-        await _repairPoisonedStore(supervisor, result);
+        const needsRepair = result === null || result.poison === true || _storeRepairOwed;
+        if (!joining && !needsRepair) break;
+        if (needsRepair) {
+          if (result !== null && result.poison === true) _stats.poisons++;
+          _spoilFills();
+        }
+        await (joining ? _residentRepair : _repairPoisonedStore(supervisor, result));
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
         if (!joining) return [];
