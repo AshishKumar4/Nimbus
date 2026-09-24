@@ -732,6 +732,13 @@ async function lsFiles(ctx, git, fs, vfs, args) {
     await writeBinary(ctx.stdout, out);
     return 0;
 }
+/** A checkout cf-git refused, as git reports one: its message on stderr, exit 1. Anything else propagates. */
+async function refusal(ctx, error) {
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError')
+        throw error;
+    await ctx.stderr.write(`${error.message}\n`);
+    return 1;
+}
 /**
  * `git checkout [<tree-ish>] -- <pathspec>...`: every tracked file the
  * pathspecs name, from the index, or from <tree-ish> into the index as well
@@ -1342,17 +1349,17 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     return 1;
                 }
                 const worktreeFs = createGitFs(credentialedVfs, dir);
-                if (subArgs.includes('-b')) {
+                const create = subArgs.includes('-b');
+                if (create)
                     await git.branch({ fs, dir, ref });
+                try {
                     await git.checkout({ fs: worktreeFs, dir, ref });
-                    if (!quiet)
-                        ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
                 }
-                else {
-                    await git.checkout({ fs: worktreeFs, dir, ref });
-                    if (!quiet)
-                        ctx.stdout.write(`Switched to branch '${ref}'\n`);
+                catch (e) {
+                    return await refusal(ctx, e);
                 }
+                if (!quiet)
+                    ctx.stdout.write(create ? `Switched to a new branch '${ref}'\n` : `Switched to branch '${ref}'\n`);
                 return 0;
             }
             case 'diff':
@@ -1470,18 +1477,30 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'merge': {
-                const theirs = subArgs[0];
+                const theirs = subArgs.find(a => !a.startsWith('-'));
                 if (!theirs) {
                     ctx.stderr.write('usage: git merge <branch>\n');
                     return 1;
                 }
-                await git.merge({
-                    fs, dir, theirs,
+                // Into the current branch, or HEAD when detached. The branch moves only once the worktree
+                // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
+                const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
+                const merged = await git.merge({
+                    fs, dir, ours, theirs,
                     author: getAuthor(ctx),
+                    noUpdateBranch: true,
                 });
-                // cf-git's merge moves the branch alone; the worktree follows it as pull's checkout makes it.
-                await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: await git.currentBranch({ fs, dir }) ?? 'HEAD' });
-                ctx.stdout.write(`Merged ${theirs}\n`);
+                if (!merged.alreadyMerged) {
+                    try {
+                        await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
+                    }
+                    catch (e) {
+                        return await refusal(ctx, e);
+                    }
+                    await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
+                }
+                if (!subArgs.includes('-q') && !subArgs.includes('--quiet'))
+                    ctx.stdout.write(`Merged ${theirs}\n`);
                 return 0;
             }
             case 'reset': {
@@ -1489,15 +1508,15 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 const soft = subArgs.includes('--soft');
                 const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
                 const oid = await git.resolveRef({ fs, dir, ref });
+                if (hard) {
+                    // The index and worktree become the target's, as a forced checkout from the old index
+                    // makes them (type changes included), before the branch moves: a failed write leaves it.
+                    await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
+                }
                 // Move the current branch, or a detached HEAD, to the target OID
                 const branch = await git.currentBranch({ fs, dir });
                 await git.writeRef({ fs, dir, ref: branch ? `refs/heads/${branch}` : 'HEAD', value: oid, force: true });
-                if (hard) {
-                    // The index and worktree become the target's, as a forced checkout from the old index
-                    // makes them (type changes included); HEAD stays where it is.
-                    await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
-                }
-                else if (!soft) {
+                if (!hard && !soft) {
                     // Reset index (--mixed)
                     const matrix = await git.statusMatrix({ fs, dir });
                     for (const [filepath] of matrix) {

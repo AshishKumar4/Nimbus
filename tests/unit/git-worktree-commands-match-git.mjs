@@ -471,6 +471,15 @@ try {
     user.mkdir(`${repo.virtual}/${path}`.split('/').slice(0, -1).join('/'), { recursive: true });
     user.writeFile(`${repo.virtual}/${path}`, content);
   };
+  /** `path` gone from both worktrees. */
+  const removeBoth = (repo, path) => {
+    rmSync(join(repo.disk, path), { recursive: true, force: true });
+    user.removeRecursive(`${repo.virtual}/${path}`);
+  };
+  const linkBoth = (repo, path, target) => {
+    symlinkSync(target, join(repo.disk, path));
+    user.symlink(target, `${repo.virtual}/${path}`);
+  };
   /** The same worktree (the link's target directory untouched) and the same index, as both gits list them. */
   const sameWorktree = async (label, repo) => {
     assert.deepEqual(vfsTree(repo.virtual), diskTree(repo.disk), `${label}: worktree`);
@@ -518,7 +527,10 @@ try {
   await typeChange('merge the directories in', ['merge', 'b']);
 
   // A branch without `d`, for a pull that removes the directory.
-  sh(types, ['checkout', '-q', '-b', 'nod'], ['rm', '-rq', 'd'], ['commit', '-q', '-m', 'no d'], ['checkout', '-q', 'main']);
+  sh(types, ['checkout', '-q', '-b', 'nod'], ['rm', '-rq', 'd'], ['commit', '-q', '-m', 'no d']);
+  // And one where `d` is a file.
+  writeFileSync(join(types, 'd'), 'd, a file\n');
+  sh(types, ['checkout', '-q', '-b', 'dfile'], ['add', 'd'], ['commit', '-q', '-m', 'd, a file'], ['checkout', '-q', 'main']);
 
   // pull runs in the network facet (the bundled cf-git over its buffered fs), from one smart-HTTP server.
   const served = join(scratch, 'served');
@@ -605,7 +617,7 @@ try {
     }), facetEnv);
     const pull = await response.json();
     assert.equal(pull.success, gitCode === 0, `${label}: git exits ${gitCode} (${gitStderr}); nimbus: ${pull.error}`);
-    if (gitCode !== 0) assert.equal(`${pull.error}\n`, gitStderr.replace(/^error: /, ''), `${label}: the refusal`);
+    if (gitCode !== 0) assert.equal(`${pull.error}\n`, gitStderr, `${label}: the refusal`);
     assert.equal(realGit(pulled.disk, ['rev-parse', 'HEAD']).stdout.toString(), realGit(copyOf(pulled), ['rev-parse', 'HEAD']).stdout.toString(), `${label}: HEAD`);
     await sameWorktree(label, pulled);
   };
@@ -613,6 +625,162 @@ try {
   // A directory the pulled commit drops keeps the untracked files in it, as rmdir(2) keeps them.
   rewriteBoth(pulled, 'd/u', 'untracked\n');
   await pullBoth('pull a commit without the directory, an untracked file in it', 'nod');
+  // A pull git refuses moves nothing: not the branch, not the index, not the worktree.
+  await pullBoth('pull a file over a directory with an untracked file in it', 'dfile');
+  removeBoth(pulled, 'd');
+  await pullBoth('pull the file once the directory is gone', 'dfile');
+
+  // ── A branch switch refuses what git refuses, all at once, and keeps what git keeps ──
+  // Each repository is built by real git and mirrored; both gits run the
+  // command, exit alike with the same stderr, and leave the same HEAD,
+  // worktree and index. Unforced, a switch is git's twoway merge of the index
+  // against HEAD and the target: a staged or local change the switch does not
+  // touch survives, an untracked file is overwritten only if ignored, and a
+  // directory a file replaces goes only if nothing untracked is left in it.
+  let scenarios = 0;
+  /** A repository `build` makes with real git (put, link, rm, git), mirrored into the VFS. */
+  const scenario = (build) => {
+    const repo = { disk: join(diskRoot, `scenario-${scenarios}`), virtual: `${vfsRoot}/scenario-${scenarios++}` };
+    mkdirSync(repo.disk);
+    sh(repo.disk, ['init', '-q', '-b', 'main']);
+    build({
+      put: (path, content) => {
+        mkdirSync(join(repo.disk, path, '..'), { recursive: true });
+        writeFileSync(join(repo.disk, path), content);
+      },
+      link: (path, target) => symlinkSync(target, join(repo.disk, path)),
+      rm: (path) => rmSync(join(repo.disk, path), { recursive: true, force: true }),
+      git: (...args) => sh(repo.disk, args),
+    });
+    mirror(repo.disk, repo.virtual);
+    return repo;
+  };
+  /** Both gits run `args` in `repo`: the same exit, stderr, HEAD, worktree and index (status included). */
+  const agreeOn = async (label, repo, args) => {
+    const expected = realGit(repo.disk, args);
+    const actual = await nimbusGit(repo.virtual, args);
+    assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+    assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+    const copy = copyOf(repo);
+    for (const probe of [['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
+      ['status', '--porcelain', '--untracked-files=all', '--ignored']]) {
+      assert.equal(realGit(copy, probe).stdout.toString(), realGit(repo.disk, probe).stdout.toString(), `${label}: git ${probe.join(' ')}`);
+    }
+    assert.deepEqual(vfsTree(repo.virtual), diskTree(repo.disk), `${label}: worktree`);
+    checks++;
+  };
+  /** main tracks `d/x`, k and f; branch b has `d` as a file (or, `asLink`, a link), n, and a changed f. */
+  const dirBecomesFile = ({ asLink = false } = {}) => scenario(({ put, link, rm, git }) => {
+    put('.gitignore', '*.o\n');
+    put('d/x', 'x\n');
+    put('k', 'k\n');
+    put('f', 'f\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'dir');
+    git('checkout', '-q', '-b', 'b');
+    rm('d');
+    if (asLink) link('d', 'elsewhere');
+    else put('d', 'file d\n');
+    put('n', 'new\n');
+    put('f', 'f2\n');
+    put('i.o', 'tracked, and ignored\n');
+    git('add', '-A');
+    git('add', '-f', 'i.o');
+    git('commit', '-q', '-m', 'b');
+    git('checkout', '-q', 'main');
+  });
+  {
+    const repo = dirBecomesFile();
+    rewriteBoth(repo, 'd/u', 'untracked\n');
+    await agreeOn('a switch that would lose an untracked file in a directory it replaces', repo, ['checkout', '-q', 'b']);
+    rewriteBoth(repo, 'n', 'mine\n');
+    rewriteBoth(repo, 'f', 'local\n');
+    await agreeOn('a switch refused for a local change, an untracked directory and an untracked file', repo, ['checkout', 'b']);
+    removeBoth(repo, 'n');
+    removeBoth(repo, 'd/u');
+    rewriteBoth(repo, 'd/u.o', 'ignored\n');
+    await agreeOn('a switch refused for a local change alone, an ignored file in the directory', repo, ['checkout', '-q', 'b']);
+    rewriteBoth(repo, 'f', 'f\n');
+    rewriteBoth(repo, 'i.o', 'ignored, in the way\n');
+    await agreeOn('a switch removes the ignored files in its way', repo, ['checkout', '-q', 'b']);
+  }
+  {
+    const repo = dirBecomesFile({ asLink: true });
+    rewriteBoth(repo, 'd/u.o', 'ignored\n');
+    await agreeOn('a directory with only ignored files in it becomes a link', repo, ['checkout', '-q', 'b']);
+    await agreeOn('and the link a directory again', repo, ['checkout', '-q', 'main']);
+  }
+  {
+    const repo = scenario(({ put, git }) => {
+      put('k', 'k\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'k');
+      git('checkout', '-q', '-b', 'b');
+      put('d/x', 'x\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'd');
+      git('checkout', '-q', 'main');
+    });
+    linkBoth(repo, 'd', 'nowhere');
+    await agreeOn('an untracked link where the branch has a directory', repo, ['checkout', '-q', 'b']);
+    removeBoth(repo, 'd');
+    rewriteBoth(repo, 'd/x', 'x\n');
+    await agreeOn('an untracked file the branch has, byte for byte', repo, ['checkout', '-q', 'b']);
+  }
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', 'f\n');
+      put('g', 'g\n');
+      put('s', 's\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'b');
+      put('f', 'f2\n');
+      git('commit', '-q', '-a', '-m', 'b');
+      git('checkout', '-q', 'main');
+    });
+    rewriteBoth(repo, 's', 'staged\n');
+    rewriteBoth(repo, 'a', 'added\n');
+    for (const path of ['s', 'a']) {
+      sh(repo.disk, ['add', path]);
+      assert.equal((await nimbusGit(repo.virtual, ['add', path])).code, 0);
+    }
+    rewriteBoth(repo, 'g', 'local\n');
+    await agreeOn('a switch keeps a staged change, a staged new file and a local change it does not touch', repo, ['checkout', '-q', 'b']);
+    await agreeOn('and so does the switch back', repo, ['checkout', '-q', 'main']);
+    rewriteBoth(repo, 'f', 'f2\n');
+    await agreeOn('a local change is one even when it matches the branch', repo, ['checkout', '-q', 'b']);
+  }
+  // merge checks the merged commit out as a switch does, and moves the branch only after.
+  {
+    const repo = dirBecomesFile();
+    rewriteBoth(repo, 'd/u', 'untracked\n');
+    rewriteBoth(repo, 'n', 'mine\n');
+    rewriteBoth(repo, 'f', 'local\n');
+    await agreeOn('a merge refused for a local change, an untracked directory and an untracked file', repo, ['merge', 'b']);
+    removeBoth(repo, 'n');
+    removeBoth(repo, 'd/u');
+    rewriteBoth(repo, 'f', 'f\n');
+    await agreeOn('the merge once nothing is in its way', repo, ['merge', '-q', 'b']);
+  }
+  // reset --hard is a forced checkout: untracked paths in the target's way go.
+  for (const [label, target, untracked] of [
+    ['reset --hard over an untracked file where the target has a directory', ['d/x'], 'd'],
+    ['reset --hard over an untracked directory where the target has a file', ['d'], 'd/u'],
+  ]) {
+    const repo = scenario(({ put, git }) => {
+      put('k', 'k\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'k');
+      git('branch', 'old');
+      for (const path of target) put(path, 'tracked\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'target');
+      git('checkout', '-q', '-b', 'moved', 'old');
+    });
+    rewriteBoth(repo, untracked, 'untracked\n');
+    await agreeOn(label, repo, ['reset', '-q', '--hard', 'main']);
+  }
 
   // ── A same-size rewrite in the second the index was written ──
   // Its stat still matches the index entry, so only git's racily-clean rule
