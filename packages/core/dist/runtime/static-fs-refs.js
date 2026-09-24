@@ -21,7 +21,7 @@
  * answer), a value passed through a function parameter, a property of an
  * object, or a binding reassigned more than once.
  */
-import { parse } from 'acorn';
+import { parse, tokenizer, tokTypes } from 'acorn';
 import { full } from 'acorn-walk';
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
 /** Calls whose first argument is a path the call reads, stats or lists. */
@@ -73,6 +73,8 @@ function isNode(value) {
  * `filename` (absolute). Unparseable sources name nothing.
  */
 export function findStaticFsReferences(source, filename) {
+    if (source.length > STATIC_AST_MAX_SOURCE)
+        return scanStaticFsTokens(source, filename);
     const refs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
     const ast = parseAny(source);
     if (ast === null)
@@ -351,6 +353,100 @@ export function findStaticFsReferences(source, filename) {
     refs.exact = [...new Set(refs.exact)];
     refs.listed = [...new Set(refs.listed)];
     refs.cwdRelative = [...new Set(refs.cwdRelative)];
+    return refs;
+}
+/**
+ * Sources larger than this are scanned token by token instead of parsed.
+ *
+ * An AST costs the heap a multiple of its source — measured with acorn: 13 MB
+ * for a 1.5 MB module, 94 MB for a 4.3 MB one — and the analysis runs in the
+ * session's Durable Object, whose isolate has 128 MiB for everything. A
+ * single-file CLI bundle past a few megabytes reset the session outright.
+ */
+export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
+/**
+ * The same references, found in a token stream with O(1) memory: the
+ * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
+ * dirname, 'lit', ...)`, `new URL('lit', import.meta.url)`, a read call on an
+ * absolute literal, and package-subpath literals. What folding through
+ * bindings would add is not found here.
+ */
+export function scanStaticFsTokens(source, filename) {
+    const refs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
+    const file = normalize(filename);
+    const dir = dirnameOf(file);
+    const recent = [];
+    const at = (back) => recent[recent.length - 1 - back];
+    const isPunct = (t, label) => t !== undefined && t.type === label;
+    const scan = (sourceType) => {
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest', sourceType, allowHashBang: true,
+            allowReturnOutsideFunction: sourceType === 'script', allowAwaitOutsideFunction: true,
+        });
+        for (;;) {
+            const token = tokens.getToken();
+            if (token.type === tokTypes.eof)
+                return;
+            const type = token.type.label;
+            // acorn's typings omit Token.value; it is the literal's or name's value.
+            const value = token.value;
+            recent.push({ type, value });
+            if (recent.length > 64)
+                recent.splice(0, recent.length - 32);
+            if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
+                refs.resolves.push({ from: dir, spec: value });
+            }
+            if (type !== ')')
+                continue;
+            // new URL('lit', import.meta.url)
+            if (at(1)?.value === 'url' && isPunct(at(2), '.') && at(3)?.value === 'meta' && isPunct(at(4), '.')
+                && at(5)?.type === 'import' && isPunct(at(6), ',') && at(7)?.type === 'string' && isPunct(at(8), '(')
+                && at(9)?.value === 'URL' && at(10)?.type === 'new') {
+                try {
+                    refs.exact.push(decodeURIComponent(new URL(String(at(7).value), 'file://' + file).pathname));
+                }
+                catch { /* not a URL */ }
+                continue;
+            }
+            // Walk back over `'a', 'b', ...` to what precedes the literal run.
+            const lits = [];
+            let i = 1;
+            while (at(i)?.type === 'string' && isPunct(at(i + 1), ',')) {
+                lits.unshift(String(at(i).value));
+                i += 2;
+            }
+            if (lits.length === 0) {
+                // readFileSync('/abs') and friends.
+                if (at(1)?.type === 'string' && isPunct(at(2), '(') && at(3)?.type === 'name' && FS_SINKS.has(String(at(3).value))) {
+                    const lit = String(at(1).value);
+                    if (lit.startsWith('/')) {
+                        refs.exact.push(normalize(lit));
+                        if (LIST_SINKS.has(String(at(3).value)))
+                            refs.listed.push(normalize(lit));
+                    }
+                }
+                continue;
+            }
+            // join|resolve(__dirname, ...) and (import.meta.dirname, ...)
+            const dirnameArg = at(i)?.type === 'name' && at(i).value === '__dirname' ? i
+                : at(i)?.value === 'dirname' && isPunct(at(i + 1), '.') && at(i + 2)?.value === 'meta'
+                    && isPunct(at(i + 3), '.') && at(i + 4)?.type === 'import' ? i + 4 : -1;
+            if (dirnameArg >= 0 && isPunct(at(dirnameArg + 1), '('))
+                refs.exact.push(normalize(dir + '/' + lits.join('/')));
+        }
+    };
+    try {
+        scan('module');
+    }
+    catch {
+        recent.length = 0;
+        try {
+            scan('script');
+        }
+        catch { /* names nothing more */ }
+    }
+    refs.exact = [...new Set(refs.exact)];
+    refs.listed = [...new Set(refs.listed)];
     return refs;
 }
 function calleeName(call) {

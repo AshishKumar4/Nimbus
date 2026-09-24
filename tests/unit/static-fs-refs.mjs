@@ -4,7 +4,7 @@
 // computes from run-time data.
 
 import assert from 'node:assert/strict';
-import { findStaticFsReferences as refs } from '../../packages/core/src/runtime/static-fs-refs.ts';
+import { findStaticFsReferences as refs, STATIC_AST_MAX_SOURCE } from '../../packages/core/src/runtime/static-fs-refs.ts';
 
 const FILE = '/p/node_modules/pkg/lib/index.js';
 const ESM = '/p/node_modules/pkg/dist/index.mjs';
@@ -76,5 +76,20 @@ for (const [label, source] of [
 
 // Unparseable input names nothing rather than throwing.
 assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
+
+// A module too large to parse in the session's heap is scanned token by token,
+// with the shapes that need no bindings still found.
+{
+  const pad = '\n// ' + 'x'.repeat(STATIC_AST_MAX_SOURCE);
+  const big = refs(`const path = require('path');
+    fs.readFileSync(path.join(__dirname, '..', 'data', 'x.json'));
+    const u = new URL('../runtime/entry.js', import.meta.url);
+    fs.readdirSync('/etc/app/templates');
+    x = ['astro/runtime/client/entry.js'];` + pad, FILE);
+  assert.ok(big.exact.includes('/p/node_modules/pkg/data/x.json'), JSON.stringify(big.exact));
+  assert.ok(big.exact.includes('/p/node_modules/pkg/runtime/entry.js'), JSON.stringify(big.exact));
+  assert.deepEqual(big.listed, ['/etc/app/templates']);
+  assert.deepEqual(big.resolves.map((r) => r.spec), ['astro/runtime/client/entry.js']);
+}
 
 console.log('static-fs-refs: ok');

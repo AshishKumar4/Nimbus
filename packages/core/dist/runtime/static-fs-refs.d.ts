@@ -22,4 +22,21 @@ export interface StaticFsRefs {
  * `filename` (absolute). Unparseable sources name nothing.
  */
 export declare function findStaticFsReferences(source: string, filename: string): StaticFsRefs;
+/**
+ * Sources larger than this are scanned token by token instead of parsed.
+ *
+ * An AST costs the heap a multiple of its source — measured with acorn: 13 MB
+ * for a 1.5 MB module, 94 MB for a 4.3 MB one — and the analysis runs in the
+ * session's Durable Object, whose isolate has 128 MiB for everything. A
+ * single-file CLI bundle past a few megabytes reset the session outright.
+ */
+export declare const STATIC_AST_MAX_SOURCE: number;
+/**
+ * The same references, found in a token stream with O(1) memory: the
+ * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
+ * dirname, 'lit', ...)`, `new URL('lit', import.meta.url)`, a read call on an
+ * absolute literal, and package-subpath literals. What folding through
+ * bindings would add is not found here.
+ */
+export declare function scanStaticFsTokens(source: string, filename: string): StaticFsRefs;
 //# sourceMappingURL=static-fs-refs.d.ts.map

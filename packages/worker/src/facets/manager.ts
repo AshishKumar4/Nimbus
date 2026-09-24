@@ -4717,7 +4717,7 @@ export class FacetManager {
     const started = Date.now();
     const trace = (what: string) => {
       if (!this.debugEnabled) return;
-      console.log(`[nimbus-debug] pid ${entry.pid} data plan: ${what} at ${Date.now() - started} ms`);
+      this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${what} at ${Date.now() - started} ms\n`);
     };
     trace('static references');
     const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
@@ -6250,6 +6250,7 @@ export class FacetManager {
   ): Promise<void> {
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
+    if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
     const vfsState = await this._buildProcessBundle(
       entry,
       { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile },
@@ -6335,6 +6336,7 @@ export class FacetManager {
       };
       generatedWorker = undefined;
       const vfsTextModules = await this.imageStore.materialize(entry.pid, drainSources(sources), pacer);
+      if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: images stored, starting the facet\n');
       // Last gate before the facet exists. A launch now spans many turns, so
       // a kill can land anywhere inside it; booting a process the table has
       // already exited would leave a facet nothing owns, running against a
