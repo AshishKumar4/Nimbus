@@ -70,7 +70,7 @@ import {
   type VfsListPage,
   type VfsMutationReceipt,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { CredentialedVfs, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -529,6 +529,67 @@ export async function _rpcFsAcquire(
 ): Promise<VfsAcquireResult> {
   const args = FsAcquireArgsSchema.parse({ epoch, cursor });
   return self.supervisorBridge(pid).acquire(args.epoch, args.cursor);
+}
+
+/** What a process passes to fsAcquire: the cursor its resident set is at. */
+export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;
+
+/** An ACQUIRE a delivery carries: fsAcquire's arguments and its answer to them. */
+export interface VfsDeliveredAcquire {
+  args: FsAcquireArgs;
+  answer: VfsAcquireResult;
+}
+
+/**
+ * The ACQUIRE a delivery carries, so the process it is delivered to applies
+ * it instead of asking.
+ *
+ * A stdin packet, a child's output or exit, a request routed to a port: the
+ * supervisor hands each of these to a process, and the process may not run
+ * the code they wake until it has applied everything written before them
+ * (protocol §3, §5.6). Asking costs a round trip per delivery, which an
+ * attached terminal pays on every keystroke. But the supervisor is already
+ * answering: `args` are what the process would pass to fsAcquire, and
+ * `answer` is exactly what fsAcquire answers for them, computed here, after
+ * the thing delivered was queued. Every write that preceded it is in the
+ * answer, and the delivery carries it, so it cannot be lost or reordered
+ * apart from it.
+ *
+ * One format with fsAcquire's own: the same arguments, checked by the same
+ * schema, answered by the same function. Undefined when there is no answer
+ * to carry — the process sent no arguments it can be answered for, or this
+ * one could not be computed — and the process then asks, as it always has,
+ * where a failure is counted and handled. It is never a reason to fail the
+ * delivery: that would lose a dequeued keystroke or a routed request.
+ */
+export async function _acquireOnDelivery(
+  self: RpcHost,
+  args: unknown,
+  pid?: number,
+): Promise<VfsDeliveredAcquire | undefined> {
+  const parsed = FsAcquireArgsSchema.safeParse(args);
+  if (!parsed.success) return undefined;
+  const caller = pid !== undefined && pid > 0 ? pid : undefined;
+  try {
+    return { args: parsed.data, answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, caller) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The ACQUIRE a request routed to `pid`'s port carries. The supervisor, not
+ * the process, starts a request, so it holds no cursor of the process's to
+ * answer from, and answers from its own: "nothing since now". The process can
+ * use that only when it is already there, which is protocol §9.2's
+ * one-integer piggyback — true for any request no write preceded since the
+ * process last caught up — and otherwise asks.
+ */
+export function _acquireForRoutedRequest(self: RpcHost, pid: number): Promise<VfsDeliveredAcquire | undefined> {
+  self.ensureSqliteFs();
+  const vfs: SqliteVFS | null = self.sqliteFs;
+  if (!vfs) return Promise.resolve(undefined);
+  return _acquireOnDelivery(self, { epoch: vfs.epoch, cursor: vfs.revision() }, pid);
 }
 
 /**
@@ -1242,7 +1303,23 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<v
     fpm.stdinEnd(childPid);
 }
 
-export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number) {
+/**
+ * `reply`, carrying the ACQUIRE for the caller (`_acquireOnDelivery`) when it
+ * delivers anything. An empty poll wakes no code, so it is answered bare.
+ */
+async function withDeliveredAcquire<T extends object>(
+  self: RpcHost,
+  reply: T,
+  delivers: boolean,
+  acquire: unknown,
+  pid: number | undefined,
+): Promise<T> {
+  if (!delivers) return reply;
+  const acquired = await _acquireOnDelivery(self, acquire, pid);
+  return acquired ? { ...reply, acquired } : reply;
+}
+
+export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number) {
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1250,19 +1327,33 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     if (isPriorGenerationPid(self, childPid)) {
       return { signal: 'SIGKILL', ended: true };
     }
+    let packet: { data: Uint8Array; ended: boolean; resize?: { columns: number; rows: number }; signal?: string };
     if (self.processes.hasInput(childPid)) {
       // The interactive input store holds text packets; the child's stdin
       // pump takes bytes, so this text producer encodes at its edge.
-      const packet = await self.processes.readInput(childPid, waitMs);
-      return { ...packet, data: enc.encode(packet.data) };
+      const input = await self.processes.readInput(childPid, waitMs);
+      packet = { ...input, data: enc.encode(input.data) };
+    } else {
+      const fpm = self._ensureFacetProcessManager();
+      packet = await fpm.cpReadStdin(childPid, waitMs);
     }
-    const fpm = self._ensureFacetProcessManager();
-    return fpm.cpReadStdin(childPid, waitMs);
+    const delivers = packet.ended || packet.signal !== undefined || packet.resize !== undefined
+      || packet.data.byteLength > 0;
+    return withDeliveredAcquire(self, packet, delivers, acquire, pid);
 }
 
-export async function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number) {
+export async function _rpcCpReadOutput(
+  self: RpcHost,
+  childPid: number,
+  fd: 1 | 2,
+  sinceSeq: number,
+  waitMs: number,
+  acquire?: unknown,
+  pid?: number,
+) {
     const fpm = self._ensureFacetProcessManager();
-    return fpm.readOutput(childPid, fd, sinceSeq, waitMs);
+    const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
+    return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 
 export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
@@ -1275,9 +1366,10 @@ export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string
     return fpm.kill(childPid, signal);
 }
 
-export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number) {
+export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number) {
     const fpm = self._ensureFacetProcessManager();
-    return fpm.wait(childPid, waitMs);
+    const status = await fpm.wait(childPid, waitMs);
+    return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
 
 /**

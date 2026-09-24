@@ -46,7 +46,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
+import type { FsAcquireArgs, FsReadBatchEntry, FsReadBatchRequest, VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
@@ -744,13 +744,21 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('cpStdinEnd', [childPid]));
   }
 
-  async cpReadStdin(childPid: number, waitMs: number): Promise<{
+  /**
+   * The three long polls that deliver to a process — its stdin, and a
+   * child's output and exit — carry the process's ACQUIRE arguments, and a
+   * reply that delivers anything carries the answer for them (`acquired`,
+   * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
+   * asking. The caller's pid names whose credential answers it.
+   */
+  async cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
     data: Uint8Array;
     ended: boolean;
     resize?: { columns: number; rows: number };
     signal?: string;
+    acquired?: VfsDeliveredAcquire;
   }> {
-    return this._call(this._op('cpReadStdin', [childPid, waitMs]));
+    return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 
   async cpReadOutput(
@@ -758,8 +766,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     fd: 1 | 2,
     sinceSeq: number,
     waitMs: number,
-  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number }> {
-    return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs]));
+    acquire?: FsAcquireArgs,
+  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; acquired?: VfsDeliveredAcquire }> {
+    return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 
   async cpDrainOutput(childPid: number): Promise<{ stdout: Uint8Array; stderr: Uint8Array; stdoutClosed: boolean; stderrClosed: boolean }> {
@@ -770,8 +779,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('cpKill', [childPid, signal]));
   }
 
-  async cpWait(childPid: number, waitMs: number): Promise<{ done: boolean; exitCode: number | null; signal: string | null }> {
-    return this._call(this._op('cpWait', [childPid, waitMs]));
+  async cpWait(
+    childPid: number,
+    waitMs: number,
+    acquire?: FsAcquireArgs,
+  ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; acquired?: VfsDeliveredAcquire }> {
+    return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
   }
 
   /**

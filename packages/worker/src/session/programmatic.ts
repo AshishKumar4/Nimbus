@@ -37,6 +37,7 @@ import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
+import { _acquireForRoutedRequest } from './rpc.js';
 
 export interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -1497,7 +1498,7 @@ function successorGeneration(self: ProgrammaticHost): number {
 function installEmptyProcessState(self: ProgrammaticHost, generation: number): void {
   self.processes = new SessionProcessSupervisor();
   self.processes.setPidBase(generation * PID_GEN_STRIDE);
-  self.portRegistry = new PortRegistry();
+  self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
   self._w9PersistWired = false;
 }
 
