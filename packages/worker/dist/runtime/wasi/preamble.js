@@ -142,6 +142,12 @@ export function __wasiAdoptSupervisor(sup) {
     if (sup)
         __wasiSup = sup;
 }
+// The host is about to run the guest again after waiting on something the
+// guest cannot see (a timer it parked on, a request): a runtime that resumes
+// its guest outside any import says so here.
+export function __wasiResumed() {
+    __wasiLookups.resumed();
+}
 // A guest-visible path in canonical form: no leading '/', no '..', no double
 // slashes. The socket path prefixes are matched against it.
 function __wasiCanonicalize(p) {
@@ -1559,28 +1565,6 @@ export function __wasiMakeImports(opts) {
         residentBytes: __wasiFS.residentFileCap,
         lookups: __wasiLookups,
     });
-    // Input that did not come from the filesystem can carry a peer's write, so
-    // the next lookup takes the barrier before answering from memory.
-    const fromOutside = (name, outside) => {
-        const body = imports[name];
-        imports[name] = function (...args) {
-            const result = body.apply(this, args);
-            if (!outside(args[0]))
-                return result;
-            if (result && typeof result.then === 'function') {
-                return result.finally(() => __wasiLookups.resumed());
-            }
-            __wasiLookups.resumed();
-            return result;
-        };
-    };
-    fromOutside('fd_read', fd => {
-        const kind = fdTable.get(fd)?.kind;
-        return kind !== 'authority' && kind !== 'resident' && kind !== 'preopen';
-    });
-    fromOutside('sock_recv', () => true);
-    fromOutside('sock_accept', () => true);
-    fromOutside('poll_oneoff', () => true);
     // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
     // fd_write can route socket fds through them (wasi-libc maps read(2)/
     // write(2) to fd_read/fd_write for every fd kind, sockets included).
@@ -1609,6 +1593,29 @@ export function __wasiMakeImports(opts) {
         if (typeof imports[name] === 'function')
             imports[name] = withParkDeadline(imports[name]);
     }
+    // Input that did not come from the filesystem can carry a peer's write, so
+    // the next lookup takes the barrier before answering from memory. Wrapped
+    // outside the park watchdog: its EAGAIN is a return from a wait as well.
+    const fromOutside = (name, outside) => {
+        const body = imports[name];
+        imports[name] = function (...args) {
+            const result = body.apply(this, args);
+            if (!outside(args[0]))
+                return result;
+            if (result && typeof result.then === 'function') {
+                return result.finally(() => __wasiLookups.resumed());
+            }
+            __wasiLookups.resumed();
+            return result;
+        };
+    };
+    fromOutside('fd_read', fd => {
+        const kind = fdTable.get(fd)?.kind;
+        return kind !== 'authority' && kind !== 'resident' && kind !== 'preopen';
+    });
+    fromOutside('sock_recv', () => true);
+    fromOutside('sock_accept', () => true);
+    fromOutside('poll_oneoff', () => true);
     // How this instance is allowed to block — a parameter, because it is a
     // property of the CALLER, not of WASI.
     //

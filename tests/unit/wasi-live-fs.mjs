@@ -51,10 +51,19 @@ function mockSupervisor(seed = {}) {
   const store = new Map(Object.entries(seed).map(([p, v]) => [p, enc.encode(v)]));
   const log = [];
   let revision = 1;
+  // The authority's invalidation log: each change records the path and its parent.
+  const changes = [];
+  const changed = (...paths) => {
+    revision += 1;
+    for (const p of paths) for (const q of [p, p.slice(0, Math.max(0, p.lastIndexOf('/')))]) changes.push({ rev: revision, path: q });
+  };
   return descriptorSupervisor({
     store, log,
     get revision() { return revision; },
-    bump() { revision++; },
+    async fsAcquire(epoch, cursor) {
+      if (epoch !== 'mock') return { epoch: 'mock', rev: revision, paths: [], poison: true };
+      return { epoch: 'mock', rev: revision, paths: changes.filter((c) => c.rev > cursor), poison: false };
+    },
     async fsRevision() { log.push(['fsRevision']); return revision; },
     async fsReadRange(p, offset, length) {
       log.push(['fsReadRange', p, offset, length]);
@@ -66,7 +75,7 @@ function mockSupervisor(seed = {}) {
     async writeFile(p, content) {
       log.push(['writeFile', p]);
       store.set(p, typeof content === 'string' ? enc.encode(content) : new Uint8Array(content));
-      revision++;
+      changed(p);
     },
     async fsWriteRange(p, offset, bytes) {
       log.push(['fsWriteRange', p, offset, bytes.length]);
@@ -75,7 +84,7 @@ function mockSupervisor(seed = {}) {
       next.set(cur, 0);
       next.set(new Uint8Array(bytes), offset);
       store.set(p, next);
-      revision++;
+      changed(p);
       return bytes.length;
     },
     async fsTruncate(p, size) {
@@ -84,19 +93,19 @@ function mockSupervisor(seed = {}) {
       const next = new Uint8Array(size);
       next.set(cur.subarray(0, Math.min(cur.length, size)), 0);
       store.set(p, next);
-      revision++;
+      changed(p);
     },
-    async mkdir(p) { log.push(['mkdir', p]); revision++; },
-    async rmdir(p) { log.push(['rmdir', p]); revision++; },
-    async unlink(p) { log.push(['unlink', p]); store.delete(p); revision++; },
+    async mkdir(p) { log.push(['mkdir', p]); changed(p); },
+    async rmdir(p) { log.push(['rmdir', p]); changed(p); },
+    async unlink(p) { log.push(['unlink', p]); store.delete(p); changed(p); },
     async rename(from, to) {
       log.push(['rename', from, to]);
       if (store.has(from)) { store.set(to, store.get(from)); store.delete(from); }
-      revision++;
+      changed(from, to);
     },
-    async symlink(target, p) { log.push(['symlink', target, p]); revision++; },
-    async chmod(p, mode) { log.push(['chmod', p, mode]); revision++; },
-    async utimes(p, a, m) { log.push(['utimes', p]); revision++; },
+    async symlink(target, p) { log.push(['symlink', target, p]); changed(p); },
+    async chmod(p, mode) { log.push(['chmod', p, mode]); changed(p); },
+    async utimes(p, a, m) { log.push(['utimes', p]); changed(p); },
     async stat(p) {
       log.push(['stat', p]);
       if (store.has(p)) {
@@ -390,12 +399,13 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal((await h.read(3)).errno, EISDIR, 'and neither has the preopen root');
 }
 
-// ── 12. A read-only open is answered from memory until the guest resumes ────
-// The lookup and the bytes are held between resumptions: a second open costs
-// no round trip, and the descriptor calls in between (fstat, seek, read,
-// close) never reach the supervisor. Input from outside the filesystem can
-// carry a peer's write, so after it the next open revalidates and a moved
-// revision is read again. A writable open never uses the copy.
+// ── 12. Between resumptions an open is answered from memory, per barrier ────
+// After a live answer the next answer from memory first takes the barrier;
+// with nothing changed it keeps what it holds, so a second open costs that
+// one call and the descriptor calls in between (fstat, seek, read, close)
+// never reach the supervisor. A peer's rewrite the guest has not observed
+// does not show until the guest resumes from outside; then the barrier names
+// the file and the next open reads it again. A writable open never uses a copy.
 {
   const RDONLY = 0x1fbffeben; // what wasi-libc requests for O_RDONLY
   const sup = mockSupervisor({ 'home/user/mod.py': 'first' });
@@ -403,6 +413,8 @@ const ROOT_INIT = (extra = {}) => ({
   const base = sup.stat;
   sup.stat = async (p) => { const st = await base(p); return st && { ...st, revision: revisions.get(typeof p === 'string' ? p : p.path) ?? 1 }; };
   sup.readFileBytes = async (p) => { sup.log.push(['readFileBytes']); return sup.store.get(typeof p === 'string' ? p : p.path) ?? null; };
+  const acquire = sup.fsAcquire;
+  sup.fsAcquire = async (...args) => { sup.log.push(['fsAcquire']); return acquire(...args); };
   const h = host(ROOT_INIT(), sup);
   const ops = () => sup.log.map(([op]) => op);
   const readAll = async (fd) => { const r = await h.read(fd); assert.equal(r.errno, ESUCCESS); await h.wasiImport.fd_close(fd); return r.text; };
@@ -411,18 +423,22 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal(first.errno, ESUCCESS);
   assert.equal(P.fdTable.get(first.fd).kind, 'resident', 'a read-only open of a small file is resident');
   assert.equal(await readAll(first.fd), 'first');
-  const held = sup.log.length;
+  let held = sup.log.length;
   const second = await h.open('home/user/mod.py', { rights: RDONLY });
   assert.equal(await readAll(second.fd), 'first');
-  assert.deepEqual(sup.log.slice(held), [], 'a second open before any resumption reaches the supervisor not at all');
+  assert.deepEqual(ops().slice(held), ['fsAcquire'], 'a second open costs the barrier and nothing else');
   assert.equal(ops().filter((op) => op === 'readFileBytes').length, 1, 'two opens read the content once');
   assert.ok(!ops().some((op) => op === 'fsOpen' || op === 'fsRead' || op === 'fsClose'), 'no descriptor op crossed to the supervisor');
 
-  sup.store.set('home/user/mod.py', enc.encode('second'));
+  await sup.writeFile('home/user/mod.py', 'second');
   revisions.set('home/user/mod.py', 2);
+  held = sup.log.length;
+  const unobserved = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(await readAll(unobserved.fd), 'first', 'with nothing observed since the barrier, the guest keeps its view');
+  assert.deepEqual(ops().slice(held), [], 'and keeping it costs nothing');
   assert.equal(await h.wasiImport.fd_read(0, 0x300, 0, 0x200), ESUCCESS, 'the guest reads its stdin');
   const third = await h.open('home/user/mod.py', { rights: RDONLY });
-  assert.equal(await readAll(third.fd), 'second', 'after input from outside, a moved revision is read again');
+  assert.equal(await readAll(third.fd), 'second', 'after input from outside, the barrier names the file and it is read again');
 
   const writable = await h.open('home/user/mod.py', { rights: RDONLY | (1n << 6n) });
   assert.equal(writable.errno, ESUCCESS);
@@ -430,10 +446,10 @@ const ROOT_INIT = (extra = {}) => ({
   await h.wasiImport.fd_close(writable.fd);
 }
 
-// ── 13. Absence comes from the directory's listing; own changes show at once ─
+// ── 13. A directory that keeps missing answers from its listing ─────────────
 // An interpreter searching its load path misses in each directory far more
-// often than it hits. One listing answers every miss in that directory, and
-// in every directory below a name the listing lacks. Whatever this process
+// often than it hits. The second miss in a directory takes its listing, and
+// the misses after it cost one barrier between them. Whatever this process
 // creates or removes is visible to its very next lookup, resumption or not.
 {
   const sup = mockSupervisor({ 'home/user/lib/present.rb': 'x' });
@@ -442,14 +458,14 @@ const ROOT_INIT = (extra = {}) => ({
   const stats = () => sup.log.filter(([op]) => op === 'stat').length;
 
   assert.equal((await h.stat('home/user/lib/a.rb')).errno, ENOENT);
-  const listed = sup.log.length;
-  for (const miss of ['home/user/lib/b.rb', 'home/user/lib/c.so', 'home/user/lib/nested/d.rb', 'home/user/lib/nested/deeper/e.rb']) {
+  assert.equal((await h.stat('home/user/lib/b.rb')).errno, ENOENT);
+  const listed = stats();
+  for (const miss of ['home/user/lib/c.so', 'home/user/lib/d.rb', 'home/user/lib/e.bundle']) {
     assert.equal((await h.stat(miss)).errno, ENOENT, `${miss} is absent`);
   }
-  assert.deepEqual(sup.log.slice(listed), [], 'misses in a listed directory and below a missing name cost no round trip');
-  const before = stats();
+  assert.equal(stats(), listed, 'misses in a listed directory are answered without a stat');
   assert.equal((await h.stat('home/user/lib/present.rb')).errno, ESUCCESS, 'a name the listing holds is stat\'d for real');
-  assert.equal(stats(), before + 1);
+  assert.equal(stats(), listed + 1);
 
   const created = await h.open('home/user/lib/b.rb', { oflags: 1 /* O_CREAT */ });
   assert.equal(created.errno, ESUCCESS);

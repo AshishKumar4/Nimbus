@@ -63,37 +63,50 @@ export declare const WASI_LISTEN_PATH_PREFIX = "/dev/nimbus/listen/";
 export declare const WASI_ACCEPTED_PATH_PREFIX = "/dev/nimbus/socket/";
 export declare function filesystemErrno(error: unknown): Errno;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
+/** A lookup's answer, and whether it came from memory rather than the authority just now. */
+export interface HeldLookup {
+    stat: RuntimeVfsStat | null;
+    held: boolean;
+}
 /**
- * Lookup answers (a stat, or its absence) held between the guest's
- * resumptions, under the same ACQUIRE barrier a node facet's resident cells
- * use. An answer is served from memory only while the barrier has reported
- * no mutation anywhere since the cursor it was filled under, and this
- * process has changed nothing itself.
+ * Lookup answers (a stat, or its absence) a parked WASI guest is given from
+ * memory, under the ACQUIRE barrier node facets use for their resident cells.
  *
- * Absence is answered from the parent directory's listing, one round trip
- * for every name the directory lacks: an interpreter searching its load
- * path misses in each directory far more often than it hits.
+ * Invariant: an answer is served from memory only when nothing the guest has
+ * observed is newer than the barrier it was validated at. So every live
+ * answer the guest receives (any authority call but the barrier itself) and
+ * every resumption from outside the filesystem ({@link resumed}) leaves the
+ * cache unverified, and the next answer from memory first takes the barrier
+ * and applies its delta. A run of lookups with nothing live between them, an
+ * interpreter re-probing its load path, costs nothing.
  *
- * The owner of the guest's non-filesystem inputs (sockets, stdin, clocks
- * that wake it) calls {@link resumed} whenever one of them returns: that
- * input can carry a peer's write, so the next lookup takes the barrier
- * before answering. A guest that only computes and reads files, like an
- * interpreter loading its libraries, takes it once.
+ * Absence in a directory that keeps missing is answered from its listing,
+ * taken only where it answers exactly as a stat would: the directory is
+ * searchable and readable by this credential, and its real path is the one
+ * the guest named, so a delta naming a path in it reaches the listing.
  */
 export declare class AuthorityLookupCache {
     private readonly answers;
     private readonly listings;
+    private readonly misses;
+    private entries;
     private cursor;
     private verified;
     private resumptions;
     private window;
+    /** The guest observed something the barrier has not covered: take it before the next held answer. */
     resumed(): void;
+    /** This process changed a file's bytes or metadata; which names exist is unchanged. */
+    touched(): void;
+    /** This process changed which names exist, or the view cannot be repaired. */
     forget(): void;
-    stat(fs: RuntimeFsBridge, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null>;
-    private cached;
+    stat(fs: RuntimeFsBridge, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<HeldLookup>;
+    /** Stat live and record it, for a caller about to act on current bytes. */
+    fresh(fs: RuntimeFsBridge, target: RuntimeFsPath, followSymlinks: boolean): Awaitable<RuntimeVfsStat | null>;
+    private fill;
+    private record;
     private verify;
-    /** True only when a listing proves the name is missing, which is ENOENT with or without following. */
-    private absent;
+    private apply;
     private list;
 }
 export interface AuthorityFilesystemOptions {

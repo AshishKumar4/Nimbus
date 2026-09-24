@@ -1,5 +1,6 @@
 import type { FdEntry, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions, WasiRunResult, WasiStartInstance, WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 export declare function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void;
+export declare function __wasiResumed(): void;
 export declare function __wasiInitFS(opts: WasiInitOptions): void;
 export declare const fdTable: Map<number, FdEntry>;
 export declare function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBundle;
