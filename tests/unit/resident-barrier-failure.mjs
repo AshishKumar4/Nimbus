@@ -199,6 +199,54 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(F), 'x2', "and no later resumption serves the repair's x1");
   },
 
+  async 'a poison lands while a refetch is in flight'() {
+    // A's delta reports f.txt, so A drops it and refetches it; A's read is
+    // answered late. B's ACQUIRE gets no answer and the listing is down too,
+    // so the repair cannot refill f.txt: the poison spoils A's read, and B
+    // reads f.txt itself. That read began after the poison and must be
+    // judged only by what is reported after it began, and A, whose own read
+    // was spoiled, must wait for it rather than resume onto a miss.
+    const { authority, fault, probe, forward } = await boot();
+    const reads = holdReadsOf(fault, forward, '/f.txt');
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    const a = probe.resume(F);
+    await until(() => reads.length === 1, "A's refetch of f.txt");
+
+    fault.fsAcquire = DROPPED;
+    fault.fsList = DROPPED;
+    const b = probe.resume(F);
+    await until(() => reads.length === 2, "B's own read of f.txt");
+    fault.fsAcquire = null;
+    fault.fsList = null;
+
+    reads[0].resolve();
+    await sleep(20);
+    reads[1].resolve();
+    assert.equal(await b, 'v2', 'a read that began after the poison installs what it was served');
+    assert.equal(await a, 'v2', 'and a resumption whose own refetch was spoiled waits for it');
+  },
+
+  async 'a poison whose repair refills a refetch it spoiled'() {
+    // The same poison with the listing up: B's repair refills f.txt, not a
+    // read of B's own, and A's spoiled read lands before the repair does. A
+    // resumes once f.txt is held again, not onto the gap in between.
+    const { authority, fault, probe, forward } = await boot();
+    const reads = holdReadsOf(fault, forward, '/f.txt');
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    const a = probe.resume(F);
+    await until(() => reads.length === 1, "A's refetch of f.txt");
+
+    fault.fsAcquire = () => { fault.fsAcquire = null; return DROPPED(); };
+    const b = probe.resume(F);
+    await until(() => reads.length === 2, "the repair's read of f.txt");
+
+    reads[0].resolve();
+    await sleep(20);
+    reads[1].resolve();
+    assert.equal(await a, 'v2', 'a resumption whose refetch the poison spoiled waits for the repair to refill it');
+    assert.equal(await b, 'v2');
+  },
+
   async 'a heap-held cell whose barrier ACQUIRE is dropped'() {
     // The one-shot body and the opencode runner hold the resident set on the
     // heap rather than in facet SQLite; the same barrier guards it.
@@ -241,5 +289,23 @@ await runScenarios(import.meta.path, {
     assert.equal(await seen.promise, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
   },
 }, { barrierFailures: true });
+
+/**
+ * Hold every batch read that asks for `suffix` until the test releases it:
+ * each one is served at once, and its answer waits on the gate it pushes.
+ */
+function holdReadsOf(fault, forward, suffix) {
+  const reads = [];
+  fault.fsReadBatch = async (requests) => {
+    const entries = await forward('fsReadBatch', [requests]);
+    if (requests.some((request) => request.path.endsWith(suffix))) {
+      const gate = Promise.withResolvers();
+      reads.push(gate);
+      await gate.promise;
+    }
+    return entries;
+  };
+  return reads;
+}
 
 console.log('resident-barrier-failure: ok');
