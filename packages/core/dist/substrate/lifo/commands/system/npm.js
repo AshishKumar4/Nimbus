@@ -811,8 +811,9 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
 }
 /**
  * `npm ci`: a clean install of exactly the tree package-lock.json (or
- * npm-shrinkwrap.json) records. node_modules is removed first; a lock that
- * disagrees with package.json fails the install instead of being re-resolved.
+ * npm-shrinkwrap.json) records. The host validates the lock and only then
+ * removes node_modules: a lock that disagrees with package.json fails the
+ * install with the project untouched, instead of being re-resolved.
  */
 async function npmCi(ctx, deps) {
     const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
@@ -839,7 +840,6 @@ async function npmCi(ctx, deps) {
         return 1;
     }
     const startTime = Date.now();
-    await ctx.vfs.remove(join(ctx.cwd, 'node_modules'), { recursive: true, force: true });
     const npmLog = invocation.loglevel
         ? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level))
             await ctx.stderr.write(`${line}\n`); }
