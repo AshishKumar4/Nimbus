@@ -126,22 +126,24 @@ export const DURABLE_FACET_NAME_PREFIX = 'app-slot-';
  * Slot books, per hosting actor, because the facet index is per Durable
  * Object.
  *
- * Keyed weakly off `ctx`, and that is sound rather than lossy: a facet cannot
- * outlive the Durable Object hosting it, so a book that goes away with its
- * host describes nothing that still exists. A fresh incarnation restarts at
- * slot 0, and its first get of each name follows a delete, so a process never
- * boots onto storage a previous incarnation left under that name.
+ * Keyed weakly off `ctx`, so a book describes one incarnation. A facet that
+ * is still running when that incarnation ends outlives it (measured: a timer
+ * or an outgoing call keeps it going), and a `get` of its name with a new
+ * class then resets the whole object. So a fresh incarnation's first get of
+ * each name ends whatever runs there first: a minted `proc-slot-` name is
+ * deleted, which also wipes the storage a previous incarnation left, and an
+ * explicit name is aborted, which keeps it.
  *
- * The book names only the `proc-slot-` space. Durable `app-slot-` names are
- * allocated against DO storage instead (their owner survives a reset), so a
- * fresh incarnation's `next` starting at 0 can never collide with them even
+ * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
+ * are allocated against DO storage instead (their owner survives a reset), so
+ * a fresh incarnation's `next` starting at 0 can never collide with them even
  * before the durable ledger is adopted.
  */
 const slotBooks = new WeakMap();
 function slotBook(ctx) {
     let book = slotBooks.get(ctx);
     if (!book) {
-        book = { free: [], next: 0, held: new Map() };
+        book = { free: [], next: 0, held: new Map(), live: new Set() };
         slotBooks.set(ctx, book);
     }
     return book;
@@ -268,8 +270,13 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         evaluated = true;
         return { class: residentProcessClass(ctx, env, disk, supervisor, params) };
     };
+    const book = slotBook(ctx);
     let facet;
     try {
+        // get() with a new class on a facet an earlier incarnation left running resets this object.
+        if (explicit && !book.live.has(name)) {
+            facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
+        }
         facet = facets.get(name, start);
     }
     catch (error) {
@@ -277,6 +284,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             releaseSlot(ctx, params.pid);
         throw withFacetBudgetNamed(facetNameCount(ctx), error);
     }
+    if (explicit)
+        book.live.add(name);
     let disposed = false;
     const release = async () => {
         if (disposed)
@@ -287,6 +296,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             facets.abort(name, new Error('Nimbus: resident process released'));
         }
         catch { /* already gone */ }
+        if (explicit)
+            book.live.delete(name);
         // The two release classes: an ephemeral facet's SQLite is slot-reuse
         // hygiene — the name is handed out again, so the store must not be — and
         // a durable one's is the application itself: abort ends the process, the

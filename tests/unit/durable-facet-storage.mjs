@@ -195,6 +195,40 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   second.kill(); await second.done;
 }
 
+// ── 5b. a spawn never ends a facet its own incarnation holds live ──────────
+//
+// The abort before get is for what an ended incarnation left running. A
+// process this incarnation started is still its own, whoever asks for the name.
+{
+  let evaluations = 0;
+  const world = createFacetWorld(() => {
+    const boot = ++evaluations;
+    return {
+      async startProcess() { return { ok: true }; },
+      async handleHttpRequest() { return Response.json({ boot }); },
+    };
+  });
+  const ctx = createFacetCtx(world, 'live-do');
+  const env = { LOADER: world.loader };
+  const fabric = new ProcessFabric(processHostFor(ctx, env, () => ({ readFile() { throw new Error('no disk'); } })));
+  const spawn = (pid) => fabric.startResidentProcess({
+    startContract: 'boot', pid,
+    workerKey: `nimbus-process:live-do:${pid}`,
+    boot: BOOT,
+    facet: { name: 'app-slot-9', durable: true },
+    onWriterActivated() {}, onWriterRetired() {},
+  });
+  const running = await spawn(1);
+  await running.booted();
+  const other = await spawn(2);
+  await other.booted();
+  const answer = await (await running.routeTarget.handleHttpRequest(new Request('http://app.test/'))).json();
+  assert.equal(answer.boot, 1, 'the running process still answers');
+  assert.equal(evaluations, 1, 'nothing this incarnation runs was ended and booted again');
+  other.kill(); running.kill();
+  await Promise.all([other.done, running.done]);
+}
+
 // ── 6. the ledger counts durable mints, not durable releases ────────────────
 {
   const { ctx, fm } = setup();

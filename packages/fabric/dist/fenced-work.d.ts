@@ -53,9 +53,9 @@ export declare const FENCED_WORK_MAX_ATTEMPT = 1;
  * (staging, 2026-08-13): every observed reset struck seconds AFTER the launch
  * settled — the platform kills the object while the resident runs, which is
  * when a launch-scoped row had already been deleted and recovery had nothing
- * to find. A resident's facet cannot outlive its session instance (the
- * process host's held-open leg dies with it), so a row from a previous
- * generation always names a process that is genuinely gone.
+ * to find. A resident's facet can outlive its session instance (a pending
+ * timer keeps it running), but nothing routes to it from the next one, and a
+ * spawn that takes its facet name ends it first.
  */
 export interface FencedWorkRecord {
     pid: number;
