@@ -69,8 +69,6 @@ export declare class NimbusWrangler {
     private rebuildTimer;
     /** DO class map: binding name → DurableObjectClass from the inner worker. */
     private doClassMap;
-    /** Facet names we've created via ctx.facets.get — aborted on rebuild / stop. */
-    private doFacetNames;
     constructor(opts: NimbusWranglerOptions);
     /** Start the wrangler dev server. */
     start(): Promise<boolean>;

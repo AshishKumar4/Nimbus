@@ -38,4 +38,13 @@ export declare function getInnerDoClass(supervisorDoId: string, bindingName: str
 export declare function registerInnerDoClass(supervisorDoId: string, bindingName: string, cls: DurableObjectClass): void;
 /** Clear all registrations belonging to a supervisor DO (called on rebuild). */
 export declare function clearInnerDoClasses(supervisorDoId: string): void;
+/**
+ * Record that this incarnation opens `facetName` for `bindingName`. True on the
+ * name's first open since the incarnation began or the binding's facets were
+ * last aborted: whatever still runs under it has a class this build no longer
+ * uses, and a get() with the new class on it resets the whole object.
+ */
+export declare function noteInnerDoFacetOpened(ctx: DurableObjectState, bindingName: string, facetName: string): boolean;
+/** Abort the facets this incarnation opened for `bindingNames`, keeping their storage, so each next request starts the class registered then. */
+export declare function abortInnerDoFacets(ctx: DurableObjectState, bindingNames: Iterable<string>, reason: Error): void;
 //# sourceMappingURL=inner-do-registry.d.ts.map

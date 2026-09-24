@@ -28,6 +28,8 @@ import { reservePort, readPortReservation } from '../../packages/worker/src/sess
 import {
   createFacetWorld,
   createFacetCtx,
+  createProcessFacetCtx,
+  resetProcessFacetStorage,
 } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
@@ -152,6 +154,40 @@ function routeHost(fm, portRegistry) {
   const body = await response.json();
   assert.equal(body.ok, true, 'the re-driven facet answered the request');
   assert.equal(next.portRegistry.has(20300), true, 'the re-drive re-bound the port');
+}
+
+// ── 1b. the re-drive replaces a facet the ended instance left running ───────
+//
+// The platform can end an instance while its app's facet keeps running (a
+// timer or a pending outgoing call keeps it going). On the platform, a get of
+// that name with the re-drive's new class resets the whole object.
+{
+  resetProcessFacetStorage('app-slot-0');
+  const first = setup();
+  await reservePort(first.ctx, { owner: 'app', preferredPort: 20360, occupiedPorts: NONE });
+  await first.fm.spawnWorker('export default {}', 'durable app', '/app', {
+    durable: { owner: 'app' },
+    port: 20360,
+  });
+  createProcessFacetCtx('app-slot-0').storage.sql.exec('CREATE TABLE marker (v INTEGER)');
+  createProcessFacetCtx('app-slot-0').storage.sql.exec('INSERT INTO marker VALUES (7)');
+
+  const next = setup({ storage: first.storage, world: first.world, disk: first.disk });
+  next.processes.setPidBase(PID_GEN_STRIDE);
+  assert.deepEqual(first.world.liveFacets(), ['app-slot-0'], 'the ended instance left its facet running');
+
+  const response = await routeToSessionPort(
+    routeHost(next.fm, next.portRegistry),
+    20360,
+    new Request('https://probe.test/port/20360/'),
+    '/',
+    '',
+  );
+  assert.equal(response.status, 200, 'the request waited out the re-drive and routed');
+  assert.equal((await response.json()).boot, 'boot-2',
+    'the re-driven process answers, not the one the ended instance left running');
+  assert.deepEqual(createProcessFacetCtx('app-slot-0').storage.sql.exec('SELECT v FROM marker'), [{ v: 7 }],
+    'the application store outlives the process it replaced');
 }
 
 // ── 2. a port nothing durable owns stays the honest 502 ─────────────────────

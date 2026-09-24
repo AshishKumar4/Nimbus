@@ -24,7 +24,7 @@
 import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
+import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -174,7 +174,12 @@ export async function _rpcInnerDoFetch(self, req) {
         };
     }
     const facetName = 'innerDO-' + req.bindingName + '-' + req.id;
-    const facet = self.ctx.facets.get(facetName, async () => ({
+    const ctx = self.ctx;
+    if (noteInnerDoFacetOpened(ctx, req.bindingName, facetName)) {
+        // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
+        ctx.facets.abort(facetName, new Error('Nimbus: this inner Durable Object restarts on the current build'));
+    }
+    const facet = ctx.facets.get(facetName, async () => ({
         class: cls,
         id: req.id, // FacetStartupOptions.id — inner DO sees this as its ctx.id
     }));

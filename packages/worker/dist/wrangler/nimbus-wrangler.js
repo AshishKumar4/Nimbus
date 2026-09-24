@@ -14,7 +14,7 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { registerInnerDoClass, clearInnerDoClasses } from '@nimbus-sh/fabric/inner-do-registry.js';
+import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
@@ -144,8 +144,6 @@ export class NimbusWrangler {
     rebuildTimer = null;
     /** DO class map: binding name → DurableObjectClass from the inner worker. */
     doClassMap = new Map();
-    /** Facet names we've created via ctx.facets.get — aborted on rebuild / stop. */
-    doFacetNames = new Set();
     constructor(opts) {
         this.vfs = opts.vfs;
         this.vfsEvents = opts.vfsEvents;
@@ -188,15 +186,9 @@ export class NimbusWrangler {
         }
         // Abort live inner-DO facets so their stubs drop. Storage persists per
         // docs — next start() or `nimbus-wrangler reset` controls deletion.
-        if (this.doFacetNames.size > 0 && this.supervisorCtx?.facets?.abort) {
-            for (const name of this.doFacetNames) {
-                try {
-                    this.supervisorCtx.facets.abort(name, new Error('nimbus-wrangler stopped'));
-                }
-                catch { }
-            }
+        if (this.supervisorCtx) {
+            abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler stopped'));
         }
-        this.doFacetNames.clear();
         this.doClassMap.clear();
         this.workerStub = null;
     }
@@ -395,13 +387,8 @@ export class NimbusWrangler {
             // startup callback with the fresh class. Docs: abort invalidates
             // all existing stubs but preserves storage; the next get() is the
             // code-update pattern.
-            if (this.doFacetNames.size > 0 && this.supervisorCtx?.facets?.abort) {
-                for (const name of this.doFacetNames) {
-                    try {
-                        this.supervisorCtx.facets.abort(name, new Error('nimbus-wrangler rebuilding'));
-                    }
-                    catch { }
-                }
+            if (this.supervisorCtx) {
+                abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler rebuilding'));
             }
             // Two-pass load to break the chicken-and-egg:
             //   Pass 1: load with NO env to extract any durable_objects classes.
@@ -629,10 +616,6 @@ export class NimbusWrangler {
                             route: hostRoute() ?? undefined,
                         },
                     });
-                    // Track facet names we might create later so stop() can abort
-                    // them cleanly. Exact ids aren't known until inner calls
-                    // .get(id), so we just track the base name.
-                    this.doFacetNames.add('innerDO-' + bindingName + '-*');
                 }
             }
         }

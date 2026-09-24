@@ -84,7 +84,7 @@ tasks your object schedules through `lifecycle`:
 | Task | What it does |
 |---|---|
 | `resident-launch` | Boots the next chunk of a resident process's launch. Each chunk needs its own CPU budget. |
-| `resident-keepalive` | No work. The invocation itself keeps the object, and the resident processes that die with it, in memory. It re-arms while a resident runs and a client is present: a hibernatable WebSocket on `ctx`, or a runtime call within the last 60 s. |
+| `resident-keepalive` | No work. The invocation itself keeps the object in memory, and with it the resident processes it hosts. It re-arms while a resident runs and a client is present: a hibernatable WebSocket on `ctx`, or a runtime call within the last 60 s. |
 | `log-flush` | Persists buffered process output. |
 | `log-janitor` | Drops the logs of exited processes every 60 s while any remain. |
 
@@ -94,8 +94,8 @@ pending deadline for that task and rejects when it cannot arm one.
 `lifecycle.cancel(task)` drops the deadline. Do not run `onScheduled` from
 `setTimeout` in the current invocation. That timer shares the current
 invocation's CPU budget, so paced launches run out of CPU, and it is not an
-event, so the platform evicts the object after about 10 s idle and the
-resident processes die with it.
+event, so the platform evicts the object after about 10 s idle and its
+resident processes are lost: the next instance starts them again.
 
 One alarm serves every task:
 

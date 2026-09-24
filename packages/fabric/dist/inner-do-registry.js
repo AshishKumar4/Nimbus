@@ -49,3 +49,38 @@ export function clearInnerDoClasses(supervisorDoId) {
             _NIMBUS_INNER_DO_CLASSES.delete(k);
     }
 }
+/** Inner-DO facet names each incarnation has opened, by binding; keyed off ctx, so a new incarnation starts empty. */
+const openedInnerDoFacets = new WeakMap();
+/**
+ * Record that this incarnation opens `facetName` for `bindingName`. True on the
+ * name's first open since the incarnation began or the binding's facets were
+ * last aborted: whatever still runs under it has a class this build no longer
+ * uses, and a get() with the new class on it resets the whole object.
+ */
+export function noteInnerDoFacetOpened(ctx, bindingName, facetName) {
+    let byBinding = openedInnerDoFacets.get(ctx);
+    if (!byBinding)
+        openedInnerDoFacets.set(ctx, byBinding = new Map());
+    let names = byBinding.get(bindingName);
+    if (!names)
+        byBinding.set(bindingName, names = new Set());
+    if (names.has(facetName))
+        return false;
+    names.add(facetName);
+    return true;
+}
+/** Abort the facets this incarnation opened for `bindingNames`, keeping their storage, so each next request starts the class registered then. */
+export function abortInnerDoFacets(ctx, bindingNames, reason) {
+    const byBinding = openedInnerDoFacets.get(ctx);
+    if (!byBinding)
+        return;
+    for (const bindingName of bindingNames) {
+        for (const facetName of byBinding.get(bindingName) ?? []) {
+            try {
+                ctx.facets.abort(facetName, reason);
+            }
+            catch { /* already gone */ }
+        }
+        byBinding.delete(bindingName);
+    }
+}
