@@ -506,6 +506,7 @@ const WORKSPACE_TABLES = [
     'vfs_gc_queue',
     'vfs_jobs',
     'vfs_snapshots',
+    'vfs_tombstones',
     'vfs_append_receipts',
     'vfs_append_writer_state',
     'vfs_append_module_state',

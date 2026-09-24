@@ -298,6 +298,16 @@ const CHUNK_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CHUNK_ROW_
 const MANIFEST_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / MANIFEST_ROW_COLUMNS);
 const CONTENT_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CONTENT_ROW_COLUMNS);
 const GC_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / GC_ROW_COLUMNS);
+const TOMBSTONE_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / 2);
+/**
+ * Tombstones kept for invalidatedSince to answer cursors older than the
+ * in-memory log from SQL. Past this the oldest go, a page per maintenance
+ * call, and the floor rises: a cursor below it poisons.
+ */
+const TOMBSTONE_RETAIN_ROWS = 65_536;
+const TOMBSTONE_PRUNE_PAGE_ROWS = 2_048;
+/** Paths an answer from SQL may carry; past it the caller reconciles against list(). */
+const SQL_DELTA_MAX_PATHS = 16_384;
 /** Keys in one `IN (…)` list, leaving room for a statement's other parameters. */
 const KEYS_PER_SQL_EXEC = SQL_MAX_BOUND_PARAMETERS - 10;
 /**
@@ -329,6 +339,7 @@ const INODE_KIND_DIRECTORY = 1;
 const INODE_KIND_SYMLINK = 2;
 /** The inode columns `inodeFromRow` reads. */
 const INODE_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id';
+const INODE_SELECT_COLUMNS_AS_I = INODE_SELECT_COLUMNS.split(', ').map((column) => `i.${column}`).join(', ');
 /** Rows one page of a subtree walk holds: a bound on its heap, not on the tree. */
 const SUBTREE_PAGE_ROWS = 4096;
 /** vfs_gc_queue kinds. */
@@ -679,10 +690,12 @@ class TransactionPlanBuilder {
     const historyRows = this.history ? inodeRows + deletes : 0;
     return {
       blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
-      logicalRows: inodeRows + deletes + pieces + manifestRows + contentRows + gcRows + historyRows,
+      // A delete writes its tombstone too.
+      logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows,
       sqlExecs: 2
         + groupedSqlExecs(historyRows, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(deletes, KEYS_PER_SQL_EXEC)
+        + groupedSqlExecs(deletes, TOMBSTONE_ROWS_PER_SQL_EXEC)
         + groupedSqlExecs(pieces, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(pieces, CHUNK_ROWS_PER_SQL_EXEC)
         + groupedSqlExecs(manifestRows, MANIFEST_ROWS_PER_SQL_EXEC)
@@ -796,6 +809,12 @@ export interface SqliteVfsOptions {
    * are dropped, and a path without one reports the newest revision dropped.
    */
   readonly pathRevisionBytes?: number;
+  /**
+   * Tombstones kept for answering old invalidation cursors from SQL;
+   * defaults to TOMBSTONE_RETAIN_ROWS. A cursor older than the oldest kept
+   * poisons (the reader reconciles against list()).
+   */
+  readonly tombstoneRows?: number;
 }
 
 /**
@@ -936,8 +955,9 @@ export class SqliteVFS {
   // revision(dir) is a subtree watermark: it changes iff something under
   // dir changed. Consumers (runtime snapshot caches, page caches, handle
   // staleness checks) key on revision(path) instead of the global clock,
-  // so unrelated writes no longer invalidate them. In-memory only — the
-  // clock resets with the DO lifetime, exactly like the caches keyed on it.
+  // so unrelated writes no longer invalidate them. The stamps are in memory;
+  // a file without one reports its row's generation, and anything else the
+  // floor, which starts at the clock at open.
   //
   // Bounded by bytes, like the invalidation log below: a million-file tree
   // written in one lifetime would otherwise hold a revision per path. Past
@@ -965,15 +985,20 @@ export class SqliteVFS {
   // cannot serve that: it answers "what is the watermark under here", not
   // "what changed since when".
   //
-  // _epoch exists because _revision is in-memory and restarts at 0 with the
-  // DO, while a facet outlives supervisor restarts. A bare revision compare
-  // fails OPEN across one: a facet holding cursor N sees the clock reset,
-  // N further writes land, and `rev === cursor` reads as "nothing changed"
-  // while every byte it holds is stale. Classic ABA, in the one direction
-  // this protocol may never fail in. An epoch never recurs, so the pair is
-  // globally monotonic. Supervisor DO resets are an observed event here,
-  // not a hypothetical.
-  private readonly _epoch = crypto.randomUUID();
+  // The epoch names the clock. Revisions are durable generations
+  // (vfs_state.gen), so they survive a supervisor restart, and the epoch is
+  // the database's incarnation, created with it: a facet holding a cursor
+  // from before a restart gets a delta, not a refill. What the epoch must
+  // never allow is ABA, a cursor meeting a clock that went back and forward
+  // over it with different writes: gens never regress within one database,
+  // and a new database is a new incarnation. A storage point-in-time
+  // recovery does regress gens and keeps the incarnation, so one must be
+  // followed by rotateIncarnation().
+  private _epoch = '';
+  /** invalidatedSince answers from SQL only above this: the newest pruned tombstone. */
+  private _tombstoneFloor = 0;
+  private _tombstoneRows: number | null = null;
+  private readonly tombstoneRetain: number;
   private _invalidations: { rev: number; path: string }[] = [];
   private _invalidationBytes = 0;
   /**
@@ -1000,8 +1025,25 @@ export class SqliteVFS {
   // limit.
   private static readonly INVALIDATION_LOG_MAX_BYTES = 256 * 1024;
 
-  /** Identifies this supervisor incarnation. Never reused across restarts. */
+  /** Names the revision clock: this database's incarnation, stable across restarts. */
   get epoch(): string { return this._epoch; }
+
+  /**
+   * Start a new clock epoch: every cursor held against the old one poisons.
+   * For a storage restore to an earlier point in time, which takes the
+   * generations back under cursors facets still hold.
+   */
+  rotateIncarnation(): string {
+    const incarnation = crypto.randomUUID();
+    this.transactionSync(() => {
+      this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1', incarnation);
+    });
+    this._epoch = incarnation;
+    this._invalidations = [];
+    this._invalidationBytes = 0;
+    this._invalidationFloor = this._revision;
+    return incarnation;
+  }
 
   private readonly exclusiveMutationLeases = new Map<string, string>();
   private activeMutationOwner: string | null = null;
@@ -1106,6 +1148,10 @@ export class SqliteVFS {
       throw vfsError('EINVAL', `per-path revision budget must be a byte count, not ${pathRevisionBytes}`);
     }
     this.pathRevisionBudget = pathRevisionBytes;
+    this.tombstoneRetain = options.tombstoneRows ?? TOMBSTONE_RETAIN_ROWS;
+    if (!Number.isSafeInteger(this.tombstoneRetain) || this.tombstoneRetain < 0) {
+      throw vfsError('EINVAL', `tombstone retention must be a row count, not ${this.tombstoneRetain}`);
+    }
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
     if (namespace === undefined) {
       let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
@@ -1196,12 +1242,13 @@ export class SqliteVFS {
         pin_gen INTEGER NOT NULL,
         next_ino INTEGER NOT NULL,
         next_chunk INTEGER NOT NULL,
-        next_content INTEGER NOT NULL
+        next_content INTEGER NOT NULL,
+        tomb_floor INTEGER NOT NULL
       )`);
       const state = [...this.sql.exec('SELECT schema FROM vfs_state WHERE slot = 1')][0];
       if (!state) {
         this.sql.exec(
-          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content) VALUES (1, ?, ?, 0, 0, 1, 1, 1)',
+          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor) VALUES (1, ?, ?, 0, 0, 1, 1, 1, 0)',
           VFS_SCHEMA,
           crypto.randomUUID(),
         );
@@ -1277,6 +1324,13 @@ export class SqliteVFS {
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen ON vfs_inode_history(gen_to)');
+      // One row per deleted path, written with the delete: what lets
+      // invalidatedSince answer a cursor from before this incarnation's log.
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_tombstones (
+        path TEXT PRIMARY KEY,
+        gen INTEGER NOT NULL
+      ) WITHOUT ROWID`);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_tombstones_gen ON vfs_tombstones(gen)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_chunk ON vfs_inode_history(chunk_id) WHERE chunk_id IS NOT NULL');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_content ON vfs_inode_history(content_id) WHERE content_id IS NOT NULL');
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_gc_queue (
@@ -1301,10 +1355,15 @@ export class SqliteVFS {
         created_at INTEGER NOT NULL
       )`);
     });
-    const state = [...this.sql.exec('SELECT gen, pin_gen FROM vfs_state WHERE slot = 1')][0]!;
+    const state = [...this.sql.exec('SELECT gen, pin_gen, incarnation, tomb_floor FROM vfs_state WHERE slot = 1')][0]!;
     this._gen = Number(state.gen);
     this._pinGen = Number(state.pin_gen);
+    this._epoch = String(state.incarnation);
+    this._tombstoneFloor = Number(state.tomb_floor);
     this._revision = this._gen;
+    // Nothing is stamped yet, and every earlier mutation is at or below the
+    // clock at open: a directory or a missing path reports it.
+    this._revisionFloor = this._gen;
     this._invalidationFloor = this._gen;
     this.legacyTables = LEGACY_TABLES
       .filter(({ name, columns }) => {
@@ -1940,9 +1999,19 @@ export class SqliteVFS {
     return this.pathRevision(p);
   }
 
-  /** A storage key's revision: its own, or the floor once it was dropped. */
-  private pathRevision(key: string): number {
-    return this._pathRevisions.get(key) ?? this._revisionFloor;
+  /**
+   * A storage key's revision: its own stamp; else, for a file or symlink,
+   * its row's generation, which its last mutation wrote and which survives
+   * restarts, so an untouched file keeps its revision across incarnations;
+   * else the floor. Never more than the global clock, so a row written by a
+   * transaction not yet published reports the clock.
+   */
+  private pathRevision(key: string, inode?: INode): number {
+    const stamped = this._pathRevisions.get(key);
+    if (stamped !== undefined) return stamped;
+    const node = inode ?? this.inodes.get(key);
+    if (node !== undefined && !node.isDir) return Math.min(node.gen, this._revision);
+    return this._revisionFloor;
   }
 
   /**
@@ -2082,7 +2151,10 @@ export class SqliteVFS {
     // consecutive integers: completeness is judged against the newest
     // revision any entry was dropped from, never against oldest - 1.
     if (cursor < this._invalidationFloor) {
-      return { epoch: this._epoch, rev, paths: [], poison: true };
+      const paths = this.invalidatedFromSql(cursor, rev);
+      return paths === null
+        ? { epoch: this._epoch, rev, paths: [], poison: true }
+        : { epoch: this._epoch, rev, paths, poison: false };
     }
     // The log is append-ordered by revision, so the last entry for a path
     // is its newest — the one the caller has to be at or past to keep it.
@@ -2092,6 +2164,40 @@ export class SqliteVFS {
     }
     const paths = [...latest].map(([path, pathRev]) => ({ path, rev: pathRev }));
     return { epoch: this._epoch, rev, paths, poison: false };
+  }
+
+  /**
+   * The delta for a cursor older than the log, from the rows themselves:
+   * every row written in (cursor, rev] and every path deleted in it (its
+   * tombstone), each with its parent, at the generation that wrote it. As
+   * complete as the log, since every mutation writes a row or a tombstone.
+   * Null (poison) below the tombstone floor, or past SQL_DELTA_MAX_PATHS,
+   * where a reconcile against list() is cheaper than the delta.
+   */
+  private invalidatedFromSql(cursor: number, rev: number): VfsInvalidatedPath[] | null {
+    if (cursor < this._tombstoneFloor) return null;
+    const latest = new Map<string, number>();
+    const note = (path: string, gen: number): void => {
+      if ((latest.get(path) ?? -1) < gen) latest.set(path, gen);
+    };
+    for (const table of ['vfs_inodes', 'vfs_tombstones']) {
+      const rows = [...this.sql.exec(
+        `SELECT path, gen FROM ${table} WHERE gen > ? AND gen <= ? LIMIT ?`,
+        cursor,
+        rev,
+        SQL_DELTA_MAX_PATHS + 1,
+      )];
+      if (rows.length > SQL_DELTA_MAX_PATHS) return null;
+      for (const row of rows) {
+        const path = String(row.path);
+        const gen = Number(row.gen);
+        note(path, gen);
+        const parent = this.parentPath(path);
+        if (parent !== '') note(parent, gen);
+      }
+      if (latest.size > SQL_DELTA_MAX_PATHS) return null;
+    }
+    return [...latest].map(([path, pathRev]) => ({ path, rev: pathRev }));
   }
 
   acquireExclusiveMutation(
@@ -2574,6 +2680,17 @@ export class SqliteVFS {
     if (taken) this.contentKeyMemo.set(ref.contentId, hex(key));
     else this.transactionSync(() => { this.sql.exec('UPDATE vfs_contents SET digest = ? WHERE id = ?', key, ref.contentId); });
     return hex(key);
+  }
+
+  /** contentKeyOf from a list row's joined chunk hash or digest, so a page costs no lookup per file. */
+  private listedContentKey(inode: INode, row: SqlRow): string {
+    if (inode.chunkId !== null && row.chunk_hash !== null && row.chunk_hash !== undefined) {
+      return hex(this.blobToUint8Array(row.chunk_hash));
+    }
+    if (inode.contentId !== null && row.content_digest !== null && row.content_digest !== undefined) {
+      return hex(this.blobToUint8Array(row.content_digest));
+    }
+    return this.contentKeyOf(inode);
   }
 
   private contentKey(path: string, cred: VfsCred): string {
@@ -3686,7 +3803,11 @@ export class SqliteVFS {
     let parentReachable = false;
     for (;;) {
       const rows = [...this.sql.exec(
-        `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? ORDER BY path LIMIT ?`,
+        `SELECT ${INODE_SELECT_COLUMNS_AS_I}, c.hash AS chunk_hash, ct.digest AS content_digest
+         FROM vfs_inodes i
+         LEFT JOIN vfs_chunks c ON c.id = i.chunk_id
+         LEFT JOIN vfs_contents ct ON ct.id = i.content_id
+         WHERE i.path > ? ORDER BY i.path LIMIT ?`,
         cursor,
         limit + 1,
       )];
@@ -3719,7 +3840,7 @@ export class SqliteVFS {
         // The storage key's revision, the one revision() reports for the name
         // this entry is listed under: a confined caller's /tmp/x is its own
         // file, not the shared one at the same name.
-        const pathRevision = this.pathRevision(path);
+        const pathRevision = this.pathRevision(path, inode);
         entries.push({
           path: logical,
           kind: inode.kind,
@@ -3727,6 +3848,7 @@ export class SqliteVFS {
           rev: pathRevision,
           stat: { ...this.statOf(inode), revision: pathRevision },
           ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
+          ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
         });
       }
       if (rows.length <= limit) return { epoch, rev, entries, next: null };
@@ -3943,8 +4065,9 @@ export class SqliteVFS {
       if (builder.empty) return;
       const plan = builder.build();
       this.assertTransactionFits(plan.metrics);
-      this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+      // Before executing: a commit that throws after it is durable is reported too.
       for (const path of plan.affectedPaths) touchedPaths.add(path);
+      this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
       const rows = plan.inodes.length + plan.deletes.length;
       this._sqlWrites += rows;
       this._batchWrites++;
@@ -4012,6 +4135,7 @@ export class SqliteVFS {
       flushPublished();
     } catch (error) {
       this.unpublishRenameDestination(committed);
+      if (touchedPaths.size > 0) this.bumpRevision([...touchedPaths]);
       throw error;
     }
     // The superseded occupant goes first: it shares its path with the entry
@@ -4057,12 +4181,18 @@ export class SqliteVFS {
       retired = [];
       builder = this.newPlan();
     };
-    for (const entry of retiring) {
-      if (builder.wouldExceedDeletion() !== null) retire();
-      builder.addDeletedPath(entry.path, entry, false);
-      retired.push(entry);
+    try {
+      for (const entry of retiring) {
+        if (builder.wouldExceedDeletion() !== null) retire();
+        builder.addDeletedPath(entry.path, entry, false);
+        retired.push(entry);
+      }
+      retire();
+    } catch (error) {
+      // What committed is visible, so it is published before the error goes.
+      this.bumpRevision([...touchedPaths]);
+      throw error;
     }
-    retire();
 
     this.bumpRevision([...touchedPaths]);
     this.emitMutation('rename', newPath, oldPath);
@@ -5696,6 +5826,16 @@ export class SqliteVFS {
           const batch = deletes.slice(i, i + KEYS_PER_SQL_EXEC);
           this.sql.exec(`DELETE FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch);
         }
+        this.insertRows(
+          'vfs_tombstones (path, gen)',
+          2,
+          deletes.flatMap((path) => [path, gen]),
+          'INSERT OR REPLACE',
+        );
+        if (deletes.length > 0) {
+          if (this._tombstoneRows !== null) this._tombstoneRows += deletes.length;
+          if (this.tombstoneRows() > this.tombstoneRetain) this.maintenancePending = true;
+        }
         for (const entry of plan.deletes) {
           if (!entry.dereference || !entry.prior) continue;
           if (entry.prior.chunkId !== null) queue.add(GC_CHUNK, entry.prior.chunkId);
@@ -6078,10 +6218,50 @@ export class SqliteVFS {
       this.auditPage(pinnedContents);
       transactions++;
     }
+    // One page past the budget: GC can take every transaction a mutation
+    // allows, and tombstones must not wait behind it for the next mutation.
+    if (maximum > 0 && this.tombstoneRows() > this.tombstoneRetain) {
+      this.pruneTombstones();
+      transactions++;
+    }
+    while (transactions < maximum && this.tombstoneRows() > this.tombstoneRetain) {
+      this.pruneTombstones();
+      transactions++;
+    }
     if (maximum > 0) {
-      this.maintenancePending = this.legacyTables.length > 0 || !contentsIdle || !chunksIdle || this.auditCursor !== null;
+      this.maintenancePending = this.legacyTables.length > 0 || !contentsIdle || !chunksIdle || this.auditCursor !== null
+        || this.tombstoneRows() > this.tombstoneRetain;
     }
     return { transactions };
+  }
+
+  /** Tombstones held, counted once and then kept by the writers (an overcount only prunes early). */
+  private tombstoneRows(): number {
+    if (this._tombstoneRows === null) {
+      this._tombstoneRows = Number([...this.sql.exec('SELECT COUNT(*) AS n FROM vfs_tombstones')][0]!.n);
+    }
+    return this._tombstoneRows;
+  }
+
+  /** Drop the oldest page of tombstones and raise the floor to the newest dropped. */
+  private pruneTombstones(): void {
+    const edge = [...this.sql.exec(
+      'SELECT gen FROM vfs_tombstones ORDER BY gen LIMIT 1 OFFSET ?',
+      Math.min(TOMBSTONE_PRUNE_PAGE_ROWS, Math.max(1, this.tombstoneRows() - this.tombstoneRetain)) - 1,
+    )][0];
+    if (edge === undefined) { this._tombstoneRows = null; return; }
+    const floor = Number(edge.gen);
+    let removed = 0;
+    this.executeMeasuredTransaction(
+      this.metricsOnlyPlan({ blobBytes: 0, logicalRows: TOMBSTONE_PRUNE_PAGE_ROWS * 2 + 1, sqlExecs: 3, affectedPaths: 0 }),
+      { source: 'content-gc', limitMode: 'bounded' },
+      () => {
+        removed = [...this.sql.exec('DELETE FROM vfs_tombstones WHERE gen <= ? RETURNING 1', floor)].length;
+        this.sql.exec('UPDATE vfs_state SET tomb_floor = MAX(tomb_floor, ?) WHERE slot = 1', floor);
+      },
+    );
+    this._tombstoneFloor = Math.max(this._tombstoneFloor, floor);
+    this._tombstoneRows = Math.max(0, this.tombstoneRows() - removed);
   }
 
   /**

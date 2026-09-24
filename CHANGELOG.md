@@ -39,6 +39,15 @@ published independently in the `@nimbus-sh` npm scope.
   later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
   `storeStats()` reports chunks, history rows, the GC queue, snapshots and
   jobs.
+- The revision clock survives a supervisor restart. The epoch is the
+  database's incarnation and revisions are its generations, so a facet
+  holding a cursor from before a restart gets a delta instead of a poison:
+  deltas older than the in-memory log are answered from the rows and a
+  tombstone per deleted path (poisoning only past 16,384 paths or below the
+  oldest of the 65,536 tombstones kept). An untouched file keeps its
+  revision across the restart, so a facet's reconcile keeps its rows.
+  `list()` entries carry `contentKey`. `rotateIncarnation()` starts a new
+  epoch, for a storage restore to an earlier point in time.
 - The revision clock is the durable generation, so revisions jump by more
   than one between publications. Existing filesystems start empty: the
   pre-v2 tables are ignored and deleted in bounded pages.

@@ -214,6 +214,12 @@ export interface SqliteVfsOptions {
      * are dropped, and a path without one reports the newest revision dropped.
      */
     readonly pathRevisionBytes?: number;
+    /**
+     * Tombstones kept for answering old invalidation cursors from SQL;
+     * defaults to TOMBSTONE_RETAIN_ROWS. A cursor older than the oldest kept
+     * poisons (the reader reconciles against list()).
+     */
+    readonly tombstoneRows?: number;
 }
 export declare class SqliteVFS {
     private readonly openNodes;
@@ -237,7 +243,11 @@ export declare class SqliteVFS {
     private readonly pathRevisionBudget;
     private static readonly PATH_REVISIONS_MAX_BYTES;
     private transactionPublication;
-    private readonly _epoch;
+    private _epoch;
+    /** invalidatedSince answers from SQL only above this: the newest pruned tombstone. */
+    private _tombstoneFloor;
+    private _tombstoneRows;
+    private readonly tombstoneRetain;
     private _invalidations;
     private _invalidationBytes;
     /**
@@ -247,8 +257,14 @@ export declare class SqliteVFS {
      */
     private _invalidationFloor;
     private static readonly INVALIDATION_LOG_MAX_BYTES;
-    /** Identifies this supervisor incarnation. Never reused across restarts. */
+    /** Names the revision clock: this database's incarnation, stable across restarts. */
     get epoch(): string;
+    /**
+     * Start a new clock epoch: every cursor held against the old one poisons.
+     * For a storage restore to an earlier point in time, which takes the
+     * generations back under cursors facets still hold.
+     */
+    rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -479,7 +495,13 @@ export declare class SqliteVFS {
      * by construction (every mutation stamps all ancestors).
      */
     revision(path?: string, cred?: VfsCred): number;
-    /** A storage key's revision: its own, or the floor once it was dropped. */
+    /**
+     * A storage key's revision: its own stamp; else, for a file or symlink,
+     * its row's generation, which its last mutation wrote and which survives
+     * restarts, so an untouched file keeps its revision across incarnations;
+     * else the floor. Never more than the global clock, so a row written by a
+     * transaction not yet published reports the clock.
+     */
     private pathRevision;
     /**
      * Advance the clock to the committed generation, stamp every path + its
@@ -542,6 +564,15 @@ export declare class SqliteVFS {
         paths: VfsInvalidatedPath[];
         poison: boolean;
     };
+    /**
+     * The delta for a cursor older than the log, from the rows themselves:
+     * every row written in (cursor, rev] and every path deleted in it (its
+     * tombstone), each with its parent, at the generation that wrote it. As
+     * complete as the log, since every mutation writes a row or a tombstone.
+     * Null (poison) below the tombstone floor, or past SQL_DELTA_MAX_PATHS,
+     * where a reconcile against list() is cheaper than the delta.
+     */
+    private invalidatedFromSql;
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
@@ -607,6 +638,8 @@ export declare class SqliteVFS {
      * another content already holds it.
      */
     private contentKeyOf;
+    /** contentKeyOf from a list row's joined chunk hash or digest, so a page costs no lookup per file. */
+    private listedContentKey;
     private contentKey;
     /**
      * Overwrite `bytes` at `offset`. Only the chunks around the range are
@@ -1007,6 +1040,10 @@ export declare class SqliteVFS {
     runContentMaintenance(maxTransactions?: number): {
         transactions: number;
     };
+    /** Tombstones held, counted once and then kept by the writers (an overcount only prunes early). */
+    private tombstoneRows;
+    /** Drop the oldest page of tombstones and raise the floor to the newest dropped. */
+    private pruneTombstones;
     /**
      * The next page of queued ids of `kind` past the cursor, pinned ones
      * stepped over (the cursor moves past them; they stay queued). Null when

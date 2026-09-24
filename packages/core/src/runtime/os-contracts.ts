@@ -350,6 +350,8 @@ export interface VfsListEntry {
   rev: number;
   stat: RuntimeVfsStat;
   linkTarget?: string;
+  /** Files only: equal keys mean equal bytes (SqliteVFS.contentKey). */
+  contentKey?: string;
 }
 
 /**
