@@ -250,6 +250,8 @@ const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-bash',
       summary: 'GNU bash 5.2.37 and BusyBox 1.37.0, cross-compiled to wasm32-wasi',
+      // 0.11.0 is the first core whose bash runner is BASH_RUNNER; 0.10.0 runs `bash-runner`.
+      core: '>=0.11.0',
     },
     files: [
       { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },
@@ -955,10 +957,9 @@ function writeNpmPackage(outDir, manifest, downloaded) {
     files: ['index.js', 'index.d.ts', 'manifest.json', 'blobs', 'LICENSE', 'README.md'],
     // The runtime is inert without the half that installs and runs it, and
     // `index.d.ts` types itself against that package's exports. The floor is
-    // the core release whose FacetHost carries every runner generated from
-    // this tree — earlier cores would seed the files and then have no
-    // command to run them.
-    peerDependencies: { '@nimbus-sh/core': '>=0.4.0' },
+    // the first core release that registers every runner this manifest names:
+    // an earlier core seeds the files and then has no command to run them.
+    peerDependencies: { '@nimbus-sh/core': spec.npm.core ?? '>=0.4.0' },
     publishConfig: { access: 'public' },
   }, null, 2)}\n`);
 
