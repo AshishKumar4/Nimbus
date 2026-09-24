@@ -261,6 +261,7 @@ async function printHelp(ctx) {
     await ctx.stdout.write('Commands:\n');
     await ctx.stdout.write('  init [-y]                  create package.json\n');
     await ctx.stdout.write('  install [pkg...] [-g] [-D] install packages\n');
+    await ctx.stdout.write('  ci                         clean install from package-lock.json\n');
     await ctx.stdout.write('  uninstall <pkg> [-g]       remove a package\n');
     await ctx.stdout.write('  list [-g]                  list installed packages\n');
     await ctx.stdout.write('  run <script>               run a package.json script\n');
@@ -772,6 +773,10 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
             case 'i':
             case 'add':
                 return (await npmInstall(ctx, registry, kernel, deps));
+            case 'ci':
+            case 'clean-install':
+            case 'install-clean':
+                return (await npmCi(ctx, deps));
             case 'uninstall':
             case 'remove':
             case 'rm':
@@ -803,6 +808,65 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
                 return 1;
         }
     };
+}
+/**
+ * `npm ci`: a clean install of exactly the tree package-lock.json (or
+ * npm-shrinkwrap.json) records. node_modules is removed first; a lock that
+ * disagrees with package.json fails the install instead of being re-resolved.
+ */
+async function npmCi(ctx, deps) {
+    const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+    if (invocation.global) {
+        await ctx.stderr.write('npm ERR! `npm ci` does not work for global packages\n');
+        return 1;
+    }
+    if (invocation.packages.length > 0) {
+        await ctx.stderr.write('npm ERR! `npm ci` does not take package arguments; use `npm install <pkg>`\n');
+        return 1;
+    }
+    let hasLock = false;
+    for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+        if (await ctx.vfs.exists(join(ctx.cwd, name)))
+            hasLock = true;
+    }
+    if (!hasLock) {
+        await ctx.stderr.write('npm ERR! The `npm ci` command can only install with an existing package-lock.json or\n' +
+            'npm ERR! npm-shrinkwrap.json. Run `npm install` to generate one, then try again.\n');
+        return 1;
+    }
+    if (!deps?.installer) {
+        await ctx.stderr.write('npm ERR! `npm ci` needs the host installer, which this runtime does not provide\n');
+        return 1;
+    }
+    const startTime = Date.now();
+    await ctx.vfs.remove(join(ctx.cwd, 'node_modules'), { recursive: true, force: true });
+    const npmLog = invocation.loglevel
+        ? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level))
+            await ctx.stderr.write(`${line}\n`); }
+        : null;
+    try {
+        const result = await deps.installer.install({
+            projectDir: ctx.cwd,
+            packages: [],
+            global: false,
+            pid: ctx.pid,
+            registry: getRegistry(ctx.env),
+            production: invocation.production,
+            fromLockfile: true,
+            npmLog,
+            onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
+        });
+        await writeInstallSummary(ctx, result.installed, result.failed, {
+            totalFiles: result.totalFiles,
+            fromCacheHits: result.fromCacheHits,
+            startedAt: startTime,
+        });
+        return result.failed.length > 0 ? 1 : 0;
+    }
+    catch (err) {
+        await ctx.stderr.write(`npm ERR! ${err instanceof Error ? err.message : String(err)}\n`);
+        return 1;
+    }
 }
 /**
  * Install a single npm package globally into the VFS.

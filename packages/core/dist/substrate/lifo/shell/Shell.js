@@ -175,7 +175,7 @@ export class Shell {
         this.builtins.set('alias', async (args, stdout) => (await this.builtinAlias(args, stdout)));
         this.builtins.set('unalias', async (args, _stdout, stderr) => (await this.builtinUnalias(args, stderr)));
         this.builtins.set('test', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
-        this.builtins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+        this.builtins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context, true)));
     }
     getJobTable() {
         return this.jobTable;

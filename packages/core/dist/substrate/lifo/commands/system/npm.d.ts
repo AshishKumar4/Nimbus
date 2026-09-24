@@ -39,6 +39,8 @@ export interface NpmInstallPort {
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
         registry: string;
         production?: boolean;
+        /** `npm ci`: place exactly what the project's package-lock.json records. */
+        fromLockfile?: boolean;
         npmLog?: NpmLogEmitter | null;
         onProgress?: (line: string) => void;
     }): Promise<{

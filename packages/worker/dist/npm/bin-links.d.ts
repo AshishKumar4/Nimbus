@@ -28,10 +28,12 @@ type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile' | '
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;
-export declare function createNpmBinShim(entry: NpmBinEntry): string;
+export declare function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string;
 export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[];
 export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): NpmBinResolution | null;
 export declare function resolveNpmBinFromPath(vfs: VfsLike, cwd: string, envPath: string, name: string): NpmBinResolution | null;
+/** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
+export declare function resolveNpmBinPath(vfs: VfsLike & Pick<CredentialedVfs, 'stat'>, cwd: string, path: string): NpmBinResolution | null;
 export declare function materializeNpmBinShims(vfs: WritableVfsLike, nodeModulesPath: string, binDir: string): number;
 export {};
 //# sourceMappingURL=bin-links.d.ts.map

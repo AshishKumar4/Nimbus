@@ -2,7 +2,8 @@ import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
-  resolveNpmBin, resolveNpmBinFromPath,
+  resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath,
+  type NpmBinResolution,
   isStagedArtifactTarget, stagedArtifactId,
 } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -64,6 +65,15 @@ export function installNpmBinFallbackResolver(
   const upstreamResolve = registry.resolve.bind(registry);
 
   registry.resolve = async function resolveWithNpmBins(name: string): Promise<unknown> {
+    // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
+    // same program as the bare name: same runtime choice, TTY and lifecycle.
+    if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
+      const cwd = deps.getCwd() || '/home/user';
+      const bin = resolveNpmBinPath(vfs, cwd, name);
+      if (!bin) return await upstreamResolve(name);
+      return binHandler(bin.name, (ctx) => resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+    }
+
     const upstream = await upstreamResolve(name);
     if (upstream) return upstream;
 
@@ -81,14 +91,21 @@ export function installNpmBinFallbackResolver(
       return hintHandler;
     }
 
+    return binHandler(name, (ctx) => resolveNpmBinForInvocation(
+      vfs,
+      ctx.cwd || '/home/user',
+      ctx.env?.PATH || DEFAULT_PATH,
+      name,
+    ));
+  };
+
+  function binHandler(
+    name: string,
+    lookup: (ctx: CommandContext) => NpmBinResolution | null,
+  ): (ctx: CommandContext) => Promise<number> {
     return async (ctx: CommandContext): Promise<number> => {
       const invocationCwd = ctx.cwd || '/home/user';
-      const bin = resolveNpmBinForInvocation(
-        vfs,
-        invocationCwd,
-        ctx.env?.PATH || DEFAULT_PATH,
-        name,
-      );
+      const bin = lookup(ctx);
       if (!bin) {
         ctx.stderr.write(`${name}: command not found\n`);
         return 127;
@@ -107,11 +124,22 @@ export function installNpmBinFallbackResolver(
         );
       }
 
+      // A PATH script for another interpreter (`#!/bin/sh`) is not a node
+      // program: run it the way a path-shaped invocation of it runs.
+      const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
+      if (runtimeName === null) {
+        const execCmd = await upstreamResolve('/' + bin.shimPath);
+        if (typeof execCmd !== 'function') {
+          ctx.stderr.write(`${name}: command not found\n`);
+          return 127;
+        }
+        return await (execCmd as NodeCommandHandler)(ctx);
+      }
+
       const bundleProfile = bundleProfileForNpmBin(bin);
       const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
       const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
       const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
-      const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
       const runtimeCmd = await upstreamResolve(runtimeName);
       if (typeof runtimeCmd !== 'function') {
         ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -175,7 +203,7 @@ export function installNpmBinFallbackResolver(
       }
       return exitCode;
     };
-  };
+  }
 }
 
 function resolveNpmBinForInvocation(
@@ -301,9 +329,11 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function npmBinRuntimeForTarget(vfs: CredentialedVfs, targetPath: string): 'node' | 'bun' {
+/** null when the target's `#!` names an interpreter other than node or bun; no `#!` runs as node. */
+function npmBinRuntimeForTarget(vfs: CredentialedVfs, targetPath: string): 'node' | 'bun' | null {
   const firstLine = readFirstLine(vfs, targetPath);
-  return shebangRuntime(firstLine) ?? 'node';
+  if (!firstLine?.startsWith('#!')) return 'node';
+  return shebangRuntime(firstLine);
 }
 
 function readFirstLine(vfs: CredentialedVfs, path: string): string | null {

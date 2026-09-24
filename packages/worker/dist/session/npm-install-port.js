@@ -13,6 +13,7 @@ export function createNpmInstallPort(self) {
             const result = await installer.install(installCwd, {
                 packages: spec.packages.length > 0 ? [...spec.packages] : undefined,
                 production: spec.production,
+                fromLockfile: spec.fromLockfile,
                 pid: spec.pid,
                 registry: spec.registry,
                 npmLog: spec.npmLog ?? undefined,

@@ -88,6 +88,7 @@ export declare class NpmInstaller {
     install(projectDir: string, opts?: {
         packages?: string[];
         production?: boolean;
+        fromLockfile?: boolean;
         pid?: number;
         npmLog?: NpmLogEmitter;
         onProgress?: (msg: string) => void;
@@ -176,6 +177,14 @@ export declare class NpmInstaller {
      * Check if a lockfile is still valid against current package.json specs.
      */
     private isLockfileValid;
+    /**
+     * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
+     * records, checked against package.json first. The ABI policy the resolver
+     * applies still holds: platform-native optional shards are skipped, a
+     * required one is refused, and a swapped package resolves its swap target
+     * at the locked version.
+     */
+    private treeFromPackageLock;
     /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
     private lockfileToResolved;
     /**

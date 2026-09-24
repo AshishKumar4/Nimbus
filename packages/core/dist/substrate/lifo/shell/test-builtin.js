@@ -1,13 +1,20 @@
 import { expandWord } from './expander.js';
 import { globMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
+import { S_IFCHR, S_IFMT } from '../kernel/vfs/types.js';
 /**
- * Implementation of the `test` / `[` shell builtin.
- * Evaluates conditional expressions.
+ * Implementation of the `test` / `[` shell builtin (POSIX `test`).
+ * `bracket` is true for `[`, whose last argument must be `]`.
  */
-export async function evaluateTest(args, vfs, stderr, context) {
-    // `[` requires a closing `]`
-    const operands = args.length > 0 && args[args.length - 1] === ']' ? args.slice(0, -1) : args;
+export async function evaluateTest(args, vfs, stderr, context, bracket = false) {
+    let operands = args;
+    if (bracket) {
+        if (args[args.length - 1] !== ']') {
+            (await stderr.write('[: missing ]\n'));
+            return 2;
+        }
+        operands = args.slice(0, -1);
+    }
     return (await evaluateTestExpression(literalOperands(operands), vfs, stderr, context, 'test'));
 }
 /**
@@ -58,6 +65,11 @@ async function evaluateTestExpression(operands, vfs, stderr, context, mode) {
         return 1; // false
     }
     try {
+        const posix = mode === 'test' && operands.length <= 4
+            ? await evaluateByArgCount(operands, 0, operands.length, vfs, context)
+            : undefined;
+        if (posix !== undefined)
+            return posix ? 0 : 1;
         const result = await parseOr(operands, 0, vfs, context, mode, true);
         if (result.pos !== operands.length) {
             (await stderr.write('test: too many arguments\n'));
@@ -68,6 +80,53 @@ async function evaluateTestExpression(operands, vfs, stderr, context, mode) {
     catch (e) {
         (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
         return 2;
+    }
+}
+/**
+ * POSIX decides `test` with four or fewer arguments by their count, so an
+ * operand spelled like an operator (`[ "$x" = -n ]`, `[ ! = ! ]`) is still an
+ * operand. Returns undefined where POSIX leaves the result unspecified and the
+ * general grammar should decide.
+ */
+async function evaluateByArgCount(ops, start, count, vfs, context) {
+    const at = (i) => ops.literal(start + i) ?? '';
+    switch (count) {
+        case 0:
+            return false;
+        case 1:
+            return at(0).length > 0;
+        case 2:
+            if (at(0) === '!')
+                return at(1).length === 0;
+            if (Object.hasOwn(UNARY_OPERATORS, at(0)))
+                return await evaluateUnary(at(0), at(1), vfs, context);
+            throw new Error(`${at(0)}: unary operator expected`);
+        case 3: {
+            if (at(1) === '-a')
+                return at(0).length > 0 && at(2).length > 0;
+            if (at(1) === '-o')
+                return at(0).length > 0 || at(2).length > 0;
+            const binary = evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test');
+            if (binary !== undefined)
+                return binary;
+            if (at(0) === '!') {
+                const inner = await evaluateByArgCount(ops, start + 1, 2, vfs, context);
+                return inner === undefined ? undefined : !inner;
+            }
+            if (at(0) === '(' && at(2) === ')')
+                return at(1).length > 0;
+            throw new Error(`${at(1)}: binary operator expected`);
+        }
+        case 4:
+            if (at(0) === '!') {
+                const inner = await evaluateByArgCount(ops, start + 1, 3, vfs, context);
+                return inner === undefined ? undefined : !inner;
+            }
+            if (at(0) === '(' && at(3) === ')')
+                return await evaluateByArgCount(ops, start + 1, 2, vfs, context);
+            return undefined;
+        default:
+            return undefined;
     }
 }
 /**
@@ -96,7 +155,6 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
         return { value: false, pos };
     }
     const arg = ops.literal(pos) ?? '';
-    const valueAt = async (index) => (evaluate ? (await ops.value(index)).value : '');
     // Negation
     if (arg === '!') {
         const result = await parsePrimary(ops, pos + 1, vfs, context, mode, evaluate);
@@ -110,54 +168,22 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
         }
         return { value: result.value, pos: result.pos + 1 };
     }
-    // Unary string tests
-    if (arg === '-z' && pos + 1 < ops.length) {
-        return { value: (await valueAt(pos + 1)).length === 0, pos: pos + 2 };
-    }
-    if (arg === '-n' && pos + 1 < ops.length) {
-        return { value: (await valueAt(pos + 1)).length > 0, pos: pos + 2 };
-    }
-    if (arg === '-t' && pos + 1 < ops.length) {
-        return {
-            value: context?.isFdTerminal(toInt(await valueAt(pos + 1))) ?? false,
-            pos: pos + 2,
-        };
-    }
-    // Unary file tests
-    if (arg.startsWith('-') && arg.length === 2 && pos + 1 < ops.length && isFileTestFlag(arg[1])) {
-        const fileResult = evaluate
-            ? (await evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd))
+    // A binary operator in second place wins over a unary reading of the first word.
+    const op = pos + 2 < ops.length ? ops.literal(pos + 1) : undefined;
+    if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
+        const value = evaluate
+            ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false
             : false;
-        return { value: fileResult, pos: pos + 2 };
+        return { value, pos: pos + 3 };
     }
-    // Binary operators: check if there's an operator at pos+1
-    if (pos + 2 <= ops.length) {
-        const op = ops.literal(pos + 1);
-        if (op !== undefined) {
-            // String comparisons
-            if (op === '=' || op === '==' || op === '!=') {
-                const equal = evaluate
-                    ? stringCompare(await ops.value(pos), await ops.value(pos + 2), mode)
-                    : false;
-                return { value: op === '!=' ? !equal : equal, pos: pos + 3 };
-            }
-            if (op === '<') {
-                return { value: (await valueAt(pos)) < (await valueAt(pos + 2)), pos: pos + 3 };
-            }
-            if (op === '>') {
-                return { value: (await valueAt(pos)) > (await valueAt(pos + 2)), pos: pos + 3 };
-            }
-            // Integer comparisons
-            const integerCompare = INTEGER_COMPARISONS[op];
-            if (integerCompare !== undefined) {
-                const value = evaluate
-                    && integerCompare(toInt(await valueAt(pos)), toInt(await valueAt(pos + 2)));
-                return { value, pos: pos + 3 };
-            }
-        }
+    if (Object.hasOwn(UNARY_OPERATORS, arg) && pos + 1 < ops.length) {
+        const value = evaluate
+            ? await evaluateUnary(arg, (await ops.value(pos + 1)).value, vfs, context)
+            : false;
+        return { value, pos: pos + 2 };
     }
     // Single string argument -- true if non-empty
-    return { value: (await valueAt(pos)).length > 0, pos: pos + 1 };
+    return { value: evaluate && (await ops.value(pos)).value.length > 0, pos: pos + 1 };
 }
 const INTEGER_COMPARISONS = {
     '-eq': (a, b) => a === b,
@@ -167,9 +193,42 @@ const INTEGER_COMPARISONS = {
     '-gt': (a, b) => a > b,
     '-ge': (a, b) => a >= b,
 };
-const FILE_TEST_FLAGS = 'efdsrwx';
-function isFileTestFlag(flag) {
-    return FILE_TEST_FLAGS.includes(flag);
+const BINARY_OPERATORS = {
+    '=': true, '==': true, '!=': true, '<': true, '>': true,
+    '-eq': true, '-ne': true, '-lt': true, '-le': true, '-gt': true, '-ge': true,
+};
+// POSIX unary primaries; -h and -L are the same symlink test.
+const UNARY_OPERATORS = {
+    '-b': true, '-c': true, '-d': true, '-e': true, '-f': true, '-g': true, '-h': true, '-k': true, '-L': true,
+    '-n': true, '-p': true, '-r': true, '-s': true, '-S': true, '-t': true, '-u': true, '-w': true, '-x': true, '-z': true,
+};
+/** Undefined when `op` is not a binary comparison. */
+function evaluateBinary(op, left, right, mode) {
+    switch (op) {
+        case '=':
+        case '==':
+            return stringCompare(left, right, mode);
+        case '!=':
+            return !stringCompare(left, right, mode);
+        case '<':
+            return left.value < right.value;
+        case '>':
+            return left.value > right.value;
+    }
+    const integerCompare = Object.hasOwn(INTEGER_COMPARISONS, op) ? INTEGER_COMPARISONS[op] : undefined;
+    return integerCompare?.(toInt(left.value), toInt(right.value));
+}
+async function evaluateUnary(op, operand, vfs, context) {
+    switch (op) {
+        case '-z':
+            return operand.length === 0;
+        case '-n':
+            return operand.length > 0;
+        case '-t':
+            return context?.isFdTerminal(toInt(operand)) ?? false;
+        default:
+            return await evaluateFileTest(op[1], operand, vfs, context?.cwd);
+    }
 }
 function isOrOperator(value, mode) {
     return value === '-o' || (mode === 'double-bracket' && value === '||');
@@ -200,32 +259,44 @@ function hasPatternSyntax(value) {
  */
 async function evaluateFileTest(flag, operand, vfs, cwd) {
     const path = cwd === undefined ? operand : resolve(cwd, operand);
-    switch (flag) {
-        case 'e':
-            return (await statOf(vfs, path)) !== null;
-        case 'f':
-            return (await statOf(vfs, path))?.type === 'file';
-        case 'd':
-            return (await statOf(vfs, path))?.type === 'directory';
-        case 's': {
-            const stat = (await statOf(vfs, path));
-            return stat !== null && stat.type === 'file' && stat.size > 0;
+    if (flag === 'h' || flag === 'L') {
+        return (await statOf(vfs, path, false))?.type === 'symlink';
+    }
+    if (flag === 'r' || flag === 'w' || flag === 'x') {
+        try {
+            (await vfs.access(path, flag === 'r' ? 0o4 : flag === 'w' ? 0o2 : 0o1));
+            return true;
         }
-        default: {
-            const mode = flag === 'r' ? 0o4 : flag === 'w' ? 0o2 : 0o1;
-            try {
-                (await vfs.access(path, mode));
-                return true;
-            }
-            catch {
-                return false;
-            }
+        catch {
+            return false;
         }
     }
+    const stat = await statOf(vfs, path, true);
+    if (stat === null)
+        return false;
+    switch (flag) {
+        case 'e':
+            return true;
+        case 'f':
+            return stat.type === 'file';
+        case 'd':
+            return stat.type === 'directory';
+        case 's':
+            return stat.type === 'file' && stat.size > 0;
+        case 'b':
+        case 'c':
+        case 'p':
+        case 'S':
+            return (stat.mode & S_IFMT) === SPECIAL_FILE_FORMATS[flag];
+        default:
+            return (stat.mode & MODE_BITS[flag]) !== 0;
+    }
 }
-async function statOf(vfs, path) {
+const SPECIAL_FILE_FORMATS = { b: 0o060000, c: S_IFCHR, p: 0o010000, S: 0o140000 };
+const MODE_BITS = { u: 0o4000, g: 0o2000, k: 0o1000 };
+async function statOf(vfs, path, followSymlinks) {
     try {
-        return (await vfs.stat(path));
+        return followSymlinks ? await vfs.stat(path) : await vfs.lstat(path);
     }
     catch {
         return null;

@@ -1,4 +1,4 @@
-import { resolveNpmBin, resolveNpmBinFromPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
+import { resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -18,6 +18,15 @@ export function installNpmBinFallbackResolver(registry, deps) {
     const vfs = deps.vfs;
     const upstreamResolve = registry.resolve.bind(registry);
     registry.resolve = async function resolveWithNpmBins(name) {
+        // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
+        // same program as the bare name: same runtime choice, TTY and lifecycle.
+        if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
+            const cwd = deps.getCwd() || '/home/user';
+            const bin = resolveNpmBinPath(vfs, cwd, name);
+            if (!bin)
+                return await upstreamResolve(name);
+            return binHandler(bin.name, (ctx) => resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+        }
         const upstream = await upstreamResolve(name);
         if (upstream)
             return upstream;
@@ -40,9 +49,12 @@ export function installNpmBinFallbackResolver(registry, deps) {
             hintHandler.__nimbusRuntimeInstallHint = true;
             return hintHandler;
         }
+        return binHandler(name, (ctx) => resolveNpmBinForInvocation(vfs, ctx.cwd || '/home/user', ctx.env?.PATH || DEFAULT_PATH, name));
+    };
+    function binHandler(name, lookup) {
         return async (ctx) => {
             const invocationCwd = ctx.cwd || '/home/user';
-            const bin = resolveNpmBinForInvocation(vfs, invocationCwd, ctx.env?.PATH || DEFAULT_PATH, name);
+            const bin = lookup(ctx);
             if (!bin) {
                 ctx.stderr.write(`${name}: command not found\n`);
                 return 127;
@@ -56,11 +68,21 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 const disposition = classifyStagedArtifact(artifact, argv);
                 return await runStagedArtifact(deps, name, artifact, argv, invocationCwd, ctx, disposition);
             }
+            // A PATH script for another interpreter (`#!/bin/sh`) is not a node
+            // program: run it the way a path-shaped invocation of it runs.
+            const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
+            if (runtimeName === null) {
+                const execCmd = await upstreamResolve('/' + bin.shimPath);
+                if (typeof execCmd !== 'function') {
+                    ctx.stderr.write(`${name}: command not found\n`);
+                    return 127;
+                }
+                return await execCmd(ctx);
+            }
             const bundleProfile = bundleProfileForNpmBin(bin);
             const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
             const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
-            const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
             const runtimeCmd = await upstreamResolve(runtimeName);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -131,7 +153,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             return exitCode;
         };
-    };
+    }
 }
 function resolveNpmBinForInvocation(vfs, cwd, envPath, name) {
     return resolveNpmBinFromPath(vfs, cwd, envPath, name)
@@ -216,9 +238,12 @@ function formatError(error) {
         return error.stack || error.message;
     return String(error);
 }
+/** null when the target's `#!` names an interpreter other than node or bun; no `#!` runs as node. */
 function npmBinRuntimeForTarget(vfs, targetPath) {
     const firstLine = readFirstLine(vfs, targetPath);
-    return shebangRuntime(firstLine) ?? 'node';
+    if (!firstLine?.startsWith('#!'))
+        return 'node';
+    return shebangRuntime(firstLine);
 }
 function readFirstLine(vfs, path) {
     try {
