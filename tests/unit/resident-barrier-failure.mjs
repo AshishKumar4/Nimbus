@@ -28,6 +28,7 @@ import {
   launchResident,
   runScenarios,
   sleep,
+  until,
 } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
@@ -47,8 +48,8 @@ require("http").createServer((q, s) => s.end("up")).listen(3000);
 
 /**
  * A resident process holding f.txt at 'v1' and g.txt at 'g1', whose
- * supervisor fails each op `fault` names while it is set, and answers it as
- * the session does otherwise.
+ * supervisor answers each op `fault` names through that function while it is
+ * set, and as the session does otherwise. `forward` is the session's answer.
  */
 async function boot() {
   const authority = createAuthority();
@@ -59,14 +60,14 @@ async function boot() {
   const overrides = {};
   let forward;
   for (const op of Object.keys(fault)) {
-    overrides[op] = (...args) => (fault[op] ? fault[op]() : forward(op, args));
+    overrides[op] = (...args) => (fault[op] ? fault[op](...args) : forward(op, args));
   }
   const handle = facetSupervisor(authority, overrides);
   forward = handle.forward;
   await launchResident({ program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
   const probe = globalThis.__probe;
   assert.equal(probe.read(F), 'v1', 'the boot fill holds the file');
-  return { authority, fault, probe };
+  return { authority, fault, probe, log: handle.log, forward };
 }
 
 await runScenarios(import.meta.path, {
@@ -111,6 +112,43 @@ await runScenarios(import.meta.path, {
     fault.fsReadBatch = null;
     authority.kfs.writeFile('home/user/app/f.txt', 'v3');
     assert.equal(await probe.resume(F, G), 'v3,g1', 'the next barrier restores what the failed one dropped');
+  },
+
+  async 'a barrier that joins a repair already in flight'() {
+    // An outage leaves a repair owed. The next barrier (A) starts it; its
+    // batch read serves f.txt at v1 and is answered late. A peer writes v2,
+    // and the barrier after that (B) is answered after the write, so the
+    // delta it holds names f.txt. B joins A's repair rather than start its
+    // own. The repair's rows predate B's ACQUIRE, so B may not resume on them.
+    const { authority, fault, probe, log, forward } = await boot();
+    fault.fsAcquire = DROPPED;
+    fault.fsList = DROPPED;
+    fault.fsReadBatch = DROPPED;
+    await probe.resume(F);
+    await sleep(50);
+    fault.fsAcquire = null;
+    fault.fsList = null;
+
+    const gate = Promise.withResolvers();
+    const served = Promise.withResolvers();
+    fault.fsReadBatch = async (requests) => {
+      fault.fsReadBatch = null;
+      const entries = await forward('fsReadBatch', [requests]);
+      served.resolve();
+      await gate.promise;
+      return entries;
+    };
+    const a = probe.resume(F);
+    await served.promise;
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    const acquired = log.calls.fsAcquire ?? 0;
+    const b = probe.resume(F);
+    await until(() => (log.calls.fsAcquire ?? 0) > acquired, "B's ACQUIRE");
+    await sleep(20);
+    gate.resolve();
+
+    assert.match(await a, /^v[12]$/, 'A was answered before the write, so either version is its to see');
+    assert.equal(await b, 'v2', 'B was told f.txt changed, so it must not resume on the repair that predates that');
   },
 
   async 'a heap-held cell whose barrier ACQUIRE is dropped'() {

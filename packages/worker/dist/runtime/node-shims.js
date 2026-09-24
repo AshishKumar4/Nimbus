@@ -1802,33 +1802,17 @@ const __fsMod = (() => {
    * cursor to adopt, the one held is kept and still owed every change since.
    * The barrier itself never throws: the operation or callback behind it
    * runs either way, against rows that were vouched for or a colder cache.
+   *
+   * A repair is single-flight, so a barrier that needs one while another
+   * barrier's is running joins it. That repair's listing may predate this
+   * barrier's own ACQUIRE — the rows it vouches for are the other barrier's
+   * answer, not this one's — so a joiner waits for it and then asks again:
+   * a delta from the repaired cursor names everything since. Only the barrier
+   * that started a repair resumes on it alone.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
-    let result = null;
-    // Through the RPC helper like every other supervisor call, because it IS
-    // one: the barrier is the first thing an async read issues, and while it
-    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
-    // one-shot facet's event loop, which exits when no handle is live, then
-    // ended the program mid-read — measured as an fs.promises.readFile whose
-    // .then never ran, no error, no output, intermittently, and never when a
-    // pending timer happened to hold the program open.
-    try {
-      result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
-      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
-        throw new Error("fsAcquire answered without a cursor");
-      }
-    } catch (error) {
-      result = null;
-      _stats.barrierFailures++;
-      _stats.lastBarrierFailure = (error && error.message) || String(error);
-    }
-    const poisoned = result === null || result.poison === true;
-    // Paths that held content before this eviction are the ones worth
-    // refetching at a resumption boundary — a later sync read of any of them
-    // would otherwise miss. Collected before the delete so the membership
-    // test is against the pre-eviction bundle.
-    const wereResident = [];
+    let result = await _acquire(supervisor);
     // When the resident set lives in the facet's own SQLite, the STORE applies
     // the delta. That is not an optimisation, it is where provenance has to
     // live: a facet's SQLite outlives its module scope, so a new incarnation
@@ -1836,13 +1820,24 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
-      if (poisoned || _storeRepairOwed) {
+      for (let joins = 0; result === null || result.poison === true || _storeRepairOwed; joins++) {
         if (result !== null && result.poison === true) _stats.poisons++;
         _spoilFills();
+        const joining = _residentRepair !== null;
         await _repairPoisonedStore(supervisor, result);
         // Nothing is returned because a dropped cell is either refetched by
         // the repair or gone from the authority too.
-        return [];
+        if (!joining) return [];
+        if (joins + 1 >= _REPAIR_JOINS_MAX) {
+          // Every repair this barrier waited on was someone else's. Rather
+          // than resume on rows none of them vouched for as of its own
+          // answer, it drops them and leaves the repair owed: a colder cache,
+          // never a stale byte. Any repair still to finish lists after this.
+          __residentDropDated();
+          _storeRepairOwed = true;
+          return [];
+        }
+        result = await _acquire(supervisor);
       }
       // The store keeps a row of this facet's own bytes over any report, so
       // the report is noted first: the write or mutation that owns the row
@@ -1861,7 +1856,12 @@ const __fsMod = (() => {
       _stats.selfWrites += applied.kept;
       return applied.dropped;
     }
-    if (poisoned) {
+    // Paths that held content before this eviction are the ones worth
+    // refetching at a resumption boundary — a later sync read of any of them
+    // would otherwise miss. Collected before the delete so the membership
+    // test is against the pre-eviction bundle.
+    const wereResident = [];
+    if (result === null || result.poison === true) {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       if (result !== null) _stats.poisons++;
       _spoilFills();
@@ -1890,6 +1890,41 @@ const __fsMod = (() => {
   }
 
   /**
+   * Repairs someone else started that one barrier waits on, in a row, before
+   * it stops asking again and drops what it cannot vouch for. A bound on the
+   * barrier's own liveness, not a tuning knob: each join waits a whole repair,
+   * so the fourth means repairs keep being started under it.
+   */
+  const _REPAIR_JOINS_MAX = 4;
+
+  /**
+   * One ACQUIRE: the authority's answer, or null when there is none — the
+   * call failed past the supervisor's own retries, the host could not serve
+   * it, or the answer carried no cursor. A null is counted where the
+   * coherence stats are read, and is never an empty delta (_acquireBarrier).
+   */
+  async function _acquire(supervisor) {
+    // Through the RPC helper like every other supervisor call, because it IS
+    // one: the barrier is the first thing an async read issues, and while it
+    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
+    // one-shot facet's event loop, which exits when no handle is live, then
+    // ended the program mid-read — measured as an fs.promises.readFile whose
+    // .then never ran, no error, no output, intermittently, and never when a
+    // pending timer happened to hold the program open.
+    try {
+      const result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r);
+      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
+        throw new Error("fsAcquire answered without a cursor");
+      }
+      return result;
+    } catch (error) {
+      _stats.barrierFailures++;
+      _stats.lastBarrierFailure = (error && error.message) || String(error);
+      return null;
+    }
+  }
+
+  /**
    * ACQUIRE, then repopulate the working set the invalidation just dropped.
    *
    * The barrier used at every UNTRUSTED resumption — a timer firing, a
@@ -1913,10 +1948,15 @@ const __fsMod = (() => {
    * arrive together — and both deltas name the same changed path. The first
    * to land evicts it and starts the refetch; the second finds no row and
    * would release its callback while that refetch is still in flight, onto
-   * a miss. So a barrier also refetches every path another barrier is still
-   * refetching, under its own cursor, and waits for it.
+   * a miss. So a barrier also waits for every refetch still in flight.
+   * It does not read those paths again. A refetch in flight installs its
+   * bytes unless a barrier has since reported the path above the cursor it
+   * was issued under, or a poison spoiled it (_installResident). Only then
+   * does a later barrier read the path itself, and only if nothing holds it
+   * by now. Re-reading every in-flight path at every resumption cost a dev
+   * server 50 reads per request while a peer's refetch of 50 files ran: 500
+   * reads over ten resumptions, and under steady load the set never drained.
    */
-  const _refetching = new Map();
   async function _acquireAndRefetch(supervisor) {
     const stale = await _acquireBarrier(supervisor);
     // Plus what an own-mutation lease dropped since the last resumption:
@@ -1926,18 +1966,38 @@ const __fsMod = (() => {
       for (const k of _owedRefetch) if (stale.indexOf(k) === -1) stale.push(k);
       _owedRefetch.clear();
     }
-    for (const k of _refetching.keys()) if (stale.indexOf(k) === -1) stale.push(k);
-    if (stale.length === 0) return;
-    for (const k of stale) _refetching.set(k, (_refetching.get(k) || 0) + 1);
-    try {
-      await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
-    } finally {
-      for (const k of stale) {
-        const left = _refetching.get(k) - 1;
-        if (left > 0) _refetching.set(k, left);
-        else _refetching.delete(k);
-      }
+    // Taken before this barrier's own refetches join the map.
+    const inFlight = [..._refetching];
+    const reads = stale.map(_refetch);
+    for (const [k, refetch] of inFlight) {
+      if (stale.indexOf(k) !== -1) continue;
+      if (!(refetch.fill.record.reported > refetch.fill.rev)) reads.push(refetch.done);
+      else if (!(__vfsBundle && k in __vfsBundle)) reads.push(_refetch(k));
     }
+    if (reads.length > 0) await Promise.all(reads);
+  }
+
+  /**
+   * Refetches in flight, per path: the newest read of it, and the fill
+   * ticket that read installs under — the cursor it was issued at, and the
+   * reports noted against it since.
+   */
+  const _refetching = new Map();
+
+  /**
+   * Read \`k\` live and install it, behind the barrier just taken. Settles
+   * either way: a refetch that fails leaves the path missing, which the next
+   * read of it answers.
+   */
+  function _refetch(k) {
+    const fill = _beginFill(k);
+    const refetch = { fill, done: null };
+    refetch.done = _liveReadFile("/" + k, undefined, fill).then(() => {}, () => {}).finally(() => {
+      _endFill(fill);
+      if (_refetching.get(k) === refetch) _refetching.delete(k);
+    });
+    _refetching.set(k, refetch);
+    return refetch.done;
   }
 
   /**
@@ -2437,16 +2497,17 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts, skipAcquire) {
+  async function _liveReadFile(p, opts, refetch) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
-    // The refetch step of _acquireAndRefetch has already acquired against a
-    // fresh cursor, so re-acquiring here would be a redundant round trip
-    // that always returns "still R". Every other caller acquires.
-    if (!skipAcquire) await _acquireBarrier(supervisor);
-    const fill = _beginFill(_strip(absPath));
+    // A refetch (_refetch) has already acquired against a fresh cursor and
+    // holds the fill ticket issued under it, so re-acquiring here would be a
+    // redundant round trip that always returns "still R". Every other caller
+    // acquires, and its fill ticket is its own.
+    if (!refetch) await _acquireBarrier(supervisor);
+    const fill = refetch || _beginFill(_strip(absPath));
     try {
       if (typeof supervisor.fsReadRange === "function") {
         // Chunked: the caller wants the whole file, but nothing upstream has
@@ -2488,7 +2549,7 @@ const __fsMod = (() => {
         }
       }
     } finally {
-      _endFill(fill);
+      if (!refetch) _endFill(fill);
     }
 
     throw _fsErr("ENOENT", "open", p);

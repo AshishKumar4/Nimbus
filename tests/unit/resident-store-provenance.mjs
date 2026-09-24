@@ -23,6 +23,8 @@ import {
   facetSupervisor,
   launchResident,
   runScenarios,
+  sleep,
+  until,
 } from './lib/resident-body.mjs';
 
 const APP = '/home/user/app';
@@ -37,6 +39,12 @@ globalThis.__probe = {
   // A resumption the program did not ask the filesystem for: the callback runs
   // behind the shim's barrier, then reads synchronously.
   resume: (p) => new Promise((resolve) => setTimeout(() => resolve(read(p)), 0)),
+  // One resumption, then synchronous reads of every path named.
+  resumeAll: (paths) => {
+    const done = Promise.withResolvers();
+    setTimeout(() => done.resolve(paths.map(read)), 0);
+    return done.promise;
+  },
   settle: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   overwriteAt: async (p, text, at) => {
     const handle = await fs.promises.open(p, "r+");
@@ -199,6 +207,82 @@ await runScenarios(import.meta.path, {
     assert.notEqual(probe.read(`${APP}/slow.txt`), 'S1', 'but must not leave those bytes behind for a sync read');
     assert.equal(await probe.readAsync(`${APP}/slow.txt`), 'S2');
     assert.equal(probe.read(`${APP}/slow.txt`), 'S2', 'a read issued after the change fills the store as usual');
+  },
+
+  async 'resumptions during a refetch wait on it rather than read again'() {
+    // A peer rewrites 50 held files. The first resumption after that drops
+    // them and refetches them in one batch, answered late. Nine more
+    // resumptions land while that batch is in flight. Nothing changed since
+    // the first one's ACQUIRE, so each must wait on the refetch already
+    // running rather than read all 50 files again.
+    const N = 50;
+    const files = {};
+    for (let i = 0; i < N; i++) files[`many-${i}.txt`] = `old-${i}`;
+    const paths = Object.keys(files).map((name) => `${APP}/${name}`);
+    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers(), reads: 0 };
+    const { authority, log, probe } = await boot(files, (auth) => ({
+      async fsReadBatch(requests) {
+        const entries = await _rpcFsReadBatch(auth.host, requests);
+        if (hold.armed) {
+          hold.reads += requests.filter((request) => request.path.includes('/many-')).length;
+          if (!hold.held) {
+            hold.held = true;
+            hold.served.resolve();
+            await hold.gate.promise;
+          }
+        }
+        return entries;
+      },
+    }));
+    hold.armed = true;
+    for (let i = 0; i < N; i++) authority.kfs.writeFile(`home/user/app/many-${i}.txt`, `new-${i}`);
+    const first = probe.resumeAll(paths);
+    await hold.served.promise;
+    const acquired = log.calls.fsAcquire ?? 0;
+    const later = [];
+    for (let i = 0; i < 9; i++) later.push(probe.resumeAll(paths));
+    await until(() => (log.calls.fsAcquire ?? 0) >= acquired + 9, 'the nine later ACQUIREs');
+    await sleep(20);
+    hold.gate.resolve();
+
+    const expected = paths.map((_, i) => `new-${i}`);
+    for (const seen of [await first, ...(await Promise.all(later))]) {
+      assert.deepEqual(seen, expected, 'every resumption reads the peer bytes');
+    }
+    assert.equal(hold.reads, N, `one read per changed file, not one per resumption (was ${hold.reads})`);
+  },
+
+  async 'a refetch in flight that a later write outdates'() {
+    // The other side of waiting: a resumption whose own delta reports the
+    // path above the cursor the in-flight refetch was issued under cannot
+    // use that refetch — its install will be declined — and reads the path
+    // itself.
+    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers() };
+    const { authority, log, probe } = await boot({ 'p.txt': 'v1' }, (auth) => ({
+      async fsReadBatch(requests) {
+        const entries = await _rpcFsReadBatch(auth.host, requests);
+        if (hold.armed && !hold.held) {
+          hold.held = true;
+          hold.served.resolve();
+          await hold.gate.promise;
+        }
+        return entries;
+      },
+    }));
+
+    hold.armed = true;
+    authority.kfs.writeFile('home/user/app/p.txt', 'v2');
+    const first = probe.resume(`${APP}/p.txt`);
+    await hold.served.promise;
+    authority.kfs.writeFile('home/user/app/p.txt', 'v3');
+    const acquired = log.calls.fsAcquire ?? 0;
+    const second = probe.resume(`${APP}/p.txt`);
+    await until(() => (log.calls.fsAcquire ?? 0) > acquired, "the second resumption's ACQUIRE");
+    await sleep(20);
+    hold.gate.resolve();
+
+    assert.equal(await second, 'v3', 'the second resumption reads what its own delta reported');
+    assert.match(await first, /^v[23]$/, 'the first reads its own refetch or a newer one');
   },
 });
 
