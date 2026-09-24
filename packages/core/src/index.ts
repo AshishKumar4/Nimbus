@@ -17,6 +17,8 @@ export type {
   NimbusFilesystemAuthority,
   NimbusFilesystemBinding,
   NimbusHostFilesystemLease,
+  NimbusMountEntry,
+  NimbusMountUsage,
   RuntimeFsBridge,
   RuntimeReadOptions,
   RuntimeSynchronousFs,

@@ -24,6 +24,7 @@ type UnixCommandRegistry = {
     register(name: string, handler: Command): void;
     resolve(name: string): unknown;
 };
+export declare function fsErrorMessage(error: unknown): string;
 export declare function registerUnixCommands(registry: UnixCommandRegistry, sqliteVfs: SqliteVFS): void;
 export {};
 //# sourceMappingURL=unix-commands.d.ts.map

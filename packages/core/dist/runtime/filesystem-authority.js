@@ -1,3 +1,4 @@
+import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { requireVfsCred, } from './os-contracts.js';
 import { createSqliteDescriptorScope, SqliteRuntimeFsBridge, } from './sqlite-runtime-fs-bridge.js';
 function immutableCredential(cred) {
@@ -291,6 +292,30 @@ export class SqliteFilesystemAuthority {
     async revokeAppendWriter(pid, writerId) { this.vfs.revokeAppendWriter(pid, writerId); }
     async revokeAppendWriters(pid) { this.vfs.revokeAppendWriters(pid); }
     async revokeAppendWritersThrough(maxPid) { this.vfs.revokeAppendWritersThrough(maxPid); }
+    /**
+     * The kernel's mount table. Its SQLite directories are one store, listed
+     * once as `/` (numbers: {@link SqliteVFS.storageUsage}); every other kernel
+     * mount (/proc, /dev, an embedder's) as its provider describes it.
+     */
+    mounts(_cred) {
+        const vfs = this.vfs;
+        const entries = [
+            { mountPoint: '/', source: 'nimbus', type: 'nimbus-sqlite', options: ['rw'], usage: async () => vfs.storageUsage() },
+        ];
+        for (const { path, provider } of this.kernel?.mountTable() ?? []) {
+            if (provider instanceof SqliteVFSProvider)
+                continue;
+            const described = provider.describeMount?.();
+            entries.push({
+                mountPoint: path,
+                source: described?.source ?? 'none',
+                type: described?.type ?? 'kernel',
+                options: described?.options,
+                usage: async () => (await described?.usage?.()) ?? null,
+            });
+        }
+        return entries;
+    }
     closeScope(scope) {
         if (scope.closed)
             return;

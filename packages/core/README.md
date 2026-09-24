@@ -155,6 +155,45 @@ must support nested savepoints for individual VFS writes. If reading those
 inodes back also fails, Nimbus throws an `AggregateError` carrying both
 failures; discard that VFS instance and reopen it after storage recovers.
 
+## Mounts in df, mount and /proc/mounts
+
+`df`, `mount` and `/proc/mounts` read one listing, the filesystem authority's
+`mounts(cred)`. The default lists the SQLite store as `/` (size: the 10 GB
+Durable Object storage limit; used: file bytes stored; available: the limit
+less the database's size where the host reports `sql.databaseSize`), plus
+every other kernel mount (`/proc`, `/dev`, and any you add with
+`ws.kernel.vfs.mount`). A kernel provider with `describeMount()` supplies its
+own source, type, options and usage. An authority wrapper that serves more
+paths adds them by overriding `mounts` and calling `super`:
+
+```ts
+import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import type { NimbusMountEntry, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+
+class HostMounts extends SqliteFilesystemAuthority {
+  override mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
+    return [
+      ...super.mounts(cred),
+      {
+        mountPoint: '/shared',
+        source: 'r2:team-bucket',
+        type: 'r2',
+        options: ['rw'],
+        usage: async () => null, // or { size, used, available } in bytes
+      },
+    ];
+  }
+}
+
+const ws = await NimbusWorkspace.create({
+  sql, transactions, generation,
+  filesystem: (base) => new HostMounts((base as SqliteFilesystemAuthority).vfs),
+});
+```
+
+`df` hides entries whose `usage()` answers `null` unless given `-a` or a path
+on them. `/proc/mounts` never shows usage.
+
 ## What the worker package adds
 
 Resident processes (long-running servers, attached TUIs), the session

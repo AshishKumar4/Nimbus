@@ -1,4 +1,4 @@
-import type { VfsCred } from '../../../../runtime/os-contracts.js';
+import type { NimbusMountUsage, VfsCred } from '../../../../runtime/os-contracts.js';
 /**
  * What a stat can report.
  *
@@ -94,6 +94,18 @@ export interface VirtualProvider {
     readdir(subpath: string): Dirent[];
     access?(subpath: string, mode: number): void;
     as?(cred: VfsCred): VirtualProvider;
+    /**
+     * How this mount appears in the filesystem authority's listing (df, mount,
+     * /proc/mounts). A provider without it is listed as `none`, type `kernel`,
+     * with no usage.
+     */
+    describeMount?(): KernelMountDescription;
+}
+export interface KernelMountDescription {
+    readonly source: string;
+    readonly type: string;
+    readonly options?: readonly string[];
+    usage?(): Promise<NimbusMountUsage | null>;
 }
 export interface MountProvider extends VirtualProvider {
     writeFile(subpath: string, content: string | Uint8Array): void;

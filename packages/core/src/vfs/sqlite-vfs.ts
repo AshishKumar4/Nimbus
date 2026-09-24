@@ -56,6 +56,7 @@ import {
   MAX_TX_SQL_EXECS,
   MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
   SQL_MAX_BOUND_PARAMETERS,
+  DO_STORAGE_LIMIT_BYTES,
 } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -5604,6 +5605,20 @@ export class SqliteVFS {
     };
   }
 
+  /**
+   * The root mount's df numbers. `size` is the Durable Object storage limit
+   * this store is built to fit; `used` the bytes of file content stored;
+   * `available` what the host can still take: the limit less the whole
+   * database (content plus metadata, indexes and free pages) where the host
+   * reports its size, else less the stored bytes.
+   */
+  storageUsage(): { size: number; used: number; available: number } {
+    this.ensureCounters();
+    const size = DO_STORAGE_LIMIT_BYTES;
+    const occupied = this.sql.databaseSize ?? this._usedBytes;
+    return { size, used: this._usedBytes, available: Math.max(0, size - occupied) };
+  }
+
   getStats() {
     // B3: O(1) — read the running counters. Previously three passes
     // over every inode (two filter + one for-of); at 50K inodes that
@@ -5636,7 +5651,7 @@ export class SqliteVFS {
       files: totalFiles,
       directories: totalDirs,
       usedBytes,
-      capacityBytes: 10 * 1024 * 1024 * 1024, // 10 GB
+      capacityBytes: DO_STORAGE_LIMIT_BYTES,
       backend: 'DO SQLite (demand-paged VFS)',
 
       // Cache stats. maxEntries / maxBytes are now W5-runtime-mutable —

@@ -847,6 +847,18 @@ export declare class SqliteVFS {
             bytes: number;
         };
     };
+    /**
+     * The root mount's df numbers. `size` is the Durable Object storage limit
+     * this store is built to fit; `used` the bytes of file content stored;
+     * `available` what the host can still take: the limit less the whole
+     * database (content plus metadata, indexes and free pages) where the host
+     * reports its size, else less the stored bytes.
+     */
+    storageUsage(): {
+        size: number;
+        used: number;
+        available: number;
+    };
     getStats(): {
         files: number;
         directories: number;
