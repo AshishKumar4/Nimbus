@@ -192,6 +192,35 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     readonly code: "E2BIG";
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
 }
+/** The export format's version: rows naming chunks by sha256. */
+export declare const VFS_EXPORT_SCHEMA = 2;
+/** One entry of an exported tree, relative to the export's root ('' is the root). */
+export interface VfsExportRow {
+    path: string;
+    kind: VfsInodeKind;
+    size: number;
+    mode: number;
+    uid: number;
+    gid: number;
+    atime: number;
+    mtime: number;
+    /** False for content in one chunk (<= CHUNK_SIZE bytes). */
+    manifest: boolean;
+    /** Chunk sha256 (hex) and size, in content order. */
+    pieces: [string, number][];
+}
+export interface VfsExportPage {
+    schema: number;
+    root: string;
+    /** The cursor this page follows (null: the first page). */
+    after: string | null;
+    rows: VfsExportRow[];
+    next: string | null;
+}
+export interface VfsExportChunk {
+    hash: string;
+    data: Uint8Array;
+}
 export interface SnapshotInfo {
     name: string;
     /** The generation it pins: the tree as that transaction left it. */
@@ -291,6 +320,10 @@ export declare class SqliteVFS {
     private _pinGen;
     /** Whole manifests of recently read files up to MANIFEST_KEPT_BYTES, by content id (LRU). */
     private readonly manifestWindows;
+    /** The staging content holding each import's chunks, by destination. */
+    private readonly importStagings;
+    /** Page digests by (generation, root, cursor, limit): a snapshot's pages never change. */
+    private readonly pageDigests;
     /** Snapshot generations by name, loaded on first use. */
     private snapshotGens;
     /** writeStreams in flight, for snapshot's quiesce. */
@@ -927,6 +960,83 @@ export declare class SqliteVFS {
         jobs: number;
         databaseBytes: number;
     };
+    /**
+     * One page of snapshot `at`'s tree under `root`, after the relative path
+     * `after` (null: from the start), in path order. Rows carry their chunk
+     * hashes and sizes, never bytes; a page stops at `limit` rows or
+     * EXPORT_PAGE_PIECES chunk references. `next` is the cursor for the
+     * following page, null after the last.
+     */
+    exportPage(options: {
+        at: string;
+        root?: string;
+        after?: string | null;
+        limit?: number;
+    }): VfsExportPage;
+    private exportRow;
+    /**
+     * sha256 over a page's rows (path, metadata, chunk hashes): equal digests
+     * mean equal trees for that page, so two databases compare page by page
+     * and only a differing page is compared row by row. Memoized by snapshot
+     * generation, since a snapshot's rows never change.
+     */
+    pageDigest(options: {
+        at: string;
+        root?: string;
+        after?: string | null;
+        limit?: number;
+    }): {
+        digest: string;
+        next: string | null;
+    };
+    /** The chunk hashes a page names that this database does not hold. */
+    wantChunks(page: VfsExportPage): string[];
+    private absentChunks;
+    /**
+     * The bytes of chunks by hash, up to `maxBytes` (at least one chunk);
+     * `rest` is what did not fit. ENOENT for a hash this database lacks.
+     */
+    exportChunks(hashes: readonly string[], maxBytes?: number): {
+        chunks: VfsExportChunk[];
+        rest: string[];
+    };
+    /**
+     * Where an import into `dst` stands: the relative path of the last row
+     * committed (resume with exportPage({ after })), '' when only the root
+     * is, null when nothing is. Rows commit in path order, so this is exact
+     * after a reset.
+     */
+    importCursor(dst: string): string | null;
+    /**
+     * Write one exported page under `dst`. The first page of an import needs
+     * `dst` absent or an empty directory, and records a vfs_jobs row; later
+     * pages continue it, and rows at or before importCursor(dst) are skipped,
+     * so a page replayed after a reset is harmless. Every chunk given is
+     * re-hashed before anything is written; if the page names a chunk neither
+     * given nor stored, nothing is written and `want` lists what to send.
+     * Files too large for one transaction stage across several.
+     */
+    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>): {
+        imported: number;
+        want: string[];
+        done: boolean;
+    };
+    /**
+     * Store chunks for an import into `dst` ahead of its pages, a bounded
+     * transaction at a time, so no page has to carry bytes and a file of any
+     * size imports in frames. Each chunk is re-hashed first. They are held by
+     * a staging content the import owns until its last page; after a reset
+     * GC may take them, and importPage then names them in `want` again.
+     */
+    importChunks(dst: string, chunks: Iterable<VfsExportChunk>): {
+        stored: number;
+    };
+    private importJob;
+    /** An import starts into an absent path or an empty directory under an existing one. */
+    private assertImportTarget;
+    private beginImport;
+    private hasChildren;
+    private importedEntry;
     private normalizeBatchInode;
     private authorizeBatch;
     /**

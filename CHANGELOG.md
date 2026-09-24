@@ -39,6 +39,17 @@ published independently in the `@nimbus-sh` npm scope.
   later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
   `storeStats()` reports chunks, history rows, the GC queue, snapshots and
   jobs.
+- Trees move between databases by hash: `exportPage({ at, root, after })`
+  lists a snapshot's rows with their chunk hashes, `wantChunks(page)` says
+  which chunks the importer lacks, `exportChunks(hashes)` sends those in
+  bounded frames, `importChunks(dst, chunks)` stores them (re-hashed) and
+  `importPage(dst, page)` writes the rows. Only missing chunks travel (a
+  second import of the same tree moved 0 bytes); a file of any size imports
+  in frames; an import a reset interrupts resumes from `importCursor(dst)`;
+  a non-empty target, another schema and a chunk that does not hash to its
+  name are refused. `pageDigest(...)` compares two databases page by page.
+  Measured between two Durable Objects: 17-21 MB/s of unique content, the
+  storage write rate (the same frames alone move at 60-64 MB/s).
 - The revision clock survives a supervisor restart. The epoch is the
   database's incarnation and revisions are its generations, so a facet
   holding a cursor from before a restart gets a delta instead of a poison:
