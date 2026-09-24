@@ -49,7 +49,9 @@ import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { planFacetData } from './data-plan.js';
+import { packageRootOf, planFacetData } from './data-plan.js';
+import { ReadProfile, type ReadProfileBucket } from './read-profile.js';
+import { NpmCache } from '../npm/cache.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -4339,6 +4341,12 @@ export class FacetManager {
    * already deliver for the case that matters: running the command again.
    */
   private residencyProfiles = new Map<string, Set<string>>();
+  /**
+   * Misses shared across sessions per installed package (read-profile.ts),
+   * when the deployment binds NIMBUS_READ_PROFILES. Absent, a miss is learned
+   * for this session only (residencyProfiles).
+   */
+  private readProfile: ReadProfile | null = null;
   /** Per module path: its static references at a revision (see _closureStaticRefs). */
   private staticRefsMemo = new Map<string, { rev: number; refs: StaticFsRefs }>();
   /** Modules whose references are remembered: a few programs' closures. */
@@ -4411,6 +4419,10 @@ export class FacetManager {
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
+    const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+      ? Reflect.get(env, 'NIMBUS_READ_PROFILES')
+      : undefined;
+    this.readProfile = profiles && typeof profiles === 'object' ? new ReadProfile(profiles as ReadProfileBucket) : null;
     this.launchJournal = new FencedWork<ResidentLaunchRecord>(ctx.storage, {
       generationBase: () => this.processes.pidBase,
       waitUntil: (promise) => this.ctx.waitUntil(promise),
@@ -4718,6 +4730,7 @@ export class FacetManager {
       home: home || '/home/user',
       closure: vfsState.bundlePaths ?? [],
       refs: await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer),
+      learned: await this._learnedReads(vfsState),
       spend: (units) => pacer.spend(units),
     });
     return plan.paths;
@@ -4729,6 +4742,36 @@ export class FacetManager {
    * cells were rewritten and lost their import.meta. Each module is parsed once
    * per revision of it, in this session.
    */
+  /**
+   * Paths earlier launches missed: this session's for the same build, and,
+   * with a shared profile, every session's for the packages this closure
+   * loads. A learned path is planned only where the process's own listing
+   * shows a regular file (data-plan.ts), and read through its own credential.
+   */
+  private async _learnedReads(vfsState: FacetVfsState): Promise<string[]> {
+    const own = vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
+    if (!this.readProfile) return own;
+    const roots = new Set<string>();
+    for (const path of vfsState.bundlePaths ?? []) {
+      const root = packageRootOf(path.replace(/^\/+/, ''));
+      if (root !== null) roots.add(root);
+    }
+    if (roots.size === 0) return own;
+    try {
+      const integrities = this._installedIntegrities();
+      return [...own, ...await this.readProfile.lookup(roots, (root) => integrities.get(root) ?? null)];
+    } catch {
+      // The shared profile is an accelerator: unreachable, the launch plans without it.
+      return own;
+    }
+  }
+
+  /** Installed package directory → the tarball integrity the session's lockfiles pin. */
+  private _installedIntegrities(): Map<string, string> {
+    const sql = (this.ctx.storage as { sql?: SqlStorage }).sql;
+    return sql ? new NpmCache(sql).installedIntegrities() : new Map();
+  }
+
   private async _closureStaticRefs(
     vfs: ExecutionFs,
     paths: readonly string[],
@@ -4969,6 +5012,13 @@ export class FacetManager {
   noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[]): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
     this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
+    if (this.readProfile && residencyMisses && residencyMisses.length > 0) {
+      const profile = this.readProfile;
+      this.ctx.waitUntil((async () => {
+        const integrities = this._installedIntegrities();
+        await profile.record(residencyMisses, (root) => integrities.get(root) ?? null);
+      })().catch(() => 0));
+    }
     this.portRegistry.unregisterByPid(pid);
     this.processes.exit(pid, exitCode);
     const tracked = this.processRpcResources.get(pid);
@@ -6192,7 +6242,12 @@ export class FacetManager {
       { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile },
       pacer,
     );
+    const planStart = Date.now();
     const dataPlan = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
+    if (this.debugEnabled) {
+      this.processes.appendOutput(entry.pid, 'stderr',
+        `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
+    }
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
     // rides on top of the recipe's env and is never journalled: it is

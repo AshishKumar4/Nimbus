@@ -376,6 +376,19 @@ export class NpmCache {
     return result;
   }
 
+  /**
+   * Every installed package directory (namespace key, no leading slash) and
+   * the integrity its tarball was pinned to, across projects.
+   */
+  installedIntegrities(): Map<string, string> {
+    this.ensureSchema();
+    const out = new Map<string, string>();
+    for (const r of this.sql.exec(`SELECT hoisted_path, integrity FROM pkg_lockfile WHERE integrity <> ''`)) {
+      out.set(String(r.hoisted_path).replace(/^\/+/, ''), String(r.integrity));
+    }
+    return out;
+  }
+
   /** Write/overwrite the lockfile for a project. Atomic via transaction. */
   writeLockfile(
     projectPath: string,

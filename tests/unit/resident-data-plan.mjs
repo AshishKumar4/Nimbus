@@ -34,6 +34,7 @@ import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 
 const PROJECT = '/home/user/proj';
 /** A project file past the bundle's byte cap and the single-value ceiling: chunked. */
@@ -70,6 +71,10 @@ kfs.writeFile(
     + "module.exports = () => fs.readFileSync(path.join(__dirname, 'templates', 'entry.js'), 'utf8');\n",
 );
 kfs.writeFile('home/user/proj/node_modules/tablepkg/templates/entry.js', 'export const TEMPLATE = 1;\n');
+/** Read as text by a path computed at run time: no rule and no static reference holds it. */
+kfs.mkdir('home/user/proj/node_modules/tablepkg/private', { recursive: true, mode: 0o755 });
+kfs.writeFile('home/user/proj/node_modules/tablepkg/private/late.js', 'late-bytes');
+const LATE = 'home/user/proj/node_modules/tablepkg/private/late.js';
 
 /**
  * The supervisor the facet talks to.
@@ -146,7 +151,29 @@ const world = createFacetWorld(async (config, info) => {
   }
 });
 
+/** A shared read profile (R2, in memory): what one session misses, the next holds. */
+const profiles = new Map();
+const profileBucket = {
+  async get(key) { return profiles.has(key) ? { text: async () => profiles.get(key) } : null; },
+  async put(key, value) { profiles.set(key, value); },
+  async list({ prefix }) {
+    return { objects: [...profiles.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })), truncated: false };
+  },
+};
+/** A session's npm lockfile: the integrity tablepkg was installed from. */
+function sessionCtx(name) {
+  const ctx = createFacetCtx(world, name);
+  const npm = createSqliteVfsTestHarness();
+  ctx.storage.sql = npm.sql;
+  new NpmCache(npm.sql).writeLockfile('/home/user/proj', new Map([['tablepkg', {
+    name: 'tablepkg', resolvedVer: '1.0.0', integrity: 'sha512-dGFibGVwa2c=', depsJson: '{}',
+    hoistedPath: '/home/user/proj/node_modules/tablepkg',
+  }]]));
+  return ctx;
+}
+
 const env = {
+  NIMBUS_READ_PROFILES: profileBucket,
   LOADER: world.loader,
   ASSETS: {
     async fetch(request) {
@@ -159,10 +186,15 @@ const env = {
   },
 };
 
-const ctx = createFacetCtx(world, 'first-sync-read-session');
-const manager = new FacetManager(ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
-manager.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
-delete globalThis.__portRegistry;
+let sessionCtxNow;
+function session(name) {
+  sessionCtxNow = sessionCtx(name);
+  const m = new FacetManager(sessionCtxNow, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
+  m.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
+  delete globalThis.__portRegistry;
+  return m;
+}
+let manager = session('first-sync-read-session');
 
 /** A real node program: every read below is its first contact with the file. */
 const program = (readOutside) => `
@@ -180,7 +212,8 @@ t('big', () => { const b = fs.readFileSync(${JSON.stringify(BIG)}, 'utf8'); retu
 t('small', () => fs.readFileSync(${JSON.stringify(PROJECT + '/many/f287.txt')}, 'utf8'));
 t('static', () => require('tablepkg')().trim());
 (async () => {
-  if (${readOutside}) {
+  t('late', () => fs.readFileSync('/' + ['home', 'user', 'proj', 'node_modules', 'tablepkg', 'private', 'late.js'].join('/'), 'utf8'));
+if (${readOutside}) {
     t('outside', () => fs.readFileSync(outside, 'utf8'));
     t('outsideStat', () => fs.statSync(outside).size);
     t('outsideList', () => fs.readdirSync(outside.slice(0, outside.lastIndexOf('/'))).join(','));
@@ -215,7 +248,7 @@ async function run(readOutside) {
     await new Promise((r) => setTimeout(r, 25));
   }
   const line = stdoutChunks.join('').split('\n').find((l) => l.startsWith('RESULT ')) ?? 'RESULT {}';
-  return JSON.parse(line.slice('RESULT '.length));
+  return { ...JSON.parse(line.slice('RESULT '.length)), pid: spawned.pid };
 }
 
 // ── Arm 1 (control): with the fill disabled, every planned read must FAIL ────
@@ -238,6 +271,21 @@ assert.equal(filled.outsideList, 'never-required.json', 'and lists it');
 assert.equal(filled.outsideAsync, String(OUTSIDE_BODY.length), 'and the async read the miss names returns it');
 assert.ok(fsListCalls > 0, 'the store asked the authority what exists');
 assert.ok(fsReadBatchCalls > 0, 'the store was filled over the supervisor');
+
+// ── Arm 3: a miss is learned for the package, across sessions ───────────────
+// The run above missed late.js. Its exit report files the miss under the
+// package's installed integrity; a different session launching the same
+// tarball holds the file from boot.
+assert.equal(filled.late, 'ERR:EAGAIN', `a runtime-computed package read is a first miss: ${JSON.stringify(filled)}`);
+manager.noteProcessReportedExit(filled.pid, 1, [LATE]);
+await Promise.all(sessionCtxNow.waited);
+assert.equal(profiles.size, 1, 'the miss was filed under the package');
+assert.ok(![...profiles.values()][0].includes('home/user'), 'package-relative');
+// A second session over the same files: its pids start again at 1.
+for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
+manager = session('another-session');
+const learned = await run(false);
+assert.equal(learned.late, 'late-bytes', `another session holds the learned file: ${JSON.stringify(learned)}`);
 
 say('resident-data-plan: ok\n');
 say(`  control: ${JSON.stringify(control)}\n`);

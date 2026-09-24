@@ -934,6 +934,12 @@ export declare class FacetManager {
      * already deliver for the case that matters: running the command again.
      */
     private residencyProfiles;
+    /**
+     * Misses shared across sessions per installed package (read-profile.ts),
+     * when the deployment binds NIMBUS_READ_PROFILES. Absent, a miss is learned
+     * for this session only (residencyProfiles).
+     */
+    private readProfile;
     /** Per module path: its static references at a revision (see _closureStaticRefs). */
     private staticRefsMemo;
     /** Modules whose references are remembered: a few programs' closures. */
@@ -1092,6 +1098,15 @@ export declare class FacetManager {
      * cells were rewritten and lost their import.meta. Each module is parsed once
      * per revision of it, in this session.
      */
+    /**
+     * Paths earlier launches missed: this session's for the same build, and,
+     * with a shared profile, every session's for the packages this closure
+     * loads. A learned path is planned only where the process's own listing
+     * shows a regular file (data-plan.ts), and read through its own credential.
+     */
+    private _learnedReads;
+    /** Installed package directory → the tarball integrity the session's lockfiles pin. */
+    private _installedIntegrities;
     private _closureStaticRefs;
     private _buildProcessBundle;
     /**

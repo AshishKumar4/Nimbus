@@ -128,6 +128,11 @@ export declare class NpmCache {
     };
     /** Read the lockfile for a project, keyed by placement path. Null if not found. */
     readLockfile(projectPath: string): Map<string, LockfileEntry> | null;
+    /**
+     * Every installed package directory (namespace key, no leading slash) and
+     * the integrity its tarball was pinned to, across projects.
+     */
+    installedIntegrities(): Map<string, string>;
     /** Write/overwrite the lockfile for a project. Atomic via transaction. */
     writeLockfile(projectPath: string, entries: Map<string, LockfileEntry>, ctx?: DurableObjectState): void;
     /** Delete lockfile for a project (e.g., after package.json changes). */
