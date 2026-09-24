@@ -121,6 +121,9 @@ export interface WranglerConfig {
     placement?: {
         mode: 'smart';
     };
+    limits: {
+        cpu_ms: number;
+    };
     vars?: Record<string, string>;
     assets: {
         directory: string;

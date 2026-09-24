@@ -69,6 +69,8 @@ export function buildNimbusWranglerConfig(opts) {
         main: 'src/index.ts',
         compatibility_date: compatDate,
         compatibility_flags: ['nodejs_compat'],
+        // Shell commands run in the session DO; the platform's 30 s default kills long ones.
+        limits: { cpu_ms: 300_000 },
         assets: {
             directory: 'node_modules/@nimbus-sh/worker/public',
             binding: 'ASSETS',
