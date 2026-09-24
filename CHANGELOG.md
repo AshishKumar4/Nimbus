@@ -4,6 +4,38 @@ An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## 2026-09-24
+
+### git
+
+- `git rev-parse` answers `--show-toplevel`, `--git-dir`,
+  `--is-inside-work-tree`, `--verify` (with `-q`), `--abbrev-ref` and
+  revision names, from any directory of the repository or from inside
+  `.git`. It used to be "not a git command". Revision syntax such as
+  `HEAD~1` is refused with an error.
+- `git ls-files` lists the index, `--others` (with `--exclude-standard`),
+  `--modified` and `--deleted`, relative to the working directory, with
+  git's path quoting or `-z`.
+- `git diff` prints a unified patch of the worktree against the index,
+  against a commit (`git diff HEAD --`), or of the index (`--cached`), and
+  `git diff --no-index` compares two paths, either of them `/dev/null`.
+  `--stat`, `--name-only`, `--name-status`, `-z` and `-U<n>` work. It used
+  to print the first 50 lines of each changed file. Headers, hunk ranges,
+  `\ No newline at end of file`, mode lines, binary files and `--stat`
+  match git byte for byte. The hunks come from jsdiff's Myers diff, so where
+  an edit has more than one minimal form, a hunk can sit somewhere else
+  than git would put it. The patch still applies.
+- `-q` works on `init`, `commit`, `checkout`, `fetch`, `pull` and `push`.
+  `commit` reads bundled short options, so `git commit -qm msg` commits
+  "msg". It used to commit with the message "commit". `commit -a` stages
+  tracked changes.
+- `git add -A` of 10,000 2 KiB files takes 15 s in a deployed session, and
+  1,000 take 1.7 s. It used to rewrite the whole index once per file: 1,000
+  files took 34.5 s, and 10,000 were cut off after 283 s with half of them
+  staged. The index is now written once, files are added one at a time, and
+  objects are deflated with pako instead of `CompressionStream`, which costs
+  about 9 ms a call in workerd.
+
 ## 2026-09-23
 
 ### esbuild
