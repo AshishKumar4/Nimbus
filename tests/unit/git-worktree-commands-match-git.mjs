@@ -768,6 +768,28 @@ try {
     rewriteBoth(repo, 'f', 'f\n');
     await agreeOn('the merge once nothing is in its way', repo, ['merge', '-q', 'b']);
   }
+  // A merge that is not a fast-forward refuses the same way, with exit 2 and ort's last word.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      put('h', 'h\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'b');
+      put('f', '2\n');
+      put('n', 'new\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'b');
+      git('checkout', '-q', 'main');
+      put('h', 'h2\n');
+      git('commit', '-q', '-a', '-m', 'm');
+    });
+    rewriteBoth(repo, 'f', 'local\n');
+    await agreeOn('a merge, not a fast-forward, refused for a local change', repo, ['merge', '-q', '--no-edit', 'b']);
+    rewriteBoth(repo, 'f', '1\n');
+    rewriteBoth(repo, 'n', 'mine\n');
+    await agreeOn('a merge, not a fast-forward, refused for an untracked file', repo, ['merge', '-q', '--no-edit', 'b']);
+  }
   // reset --hard is a forced checkout: untracked paths in the target's way go.
   for (const [label, target, untracked] of [
     ['reset --hard over an untracked file where the target has a directory', ['d/x'], 'd'],

@@ -794,11 +794,15 @@ export function replacedIndexEntries(index: readonly string[], restored: Readonl
   });
 }
 
-/** A checkout cf-git refused, as git reports one: its message on stderr, exit 1. Anything else propagates. */
-async function refusal(ctx: Ctx, error: unknown): Promise<number> {
+/**
+ * A checkout cf-git refused, as git reports one: its message on stderr, exit 1. A merge
+ * that is not a fast-forward (`strategy`) refuses as its strategy does, with that line
+ * after it and exit 2. Anything else propagates.
+ */
+async function refusal(ctx: Ctx, error: unknown, strategy?: string): Promise<number> {
   if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError') throw error;
-  await ctx.stderr.write(`${error.message}\n`);
-  return 1;
+  await ctx.stderr.write(`${error.message}\n${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
+  return strategy ? 2 : 1;
 }
 
 /**
@@ -1560,7 +1564,7 @@ export async function runGitCommand(
           try {
             await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
           } catch (e) {
-            return await refusal(ctx, e);
+            return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
           }
           await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
         }

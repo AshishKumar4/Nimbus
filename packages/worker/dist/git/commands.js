@@ -738,12 +738,40 @@ async function lsFiles(ctx, git, fs, vfs, args) {
     await writeBinary(ctx.stdout, out);
     return 0;
 }
-/** A checkout cf-git refused, as git reports one: its message on stderr, exit 1. Anything else propagates. */
-async function refusal(ctx, error) {
+/**
+ * The index entries that restoring `restored` replaces (add_index_entry_with_check):
+ * a file at one of a restored path's leading directories, or anything below a
+ * restored path.
+ */
+export function replacedIndexEntries(index, restored) {
+    // Every leading directory of a restored path, once: an entry there is a file in its way.
+    const leading = new Set();
+    for (const path of restored) {
+        for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1))
+            leading.add(path.slice(0, at));
+    }
+    return index.filter((path) => {
+        if (restored.has(path))
+            return false;
+        if (leading.has(path))
+            return true;
+        for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
+            if (restored.has(path.slice(0, at)))
+                return true;
+        }
+        return false;
+    });
+}
+/**
+ * A checkout cf-git refused, as git reports one: its message on stderr, exit 1. A merge
+ * that is not a fast-forward (`strategy`) refuses as its strategy does, with that line
+ * after it and exit 2. Anything else propagates.
+ */
+async function refusal(ctx, error, strategy) {
     if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError')
         throw error;
-    await ctx.stderr.write(`${error.message}\n`);
-    return 1;
+    await ctx.stderr.write(`${error.message}\n${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
+    return strategy ? 2 : 1;
 }
 /**
  * `git checkout [<tree-ish>] -- <pathspec>...`: every tracked file the
@@ -818,15 +846,7 @@ async function checkoutPaths(ctx, git, vfs, source, pathArgs) {
     // restored path replaces goes first, as add_index_entry_with_check replaces it: a file at
     // one of its leading directories, or anything below it.
     const restored = new Set(files.map(({ path }) => path));
-    const replaced = (await git.listFiles({ fs, dir: root, cache })).filter((path) => {
-        if (restored.has(path))
-            return false;
-        for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
-            if (restored.has(path.slice(0, at)))
-                return true;
-        }
-        return files.some(({ path: file }) => file.startsWith(`${path}/`));
-    });
+    const replaced = replacedIndexEntries(await git.listFiles({ fs, dir: root, cache }), restored);
     if (replaced.length)
         await git.remove({ fs, dir: root, filepath: replaced, cache });
     if (files.length)
@@ -1524,7 +1544,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                         await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
                     }
                     catch (e) {
-                        return await refusal(ctx, e);
+                        return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
                     }
                     await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
                 }
