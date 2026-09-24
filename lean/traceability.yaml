@@ -522,5 +522,6 @@ requirements:
     remainingEvidence:
       - Built by VfsLazyInodesLane at 11315e98 (work/vfs-lazy-inodes); its extra substitution (an entry under a directory removed or renamed away at or after it reported as that directory, subtree) is covered by no_leak_any and coherence_any
       - The fixture checks properties (evicted set covers mustEvict, no reported name in forbidden), not the exact entry list
+      - VfsLazyInodesLane's test (5d191b32) passes all 155 cases, is red on the previous rules (8bb2b940, db8791aa) and on a mutant reporting hidden names as themselves
       - Visibility is traversability of every directory above a name for one caller; symlinks, confined /tmp views and uid/gid are folded into that one bit
       - Log completeness (every node change logged, structural when kind, existence or traversability changed) is a hypothesis
