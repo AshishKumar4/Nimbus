@@ -3246,16 +3246,19 @@ export class SqliteVFS {
     // A confined principal owns its own triad and nothing else. Refusing chmod
     // outright would be simpler and wrong: execution is gated on the x bit, so
     // a guest that writes build.sh and cannot chmod it cannot run it. What
-    // must not happen is WIDENING past its own principal, so the group, other
-    // and setuid/setgid/sticky bits keep the value they were provisioned with
-    // while the owner triad moves freely. `u+x` works; `+x` and `777` do not.
+    // must not happen is WIDENING past its own principal: the group and other
+    // triads and setuid/setgid may only lose bits, and sticky, which restricts
+    // others, may only gain one, while the owner triad moves freely. `u+x`,
+    // `700`, `600` and `go-w` work; `+x` and `777` do not.
     //
     // Refused, never clamped. Quietly narrowing a mutation to the part that
     // was allowed reports success for something other than what was asked, so
     // the refusal names the spelling that works instead.
     if (cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid)) {
-      const beyondOwner = (mode & 0o7777) & ~0o700;
-      if (beyondOwner !== ((inode.mode & 0o7777) & ~0o700)) {
+      const current = inode.mode & 0o7777;
+      const granted = (mode & 0o6077) & ~current;
+      const unstuck = current & ~mode & 0o1000;
+      if (granted !== 0 || unstuck !== 0) {
         throw vfsError(
           'EPERM',
           `${resolved.path}: mode change would grant permission outside your own principal; use u+x`,
