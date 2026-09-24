@@ -12,7 +12,7 @@ import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { DEFAULT_CONTEXT, absentSpec, bytesFromBinary, formatNameOnly, formatNameStatus, formatPatch, formatStat, pathLine, statFile, } from './unified-diff.js';
+import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, } from './unified-diff.js';
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
 // diff, ls-files, rev-parse, remote, merge, reset, tag, config) run here in the supervisor DO.
@@ -61,6 +61,40 @@ function createGitFs(vfs) {
             if (dir && !vfs.exists(dir))
                 vfs.mkdir(dir, { recursive: true });
         }
+    }
+    // The inode as Node's fs.Stats: git's stat cache compares ctime, ino, uid and gid too.
+    function statsOf(filepath, follow) {
+        const p = normalizePath(filepath);
+        let st;
+        if (!p) {
+            const now = Date.now();
+            st = { dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, atime: now, ctime: now, mtime: now, mode: 0o755, uid: 0, gid: 0 };
+        }
+        else {
+            try {
+                st = follow ? vfs.stat(p) : vfs.lstat(p);
+            }
+            catch {
+                const err = new Error(`ENOENT: no such file or directory, ${follow ? 'stat' : 'lstat'} '${filepath}'`);
+                err.code = 'ENOENT';
+                err.errno = -2;
+                throw err;
+            }
+        }
+        const isDir = st.type === 'directory';
+        const isLink = st.type === 'symlink';
+        return {
+            isFile: () => st.type === 'file',
+            isDirectory: () => isDir,
+            isSymbolicLink: () => isLink,
+            size: st.size,
+            mode: (isLink ? 0o120000 : isDir ? 0o040000 : 0o100000) | (st.mode & 0o7777),
+            mtimeMs: st.mtime, mtime: new Date(st.mtime),
+            ctimeMs: st.ctime, ctime: new Date(st.ctime),
+            atimeMs: st.atime, atime: new Date(st.atime),
+            uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
+            type: isDir ? 'dir' : isLink ? 'symlink' : 'file',
+        };
     }
     return {
         promises: {
@@ -114,63 +148,23 @@ function createGitFs(vfs) {
                     vfs.rmdir(p);
             },
             async stat(filepath) {
-                const p = normalizePath(filepath);
-                // Synthetic directory stat — used for root, '.', and known directories
-                function dirStat() {
-                    const now = Date.now();
-                    const d = new Date(now);
-                    return {
-                        isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false,
-                        size: 0, mode: 0o755, type: 'dir',
-                        mtimeMs: now, mtime: d, ctimeMs: now, ctime: d, atimeMs: now, atime: d,
-                        uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1,
-                    };
-                }
-                // Empty path (from '.', '/', etc.) = root directory
-                if (!p)
-                    return dirStat();
-                // Check if path is a known directory (even without VFS stat entry)
-                if (vfs.exists(p) && vfs.isDirectory(p))
-                    return dirStat();
-                let st;
-                try {
-                    st = vfs.stat(p);
-                }
-                catch {
-                    const err = new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
-                    err.code = 'ENOENT';
-                    err.errno = -2;
-                    throw err;
-                }
-                // isomorphic-git calls .valueOf() on mtime/ctime/atime — all must be Date objects
-                const mtimeMs = st.mtime || Date.now();
-                const mtime = new Date(mtimeMs);
-                return {
-                    isFile: () => st.type === 'file',
-                    isDirectory: () => st.type === 'directory',
-                    isSymbolicLink: () => false,
-                    size: st.size,
-                    mode: st.mode || 0o644,
-                    mtimeMs,
-                    mtime,
-                    ctimeMs: mtimeMs,
-                    ctime: mtime,
-                    atimeMs: mtimeMs,
-                    atime: mtime,
-                    uid: 1000,
-                    gid: 1000,
-                    dev: 0,
-                    ino: 0,
-                    nlink: 1,
-                    type: st.type === 'directory' ? 'dir' : 'file',
-                };
+                return statsOf(filepath, true);
             },
             async lstat(filepath) {
-                return this.stat(filepath);
+                return statsOf(filepath, false);
             },
             async chmod() { },
-            async symlink() { },
-            async readlink(filepath) { return filepath; },
+            async symlink(target, filepath) {
+                const p = normalizePath(filepath);
+                ensureParent(p);
+                // Checkout retargets a link in place, as the clone facet's adapter does.
+                if (vfs.exists(p) && !vfs.isDirectory(p))
+                    vfs.unlink(p);
+                vfs.symlink(target, p);
+            },
+            async readlink(filepath) {
+                return vfs.readlink(normalizePath(filepath));
+            },
         },
     };
 }
@@ -499,6 +493,16 @@ async function revParse(ctx, git, fs, vfs, args) {
     return 0;
 }
 // ── Worktree inspection (ls-files, diff) ─────────────────────────────────
+/** Whether git trusts the worktree's exec bit here: core.filemode, true unless set false. */
+async function trustsFileMode(git, fs, dir) {
+    return (await git.getConfig({ fs, dir, path: 'core.filemode' })) !== false;
+}
+/** ce_mode_from_stat: without a trusted exec bit a file keeps its index mode, or 100644 when new. */
+function worktreeMode(mode, indexMode, filemode) {
+    if (filemode || mode === 0o120000)
+        return mode;
+    return indexMode !== undefined && indexMode !== 0o120000 ? indexMode : 0o100644;
+}
 /** git's index and tree order: the UTF-8 bytes, which is code point order rather than UTF-16's. */
 function comparePaths(a, b) {
     for (let i = 0; i < a.length && i < b.length; i++) {
@@ -633,6 +637,7 @@ async function lsFiles(ctx, git, fs, vfs, args) {
     const untracked = [];
     const tracked = [];
     const trees = readWorktree ? [git.STAGE(), git.WORKDIR()] : [git.STAGE()];
+    const filemode = modified && await trustsFileMode(git, fs, root);
     await walkScoped(git, fs, root, {}, trees, specs, async (path, [stage, work]) => {
         const workType = work ? await work.type() : undefined;
         if (stage) {
@@ -642,8 +647,9 @@ async function lsFiles(ctx, git, fs, vfs, args) {
             const missing = readWorktree && !workType;
             let changed = missing;
             if (modified && !missing && stageType === 'blob') {
-                changed = !work || workType !== 'blob'
-                    || await work.mode() !== await stage.mode() || await work.oid() !== await stage.oid();
+                const stageMode = await stage.mode();
+                changed = !work || workType !== 'blob' || await work.oid() !== await stage.oid()
+                    || worktreeMode(await work.mode(), stageMode, filemode) !== stageMode;
             }
             tracked.push({ path, deleted: missing, modified: changed });
             // A file replaced by a directory leaves that directory untracked.
@@ -682,13 +688,22 @@ async function lsFiles(ctx, git, fs, vfs, args) {
 /** diff-files, diff-index and diff-index --cached, as file pairs in path order. */
 async function changedPairs(git, fs, dir, cache, base, specs) {
     const pairs = [];
-    const blob = async (entry, worktree) => (entry && (await entry.type()) === 'blob' ? { oid: await entry.oid(), mode: await entry.mode(), worktree } : null);
-    const record = (path, one, two) => {
+    const filemode = await trustsFileMode(git, fs, dir);
+    // A worktree side is read against its index entry's mode.
+    const blob = async (path, entry, index) => {
+        if (!entry || (await entry.type()) !== 'blob')
+            return null;
+        const mode = await entry.mode();
+        return index
+            ? { path, oid: await entry.oid(), mode: worktreeMode(mode, await index.mode(), filemode), worktree: true }
+            : { path, oid: await entry.oid(), mode, worktree: false };
+    };
+    const record = (one, two) => {
         if (!one && !two)
             return;
         if (one && two && one.oid === two.oid && one.mode === two.mode)
             return;
-        pairs.push({ path, one, two });
+        pairs.push({ one, two });
     };
     const trees = base.kind === 'index'
         ? [git.STAGE(), git.WORKDIR()]
@@ -700,18 +715,19 @@ async function changedPairs(git, fs, dir, cache, base, specs) {
             if (stageType !== 'blob')
                 return stageType === 'tree';
             // A missing file, or a directory where the file was, is a deletion.
-            record(path, await blob(stage, false), await blob(work, true));
+            record(await blob(path, stage), await blob(path, work, stage));
             return false;
         }
         const [head, stage, work] = entries;
         const headType = head ? await head.type() : undefined;
         const stageType = stage ? await stage.type() : undefined;
         // diff-index: a path the index lacks is deleted whatever the worktree holds.
-        const two = stageType !== 'blob' ? null : base.cached ? await blob(stage, false) : await blob(work, true);
-        record(path, await blob(head, false), two);
+        const two = stageType !== 'blob' ? null : base.cached ? await blob(path, stage) : await blob(path, work, stage);
+        record(await blob(path, head), two);
         return headType === 'tree' || stageType === 'tree';
     });
-    return pairs.sort((a, b) => comparePaths(a.path, b.path));
+    const pathOf = (pair) => (pair.one ?? pair.two).path;
+    return pairs.sort((a, b) => comparePaths(pathOf(a), pathOf(b)));
 }
 /** Print pairs one at a time, each loaded only while it is rendered. */
 async function writeDiff(ctx, pairs, output) {
@@ -785,11 +801,13 @@ async function diffNoIndex(ctx, git, vfs, paths, output) {
 }
 const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
     + '   or: git diff --no-index [--] <path> <path>\n'
-    + 'options: --stat | --name-only | --name-status, -z, -U<n>\n';
+    + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 async function diffCommand(ctx, git, fs, vfs, args) {
     let cached = false;
     let noIndex = false;
     let dashdash = false;
+    // Renames are on by default, as with git's diff.renames; null turns them off.
+    let minimumScore = DEFAULT_RENAME_SCORE;
     const output = {
         format: 'patch',
         z: false,
@@ -816,6 +834,16 @@ async function diffCommand(ctx, git, fs, vfs, args) {
             output.context = Number(context[1]);
             continue;
         }
+        const findRenames = /^(?:-M|--find-renames(?:=|$))(.*)$/.exec(arg);
+        if (findRenames) {
+            const score = parseRenameScore(findRenames[1]);
+            if (score === null) {
+                await ctx.stderr.write(`error: invalid argument to find-renames\n${DIFF_USAGE}`);
+                return 129;
+            }
+            minimumScore = score || DEFAULT_RENAME_SCORE;
+            continue;
+        }
         switch (arg) {
             case '--cached':
             case '--staged':
@@ -827,12 +855,14 @@ async function diffCommand(ctx, git, fs, vfs, args) {
             case '-z':
                 output.z = true;
                 continue;
-            // A patch is the default, and nothing here renames, colors or runs external tools.
+            case '--no-renames':
+                minimumScore = null;
+                continue;
+            // A patch is the default, and nothing here colors or runs external tools.
             case '-p':
             case '-u':
             case '--patch':
             case '--no-ext-diff':
-            case '--no-renames':
             case '--no-color': continue;
             case '--stat':
             case '--name-only':
@@ -893,19 +923,32 @@ async function diffCommand(ctx, git, fs, vfs, args) {
         ? { kind: 'tree', ref: revs[0] ?? 'HEAD', cached: true }
         : revs.length ? { kind: 'tree', ref: revs[0], cached: false } : { kind: 'index' };
     const pending = await changedPairs(git, fs, root, cache, base, repoPaths(pathArgs, ctx.cwd, root));
-    const withData = output.format === 'patch' || output.format === 'stat';
-    const load = async (path, pendingSide) => {
-        if (!pendingSide)
-            return absentSpec(path);
-        const data = !withData ? new Uint8Array(0)
-            : pendingSide.worktree ? vfs.readFile(normalizeVfsPath(`${root}/${path}`))
-                : (await git.readBlob({ fs, dir: root, oid: pendingSide.oid, cache })).blob;
-        return { path, valid: true, oid: pendingSide.oid, mode: pendingSide.mode, data };
+    const read = async (side) => {
+        if (!side.worktree)
+            return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
+        const key = normalizeVfsPath(`${root}/${side.path}`);
+        return side.mode === 0o120000 ? enc.encode(vfs.readlink(key)) : vfs.readFile(key);
     };
-    await writeDiff(ctx, pending.map(({ path, one, two }) => async () => ({
-        one: await load(path, one),
-        two: await load(path, two),
+    const { queue, neededRenameLimit } = minimumScore === null
+        ? { queue: pending, neededRenameLimit: 0 }
+        : await detectRenames(pending, read, { minimumScore });
+    const withData = output.format === 'patch' || output.format === 'stat';
+    const spec = async (side) => ({
+        path: side.path,
+        valid: true,
+        oid: side.oid,
+        mode: side.mode,
+        data: withData ? await read(side) : new Uint8Array(0),
+    });
+    await writeDiff(ctx, queue.map(({ one, two, renameScore }) => async () => ({
+        one: one ? await spec(one) : absentSpec(two.path),
+        two: two ? await spec(two) : absentSpec(one.path),
+        renameScore,
     })), output);
+    if (neededRenameLimit) {
+        await ctx.stderr.write('warning: exhaustive rename detection was skipped due to too many files.\n'
+            + `warning: you may want to set your diff.renameLimit variable to at least ${neededRenameLimit} and retry the command.\n`);
+    }
     return 0;
 }
 // ── Git subcommand implementations ──────────────────────────────────────

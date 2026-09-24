@@ -12,9 +12,12 @@ export interface DiffSpec {
 export interface DiffPair {
     one: DiffSpec;
     two: DiffSpec;
+    /** Set when rename detection paired `one` with `two`: similarity out of MAX_SCORE. */
+    renameScore?: number;
 }
 export declare function absentSpec(path: string): DiffSpec;
-export declare function pairStatus(pair: DiffPair): 'A' | 'D' | 'M';
+/** diff_resolve_rename_copy's status letter. */
+export declare function pairStatus(pair: DiffPair): 'A' | 'D' | 'T' | 'R' | 'M';
 export declare function binaryFromBytes(bytes: Uint8Array): string;
 export declare function bytesFromBinary(text: string): Uint8Array;
 /** A path's UTF-8 bytes as a binary string. */
@@ -39,4 +42,33 @@ export interface StatFile {
 export declare function statFile(pair: DiffPair): StatFile;
 /** The --stat block for `columns` terminal columns (git's term_columns: $COLUMNS, else 80). */
 export declare function formatStat(files: readonly StatFile[], columns: number): string;
+export declare const MAX_SCORE = 60000;
+export declare const DEFAULT_RENAME_SCORE = 30000;
+export declare function similarityIndex(score: number): number;
+/** parse_rename_score (`5`, `50%` and `.5` are all 50%), or null when anything follows the number. */
+export declare function parseRenameScore(text: string): number | null;
+export interface RenameSide {
+    path: string;
+    oid: string;
+    mode: number;
+}
+export interface QueuedPair<S extends RenameSide> {
+    one: S | null;
+    two: S | null;
+    renameScore?: number;
+}
+/**
+ * git diff's default rename detection over a path-ordered queue: exact
+ * renames, then unique basenames at a higher bar, then the similarity
+ * matrix, skipped (as git skips it) past `renameLimit` squared pairs. A
+ * rename takes its destination's place in the queue. `neededRenameLimit`
+ * is non-zero when the matrix was skipped.
+ */
+export declare function detectRenames<S extends RenameSide>(queue: readonly QueuedPair<S>[], read: (side: S) => Promise<Uint8Array>, { minimumScore, renameLimit }?: {
+    minimumScore?: number | undefined;
+    renameLimit?: number | undefined;
+}): Promise<{
+    queue: QueuedPair<S>[];
+    neededRenameLimit: number;
+}>;
 //# sourceMappingURL=unified-diff.d.ts.map
