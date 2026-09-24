@@ -46,7 +46,7 @@
  * makes a stale pin a cache miss rather than an outage.
  */
 import { z } from 'zod/v4';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { sha256Hex, sha256HexOfStream, sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
 import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
@@ -162,8 +162,12 @@ export async function fetchManifest(env, entry) {
     return parseRuntimeManifest(parseJsonBytes(bytes));
 }
 /**
- * Fetch the blob a manifest file entry points at, verified against the
- * digest that same entry carries.
+ * Stream the blob a manifest file entry points at, verified against the
+ * digest that same entry carries. A colo-cache entry is verified whole
+ * before any of it is served, so a poisoned one is a miss. An R2 read errors
+ * at its end, rather than closing, when its bytes do not hash to the digest.
+ * The consumer hashes what it reads as well (the installer does, before it
+ * commits a blob), so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
  * a `ManifestFile` always has both, and it is the only thing this takes.
@@ -175,7 +179,7 @@ export async function fetchBlob(env, file) {
     if (!address) {
         throw new Error(`manifest entry ${file.path} has no usable sha256 (${file.sha256})`);
     }
-    const cached = await l2Get(address);
+    const cached = await l2GetStream(address);
     if (cached)
         return cached;
     const r2 = env.NIMBUS_RUNTIME_CACHE;
@@ -186,14 +190,26 @@ export async function fetchBlob(env, file) {
     if (!obj) {
         throw new Error(`blob ${file.content} not in R2 — manifest references a missing blob`);
     }
-    const bytes = new Uint8Array(await obj.arrayBuffer());
-    const verified = await verifyBytes(address, bytes);
-    if (!verified) {
-        throw new Error(`sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, ` +
-            `R2 holds ${await sha256Hex(bytes)}`);
-    }
-    await l2Put(verified, 'application/octet-stream');
-    return verified.bytes;
+    // L2 is filled from a second read once this one verifies: teeing this
+    // stream into the cache would buffer whatever the slower side lags by.
+    return obj.body.pipeThrough(digestChecked(address, (actual) => `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, R2 holds ${actual}`, () => l2PutStream(address, async () => (await r2.get(file.content))?.body ?? null)));
+}
+/** Pass bytes through unchanged; at the end, error unless they hashed to
+ *  `address`, and run `onVerified` before closing when they did. */
+function digestChecked(address, mismatch, onVerified) {
+    const digest = sha256Incremental();
+    return new TransformStream({
+        async transform(chunk, controller) {
+            controller.enqueue(chunk);
+            await digest.update(chunk);
+        },
+        async flush() {
+            const actual = await digest.hex();
+            if (actual !== address.sha256)
+                throw new Error(mismatch(actual));
+            await onVerified?.();
+        },
+    });
 }
 // ── RuntimeSource ────────────────────────────────────────────────────
 export function runtimeAbiForCatalogName(name) {
@@ -311,6 +327,50 @@ async function l2Put(verified, contentType) {
             },
         });
         await caches.default.put(new Request(l2Url(verified.address)), resp);
+    }
+    catch { /* best-effort */ }
+}
+/**
+ * The blob entry at `address` as a stream, or null on the same terms as
+ * {@link l2Get}. The entry is hashed whole before any of it is served, so a
+ * poisoned entry stays a miss; it is then served from a second read, so
+ * neither read holds it. That read is not checked again here: its consumer
+ * verifies what it reads, which also catches an entry swapped in between.
+ */
+async function l2GetStream(address) {
+    try {
+        const caches = globalThis.caches;
+        if (!caches?.default)
+            return null;
+        const probe = await caches.default.match(new Request(l2Url(address)));
+        if (!probe?.ok || !probe.body)
+            return null;
+        if (await sha256HexOfStream(probe.body) !== address.sha256)
+            return null;
+        const hit = await caches.default.match(new Request(l2Url(address)));
+        return hit?.ok && hit.body ? hit.body : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Store a stream under its own digest. It passes through a digest check
+ *  that errors the body on a mismatch, and an errored body stores nothing. */
+async function l2PutStream(address, open) {
+    try {
+        const caches = globalThis.caches;
+        if (!caches?.default)
+            return;
+        const body = await open();
+        if (!body)
+            return;
+        const resp = new Response(body.pipeThrough(digestChecked(address, (actual) => `L2 fill read ${actual}`)), {
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'Cache-Control': 'public, max-age=31536000, immutable',
+            },
+        });
+        await caches.default.put(new Request(l2Url(address)), resp);
     }
     catch { /* best-effort */ }
 }

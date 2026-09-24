@@ -146,12 +146,11 @@ export function makeRubyRunnerFactory(deps: {
         return 0;
       }
 
-      // Resolve install bytes.
+      // The interpreter image must be installed.
       if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
         ctx.stderr.write(`${binName}: ruby+stdlib.wasm missing (re-run 'nimbus install ruby')\n`);
         return 127;
       }
-      const wasmBytes = (await vfs.readFile(wasmVfs));
 
       // Parse argv.
       const parsed = toolInvocation.mode === 'tool'
@@ -211,7 +210,6 @@ export function makeRubyRunnerFactory(deps: {
       if (!userEnv.LC_ALL) userEnv.LC_ALL = 'C.UTF-8';
 
       const facetArgs = {
-        wasmBytes,
         wasmVfsPath: wasmVfs,
         userCode,
         rbArgv,
@@ -237,7 +235,8 @@ export function makeRubyRunnerFactory(deps: {
           argv: [binName, ...argv],
         });
       } else {
-        result = await dispatchRubyFacet(deps.facets, ctx.vfs.authority, facetArgs, ctx.pid);
+        result = await dispatchRubyFacet(
+          deps.facets, ctx.vfs.authority, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -546,18 +545,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(out).set(bytes);
-  return out;
-}
-
 // ── Facet dispatch ───────────────────────────────────────────────────
 
 interface RubyFacetArgs {
-  /** Interpreter+stdlib image bytes, for the facet that answers in place. */
-  wasmBytes: Uint8Array;
-  /** Where that image lives, for a resident process whose host resolves it itself. */
+  /** Where the interpreter+stdlib image lives. */
   wasmVfsPath: string;
   userCode: string;
   rbArgv: string[];
@@ -637,6 +628,7 @@ async function dispatchRubyFacet(
   facets: FacetHost,
   vfs: import('./os-contracts.js').RuntimeFsBridge,
   args: RubyFacetArgs,
+  image: ArrayBuffer,
   pid: number,
 ): Promise<RubyFacetResult> {
   // The Ruby preamble runs the entire bootstrap in the facet's own scope,
@@ -684,7 +676,7 @@ async function dispatchRubyFacet(
   try {
     const rawResult = await facet.submit<RubyFacetCallArgs, unknown>(facetFn, toRubyCallArgs(args), {
       wasmModules: {
-        'ruby+stdlib.wasm': toArrayBuffer(args.wasmBytes),
+        'ruby+stdlib.wasm': image,
       },
       timeoutMs: 300_000,
     });

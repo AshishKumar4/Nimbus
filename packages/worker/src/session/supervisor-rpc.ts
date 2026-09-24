@@ -34,6 +34,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
+import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -111,19 +112,21 @@ function _estimateWriteBatchBytes(payload: any): number {
 
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
-   * Resolve the host anew for each WorkerEntrypoint invocation, by the
-   * route the binding carries. The platform serves this entrypoint from
-   * whichever isolate it likes; the props were minted in the host's.
+   * A fresh stub for the host, by the route the binding carries, per call.
+   * The platform serves this entrypoint from whichever isolate it likes; the
+   * props were minted in the host's.
    */
-  private _dispatch(): (envelope: SupervisorOpEnvelope) => Promise<unknown> {
-    const props = (this.ctx.props ?? {}) as { doId?: unknown; route?: HostRoute };
-    const doId = props.doId;
+  private _host(): object {
+    const doId = (this.ctx.props as { doId?: unknown } | undefined)?.doId;
     if (typeof doId !== 'string' || doId.length === 0) {
       throw new Error('SupervisorRPC: missing doId in props');
     }
-    const namespace = hostNamespaceBinding(this.env, 'SupervisorRPC', props.route);
-    const stub = namespace.get(namespace.idFromString(doId));
-    return hostOpDispatch(stub, 'SupervisorRPC', props.route);
+    const namespace = hostNamespaceBinding(this.env, 'SupervisorRPC', this._route());
+    return namespace.get(namespace.idFromString(doId));
+  }
+
+  private _route(): HostRoute | undefined {
+    return (this.ctx.props as { route?: HostRoute } | undefined)?.route;
   }
 
   private _op<T>(
@@ -131,12 +134,27 @@ export class SupervisorRPC extends WorkerEntrypoint {
     args: readonly unknown[] = [],
     extra: Omit<SupervisorOpEnvelope, 'op' | 'args'> = {},
   ): Promise<T> {
-    return this._dispatch()({ op, args, ...extra }) as Promise<T>;
+    return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...extra }) as Promise<T>;
   }
 
   /** Stamp filesystem credentials from the binding, not the supplied arguments. */
   private _fsOp<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
     return this._op<T>(op, args, { pid: this._pid() });
+  }
+
+  /**
+   * A filesystem read changes nothing on the host, so a call the platform
+   * dropped on the way to it is repeated on a fresh stub. Measured: the
+   * host's `stat` failing with "Network connection lost." (`retryable`) is
+   * what failed CPython's start in about one fresh session in twenty.
+   */
+  private _fsRead<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
+    const envelope: SupervisorOpEnvelope = { op, args, pid: this._pid() };
+    return idempotent(
+      op,
+      () => this._host(),
+      (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
+    );
   }
 
   private _reportingPid(): number {
@@ -167,7 +185,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // ── Filesystem RPC ────────────────────────────────────────────────────
 
   async readFile(path: string): Promise<string | null> {
-    return this._call(this._fsOp('readFile', [path]));
+    return this._call(this._fsRead('readFile', [path]));
   }
 
   /**
@@ -175,7 +193,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * object/pack files where the text readFile would corrupt content.
    */
   async readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null> {
-    return this._call(this._fsOp('readFileBytes', [path]));
+    return this._call(this._fsRead('readFileBytes', [path]));
   }
 
   async writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number> {
@@ -188,15 +206,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {
-    return this._call(this._fsOp('stat', [path, options]));
+    return this._call(this._fsRead('stat', [path, options]));
   }
 
   async lstat(path: string): Promise<any> {
-    return this._call(this._fsOp('lstat', [path]));
+    return this._call(this._fsRead('lstat', [path]));
   }
 
   async hasLegacySymlinkUnder(path: string): Promise<boolean> {
-    return this._call(this._fsOp('hasLegacySymlinkUnder', [path]));
+    return this._call(this._fsRead('hasLegacySymlinkUnder', [path]));
   }
 
   async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt> {
@@ -208,7 +226,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async access(path: RuntimeFsPath, mode: number): Promise<void> {
-    return this._call(this._fsOp('access', [path, mode]));
+    return this._call(this._fsRead('access', [path, mode]));
   }
 
   async chown(
@@ -225,11 +243,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async readdir(path: RuntimeFsPath): Promise<{ name: string; type: string }[]> {
-    return this._call(this._fsOp('readdir', [path]));
+    return this._call(this._fsRead('readdir', [path]));
   }
 
   async exists(path: string): Promise<boolean> {
-    return this._call(this._fsOp('exists', [path]));
+    return this._call(this._fsRead('exists', [path]));
   }
 
   async mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void> {
@@ -249,7 +267,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async readlink(path: RuntimeFsPath): Promise<string | null> {
-    return this._call(this._fsOp('readlink', [path]));
+    return this._call(this._fsRead('readlink', [path]));
   }
 
   async symlink(target: string, path: RuntimeFsPath): Promise<void> {
@@ -272,7 +290,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async fsRevision(path?: string): Promise<number> {
-    return this._call(this._fsOp('fsRevision', [path]));
+    return this._call(this._fsRead('fsRevision', [path]));
   }
 
   /**
@@ -293,7 +311,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * never mistaken for a complete listing.
    */
   async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
-    return this._call(this._fsOp('fsList', [after ?? null, limit ?? null]));
+    return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
   }
 
   /**
@@ -363,7 +381,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsOp('fsSync', args));
   }
   async fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>> {
-    return this._call(this._fsOp('fsRealpath', args));
+    return this._call(this._fsRead('fsRealpath', args));
   }
   async fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>> {
     return this._call(this._fsOp('fsRemove', args));
@@ -388,7 +406,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * hibernation and never rewrite whole files for partial updates.
    */
   async fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return this._call(this._fsOp('fsReadRange', [path, offset, length]));
+    return this._call(this._fsRead('fsReadRange', [path, offset, length]));
   }
 
   /**
@@ -398,7 +416,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * session's heap for the rest of its life.
    */
   async fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return this._call(this._fsOp('fsReadRangeUncached', [path, offset, length]));
+    return this._call(this._fsRead('fsReadRangeUncached', [path, offset, length]));
   }
 
   /**
@@ -423,7 +441,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('fsReadBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {
-      return await this._call(this._fsOp('fsReadBatch', [requests]));
+      return await this._call(this._fsRead('fsReadBatch', [requests]));
     } finally {
       rpcPayloadEnd(payloadBytes);
     }

@@ -14,6 +14,9 @@ export declare class ExecutionFs {
     revision(path?: string): Promise<number>;
     /** Whole-file read that never pins the content in the session LRU. */
     readFileUncached(path: string): Promise<Uint8Array>;
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so
+     *  a runtime image is held once rather than copied into one. */
+    readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     get authority(): RuntimeFsBridge;
     private probe;
     stat(path: string): Promise<ExecutionStat>;
@@ -24,6 +27,8 @@ export declare class ExecutionFs {
     isSymlink(path: string): Promise<boolean>;
     readFile(path: string): Promise<Uint8Array>;
     readFileString(path: string): Promise<string>;
+    /** Ranged read that neither consults nor fills the session's content cache. */
+    readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array>;
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     writeFile(path: string, bytes: string | Uint8Array): Promise<void>;
     writeRange(path: string, offset: number, bytes: Uint8Array): Promise<number>;

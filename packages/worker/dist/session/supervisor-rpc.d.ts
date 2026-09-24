@@ -56,14 +56,22 @@ export type SupervisorCacheStatEvent = {
 };
 export declare class SupervisorRPC extends WorkerEntrypoint {
     /**
-     * Resolve the host anew for each WorkerEntrypoint invocation, by the
-     * route the binding carries. The platform serves this entrypoint from
-     * whichever isolate it likes; the props were minted in the host's.
+     * A fresh stub for the host, by the route the binding carries, per call.
+     * The platform serves this entrypoint from whichever isolate it likes; the
+     * props were minted in the host's.
      */
-    private _dispatch;
+    private _host;
+    private _route;
     private _op;
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     private _fsOp;
+    /**
+     * A filesystem read changes nothing on the host, so a call the platform
+     * dropped on the way to it is repeated on a fresh stub. Measured: the
+     * host's `stat` failing with "Network connection lost." (`retryable`) is
+     * what failed CPython's start in about one fresh session in twenty.
+     */
+    private _fsRead;
     private _reportingPid;
     private _call;
     private _pid;

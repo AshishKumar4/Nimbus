@@ -32,6 +32,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
+import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -82,26 +83,37 @@ function _estimateWriteBatchBytes(payload) {
 // with composeFabric.
 export class SupervisorRPC extends WorkerEntrypoint {
     /**
-     * Resolve the host anew for each WorkerEntrypoint invocation, by the
-     * route the binding carries. The platform serves this entrypoint from
-     * whichever isolate it likes; the props were minted in the host's.
+     * A fresh stub for the host, by the route the binding carries, per call.
+     * The platform serves this entrypoint from whichever isolate it likes; the
+     * props were minted in the host's.
      */
-    _dispatch() {
-        const props = (this.ctx.props ?? {});
-        const doId = props.doId;
+    _host() {
+        const doId = this.ctx.props?.doId;
         if (typeof doId !== 'string' || doId.length === 0) {
             throw new Error('SupervisorRPC: missing doId in props');
         }
-        const namespace = hostNamespaceBinding(this.env, 'SupervisorRPC', props.route);
-        const stub = namespace.get(namespace.idFromString(doId));
-        return hostOpDispatch(stub, 'SupervisorRPC', props.route);
+        const namespace = hostNamespaceBinding(this.env, 'SupervisorRPC', this._route());
+        return namespace.get(namespace.idFromString(doId));
+    }
+    _route() {
+        return this.ctx.props?.route;
     }
     _op(op, args = [], extra = {}) {
-        return this._dispatch()({ op, args, ...extra });
+        return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...extra });
     }
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     _fsOp(op, args = []) {
         return this._op(op, args, { pid: this._pid() });
+    }
+    /**
+     * A filesystem read changes nothing on the host, so a call the platform
+     * dropped on the way to it is repeated on a fresh stub. Measured: the
+     * host's `stat` failing with "Network connection lost." (`retryable`) is
+     * what failed CPython's start in about one fresh session in twenty.
+     */
+    _fsRead(op, args = []) {
+        const envelope = { op, args, pid: this._pid() };
+        return idempotent(op, () => this._host(), (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope));
     }
     _reportingPid() {
         const pid = this.ctx.props?.pid;
@@ -126,14 +138,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     async readFile(path) {
-        return this._call(this._fsOp('readFile', [path]));
+        return this._call(this._fsRead('readFile', [path]));
     }
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
     async readFileBytes(path) {
-        return this._call(this._fsOp('readFileBytes', [path]));
+        return this._call(this._fsRead('readFileBytes', [path]));
     }
     async writeFile(path, content) {
         // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
@@ -144,13 +156,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('writeFile', [path, content]));
     }
     async stat(path, options) {
-        return this._call(this._fsOp('stat', [path, options]));
+        return this._call(this._fsRead('stat', [path, options]));
     }
     async lstat(path) {
-        return this._call(this._fsOp('lstat', [path]));
+        return this._call(this._fsRead('lstat', [path]));
     }
     async hasLegacySymlinkUnder(path) {
-        return this._call(this._fsOp('hasLegacySymlinkUnder', [path]));
+        return this._call(this._fsRead('hasLegacySymlinkUnder', [path]));
     }
     async utimes(path, atimeMs, mtimeMs) {
         return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
@@ -159,7 +171,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('chmod', [path, mode]));
     }
     async access(path, mode) {
-        return this._call(this._fsOp('access', [path, mode]));
+        return this._call(this._fsRead('access', [path, mode]));
     }
     async chown(path, uid, gid, options) {
         return this._call(this._fsOp('chown', [path, uid, gid, options]));
@@ -168,10 +180,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('setUmask', [mask]));
     }
     async readdir(path) {
-        return this._call(this._fsOp('readdir', [path]));
+        return this._call(this._fsRead('readdir', [path]));
     }
     async exists(path) {
-        return this._call(this._fsOp('exists', [path]));
+        return this._call(this._fsRead('exists', [path]));
     }
     async mkdir(path, options) {
         return this._call(this._fsOp('mkdir', [path, options]));
@@ -186,7 +198,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('unlink', [path]));
     }
     async readlink(path) {
-        return this._call(this._fsOp('readlink', [path]));
+        return this._call(this._fsRead('readlink', [path]));
     }
     async symlink(target, path) {
         return this._call(this._fsOp('symlink', [target, path]));
@@ -206,7 +218,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('fsAcquire', [epoch, cursor]));
     }
     async fsRevision(path) {
-        return this._call(this._fsOp('fsRevision', [path]));
+        return this._call(this._fsRead('fsRevision', [path]));
     }
     /**
      * Enumerate the session filesystem, one bounded page at a time.
@@ -226,7 +238,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * never mistaken for a complete listing.
      */
     async fsList(after, limit) {
-        return this._call(this._fsOp('fsList', [after ?? null, limit ?? null]));
+        return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
     }
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor
@@ -288,7 +300,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('fsSync', args));
     }
     async fsRealpath(...args) {
-        return this._call(this._fsOp('fsRealpath', args));
+        return this._call(this._fsRead('fsRealpath', args));
     }
     async fsRemove(...args) {
         return this._call(this._fsOp('fsRemove', args));
@@ -311,7 +323,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * hibernation and never rewrite whole files for partial updates.
      */
     async fsReadRange(path, offset, length) {
-        return this._call(this._fsOp('fsReadRange', [path, offset, length]));
+        return this._call(this._fsRead('fsReadRange', [path, offset, length]));
     }
     /**
      * The same read with the session's content cache bypassed, for a boot spec's
@@ -320,7 +332,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * session's heap for the rest of its life.
      */
     async fsReadRangeUncached(path, offset, length) {
-        return this._call(this._fsOp('fsReadRangeUncached', [path, offset, length]));
+        return this._call(this._fsRead('fsReadRangeUncached', [path, offset, length]));
     }
     /**
      * Read many ranges in ONE round trip — the read-side counterpart to
@@ -344,7 +356,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         setLastRpcFrame('fsReadBatch', payloadBytes);
         rpcPayloadStart(payloadBytes);
         try {
-            return await this._call(this._fsOp('fsReadBatch', [requests]));
+            return await this._call(this._fsRead('fsReadBatch', [requests]));
         }
         finally {
             rpcPayloadEnd(payloadBytes);

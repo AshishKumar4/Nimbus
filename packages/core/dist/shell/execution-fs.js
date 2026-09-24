@@ -23,8 +23,14 @@ export class ExecutionFs {
     async revision(path) { return await this.authority.revision(path); }
     /** Whole-file read that never pins the content in the session LRU. */
     async readFileUncached(path) {
+        return new Uint8Array(await this.readArrayBufferUncached(path));
+    }
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so
+     *  a runtime image is held once rather than copied into one. */
+    async readArrayBufferUncached(path) {
         const stat = await this.stat(path);
-        const result = new Uint8Array(stat.size);
+        const buffer = new ArrayBuffer(stat.size);
+        const result = new Uint8Array(buffer);
         for (let offset = 0; offset < result.length;) {
             const bytes = await this.authority.readRange(path, offset, Math.min(65536, result.length - offset), { cached: false });
             if (!bytes || bytes.length === 0)
@@ -32,7 +38,7 @@ export class ExecutionFs {
             result.set(bytes, offset);
             offset += bytes.length;
         }
-        return result;
+        return buffer;
     }
     get authority() {
         if (this.bridge instanceof VFS)
@@ -78,6 +84,15 @@ export class ExecutionFs {
         return bytes;
     }
     async readFileString(path) { return new TextDecoder().decode(await this.readFile(path)); }
+    /** Ranged read that neither consults nor fills the session's content cache. */
+    async readRangeUncached(path, offset, length) {
+        const bytes = this.bridge instanceof VFS
+            ? this.bridge.readRange(path, offset, length)
+            : await this.bridge.readRange(path, offset, length, { cached: false });
+        if (bytes === null)
+            throw new VFSError('ENOENT', path);
+        return bytes;
+    }
     async readRange(path, offset, length) {
         const bytes = await this.bridge.readRange(path, offset, length);
         if (bytes === null)
