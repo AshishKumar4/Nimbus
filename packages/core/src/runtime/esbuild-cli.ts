@@ -4,9 +4,11 @@
  * Runs the real esbuild CLI: the Go program inside esbuild.wasm, not a
  * reimplementation of its flags, so every flag, default, path rule and message
  * is esbuild's own. It runs as the calling process, from the caller's working
- * directory, in whatever isolate the host's `run` dispatches to; the runner
- * there is ESBUILD_CLI_PREAMBLE (runtime/esbuild-cli/preamble.ts). On workerd
- * that is the session's esbuild facet, the one that also serves its transforms.
+ * directory, in whatever isolate the host's `run` dispatches to. The runner
+ * there is runtime/esbuild-cli/preamble.ts behind esbuild-wasm's wasm_exec.js,
+ * which installs `globalThis.__esbuildCliRun(args, supervisor, output, module)`.
+ * On workerd that is the session's esbuild facet, the one that also serves its
+ * transforms, and the runner reaches it as a staged asset.
  *
  * Nothing about the build lives in the session's isolate. esbuild's Go heap
  * grows with the module graph and a WebAssembly memory never shrinks: a React
@@ -16,7 +18,6 @@
 import type { Command, CommandContext, CommandInputStream, CommandOutputStream } from '../substrate/lifo/commands/types.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from './esbuild-cli/types.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { ESBUILD_CLI_BODY_SRC } from './esbuild-cli.generated.js';
 
 export type { EsbuildCliArgs, EsbuildCliOutput } from './esbuild-cli/types.js';
 
@@ -28,13 +29,6 @@ export interface EsbuildCommandDeps {
    */
   run(args: EsbuildCliArgs, ctx: CommandContext, output: EsbuildCliOutput): Promise<number>;
 }
-
-/**
- * Go's wasm_exec.js and the runner, as one script. Evaluated in the isolate
- * that hosts esbuild, it installs `globalThis.__esbuildCliRun(args,
- * supervisor, output, module)`.
- */
-export const ESBUILD_CLI_PREAMBLE: string = ESBUILD_CLI_BODY_SRC;
 
 // The environment esbuild reads; esbuild-wasm's own launcher passes exactly these.
 const ESBUILD_ENV = ['NO_COLOR', 'NODE_PATH', 'npm_config_user_agent', 'WT_SESSION'];

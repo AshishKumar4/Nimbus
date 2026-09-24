@@ -10,7 +10,7 @@ import {
   type EsbuildTransformOutcome,
   type EsbuildTransformRequest,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { ESBUILD_CLI_PREAMBLE, type EsbuildCliArgs, type EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
+import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
@@ -21,12 +21,14 @@ import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
-import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
+import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 
 /**
- * Everything of the facet's module but esbuild's JS adapter, which the wasm
- * version keys. `wasmModule`, `newEsbuild` and `esbuild` are bound by the
- * lines before it.
+ * Everything of the facet's module but its staged parts: esbuild's JS adapter,
+ * which the wasm version keys, and the `esbuild` command's runner, which its
+ * build id keys. `wasmModule`, `newEsbuild` and `esbuild` are bound by the
+ * lines before it, and the runner installs `globalThis.__esbuildCliRun`.
  *
  * Transforms share one esbuild, whose heap only grows. A build or an
  * `esbuild` command gets its own Go instance, dropped when it ends, so what
@@ -35,7 +37,6 @@ import { fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-
 const ESBUILD_FACET_BODY = [
   ESBUILD_NAME_GLOBAL_SHIM,
   generateEsbuildFacetRuntimeSource(),
-  ESBUILD_CLI_PREAMBLE,
   'let initialized;',
   'function ensureInitialized() {',
   '  initialized ||= esbuild.initialize({ wasmModule, worker: false });',
@@ -70,7 +71,7 @@ const ESBUILD_FACET_BODY = [
 ].join('\n');
 
 // The loader serves the code it cached under an id, so the id carries the code.
-export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${hashSource(ESBUILD_FACET_BODY)}`;
+export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
 
 /** Source bytes per facet call: bounds what the caller's isolate holds for one round trip. */
 const TRANSFORM_BATCH_SOURCE_BYTES = 4 * 1024 * 1024;
@@ -85,14 +86,16 @@ type EsbuildFacetRpc = DurableObject & {
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
- * each call of the factory is a separate esbuild.
+ * each call of the factory is a separate esbuild. `cliRunner` is the staged
+ * runner of the `esbuild` command (fetchEsbuildCliRunner).
  */
-export function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string): WorkerCode {
+export function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string, cliRunner: string): WorkerCode {
   const source = [
     'import { DurableObject } from "cloudflare:workers";',
     'import wasmModule from "esbuild.wasm";',
     `const newEsbuild = new Function(${JSON.stringify(jsFnBody)});`,
     'const esbuild = newEsbuild();',
+    cliRunner,
     ESBUILD_FACET_BODY,
   ].join('\n');
 
@@ -124,11 +127,12 @@ async function esbuildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetc
   }
   const worker = await loader.get(ESBUILD_FACET_WORKER_ID, async () => {
     const assetsEnv = { ASSETS: assets };
-    const [wasmBytes, jsFnBody] = await Promise.all([
+    const [wasmBytes, jsFnBody, cliRunner] = await Promise.all([
       fetchEsbuildWasmBytes(assetsEnv),
       fetchEsbuildJsFnBody(assetsEnv),
+      fetchEsbuildCliRunner(assetsEnv),
     ]);
-    return esbuildFacetWorkerCode(wasmBytes, jsFnBody);
+    return esbuildFacetWorkerCode(wasmBytes, jsFnBody, cliRunner);
   });
   const facetClass = worker.getDurableObjectClass('EsbuildFacet');
   return ctx.facets.get<EsbuildFacetRpc>(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));

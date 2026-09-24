@@ -1,11 +1,4 @@
 import { normalizeVfsPath } from '../vfs/path.js';
-import { ESBUILD_CLI_BODY_SRC } from './esbuild-cli.generated.js';
-/**
- * Go's wasm_exec.js and the runner, as one script. Evaluated in the isolate
- * that hosts esbuild, it installs `globalThis.__esbuildCliRun(args,
- * supervisor, output, module)`.
- */
-export const ESBUILD_CLI_PREAMBLE = ESBUILD_CLI_BODY_SRC;
 // The environment esbuild reads; esbuild-wasm's own launcher passes exactly these.
 const ESBUILD_ENV = ['NO_COLOR', 'NODE_PATH', 'npm_config_user_agent', 'WT_SESSION'];
 async function readStdin(stdin) {

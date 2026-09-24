@@ -10,12 +10,13 @@
  * never live in the session's isolate: the session sees one filesystem call
  * at a time.
  *
- * scripts/bundle-facet-workers.mjs bundles this file into
- * esbuild-cli.generated.ts as an IIFE and puts Go's own wasm_exec.js from the
- * esbuild-wasm package in front of it as `__esbuildGoRuntime(global, fs)`, so
- * the Go glue is always the one esbuild.wasm was built against. The IIFE may
- * contain no import, export or top-level await; `globalThis.__esbuildCliRun`
- * is its only entry point.
+ * scripts/bundle-facet-workers.mjs bundles this file as an IIFE, puts Go's own
+ * wasm_exec.js from the esbuild-wasm package in front of it as
+ * `__esbuildGoRuntime(global, fs)`, so the Go glue is always the one
+ * esbuild.wasm was built against, and stages the result as a static asset
+ * (public/_assets/runtime/esbuild-cli-<buildId>.js in @nimbus-sh/worker). The
+ * IIFE may contain no import, export or top-level await;
+ * `globalThis.__esbuildCliRun` is its only entry point.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsStat } from '../os-contracts.js';

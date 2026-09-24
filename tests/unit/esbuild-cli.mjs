@@ -9,10 +9,10 @@
 // build with no --outfile or --outdir went to a /dist that real esbuild has
 // never had, rather than to stdout.
 //
-// Driven through a workspace shell, with the runner production evaluates in
-// the session's esbuild facet (ESBUILD_CLI_PREAMBLE) evaluated here instead,
-// the real esbuild.wasm, and a filesystem whose owners and permissions are the
-// ones the session enforces.
+// Driven through a workspace shell, with the runner production stages for the
+// session's esbuild facet (the asset ESBUILD_CLI_ASSET_PATH names) evaluated
+// here instead, the real esbuild.wasm, and a filesystem whose owners and
+// permissions are the ones the session enforces.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -21,14 +21,15 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { vfsSupervisor } from '../../packages/core/src/runtime/vfs-supervisor.ts';
-import { ESBUILD_CLI_PREAMBLE, makeEsbuildCommand } from '../../packages/core/src/runtime/esbuild-cli.ts';
+import { makeEsbuildCommand } from '../../packages/core/src/runtime/esbuild-cli.ts';
+import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const wasm = new WebAssembly.Module(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')));
-new Function(ESBUILD_CLI_PREAMBLE)();
+new Function(await readFile(new URL(`../../packages/worker/public${ESBUILD_CLI_ASSET_PATH}`, import.meta.url), 'utf8'))();
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const ws = await NimbusWorkspace.create({
