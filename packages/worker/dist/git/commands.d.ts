@@ -2,24 +2,25 @@
  * git-commands.ts — Nimbus v2.0 Git integration via isomorphic-git.
  *
  * Provides a full `git` command with subcommands:
- * init, clone, status, add, commit, log, branch, checkout,
- * diff, remote, fetch, pull, push, merge, reset, tag, stash
+ * init, clone, status, add, commit, log, branch, checkout, diff,
+ * ls-files, rev-parse, remote, fetch, pull, push, merge, reset, tag
  *
  * Uses a VFS→isomorphic-git FS adapter that maps all operations
  * to the SqliteVFS.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+type OutputStream = {
+    write(s: string): void | Promise<void>;
+    /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
+    writeBytes?(bytes: Uint8Array): void | Promise<void>;
+};
 type Ctx = {
     pid: number;
     cred: VfsCred;
     args: string[];
-    stdout: {
-        write(s: string): void;
-    };
-    stderr: {
-        write(s: string): void;
-    };
+    stdout: OutputStream;
+    stderr: OutputStream;
     cwd: string;
     env: Record<string, string>;
 };
