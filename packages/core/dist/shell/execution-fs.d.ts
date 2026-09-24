@@ -57,6 +57,10 @@ export declare class ExecutionFs {
     rmdir(path: string): Promise<void>;
     rename(from: string, to: string): Promise<void>;
     copyFile(from: string, to: string): Promise<void>;
+    /** Copy a tree by reference; EXDEV when the bridge cannot (a kernel VFS, a mount). */
+    copyTree(from: string, to: string, options?: {
+        preserve?: boolean;
+    }): Promise<number>;
     remove(path: string, options?: {
         recursive?: boolean;
         force?: boolean;

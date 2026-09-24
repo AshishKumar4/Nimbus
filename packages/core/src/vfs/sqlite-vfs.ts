@@ -148,6 +148,11 @@ interface INode {
   gen: number;
 }
 
+/** Where path resolution looks inodes up: the live cache, or a snapshot's tree. */
+interface InodeLookup {
+  get(path: string): INode | undefined;
+}
+
 export interface VfsOpenDescription {
   /** Inode number the description currently resolves; 0 is never issued. */
   readonly ino: number;
@@ -235,6 +240,11 @@ export interface CredentialedVfs {
   removeRecursive(path: string): number;
   rename(oldPath: string, newPath: string): void;
   copyFile(src: string, dest: string): void;
+  /**
+   * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
+   * Returns the entries copied. See SqliteVFS.copyTree.
+   */
+  copyTree(src: string, dest: string, options?: { preserve?: boolean }): number;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   writeStream(
     stream: ReadableStream<Uint8Array>,
@@ -296,6 +306,8 @@ const KEYS_PER_SQL_EXEC = SQL_MAX_BOUND_PARAMETERS - 10;
  */
 const MANIFEST_KEPT_BYTES = 256 * CDC_MIN;
 const MANIFEST_WINDOWS = 64;
+/** Inode rows one copyTree transaction copies. */
+const COPY_PAGE_ROWS = 250;
 /** Manifest rows one copy transaction moves. */
 const MANIFEST_PAGE_ROWS = 200;
 /** Manifest rows one GC transaction drains: each also queues its chunk, and the page's content ids ride along. */
@@ -707,6 +719,18 @@ interface ContentRef {
   contentId: number | null;
 }
 
+/** A copyTree in progress, as its vfs_jobs row records it. */
+interface CopyTreeJob {
+  src: string;
+  dst: string;
+  uid: number;
+  gid: number;
+  /** Mode bits a copy loses: the umask and setuid/setgid, unless preserving. */
+  clearBits: number;
+  preserveOwner: boolean;
+  preserveTimes: boolean;
+}
+
 interface PreparedBatchTransaction {
   plan: TransactionPlan;
   deletedInodes: readonly INode[];
@@ -1075,6 +1099,7 @@ export class SqliteVFS {
     this.initSchema();
     this.resumeAppendMaintenance();
     this.queueAbandonedStaging();
+    this.resumeJobs();
     this.runContentMaintenanceSafely(2, true);
   }
 
@@ -1225,6 +1250,16 @@ export class SqliteVFS {
         id INTEGER NOT NULL,
         PRIMARY KEY (kind, id)
       ) WITHOUT ROWID`);
+      // Operations of many transactions whose prefix is not a state a crash
+      // may leave: the row records how to finish them.
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_jobs (
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,
+        args TEXT NOT NULL,
+        cursor TEXT NOT NULL,
+        start_gen INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )`);
     });
     const state = [...this.sql.exec('SELECT gen, pin_gen FROM vfs_state WHERE slot = 1')][0]!;
     this._gen = Number(state.gen);
@@ -1679,6 +1714,7 @@ export class SqliteVFS {
       removeRecursive: (path) => this.removeRecursive(path, bound),
       rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
+      copyTree: (src, dest, options) => this.copyTree(src, dest, bound, options),
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -1708,11 +1744,16 @@ export class SqliteVFS {
     return (granted & requested) === requested;
   }
 
+  /**
+   * Resolve `path` for `cred`. `tree` looks inodes up: the live tree, or a
+   * snapshot's (SnapshotVfs), which resolves symlinks inside itself.
+   */
   private resolvePath(
     path: string,
     cred: VfsCred,
     followLeaf: boolean,
     allowMissing: boolean,
+    tree: InodeLookup = this.inodes,
   ): { path: string; inode: INode | undefined } {
     let current = this.storageKey(path, cred);
     const seen = new Set<string>();
@@ -1722,7 +1763,7 @@ export class SqliteVFS {
       let restarted = false;
       for (let index = 0; index < parts.length; index++) {
         prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
-        const inode = this.inodes.get(prefix);
+        const inode = tree.get(prefix);
         const leaf = index === parts.length - 1;
         if (!inode) {
           if (leaf || allowMissing) return { path: current, inode: undefined };
@@ -1751,7 +1792,7 @@ export class SqliteVFS {
         }
       }
       if (restarted) continue;
-      return { path: current, inode: this.inodes.get(current) };
+      return { path: current, inode: tree.get(current) };
     }
     throw vfsError('ELOOP', path);
   }
@@ -1760,13 +1801,14 @@ export class SqliteVFS {
     path: string,
     want: number,
     cred: VfsCred,
-    options: { followLeaf?: boolean; allowMissingLeaf?: boolean } = {},
+    options: { followLeaf?: boolean; allowMissingLeaf?: boolean; tree?: InodeLookup } = {},
   ): { path: string; inode: INode | undefined } {
     const resolved = this.resolvePath(
       path,
       cred,
       options.followLeaf ?? true,
       options.allowMissingLeaf ?? false,
+      options.tree,
     );
     if (!resolved.inode) {
       if (options.allowMissingLeaf) return resolved;
@@ -4053,6 +4095,165 @@ export class SqliteVFS {
     });
     this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
     this.runContentMaintenanceSafely(1);
+  }
+
+  /**
+   * Copy the tree at `src` to a new path `dst` by reference (`cp -r`): one
+   * inode row per entry naming the source's chunk or manifest, no byte read
+   * or written, `INSERT … SELECT` pages of COPY_PAGE_ROWS rows per
+   * transaction. Returns the entries copied.
+   *
+   * Without `preserve` a copy is a new file of the caller's (cp without -p):
+   * the caller owns it, the umask and setuid/setgid clearing apply, and its
+   * times are now. With it, mode and times carry over, and ownership too
+   * when the caller is root.
+   *
+   * Symlinks are copied as links. Every entry must be readable by the
+   * caller, and every directory searchable, before the first page commits.
+   * A `vfs_jobs` row records the cursor, so a reset mid-copy resumes to the
+   * complete tree at the next open.
+   */
+  private copyTree(src: string, dst: string, cred: VfsCred, options: { preserve?: boolean } = {}): number {
+    this.assertMutationsAllowed([dst]);
+    const source = this.checkAccess(src, 0o4, cred, { followLeaf: false });
+    const root = source.inode!;
+    const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+    if (target.inode) throw vfsError('EEXIST', target.path);
+    this.checkParentAccess(target.path, cred);
+    if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
+      throw vfsError('EINVAL', `cannot copy ${source.path} into itself`);
+    }
+    if (cred.uid !== 0 && root.isDir) {
+      for (const inode of this.subtreeDescending(source.path, root, false)) {
+        if (!this.accessInode(inode, inode.isDir ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
+          throw vfsError('EACCES', inode.path);
+        }
+      }
+    }
+    const job: CopyTreeJob = {
+      src: source.path,
+      dst: target.path,
+      uid: cred.uid,
+      gid: cred.gid,
+      clearBits: options.preserve ? 0 : (cred.umask & 0o777) | 0o6000,
+      preserveOwner: options.preserve === true && cred.uid === 0,
+      preserveTimes: options.preserve === true,
+    };
+    return this.runCopyTree(job, null);
+  }
+
+  /**
+   * Run a copyTree job to completion: the root row and the job row in the
+   * first transaction, then one page per transaction, the cursor moving in
+   * the transaction that copies the page. `id` resumes a recorded job.
+   */
+  private runCopyTree(job: CopyTreeJob, id: number | null): number {
+    const range = subtreeRange(job.src);
+    let jobId = id;
+    let cursor = jobId === null ? null : String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', jobId)][0]!.cursor);
+    let copied = 0;
+    for (;;) {
+      const now = this.now();
+      const page = cursor === null
+        ? [...this.sql.exec('SELECT path, kind, size FROM vfs_inodes WHERE path = ?', job.src)]
+        : [...(range.upper === null
+          ? this.sql.exec('SELECT path, kind, size FROM vfs_inodes WHERE path > ? ORDER BY path LIMIT ?', cursor, COPY_PAGE_ROWS)
+          : this.sql.exec(
+            'SELECT path, kind, size FROM vfs_inodes WHERE path > ? AND path < ? ORDER BY path LIMIT ?',
+            cursor,
+            range.upper,
+            COPY_PAGE_ROWS,
+          ))];
+      const last = page.length > 0 ? String(page[page.length - 1]!.path) : null;
+      const done = cursor !== null && page.length < COPY_PAGE_ROWS;
+      let gen = 0;
+      this.executeMeasuredTransaction(
+        this.metricsOnlyPlan({ blobBytes: 0, logicalRows: page.length + 2, sqlExecs: 4, affectedPaths: page.length }),
+        { source: 'content-publish', limitMode: 'bounded' },
+        () => {
+          const state = [...this.sql.exec(
+            'UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen, next_ino',
+          )][0]!;
+          gen = Number(state.gen);
+          const firstIno = Number(state.next_ino);
+          if (page.length > 0) {
+            const lower = cursor === null ? job.src : cursor;
+            const tail = job.src.length + 1;
+            this.sql.exec(
+              `INSERT OR IGNORE INTO vfs_inodes
+                 (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id)
+               SELECT ? || substr(path, ?),
+                      CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
+                      kind, size,
+                      CASE WHEN ? THEN atime ELSE ? END, CASE WHEN ? THEN mtime ELSE ? END, ?,
+                      CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE mode & ~? END,
+                      CASE WHEN ? THEN uid ELSE ? END, CASE WHEN ? THEN gid ELSE ? END,
+                      ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id
+               FROM vfs_inodes WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`,
+              job.dst, tail,
+              job.src, this.parentPath(job.dst), job.dst, tail,
+              job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now,
+              job.clearBits,
+              job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid,
+              firstIno, gen,
+              lower, last,
+            );
+            this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
+          }
+          if (jobId === null) {
+            jobId = Number([...this.sql.exec(
+              `INSERT INTO vfs_jobs (kind, args, cursor, start_gen, created_at) VALUES ('copyTree', ?, ?, ?, ?) RETURNING id`,
+              JSON.stringify(job),
+              job.src === '' ? '' : `${job.src}/`,
+              gen,
+              now,
+            )][0]!.id);
+          } else if (done) {
+            this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
+          } else {
+            this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', last, jobId);
+          }
+        },
+      );
+      this._gen = gen;
+      const published: string[] = [];
+      for (const row of page) {
+        const path = job.dst + String(row.path).slice(job.src.length);
+        published.push(path);
+        if (!this._countersLoaded) continue;
+        if (Number(row.kind) === INODE_KIND_DIRECTORY) this._totalDirs++;
+        else { this._totalFiles++; this._usedBytes += Number(row.size); }
+      }
+      copied += page.length;
+      if (published.length > 0) this.bumpRevision(published);
+      // One event for the tree, as rename emits: events queue until the
+      // turn ends, and one per copied row would hold the whole tree.
+      if (cursor === null) this.emitMutation(Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' : 'add', job.dst);
+      if (cursor === null) {
+        cursor = job.src === '' ? '' : `${job.src}/`;
+        if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
+          // A file or symlink is its own whole tree: its job ends with it.
+          this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId); });
+          return copied;
+        }
+        continue;
+      }
+      if (done) return copied;
+      cursor = last!;
+    }
+  }
+
+  /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
+  private resumeJobs(): void {
+    for (const row of [...this.sql.exec('SELECT id, kind, args FROM vfs_jobs ORDER BY id')]) {
+      const id = Number(row.id);
+      try {
+        if (row.kind === 'copyTree') this.runCopyTree(JSON.parse(String(row.args)) as CopyTreeJob, id);
+        else throw new Error(`unknown job kind ${String(row.kind)}`);
+      } catch (error) {
+        console.error(`[sqlite-vfs] job ${id} (${String(row.kind)}) failed to resume:`, this.errorMessage(error));
+      }
+    }
   }
 
   // ── Batch write (npm install fast path) ───────────────────────────────

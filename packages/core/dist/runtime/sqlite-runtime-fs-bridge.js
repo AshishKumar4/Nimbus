@@ -529,6 +529,15 @@ export class SqliteRuntimeFsBridge {
             this.vfs.writeFile(target.path, bytes);
         }
     }
+    copyTree(from, to, options) {
+        const source = this.locate(from, false);
+        if (source === null)
+            throw fsError('ELOOP', 'copyTree', from);
+        const target = this.locateMutation(to, false, 'copyTree');
+        if (source.mount || target.mount)
+            throw fsError('EXDEV', 'copyTree', to);
+        return this.vfs.copyTree(source.path, target.path, options);
+    }
     writeBatch(payload) {
         return this.vfs.writeBatch(payload);
     }

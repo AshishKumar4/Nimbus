@@ -138,6 +138,12 @@ export class ExecutionFs {
     async rmdir(path) { await this.bridge.rmdir(path); }
     async rename(from, to) { await this.bridge.rename(from, to); }
     async copyFile(from, to) { await this.bridge.copyFile(from, to); }
+    /** Copy a tree by reference; EXDEV when the bridge cannot (a kernel VFS, a mount). */
+    async copyTree(from, to, options) {
+        if (this.bridge instanceof VFS)
+            throw Object.assign(new Error(`EXDEV: ${to}`), { code: 'EXDEV' });
+        return await this.bridge.copyTree(from, to, options);
+    }
     async remove(path, options = {}) {
         if (!(this.bridge instanceof VFS)) {
             await this.bridge.remove(path, options);

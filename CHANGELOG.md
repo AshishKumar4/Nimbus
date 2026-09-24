@@ -21,6 +21,12 @@ published independently in the `@nimbus-sh` npm scope.
 - Garbage collection works from a queue written in the same transaction as
   every dereference, and deletes a chunk only after probing every reference
   to it. A reset in the middle of a large write leaves no chunk behind.
+- `cp -r`, `-R` and `-a` copy directories. A copy to a new destination
+  within the filesystem copies inode rows in bounded transactions and no
+  bytes (`copyTree`, measured below); one into an existing directory merges
+  entry by entry. `cp -p` preserves mode and times, and a directory without
+  `-r` is omitted with GNU cp's message. A reset mid-copy resumes to the
+  complete tree the next time the filesystem opens.
 - The revision clock is the durable generation, so revisions jump by more
   than one between publications. Existing filesystems start empty: the
   pre-v2 tables are ignored and deleted in bounded pages.

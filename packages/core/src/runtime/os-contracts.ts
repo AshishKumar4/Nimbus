@@ -285,6 +285,13 @@ export interface RuntimeFsBridge {
   realpath(path: RuntimeFsPath): Awaitable<string>;
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
+  /**
+   * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
+   * `-p`), returning the entries copied. Within one SQLite filesystem this
+   * copies inode rows, never bytes; across mounts it fails EXDEV and the
+   * caller copies entry by entry.
+   */
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Awaitable<number>;
   fstat(handleId: number): Awaitable<RuntimeVfsStat>;
   dup(handleId: number): Awaitable<RuntimeFileHandle>;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;

@@ -122,6 +122,13 @@ export interface CredentialedVfs {
     removeRecursive(path: string): number;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
+    /**
+     * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
+     * Returns the entries copied. See SqliteVFS.copyTree.
+     */
+    copyTree(src: string, dest: string, options?: {
+        preserve?: boolean;
+    }): number;
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
         chunks: number;
@@ -415,6 +422,10 @@ export declare class SqliteVFS {
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
+    /**
+     * Resolve `path` for `cred`. `tree` looks inodes up: the live tree, or a
+     * snapshot's (SnapshotVfs), which resolves symlinks inside itself.
+     */
     private resolvePath;
     private checkAccess;
     private checkParentAccess;
@@ -744,6 +755,31 @@ export declare class SqliteVFS {
      * copies on write (rewriteFile's sharing probes).
      */
     private copyFile;
+    /**
+     * Copy the tree at `src` to a new path `dst` by reference (`cp -r`): one
+     * inode row per entry naming the source's chunk or manifest, no byte read
+     * or written, `INSERT … SELECT` pages of COPY_PAGE_ROWS rows per
+     * transaction. Returns the entries copied.
+     *
+     * Without `preserve` a copy is a new file of the caller's (cp without -p):
+     * the caller owns it, the umask and setuid/setgid clearing apply, and its
+     * times are now. With it, mode and times carry over, and ownership too
+     * when the caller is root.
+     *
+     * Symlinks are copied as links. Every entry must be readable by the
+     * caller, and every directory searchable, before the first page commits.
+     * A `vfs_jobs` row records the cursor, so a reset mid-copy resumes to the
+     * complete tree at the next open.
+     */
+    private copyTree;
+    /**
+     * Run a copyTree job to completion: the root row and the job row in the
+     * first transaction, then one page per transaction, the cursor moving in
+     * the transaction that copies the page. `id` resumes a recorded job.
+     */
+    private runCopyTree;
+    /** Finish every job a reset interrupted. Runs at open; a job resumes from its cursor. */
+    private resumeJobs;
     private normalizeBatchInode;
     private authorizeBatch;
     /**

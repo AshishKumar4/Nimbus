@@ -615,6 +615,7 @@ return globalThis.Go;
       realpath: (...args) => hop(supervisor.fsRealpath(...args)),
       remove: (...args) => hop(supervisor.fsRemove(...args)),
       copyFile: (...args) => hop(supervisor.fsCopyFile(...args)),
+      copyTree: (...args) => hop(supervisor.fsCopyTree(...args)),
       fstat: (...args) => hop(supervisor.fsFstat(...args)),
       dup: (...args) => hop(supervisor.fsDup(...args)),
       seek: (...args) => hop(supervisor.fsSeek(...args)),
