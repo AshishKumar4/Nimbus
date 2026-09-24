@@ -60,7 +60,7 @@ import {
   type FencedWorkRecord,
 } from '@nimbus-sh/fabric/fenced-work.js';
 import {
-  EsbuildService,
+  type EsbuildService,
   rewriteBundledEsmToCjs,
   rewriteProvidedCommonJsModules,
   type EsbuildTransformOutcome,
@@ -3820,10 +3820,9 @@ async function _buildPrefetchBundle(
       _markBundleEsmAsFailed(bundle, `esbuild service unavailable: ${reason}`);
     }
   } else {
-    // framework-fixes-F4 (2026-05-12): no esbuild service available at
-    // all (lazy-init failed or never wired). Same diagnostic-shim
-    // treatment so users see WHY the ESM file couldn't be transformed.
-    _markBundleEsmAsFailed(bundle, 'esbuild service not initialized (likely lazy-init failure)');
+    // No esbuild service was given: the ESM cells stage as diagnostics that
+    // say so, rather than as source `new Function` rejects without a reason.
+    _markBundleEsmAsFailed(bundle, 'no esbuild service was given to this launch');
   }
   for (const path of Object.keys(bundle)) {
     if (compiledCellPath(path) === null && (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null)) continue;
@@ -4242,11 +4241,9 @@ export class FacetManager {
   // stage into the next launch of the same entry, as a one-shot's do.
   private readonly residentBundleKeys = new Map<number, string>();
   /**
-   * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
-   * over the prefetch bundle. Created on first exec where vfs is set;
-   * shared across subsequent execs (warm wasm).  Optional setter
-   * `setEsbuildService` lets NimbusSession share its existing instance
-   * to avoid double-init.
+   * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
+   * sets it: the host's own, or one whose transforms run in the session's
+   * esbuild facet. Never one of this isolate: esbuild-wasm's heap only grows.
    */
   private esbuild: EsbuildService | null = null;
 
@@ -4535,11 +4532,7 @@ export class FacetManager {
     }
     return vfs;
   }
-  /**
-   * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
-   * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
-   * for the user-shell `node` runtime; sharing avoids paying init twice.
-   */
+  /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
@@ -4624,12 +4617,6 @@ export class FacetManager {
     if (!this.vfs) {
       return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     }
-    // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so ESM
-    // source files (e.g. tldts/dist/es6/index.js, @remix-run/react,
-    // @tailwindcss/vite, react-remove-scroll, astro) get transformed to CJS
-    // before they hit the facet's `new Function` pre-compile loop. Lazy-create
-    // one if NimbusSession didn't share its own.
-    if (!this.esbuild) this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
     this.imageStore.ensureDir();
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
@@ -4662,7 +4649,7 @@ export class FacetManager {
     }
 
     const vfsState = await buildPrefetchBundle(
-      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild, profile,
+      vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
       this.residencyProfiles.get(key), pacer,
     );
     vfsState.bundleKey = key;

@@ -141,12 +141,8 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
       });
     }
     const composed = self.facetManagerComposed;
-    // W3.5 Fix B: share the session's lazy esbuildService with the
-    // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
-    // wasm-init twice. The session may construct it after the manager
-    // exists, so the share is re-offered on every call; FacetManager
-    // otherwise lazy-creates its own on first exec — same wasm bytes,
-    // same ~10ms init cost, just paid once per surface.
+    // The session may create its esbuild after the manager exists, so it is
+    // offered on every call. Either one runs in the session's esbuild facet.
     if (self.esbuildService) {
       composed.manager.setEsbuildService(self.esbuildService);
     }
