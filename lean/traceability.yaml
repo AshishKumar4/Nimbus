@@ -472,3 +472,19 @@ requirements:
       - invalidatedFromSql lives on work/content-store (P5); its tsRef is added when that lands here
       - Directory parents the SQL answer adds, and the 16384-entry cap (else poison), are not modeled; both only add names or poison
       - Every row write stamps the transaction's generation and every delete tombstones, as ContentStoreBuild states of executeTransactionPlan and copyTree
+  CS-007:
+    statement: With content-store P6 tiering, no live path ever references a cold chunk under any interleaving of writes, dedup links, snapshots, tier passes across their upload await, restore pages and resets; the tier's re-probe and the pre-check on a resumed restore are each necessary.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.ContentStore.Tier.live_never_cold
+      - Nimbus.ContentStore.Tier.tier_without_reprobe_colds_a_live_chunk
+      - Nimbus.ContentStore.Tier.resume_without_precheck_installs_a_cold_chunk
+      - Nimbus.ContentStore.Tier.step_inv
+      - Nimbus.ContentStore.Tier.reachable_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.restore
+    remainingEvidence:
+      - P6 lives on work/content-store; its tier entry point is cited here once it lands on an integrated branch
+      - A file is one chunk; staging, open descriptors and hot snapshots are further tier exclusions not modeled (they only make tier rarer)
+      - Restore is taken to be synchronous within an isolate (no tier step mid-run), as ContentStoreBuild states; copyTree{at} and import are modeled as links that need the chunk local
+      - P4 import resumption (importCursor = MAX(path) under dst) is not modeled

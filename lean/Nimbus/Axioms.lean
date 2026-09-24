@@ -303,6 +303,14 @@ import Nimbus.Refine
 #print axioms Nimbus.ContentStore.editLargeCow_inv
 #print axioms Nimbus.ContentStore.editLargeInPlace_inv
 
+/-! ## Nimbus/ContentStore/Tier.lean -/
+
+#print axioms Nimbus.ContentStore.Tier.step_inv
+#print axioms Nimbus.ContentStore.Tier.reachable_inv
+#print axioms Nimbus.ContentStore.Tier.live_never_cold
+#print axioms Nimbus.ContentStore.Tier.tier_without_reprobe_colds_a_live_chunk
+#print axioms Nimbus.ContentStore.Tier.resume_without_precheck_installs_a_cold_chunk
+
 /-! ## Nimbus/Refine/ContentStoreCases.lean -/
 
 #print axioms Nimbus.Refine.ContentStoreCases.chunkFor_ok
