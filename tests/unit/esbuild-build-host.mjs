@@ -6,9 +6,9 @@
 // only grows. On a throwaway at main 9401b6c9, `npm install` then `vite build`
 // reset the session with exceededMemory at 200.4 MiB.
 //
-// The host is the facet module production loads (esbuildFacetWorkerCode),
-// evaluated here. Options and outcome cross a structured clone, as they cross
-// RPC.
+// The host is the facet module production loads (esbuildFacetWorkerCode, from
+// the assets production stages for it), evaluated here. Options and outcome
+// cross a structured clone, as they cross RPC.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -17,12 +17,16 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { esbuildFacetWorkerCode } from '../../packages/worker/src/facets/esbuild-transform.ts';
+import { ESBUILD_JS_ASSET_PATH } from '../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
+import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const wasmBytes = await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'));
-const jsFnBody = await readFile(new URL('../../packages/worker/public/_assets/esbuild-0.24.2.js', import.meta.url), 'utf8');
-const facetSource = esbuildFacetWorkerCode(wasmBytes.buffer, jsFnBody).modules['worker.js'];
+const staged = (path) => readFile(new URL(`../../packages/worker/public${path}`, import.meta.url), 'utf8');
+const facetSource = esbuildFacetWorkerCode(
+  wasmBytes.buffer, await staged(ESBUILD_JS_ASSET_PATH), await staged(ESBUILD_CLI_ASSET_PATH),
+).modules['worker.js'];
 // The loader resolves these two imports; bound here to what it would supply.
 globalThis.__facetImports = {
   DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },

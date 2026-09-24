@@ -1,8 +1,9 @@
 /**
- * esbuild-wasm-bytes.ts — supervisor-side fetcher for the two esbuild-wasm
- * artifacts a transform facet is built from: the wasm binary and the JS
- * adapter that drives it. Both live in the static-assets layer
- * (env.ASSETS); this module hands them to the caller when needed.
+ * esbuild-wasm-bytes.ts — supervisor-side fetcher for the artifacts the
+ * esbuild facet is built from: the wasm binary, the JS adapter that drives
+ * it, and the runner of the `esbuild` command. All three live in the
+ * static-assets layer (env.ASSETS); this module hands them to the caller when
+ * needed.
  *
  * Cache strategy
  * ──────────────
@@ -32,7 +33,10 @@
  * The JS adapter followed the wasm for the same reason at a smaller
  * scale: the supervisor already imports esbuild-wasm's browser build as a
  * module for its own transforms, so carrying the same 117 KiB again as a
- * string literal for facets doubled it in the Worker bundle.
+ * string literal for facets doubled it in the Worker bundle. The CLI runner
+ * (32 KiB of Go glue and fs shim) only ever runs in the facet, so it is
+ * staged too; its name carries a prefix of its digest, because unlike the
+ * other two it changes without an esbuild upgrade.
  *
  * Each call to `fetchEsbuildWasmBytes(env)` now does:
  *   - one `caches.default.match()` — sub-millisecond on hit
@@ -49,6 +53,7 @@
  * digest the generator recorded before returning).
  */
 import { ESBUILD_JS_ASSET_PATH, ESBUILD_JS_SHA256, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256, } from '../esbuild-wasm-bundle.generated.js';
+import { ESBUILD_CLI_ASSET_PATH, ESBUILD_CLI_SHA256 } from '../esbuild-cli-artifact.generated.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
@@ -64,12 +69,15 @@ import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
  */
 export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_WASM_ASSET_PATH}`;
 export const ESBUILD_JS_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_JS_ASSET_PATH}`;
+/** The CLI runner's key names its build id, so each rebuild lands a fresh entry. */
+export const ESBUILD_CLI_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_CLI_ASSET_PATH}`;
 const ESBUILD_WASM_ASSET = {
     label: 'esbuild-wasm',
     path: ESBUILD_WASM_ASSET_PATH,
     l2Key: ESBUILD_WASM_L2_KEY,
     sha256: ESBUILD_WASM_SHA256,
     contentType: 'application/wasm',
+    stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
 };
 const ESBUILD_JS_ASSET = {
     label: 'esbuild-wasm JS adapter',
@@ -77,6 +85,15 @@ const ESBUILD_JS_ASSET = {
     l2Key: ESBUILD_JS_L2_KEY,
     sha256: ESBUILD_JS_SHA256,
     contentType: 'text/javascript; charset=utf-8',
+    stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
+};
+const ESBUILD_CLI_ASSET = {
+    label: 'esbuild CLI runner',
+    path: ESBUILD_CLI_ASSET_PATH,
+    l2Key: ESBUILD_CLI_L2_KEY,
+    sha256: ESBUILD_CLI_SHA256,
+    contentType: 'text/javascript; charset=utf-8',
+    stagedBy: 'scripts/bundle-facet-workers.mjs',
 };
 /**
  * Fetch the esbuild-wasm bytes from the static-assets layer.
@@ -101,6 +118,14 @@ export function fetchEsbuildWasmBytes(env) {
  */
 export async function fetchEsbuildJsFnBody(env) {
     return new TextDecoder().decode(await fetchVerifiedAsset(env, ESBUILD_JS_ASSET));
+}
+/**
+ * Fetch the `esbuild` command's runner: Go's wasm_exec.js and the typed fs
+ * shim, a script that installs `globalThis.__esbuildCliRun` when the esbuild
+ * facet evaluates it. Verified like the adapter it sits beside.
+ */
+export async function fetchEsbuildCliRunner(env) {
+    return new TextDecoder().decode(await fetchVerifiedAsset(env, ESBUILD_CLI_ASSET));
 }
 async function fetchVerifiedAsset(env, asset) {
     const caches = globalThis.caches;
@@ -141,7 +166,7 @@ async function fetchVerifiedAsset(env, asset) {
         throw new Error(`${asset.label} integrity check failed: expected ${asset.sha256}, got ` +
             `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${asset.path} — ` +
             'the staged asset is corrupt or out of sync; rerun ' +
-            'scripts/bundle-esbuild-wasm.mjs and redeploy');
+            `${asset.stagedBy} and redeploy`);
     }
     if (!fromCache) {
         // ── L2 write-back ────────────────────────────────────────────

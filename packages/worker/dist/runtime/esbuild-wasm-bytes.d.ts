@@ -1,8 +1,9 @@
 /**
- * esbuild-wasm-bytes.ts — supervisor-side fetcher for the two esbuild-wasm
- * artifacts a transform facet is built from: the wasm binary and the JS
- * adapter that drives it. Both live in the static-assets layer
- * (env.ASSETS); this module hands them to the caller when needed.
+ * esbuild-wasm-bytes.ts — supervisor-side fetcher for the artifacts the
+ * esbuild facet is built from: the wasm binary, the JS adapter that drives
+ * it, and the runner of the `esbuild` command. All three live in the
+ * static-assets layer (env.ASSETS); this module hands them to the caller when
+ * needed.
  *
  * Cache strategy
  * ──────────────
@@ -32,7 +33,10 @@
  * The JS adapter followed the wasm for the same reason at a smaller
  * scale: the supervisor already imports esbuild-wasm's browser build as a
  * module for its own transforms, so carrying the same 117 KiB again as a
- * string literal for facets doubled it in the Worker bundle.
+ * string literal for facets doubled it in the Worker bundle. The CLI runner
+ * (32 KiB of Go glue and fs shim) only ever runs in the facet, so it is
+ * staged too; its name carries a prefix of its digest, because unlike the
+ * other two it changes without an esbuild upgrade.
  *
  * Each call to `fetchEsbuildWasmBytes(env)` now does:
  *   - one `caches.default.match()` — sub-millisecond on hit
@@ -71,6 +75,8 @@ export interface EsbuildWasmFetchEnv {
  */
 export declare const ESBUILD_WASM_L2_KEY: string;
 export declare const ESBUILD_JS_L2_KEY: string;
+/** The CLI runner's key names its build id, so each rebuild lands a fresh entry. */
+export declare const ESBUILD_CLI_L2_KEY: string;
 /**
  * Fetch the esbuild-wasm bytes from the static-assets layer.
  *
@@ -91,4 +97,10 @@ export declare function fetchEsbuildWasmBytes(env: EsbuildWasmFetchEnv): Promise
  * splice it in verbatim, so it is verified like the wasm it drives.
  */
 export declare function fetchEsbuildJsFnBody(env: EsbuildWasmFetchEnv): Promise<string>;
+/**
+ * Fetch the `esbuild` command's runner: Go's wasm_exec.js and the typed fs
+ * shim, a script that installs `globalThis.__esbuildCliRun` when the esbuild
+ * facet evaluates it. Verified like the adapter it sits beside.
+ */
+export declare function fetchEsbuildCliRunner(env: EsbuildWasmFetchEnv): Promise<string>;
 //# sourceMappingURL=esbuild-wasm-bytes.d.ts.map

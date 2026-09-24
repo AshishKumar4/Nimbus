@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Integrity guard for the staged build artifacts the supervisor compiles as
-// wasm modules or evaluates as facet ESM: the esbuild wasm, the sql.js wasm,
-// and every file of the opencode artifact.
+// wasm modules or evaluates as facet code: the esbuild wasm, its JS adapter
+// and the `esbuild` command's runner, the sql.js wasm, and every file of the
+// opencode artifact.
 //
 // The L2 tier (caches.default) is the untrusted one — a poisoned colo-cache
 // entry is served ahead of ASSETS and never re-derived from the deploy — so
@@ -24,11 +25,14 @@ import {
   OPENCODE_ARTIFACT_VERSION,
 } from '../../packages/worker/src/opencode-artifact.generated.ts';
 import {
+  ESBUILD_CLI_L2_KEY,
   ESBUILD_JS_L2_KEY,
   ESBUILD_WASM_L2_KEY,
+  fetchEsbuildCliRunner,
   fetchEsbuildJsFnBody,
   fetchEsbuildWasmBytes,
 } from '../../packages/worker/src/runtime/esbuild-wasm-bytes.ts';
+import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 import {
   SQLITE_WASM_L2_KEY,
   fetchSqliteWasmBytes,
@@ -95,6 +99,13 @@ const cases = [
     l2Key: ESBUILD_JS_L2_KEY,
     asset: path.join(workerRoot, 'public', '_assets', `esbuild-${ESBUILD_VERSION}.js`),
     fetch: async (env) => new TextEncoder().encode(await fetchEsbuildJsFnBody(env)),
+  },
+  {
+    // Evaluated in the esbuild facet at startup, so pinned the same way.
+    label: 'esbuild CLI runner',
+    l2Key: ESBUILD_CLI_L2_KEY,
+    asset: path.join(workerRoot, 'public', ESBUILD_CLI_ASSET_PATH),
+    fetch: async (env) => new TextEncoder().encode(await fetchEsbuildCliRunner(env)),
   },
   {
     label: 'sql.js wasm',

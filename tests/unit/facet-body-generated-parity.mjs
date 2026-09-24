@@ -5,10 +5,11 @@
 // (runtime/bash/preamble.ts) and the esbuild CLI runner
 // (runtime/esbuild-cli/preamble.ts) are real, type-checked modules. What
 // actually ships is the STRING scripts/bundle-facet-workers.mjs esbuilds out of
-// them into core's runtime/*.generated.ts, which the runners splice into their
-// facet module sources.
+// them: into core's runtime/*.generated.ts, which the runners splice into their
+// facet module sources, or, for the esbuild CLI runner, into the worker's
+// staged asset the esbuild facet fetches.
 //
-// Both generated files are tracked, so an edit to a preamble without re-running
+// Every one of them is tracked, so an edit to a preamble without re-running
 // the bundler ships the OLD body while the source, the types and every review
 // show the new one. That drift is invisible: the code reads correct and the
 // facet runs something else. This fails loud on exactly it.
@@ -21,6 +22,7 @@
 // Mirrors tests/unit/node-shims-artifact-parity.mjs (generated-vs-source parity).
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   bundleBashRunner,
@@ -29,7 +31,7 @@ import {
 } from '../../packages/worker/scripts/bundle-facet-workers.mjs';
 import { WASI_INSTANCE_BODY_SRC } from '../../packages/core/src/runtime/wasi-instance.generated.ts';
 import { BASH_RUNNER_BODY_SRC } from '../../packages/core/src/runtime/bash-runner.generated.ts';
-import { ESBUILD_CLI_BODY_SRC } from '../../packages/core/src/runtime/esbuild-cli.generated.ts';
+import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 
 const cases = [
   {
@@ -49,8 +51,8 @@ const cases = [
   {
     label: 'esbuild CLI runner',
     source: 'packages/core/src/runtime/esbuild-cli/preamble.ts',
-    generated: 'packages/core/src/runtime/esbuild-cli.generated.ts',
-    committed: ESBUILD_CLI_BODY_SRC,
+    generated: `packages/worker/public${ESBUILD_CLI_ASSET_PATH}`,
+    committed: readFileSync(new URL(`../../packages/worker/public${ESBUILD_CLI_ASSET_PATH}`, import.meta.url), 'utf8'),
     rebuild: bundleEsbuildCli,
   },
 ];
