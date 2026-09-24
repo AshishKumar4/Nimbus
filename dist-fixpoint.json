@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d47a7281789c64582e9d13d5ac20ed433d83c414a9124cf10688784976e4624e",
+  "fingerprint": "82b7b2d5784541b67c704cb5ccf14b4fbfd16162511650249e77634e2731c3cc",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -888,8 +888,8 @@
     "packages/core/dist/vfs/seed-project.d.ts.map": "7623e237cca22202e747717fedd3dee60f4adaa3d6f53bdede7fcb32f87b9544",
     "packages/core/dist/vfs/seed-project.js": "92cb00c1ec3d5c0e3bf271201a9a37d82487807f88902c9782fdca2f7c55a17c",
     "packages/core/dist/vfs/sqlite-vfs.d.ts": "37d65fa8b89f6cea490ba43b983b83660f483e61169e9a7f08f22d82001fdc6b",
-    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "bd26f8bdbbb9dbee6dd9f4a61aa7f4bd2f3faeaf82c21737de6d64583dbb5d10",
-    "packages/core/dist/vfs/sqlite-vfs.js": "b73f86fe8a7f6443ab290c39f4b7b7c0264476d7545c07f29f5422f6a3529ddc",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "664f3fe26a7ca127b778eee7fff9215d6b5b6d9af5a9650369814698df7cc647",
+    "packages/core/dist/vfs/sqlite-vfs.js": "132ad32241cad4b7a606d9ca308da08ba9616c9aaf8dc18e79378798febaf25a",
     "packages/core/dist/vfs/symlink-registry.d.ts": "fb4685887e1891ccd7f725377480aaac9be85fe034284951bf7261a13ae02d89",
     "packages/core/dist/vfs/symlink-registry.d.ts.map": "b2a5977e8174423cd83c67d1984d156e3440e5cd974c39967d5ad7ea39729f37",
     "packages/core/dist/vfs/symlink-registry.js": "a770a0a8828d459a837d017d4383ed23e88b6cc2f2cf94127900d56bdffbe272",
@@ -1190,7 +1190,7 @@
     "packages/core/src/vfs/events.ts": "2f120e48b1db372bb5ff0187169c178ca62412416f2e4b98ffd284ebd62b40aa",
     "packages/core/src/vfs/path.ts": "6c83bd9ffc21c509243cb96d30dbd35bd496a553d81b435f732ab013d4dc334c",
     "packages/core/src/vfs/seed-project.ts": "72a9217bb335b6b2881a41e563cfd18361344bc0c5b69f6c3c74e0ad46f44e7d",
-    "packages/core/src/vfs/sqlite-vfs.ts": "4c69e3601fddfb12874df90c2c7ff3f22021300a187219411c1bc50716a83425",
+    "packages/core/src/vfs/sqlite-vfs.ts": "ae04d0c1759afa58b2dfd09a71de6159193dcdc5bea98a230d114fecd96c5357",
     "packages/core/src/vfs/symlink-registry.ts": "4b6dc23bdf6866a512dc9154a121adf49661b47be16f48c447550d78e62669d9",
     "packages/core/src/workspace/nimbus-workspace.ts": "f2f33cace67cf01789b9e7a538e6e6602344c4170d3f95f00bc99a001e3787ba",
     "packages/core/src/workspace/supervisor-op.ts": "bfbcdce594f52fff6c527af7c39abf27e0f29189b5111862860b818656e02cd7",

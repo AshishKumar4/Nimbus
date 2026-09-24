@@ -888,7 +888,8 @@ export class SqliteVFS {
         PRIMARY KEY (path, gen_to)
       ) WITHOUT ROWID`);
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
-            this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen ON vfs_inode_history(gen_to)');
+            // (gen_to, path): drop's keyset walk seeks it; gen_to alone made each page a scan.
+            this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen_path ON vfs_inode_history(gen_to, path)');
             // One row per deleted path, written with the delete: what lets
             // invalidatedSince answer a cursor from before this incarnation's log.
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_tombstones (
@@ -4089,15 +4090,21 @@ export class SqliteVFS {
             ? { sql: '', params: [] }
             : { sql: ' AND (path = ? OR (path > ? AND path < ?))', params: [job.subtree, range.lower, range.upper] };
         let restored = 0;
+        // Revived paths go in path order, so the next page starts past the last:
+        // what it skipped already has a live row, and a write after the restore
+        // began wins over it. Kept in the job row across slices.
+        let revivedAfter = String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]?.cursor ?? '');
         for (let pages = 0;; pages++) {
-            if (pages >= maxPages)
+            if (pages >= maxPages) {
+                this.transactionSync(() => { this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', revivedAfter, id); });
                 return { restored, done: false };
+            }
             const changed = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE gen > ? AND gen < ?${within.sql} ORDER BY gen LIMIT ?`, job.g, startGen, ...within.params, RESTORE_PAGE_ROWS)].map((row) => this.inodeFromRow(row));
             const revived = changed.length < RESTORE_PAGE_ROWS
                 ? [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history AS h
-           WHERE gen_to > ? AND gen_from <= ?${within.sql}
+           WHERE path > ? AND gen_to > ? AND gen_from <= ?${within.sql}
              AND NOT EXISTS (SELECT 1 FROM vfs_inodes i WHERE i.path = h.path)
-           ORDER BY path LIMIT ?`, job.g, job.g, ...within.params, RESTORE_PAGE_ROWS - changed.length)].map((row) => this.inodeFromRow(row))
+           ORDER BY path LIMIT ?`, revivedAfter, job.g, job.g, ...within.params, RESTORE_PAGE_ROWS - changed.length)].map((row) => this.inodeFromRow(row))
                 : [];
             if (changed.length === 0 && revived.length === 0) {
                 this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
@@ -4130,6 +4137,8 @@ export class SqliteVFS {
             }
             for (const past of revived)
                 builder.addInode(restoredRow(past));
+            if (revived.length > 0)
+                revivedAfter = revived[revived.length - 1].path;
             this._writeBatchOnce({ plan: builder.build(), deletedInodes }, { source: 'content-publish', limitMode: 'bounded' });
             restored += changed.length + revived.length;
         }
@@ -4194,7 +4203,7 @@ export class SqliteVFS {
             if (pages >= maxPages)
                 return { dropped, done: false };
             const page = [...this.sql.exec(`SELECT path, gen_to, gen_from, chunk_id, content_id FROM vfs_inode_history
-         WHERE gen_to > ? OR (gen_to = ? AND path > ?) ORDER BY gen_to, path LIMIT ?`, afterGen, afterGen, afterPath, DROP_PAGE_ROWS)];
+         WHERE (gen_to, path) > (?, ?) ORDER BY gen_to, path LIMIT ?`, afterGen, afterPath, DROP_PAGE_ROWS)];
             const done = page.length < DROP_PAGE_ROWS;
             // Only rows that covered the dropped generation can have lost their last snapshot.
             const dead = page.filter((row) => {
