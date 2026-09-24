@@ -103,11 +103,11 @@ function treeShape(vfs, root) {
   const { harness, vfs } = openVfs();
   seedTree(vfs, 'from', 10, 10);
   vfs.mkdir('to', { recursive: true });
-  const chunksBefore = harness.sql.exec('SELECT COUNT(*) AS n FROM file_chunks')[0].n;
+  const chunksBefore = harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n;
 
   vfs.rename('from', 'to/here');
 
-  const chunksAfter = harness.sql.exec('SELECT COUNT(*) AS n FROM file_chunks')[0].n;
+  const chunksAfter = harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n;
   assert.equal(chunksAfter, chunksBefore, 'moving a tree writes no new chunks');
 }
 
@@ -262,17 +262,8 @@ function treeShape(vfs, root) {
   vfs.writeFile('old.txt', 'OLD-CONTENT-TO-COLLECT');
   vfs.rename('new.txt', 'old.txt');
   rawVfs.runContentMaintenance(8);
-  const orphaned = harness.sql
-    .exec('SELECT content_id FROM file_chunks')
-    .map((r) => r.content_id);
-  const live = new Set(
-    harness.sql
-      .exec("SELECT content_id FROM inodes WHERE kind != 1 AND content_id IS NOT NULL")
-      .map((r) => r.content_id),
-  );
-  for (const id of orphaned) {
-    assert.ok(live.has(id), `content ${id} outlived every inode referencing it`);
-  }
+  assert.deepEqual(rawVfs._auditContentStore(), { chunks: 0, contents: 0 }, 'no content outlived every row naming it');
+  assert.equal(harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_chunks')[0].n, 1, 'only the moved file\'s chunk is left');
   assert.equal(rawVfs._verifyCounters(), null);
 }
 

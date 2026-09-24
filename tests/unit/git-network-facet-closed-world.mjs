@@ -489,9 +489,9 @@ export const git = {
       }
       if (result.ok === true) {
         for (const row of harness.sql.exec(
-          "SELECT content_id FROM inodes WHERE path = 'continuation/.git/nimbus-clone-job'",
+          "SELECT chunk_id FROM vfs_inodes WHERE path = 'continuation/.git/nimbus-clone-job'",
         )) {
-          continuationMarkerContentIds.add(String(row.content_id));
+          continuationMarkerContentIds.add(Number(row.chunk_id));
         }
       }
       return result;
@@ -962,16 +962,16 @@ export const git = {
       JSON.stringify(marker.cursor) === JSON.stringify(firstCursor)),
     'first committed cursor was not advanced in a final marker-only wave',
   );
-  // Marker generations that legitimately schedule GC: v1 → prepared-seq0
-  // overwrite, seq0 → committed-seq1 overwrite, and the terminal delete.
-  // Every additional scheduling is an unchanged-marker re-write re-arming
-  // content maintenance once per wave.
+  // Marker generations that may legitimately queue their chunk for GC: v1 →
+  // prepared-seq0 overwrite, seq0 → committed-seq1 overwrite (each unless
+  // rewritten in place), and the terminal delete. An unchanged-marker
+  // re-write resolves to the chunk it already names and queues nothing.
   const markerGcSchedules = harness.statements.filter((statement) =>
-    /INSERT (OR IGNORE )?INTO content_lifecycle/.test(statement.sql) &&
-    statement.sql.includes("'gc'") &&
-    statement.params.some((param) => continuationMarkerContentIds.has(String(param))));
-  assert.equal(markerGcSchedules.length, 3,
-    'unchanged marker waves scheduled content GC');
+    /INSERT OR IGNORE INTO vfs_gc_queue/.test(statement.sql) &&
+    statement.params.some((param, index) => index % 2 === 1 && statement.params[index - 1] === 0
+      && continuationMarkerContentIds.has(Number(param))));
+  assert.ok(markerGcSchedules.length >= 1 && markerGcSchedules.length <= 3,
+    `unchanged marker waves scheduled content GC (${markerGcSchedules.length})`);
 
   const replayJobId = 'marker-replay-job';
   const replayOptionsHash = 'f'.repeat(64);

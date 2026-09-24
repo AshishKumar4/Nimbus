@@ -130,6 +130,11 @@ export class ExecutionFs {
   async rmdir(path: string): Promise<void> { await this.bridge.rmdir(path); }
   async rename(from: string, to: string): Promise<void> { await this.bridge.rename(from, to); }
   async copyFile(from: string, to: string): Promise<void> { await this.bridge.copyFile(from, to); }
+  /** Copy a tree by reference; EXDEV when the bridge cannot (a kernel VFS, a mount). */
+  async copyTree(from: string, to: string, options?: { preserve?: boolean }): Promise<number> {
+    if (this.bridge instanceof VFS) throw Object.assign(new Error(`EXDEV: ${to}`), { code: 'EXDEV' });
+    return await this.bridge.copyTree(from, to, options);
+  }
   async remove(path: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
     if (!(this.bridge instanceof VFS)) { await this.bridge.remove(path, options); return; }
     try { if (options.recursive && this.bridge.isDirectory(path)) this.bridge.rmdirRecursive(path); else this.bridge.unlink(path); }

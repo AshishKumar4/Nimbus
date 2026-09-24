@@ -81,9 +81,18 @@ and common mutations (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rename`,
 `rmdir`, `symlink`, `readlink`, `truncate`), while merging live directory
 entries so child-process writes are visible inside long-running Node
 processes. `fs.promises.open` FileHandles and live appends use the stateless
-range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which rewrite only the
-touched 64 KiB chunks; VFS revisions are per-path subtree watermarks
-(`SqliteVFS.revision(path?)`).
+range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which re-cut and
+store only the chunks around the change; VFS revisions are per-path subtree
+watermarks (`SqliteVFS.revision(path?)`).
+
+The SQLite VFS is content-addressed (`packages/core/src/vfs/sqlite-vfs.ts`):
+every chunk is stored once per database by sha256, a file up to 64 KiB is one
+chunk named from its inode row, and a larger file is a FastCDC 16/32/64 KiB
+manifest. `copyFile`, `copyTree` (`cp -r`) and `rename` copy rows, never
+bytes; a write to shared content copies on write. Every committed transaction
+advances `vfs_state.gen`, which is also the revision clock, and every
+dereference is queued in `vfs_gc_queue` in the same transaction; GC deletes a
+queued id only after probing every reference.
 
 Every resident process (node servers, python/ruby socket servers, the opencode
 TUI and its headless server) is a DO Facet named `proc-<pid>`. **Which actor

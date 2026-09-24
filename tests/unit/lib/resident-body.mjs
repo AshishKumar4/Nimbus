@@ -89,9 +89,9 @@ const dec = new TextDecoder();
  * the double serves every route the session serves, whichever side of the
  * native/routed line an op is on.
  */
-export function createAuthority() {
+export function createAuthority(vfsOptions) {
   const harness = createSqliteVfsTestHarness();
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx, undefined, vfsOptions);
   const root = rawVfs.as(CRED_KERNEL);
   root.mkdir('home/user', { recursive: true, mode: 0o755 });
   root.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);

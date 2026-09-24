@@ -142,7 +142,7 @@ export interface NimbusFilesystemAuthority {
 }
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -251,6 +251,15 @@ export interface RuntimeFsBridge {
         force?: boolean;
     }): Awaitable<void>;
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
+    /**
+     * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
+     * `-p`), returning the entries copied. Within one SQLite filesystem this
+     * copies inode rows, never bytes; across mounts it fails EXDEV and the
+     * caller copies entry by entry.
+     */
+    copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
+        preserve?: boolean;
+    }): Awaitable<number>;
     fstat(handleId: number): Awaitable<RuntimeVfsStat>;
     dup(handleId: number): Awaitable<RuntimeFileHandle>;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;
@@ -320,6 +329,8 @@ export interface VfsListEntry {
     rev: number;
     stat: RuntimeVfsStat;
     linkTarget?: string;
+    /** Files only: equal keys mean equal bytes (SqliteVFS.contentKey). */
+    contentKey?: string;
 }
 /**
  * One page of {@link RuntimeFsBridge.list}.

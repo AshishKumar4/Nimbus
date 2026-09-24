@@ -98,12 +98,4 @@ const reopened = open().as(CRED_SESSION_USER);
 assert.equal(reopened.stat(f).ctime, vfs.stat(f).ctime);
 assert.equal(reopened.stat('/home/main/e/child').ctime, childCtime);
 
-// ── Rows written before the column existed report their mtime ───────────────
-db.run('ALTER TABLE inodes DROP COLUMN ctime');
-const upgraded = open().as(CRED_SESSION_USER);
-assert.equal(upgraded.stat(f).ctime, upgraded.stat(f).mtime);
-tick();
-upgraded.chmod(f, 0o644);
-assert.equal(upgraded.stat(f).ctime, clock, 'and track changes from then on');
-
 console.log('sqlite-vfs-ctime: all assertions passed');

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function makeVfs(db) {
   const harness = createSqliteVfsTestHarness(db);
@@ -60,10 +60,10 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
   const statementStart = harness.statementCount;
   const patch = pattern(10, 7);
   vfs.writeRange('f.bin', CHUNK_SIZE - 5, patch); // spans chunks 0 and 1
-  const chunkWrites = harness.statements.slice(statementStart)
-    .filter((statement) => /INSERT OR REPLACE INTO file_chunks/i.test(statement.sql))
-    .reduce((count, statement) => count + (statement.params.length / 3), 0);
-  assert.equal(chunkWrites, 2, 'range write spanning one boundary must rewrite exactly 2 chunks');
+  // Only the chunks around the patch are re-cut and stored: at most the two
+  // it straddles, never the file.
+  const written = chunkBytesWritten(harness, statementStart);
+  assert.ok(written > 0 && written <= 2 * CHUNK_SIZE, `range write stored ${written} chunk bytes`);
 
   const expected = new Uint8Array(data);
   expected.set(patch, CHUNK_SIZE - 5);

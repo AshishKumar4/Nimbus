@@ -6,6 +6,76 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-09-24
 
+### filesystem
+
+- The SQLite filesystem stores content by sha256: every chunk is stored once
+  per database. A file up to 64 KiB is one chunk named from its inode row; a
+  larger file is a manifest of FastCDC chunks (16/32/64 KiB), so an edit
+  re-cuts and stores only the chunks around it. Writing a second identical
+  node_modules tree stores no chunk (measured: 167 MB then 10.7 MB for a
+  20,000-file corpus written twice, against 263 MB each time before).
+- `stat()` reports the row's generation (`gen`), and `contentKey(path)` gives
+  a key that is equal only for equal bytes.
+- `copyFile` copies the inode row, not the bytes; a later write to either
+  file copies on write.
+- Garbage collection works from a queue written in the same transaction as
+  every dereference, and deletes a chunk only after probing every reference
+  to it. A reset in the middle of a large write leaves no chunk behind.
+- `cp -r`, `-R` and `-a` copy directories. A copy to a new destination
+  within the filesystem copies inode rows in bounded transactions and no
+  bytes (`copyTree`, measured below); one into an existing directory merges
+  entry by entry. `cp -p` preserves mode and times, and a directory without
+  `-r` is omitted with GNU cp's message. A reset mid-copy resumes to the
+  complete tree the next time the filesystem opens.
+- Snapshots: `SqliteVFS.snapshot(name)` pins the current tree in one
+  row, whatever its size (0.07 ms at 100k files); `snapshot(name,
+  { quiesce: true })` waits for streamed writes first. `at(name)` is a
+  read-only view with the usual permission checks, `diff(a, b)` lists what
+  changed between two snapshots or the live tree, `restore(name,
+  { subtree })` puts the tree back and `dropSnapshot(name)` releases what
+  only it held. Restore, diff and drop cost the changes since the snapshot,
+  not the tree, and a reset during restore or drop finishes at the next
+  open. The first write to a path after a snapshot keeps its previous row;
+  later writes keep nothing. `copyTree(src, dst, { at })` forks a snapshot.
+  `storeStats()` reports chunks, history rows, the GC queue, snapshots and
+  jobs.
+- Long filesystem jobs yield. `copyTreeAsync` (used by `cp -r` over RPC),
+  `restoreAsync` and `dropSnapshotAsync` run 200 transactions at a time
+  with a yield between, and a job a reset interrupted resumes the same way
+  at open. workerd reset an object that forked 1M files in one synchronous
+  turn; sliced, the same fork took 28 s (27.5 us a row).
+- Snapshot history can live in a cold store: with `coldStore` (an R2
+  bucket binding or anything with get/put/delete) `tierColdChunks()` moves
+  chunks that only snapshots reference out of the database, so the quota
+  bounds the live tree and history is unbounded. The live tree never names
+  a cold chunk and always reads synchronously. `await prepareSnapshot(name)`
+  brings a snapshot's chunks back before `at(name)` reads, `restore(name)`
+  or `copyTree(..., { at })`, which fail ENODATA otherwise; a write of a cold
+  chunk's bytes makes it local again; GC deletes cold objects too.
+- Trees move between databases by hash: `exportPage({ at, root, after })`
+  lists a snapshot's rows with their chunk hashes, `wantChunks(page)` says
+  which chunks the importer lacks, `exportChunks(hashes)` sends those in
+  bounded frames, `importChunks(dst, chunks)` stores them (re-hashed) and
+  `importPage(dst, page)` writes the rows. Only missing chunks travel (a
+  second import of the same tree moved 0 bytes); a file of any size imports
+  in frames; an import a reset interrupts resumes from `importCursor(dst)`;
+  a non-empty target, another schema and a chunk that does not hash to its
+  name are refused. `pageDigest(...)` compares two databases page by page.
+  Measured between two Durable Objects: 17-21 MB/s of unique content, the
+  storage write rate (the same frames alone move at 60-64 MB/s).
+- The revision clock survives a supervisor restart. The epoch is the
+  database's incarnation and revisions are its generations, so a facet
+  holding a cursor from before a restart gets a delta instead of a poison:
+  deltas older than the in-memory log are answered from the rows and a
+  tombstone per deleted path (poisoning only past 16,384 paths or below the
+  oldest of the 65,536 tombstones kept). An untouched file keeps its
+  revision across the restart, so a facet's reconcile keeps its rows.
+  `list()` entries carry `contentKey`. `rotateIncarnation()` starts a new
+  epoch, for a storage restore to an earlier point in time.
+- The revision clock is the durable generation, so revisions jump by more
+  than one between publications. Existing filesystems start empty: the
+  pre-v2 tables are ignored and deleted in bounded pages.
+
 ### git
 
 - `git rev-parse` answers `--show-toplevel`, `--git-dir`,

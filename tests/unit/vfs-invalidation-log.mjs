@@ -116,7 +116,7 @@ console.log('vfs-invalidation-log: all assertions passed');
 // a bound: paths are unbounded in length, so N entries permit unbounded
 // memory — in the supervisor DO, which is the memory-constrained side and
 // has been observed resetting under allocation pressure. Overflowing it must
-// stay safe (poison, cold cache) rather than grow without limit.
+// stay safe (a delta from SQL, or a poison) rather than grow without limit.
 {
   const h2 = createSqliteVfsTestHarness();
   const raw2 = new SqliteVFS(h2.sql, h2.ctx);
@@ -128,7 +128,11 @@ console.log('vfs-invalidation-log: all assertions passed');
     v2.writeFile(`/${deep}/f${i}-${'y'.repeat(120)}.txt`, enc.encode('z'));
   }
   const after = raw2.invalidatedSince(base.epoch, base.rev);
-  assert.equal(after.poison, true, 'a cursor older than the retained log poisons');
+  // Older than the log, the delta comes from the rows themselves, complete.
+  assert.equal(after.poison, false, 'a cursor older than the retained log is answered from SQL');
+  const reported = new Set(names(after));
+  for (let i = 0; i < 4000; i++) assert.ok(reported.has(`${deep}/f${i}-${'y'.repeat(120)}.txt`));
+  assert.ok(reported.has(deep), 'with the parent');
   // 4000 writes x ~350 B/entry x 2 entries would be ~2.8 MB unbounded.
   const held = raw2._invalidationBytes;
   assert.ok(held <= 256 * 1024, `log stays within its byte budget, held=${held}`);
