@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "86b6dccb8885d0fbbc0a6151578d86779ba5a4017611bf5ab3818139d1bd3d0b",
+  "fingerprint": "7ac0eacba8dd7b18cb450518f7bc2ef1ea4e56233f39d25a9148723c892a97d9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1670,9 +1670,9 @@
     "packages/worker/dist/runtime/node-runner.d.ts": "348328f3bdba5bc900e1906af04cbfcab83f612dc4a02c28215c4427d145ceed",
     "packages/worker/dist/runtime/node-runner.d.ts.map": "6cf74e8948d8bba70a25b7b98561052f6b12b800c973e17cc4cafc8ed9558303",
     "packages/worker/dist/runtime/node-runner.js": "a0f68b53b11e18b79632de3846387655cb9ba27f4ab98496592720abf1c05730",
-    "packages/worker/dist/runtime/node-shims-artifact.d.ts": "e9aef36bb4f5b751ea6bb43ea2ff2d94eae1ee9b41d3d087cb71ccff1b225dec",
-    "packages/worker/dist/runtime/node-shims-artifact.d.ts.map": "ea1eb72f632c35cb124d89c50e73b2f8a60d83904eee3a49d0312f0a69562568",
-    "packages/worker/dist/runtime/node-shims-artifact.js": "00c67b71435b07704e9278f0f451237ad9f95743cca2864f577478d165f40be0",
+    "packages/worker/dist/runtime/node-shims-artifact.d.ts": "916413c9b17de76949f23e067a3241d18acd644f2c8a302596eeb14950fa86ae",
+    "packages/worker/dist/runtime/node-shims-artifact.d.ts.map": "261b1c675a51a81e80b4ed4424d354884ddbca5453e073460f09f95ee63dcecd",
+    "packages/worker/dist/runtime/node-shims-artifact.js": "2bb32fef969c29bb85ed31f4222287d31e4d8c90a7f06eb7b49d7b267573110b",
     "packages/worker/dist/runtime/node-shims.d.ts": "1750e905bc35ca6f69ef00897443087b825d6d94f9028612b0175d440dc511f4",
     "packages/worker/dist/runtime/node-shims.d.ts.map": "25fc04ec0dab6c8d24b53b1ee8a2a6817ada40afba0841989e1b01a6429cd4fa",
     "packages/worker/dist/runtime/node-shims.js": "c2eee4933cdfa73faa3238162e7231a2fa1c681ee7958ae0d0f54088aabee410",
@@ -2000,7 +2000,7 @@
     "packages/worker/src/runtime/html-entrypoint.ts": "a601f3fe0bbec416f945a7f6d7ca029f819ab1c610530d438df384337682fc74",
     "packages/worker/src/runtime/node-repl.ts": "aceafbc8b8203b31c188e01afd958984d83ec80a07dc0b9968d7f70ba87b311a",
     "packages/worker/src/runtime/node-runner.ts": "50b5442bcd138191c8d292828937fd4d275e4d78f4ed071d7ed1082d5a1b63b1",
-    "packages/worker/src/runtime/node-shims-artifact.ts": "3cfaade9f85974ee606e4db7b293e325847c0b5cf77386c3c45a4a2d55c37a48",
+    "packages/worker/src/runtime/node-shims-artifact.ts": "3d704c8843a0add9304ac933a7cf83f9edc846ed94cc3c77bd484121b575851d",
     "packages/worker/src/runtime/node-shims.ts": "00a5fe0c1b04ee2059e8b4eb4a441fe46d034a7b184def0e6192df4bc36696ff",
     "packages/worker/src/runtime/opencode-artifact.ts": "c3300c3c357fed78f0eef8f0e7304d7ad43ef09a2ebe9ddf7d3fd4324a41405d",
     "packages/worker/src/runtime/opencode-facet-runner.ts": "812e2650958608eaea0ec61531d5ad0a46cd70528a9eff2d61f3e3d64364b149",

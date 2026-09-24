@@ -38,7 +38,6 @@ import {
   fetchSqliteWasmBytes,
 } from '../../packages/worker/src/runtime/sqlite-wasm-bytes.ts';
 import { fetchOpencodeWasmBytes } from '../../packages/worker/src/runtime/opencode-artifact.ts';
-import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
 import {
   NODE_SHIMS_ENTRY,
   RESIDENT_STORE_ENTRY,
@@ -49,6 +48,9 @@ const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../packages/worker',
 );
+
+// Imported per case, so each case gets its own memo (tests below).
+const NODE_FETCHER = '../../packages/worker/src/runtime/node-shims-artifact.ts';
 
 const POISON = new TextEncoder().encode('attacker-controlled bytes');
 
@@ -191,54 +193,98 @@ try {
     );
   }
 
-  // The node-compat layer's three sources arrive in one per-isolate fetch.
-  // Each is verified on its own: poisoning any one of them, on either tier,
-  // is a throw that names it, never a facet spliced from attacker text.
-  // Failed fetches are not memoized, so the clean fetch comes last.
+  // The node-compat layer's three sources arrive in one per-isolate fetch, and
+  // each is verified on its own. The colo cache here keeps what it is given,
+  // as caches.default does: an entry is served to every later fetch in the
+  // colo for the build, so only verified bytes may ever be put, and a bad
+  // entry has to go rather than fail every node launch after it.
   const nodeSources = [
     ['node-shims', NODE_SHIMS_ENTRY, 'shims'],
     ['vfs-write-ledger', VFS_WRITE_LEDGER_ENTRY, 'ledger'],
     ['resident-store', RESIDENT_STORE_ENTRY, 'residentStore'],
   ];
   const stagedText = (entry) => readFileSync(path.join(workerRoot, 'public', entry.slice(1)), 'utf8');
-  const nodeAssets = (poisoned) => ({
+  // A truncated body, as an interrupted read or a short 200 would give.
+  const truncated = (entry) => stagedText(entry).slice(0, 1000);
+  const nodeAssets = (bad) => ({
     ASSETS: {
       async fetch(request) {
         const entry = new URL(request.url).pathname;
-        return new Response(entry === poisoned ? POISON : stagedText(entry));
+        return new Response(entry === bad ? truncated(entry) : stagedText(entry));
       },
     },
   });
-  /** caches.default serving POISON for `poisoned`'s entry, a miss for the rest. */
-  const nodeCaches = (poisoned) => {
-    const puts = [];
+  const persistentCache = () => {
+    const entries = new Map();
     globalThis.caches = {
       default: {
         async match(request) {
-          return poisoned !== null && new URL(request.url).pathname === poisoned ? new Response(POISON) : undefined;
+          const body = entries.get(request.url);
+          return body === undefined ? undefined : new Response(body);
         },
-        async put(request, response) {
-          puts.push(request.url);
-          await response.text();
-        },
+        async put(request, response) { entries.set(request.url, await response.text()); },
+        async delete(request) { return entries.delete(request.url); },
       },
     };
-    return puts;
+    return entries;
   };
+  const cachedFor = (entries, entry) => [...entries].filter(([url]) => new URL(url).pathname === entry).map(([, body]) => body);
+  // Each case runs in an isolate of its own: a fresh copy of the fetcher and its memo.
+  let isolate = 0;
+  const freshIsolate = async () => (await import(`${NODE_FETCHER}?isolate=${++isolate}`)).fetchNodeFacetSources;
+  const assertServesStaged = (fetched, what) => {
+    for (const [label, entry, field] of nodeSources) {
+      assert.equal(fetched[field], stagedText(entry), `${what}: ${label} is the staged source`);
+    }
+  };
+  const assertCachesOnlyStaged = (entries, what) => {
+    for (const [label, entry] of nodeSources) {
+      for (const body of cachedFor(entries, entry)) {
+        assert.equal(body, stagedText(entry), `${what}: L2 holds bytes for ${label} that are not the staged source`);
+      }
+    }
+  };
+
   for (const [label, entry] of nodeSources) {
-    nodeCaches(entry);
-    await rejects(() => fetchNodeFacetSources(nodeAssets(null)), new RegExp(`${label} asset integrity mismatch`),
-      `${label}: poisoned L2 entry`);
-    nodeCaches(null);
-    await rejects(() => fetchNodeFacetSources(nodeAssets(entry)), new RegExp(`${label} asset integrity mismatch`),
-      `${label}: poisoned ASSETS read`);
+    // A bad ASSETS body is refused and never cached: once ASSETS is sound
+    // again, the same isolate's next fetch succeeds.
+    {
+      const entries = persistentCache();
+      const fetchSources = await freshIsolate();
+      await rejects(() => fetchSources(nodeAssets(entry)), new RegExp(`${label} asset integrity mismatch`),
+        `${label}: truncated ASSETS body`);
+      assertCachesOnlyStaged(entries, `${label}: after a truncated ASSETS body`);
+      assertServesStaged(await fetchSources(nodeAssets(null)), `${label}: the retry after a truncated body`);
+    }
+    // A bad L2 entry is dropped and the source read from ASSETS again, and
+    // the staged bytes take its place.
+    {
+      const entries = persistentCache();
+      await (await freshIsolate())(nodeAssets(null));
+      const [key] = [...entries.keys()].filter((url) => new URL(url).pathname === entry);
+      assert.ok(key, `${label}: a clean fetch caches the source`);
+      entries.set(key, new TextDecoder().decode(POISON));
+      assertServesStaged(await (await freshIsolate())(nodeAssets(null)), `${label}: a poisoned L2 entry`);
+      assertCachesOnlyStaged(entries, `${label}: after a poisoned L2 entry`);
+      assert.equal(cachedFor(entries, entry).length, 1, `${label}: the staged bytes replace the poisoned entry`);
+    }
+    // Both tiers bad: the fetch fails and names the source, and the bad L2
+    // entry is gone rather than waiting for the next fetch.
+    {
+      const entries = persistentCache();
+      await (await freshIsolate())(nodeAssets(null));
+      const [key] = [...entries.keys()].filter((url) => new URL(url).pathname === entry);
+      entries.set(key, new TextDecoder().decode(POISON));
+      await rejects(() => freshIsolate().then((fetchSources) => fetchSources(nodeAssets(entry))),
+        new RegExp(`${label} asset integrity mismatch`), `${label}: poisoned L2 entry and truncated ASSETS body`);
+      assertCachesOnlyStaged(entries, `${label}: after both tiers were bad`);
+    }
   }
-  const nodePuts = nodeCaches(null);
-  const fetched = await fetchNodeFacetSources(nodeAssets(null));
-  for (const [label, entry, field] of nodeSources) {
-    assert.equal(fetched[field], stagedText(entry), `${label}: the facet gets the staged source`);
+  {
+    const entries = persistentCache();
+    assertServesStaged(await (await freshIsolate())(nodeAssets(null)), 'a clean fetch');
+    assert.equal(entries.size, nodeSources.length, 'each source is cached under its own key');
   }
-  assert.equal(new Set(nodePuts).size, nodeSources.length, 'each source is written back to L2 under its own key');
 } finally {
   delete globalThis.caches;
 }
