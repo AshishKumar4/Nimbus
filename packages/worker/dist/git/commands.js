@@ -286,13 +286,52 @@ function getAuthor(ctx) {
         email: ctx.env.GIT_AUTHOR_EMAIL || 'user@nimbus.dev',
     };
 }
+/** fetch, pull and push: `-q`/`--quiet` wherever it appears; the other words keep their order. */
+function takeQuiet(args) {
+    const rest = args.filter((arg) => arg !== '-q' && arg !== '--quiet');
+    return { quiet: rest.length !== args.length, rest };
+}
+/** commit's -m (repeatable), -q and -a, bundled as git allows (`-qm msg`, `-mmsg`); other options stay ignored. */
+function parseCommitArgs(args) {
+    const messages = [];
+    let quiet = false;
+    let all = false;
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--')
+            break;
+        if (arg === '--quiet')
+            quiet = true;
+        else if (arg === '--all')
+            all = true;
+        else if (arg === '--message')
+            messages.push(args[++i] ?? '');
+        else if (arg.startsWith('--message='))
+            messages.push(arg.slice('--message='.length));
+        else if (/^-[^-]/.test(arg)) {
+            for (let j = 1; j < arg.length; j++) {
+                if (arg[j] === 'q')
+                    quiet = true;
+                else if (arg[j] === 'a')
+                    all = true;
+                else if (arg[j] === 'm') {
+                    messages.push(j + 1 < arg.length ? arg.slice(j + 1) : args[++i] ?? '');
+                    break;
+                }
+            }
+        }
+    }
+    return { messages, quiet, all };
+}
 // ── Staging ──────────────────────────────────────────────────────────────
 /** `git add -A` under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
-async function stageAll(git, fs, dir) {
+async function stageAll(git, fs, dir, trackedOnly) {
     const cache = {};
     const added = [];
     const removed = [];
     for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
+        if (trackedOnly && stage === 0)
+            continue;
         if (head === workdir && workdir === stage)
             continue;
         if (workdir === 0)
@@ -364,7 +403,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                         credentialedVfs.mkdir(stripped, { recursive: true });
                 }
                 await git.init({ fs, dir: initDir });
-                ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
+                if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) {
+                    ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
+                }
                 return 0;
             }
             case 'clone': {
@@ -479,23 +520,26 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
             case 'add': {
                 const paths = subArgs.filter(a => !a.startsWith('-'));
                 if (paths.length === 0 || paths.includes('.'))
-                    await stageAll(git, fs, dir);
+                    await stageAll(git, fs, dir, false);
                 else
                     await git.add({ fs, dir, filepath: paths, parallel: false });
                 return 0;
             }
             case 'commit': {
-                const msgIdx = subArgs.indexOf('-m');
-                const message = msgIdx >= 0 ? subArgs[msgIdx + 1] : 'commit';
+                const { messages, quiet, all } = parseCommitArgs(subArgs);
+                const message = messages.length ? messages.join('\n\n') : 'commit';
                 if (!message) {
                     ctx.stderr.write('error: empty commit message\n');
                     return 1;
                 }
+                if (all)
+                    await stageAll(git, fs, dir, true);
                 const sha = await git.commit({
                     fs, dir, message,
                     author: getAuthor(ctx),
                 });
-                ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
+                if (!quiet)
+                    ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
                 return 0;
             }
             case 'log': {
@@ -558,6 +602,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'checkout': {
+                const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
                 const ref = subArgs.find(a => !a.startsWith('-'));
                 if (!ref) {
                     ctx.stderr.write('error: specify a branch\n');
@@ -566,11 +611,13 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 if (subArgs.includes('-b')) {
                     await git.branch({ fs, dir, ref });
                     await git.checkout({ fs, dir, ref });
-                    ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
+                    if (!quiet)
+                        ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
                 }
                 else {
                     await git.checkout({ fs, dir, ref });
-                    ctx.stdout.write(`Switched to branch '${ref}'\n`);
+                    if (!quiet)
+                        ctx.stdout.write(`Switched to branch '${ref}'\n`);
                 }
                 return 0;
             }
@@ -617,24 +664,28 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'fetch': {
-                const remote = subArgs[0] || 'origin';
+                const { quiet, rest } = takeQuiet(subArgs);
+                const remote = rest[0] || 'origin';
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
-                ctx.stdout.write(`Fetching from ${remote}...\n`);
+                if (!quiet)
+                    ctx.stdout.write(`Fetching from ${remote}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'fetch',
                     pid: ctx.pid,
                     dir,
                     remote,
+                    quiet,
                     auth: {
                         username: ctx.env.GIT_USERNAME || '',
                         password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
                     },
                 });
                 if (result.success) {
-                    ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                    if (!quiet)
+                        ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
                 else {
@@ -643,19 +694,22 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'pull': {
-                const remote = subArgs[0] || 'origin';
-                const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
+                const { quiet, rest } = takeQuiet(subArgs);
+                const remote = rest[0] || 'origin';
+                const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
-                ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
+                if (!quiet)
+                    ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'pull',
                     pid: ctx.pid,
                     dir,
                     remote,
                     ref: branch,
+                    quiet,
                     author: getAuthor(ctx),
                     auth: {
                         username: ctx.env.GIT_USERNAME || '',
@@ -663,7 +717,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     },
                 });
                 if (result.success) {
-                    ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                    if (!quiet)
+                        ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
                 else {
@@ -672,26 +727,30 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'push': {
-                const remote = subArgs[0] || 'origin';
-                const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
+                const { quiet, rest } = takeQuiet(subArgs);
+                const remote = rest[0] || 'origin';
+                const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
-                ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
+                if (!quiet)
+                    ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'push',
                     pid: ctx.pid,
                     dir,
                     remote,
                     ref: branch,
+                    quiet,
                     auth: {
                         username: ctx.env.GIT_USERNAME || '',
                         password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
                     },
                 });
                 if (result.success) {
-                    ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                    if (!quiet)
+                        ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
                 else {

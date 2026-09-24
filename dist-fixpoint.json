@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c15c5dfc0e5c64f48053f47411cdf6aa2a399bd6805a4cc614742114dfa026cf",
+  "fingerprint": "9d026f2326b7a91c61708489ce3c0b0c2c139074d15ac1b20bebcee67cd6cd57",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1527,8 +1527,8 @@
     "packages/worker/dist/git-bundle.generated.d.ts.map": "09ec9e130b790c1356c5a93a9b7e3f851bb050f76ea1fccfb4ece1cb4ee9c2e8",
     "packages/worker/dist/git-bundle.generated.js": "6f39a635ab5b5477833f9992a5628e7dbda4b93a90391baa1e54d5abf0064dd5",
     "packages/worker/dist/git/commands.d.ts": "eade284cfb750704d9ad5494f423e088dde934f0051276f6ac98883d1f802612",
-    "packages/worker/dist/git/commands.d.ts.map": "592e03e8ec3172530261d972ec31d1a051ea3180b3e8803d5710658b165ba7d2",
-    "packages/worker/dist/git/commands.js": "0847f102ccba47ee24f108563c484097ea3eec298ef965fddc863ab57aaffc98",
+    "packages/worker/dist/git/commands.d.ts.map": "915681c4608ddf447468290b12c2827a9cdd2f2e802eb0214b6cb7a4b9f8fc0a",
+    "packages/worker/dist/git/commands.js": "77df553e143fc5f6763cf71165b5ce6c037cb44c8f1417096f9a8abb5a30e711",
     "packages/worker/dist/git/network-facet.d.ts": "d8f8ca7b45fa3dba70b2855b1e99d3647dab0066bc197720cec2b7c1a7cc6388",
     "packages/worker/dist/git/network-facet.d.ts.map": "39328fd41cebb45db4f1cf1f6c299ac26ba5037ca323753a4e0025f5f85a32cd",
     "packages/worker/dist/git/network-facet.js": "2f34658added239179349fc8d2ad9bed546782641d2bd20f0e289aa6a0cc49f7",
@@ -1946,7 +1946,7 @@
     "packages/worker/src/facets/wasm-swap-registry.ts": "40e84f0e6242a2cfc3a1fe9948ff9b626a3b8d1ea218ca30d39a3c7def6d9c5c",
     "packages/worker/src/facets/ws-terminal.ts": "ca779c2443a876a5416ba589914247494ddb701d3f4a741b3cad3cd811eeffc7",
     "packages/worker/src/git-bundle.generated.ts": "6eeea03568534f3966e6f96789acb391be314617b55b91d023199f3e26a2397c",
-    "packages/worker/src/git/commands.ts": "a9837d35a09d1c39e5da530a76be8abee206e540eb2ab20fac14230ef238630f",
+    "packages/worker/src/git/commands.ts": "710c273daeecfd02fc8aa7ed14699c0c8a6e296f3b2b24e2ea5ca51f33a39f41",
     "packages/worker/src/git/network-facet.ts": "a5f2fab13d246a91cbfdd2c82ee572e0cdcc91e2e229b4ead5fee02e87658d5d",
     "packages/worker/src/hosted/commands.ts": "93b81b5dc26d2c4c31d0b3315abf67cb4917180897f871b8cdd432a4eaa1559f",
     "packages/worker/src/hosted/runtime.ts": "67e1d13e318b58be68391f5e32b990ab77393480580e88eeaafdbbbb5a882ef9",
