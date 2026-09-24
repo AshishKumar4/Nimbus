@@ -503,7 +503,7 @@ requirements:
       - A facet that drops a subtree when a directory's own entry reports it absent or untraversable is not affected; the resident store on integrate/0924 evicts exact names
   COH-009:
     statement: Under the rule that reports a path the caller cannot see as its nearest visible ancestor with subtree scope, and evicts under structural directory entries, the caller never receives a name it cannot see at answer time, and no row it filled survives a change to that path's content or visibility, chmod-only revocation included.
-    status: proved-in-abstract-model
+    status: proved-and-refined
     theorems:
       - Nimbus.Coherence.VisibleDelta.no_leak
       - Nimbus.Coherence.VisibleDelta.coherence
@@ -511,9 +511,16 @@ requirements:
       - Nimbus.Coherence.VisibleDelta.nva_spec
       - Nimbus.Coherence.VisibleDelta.visible_root
       - Nimbus.Coherence.VisibleDelta.entry_evicts
+      - Nimbus.Coherence.VisibleDelta.report_answers
+      - Nimbus.Coherence.VisibleDelta.no_leak_any
+      - Nimbus.Coherence.VisibleDelta.entry_evicts_any
+      - Nimbus.Coherence.VisibleDelta.coherence_any
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/vfs-visible-delta.json :: tests/unit/vfs-visible-delta-fixture.mjs
     remainingEvidence:
-      - The rule is Main's, to be built by VfsLazyInodesLane on work/vfs-lazy-inodes; the refinement fixture follows its commit
+      - Built by VfsLazyInodesLane at 11315e98 (work/vfs-lazy-inodes); its extra substitution (an entry under a directory removed or renamed away at or after it reported as that directory, subtree) is covered by no_leak_any and coherence_any
+      - The fixture checks properties (evicted set covers mustEvict, no reported name in forbidden), not the exact entry list
       - Visibility is traversability of every directory above a name for one caller; symlinks, confined /tmp views and uid/gid are folded into that one bit
       - Log completeness (every node change logged, structural when kind, existence or traversability changed) is a hypothesis

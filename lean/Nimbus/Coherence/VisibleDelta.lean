@@ -150,4 +150,69 @@ theorem chmod_revokes_rows_below (W0 W1 : World) (V : Path → Bool) (hV : ∀ p
   obtain ⟨m, hm, _, ht⟩ := (coherence W0 W1 V hV d hc hq0 hk).1 a ha hne
   rw [hw] at hm; cases hm; rw [hn] at ht; cases ht
 
+/-! ## Any substitution by a visible ancestor
+
+VfsLazyInodesLane's 11315e98 also reports an entry under a directory `D` as
+`(D, subtree)` when `D` was removed or renamed away in the window at or after the
+entry, so a remade directory never reports names from the one it replaced. Both
+properties hold for every report that keeps a visible entry or replaces an entry
+by a visible ancestor with subtree scope, and names every logged entry that way. -/
+
+/-- `rep` answers `d`: every logged entry is reported as itself (when visible) or
+    by a visible ancestor with subtree scope, and nothing else is reported. -/
+def Answers (V : Path → Bool) (d rep : List Entry) : Prop :=
+  (∀ x ∈ d, (V x.1 = true ∧ x ∈ rep) ∨ ∃ a, a <+: x.1 ∧ V a = true ∧ (a, true) ∈ rep) ∧
+  (∀ y ∈ rep, V y.1 = true)
+
+theorem report_answers (V : Path → Bool) (hroot : V [] = true) (d : List Entry) : Answers V d (report V d) := by
+  refine ⟨fun x hx => ?_, fun y hy => ?_⟩
+  · by_cases hv : V x.1 = true
+    · exact Or.inl ⟨hv, List.mem_map.mpr ⟨x, hx, by simp [hv]⟩⟩
+    · exact Or.inr ⟨nva V x.1, (nva_spec V hroot x.1).2, (nva_spec V hroot x.1).1,
+        List.mem_map.mpr ⟨x, hx, by simp [hv]⟩⟩
+  · obtain ⟨x, _, rfl⟩ := List.mem_map.mp hy
+    split
+    · assumption
+    · exact (nva_spec V hroot x.1).1
+
+theorem no_leak_any (W1 : World) (V : Path → Bool) (hV : ∀ p, V p = true ↔ Visible W1 p) {d rep : List Entry}
+    (ha : Answers V d rep) : ∀ y ∈ rep, Visible W1 y.1 :=
+  fun y hy => (hV _).mp (ha.2 y hy)
+
+theorem entry_evicts_any (V : Path → Bool) {d rep : List Entry} (ha : Answers V d rep) {p q : Path} {b : Bool}
+    (hx : (p, b) ∈ d) (hpq : p <+: q) (hb : p = q ∨ b = true) (hk : Kept rep q) : False := by
+  rcases ha.1 _ hx with ⟨_, hm⟩ | ⟨a, hap, _, hm⟩
+  · have := hk _ hm
+    rcases hb with rfl | hb
+    · exact this.1 rfl
+    · exact this.2 hb hpq
+  · exact (hk _ hm).2 rfl (hap.trans hpq)
+
+theorem coherence_any (W0 W1 : World) (V : Path → Bool) {d rep : List Entry} (ha : Answers V d rep)
+    (hc : Complete W0 W1 d) {q : Path} (hq0 : Visible W0 q) (hk : Kept rep q) :
+    Visible W1 q ∧ W1 q = W0 q := by
+  refine ⟨?_, ?_⟩
+  · intro a hab hne
+    obtain ⟨n, h1, h2, h3⟩ := hq0 a hab hne
+    by_cases e : W1 a = W0 a
+    · exact ⟨n, by rw [e]; exact h1, h2, h3⟩
+    · obtain ⟨b, hb, hs⟩ := hc a (Ne.symm e)
+      apply Classical.byContradiction
+      intro hn
+      have hshape : shape (W0 a) ≠ shape (W1 a) := by
+        intro hsh
+        apply hn
+        rw [h1] at hsh
+        cases hw : W1 a with
+        | none => rw [hw] at hsh; simp [shape] at hsh
+        | some m =>
+          rw [hw] at hsh
+          simp [shape, h2, h3] at hsh
+          exact ⟨m, rfl, hsh.1, hsh.2⟩
+      exact entry_evicts_any V ha hb hab.1 (Or.inr (hs hshape)) hk
+  · apply Classical.byContradiction
+    intro e
+    obtain ⟨b, hb, _⟩ := hc q (Ne.symm e)
+    exact entry_evicts_any V ha hb (List.prefix_refl q) (Or.inl rfl) hk
+
 end Nimbus.Coherence.VisibleDelta

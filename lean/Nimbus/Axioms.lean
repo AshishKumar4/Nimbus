@@ -98,6 +98,10 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.VisibleDelta.entry_evicts
 #print axioms Nimbus.Coherence.VisibleDelta.coherence
 #print axioms Nimbus.Coherence.VisibleDelta.chmod_revokes_rows_below
+#print axioms Nimbus.Coherence.VisibleDelta.report_answers
+#print axioms Nimbus.Coherence.VisibleDelta.no_leak_any
+#print axioms Nimbus.Coherence.VisibleDelta.entry_evicts_any
+#print axioms Nimbus.Coherence.VisibleDelta.coherence_any
 
 /-! ## Nimbus/ContentStore/Bugs.lean -/
 
