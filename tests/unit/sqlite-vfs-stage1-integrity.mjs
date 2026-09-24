@@ -4,10 +4,13 @@ import assert from 'node:assert/strict';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now, so _verifyCounters judges how every later
+  // mutation maintained them rather than a fresh aggregate.
+  rawVfs.getStats();
   return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
@@ -765,27 +768,14 @@ for (const faultCase of [
 // an atomic write is `write temp; rename temp final`, and a whole-inode scan
 // per call made every one of them cost the size of the tree it wrote into.
 {
-  const { rawVfs, vfs } = openVfs();
+  const { harness, rawVfs, vfs } = openVfs();
   vfs.mkdir('bulk', { recursive: true });
   for (let i = 0; i < 400; i++) vfs.writeFile(`bulk/file-${i}.js`, 'x');
   vfs.writeFile('atomic.tmp', 'payload');
 
-  let walked = 0;
-  const inodes = rawVfs.inodes;
-  const whole = new Set(['values', 'keys', 'entries', Symbol.iterator]);
-  rawVfs.inodes = new Proxy(inodes, {
-    get(target, property) {
-      if (whole.has(property)) walked++;
-      const value = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  try {
-    vfs.rename('atomic.tmp', 'bulk/final.js');
-  } finally {
-    rawVfs.inodes = inodes;
-  }
-  assert.equal(walked, 0, 'rename walked the whole inode table');
+  const from = harness.statements.length;
+  vfs.rename('atomic.tmp', 'bulk/final.js');
+  assert.deepEqual(inodeTableScans(harness, from), [], 'rename read the whole inode table');
   assert.equal(vfs.readFileString('bulk/final.js'), 'payload');
   assert.equal(vfs.exists('atomic.tmp'), false);
   assert.equal(rawVfs._verifyCounters(), null);

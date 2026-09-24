@@ -145,14 +145,15 @@ When your own SQL rows must commit with filesystem bytes, use
 `storage.transactionSync`. Use the credentialed synchronous VFS methods inside
 the callback, not the workspace's asynchronous file methods. The callback can
 read its writes; revisions and watch events publish only after commit. On
-rollback, Nimbus clears cached chunks and reloads the always-resident inode
-tree from SQLite before rethrowing with the original error as `cause`.
+rollback, Nimbus drops its cached chunks and inodes, so every later read
+comes from SQLite, and returns open file descriptions to the inodes they
+named before rethrowing with the original error as `cause`.
 
 The method must own the outermost transaction on the same SQL host. Do not
 nest it or start asynchronous work inside it. The host's transaction primitive
-must support nested savepoints for individual VFS writes. If rollback reload
-also fails, Nimbus throws an `AggregateError` carrying both failures; discard
-that VFS instance and reopen it after storage recovers.
+must support nested savepoints for individual VFS writes. If reading those
+inodes back also fails, Nimbus throws an `AggregateError` carrying both
+failures; discard that VFS instance and reopen it after storage recovers.
 
 ## What the worker package adds
 

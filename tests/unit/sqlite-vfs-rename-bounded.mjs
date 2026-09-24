@@ -28,6 +28,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now, so _verifyCounters judges how every later
+  // mutation maintained them rather than a fresh aggregate.
+  rawVfs.getStats();
   return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 

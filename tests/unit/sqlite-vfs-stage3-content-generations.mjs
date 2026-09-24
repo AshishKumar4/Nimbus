@@ -14,6 +14,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  // Load the running counters now: probes below read stats from inside a
+  // statement, where the first read's aggregate would re-enter them.
+  rawVfs.getStats();
   return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
 }
 
@@ -406,11 +409,13 @@ for (let statement = 1; statement <= schemaMigrationStatementCount; statement++)
 }
 
 // The loaded inode is the content-resolution cache: an uncached multi-chunk
-// read performs chunk queries only, never an inode lookup per chunk.
+// read performs chunk queries only, never an inode lookup per chunk. The
+// stat loads the inode, the one lookup a path costs.
 {
   const data = bytes(CHUNK_SIZE * 3 + 5, 47);
   const harness = createStage1Fixture([{ path: 'cached-resolver.bin', data }]);
   const { vfs } = openVfs(harness);
+  vfs.stat('cached-resolver.bin');
   const offset = harness.statements.length;
   assert.deepEqual(vfs.readFile('cached-resolver.bin'), data);
   const reads = harness.statements.slice(offset);

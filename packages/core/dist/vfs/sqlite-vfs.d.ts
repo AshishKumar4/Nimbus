@@ -5,7 +5,7 @@
  *
  * ┌─────────────────────────────────────────┐
  * │           Nimbus VFS (in-memory)           │
- * │  INode tree: always-resident metadata    │  ~10-20 MB for 50K files
+ * │  INode cache: bounded view of `inodes`   │  64k entries ≈ 14 MB (V8)
  * │  ContentCache: LRU file content cache    │  ~32 MB (512 × 64KB)
  * │  ─────────────────────────────────────── │
  * │  On cache miss → SQLite read             │
@@ -36,7 +36,8 @@
  *
  * Key design decisions:
  * - 64KB chunks (not 4KB): file access is sequential, fewer rows
- * - INode metadata always in memory (small: ~200B per file)
+ * - INode metadata demand-loaded by path through a bounded cache; SQLite
+ *   indexes it by path and by parent, so no walk needs the whole tree
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
@@ -190,19 +191,25 @@ export declare class SqliteVfsTransactionTooLargeError extends Error {
     readonly code: "E2BIG";
     constructor(limit: TransactionLimit, actual: number, maximum: number, metrics: Readonly<TransactionPlanMetrics>);
 }
+export interface SqliteVfsOptions {
+    /**
+     * Inodes held in memory; defaults to INODE_CACHE_MAX_ENTRIES. SQLite holds
+     * every inode, so this bounds the heap, not the filesystem.
+     */
+    readonly inodeCacheEntries?: number;
+}
 export declare class SqliteVFS {
     private readonly openNodes;
     private sql;
     private ctx;
     readonly events: VfsEventEmitter;
-    private inodes;
-    /** Children index: parentPath → Set of child paths. O(1) readdir. */
-    private children;
+    private readonly inodes;
     private cache;
     /** Actual bytes in cache (not all chunks are full 64KB) */
     private _cacheBytes;
     private _lruMaxEntries;
     private _lruShrinkRefcount;
+    private _countersLoaded;
     private _totalFiles;
     private _totalDirs;
     private _usedBytes;
@@ -266,8 +273,11 @@ export declare class SqliteVFS {
      * `CREATE ... IF NOT EXISTS` is a no-op on an existing object; every row
      * seed is preceded by the read that decides it; the migration markers
      * are written only when the migration runs.
+     *
+     * Nor does it read the tree: no inode is loaded until a path asks for it,
+     * so opening costs the same at ten files and at a million.
      */
-    constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string);
+    constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options?: SqliteVfsOptions);
     private initSchema;
     /**
      * Allocate the next inode number. The counter row and the inode insert that
@@ -296,9 +306,25 @@ export declare class SqliteVFS {
     /** Decode a hex scope suffix back to its namespace; null when malformed. */
     private tableColumns;
     private migrateFromLegacy;
-    private loadInodes;
-    private _addToChildrenIndex;
-    private _removeFromChildrenIndex;
+    /** The cache's loader: the inode at `path`, read from SQLite. */
+    private loadInode;
+    private inodeFromRow;
+    /**
+     * Number a row that has no ino. Every writer since the column existed
+     * assigns one, and the backfill numbered every row older than the column,
+     * so only code from before the column, run against this database after a
+     * newer one had opened it, leaves one behind. The number comes from the
+     * allocator, which is past every ino in use, so it cannot collide.
+     */
+    private repairIno;
+    /**
+     * Load the running counters with one aggregate over `inodes`, the first
+     * time anything reads them. Opening does not pay for it; the first stats
+     * read does, once.
+     */
+    private ensureCounters;
+    /** Every non-directory counts as a file, symlinks included, as it always has. */
+    private aggregateCounters;
     private cacheKey;
     private cacheGet;
     private cacheSet;
@@ -544,6 +570,8 @@ export declare class SqliteVFS {
     private generatedMutationChunk;
     private readFileString;
     private stat;
+    /** A linked inode's stat, for `stat` and for the entries `list` reports. */
+    private statOf;
     private utimes;
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
@@ -569,7 +597,9 @@ export declare class SqliteVFS {
      *
      * Ordered by path so `after` is a stable resume key across pages. Ordering
      * by anything else would let an insert during pagination shift entries
-     * across the page boundary and drop them.
+     * across the page boundary and drop them. The order is the path index's
+     * own, so a page is one range read of it: nothing is sorted, and nothing
+     * beyond the page is read.
      *
      * Access is checked per path against the caller's credential, and a path it
      * cannot reach is OMITTED rather than reported. Omission is the safe
@@ -594,11 +624,20 @@ export declare class SqliteVFS {
      * together instead, closed on the entry before the one that would overflow
      * it, and the removal owes one maintenance pass rather than one per group.
      *
-     * Removal is group-atomic rather than path-atomic. Because entries go
-     * deepest first, every committed prefix is a consistent smaller tree —
-     * exactly the state an interrupted per-entry walk left behind.
+     * Removal is group-atomic rather than path-atomic. Because every entry goes
+     * before the directory holding it, every committed prefix is a consistent
+     * smaller tree — exactly the state an interrupted per-entry walk left
+     * behind. The subtree is read a page at a time, never held whole.
      */
     private removeRecursive;
+    /**
+     * The inodes under `root`, then `root` itself, in descending path order, a
+     * bounded page at a time. A path under a directory extends the directory's
+     * path, so it sorts after it: every entry comes before the directory that
+     * holds it. Each page starts below the last path read, so removing what
+     * was already yielded does not disturb the walk.
+     */
+    private subtreeDescending;
     private rename;
     /**
      * Unwind the destination inodes a failed move had already published.
@@ -689,14 +728,19 @@ export declare class SqliteVFS {
      * The callback may read its writes. Revisions and events publish only on
      * commit, once for the combined mutation. Existing credential checks apply.
      *
-     * Inodes are an always-resident cache (absence means ENOENT), so rollback
-     * discards cached chunks and rebuilds metadata/children/counters from SQL.
+     * Rollback discards the cached chunks and inodes and unloads the counters,
+     * so every later read answers from SQLite, which is back at the committed
+     * state; open descriptions return to the rows they described before.
      * No inode snapshot or undo log is retained. Recovery failure is surfaced
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
     private emitMutation;
     private transactionSync;
+    /**
+     * `priors`, when the caller has them, holds what stood at each of
+     * `plan.inodes`' paths before this transaction, in the same order.
+     */
     private executeTransactionPlan;
     private executeMeasuredTransaction;
     /**
@@ -721,12 +765,15 @@ export declare class SqliteVFS {
     /**
      * Every inode at or under each root, deepest first.
      *
-     * The children index answers "what is under this prefix?" in the size of
-     * the subtree. The scan it replaces answered it in the size of the whole
-     * filesystem, and every mutation resolved its deletions twice — once to
-     * preflight the plan, once to commit it — so removing a tree of N entries
-     * one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
+     * The path index answers "what is under this prefix?" in the size of the
+     * subtree (subtreeRange). The scan it replaces answered it in the size of
+     * the whole filesystem, and every mutation resolved its deletions twice —
+     * once to preflight the plan, once to commit it — so removing a tree of N
+     * entries one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
      * 19,429-file tree, on the object's only thread.
+     *
+     * The subtree is held whole, so only callers that commit it whole use this:
+     * a batch's deletions and a rename. A removal pages (subtreeDescending).
      */
     private collectSubtreeInodes;
     /**
@@ -736,10 +783,11 @@ export declare class SqliteVFS {
      */
     private mkdirBatch;
     /**
-     * Debug-only: recompute counters from scratch and return any drift
-     * against the running counters. Returns null if consistent. Used by
-     * the B3 runtime test; production paths should never call this
-     * (the whole point of B3 is avoiding the O(N) walk).
+     * Debug-only: aggregate the counters from the durable rows and return any
+     * drift against the running counters. Returns null if consistent. Used by
+     * the B3 runtime test; production paths should never call this (the whole
+     * point of B3 is avoiding the O(N) read). Counters no read has loaded yet
+     * are loaded from the same aggregate, so they cannot drift.
      */
     _verifyCounters(): null | {
         expected: {
@@ -897,6 +945,8 @@ export declare class SqliteVFS {
             total: number;
             files: number;
             directories: number;
+            resident: number;
+            cacheCapacity: number;
             memoryEstimate: number;
         };
     };
