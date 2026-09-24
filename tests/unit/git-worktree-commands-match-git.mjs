@@ -655,14 +655,17 @@ try {
     mirror(repo.disk, repo.virtual);
     return repo;
   };
-  /** Both gits run `args` in `repo`: the same exit, stderr, HEAD, worktree and index (status included). */
-  const agreeOn = async (label, repo, args) => {
+  /**
+   * Both gits run `args` in `repo`: the same exit, stderr, HEAD, worktree and index (status
+   * included). A commit's id differs (its dates and author do), so `commits` compares trees instead.
+   */
+  const agreeOn = async (label, repo, args, { commits = false } = {}) => {
     const expected = realGit(repo.disk, args);
     const actual = await nimbusGit(repo.virtual, args);
     assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
     assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
     const copy = copyOf(repo);
-    for (const probe of [['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
+    for (const probe of [commits ? ['rev-parse', 'HEAD^{tree}'] : ['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
       ['status', '--porcelain', '--untracked-files=all', '--ignored']]) {
       assert.equal(realGit(copy, probe).stdout.toString(), realGit(repo.disk, probe).stdout.toString(), `${label}: git ${probe.join(' ')}`);
     }
@@ -780,6 +783,59 @@ try {
     });
     rewriteBoth(repo, untracked, 'untracked\n');
     await agreeOn(label, repo, ['reset', '-q', '--hard', 'main']);
+  }
+
+  // checkout with a bare `--` switches (or stays), keeping local and staged changes.
+  for (const args of [['checkout', '--'], ['checkout', 'HEAD', '--'], ['checkout', '-q', 'main', '--'], ['checkout']]) {
+    const repo = scenario(({ put, git }) => {
+      put('f', 'base\n');
+      put('s/g', 'g\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+    });
+    rewriteBoth(repo, 'f', 'local\n');
+    rewriteBoth(repo, 's/g', 'staged\n');
+    sh(repo.disk, ['add', 's/g']);
+    assert.equal((await nimbusGit(repo.virtual, ['add', 's/g'])).code, 0);
+    await agreeOn(`git ${args.join(' ')} with no paths`, repo, args);
+  }
+  // checkout <tree> -- <path> replaces the index entries a restored path conflicts with, and the
+  // worktree's directory, file or link in its way; the next commit holds what git's holds.
+  {
+    const repo = scenario(({ put, link, rm, git }) => {
+      put('d/x', 'x\n');
+      put('t/f', 'f\n');
+      link('l', 't');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'dir');
+      git('branch', 'withdir');
+      rm('d');
+      put('d', 'file\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'file');
+      git('branch', 'withfile');
+    });
+    // The commits below differ from git's by id alone, so HEAD is compared by its tree.
+    const agreeTree = (label, at, args) => agreeOn(label, at, args, { commits: true });
+    await agreeTree('checkout <tree> -- a directory where the index has a file', repo, ['checkout', 'withdir', '--', 'd']);
+    await agreeTree('and commit it', repo, ['commit', '-q', '-m', 'd, a directory']);
+    const lsTree = (cwd) => realGit(cwd, ['ls-tree', '-r', 'HEAD']).stdout.toString();
+    assert.equal(lsTree(copyOf(repo)), lsTree(repo.disk), 'the commit after checkout <tree> -- d');
+    await agreeTree('checkout <tree> -- a file where the index has a directory', repo, ['checkout', 'withfile', '--', 'd']);
+    await agreeTree('and commit that', repo, ['commit', '-q', '-m', 'd, a file']);
+    assert.equal(lsTree(copyOf(repo)), lsTree(repo.disk), 'the commit after checkout <tree> -- d, back');
+    removeBoth(repo, 'd');
+    rewriteBoth(repo, 'd/u', 'untracked\n');
+    await agreeTree('checkout -- a file where the worktree has a directory', repo, ['checkout', '--', 'd']);
+    removeBoth(repo, 'l');
+    rewriteBoth(repo, 'l/u', 'untracked\n');
+    await agreeTree('checkout HEAD -- a link where the worktree has a directory', repo, ['checkout', 'HEAD', '--', 'l']);
+    // A pathspec ending in '/' names a directory, never the link there.
+    removeBoth(repo, 'l');
+    await agreeTree('checkout -- a link named as a directory', repo, ['checkout', '--', 'l/']);
+    await agreeTree('checkout -- a path below a tracked link', repo, ['checkout', '--', 'l/f']);
+    rewriteBoth(repo, 't/f', 'changed\n');
+    await agreeTree('checkout -- a directory named with its slash', repo, ['checkout', '--', 't/']);
   }
 
   // ── A same-size rewrite in the second the index was written ──

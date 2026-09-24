@@ -152,8 +152,12 @@ function createGitFs(vfs, worktree = null) {
             async writeFile(filepath, data, opts) {
                 const p = normalizePath(filepath);
                 ensureDirectories(p, false);
-                if (checkedOut(p) && lstatOrNull(p)?.type === 'symlink')
+                // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
+                const existing = checkedOut(p) ? lstatOrNull(p)?.type : undefined;
+                if (existing === 'symlink')
                     vfs.unlink(p);
+                else if (existing === 'directory')
+                    vfs.removeRecursive(p);
                 if (typeof data === 'string') {
                     vfs.writeFile(p, data);
                 }
@@ -200,7 +204,9 @@ function createGitFs(vfs, worktree = null) {
                 ensureDirectories(p, false);
                 // Checkout retargets a link in place, as the clone facet's adapter does.
                 const st = lstatOrNull(p);
-                if (st && st.type !== 'directory')
+                if (st?.type === 'directory' && checkedOut(p))
+                    vfs.removeRecursive(p);
+                else if (st && st.type !== 'directory')
                     vfs.unlink(p);
                 vfs.symlink(target, p);
             },
@@ -758,6 +764,8 @@ async function checkoutPaths(ctx, git, vfs, source, pathArgs) {
         return 128;
     }
     const specs = repoPaths(pathArgs, ctx.cwd, root);
+    // A pathspec ending in '/' names a directory: it matches what is below it, never a file or link there.
+    const dirOnly = pathArgs.map((arg, i) => arg.endsWith('/') && specs[i] !== '');
     const fs = createGitFs(vfs, root);
     const cache = {};
     let tree = git.STAGE();
@@ -778,16 +786,18 @@ async function checkoutPaths(ctx, git, vfs, source, pathArgs) {
         // A gitlink is never checked out.
         if (!entry || type !== 'blob')
             return false;
-        for (const spec of specs)
-            if (spec === '' || path === spec || path.startsWith(`${spec}/`))
-                matched.add(spec);
+        const matching = specs.flatMap((spec, i) => spec === '' || path.startsWith(`${spec}/`) || (path === spec && !dirOnly[i]) ? [i] : []);
+        if (matching.length === 0)
+            return false;
+        for (const i of matching)
+            matched.add(i);
         files.push({ path, oid: await entry.oid(), mode: await entry.mode() });
         return false;
     });
     let unmatched = '';
-    specs.forEach((spec, i) => {
-        if (!matched.has(spec))
-            unmatched += `error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`;
+    pathArgs.forEach((arg, i) => {
+        if (!matched.has(i))
+            unmatched += `error: pathspec '${arg}' did not match any file(s) known to git\n`;
     });
     if (unmatched) {
         await ctx.stderr.write(unmatched);
@@ -804,9 +814,23 @@ async function checkoutPaths(ctx, git, vfs, source, pathArgs) {
             vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
         }
     }
-    // The index takes each file's fresh stat data (and, from a tree, its blob).
+    // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
+    // restored path replaces goes first, as add_index_entry_with_check replaces it: a file at
+    // one of its leading directories, or anything below it.
+    const restored = new Set(files.map(({ path }) => path));
+    const replaced = (await git.listFiles({ fs, dir: root, cache })).filter((path) => {
+        if (restored.has(path))
+            return false;
+        for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
+            if (restored.has(path.slice(0, at)))
+                return true;
+        }
+        return files.some(({ path: file }) => file.startsWith(`${path}/`));
+    });
+    if (replaced.length)
+        await git.remove({ fs, dir: root, filepath: replaced, cache });
     if (files.length)
-        await git.add({ fs, dir: root, filepath: files.map(({ path }) => path), parallel: false, force: true, cache });
+        await git.add({ fs, dir: root, filepath: [...restored], parallel: false, force: true, cache });
     return 0;
 }
 /** diff-files, diff-index and diff-index --cached, as file pairs in path order. */
@@ -1337,19 +1361,24 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'checkout': {
+                // `--` with paths after it restores those paths; a bare `--` only ends the options.
                 const dashdash = subArgs.indexOf('--');
-                if (dashdash >= 0) {
-                    const source = subArgs.slice(0, dashdash).find(a => !a.startsWith('-'));
+                const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
+                if (dashdash >= 0 && dashdash < subArgs.length - 1) {
+                    const source = options.find(a => !a.startsWith('-'));
                     return await checkoutPaths(ctx, git, credentialedVfs, source ?? null, subArgs.slice(dashdash + 1));
                 }
-                const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
-                const ref = subArgs.find(a => !a.startsWith('-'));
+                const quiet = options.includes('-q') || options.includes('--quiet');
+                const ref = options.find(a => !a.startsWith('-'));
+                // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
+                if ((!ref || ref === 'HEAD') && !options.includes('-b'))
+                    return 0;
                 if (!ref) {
-                    ctx.stderr.write('error: specify a branch\n');
-                    return 1;
+                    ctx.stderr.write("error: switch `b' requires a value\n");
+                    return 129;
                 }
                 const worktreeFs = createGitFs(credentialedVfs, dir);
-                const create = subArgs.includes('-b');
+                const create = options.includes('-b');
                 if (create)
                     await git.branch({ fs, dir, ref });
                 try {
