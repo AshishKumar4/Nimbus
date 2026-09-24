@@ -2402,12 +2402,14 @@ export class SqliteVFS {
       const name = this.logicalPath(entry.path, cred);
       if (name !== null) removedAt.set(name, Math.max(removedAt.get(name) ?? 0, entry.rev));
     }
-    const enterable = new Map<string, boolean>();
+    // Per directory, the highest one at or above it that the caller may not
+    // enter now: one lookup per directory per answer, not per entry.
+    const closedAbove = new Map<string, string | null>();
     for (const entry of this._invalidations) {
       if (entry.rev <= cursor) continue;
       const name = this.logicalPath(entry.path, cred);
       if (name === null) continue;
-      const behind = this.hiddenBehind(name, entry.rev, cred, removedAt, enterable);
+      const behind = this.hiddenBehind(name, entry.rev, cred, removedAt, closedAbove);
       if (behind === null) report(name, entry.rev, false, entry.structural !== undefined);
       else report(behind, entry.rev, true, false);
     }
@@ -2416,35 +2418,41 @@ export class SqliteVFS {
 
   /**
    * The directory above `name` that stands between the caller and it, if
-   * any: the first, from the root down, that the caller may not enter now,
-   * or whose position went at or after `rev` (removed or renamed away, so
-   * the entry names a path that is no longer there, whatever stands at that
-   * name now). Null when there is none: the caller may see `name` itself.
-   * The caller may see whatever is returned, since every directory above it
-   * passed. `enterable` memoizes the entry test per directory.
+   * any: the highest that the caller may not enter now, or whose place went
+   * at or after `rev` (removed or renamed away, so the entry names a path
+   * that is no longer there, whatever stands at that name now). Null when
+   * there is none: the caller may see `name` itself. The caller may see
+   * whatever is returned, since every directory above it passed.
    */
   private hiddenBehind(
     name: string,
     rev: number,
     cred: VfsCred,
     removedAt: ReadonlyMap<string, number>,
-    enterable: Map<string, boolean>,
+    closedAbove: Map<string, string | null>,
   ): string | null {
-    const root = this.confinedTmpRoots.get(cred.uid);
-    const parts = name.split('/');
-    let dir = '';
-    for (let index = 0; index < parts.length - 1; index++) {
-      dir = dir === '' ? parts[index]! : `${dir}/${parts[index]}`;
-      if ((removedAt.get(dir) ?? -1) >= rev) return dir;
-      let open = enterable.get(dir);
-      if (open === undefined) {
-        const inode = this.inodes.get(this.keyOfName(dir, root));
-        open = inode !== undefined && inode.kind === 'directory' && this.accessInode(inode, 0o1, cred);
-        enterable.set(dir, open);
+    const parent = this.parentPath(name);
+    let behind = this.closedAbove(parent, cred, closedAbove);
+    if (removedAt.size > 0) {
+      for (let dir = parent; dir !== ''; dir = this.parentPath(dir)) {
+        if ((removedAt.get(dir) ?? -1) >= rev && (behind === null || dir.length < behind.length)) behind = dir;
       }
-      if (!open) return dir;
     }
-    return null;
+    return behind;
+  }
+
+  /** The highest directory at or above `dir` that the caller may not enter now, or null. */
+  private closedAbove(dir: string, cred: VfsCred, memo: Map<string, string | null>): string | null {
+    if (dir === '') return null;
+    const known = memo.get(dir);
+    if (known !== undefined) return known;
+    let closed = this.closedAbove(this.parentPath(dir), cred, memo);
+    if (closed === null) {
+      const inode = this.inodes.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
+      if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) closed = dir;
+    }
+    memo.set(dir, closed);
+    return closed;
   }
 
   /**

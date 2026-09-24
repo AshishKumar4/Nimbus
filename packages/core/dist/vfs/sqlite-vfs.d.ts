@@ -596,14 +596,15 @@ export declare class SqliteVFS {
     invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult;
     /**
      * The directory above `name` that stands between the caller and it, if
-     * any: the first, from the root down, that the caller may not enter now,
-     * or whose position went at or after `rev` (removed or renamed away, so
-     * the entry names a path that is no longer there, whatever stands at that
-     * name now). Null when there is none: the caller may see `name` itself.
-     * The caller may see whatever is returned, since every directory above it
-     * passed. `enterable` memoizes the entry test per directory.
+     * any: the highest that the caller may not enter now, or whose place went
+     * at or after `rev` (removed or renamed away, so the entry names a path
+     * that is no longer there, whatever stands at that name now). Null when
+     * there is none: the caller may see `name` itself. The caller may see
+     * whatever is returned, since every directory above it passed.
      */
     private hiddenBehind;
+    /** The highest directory at or above `dir` that the caller may not enter now, or null. */
+    private closedAbove;
     /**
      * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
      * cache, so an event it may not see is simply not delivered.
