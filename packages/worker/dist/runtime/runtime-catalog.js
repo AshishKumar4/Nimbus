@@ -46,11 +46,11 @@
  * makes a stale pin a cache miss rather than an outage.
  */
 import { z } from 'zod/v4';
-import { sha256Hex, sha256HexOfStream, sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
+import { sha256Hex, sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
 import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
-import { blobPieces, splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
+import { blobPieces, RuntimeBlobDigestMismatch, splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
 import { NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
 const CatalogVersionEntrySchema = z.object({
     manifest: z.string().min(1),
@@ -163,11 +163,12 @@ export async function fetchManifest(env, entry) {
 }
 /**
  * Stream the blob a manifest file entry points at, verified against the
- * digest that same entry carries. A colo-cache entry is verified whole
- * before any of it is served, so a poisoned one is a miss. An R2 read errors
- * at its end, rather than closing, when its bytes do not hash to the digest.
- * The consumer hashes what it reads as well (the installer does, before it
- * commits a blob), so no step holds a blob whole.
+ * digest that same entry carries: from the colo cache when it has it, else
+ * from R2, read once either way. The stream errors at its end, rather than
+ * closing, with a {@link RuntimeBlobDigestMismatch} when its bytes do not
+ * hash to the digest; a colo-cache entry that fails is evicted first, so the
+ * installer's second read of that blob comes from R2. The installer commits
+ * a blob only after that clean close, so no step holds a blob whole.
  *
  * The digest is not optional and does not travel separately from the key:
  * a `ManifestFile` always has both, and it is the only thing this takes.
@@ -179,9 +180,14 @@ export async function fetchBlob(env, file) {
     if (!address) {
         throw new Error(`manifest entry ${file.path} has no usable sha256 (${file.sha256})`);
     }
-    const cached = await l2GetStream(address);
-    if (cached)
-        return cached;
+    const cached = await l2GetBody(address);
+    if (cached) {
+        return verifiedRead(address, cached, null, (actual) => {
+            l2Evict(address);
+            return `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, `
+                + `the colo cache held ${actual} and was evicted`;
+        });
+    }
     const r2 = env.NIMBUS_RUNTIME_CACHE;
     if (!r2) {
         throw new Error('NIMBUS_RUNTIME_CACHE binding missing — blob cannot be fetched');
@@ -190,20 +196,21 @@ export async function fetchBlob(env, file) {
     if (!obj) {
         throw new Error(`blob ${file.content} not in R2 — manifest references a missing blob`);
     }
-    return readOnceFillingL2(address, obj.body, (actual) => `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, R2 holds ${actual}`);
+    return verifiedRead(address, obj.body, l2FillWriter(address), (actual) => `sha256 mismatch for blob ${file.content}: manifest expects ${address.sha256}, R2 holds ${actual}`);
 }
 /**
- * `body` as a stream that errors at its end, rather than closing, unless it
- * hashed to `address`, feeding L2 from the same read. Each piece reaches the
- * cache before the consumer, and the cache entry is closed only after the
- * digest matched: a mismatch, a failed read or an abandoned stream aborts it,
- * and an aborted body stores nothing. The cache's own pace bounds the pair,
- * so neither side buffers what the other lags by.
+ * `body` as a stream that errors at its end, with a
+ * {@link RuntimeBlobDigestMismatch}, rather than closing, unless it hashed to
+ * `address`. It is read once. When `fill` is given, the same read feeds L2:
+ * each piece reaches the cache before the consumer, and the cache entry is
+ * closed only after the digest matched; a mismatch, a failed read or an
+ * abandoned stream aborts it, and an aborted body stores nothing. The
+ * cache's own pace bounds the pair, so neither side buffers what the other
+ * lags by.
  */
-function readOnceFillingL2(address, body, mismatch) {
+function verifiedRead(address, body, fill, mismatch) {
     const pieces = blobPieces(body);
     const digest = sha256Incremental();
-    let fill = l2FillWriter(address);
     const drop = (reason) => {
         fill?.abort(reason).catch(() => { });
         fill = null;
@@ -215,7 +222,7 @@ function readOnceFillingL2(address, body, mismatch) {
                 if (next.done) {
                     const actual = await digest.hex();
                     if (actual !== address.sha256)
-                        throw new Error(mismatch(actual));
+                        throw new RuntimeBlobDigestMismatch(mismatch(actual));
                     fill?.close().catch(() => { });
                     controller.close();
                     return;
@@ -363,21 +370,15 @@ async function l2Put(verified, contentType) {
     catch { /* best-effort */ }
 }
 /**
- * The blob entry at `address` as a stream, or null on the same terms as
- * {@link l2Get}. The entry is hashed whole before any of it is served, so a
- * poisoned entry stays a miss; it is then served from a second read, so
- * neither read holds it. That read is not checked again here: its consumer
- * verifies what it reads, which also catches an entry swapped in between.
+ * The body of the blob entry at `address`, or null on a miss or a stripped
+ * Cache API. Unverified: served only through {@link verifiedRead}, whose
+ * mismatch evicts it. Hashing an entry before serving it would read every
+ * blob from the cache twice, which was most of an install's time.
  */
-async function l2GetStream(address) {
+async function l2GetBody(address) {
     try {
         const caches = globalThis.caches;
         if (!caches?.default)
-            return null;
-        const probe = await caches.default.match(new Request(l2Url(address)));
-        if (!probe?.ok || !probe.body)
-            return null;
-        if (await sha256HexOfStream(probe.body) !== address.sha256)
             return null;
         const hit = await caches.default.match(new Request(l2Url(address)));
         return hit?.ok && hit.body ? hit.body : null;
@@ -385,6 +386,14 @@ async function l2GetStream(address) {
     catch {
         return null;
     }
+}
+/** Drop the entry at `address`, so the next read of it goes to R2. */
+function l2Evict(address) {
+    try {
+        const caches = globalThis.caches;
+        caches?.default?.delete(new Request(l2Url(address))).catch(() => { });
+    }
+    catch { /* best-effort */ }
 }
 /** A writer whose bytes become the L2 entry at `address` when it closes;
  *  aborting it stores nothing. Null where there is no cache. */

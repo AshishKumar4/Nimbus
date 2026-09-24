@@ -65,20 +65,6 @@ export function sha256Incremental(): Sha256Digest {
   };
 }
 
-/** Hex SHA-256 of a whole stream. On workerd the bytes are piped to the
- *  digest natively, with no JavaScript per chunk. */
-export async function sha256HexOfStream(stream: ReadableStream<Uint8Array>): Promise<string> {
-  if (typeof crypto.DigestStream === 'function') {
-    const digest = new crypto.DigestStream('SHA-256');
-    await stream.pipeTo(digest);
-    return hex(await digest.digest);
-  }
-  const digest = sha256Incremental();
-  const reader = stream.getReader();
-  for (let next = await reader.read(); !next.done; next = await reader.read()) await digest.update(next.value);
-  return await digest.hex();
-}
-
 function hex(digest: ArrayBuffer): string {
   const view = new Uint8Array(digest);
   let out = '';

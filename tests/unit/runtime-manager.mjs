@@ -124,7 +124,8 @@ const toyRunner = () => async () => 0;
     manifest: pkg.manifest,
     readBlob: (file) => {
       calls++;
-      return calls === 1 ? new Uint8Array([0]) : pkg.readBlob(file);
+      // Twice: the installer reads a blob that failed its digest once more.
+      return calls <= 2 ? new Uint8Array([0]) : pkg.readBlob(file);
     },
   };
   const { manager } = makeManager(vfs, suppliedRuntimeSource([flaky]));

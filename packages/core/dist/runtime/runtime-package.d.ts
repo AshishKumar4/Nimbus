@@ -68,6 +68,14 @@ export interface RuntimePackage {
     readBlob(file: ManifestFile): RuntimeBlob | Promise<RuntimeBlob>;
 }
 export type RuntimeBlob = Uint8Array | ReadableStream<Uint8Array>;
+/**
+ * A blob whose bytes do not hash to its manifest digest. The installer reads
+ * such a blob once more before refusing it; a source that caches blobs
+ * throws this from its stream after evicting the entry that failed.
+ */
+export declare class RuntimeBlobDigestMismatch extends Error {
+    readonly name = "RuntimeBlobDigestMismatch";
+}
 export interface SeededRuntime {
     readonly name: string;
     readonly version: string;

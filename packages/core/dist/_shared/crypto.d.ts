@@ -15,9 +15,6 @@ export interface Sha256Digest {
 }
 /** Web Crypto has no incremental digest: workerd offers `crypto.DigestStream`, Node and Bun `node:crypto`. */
 export declare function sha256Incremental(): Sha256Digest;
-/** Hex SHA-256 of a whole stream. On workerd the bytes are piped to the
- *  digest natively, with no JavaScript per chunk. */
-export declare function sha256HexOfStream(stream: ReadableStream<Uint8Array>): Promise<string>;
 export declare function sealJson(value: unknown, secret: string, options?: SealedJsonOptions): Promise<string>;
 export declare function unsealJson<T>(value: string, secret: string, options?: SealedJsonOptions): Promise<T | null>;
 export declare function encodeJsonBase64Url(value: unknown): string;

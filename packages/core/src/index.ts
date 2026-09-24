@@ -27,7 +27,7 @@ export type {
   SqlValue,
   TransactionHost,
 } from './runtime/os-contracts.js';
-export { seedRuntimePackage } from './runtime/runtime-package.js';
+export { RuntimeBlobDigestMismatch, seedRuntimePackage } from './runtime/runtime-package.js';
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export type {
   RuntimeAvailability,

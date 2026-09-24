@@ -13,7 +13,7 @@
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
 export type { NimbusFilesystemAuthority, NimbusFilesystemBinding, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeReadOptions, RuntimeSynchronousFs, Awaitable, SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from './runtime/os-contracts.js';
-export { seedRuntimePackage } from './runtime/runtime-package.js';
+export { RuntimeBlobDigestMismatch, seedRuntimePackage } from './runtime/runtime-package.js';
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export type { RuntimeAvailability, RuntimeBlob, RuntimePackage, RuntimeSource, SeededRuntime, } from './runtime/runtime-package.js';
 export type { RuntimeManagerOptions } from './runtime/runtime-manager.js';

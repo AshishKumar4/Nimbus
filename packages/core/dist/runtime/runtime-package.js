@@ -26,6 +26,14 @@
 import { sha256Incremental } from '../_shared/crypto.js';
 import { installRoot, RUNTIME_BLOB_PIECE_BYTES, runtimeAbiForManifest, runtimeEntrypoints, runtimePayloadIntact, } from './installed-runtimes.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
+/**
+ * A blob whose bytes do not hash to its manifest digest. The installer reads
+ * such a blob once more before refusing it; a source that caches blobs
+ * throws this from its stream after evicting the entry that failed.
+ */
+export class RuntimeBlobDigestMismatch extends Error {
+    name = 'RuntimeBlobDigestMismatch';
+}
 export function splitRuntimeSpec(spec) {
     const atIdx = spec.indexOf('@');
     return {
@@ -184,7 +192,16 @@ export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) 
                 return;
             const file = files[i];
             try {
-                await writeVerifiedBlob(vfs, manifest, runtimePackage, file, `${root}/${file.path}`);
+                try {
+                    await writeVerifiedBlob(vfs, manifest, runtimePackage, file, `${root}/${file.path}`);
+                }
+                catch (error) {
+                    // A source fronted by a shared cache evicts an entry that failed its
+                    // digest, so a second read is answered by its origin.
+                    if (!(error instanceof RuntimeBlobDigestMismatch))
+                        throw error;
+                    await writeVerifiedBlob(vfs, manifest, runtimePackage, file, `${root}/${file.path}`);
+                }
                 completed++;
                 options?.onProgress?.(`[${manifest.name}] fetched ${file.path} (${(file.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${files.length}`);
             }
@@ -232,7 +249,7 @@ async function writeVerifiedBlob(vfs, manifest, runtimePackage, file, target) {
         }
         const actual = await digest.hex();
         if (actual !== file.sha256) {
-            throw new Error(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
+            throw new RuntimeBlobDigestMismatch(`${manifest.name}@${manifest.version}: sha256 mismatch for ${file.path} — manifest expects `
                 + `${file.sha256}, ${file.content} holds ${actual}`);
         }
         await vfs.rename(partial, target);
