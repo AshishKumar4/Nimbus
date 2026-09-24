@@ -174,7 +174,7 @@ runtime joins the npm set by gaining an `npm` entry in its spec
 because they are workerd's `nodejs_compat` rather than an artifact to ship.
 
 Release runtimes first, then core. Core's `prepublishOnly` runs
-`scripts/dist-integrity.mjs` (dist must be the fixpoint of src), then
+`scripts/dist-integrity.mjs --publish` (see Build And Deploy), then
 `packages/core/scripts/check-runtime-packages.mjs`, which builds each npm
 runtime package and refuses the core publish unless the registry has that
 version, with the same `manifest.json`, as `dist-tags.latest`, and the core
@@ -415,6 +415,11 @@ whose `dist` predates its `src` deploys a Worker missing changes its own
 source contains. The gate makes that a refusal rather than a silent no-op
 deploy. It adds ~6s. When it refuses, the tree it refused has already been
 rebuilt: review the diff, commit it, deploy again.
+
+Publishing works the same way. No package builds at pack time; every
+published package's `prepublishOnly` is `bun ../../scripts/dist-integrity.mjs
+--publish`, which also refuses a package directory that differs from HEAD, so
+the tarball holds the committed, verified dist. Build and commit first.
 
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own

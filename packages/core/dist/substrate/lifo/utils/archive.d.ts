@@ -1,5 +1,4 @@
 import type { ExecutionFs } from "../../../shell/execution-fs.js";
-export declare function crc32(data: Uint8Array): number;
 export declare function compressGzip(data: Uint8Array): Promise<Uint8Array>;
 export declare function decompressGzip(data: Uint8Array): Promise<Uint8Array>;
 export interface TarEntry {
