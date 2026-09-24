@@ -493,6 +493,16 @@ async function revParse(ctx, git, fs, vfs, args) {
     return 0;
 }
 // ── Worktree inspection (ls-files, diff) ─────────────────────────────────
+/** Whether git trusts the worktree's exec bit here: core.filemode, true unless set false. */
+async function trustsFileMode(git, fs, dir) {
+    return (await git.getConfig({ fs, dir, path: 'core.filemode' })) !== false;
+}
+/** ce_mode_from_stat: without a trusted exec bit a file keeps its index mode, or 100644 when new. */
+function worktreeMode(mode, indexMode, filemode) {
+    if (filemode || mode === 0o120000)
+        return mode;
+    return indexMode !== undefined && indexMode !== 0o120000 ? indexMode : 0o100644;
+}
 /** git's index and tree order: the UTF-8 bytes, which is code point order rather than UTF-16's. */
 function comparePaths(a, b) {
     for (let i = 0; i < a.length && i < b.length; i++) {
@@ -627,6 +637,7 @@ async function lsFiles(ctx, git, fs, vfs, args) {
     const untracked = [];
     const tracked = [];
     const trees = readWorktree ? [git.STAGE(), git.WORKDIR()] : [git.STAGE()];
+    const filemode = modified && await trustsFileMode(git, fs, root);
     await walkScoped(git, fs, root, {}, trees, specs, async (path, [stage, work]) => {
         const workType = work ? await work.type() : undefined;
         if (stage) {
@@ -636,8 +647,9 @@ async function lsFiles(ctx, git, fs, vfs, args) {
             const missing = readWorktree && !workType;
             let changed = missing;
             if (modified && !missing && stageType === 'blob') {
-                changed = !work || workType !== 'blob'
-                    || await work.mode() !== await stage.mode() || await work.oid() !== await stage.oid();
+                const stageMode = await stage.mode();
+                changed = !work || workType !== 'blob' || await work.oid() !== await stage.oid()
+                    || worktreeMode(await work.mode(), stageMode, filemode) !== stageMode;
             }
             tracked.push({ path, deleted: missing, modified: changed });
             // A file replaced by a directory leaves that directory untracked.
@@ -676,7 +688,16 @@ async function lsFiles(ctx, git, fs, vfs, args) {
 /** diff-files, diff-index and diff-index --cached, as file pairs in path order. */
 async function changedPairs(git, fs, dir, cache, base, specs) {
     const pairs = [];
-    const blob = async (path, entry, worktree) => (entry && (await entry.type()) === 'blob' ? { path, oid: await entry.oid(), mode: await entry.mode(), worktree } : null);
+    const filemode = await trustsFileMode(git, fs, dir);
+    // A worktree side is read against its index entry's mode.
+    const blob = async (path, entry, index) => {
+        if (!entry || (await entry.type()) !== 'blob')
+            return null;
+        const mode = await entry.mode();
+        return index
+            ? { path, oid: await entry.oid(), mode: worktreeMode(mode, await index.mode(), filemode), worktree: true }
+            : { path, oid: await entry.oid(), mode, worktree: false };
+    };
     const record = (one, two) => {
         if (!one && !two)
             return;
@@ -694,15 +715,15 @@ async function changedPairs(git, fs, dir, cache, base, specs) {
             if (stageType !== 'blob')
                 return stageType === 'tree';
             // A missing file, or a directory where the file was, is a deletion.
-            record(await blob(path, stage, false), await blob(path, work, true));
+            record(await blob(path, stage), await blob(path, work, stage));
             return false;
         }
         const [head, stage, work] = entries;
         const headType = head ? await head.type() : undefined;
         const stageType = stage ? await stage.type() : undefined;
         // diff-index: a path the index lacks is deleted whatever the worktree holds.
-        const two = stageType !== 'blob' ? null : await blob(path, base.cached ? stage : work, !base.cached);
-        record(await blob(path, head, false), two);
+        const two = stageType !== 'blob' ? null : base.cached ? await blob(path, stage) : await blob(path, work, stage);
+        record(await blob(path, head), two);
         return headType === 'tree' || stageType === 'tree';
     });
     const pathOf = (pair) => (pair.one ?? pair.two).path;

@@ -35,6 +35,14 @@ published independently in the `@nimbus-sh` npm scope.
   staged. The index is now written once, files are added one at a time, and
   objects are deflated with pako instead of `CompressionStream`, which costs
   about 9 ms a call in workerd.
+- `git init` and `git clone` write the `.git/config` git writes, byte for
+  byte: `core.filemode = true`, with no `symlinks = false` or
+  `ignorecase = true`, and the remote and branch keys in git's order. A clone
+  records the one branch or tag it fetched, as `git clone --depth 1` does. A
+  `chmod +x` now shows in `git status` and `git diff`, and `git add -A`
+  stages it. Repositories made earlier keep their config. Where it says
+  `filemode = false`, the exec bit is ignored, as git ignores it, and
+  `git status` no longer stages a mode change by itself.
 
 ## 2026-09-23
 
