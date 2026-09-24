@@ -121,6 +121,12 @@ published independently in the `@nimbus-sh` npm scope.
   unless each one is on npm at its version, with the same `manifest.json`,
   as `dist-tags.latest`, and installs through the core being published. Each
   failure prints the command that fixes it.
+- Publishing no longer builds. config, platform, core, fabric, loom, sdk,
+  react, cli and worker dropped `prepack: bun run build`; their
+  `prepublishOnly` runs `scripts/dist-integrity.mjs --publish`, which refuses
+  a package directory that differs from HEAD or a dist that is not the
+  fixpoint of its src. The tarball used to come from a fresh publish-time
+  build that git never saw. react and cli joined dist-integrity's packages.
 
 ## 2026-09-23
 

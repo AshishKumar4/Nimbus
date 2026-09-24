@@ -71,6 +71,9 @@
  *   - tests/behavioral/_throwaway-target.mjs, _staging-target.mjs
  *   - tests/unit/dist-integrity.mjs  (the mechanism, red and green)
  *   - `bun scripts/dist-integrity.mjs` (CLI)
+ *   - every published package's prepublishOnly, as
+ *     `bun ../../scripts/dist-integrity.mjs --publish`, which also refuses
+ *     a package directory that differs from HEAD
  */
 
 import { spawnSync } from 'node:child_process';
@@ -89,7 +92,7 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * so a worker bundled before core has compiled resolves against a dist that
  * does not exist yet — or worse, an old one.
  */
-export const BUILT_PACKAGES = ['config', 'platform', 'core', 'fabric', 'loom', 'sdk', 'worker'];
+export const BUILT_PACKAGES = ['config', 'platform', 'core', 'fabric', 'loom', 'sdk', 'react', 'cli', 'worker'];
 
 /**
  * The build, in the only order that reaches a fixpoint.
@@ -638,6 +641,22 @@ function staleDistReason({ changed, added, removed }) {
 if (import.meta.main) {
   const log = (message) => console.error(`[dist-integrity] ${message}`);
   const useCache = !process.argv.includes('--no-cache');
+  // `--publish`: a package's prepublishOnly, run from its directory. npm packs
+  // that directory as it stands, so beyond the fixpoint it must hold exactly
+  // what HEAD holds: a consistent but uncommitted src+dist edit would
+  // otherwise ship bytes git never saw.
+  if (process.argv.includes('--publish')) {
+    const dirty = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.'], {
+      encoding: 'utf8',
+    });
+    if (dirty.status !== 0 || dirty.stdout.trim()) {
+      console.error(
+        `\nrefusing to publish — ${process.cwd()} differs from HEAD:\n${dirty.stdout}${dirty.stderr}`
+        + 'Commit or discard these, then publish again.\n',
+      );
+      process.exit(1);
+    }
+  }
   try {
     const { assets, cached } = await assertDistMatchesSource({ log, useCache });
     console.log(
