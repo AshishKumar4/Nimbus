@@ -169,6 +169,23 @@ async function __nimbusUseRpcResultUnref(promise, use) {
   finally { __nimbusDisposeRpcResult(value); }
 }
 
+/**
+ * The ACQUIRE barrier, taken before the program sees anything that arrived
+ * from outside it: a response or body from the network, a relayed socket
+ * frame, a request routed to one of its ports, a stdin packet or signal, a
+ * child's output or exit. Each of those can be the second half of a causal
+ * chain that began with a write somewhere else — \`echo v2 > f; curl :3000\`,
+ * a child that writes a file and then exits — and the handler's synchronous
+ * reads must see that write. Nothing but this barrier carries it.
+ *
+ * The barrier is installed by the fs module, which is evaluated after this
+ * point; a facet with no supervisor has none and nothing to be coherent with.
+ */
+async function __nimbusInboundBarrier() {
+  const acquire = globalThis.__nimbusVfsAcquireBarrier;
+  if (typeof acquire === "function") await acquire();
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Precompiled wasm ───────────────────────────────────────────────
 // A wasm image can only become a WebAssembly.Module through the Worker
@@ -398,13 +415,11 @@ function __nimbusWasmDigest(bytes) {
   // supervisor round trip per outbound request, not a hidden one. It is the
   // price of the guarantee.
   //
-  // The barriers live on globalThis because the fs module installs them and
-  // is evaluated after this one; a facet with no supervisor bound has none,
-  // and there is nothing to be coherent with.
+  // The RELEASE barrier lives on globalThis because the fs module installs it
+  // and is evaluated after this one; the ACQUIRE is __nimbusInboundBarrier.
   const __resumeCoherent = async (pending) => {
     const value = await pending;
-    const acquire = globalThis.__nimbusVfsAcquireBarrier;
-    if (typeof acquire === "function") await acquire();
+    await __nimbusInboundBarrier();
     return value;
   };
   const __barriered = async (input, init) => {
@@ -1445,6 +1460,16 @@ const __fsMod = (() => {
   //             a frame arrives as a supervisor reply the same barrier
   //             rides on (see the relayed WebSocket below).
   //
+  // The supervisor's own deliveries are resumptions too, and a supervisor
+  // reply carries no invalidation unless the barrier asks for one. Each takes
+  // __nimbusInboundBarrier before the program sees it:
+  //   - request: a request routed to one of the process's ports, in the
+  //             dispatch every resident's server shares (__nimbusServeHttp).
+  //   - stdin:  a stdin packet — input, its end, a signal, a resize — for an
+  //             attached process (__makeProcessStdin's pump).
+  //   - child:  a spawned child's output and its exit (_runReadLoop,
+  //             _runWaitLoop).
+  //
   // Keep this list empty. An entry here is a documented hole in the owner's
   // invariant, not a TODO: it means some process can be woken by something
   // this system does not mediate, and its next synchronous read can serve
@@ -1851,7 +1876,15 @@ const __fsMod = (() => {
    * This closes staleness of RESIDENT cells across an untrusted resumption.
    * A first synchronous touch of a NON-resident path is the separate
    * residency floor and is unaffected — it still raises EAGAIN, correctly.
+   *
+   * Two resumptions can barrier at once — a child's output and its exit
+   * arrive together — and both deltas name the same changed path. The first
+   * to land evicts it and starts the refetch; the second finds no row and
+   * would release its callback while that refetch is still in flight, onto
+   * a miss. So a barrier also refetches every path another barrier is still
+   * refetching, under its own cursor, and waits for it.
    */
+  const _refetching = new Map();
   async function _acquireAndRefetch(supervisor) {
     const stale = await _acquireBarrier(supervisor);
     // Plus what an own-mutation lease dropped since the last resumption:
@@ -1861,8 +1894,18 @@ const __fsMod = (() => {
       for (const k of _owedRefetch) if (stale.indexOf(k) === -1) stale.push(k);
       _owedRefetch.clear();
     }
+    for (const k of _refetching.keys()) if (stale.indexOf(k) === -1) stale.push(k);
     if (stale.length === 0) return;
-    await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
+    for (const k of stale) _refetching.set(k, (_refetching.get(k) || 0) + 1);
+    try {
+      await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
+    } finally {
+      for (const k of stale) {
+        const left = _refetching.get(k) - 1;
+        if (left > 0) _refetching.set(k, left);
+        else _refetching.delete(k);
+      }
+    }
   }
 
   /**
@@ -4625,8 +4668,7 @@ const __NimbusRelayedWebSocket = (() => {
           // The barrier the whole relay exists for. Every frame is now a
           // supervisor reply, so it can carry the invalidation delta, and
           // user code runs only after the resident set has caught up.
-          const acquire = globalThis.__nimbusVfsAcquireBarrier;
-          if (typeof acquire === "function") await acquire();
+          await __nimbusInboundBarrier();
           this._deliver(event);
         }
       }
@@ -5918,6 +5960,11 @@ const __childProcessMod = (() => {
   /**
    * Read-loop for a single fd. Long-polls cpReadOutput, pushes chunks
    * into the Readable via .push, handles closure.
+   *
+   * What the child printed, and that it closed the stream, is news from
+   * another process, which may have written files before it printed. So a
+   * reply that delivers anything takes the barrier first, and a 'data'
+   * handler that reads what the child wrote reads it current.
    */
   async function _runReadLoop(child, fd, stream, sinceSeqRef) {
     // Exponential backoff for idle children: start at 100ms, double up
@@ -5933,9 +5980,11 @@ const __childProcessMod = (() => {
           __supervisor.cpReadOutput(child.pid, fd, sinceSeqRef.value, backoff),
           (result) => result,
         );
-        if (r && Array.isArray(r.chunks) && r.chunks.length > 0) {
+        const chunks = r && Array.isArray(r.chunks) ? r.chunks : [];
+        if (chunks.length > 0 || (r && r.closed)) await __nimbusInboundBarrier();
+        if (chunks.length > 0) {
           backoff = 100;  // reset — child is producing
-          for (const c of r.chunks) {
+          for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
             stream.write(__BufferMod.from(c.data));
@@ -5963,7 +6012,8 @@ const __childProcessMod = (() => {
 
   /**
    * Wait-loop: long-poll cpWait until the child reports exit. Emits
-   * 'exit' once stamped.
+   * 'exit' once stamped, behind the barrier: a child's exit is how a parent
+   * learns the files it wrote are there.
    */
   async function _runWaitLoop(child) {
     while (HAS_SUPERVISOR && child.pid && !child._exitFired) {
@@ -5973,6 +6023,7 @@ const __childProcessMod = (() => {
           (result) => result,
         );
         if (r && r.done) {
+          await __nimbusInboundBarrier();
           child.exitCode = r.exitCode;
           child.signalCode = r.signal;
           child._exitFired = true;
@@ -6512,6 +6563,16 @@ function __makeProcessStdin() {
         if (readFailures > 10) throw pumpErr;
         await new Promise((resolve) => setTimeout(resolve, 500));
         continue;
+      }
+      // A packet that delivers anything — input, its end, a signal, a resize
+      // — hands the program news from outside it, and whatever sent the news
+      // may have written files first (a shell's \`echo v2 > f\` before the
+      // keystroke, the editor's save before the signal). So it takes the
+      // barrier before any handler sees it. An empty poll delivers nothing
+      // and costs nothing.
+      if (packet && (packet.resize || packet.signal || packet.ended
+          || (packet.data && packet.data.byteLength > 0))) {
+        await __nimbusInboundBarrier();
       }
       if (packet && packet.resize) {
         __nimbusTtyColumns = Number(packet.resize.columns) || __nimbusTtyColumns;
@@ -7135,6 +7196,12 @@ builtins.http = (() => {
     if (request.method !== "GET" && request.method !== "HEAD") {
       body = new Uint8Array(await request.arrayBuffer());
     }
+    // A request is a resumption like any other, and often the second half of
+    // a causal chain — \`echo v2 > f; curl :3000\` — so the handler runs behind
+    // the barrier, after the body has arrived. Sited here, in the dispatch
+    // every resident's server shares, not in a caller that happens to yield
+    // through a barriered timer on the way.
+    await __nimbusInboundBarrier();
     const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
     // Return once headers are known. A handler that never sends headers is
     // bounded by a header timeout (NOT a body-finish cap) so a hung handler

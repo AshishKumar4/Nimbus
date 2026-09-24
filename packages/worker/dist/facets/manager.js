@@ -725,6 +725,15 @@ let __nimbusStarting = null;
 let __nimbusRuntime = null;
 let __nimbusAttachedLifecycle = null;
 
+// The platform's timer, captured at module evaluation, before the shims wrap
+// setTimeout in the resumption barrier. The flush below yields turns for its
+// own bookkeeping; that is not a resumption of the program, and through the
+// wrapped timer it paid a hidden ACQUIRE per yield — the one an inbound
+// request relied on without saying so, and a second one after the response
+// on every request. The request's barrier is taken explicitly, in the shared
+// dispatch (__nimbusServeHttp), exactly once.
+const __nimbusPlatformSetTimeout = setTimeout;
+
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
@@ -744,7 +753,9 @@ async function __nimbusFlushRuntime() {
       rt.drainVfsMutations(),
     ]);
     for (let pass = 0; pass < 12; pass++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const turn = Promise.withResolvers();
+      __nimbusPlatformSetTimeout(turn.resolve, 0);
+      await turn.promise;
       if (rt.pendingIO.length <= rt.settledIO) break;
       const slice = rt.pendingIO.slice(rt.settledIO);
       rt.settledIO = rt.pendingIO.length;

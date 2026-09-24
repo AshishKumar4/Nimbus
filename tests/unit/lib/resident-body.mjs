@@ -54,10 +54,27 @@ plugin({
   },
 });
 
-// Captured before any launch: the body replaces globalThis.process and console.
+// Captured before any launch: the body replaces globalThis.process and console,
+// and wraps setTimeout in the resumption barrier.
 const realProcess = globalThis.process;
 const realStdout = realProcess.stdout.write.bind(realProcess.stdout);
 const realStderr = realProcess.stderr.write.bind(realProcess.stderr);
+const rawSetTimeout = globalThis.setTimeout;
+
+/** Wait on the platform's own timer, which takes no barrier of its own. */
+export function sleep(ms) {
+  const { promise, resolve } = Promise.withResolvers();
+  rawSetTimeout(resolve, ms);
+  return promise;
+}
+
+/** Poll `ready` on the raw timer until it holds, or fail after `ms`. */
+export async function until(ready, what, ms = 2_000) {
+  for (const deadline = Date.now() + ms; !ready();) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
+  }
+}
 
 export const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const WRITER_ID = '22222222-2222-4222-8222-222222222222';
@@ -143,10 +160,12 @@ export function facetSql(db = new Database(':memory:')) {
 /**
  * Generate the resident body for `program`, evaluate it, and start it the way
  * the fabric does: `new NimbusProcess(ctx, env).startProcess({ vfsCursor })`.
+ * `env` is the facet's bindings (SUPERVISOR); `processEnv` the program's own.
  */
 export async function launchResident({
   program,
   env,
+  processEnv = {},
   sql = facetSql(),
   cwd = '/home/user/app',
   bundle = {},
@@ -165,7 +184,7 @@ export async function launchResident({
   const generated = await generateLongRunningNodeCode(
     program,
     vfsState,
-    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd },
+    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv },
     false,
     generateShimsCode(),
   );
