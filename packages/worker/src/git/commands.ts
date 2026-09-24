@@ -773,6 +773,27 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, 
   return 0;
 }
 
+/**
+ * The index entries that restoring `restored` replaces (add_index_entry_with_check):
+ * a file at one of a restored path's leading directories, or anything below a
+ * restored path.
+ */
+export function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[] {
+  // Every leading directory of a restored path, once: an entry there is a file in its way.
+  const leading = new Set<string>();
+  for (const path of restored) {
+    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) leading.add(path.slice(0, at));
+  }
+  return index.filter((path) => {
+    if (restored.has(path)) return false;
+    if (leading.has(path)) return true;
+    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
+      if (restored.has(path.slice(0, at))) return true;
+    }
+    return false;
+  });
+}
+
 /** A checkout cf-git refused, as git reports one: its message on stderr, exit 1. Anything else propagates. */
 async function refusal(ctx: Ctx, error: unknown): Promise<number> {
   if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError') throw error;
@@ -854,13 +875,7 @@ async function checkoutPaths(
   // restored path replaces goes first, as add_index_entry_with_check replaces it: a file at
   // one of its leading directories, or anything below it.
   const restored = new Set(files.map(({ path }) => path));
-  const replaced = (await git.listFiles({ fs, dir: root, cache })).filter((path) => {
-    if (restored.has(path)) return false;
-    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
-      if (restored.has(path.slice(0, at))) return true;
-    }
-    return files.some(({ path: file }) => file.startsWith(`${path}/`));
-  });
+  const replaced = replacedIndexEntries(await git.listFiles({ fs, dir: root, cache }), restored);
   if (replaced.length) await git.remove({ fs, dir: root, filepath: replaced, cache });
   if (files.length) await git.add({ fs, dir: root, filepath: [...restored], parallel: false, force: true, cache });
   return 0;
