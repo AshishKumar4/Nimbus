@@ -8,12 +8,13 @@
   listed in `only` (by uid), null to others; `only: null` answers everyone.
 -/
 
-import Nimbus.Vfs.Composite
+import Nimbus.Vfs.CompositeOps
 import Nimbus.Refine.Json
 
 namespace Nimbus.Refine.CompositeCases
 
 open Nimbus.Vfs.Composite
+open Nimbus.Vfs.CompositeOps
 open Nimbus.Refine
 
 def uidOf (P : Principal) : Nat := if P = 0 then 0 else 1000
@@ -121,6 +122,61 @@ def genOp (S : St) (b : Nat) : Gen Op := do
   else if k < 14 then return .rmdir p
   else return .rename p (← genPath S)
 
+def pathJson (p : Path) : Json := .str ("/" ++ key p)
+
+def sortedPaths (ps : List Path) : Json :=
+  .arr ((ps.map fun p => "/" ++ key p).mergeSort (fun a b => decide (a ≤ b)) |>.map Json.str)
+
+def xoutJson : XOut → Json
+  | .err c => .obj [("error", .str c)]
+  | .report r k => .obj [("removed", sortedPaths r), ("kept", sortedPaths k)]
+  | .bytes b => .obj [("bytes", .str s!"v{b}")]
+  | .supported => .obj [("supported", .bool true)]
+  | .count n => .obj [("count", .ofNat n)]
+  | .dir m => .obj [("type", .str "directory"), ("mode", match m with | some m => .ofNat m | none => .null)]
+  | .other o => outJson o
+
+def xJson (P : Principal) (x : X) (o : XOut) : Json :=
+  let base (name : String) (path : String) (extra : List (String × Json)) : Json :=
+    .obj ([("as", .ofNat (uidOf P)), ("op", .str name), ("path", .str path)] ++ extra ++ [("expect", xoutJson o)])
+  match x with
+  | .removeRecursive p => base "removeRecursive" p []
+  | .readRange p => base "readRange" p [("offset", .ofNat 0), ("length", .ofNat 64)]
+  | .writeFileIfRevision p => base "writeFileIfRevision" p []
+  | .readFileAtRevision p => base "readFileAtRevision" p []
+  | .copy a b r => base "copy" a [("to", .str b), ("recursive", .bool r)]
+  | .statMode p => base "statMode" p []
+
+def capsJson (c : Caps) : Json :=
+  .obj [("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
+    ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))]
+
+def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 493 else none, []⟩
+
+def genX (S : St) : Gen X := do
+  let p ← genPath S
+  let k ← below 8
+  if k < 3 then return .removeRecursive p
+  else if k < 4 then return .readRange p
+  else if k < 5 then return (if (← below 2) == 0 then .writeFileIfRevision p else .readFileAtRevision p)
+  else if k < 7 then return .copy p (← genPath S) ((← below 3) != 0)
+  else return .statMode p
+
+/-- A core step the model cannot follow: `unlink`/`rmdir` of a pinned entry, or a
+    `rename` moving a pinned entry (the pins are fallback-only refusals). -/
+def touchesPin (S : St) (caps : Backend → Caps) (P : Principal) (op : Op) : Bool :=
+  let pinned (raw : String) (whole : Bool) : Bool :=
+    match walkRaw S P false raw with
+    | some (.ok p) =>
+      let ps := (caps (route S.mounts p).backend).pins
+      let rp := rel S.mounts p
+      ps.any fun pin => if whole then pfx rp pin else pin == rp
+    | _ => false
+  match op with
+  | .unlink p | .rmdir p => pinned p false
+  | .rename a _ => pinned a true
+  | _ => false
+
 def genCase : Gen (Option Json) := do
   let mut ms : List Mount := []
   for pt in points do
@@ -136,19 +192,39 @@ def genCase : Gen (Option Json) := do
   for b in [1, 2, 3] do
     if ms.any (·.backend == b) then trees := trees ++ [(b, ← genTree (fun _ => true) ((← below 5) + 1) false)]
   let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
+  let mut capList : List (Backend × Caps) := [(0, fullCaps 0)]
+  for (b, t) in trees do
+    if b != 0 then
+      let rr := (← below 2) == 0
+      let mut pins : List Path := []
+      if !rr then
+        for _ in [0:(← below 3)] do
+          if !t.isEmpty then pins := pins ++ [← pick (t.map (·.1))]
+      let mode ← below 3
+      capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
+        if mode == 0 then none else some (if mode == 1 then 448 else 493), pins⟩)]
+  let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
   for i in [0:n] do
     let P ← below 2
-    let op ← genOp S (i + 20)
-    let (o, S') := exec S P op
-    S := S'
-    steps := steps.push (opJson P op o)
+    if (← below 4) == 0 then
+      let x ← genX S
+      let (o, S') := execX caps S P x
+      S := S'
+      steps := steps.push (xJson P x o)
+    else
+      let op ← genOp S (i + 20)
+      if touchesPin S caps P op then continue
+      let (o, S') := exec S P op
+      S := S'
+      steps := steps.push (opJson P op o)
   let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
     ("only", match m.only with | none => .null | some ps => .arr (ps.map fun P => .ofNat (uidOf P)))]
   let initial := Json.obj (trees.map fun (b, t) => (backendName b, treeJson t))
   let final := Json.obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b)))
-  return some (.obj [("mounts", .arr mountsJson), ("backends", initial), ("steps", .arr steps.toList), ("final", final)])
+  return some (.obj [("mounts", .arr mountsJson), ("backends", initial),
+    ("caps", .obj (capList.map fun (b, c) => (backendName b, capsJson c))), ("steps", .arr steps.toList), ("final", final)])
 
 /-- A root symlink at a directory that exists only above a mount point: the
     synthesized directory wins for principals the mount answers; for others the
@@ -163,6 +239,46 @@ def runDirected (ms : List Mount) (trees : List (Backend × Tree)) (steps : List
   let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
     ("only", match m.only with | none => .null | some ps => .arr (ps.map fun P => .ofNat (uidOf P)))]
   .obj [("mounts", .arr mountsJson), ("backends", .obj (trees.map fun (b, t) => (backendName b, treeJson t))),
+    ("caps", .obj (trees.map fun (b, _) => (backendName b, capsJson (fullCaps b)))),
+    ("steps", .arr out.toList), ("final", .obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b))))]
+
+/-- Capabilities, the fallback removal, copy across mounts and mount-point modes. -/
+def directedX : Json := Id.run do
+  let ms : List Mount := [⟨["m1"], 1, none⟩, ⟨["m2"], 2, none⟩]
+  let trees : List (Backend × Tree) :=
+    [(0, [(["r"], .file 1)]),
+     (1, [(["f"], .file 5), (["d"], .dir), (["d", "x"], .file 6), (["d", "y"], .file 7), (["e"], .dir), (["e", "z"], .file 8)]),
+     (2, [(["g"], .file 9)])]
+  let capList : List (Backend × Caps) :=
+    [(0, fullCaps 0), (1, ⟨false, false, false, some 448, [["d", "x"]]⟩), (2, ⟨true, true, true, none, []⟩)]
+  let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
+  let steps : List (Principal × (Op ⊕ X)) :=
+    [(0, .inr (.statMode "/")), (0, .inr (.statMode "/m1")), (0, .inr (.statMode "/m2")),
+     (0, .inr (.readRange "/m1/f")), (0, .inr (.readRange "/m2/g")), (0, .inr (.readFileAtRevision "/m1/f")),
+     (0, .inr (.writeFileIfRevision "/m2/g")),
+     (0, .inr (.copy "/m1/f" "/m2/f" false)), (0, .inl (.readFile "/m2/f")),
+     (0, .inr (.copy "/m1/e" "/m2/e" true)), (0, .inl (.readdir "/m2/e")),
+     (0, .inr (.copy "/m1" "/m2/all" true)), (0, .inl (.readdir "/m2/all")),
+     (0, .inr (.copy "/" "/m2/root" true)), (0, .inr (.copy "/m1/f" "/m1" false)),
+     (0, .inr (.copy "/m1/e" "/m1/e/z2" true)), (0, .inr (.copy "/m1/d" "/m2/g" true)),
+     (0, .inr (.removeRecursive "/m1/d")), (0, .inl (.readdir "/m1/d")),
+     (0, .inr (.removeRecursive "/m1/e")), (0, .inl (.stat "/m1/e")),
+     (0, .inr (.removeRecursive "/m2/all")), (0, .inl (.stat "/m2/all")),
+     (0, .inr (.removeRecursive "/m1")), (0, .inr (.removeRecursive "/"))]
+  let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
+  let mut out : Array Json := #[]
+  for (P, st) in steps do
+    match st with
+    | .inl op =>
+      let (o, S') := exec S P op
+      S := S'; out := out.push (opJson P op o)
+    | .inr x =>
+      let (o, S') := execX caps S P x
+      S := S'; out := out.push (xJson P x o)
+  let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
+    ("only", .null)]
+  return .obj [("mounts", .arr mountsJson), ("backends", .obj (trees.map fun (b, t) => (backendName b, treeJson t))),
+    ("caps", .obj (capList.map fun (b, c) => (backendName b, capsJson c))),
     ("steps", .arr out.toList), ("final", .obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b))))]
 
 def directed : List Json :=
@@ -193,6 +309,6 @@ def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
       ("principals", .arr [.obj [("uid", .ofNat 0), ("gid", .ofNat 0)], .obj [("uid", .ofNat 1000), ("gid", .ofNat 1000)]]),
       ("note", .str "backends: fresh in-memory VFSes holding the entries (paths relative to the backend root, parents listed); a mount's source answers its backend to uids in `only`, null otherwise (only null = everyone); each step runs on composite.as(cred of `as`); `final` is every backend's tree after the steps; readdir names sorted")]
-    (directed ++ runGen 0x434F4D50 (casesOf 200 genCase))
+    (directed ++ [directedX] ++ runGen 0x434F4D50 (casesOf 200 genCase))
 
 end Nimbus.Refine.CompositeCases

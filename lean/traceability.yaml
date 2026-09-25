@@ -649,3 +649,22 @@ requirements:
     remainingEvidence:
       - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
       - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
+  VFS-COMP-003:
+    statement: Through the composite, removeRecursive never crosses into another mount and refuses /, a live mount point or an ancestor of one with EBUSY, and its fallback walk's report is exact (every subtree entry reported once, removed ones gone, kept ones present); readRange, writeFileIfRevision and readFileAtRevision answer ENOTSUP on a backend without them and are never emulated; copy across mounts changes only the target's backend; a live mount point stats its backend root's mode, synthesized only when the backend reports none.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositeOps.fallback_report_exact
+      - Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
+      - Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
+      - Nimbus.Vfs.CompositeOps.copy_stays_in_target
+      - Nimbus.Vfs.CompositeOps.mount_point_mode
+      - Nimbus.Vfs.CompositeOps.frame_refl
+      - Nimbus.Vfs.CompositeOps.frame_set
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
+    remainingEvidence:
+      - Pins (entries a fallback's unlink/rmdir refuse) are the model's only failure source; native removeRecursive ignores them and the fixture pins only backends without it
+      - With a capability present the model asserts support only; revision semantics are Coherence's
+      - Decided and sent to the Filesystem lane: copy of / or of an ancestor of a live mount is ENOTSUP; copy of a directory onto anything existing is EEXIST; ENOTSUP is checked before the backend's ENOENT

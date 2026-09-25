@@ -398,6 +398,16 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeCache.never_cached
 #print axioms Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
 
+/-! ## Nimbus/Vfs/CompositeOps.lean -/
+
+#print axioms Nimbus.Vfs.CompositeOps.fallback_report_exact
+#print axioms Nimbus.Vfs.CompositeOps.frame_refl
+#print axioms Nimbus.Vfs.CompositeOps.frame_set
+#print axioms Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
+#print axioms Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
+#print axioms Nimbus.Vfs.CompositeOps.copy_stays_in_target
+#print axioms Nimbus.Vfs.CompositeOps.mount_point_mode
+
 /-! ## Nimbus/Vfs/FastCdc.lean -/
 
 #print axioms Nimbus.Vfs.FastCdc.scanFrom_bounds
