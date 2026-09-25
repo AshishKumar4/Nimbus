@@ -9,10 +9,11 @@
     and `.` stay, `..` pops what has been resolved so far — after any link met
     before it — and never goes above `/`; a root-backend link met at a component is
     substituted there. Inside a mounted backend `..` is lexical (its links are its
-    own). `..` after a component the principal can reach that is not a directory
-    answers ENOTDIR, as Linux lookup does (Main's ruling); `..` after an absent
-    component pops it. The result is routed to the longest mount point that is a
-    prefix.
+    own). Every non-final component the principal can reach must exist and be a
+    directory before the next one, `..` included, applies: ENOENT when absent,
+    ENOTDIR when not a directory, ahead of ENXIO/EBUSY/EXDEV (Main's ruling, Linux
+    lookup). A `rename` walks its source first, so the source's errors win. The
+    result is routed to the longest mount point that is a prefix.
   - DECIDED: a path is absent for a principal when ANY mount whose point is a prefix
     of it answers null for that principal, not only the longest one. A live mount
     nested under an absent one is unreachable through it.
@@ -178,33 +179,40 @@ def linkAt (S : St) (P : Principal) (q : Path) : Option String :=
     | _ => none
   else none
 
-/-- `..` would leave `done`, a reachable non-directory: ENOTDIR. -/
-def notDirAt (S : St) (P : Principal) (done : Path) : Bool :=
-  done != [] && !absent S.mounts P done && !synth S.mounts P done &&
-    match look (treeAt S done) (rel S.mounts done) with
-    | some .dir => false
-    | some _ => true
-    | none => false
+/-- A non-final component must exist and be a directory (Linux lookup): `none` when
+    it is (or when the principal cannot reach it, so the operation answers ENXIO
+    without reading the null mount's backend); ENOENT when absent; ENOTDIR when not a
+    directory. -/
+def dirErr (S : St) (P : Principal) (q : Path) : Option String :=
+  if q = [] ∨ absent S.mounts P q = true ∨ synth S.mounts P q = true then none
+  else match look (treeAt S q) (rel S.mounts q) with
+    | some .dir => none
+    | some _ => some "ENOTDIR"
+    | none => some "ENOENT"
 
 /-- Walk the raw components in order (Linux path lookup): `""` and `.` stay, `..`
     pops what has been resolved so far (so it applies after a link), a name met at a
     root link is replaced by the link's target (absolute from `/`, relative from the
-    link's directory), at most `hops` times, then ELOOP. The last component is
-    followed only when `follow`. Absent or non-directory components do not stop the
-    walk; the operation answers for them. `steps` bounds the walk (ELOOP past it). `none`: ELOOP; `some none`:
-    ENOTDIR; `some (some p)`: the resolved path. -/
-def walk (S : St) (P : Principal) (follow : Bool) : Nat → Nat → Path → List String → Option (Option Path)
+    link's directory), at most `hops` times, then ELOOP. Every non-final component
+    must exist and be a directory before the next one, `..` included, is applied
+    (`dirErr`: ENOENT, ENOTDIR). The last component is followed only when `follow`.
+    `steps` bounds the walk (ELOOP past it). -/
+def walk (S : St) (P : Principal) (follow : Bool) : Nat → Nat → Path → List String → Option (Except String Path)
   | 0, _, _, _ => none
-  | _ + 1, _, done, [] => some (some done)
+  | _ + 1, _, done, [] => some (.ok done)
   | n + 1, hops, done, c :: rs =>
     if c = "" ∨ c = "." then walk S P follow n hops done rs
-    else if c = ".." then (if notDirAt S P done then some none else walk S P follow n hops done.dropLast rs)
-    else if rs = [] ∧ follow = false then some (some (done ++ [c]))
+    else if c = ".." then walk S P follow n hops done.dropLast rs
+    else if rs = [] ∧ follow = false then some (.ok (done ++ [c]))
     else match linkAt S P (done ++ [c]) with
       | some t =>
         if hops = 0 then none
         else walk S P follow n (hops - 1) (if t.startsWith "/" then [] else done) (t.splitOn "/" ++ rs)
-      | none => walk S P follow n hops (done ++ [c]) rs
+      | none =>
+        if rs = [] then some (.ok (done ++ [c]))
+        else match dirErr S P (done ++ [c]) with
+          | some e => some (.error e)
+          | none => walk S P follow n hops (done ++ [c]) rs
 
 /-- The composite substitutes only links the root backend holds, at paths the
     root backend serves and that are not synthesized: a link inside a mount is the
@@ -221,7 +229,7 @@ theorem resolve_root_only (S : St) (P : Principal) (q : Path) {t : String} (h : 
 
 /-- A walked path has no `""`, `.` or `..` component. -/
 theorem walk_clean (S : St) (P : Principal) (f : Bool) :
-    ∀ n hops done rest p, Clean done → walk S P f n hops done rest = some (some p) → Clean p := by
+    ∀ n hops done rest p, Clean done → walk S P f n hops done rest = some (.ok p) → Clean p := by
   intro n
   induction n with
   | zero => intro _ _ _ _ _ h; cases h
@@ -239,9 +247,7 @@ theorem walk_clean (S : St) (P : Principal) (f : Bool) :
       split at h
       · exact ih _ _ _ _ hd h
       · split at h
-        · split at h
-          · cases h
-          · exact ih _ _ _ _ (fun x hx => hd x ((List.dropLast_sublist _).subset hx)) h
+        · exact ih _ _ _ _ (fun x hx => hd x ((List.dropLast_sublist _).subset hx)) h
         · rename_i h1 h2
           have hc : c ≠ "" ∧ c ≠ "." ∧ c ≠ ".." := ⟨fun e => h1 (Or.inl e), fun e => h1 (Or.inr e), h2⟩
           split at h
@@ -250,11 +256,15 @@ theorem walk_clean (S : St) (P : Principal) (f : Bool) :
             · split at h
               · cases h
               · exact ih _ _ _ _ (by split <;> first | exact hd | exact fun _ h => by cases h) h
-            · exact ih _ _ _ _ (app hc) h
+            · split at h
+              · cases h; exact app hc
+              · split at h
+                · cases h
+                · exact ih _ _ _ _ (app hc) h
 
 def maxSteps : Nat := 4096
 
-def walkRaw (S : St) (P : Principal) (follow : Bool) (raw : String) : Option (Option Path) :=
+def walkRaw (S : St) (P : Principal) (follow : Bool) (raw : String) : Option (Except String Path) :=
   walk S P follow maxSteps fuel [] (raw.splitOn "/")
 
 /-! ## Operations -/
@@ -445,15 +455,15 @@ def execResolved (S : St) (P : Principal) (op : Op) (p q : Path) : Out × St :=
 def exec (S : St) (P : Principal) (op : Op) : Out × St :=
   match walkRaw S P op.follow op.raw with
   | none => (.err "ELOOP", S)
-  | some none => (.err "ENOTDIR", S)
-  | some (some p) =>
+  | some (.error e) => (.err e, S)
+  | some (.ok p) =>
     match op.raw2 with
     | none => execResolved S P op p []
     | some r2 =>
       match walkRaw S P false r2 with
       | none => (.err "ELOOP", S)
-      | some none => (.err "ENOTDIR", S)
-      | some (some q) => execResolved S P op p q
+      | some (.error e) => (.err e, S)
+      | some (.ok q) => execResolved S P op p q
 
 /-! ## The refusals -/
 
@@ -515,14 +525,18 @@ theorem treeAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' 
     {p : Path} (ha : absent S.mounts P p = false) : treeAt S' p = treeAt S p := by
   unfold treeAt; rw [hA.1]; exact hA.2 _ (route_not_hidden hb ha)
 
-theorem notDirAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
-    (done : Path) : notDirAt S' P done = notDirAt S P done := by
-  unfold notDirAt
+theorem dirErr_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
+    (q : Path) : dirErr S' P q = dirErr S P q := by
+  unfold dirErr
   rw [hA.1]
-  cases ha : absent S.mounts P done
-  · simp only [Bool.not_false, Bool.and_true, Bool.true_and]
+  by_cases h : q = [] ∨ absent S.mounts P q = true ∨ synth S.mounts P q = true
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg h, if_neg h]
+    have ha : absent S.mounts P q = false := by
+      cases e : absent S.mounts P q
+      · rfl
+      · exact absurd (Or.inr (Or.inl e)) h
     unfold rel; rw [treeAt_agree hA hb ha]
-  · simp
 
 theorem walk_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     (f : Bool) : ∀ n hops done rest, walk S' P f n hops done rest = walk S P f n hops done rest := by
@@ -535,7 +549,7 @@ theorem walk_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b)
     | nil => rfl
     | cons c rs =>
       simp only [walk]
-      simp only [linkAt_agree hA hb.1, notDirAt_agree hA hb, ih]
+      simp only [linkAt_agree hA hb.1, dirErr_agree hA hb, ih]
 
 theorem walkRaw_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     (f : Bool) (raw : String) : walkRaw S' P f raw = walkRaw S P f raw := walk_agree hA hb f _ _ _ _

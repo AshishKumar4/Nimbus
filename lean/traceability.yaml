@@ -603,7 +603,7 @@ requirements:
       - Nimbus.Vfs.Composite.treeAt_agree
       - Nimbus.Vfs.Composite.listing_agree
       - Nimbus.Vfs.Composite.backendOp_agree
-      - Nimbus.Vfs.Composite.notDirAt_agree
+      - Nimbus.Vfs.Composite.dirErr_agree
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     refinement:

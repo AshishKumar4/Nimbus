@@ -385,7 +385,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Composite.route_not_hidden
 #print axioms Nimbus.Vfs.Composite.linkAt_agree
 #print axioms Nimbus.Vfs.Composite.treeAt_agree
-#print axioms Nimbus.Vfs.Composite.notDirAt_agree
+#print axioms Nimbus.Vfs.Composite.dirErr_agree
 #print axioms Nimbus.Vfs.Composite.walk_agree
 #print axioms Nimbus.Vfs.Composite.walkRaw_agree
 #print axioms Nimbus.Vfs.Composite.listing_agree
