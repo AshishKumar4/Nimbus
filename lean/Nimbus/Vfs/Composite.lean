@@ -27,7 +27,8 @@
     `unlink`, `rmdir`, `rename` — of a live mount point or an ancestor of one), then
     EXDEV (`rename` across mounts), then the backend's own answer. `mkdir -p` of a
     live mount point or ancestor succeeds and changes nothing.
-  - The backend is POSIX: `rename` replaces a target file, or an empty target
+  - The backend is POSIX: a component before the last that is not a directory is
+    ENOTDIR for every operation; `mkdir -p` over a file is EEXIST; `rename` replaces a target file, or an empty target
     directory with a directory; ENOTEMPTY over a non-empty directory, ENOTDIR for a
     directory onto a file, EISDIR for a file onto a directory, EINVAL into itself,
     ENOENT/ENOTDIR for a missing/non-directory target parent; a rename onto itself
@@ -268,9 +269,16 @@ def mkdirs (t : Tree) (rp : Path) : Tree :=
 def moveTree (t : Tree) (a b : Path) : Tree :=
   t.map fun x => if pfx a x.1 then (b ++ x.1.drop a.length, x.2) else x
 
+/-- Some component before the last is not a directory (POSIX lookup: ENOTDIR). -/
+def badPrefix (t : Tree) (rp : Path) : Bool :=
+  (List.range (rp.length - 1)).any fun i => match look t (rp.take (i + 1)) with
+    | some .dir => false
+    | some _ => true
+    | none => false
+
 /-- What an operation does to the backend `P` reaches for a resolved, reachable
     path: the answer, and the new tree for that backend (if any). -/
-def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option Tree
+def backendOp0 (S : St) (P : Principal) : Op → Path → Path → Out × Option Tree
   | .stat _, p, _ =>
     if synth S.mounts P p then (.kind "directory", none)
     else match look (treeAt S p) (rel S.mounts p) with
@@ -301,9 +309,10 @@ def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option 
     else
       let t := treeAt S p
       let rp := rel S.mounts p
-      if (List.range rp.length).any fun i => match look t (rp.take (i + 1)) with
-          | some .dir => false | some _ => true | none => false
-      then (.err "ENOTDIR", none) else (.ok, some (mkdirs t rp))
+      match look t rp with
+      | some .dir => (.ok, none)
+      | some _ => (.err "EEXIST", none)
+      | none => (.ok, some (mkdirs t rp))
   | .mkdir _, p, _ =>
     let t := treeAt S p
     let rp := rel S.mounts p
@@ -344,6 +353,12 @@ def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option 
           else (.ok, some (moveTree (cut t rb) ra rb))
         else if e = .dir then (.err "EISDIR", none)
         else (.ok, some (moveTree (cut t rb) ra rb))
+
+def backendOp (S : St) (P : Principal) (op : Op) (p q : Path) : Out × Option Tree :=
+  if !synth S.mounts P p && badPrefix (treeAt S p) (rel S.mounts p) then (.err "ENOTDIR", none)
+  else if (match op with | .rename _ _ => true | _ => false) && badPrefix (treeAt S p) (rel S.mounts q) then
+    (.err "ENOTDIR", none)
+  else backendOp0 S P op p q
 
 def Op.follow : Op → Bool
   | .stat _ | .readdir _ | .readFile _ | .writeFile _ _ => true
@@ -465,7 +480,9 @@ theorem backendOp_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S 
   have ht := treeAt_agree hA hb ha
   have hl := listing_agree hA hb ha
   have hm := hA.1
-  cases op <;> simp only [backendOp, rel, ht, hl, hm]
+  unfold backendOp
+  rw [ht, hm]
+  cases op <;> simp only [backendOp0, rel, ht, hl, hm]
 
 /-- A backend served only through mounts absent for `P` neither influences nor
     receives any of `P`'s operations: two states that differ only in it give `P`
