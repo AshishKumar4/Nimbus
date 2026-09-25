@@ -370,6 +370,33 @@ import Nimbus.Refine
 #print axioms Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
 #print axioms Nimbus.Refine.RevisionFloorCases.execBump_reach
 
+/-! ## Nimbus/Vfs/Composite.lean -/
+
+#print axioms Nimbus.Vfs.Composite.normParts_clean
+#print axioms Nimbus.Vfs.Composite.norm_clean
+#print axioms Nimbus.Vfs.Composite.pfx_iff
+#print axioms Nimbus.Vfs.Composite.route_fold
+#print axioms Nimbus.Vfs.Composite.route_spec
+#print axioms Nimbus.Vfs.Composite.resolve_root_only
+#print axioms Nimbus.Vfs.Composite.absent_refuses
+#print axioms Nimbus.Vfs.Composite.busy_refuses
+#print axioms Nimbus.Vfs.Composite.exdev_refuses
+#print axioms Nimbus.Vfs.Composite.readdir_live_only
+#print axioms Nimbus.Vfs.Composite.absent_of_prefix
+#print axioms Nimbus.Vfs.Composite.route_not_hidden
+#print axioms Nimbus.Vfs.Composite.firstLink_agree
+#print axioms Nimbus.Vfs.Composite.resolve_agree
+#print axioms Nimbus.Vfs.Composite.treeAt_agree
+#print axioms Nimbus.Vfs.Composite.listing_agree
+#print axioms Nimbus.Vfs.Composite.backendOp_agree
+#print axioms Nimbus.Vfs.Composite.noninterference
+
+/-! ## Nimbus/Vfs/CompositeCache.lean -/
+
+#print axioms Nimbus.Vfs.CompositeCache.sync_read_fresh
+#print axioms Nimbus.Vfs.CompositeCache.never_cached
+#print axioms Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
+
 /-! ## Nimbus/Vfs/FastCdc.lean -/
 
 #print axioms Nimbus.Vfs.FastCdc.scanFrom_bounds

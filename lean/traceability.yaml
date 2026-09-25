@@ -581,3 +581,44 @@ requirements:
       - A relist is read at the answer's instant (one exchange); a relist served later is fresher but not modeled
       - NodeNoMirrorBuild's bridges pass 155/155 (namespace) and go red with the directory-closed subtree drop reverted. The relist's own deletion is a backstop the fixtures cannot make necessary. For the reader to have held a name that is hidden at answer time under a visible directory, some directory on the path must have changed traversability, and the code drops that subtree directly.
       - The overlay fixture's flush commits and acknowledges together, so the committed-but-unacknowledged window (COH-004) is covered by the proof, not by that fixture
+  VFS-COMP-001:
+    statement: CompositeVFS routes a normalized, root-link-resolved path to the longest matching mount; a principal never reaches, lists or is influenced by a mount whose source answers null for it (null stat, ENXIO otherwise, never an empty directory); mount points refuse unlink, rmdir and rename with EBUSY; rename across mounts is EXDEV and never emulated; the composite follows only root-backend links.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.Composite.route_spec
+      - Nimbus.Vfs.Composite.norm_clean
+      - Nimbus.Vfs.Composite.absent_refuses
+      - Nimbus.Vfs.Composite.busy_refuses
+      - Nimbus.Vfs.Composite.exdev_refuses
+      - Nimbus.Vfs.Composite.resolve_root_only
+      - Nimbus.Vfs.Composite.readdir_live_only
+      - Nimbus.Vfs.Composite.noninterference
+      - Nimbus.Vfs.Composite.normParts_clean
+      - Nimbus.Vfs.Composite.pfx_iff
+      - Nimbus.Vfs.Composite.route_fold
+      - Nimbus.Vfs.Composite.absent_of_prefix
+      - Nimbus.Vfs.Composite.route_not_hidden
+      - Nimbus.Vfs.Composite.firstLink_agree
+      - Nimbus.Vfs.Composite.resolve_agree
+      - Nimbus.Vfs.Composite.treeAt_agree
+      - Nimbus.Vfs.Composite.listing_agree
+      - Nimbus.Vfs.Composite.backendOp_agree
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
+    remainingEvidence:
+      - DESIGN.md (/mnt/scratch/nimbus/verify/vfs-api) leaves three rules open; the model decides them (absent when any mount on the path is null; a synthesized directory wins over a root link of the same name; refusal order ENXIO, EBUSY, EXDEV, backend) and the Filesystem lane was told
+      - Backends are trees without POSIX modes; removeRecursive, copy, readRange, capabilities and ENOTSUP are not modeled
+      - The tsRef is a placeholder until composite.ts lands; the lane's refinement test is the bridge
+  VFS-COMP-002:
+    statement: The node facet's staged store over a CompositeVFS serves at a resumption only values the backend now serving the path held at or after the barrier, given each backend's own no-stale guarantee, whatever the mount table did; a backend without changes is never staged; keying the store by composite path instead serves the previous backend's bytes after a source switches.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Vfs.CompositeCache.sync_read_fresh
+      - Nimbus.Vfs.CompositeCache.never_cached
+      - Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
