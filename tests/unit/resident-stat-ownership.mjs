@@ -32,7 +32,12 @@ const PROGRAM = `
 const fs = require("fs");
 const t = (f) => { try { return f(); } catch (e) { return "ERR:" + e.code; } };
 const own = (p) => t(() => { const s = fs.statSync(p); return { uid: s.uid, gid: s.gid, mode: (s.mode & 0o7777).toString(8), dir: s.isDirectory() }; });
-globalThis.__probe = { fs, t, own, resume: (f) => new Promise((resolve) => setTimeout(() => resolve(t(f)), 0)) };
+globalThis.__probe = {
+  fs, t, own,
+  resume: (f) => new Promise((resolve) => setTimeout(() => resolve(t(f)), 0)),
+  // process.exit unwinds by throwing in the facet; the exit report follows.
+  exit: () => { try { process.exit(0); } catch {} },
+};
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
@@ -45,7 +50,7 @@ async function boot({ inBundle = false, inPlan = true } = {}) {
   root.mkdir(ROOT_DIR, { mode: 0o755 });
   root.chmod(ROOT_DIR, 0o755);
   root.writeFile(`${ROOT_DIR}/conf`, 'c');
-  const { supervisor } = facetSupervisor(authority);
+  const { supervisor, log } = facetSupervisor(authority);
   // The spawn-time tables a launch ships without a metadata row: what the
   // shims used to fill in with the reader's own ownership.
   const bundle = inBundle ? { [ROOT_FILE]: '{"root":true}' } : {};
@@ -59,7 +64,7 @@ async function boot({ inBundle = false, inPlan = true } = {}) {
     dataPlan: inPlan ? [ROOT_FILE, `${ROOT_DIR}/conf`] : [],
     cursor: authority.cursor(),
   });
-  return { authority, probe: globalThis.__probe };
+  return { authority, probe: globalThis.__probe, log };
 }
 
 const rootOwned = { uid: 0, gid: 0, mode: '644', dir: false };
@@ -91,6 +96,34 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.t(() => probe.fs.chownSync(`/${ROOT_FILE}`, CRED.uid, CRED.gid)), 'ERR:EPERM', 'nor take it');
     assert.deepEqual(probe.own(`/${ROOT_FILE}`), rootOwned);
     assert.equal(probe.t(() => probe.fs.writeFileSync(`/${ROOT_FILE}`, 'pwned')), 'ERR:EACCES');
+  },
+
+  async 'a write the stale local view allowed is refused by the authority, and not read back'() {
+    // The process's view says the file is its own; a peer (root) takes it
+    // before the next barrier. The local check passes on the stale view; the
+    // authority is the backstop, and the process must not go on reading
+    // bytes the authority refused.
+    const { authority, probe, log } = await boot();
+    authority.kfs.writeFile(`${APP}/was-mine.txt`, 'original');
+    await probe.resume(() => null);
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.chown(`${APP}/was-mine.txt`, 0, 0);
+    root.chmod(`${APP}/was-mine.txt`, 0o644);
+    const accepted = probe.t(() => probe.fs.writeFileSync(`/${APP}/was-mine.txt`, 'pwned'));
+    // Whatever the local answer, the write-back meets the authority.
+    await probe.resume(() => null);
+    await sleep(50);
+    assert.equal(authority.read(`${APP}/was-mine.txt`), 'original', 'the authority refused it');
+    const after = await probe.resume(() => probe.fs.readFileSync(`/${APP}/was-mine.txt`, 'utf8'));
+    assert.notEqual(after, 'pwned', `the process reads the authority's bytes or the refusal, not its own (local: ${accepted})`);
+    assert.deepEqual(await probe.resume(() => probe.own(`/${APP}/was-mine.txt`)), rootOwned, 'and the authority\'s owner');
+    // The sync writer never saw the refusal, so it is retained for the next
+    // durability boundary and the exit report, not dropped as a caught verdict.
+    // The exit drain reports it: the process does not exit clean.
+    probe.exit();
+    for (let i = 0; i < 50 && log.exit === null; i++) await sleep(20);
+    assert.ok(log.exit !== null && (log.exit.code !== 0 || /EACCES/.test(String(log.exit.reason) + log.stderr)),
+      `the refusal reached the exit report: ${JSON.stringify(log.exit)} ${log.stderr.slice(-200)}`);
   },
 
   async "rewriting an existing file keeps its owner and mode"() {

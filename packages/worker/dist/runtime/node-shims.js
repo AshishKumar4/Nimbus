@@ -1075,7 +1075,10 @@ const __fsMod = (() => {
   function _noteCreation(k) {
     if (_createdHere.has(k)) return;
     const absPath = "/" + k;
-    if (_statLadder(absPath) === undefined && (_nsActive() || _absenceIsKnown(absPath))) _createdHere.add(k);
+    // Known absent, not merely settled by a listing: a name the parent's
+    // listing shows is someone's file whose record this view lacks.
+    if (_statLadder(absPath) !== undefined || _listedByParent(k)) return;
+    if (_nsActive() || _absenceIsKnown(absPath)) _createdHere.add(k);
   }
   function _forgetCreation(k) {
     const prefix = k + "/";
@@ -3048,6 +3051,17 @@ const __fsMod = (() => {
     _repairs.push(_learnStat("/" + k, supervisor).catch(() => {}));
   };
 
+  // The authority refused a parked write (vfs-write-ledger): what this view
+  // recorded of the path came from that write, so it is forgotten and the
+  // next access asks the authority.
+  globalThis.__nimbusVfsWriteRefused = (key) => {
+    const k = String(key).replace(/^\\/+/, "");
+    _createdHere.delete(k);
+    _acceptedHere.delete(k);
+    const table = _metadataTable();
+    if (table && !_nsActive()) delete table[k];
+  };
+
   function _concatBytes(parts, total) {
     const out = new Uint8Array(total);
     let off = 0;
@@ -3476,7 +3490,11 @@ const __fsMod = (() => {
     // process's own pending write is judged as that write was, below: by its
     // parent here, and by the authority when it lands.
     const k = _strip(absPath);
-    if (cell !== undefined && !(__vfsWrites && k in __vfsWrites) && !_acceptedHere.has(k)) {
+    // Something is there (bytes staged, or a name a listing shows) and
+    // nothing says whose: whether the write is allowed cannot be decided
+    // without the authority, so it is refused as a miss rather than granted.
+    if ((cell !== undefined || _listedByParent(k)) && !(__vfsWrites && k in __vfsWrites) && !_acceptedHere.has(k)
+      && !_createdHere.has(k)) {
       throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
     }
     // The ladder rather than existsSync: a write to a path outside the staged
@@ -3892,9 +3910,33 @@ const __fsMod = (() => {
   function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts)); }
 
   // ── unlinkSync ──
+  /**
+   * unlink(2)/rmdir(2)/rename(2) of an existing name: the parent must be
+   * writable and searchable, and in a sticky directory (/tmp, 1777) only the
+   * file's owner, the directory's owner or root may remove it. Checked before
+   * the local view changes, so a refusal leaves the process's view intact. A
+   * name whose owner this view does not know is refused as a miss.
+   */
+  function _ensureRemovable(absPath, syscall, p) {
+    _ensureAncestorsTraversable(absPath, syscall, p);
+    const k = _strip(absPath);
+    const parent = _statLadder(__pathMod.dirname(absPath));
+    if (parent === undefined) return;
+    if (!_modeAllows(parent, 3)) throw _fsErr("EACCES", syscall, p);
+    if ((Number(parent.mode) & 0o1000) === 0 || Number(cred.uid) === 0 || Number(parent.uid) === Number(cred.uid)) return;
+    if (_createdHere.has(k)) return;
+    const target = _statLadder(absPath, true);
+    if (target === undefined) {
+      if (_listedByParent(k) || _bundleLookup(absPath) !== undefined) throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
+      return;
+    }
+    if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
+  }
+
   function _unlinkQueued(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
+    _ensureRemovable(absPath, "unlink", p);
     if (__vfsBundle) delete __vfsBundle[k];
     if (__vfsWrites) delete __vfsWrites[k];
     _forgetSyncPath(k);
@@ -3906,6 +3948,7 @@ const __fsMod = (() => {
   function _rmdirQueued(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
+    _ensureRemovable(absPath, "rmdir", p);
     if (__vfsDirs) delete __vfsDirs[k];
     _forgetSyncPath(k);
     return _queueStructuralMutation(
@@ -3920,6 +3963,11 @@ const __fsMod = (() => {
   function _renameQueued(oldP, newP) {
     const oldAbs = _resolve(oldP);
     const newAbs = _resolve(newP);
+    // The name leaves its directory and lands in another (replacing what is
+    // there): both are removals by POSIX's rule.
+    _ensureRemovable(oldAbs, "rename", oldP);
+    if (_statLadder(newAbs, true) !== undefined || _listedByParent(_strip(newAbs))) _ensureRemovable(newAbs, "rename", newP);
+    else _ensureWritable(newAbs, "rename", newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     // The table still holds the old name until the rename is reported, so the

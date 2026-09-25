@@ -30,10 +30,13 @@ const fs = factory(
     [`${APP}/root-owned.json`]: { type: 'file', size: 13, mode: 0o100644, uid: 0, gid: 0 },
     [`${APP}/etc-like`]: { type: 'directory', size: 0, mode: 0o40755, uid: 0, gid: 0 },
     [`${APP}/mine-already.txt`]: { type: 'file', size: 4, mode: 0o100600, uid: 1000, gid: 1000 },
+    tmp: { type: 'directory', size: 0, mode: 0o41777, uid: 0, gid: 0 },
+    'tmp/theirs.txt': { type: 'file', size: 4, mode: 0o100644, uid: 1001, gid: 1001 },
   },
   {},
   {
     [APP]: ['root-owned.json', 'undescribed.json', 'etc-like', 'undescribed-dir', 'capped.bin', 'mine-already.txt'],
+    tmp: ['theirs.txt', 'listed-only.txt'],
     [`${APP}/etc-like`]: [],
     [`${APP}/undescribed-dir`]: [],
   },
@@ -79,5 +82,20 @@ assert.deepEqual(own(`/${APP}/root-owned.json`), { uid: 0, gid: 0, mode: '644' }
 assert.equal(t(() => fs.writeFileSync(`/${APP}/root-owned.json`, 'pwned')), 'ERR:EACCES');
 fs.chmodSync(`/${APP}/mine.txt`, 0o600);
 assert.deepEqual(own(`/${APP}/mine.txt`), { uid: 1000, gid: 1000, mode: '600' });
+
+// A name a listing shows, with no record: someone's file, not a creation.
+// (A writable parent, /tmp 1777, must not turn it into the reader's.)
+assert.notEqual(t(() => fs.writeFileSync('/tmp/listed-only.txt', 'pwned')), undefined, 'refused, not written');
+assert.notEqual(t(() => fs.readFileSync('/tmp/listed-only.txt', 'utf8')), 'pwned');
+notFabricated('/tmp/listed-only.txt');
+// In a sticky directory only the owner removes or replaces a file.
+assert.equal(t(() => fs.unlinkSync('/tmp/theirs.txt')), 'ERR:EPERM');
+assert.equal(fs.existsSync('/tmp/theirs.txt'), true, 'the refusal left the view intact');
+fs.writeFileSync('/tmp/mine.txt', 'mine');
+assert.equal(t(() => fs.renameSync('/tmp/mine.txt', '/tmp/theirs.txt')), 'ERR:EPERM', 'nor replaced by a rename');
+assert.equal(t(() => fs.renameSync('/tmp/theirs.txt', '/tmp/stolen.txt')), 'ERR:EPERM', 'nor renamed away');
+assert.equal(t(() => fs.unlinkSync('/tmp/mine.txt')), undefined, 'its own file it may remove');
+// And no removal from a directory the reader cannot write.
+assert.equal(t(() => fs.unlinkSync(`/${APP}/etc-like/anything`)), 'ERR:EACCES');
 
 console.log('node-shims-stat-ownership: ok');

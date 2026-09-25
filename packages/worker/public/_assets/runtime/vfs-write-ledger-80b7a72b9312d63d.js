@@ -143,6 +143,7 @@ const __NIMBUS_SYSCALL_VERDICT_CODES = new Set([
 ]);
 
 function __nimbusIsDurabilityFailure(error) {
+  if (error && typeof error === "object" && error.nimbusRefusedWriteBack === true) return true;
   const code = error && typeof error === "object" ? error.code : undefined;
   return typeof code !== "string" || !__NIMBUS_SYSCALL_VERDICT_CODES.has(code);
 }
@@ -422,9 +423,39 @@ function __nimbusUnsupportedVfsAppend(path) {
   return error;
 }
 
+/**
+ * The authority refused a parked write outright (a syscall verdict:
+ * EACCES, EPERM, EISDIR...). The bytes are not the file's and never will
+ * be, so the process stops serving them: the parked cell of that generation
+ * and any resident copy go, and the shims forget what they recorded of the
+ * path, so the next read asks the authority. A synchronous writer never saw
+ * an error it could catch, so the refusal is retained (reported at the next
+ * durability boundary and at exit), not treated as a verdict it handled.
+ */
+function __nimbusRefuseParkedWrite(snapshot, error) {
+  if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
+    delete __vfsWrites[snapshot.key];
+    if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[snapshot.key];
+    const refused = globalThis.__nimbusVfsWriteRefused;
+    if (typeof refused === "function") refused(snapshot.key);
+  }
+  if (error && typeof error === "object") {
+    try { error.nimbusRefusedWriteBack = true; } catch {}
+  }
+  return error;
+}
+
 function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
   return __nimbusQueueVfsMutation(snapshot.key, () => __nimbusOwnAcknowledgement(snapshot.key, async () => {
-    const value = await mutation(snapshot.content, snapshot);
+    let value;
+    try {
+      value = await mutation(snapshot.content, snapshot);
+    } catch (error) {
+      // A verdict is the authority's answer; anything else (a lost RPC) may
+      // have landed, and the parked bytes stay until that is known.
+      if (!__nimbusIsDurabilityFailure(error)) throw __nimbusRefuseParkedWrite(snapshot, error);
+      throw error;
+    }
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
       // What the barriers reported for this path while the write was in
       // flight. Read before the parked cell is retired below, which drops it.
