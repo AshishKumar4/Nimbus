@@ -41,9 +41,15 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot({ inBundle = false, inPlan = true } = {}) {
+async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
   const authority = createAuthority();
   const root = authority.rawVfs.as(CRED_KERNEL);
+  if (tmp) {
+    root.mkdir('tmp', { recursive: true });
+    root.chmod('tmp', 0o1777);
+    root.writeFile('tmp/theirs', 'root secret');
+    root.chmod('tmp/theirs', 0o644);
+  }
   authority.kfs.mkdir(APP, { recursive: true, mode: 0o755 });
   root.writeFile(ROOT_FILE, '{"root":true}');
   root.chmod(ROOT_FILE, 0o644);
@@ -124,6 +130,82 @@ await runScenarios(import.meta.path, {
     for (let i = 0; i < 50 && log.exit === null; i++) await sleep(20);
     assert.ok(log.exit !== null && (log.exit.code !== 0 || /EACCES/.test(String(log.exit.reason) + log.stderr)),
       `the refusal reached the exit report: ${JSON.stringify(log.exit)} ${log.stderr.slice(-200)}`);
+  },
+
+  // /tmp, which the namespace manifest covers like any directory: a name
+  // someone else owns is KNOWN, so the refusals are local and POSIX's, and a
+  // genuinely new name is its creator's at once.
+  async 'a foreign file in /tmp is known: writing, removing or changing it is refused locally'() {
+    const { authority, probe } = await boot({ tmp: true });
+    const theirs = '/tmp/theirs';
+    assert.deepEqual(probe.own(theirs), rootOwned);
+    assert.equal(probe.t(() => probe.fs.writeFileSync(theirs, 'pwned')), 'ERR:EACCES');
+    assert.equal(probe.t(() => probe.fs.unlinkSync(theirs)), 'ERR:EPERM', 'sticky /tmp: only the owner removes it');
+    assert.equal(probe.t(() => probe.fs.renameSync(theirs, '/tmp/stolen')), 'ERR:EPERM');
+    assert.equal(probe.t(() => probe.fs.chmodSync(theirs, 0o777)), 'ERR:EPERM');
+    assert.deepEqual(probe.own(theirs), rootOwned, 'the view is unchanged');
+    await probe.resume(() => null);
+    await sleep(50);
+    assert.equal(authority.read('tmp/theirs'), 'root secret');
+  },
+
+  async 'a new name in /tmp is its creator\'s at once: chmod, rename and unlink in the same tick'() {
+    const { authority, probe } = await boot({ tmp: true });
+    assert.equal(probe.t(() => {
+      probe.fs.writeFileSync('/tmp/mine', 'mine');
+      probe.fs.chmodSync('/tmp/mine', 0o600);
+      const st = probe.own('/tmp/mine');
+      probe.fs.renameSync('/tmp/mine', '/tmp/mine2');
+      probe.fs.writeFileSync('/tmp/gone', 'x');
+      probe.fs.unlinkSync('/tmp/gone');
+      return JSON.stringify(st);
+    }), JSON.stringify({ uid: CRED.uid, gid: CRED.gid, mode: '600', dir: false }));
+    await probe.resume(() => null);
+    await sleep(50);
+    assert.equal(authority.read('tmp/mine2'), 'mine');
+    assert.equal(authority.rawVfs.as(CRED_KERNEL).exists('tmp/gone'), false);
+  },
+
+  async 'a directory the view learns of by a later delta is as known as one listed at launch'() {
+    const { authority, probe } = await boot({ tmp: true });
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.mkdir('tmp/late', { mode: 0o755 });
+    root.chmod('tmp/late', 0o755);
+    root.writeFile('tmp/late/theirs', 'late secret');
+    root.chmod('tmp/late/theirs', 0o644);
+    root.mkdir('tmp/shared', { mode: 0o1777 });
+    root.chmod('tmp/shared', 0o1777);
+    root.writeFile('tmp/shared/theirs', 'shared secret');
+    root.chmod('tmp/shared/theirs', 0o644);
+    await probe.resume(() => null);
+    assert.deepEqual(probe.own('/tmp/late/theirs'), rootOwned);
+    assert.equal(probe.t(() => probe.fs.writeFileSync('/tmp/late/theirs', 'pwned')), 'ERR:EACCES');
+    assert.equal(probe.t(() => probe.fs.writeFileSync('/tmp/late/new', 'x')), 'ERR:EACCES', 'no create in a root 0755 directory');
+    assert.equal(probe.t(() => probe.fs.unlinkSync('/tmp/shared/theirs')), 'ERR:EPERM');
+    assert.equal(probe.t(() => probe.fs.chmodSync('/tmp/shared/theirs', 0o777)), 'ERR:EPERM');
+    probe.fs.writeFileSync('/tmp/shared/mine', 'm');
+    assert.equal(probe.t(() => probe.fs.chmodSync('/tmp/shared/mine', 0o600)), undefined);
+  },
+
+  async 'a name a peer creates after the last delta: the write is refused at write-back, reported, and not ours past the next barrier'() {
+    const { authority, probe, log } = await boot({ tmp: true });
+    await probe.resume(() => null);
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.writeFile('tmp/raced', 'theirs');
+    root.chmod('tmp/raced', 0o644);
+    // No barrier since: the view still says the name is free, a creation.
+    assert.equal(probe.t(() => probe.fs.writeFileSync('/tmp/raced', 'ours')), undefined);
+    await probe.resume(() => null);
+    await sleep(50);
+    assert.equal(authority.read('tmp/raced'), 'theirs', 'the authority refused it');
+    const after = await probe.resume(() => probe.fs.readFileSync('/tmp/raced', 'utf8'));
+    assert.notEqual(after, 'ours', 'never served as ours past the barrier');
+    assert.deepEqual(await probe.resume(() => probe.own('/tmp/raced')), rootOwned);
+    assert.equal(await probe.resume(() => probe.t(() => probe.fs.unlinkSync('/tmp/raced'))), 'ERR:EPERM', 'nor removable as ours');
+    probe.exit();
+    for (let i = 0; i < 50 && log.exit === null; i++) await sleep(20);
+    assert.ok(log.exit !== null && (log.exit.code !== 0 || /EACCES/.test(String(log.exit.reason) + log.stderr)),
+      `the refusal reached the exit report: ${JSON.stringify(log.exit)}`);
   },
 
   async "rewriting an existing file keeps its owner and mode"() {
