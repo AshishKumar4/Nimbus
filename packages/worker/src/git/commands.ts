@@ -416,6 +416,14 @@ interface CfGit {
   // Takes an array through the tracked cf-git patch, as add does.
   remove(args: { fs: unknown; dir: string; filepath: string | string[]; cache?: object }): Promise<void>;
   statusMatrix(args: { fs: unknown; dir: string; cache?: object; ignored?: boolean; filepaths?: string[] }): Promise<[string, number, number, number][]>;
+  listTags(args: { fs: unknown; dir: string }): Promise<string[]>;
+  deleteTag(args: { fs: unknown; dir: string; ref: string }): Promise<void>;
+  tag(args: { fs: unknown; dir: string; ref: string; object: string; force: boolean }): Promise<void>;
+  annotatedTag(args: {
+    fs: unknown; dir: string; ref: string; object: string; force: boolean; message: string;
+    tagger: { name: string; email: string };
+  }): Promise<void>;
+  readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' }): Promise<{ type: string; object: unknown }>;
   listFiles(args: { fs: unknown; dir: string; cache?: object }): Promise<string[]>;
   walk(args: {
     fs: unknown;
@@ -803,6 +811,183 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
     if (added.length) await git.add({ fs, dir: root, filepath: added, parallel: false, force: true, cache });
   }
   return ignored.length ? 1 : 0;
+}
+
+const TAG_USAGE = 'usage: git tag [-a] [-f] [-m <msg> | -F <file>] <tagname> [<commit>]\n'
+  + '   or: git tag -d <tagname>...\n'
+  + '   or: git tag [-n[<num>]] [-l] [<pattern>...]\n';
+
+/** git's `whitespace` cleanup of a message given with -m or -F: no trailing blanks, no runs or edges of empty lines. */
+function cleanupMessage(text: string): string {
+  const lines = text.split('\n').map((line) => line.replace(/\s+$/, ''));
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line === '' && (out.length === 0 || out[out.length - 1] === '')) continue;
+    out.push(line);
+  }
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  return out.length ? `${out.join('\n')}\n` : '';
+}
+
+/** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
+function tagPattern(pattern: string): RegExp {
+  let source = '';
+  for (const ch of pattern) {
+    source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.*+?^${}()|\\/]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * `git tag`: list (-l, patterns, -n<num> with each tag's message or its
+ * commit's subject), create (lightweight, or annotated with -a, -m or -F,
+ * a tag object as git writes it), replace (-f) and delete (-d), with git's
+ * messages and exit codes.
+ */
+async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+  let annotate = false;
+  let force = false;
+  let del = false;
+  let list = false;
+  let lines: number | null = null;
+  const messages: string[] = [];
+  let messageFile: string | null = null;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') { operands.push(...args.slice(i + 1)); break; }
+    if (arg === '-' || !arg.startsWith('-')) { operands.push(arg); continue; }
+    if (arg === '--annotate') { annotate = true; continue; }
+    if (arg === '--force') { force = true; continue; }
+    if (arg === '--delete') { del = true; continue; }
+    if (arg === '--list') { list = true; continue; }
+    if (arg.startsWith('--message=')) { messages.push(arg.slice('--message='.length)); continue; }
+    if (arg === '--message') { messages.push(args[++i] ?? ''); continue; }
+    if (arg.startsWith('--file=')) { messageFile = arg.slice('--file='.length); continue; }
+    if (arg === '--file') { messageFile = args[++i] ?? ''; continue; }
+    if (arg.startsWith('--')) {
+      await ctx.stderr.write(`error: unknown option \`${arg.slice(2)}'\n${TAG_USAGE}`);
+      return 129;
+    }
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if (flag === 'a') annotate = true;
+      else if (flag === 'f') force = true;
+      else if (flag === 'd') del = true;
+      else if (flag === 'l') list = true;
+      else if (flag === 'n') {
+        const digits = /^\d*/.exec(arg.slice(j + 1))?.[0] ?? '';
+        lines = digits ? Number(digits) : 1;
+        j += digits.length;
+      } else if (flag === 'm' || flag === 'F') {
+        const value = arg.slice(j + 1) || args[++i];
+        if (value === undefined) {
+          await ctx.stderr.write(`error: switch \`${flag}' requires a value\n${TAG_USAGE}`);
+          return 129;
+        }
+        if (flag === 'm') messages.push(value);
+        else messageFile = value;
+        break;
+      } else {
+        await ctx.stderr.write(`error: unknown switch \`${flag}'\n${TAG_USAGE}`);
+        return 129;
+      }
+    }
+  }
+  const repo = discoverRepo(vfs, ctx.cwd);
+  if (!repo) {
+    await ctx.stderr.write(NOT_A_REPOSITORY);
+    return 128;
+  }
+  const { gitdir } = repo;
+  const dir = repo.worktree ?? ctx.cwd;
+  const cache = {};
+  const abbrev = (oid: string) => oid.slice(0, 7);
+
+  if (del) {
+    let code = 0;
+    for (const name of operands) {
+      let oid: string;
+      try {
+        oid = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+      } catch {
+        await ctx.stderr.write(`error: tag '${name}' not found.\n`);
+        code = 1;
+        continue;
+      }
+      await git.deleteTag({ fs, dir, ref: name });
+      await ctx.stdout.write(`Deleted tag '${name}' (was ${abbrev(oid)})\n`);
+    }
+    return code;
+  }
+
+  const creating = !list && lines === null && operands.length > 0;
+  if (!creating) {
+    const patterns = operands.map(tagPattern);
+    const names = (await git.listTags({ fs, dir }))
+      .filter((name) => patterns.length === 0 || patterns.some((pattern) => pattern.test(name)))
+      .sort(comparePaths);
+    let out = '';
+    for (const name of names) {
+      if (lines === null) { out += `${name}\n`; continue; }
+      // The tag's own message, or for a lightweight tag its commit's (a tree or blob has none).
+      let text = '';
+      try {
+        const oid = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+        const { type, object } = await git.readObject({ fs, dir, oid, cache, format: 'parsed' });
+        if (type === 'tag' || type === 'commit') text = (object as { message: string }).message;
+      } catch { /* a broken ref lists bare */ }
+      // The first <num> lines as they are, blank ones too, continuation lines indented.
+      const shown = text.replace(/\n+$/, '').split('\n').slice(0, lines).map((line, i) => (i === 0 ? line : `    ${line}`));
+      out += shown.length && lines > 0 ? `${name.padEnd(15)} ${shown.join('\n')}\n` : `${name}\n`;
+    }
+    await writeBinary(ctx.stdout, out);
+    return 0;
+  }
+
+  const [name, target = 'HEAD', ...extra] = operands;
+  if (extra.length > 0) {
+    await ctx.stderr.write(`error: too many arguments\n${TAG_USAGE}`);
+    return 129;
+  }
+  if (messageFile !== null) {
+    try {
+      messages.push(dec.decode(vfs.readFile(normalizeVfsPath(messageFile.startsWith('/') ? messageFile : `${ctx.cwd}/${messageFile}`))));
+    } catch {
+      await ctx.stderr.write(`fatal: could not open or read '${messageFile}': No such file or directory\n`);
+      return 128;
+    }
+  }
+  if (annotate && messages.length === 0) {
+    // git would open an editor, and this git has none: what git says with no editor to run.
+    await ctx.stderr.write('error: Terminal is dumb, but EDITOR unset\nPlease supply the message using either -m or -F option.\n');
+    return 1;
+  }
+  const object = await resolveRevision(git, fs, gitdir, target, cache);
+  if (!object) {
+    await ctx.stderr.write(`fatal: Failed to resolve '${target}' as a valid ref.\n`);
+    return 128;
+  }
+  let previous: string | null = null;
+  try { previous = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` }); } catch { /* new */ }
+  if (previous !== null && !force) {
+    await ctx.stderr.write(`fatal: tag '${name}' already exists\n`);
+    return 128;
+  }
+  let value: string;
+  if (messages.length > 0) {
+    await git.annotatedTag({
+      fs, dir, ref: name, object, force: true, tagger: getAuthor(ctx),
+      // cf-git's tag object ends its message with the newline git's cleanup leaves.
+      message: cleanupMessage(messages.join('\n\n')).replace(/\n$/, ''),
+    });
+    value = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+  } else {
+    await git.tag({ fs, dir, ref: name, object, force: true });
+    value = object;
+  }
+  if (previous !== null && previous !== value) await ctx.stdout.write(`Updated tag '${name}' (was ${abbrev(previous)})\n`);
+  return 0;
 }
 
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
@@ -1727,20 +1912,8 @@ export async function runGitCommand(
         return 0;
       }
 
-      case 'tag': {
-        if (subArgs.length === 0) {
-          const tags = await git.listTags({ fs, dir });
-          for (const t of tags) ctx.stdout.write(t + '\n');
-        } else if (subArgs.includes('-d')) {
-          const name = subArgs.find(a => !a.startsWith('-'));
-          if (name) await git.deleteTag({ fs, dir, ref: name });
-        } else {
-          const name = subArgs[0];
-          await git.tag({ fs, dir, ref: name });
-          ctx.stdout.write(`Created tag ${name}\n`);
-        }
-        return 0;
-      }
+      case 'tag':
+        return await tagCommand(ctx, git, fs, credentialedVfs, subArgs);
 
       case 'config': {
         const key = subArgs.find(a => !a.startsWith('-'));

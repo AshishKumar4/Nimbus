@@ -663,13 +663,15 @@ try {
    * `sub` runs both from a subdirectory; `stdout` compares what they print; `firstLine` compares
    * only stderr's first line (a usage text below it is this git's own).
    */
-  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false } = {}) => {
+  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false, mask = null } = {}) => {
     const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, args);
     const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, args);
     assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
     const head = (text) => (firstLine ? text.split('\n')[0] : text);
     assert.equal(head(actual.stderr), head(expected.stderr), `${label}: stderr`);
-    if (stdout) assert.equal(actual.stdout.toString(), expected.stdout.toString(), `${label}: stdout`);
+    // `mask` hides what differs by clock alone (a tag object's id: its tagger line carries a time).
+    const shown = (text) => (mask ? text.replace(mask, '<masked>') : text);
+    if (stdout) assert.equal(shown(actual.stdout.toString()), shown(expected.stdout.toString()), `${label}: stdout`);
     const copy = copyOf(repo);
     for (const probe of [commits ? ['rev-parse', 'HEAD^{tree}'] : ['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
       ['status', '--porcelain', '--untracked-files=all', '--ignored']]) {
@@ -905,6 +907,50 @@ try {
     await dry('add -A', ['add', '-A']);
     await dry('add of an unknown switch', ['add', '-Q', 'a'], { firstLine: true });
     await dry('add of an unknown option', ['add', '--bogus', 'a'], { firstLine: true });
+  }
+
+  // ── git tag: lightweight and annotated tags, listing, -f and -d, as git makes them ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('a', 'a\n');
+      git('add', 'a');
+      git('commit', '-q', '-m', 'first\n\nits body');
+      git('branch', 'older');
+      put('a', 'a2\n');
+      git('commit', '-q', '-a', '-m', 'second');
+    });
+    const tag = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, ...options });
+    // A tag object's tagger line carries a clock; the rest (object, type, tag, message) must match.
+    const tags = (cwd) => realGit(cwd, ['for-each-ref', '--format=%(refname) %(objecttype) %(object) %(type) %(tag) %(*objectname) [%(contents)]', 'refs/tags'])
+      .stdout.toString().replace(/^(\S+ tag) [0-9a-f]{40} /gm, '$1 ');
+    const sameTags = (label) => assert.equal(tags(copyOf(repo)), tags(repo.disk), `${label}: refs/tags`);
+    for (const [label, args] of [
+      ['a lightweight tag', ['tag', 'light']],
+      ['a lightweight tag of a named commit', ['tag', 'old', 'older']],
+      ['an annotated tag, -a -m', ['tag', '-a', 'v1', '-m', 'msg']],
+      ['-m alone makes it annotated', ['tag', '-m', 'only m', 'v2']],
+      ['two -m paragraphs, whitespace cleaned', ['tag', '-m', 'a  ', '-m', '\n\nb\n\n', 'v3']],
+      ['-m bundled, of an older commit', ['tag', '-mbundled', 'v4', 'older']],
+    ]) {
+      await tag(label, args);
+      sameTags(label);
+    }
+    await tag('a tag that exists', ['tag', 'v1']);
+    await tag('-a with no message', ['tag', '-a', 'v5']);
+    const tagObjectId = /\(was [0-9a-f]{7}\)/g;
+    await tag('-f replaces it', ['tag', '-f', '-a', '-m', 're', 'v2'], { mask: tagObjectId });
+    sameTags('-f');
+    await tag('-f to the same commit, lightweight', ['tag', '-f', 'light']);
+    await tag('list', ['tag']);
+    await tag('-l with a pattern', ['tag', '-l', 'v*']);
+    await tag('--list with two patterns', ['tag', '--list', 'l*', 'o?d']);
+    await tag('-n', ['tag', '-n']);
+    await tag('-n2', ['tag', '-n2']);
+    await tag('-d', ['tag', '-d', 'v1', 'light'], { mask: /\(was [0-9a-f]{7}\)(?=\n.*light)/ });
+    sameTags('-d');
+    await tag('-d of a tag that does not exist', ['tag', '-d', 'nope']);
+    await tag('a commit that does not exist', ['tag', 'x', 'nosuchref']);
+    await tag('an unknown switch', ['tag', '-Q'], { firstLine: true });
   }
 
   // ── A same-size rewrite in the second the index was written ──
