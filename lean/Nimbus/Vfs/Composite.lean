@@ -19,12 +19,18 @@
     backend and is not a live mount point or an ancestor of one
     (DECIDED: the synthesized directory wins over a root link of the same name).
     A link inside a mounted backend is never followed by the composite.
-    Eight substitutions at most, then ELOOP. The last component is followed for
+    Forty substitutions at most (Linux MAXSYMLINKS), then ELOOP. `writeFile`
+    through a final link to a missing path creates it at the target (O_CREAT). The last component is followed for
     `stat`, `readdir`, `readFile` and `writeFile`, never for `mkdir`, `unlink`,
     `rmdir` or `rename`.
-  - Order of refusals: ENXIO, then EBUSY (a live mount point, or an ancestor of one,
-    for `unlink`/`rmdir`/`rename`), then EXDEV (`rename` across mounts), then the
-    backend's own answer. `mkdir -p` of a live mount point or ancestor succeeds and
+  - Order of refusals: ENXIO, then EBUSY (every mutation — `writeFile`, `mkdir`,
+    `unlink`, `rmdir`, `rename` — of a live mount point or an ancestor of one), then
+    EXDEV (`rename` across mounts), then the backend's own answer. `mkdir -p` of a
+    live mount point or ancestor succeeds and changes nothing.
+  - The backend is POSIX: `rename` replaces a target file, or an empty target
+    directory with a directory; ENOTEMPTY over a non-empty directory, ENOTDIR for a
+    directory onto a file, EISDIR for a file onto a directory, EINVAL into itself,
+    ENOENT/ENOTDIR for a missing/non-directory target parent; a rename onto itself
     changes nothing.
 
   Proved: `route_spec` (longest matching prefix), `normParts_clean`,
@@ -220,6 +226,7 @@ inductive Op where
   | readFile (p : String)
   | writeFile (p : String) (b : Nat)
   | mkdirp (p : String)
+  | mkdir (p : String)
   | unlink (p : String)
   | rmdir (p : String)
   | rename (a b : String)
@@ -233,7 +240,7 @@ inductive Out where
   | err (code : String)
   deriving DecidableEq, Repr
 
-def fuel : Nat := 8
+def fuel : Nat := 40
 
 def children (t : Tree) (rp : Path) : List String :=
   (t.filter fun x => x.1.length = rp.length + 1 && pfx rp x.1).filterMap (·.1.getLast?)
@@ -285,8 +292,8 @@ def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option 
   | .writeFile _ b, p, _ =>
     let t := treeAt S p
     let rp := rel S.mounts p
-    if synth S.mounts P p then (.err "EISDIR", none)
-    else if look t rp.dropLast ≠ some .dir then (.err "ENOENT", none)
+    if look t rp.dropLast = none then (.err "ENOENT", none)
+    else if look t rp.dropLast ≠ some .dir then (.err "ENOTDIR", none)
     else if look t rp = some .dir then (.err "EISDIR", none)
     else (.ok, some ((t.filter (·.1 != rp)) ++ [(rp, .file b)]))
   | .mkdirp _, p, _ =>
@@ -297,6 +304,13 @@ def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option 
       if (List.range rp.length).any fun i => match look t (rp.take (i + 1)) with
           | some .dir => false | some _ => true | none => false
       then (.err "ENOTDIR", none) else (.ok, some (mkdirs t rp))
+  | .mkdir _, p, _ =>
+    let t := treeAt S p
+    let rp := rel S.mounts p
+    if (look t rp).isSome then (.err "EEXIST", none)
+    else if look t rp.dropLast = none then (.err "ENOENT", none)
+    else if look t rp.dropLast ≠ some .dir then (.err "ENOTDIR", none)
+    else (.ok, some (t ++ [(rp, .dir)]))
   | .unlink _, p, _ =>
     let t := treeAt S p
     let rp := rel S.mounts p
@@ -315,25 +329,35 @@ def backendOp (S : St) (P : Principal) : Op → Path → Path → Out × Option 
     let t := treeAt S a
     let ra := rel S.mounts a
     let rb := rel S.mounts b
+    let isDir (o : Option Ent) : Bool := o == some .dir
     if (look t ra).isNone then (.err "ENOENT", none)
-    else if look t rb.dropLast ≠ some .dir then (.err "ENOENT", none)
-    else if (look t rb).isSome then (.err "EEXIST", none)
+    else if ra == rb then (.ok, none)
     else if pfx ra rb then (.err "EINVAL", none)
-    else (.ok, some (moveTree t ra rb))
+    else if look t rb.dropLast = none then (.err "ENOENT", none)
+    else if look t rb.dropLast ≠ some .dir then (.err "ENOTDIR", none)
+    else match look t rb with
+      | none => (.ok, some (moveTree t ra rb))
+      | some e =>
+        if isDir (look t ra) then
+          if e ≠ .dir then (.err "ENOTDIR", none)
+          else if !(children t rb).isEmpty then (.err "ENOTEMPTY", none)
+          else (.ok, some (moveTree (cut t rb) ra rb))
+        else if e = .dir then (.err "EISDIR", none)
+        else (.ok, some (moveTree (cut t rb) ra rb))
 
 def Op.follow : Op → Bool
   | .stat _ | .readdir _ | .readFile _ | .writeFile _ _ => true
   | _ => false
 
 def Op.raw : Op → String
-  | .stat p | .readdir p | .readFile p | .writeFile p _ | .mkdirp p | .unlink p | .rmdir p | .rename p _ => p
+  | .stat p | .readdir p | .readFile p | .writeFile p _ | .mkdirp p | .mkdir p | .unlink p | .rmdir p | .rename p _ => p
 
 def Op.raw2 : Op → Option String
   | .rename _ b => some b
   | _ => none
 
 def Op.guarded : Op → Bool
-  | .unlink _ | .rmdir _ | .rename _ _ => true
+  | .writeFile _ _ | .mkdir _ | .unlink _ | .rmdir _ | .rename _ _ => true
   | _ => false
 
 /-- The composite's answer on resolved paths `p` (and `q` for `rename`). -/
@@ -366,7 +390,8 @@ theorem absent_refuses (S : St) (P : Principal) (op : Op) (p q : Path) (h : abse
     execResolved S P op p q = ((match op with | .stat _ => .null | _ => .err "ENXIO"), S) := by
   unfold execResolved; rw [if_pos (by simp [h])]
 
-/-- `unlink`, `rmdir` and `rename` of a live mount point or an ancestor of one: EBUSY. -/
+/-- Every mutation (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) of a live mount
+    point or an ancestor of one: EBUSY. -/
 theorem busy_refuses (S : St) (P : Principal) (op : Op) (p q : Path) (hg : op.guarded = true)
     (ha : absent S.mounts P p = false) (ha2 : op.raw2.isSome = false ∨ absent S.mounts P q = false)
     (h : synth S.mounts P p = true) : execResolved S P op p q = (.err "EBUSY", S) := by

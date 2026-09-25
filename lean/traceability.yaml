@@ -608,7 +608,7 @@ requirements:
     refinement:
       - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
     remainingEvidence:
-      - DESIGN.md (/mnt/scratch/nimbus/verify/vfs-api) leaves three rules open; the model decides them (absent when any mount on the path is null; a synthesized directory wins over a root link of the same name; refusal order ENXIO, EBUSY, EXDEV, backend) and the Filesystem lane was told
+      - Rules DESIGN.md leaves open, as agreed with the Filesystem lane: absent when any mount on the path is null; a synthesized directory wins over a root link of the same name; EBUSY for every mutation of a live mount point or ancestor; refusal order ENXIO, EBUSY, EXDEV, backend; POSIX rename replacement; 40 link hops
       - Backends are trees without POSIX modes; removeRecursive, copy, readRange, capabilities and ENOTSUP are not modeled
       - The tsRef is a placeholder until composite.ts lands; the lane's refinement test is the bridge
   VFS-COMP-002:

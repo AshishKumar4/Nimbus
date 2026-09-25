@@ -48,6 +48,7 @@ def opJson (P : Principal) (op : Op) (o : Out) : Json :=
   | .readFile _ => base "readFile" []
   | .writeFile _ b => base "writeFile" [("bytes", .str s!"v{b}")]
   | .mkdirp _ => base "mkdirp" []
+  | .mkdir _ => base "mkdir" []
   | .unlink _ => base "unlink" []
   | .rmdir _ => base "rmdir" []
   | .rename _ b => base "rename" [("to", .str b)]
@@ -112,7 +113,7 @@ def genOp (S : St) (b : Nat) : Gen Op := do
   else if k < 6 then return .readdir p
   else if k < 8 then return .readFile p
   else if k < 10 then return .writeFile p b
-  else if k < 11 then return .mkdirp p
+  else if k < 11 then return (if (← below 2) == 0 then .mkdirp p else .mkdir p)
   else if k < 13 then return .unlink p
   else if k < 14 then return .rmdir p
   else return .rename p (← genPath S)
