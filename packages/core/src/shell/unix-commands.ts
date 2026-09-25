@@ -3219,34 +3219,155 @@ function mkRm(vfs: UnixVfs): CmdFn {
   };
 }
 
+/**
+ * A GNU `touch -d` date, as milliseconds since the epoch, or null. The forms
+ * scripts use: `@<seconds>[.<fraction>]`, `now`, and ISO 8601 dates with an
+ * optional time (` ` or `T`, `HH:MM[:SS[.fraction]]`) and zone (`Z`, `UTC`,
+ * `±HH:MM`, `±HHMM`). A date without a zone is in UTC, the session's zone.
+ */
+function parseTouchDate(text: string, now: number): number | null {
+  const value = text.trim();
+  if (value === 'now') return now;
+  const epoch = /^@(-?\d+)(?:\.(\d+))?$/.exec(value);
+  // GNU keeps the fraction at nanoseconds; the VFS keeps milliseconds.
+  if (epoch) return Number(epoch[1]) * 1000 + (epoch[2] ? Math.floor(Number(`0.${epoch[2]}`) * 1000) : 0);
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?\s*(Z|UTC|[+-]\d{2}:?\d{2})?$/i.exec(value);
+  if (!iso) return null;
+  const [, y, mo, d, h = '0', mi = '0', sec = '0', frac, zone] = iso;
+  const fields = [Number(mo), Number(d), Number(h), Number(mi), Number(sec)];
+  if (fields[0] < 1 || fields[0] > 12 || fields[1] < 1 || fields[1] > 31 || fields[2] > 23 || fields[3] > 59 || fields[4] > 60) return null;
+  let ms = Date.UTC(Number(y), fields[0] - 1, fields[1], fields[2], fields[3], fields[4]);
+  if (frac) ms += Math.floor(Number(`0.${frac}`) * 1000);
+  if (zone && !/^(Z|UTC)$/i.test(zone)) {
+    const m = /^([+-])(\d{2}):?(\d{2})$/.exec(zone)!;
+    ms -= (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) * 60_000;
+  }
+  return ms;
+}
+
+/** A `touch -t` stamp, `[[CC]YY]MMDDhhmm[.ss]`, in UTC, or null. Two-digit years 69-99 are 19xx, 00-68 20xx. */
+function parseTouchStamp(text: string, now: number): number | null {
+  const m = /^(\d{8}|\d{10}|\d{12})(?:\.(\d{2}))?$/.exec(text);
+  if (!m) return null;
+  const digits = m[1];
+  let year = new Date(now).getUTCFullYear();
+  let rest = digits;
+  if (digits.length === 12) { year = Number(digits.slice(0, 4)); rest = digits.slice(4); }
+  if (digits.length === 10) { const yy = Number(digits.slice(0, 2)); year = yy >= 69 ? 1900 + yy : 2000 + yy; rest = digits.slice(2); }
+  const [mo, d, h, mi] = [0, 2, 4, 6].map((i) => Number(rest.slice(i, i + 2)));
+  const sec = m[2] ? Number(m[2]) : 0;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 60) return null;
+  return Date.UTC(year, mo - 1, d, h, mi, sec);
+}
+
+/**
+ * touch, as GNU touch: each file's atime and mtime to now, to a -d date, a
+ * -t stamp or a -r file's; -a only atime, -m only mtime (--time=atime|mtime);
+ * a missing file is created empty unless -c. A missing parent directory is an
+ * error, as it is for open(2).
+ */
 function mkTouch(vfs: UnixVfs): CmdFn {
   return async (ctx) => {
     const targetVfs = ctx.vfs ?? vfs;
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
-      // Ensure parent dirs
-      const parts = fp.split('/');
-      for (let i = 1; i < parts.length; i++) {
-        const dir = parts.slice(0, i).join('/');
-        if (dir && !(await targetVfs.exists(dir))) (await targetVfs.mkdir(dir, { recursive: true }));
-      }
-      if (!(await targetVfs.exists(fp))) {
-        (await targetVfs.writeFile(fp, ''));
+    const usage = async (text: string) => {
+      await ctx.stderr.write(`touch: ${text}\nTry 'touch --help' for more information.\n`);
+      return 1;
+    };
+    let onlyAtime = false, onlyMtime = false, noCreate = false;
+    let date: string | null = null, stamp: string | null = null, reference: string | null = null;
+    const files: string[] = [];
+    let options = true;
+    const args = ctx.args;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (!options || a === '-' || !a.startsWith('-')) { files.push(a); continue; }
+      if (a === '--') { options = false; continue; }
+      if (a.startsWith('--')) {
+        const eq = a.indexOf('=');
+        const name = eq < 0 ? a : a.slice(0, eq);
+        const takesValue = ['--date', '--reference', '--time'].includes(name);
+        let value: string | undefined = eq < 0 ? undefined : a.slice(eq + 1);
+        if (takesValue && value === undefined) {
+          value = args[++i];
+          if (value === undefined) return await usage(`option '${name}' requires an argument`);
+        }
+        if (name === '--no-create') noCreate = true;
+        else if (name === '--no-dereference') { /* a link's own times: the VFS stamps links as files */ }
+        else if (name === '--date') date = value!;
+        else if (name === '--reference') reference = value!;
+        else if (name === '--time') {
+          if (value === 'atime' || value === 'access' || value === 'use') onlyAtime = true;
+          else if (value === 'mtime' || value === 'modify') onlyMtime = true;
+          else return await usage(`invalid argument '${value}' for '--time'`);
+        } else return await usage(`unrecognized option '${a}'`);
         continue;
       }
-      // Every view reaching here implements `isDirectory`: the lifo VFS gained
-      // it alongside `isFile`, which is what stopped `touch` failing on an
-      // existing file. The `stat` fallback this replaced narrowed to `never`
-      // once the surface was typed — the type system reporting that the guard
-      // it sat behind can no longer be false.
-      const isDirectory = (await targetVfs.isDirectory(fp));
-      if (!isDirectory) {
-        // Update mtime by re-writing the same content
-        const content = (await targetVfs.readFile(fp));
-        (await targetVfs.writeFile(fp, content));
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j];
+        if (ch === 'a') onlyAtime = true;
+        else if (ch === 'm') onlyMtime = true;
+        else if (ch === 'c') noCreate = true;
+        else if (ch === 'f' || ch === 'h') { /* -f is ignored by GNU too; -h: see --no-dereference */ }
+        else if (ch === 'd' || ch === 't' || ch === 'r') {
+          const value = a.slice(j + 1) || args[++i];
+          if (value === undefined) return await usage(`option requires an argument -- '${ch}'`);
+          if (ch === 'd') date = value; else if (ch === 't') stamp = value; else reference = value;
+          break;
+        } else return await usage(`invalid option -- '${ch}'`);
       }
     }
-    return 0;
+    if (files.length === 0) return await usage('missing file operand');
+    const now = Date.now();
+    let atime = now, mtime = now;
+    if (reference !== null) {
+      try {
+        const st = await targetVfs.stat(resolvePath(ctx.cwd, reference));
+        atime = st.atime;
+        mtime = st.mtime;
+      } catch {
+        await ctx.stderr.write(`touch: failed to get attributes of '${reference}': No such file or directory\n`);
+        return 1;
+      }
+    }
+    if (date !== null) {
+      const at = parseTouchDate(date, now);
+      if (at === null) { await ctx.stderr.write(`touch: invalid date format '${date}'\n`); return 1; }
+      atime = mtime = at;
+    }
+    if (stamp !== null) {
+      const at = parseTouchStamp(stamp, now);
+      if (at === null) { await ctx.stderr.write(`touch: invalid date format '${stamp}'\n`); return 1; }
+      atime = mtime = at;
+    }
+    // -a and -m together, or neither, set both.
+    const setAtime = onlyAtime || !onlyMtime;
+    const setMtime = onlyMtime || !onlyAtime;
+    let code = 0;
+    for (const f of files) {
+      const fp = resolvePath(ctx.cwd, f);
+      try {
+        if (!(await targetVfs.exists(fp))) {
+          if (noCreate) continue;
+          // open(O_CREAT) makes the file, never its directory (the VFS's writeFile would).
+          const parent = fp.includes('/') ? fp.slice(0, fp.lastIndexOf('/')) : '';
+          if (parent && !(await targetVfs.isDirectory(parent))) {
+            throw Object.assign(new Error(fp), { code: (await targetVfs.exists(parent)) ? 'ENOTDIR' : 'ENOENT' });
+          }
+          await targetVfs.writeFile(fp, '');
+        }
+        const st = await targetVfs.stat(fp);
+        await targetVfs.utimes(fp, setAtime ? atime : st.atime, setMtime ? mtime : st.mtime);
+      } catch (e) {
+        const code_ = (e as { code?: string })?.code;
+        const why = code_ === 'EACCES' ? 'Permission denied'
+          : code_ === 'ENOTDIR' ? 'Not a directory'
+          : code_ === 'EISDIR' ? 'Is a directory'
+          : 'No such file or directory';
+        await ctx.stderr.write(`touch: cannot touch '${f}': ${why}\n`);
+        code = 1;
+      }
+    }
+    return code;
   };
 }
 
