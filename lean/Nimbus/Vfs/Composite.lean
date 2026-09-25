@@ -25,7 +25,8 @@
     `rmdir` or `rename`.
   - Order of refusals: ENXIO, then EBUSY (`writeFile`, `mkdir`, `rmdir`, `rename` of a
     live mount point or an ancestor of one; `unlink` of one is EISDIR, as unlink(2)
-    refuses any directory first), then
+    refuses any directory first; `/` is the root mount's point, so these answer
+    EBUSY there too), then
     EXDEV (`rename` across mounts), then the backend's own answer. `mkdir -p` of a
     live mount point or ancestor succeeds and changes nothing.
   - The backend is POSIX: a component before the last that is not a directory is
@@ -381,7 +382,8 @@ def Op.guarded : Op → Bool
 def execResolved (S : St) (P : Principal) (op : Op) (p q : Path) : Out × St :=
   if absent S.mounts P p || (op.raw2.isSome && absent S.mounts P q) then
     (match op with | .stat _ => .null | _ => .err "ENXIO", S)
-  else if op.guarded && (synth S.mounts P p || (op.raw2.isSome && synth S.mounts P q)) then (.err "EBUSY", S)
+  else if op.guarded && (synth S.mounts P p || p.isEmpty || (op.raw2.isSome && (synth S.mounts P q || q.isEmpty))) then
+    (.err "EBUSY", S)
   else if op.raw2.isSome && (route S.mounts p).point != (route S.mounts q).point then (.err "EXDEV", S)
   else
     let (o, t) := backendOp S P op p q
@@ -418,11 +420,11 @@ theorem busy_refuses (S : St) (P : Principal) (op : Op) (p q : Path) (hg : op.gu
 /-- `rename` across mounts: EXDEV, never emulated, nothing changes. -/
 theorem exdev_refuses (S : St) (P : Principal) (a b : String) (p q : Path)
     (ha : absent S.mounts P p = false) (hb : absent S.mounts P q = false)
-    (hs : synth S.mounts P p = false) (hs2 : synth S.mounts P q = false)
+    (hs : synth S.mounts P p = false) (hs2 : synth S.mounts P q = false) (hp : p ≠ []) (hq : q ≠ [])
     (hx : (route S.mounts p).point ≠ (route S.mounts q).point) :
     execResolved S P (.rename a b) p q = (.err "EXDEV", S) := by
   unfold execResolved
-  simp [Op.raw2, Op.guarded, ha, hb, hs, hs2, hx]
+  simp [Op.raw2, Op.guarded, ha, hb, hs, hs2, hx, hp, hq]
 
 /-- `readdir` never lists a name whose path is absent for the principal. -/
 theorem readdir_live_only (S : St) (P : Principal) (p : Path) (n : String) (hn : n ∈ listing S P p) :
