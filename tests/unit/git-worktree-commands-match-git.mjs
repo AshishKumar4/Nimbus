@@ -660,12 +660,16 @@ try {
   /**
    * Both gits run `args` in `repo`: the same exit, stderr, HEAD, worktree and index (status
    * included). A commit's id differs (its dates and author do), so `commits` compares trees instead.
+   * `sub` runs both from a subdirectory; `stdout` compares what they print; `firstLine` compares
+   * only stderr's first line (a usage text below it is this git's own).
    */
-  const agreeOn = async (label, repo, args, { commits = false } = {}) => {
-    const expected = realGit(repo.disk, args);
-    const actual = await nimbusGit(repo.virtual, args);
+  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false } = {}) => {
+    const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, args);
+    const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, args);
     assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
-    assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+    const head = (text) => (firstLine ? text.split('\n')[0] : text);
+    assert.equal(head(actual.stderr), head(expected.stderr), `${label}: stderr`);
+    if (stdout) assert.equal(actual.stdout.toString(), expected.stdout.toString(), `${label}: stdout`);
     const copy = copyOf(repo);
     for (const probe of [commits ? ['rev-parse', 'HEAD^{tree}'] : ['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
       ['status', '--porcelain', '--untracked-files=all', '--ignored']]) {
@@ -860,6 +864,47 @@ try {
     await agreeTree('checkout -- a path below a tracked link', repo, ['checkout', '--', 'l/f']);
     rewriteBoth(repo, 't/f', 'changed\n');
     await agreeTree('checkout -- a directory named with its slash', repo, ['checkout', '--', 't/']);
+  }
+
+  // ── git add: what git 2.x stages for a pathspec, -n/--dry-run and -v printing it ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('.gitignore', 'i*\nidir/\n');
+      put('a', 'a\n');
+      put('s/b', 'b\n');
+      put('keep', 'k\n');
+      git('add', 'a', 's', 'keep');
+      git('commit', '-q', '-m', 'c');
+      put('a', 'a2\n');
+      put('ign', 'i\n');
+      put('idir/f', 'f\n');
+      put('sp ace', 's\n');
+      put('tab\tt', 't\n');
+      put('s/n', 'n\n');
+    });
+    removeBoth(repo, 's/b');
+    const dry = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, ...options });
+    await dry('add -n of a file', ['add', '-n', 'a']);
+    await dry('add --dry-run of the tree', ['add', '--dry-run', '.']);
+    await dry('add -n from a subdirectory', ['add', '-n', '.'], { sub: 's' });
+    await dry('add -n -A', ['add', '-n', '-A']);
+    await dry('add -nA from a subdirectory: the whole tree', ['add', '-nA'], { sub: 's' });
+    await dry('add -nu', ['add', '-nu']);
+    await dry('add -n ../a n from a subdirectory', ['add', '-n', '../a', 'n'], { sub: 's' });
+    await dry('add -n --no-all', ['add', '-n', '--no-all', '.']);
+    await dry('add -n of odd names', ['add', '-n', 'sp ace', 'tab\tt']);
+    await dry('add -n of a pathspec that matches nothing', ['add', '-n', 'nope', 'a']);
+    await dry('add -n of an ignored file', ['add', '-n', 'ign', 'a']);
+    await dry('add -n of a file in an ignored directory', ['add', '-n', 'idir/f']);
+    await dry('add -n -f of an ignored directory', ['add', '-n', '-f', 'idir']);
+    await dry('add with nothing specified', ['add']);
+    await dry('add -v', ['add', '-v', 's']);
+    await dry('add -n once staged', ['add', '-n', 's']);
+    await dry('add of an ignored file, the rest staged', ['add', 'ign', 'a']);
+    await dry('add -f of an ignored file', ['add', '-f', 'ign']);
+    await dry('add -A', ['add', '-A']);
+    await dry('add of an unknown switch', ['add', '-Q', 'a'], { firstLine: true });
+    await dry('add of an unknown option', ['add', '--bogus', 'a'], { firstLine: true });
   }
 
   // ── A same-size rewrite in the second the index was written ──

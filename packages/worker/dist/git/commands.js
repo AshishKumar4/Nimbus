@@ -381,13 +381,13 @@ async function writeBinary(stream, bin) {
         await stream.write(dec.decode(bytes));
 }
 // ── Staging ──────────────────────────────────────────────────────────────
-/** `git add -A` under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
-async function stageAll(git, fs, dir, trackedOnly) {
+/** `commit -a`'s staging of tracked changes, under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
+async function stageTracked(git, fs, dir) {
     const cache = {};
     const added = [];
     const removed = [];
     for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
-        if (trackedOnly && stage === 0)
+        if (stage === 0)
             continue;
         if (head === workdir && workdir === stage)
             continue;
@@ -615,6 +615,168 @@ async function walkScoped(git, fs, dir, cache, trees, specs, visit) {
             return [];
         },
     });
+}
+const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
+    + '[-u | --update] [--] <pathspec>...\n';
+/** git add's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
+const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--patch', '--edit', '--intent-to-add',
+    '--unified', '--inter-hunk-context', '--renormalize', '--refresh', '--ignore-errors', '--ignore-missing', '--sparse',
+    '--chmod', '--pathspec-from-file', '--pathspec-file-nul']);
+/**
+ * `git add`: what git 2.x stages for its pathspecs. A pathspec takes the
+ * changes, deletions and new files below it (as -A does); -u only tracked
+ * paths, --no-all no deletions, -A or -u with no pathspec the whole tree.
+ * -n prints what would be staged (`add 'p'`, `remove 'p'`, tracked paths
+ * first, then new ones) and stages nothing; -v prints it and stages. A
+ * pathspec that matches nothing fails before anything is staged; one that
+ * names an ignored path is reported (exit 1) unless -f, the rest still added.
+ */
+async function addCommand(ctx, git, fs, vfs, args) {
+    let dryRun = false;
+    let verbose = false;
+    let force = false;
+    let all = null;
+    let update = false;
+    let dashdash = false;
+    const pathArgs = [];
+    for (const arg of args) {
+        if (dashdash || arg === '-' || !arg.startsWith('-')) {
+            pathArgs.push(arg);
+            continue;
+        }
+        if (arg === '--') {
+            dashdash = true;
+            continue;
+        }
+        const flags = arg.startsWith('--') ? [arg.split('=')[0]] : [...arg.slice(1)];
+        for (const flag of flags) {
+            switch (flag) {
+                case 'n':
+                case '--dry-run':
+                    dryRun = true;
+                    break;
+                case 'v':
+                case '--verbose':
+                    verbose = true;
+                    break;
+                case 'f':
+                case '--force':
+                    force = true;
+                    break;
+                case 'A':
+                case '--all':
+                case '--no-ignore-removal':
+                    all = true;
+                    break;
+                case '--no-all':
+                case '--ignore-removal':
+                    all = false;
+                    break;
+                case 'u':
+                case '--update':
+                    update = true;
+                    break;
+                default:
+                    if (ADD_UNSUPPORTED.has(flag)) {
+                        await ctx.stderr.write(`fatal: git add ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
+                        return 128;
+                    }
+                    await ctx.stderr.write(flag.length === 1
+                        ? `error: unknown switch \`${flag}'\n${ADD_USAGE}`
+                        : `error: unknown option \`${flag.slice(2)}'\n${ADD_USAGE}`);
+                    return 129;
+            }
+        }
+    }
+    const repo = discoverRepo(vfs, ctx.cwd);
+    if (!repo) {
+        await ctx.stderr.write(NOT_A_REPOSITORY);
+        return 128;
+    }
+    const root = repo.worktree;
+    if (!root) {
+        await ctx.stderr.write(NOT_A_WORK_TREE);
+        return 128;
+    }
+    if (pathArgs.length === 0 && all !== true && !update) {
+        await ctx.stderr.write("Nothing specified, nothing added.\nhint: Maybe you wanted to say 'git add .'?\n"
+            + 'hint: Disable this message with "git config set advice.addEmptyPathspec false"\n');
+        return 0;
+    }
+    const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
+    const inSpec = (path, spec) => spec === '' || path === spec || path.startsWith(`${spec}/`);
+    const cache = {};
+    const matrix = await git.statusMatrix({ fs, dir: root, cache });
+    // -f takes the ignored files below each pathspec as well.
+    const forced = force
+        ? await git.statusMatrix({ fs, dir: root, cache, ignored: true, filepaths: specs.map((spec) => spec || '.') })
+        : [];
+    const rows = new Map();
+    for (const [path, head, workdir, stage] of [...matrix, ...forced]) {
+        if (specs.some((spec) => inSpec(path, spec)))
+            rows.set(path, [head, workdir, stage]);
+    }
+    const ignored = [];
+    for (const [i, spec] of specs.entries()) {
+        if (spec === '' || [...rows.keys()].some((path) => inSpec(path, spec)))
+            continue;
+        let st = null;
+        try {
+            st = vfs.lstat(normalizeVfsPath(`${root}/${spec}`));
+        }
+        catch { /* absent */ }
+        if (!st) {
+            await ctx.stderr.write(`fatal: pathspec '${pathArgs[i]}' did not match any files\n`);
+            return 128;
+        }
+        // Named but not listed: ignored (reported at the path the ignore rule names), or an empty directory.
+        const parts = spec.split('/');
+        for (let depth = 1; depth <= parts.length; depth++) {
+            const prefix = parts.slice(0, depth).join('/');
+            if (await git.isIgnored({ fs, dir: root, filepath: prefix })) {
+                if (!ignored.includes(prefix))
+                    ignored.push(prefix);
+                break;
+            }
+        }
+    }
+    const tracked = [];
+    const untracked = [];
+    for (const [path, [head, workdir, stage]] of [...rows].sort(([a], [b]) => comparePaths(a, b))) {
+        if (head === 0 && stage === 0) {
+            if (workdir !== 0 && !update)
+                untracked.push(path);
+            continue;
+        }
+        if (workdir === 0) {
+            if (stage !== 0 && all !== false)
+                tracked.push([path, 'remove']);
+        }
+        else if (stage !== workdir) {
+            tracked.push([path, 'add']);
+        }
+    }
+    if (ignored.length) {
+        await ctx.stderr.write(`The following paths are ignored by one of your .gitignore files:\n${ignored.map((p) => `${p}\n`).join('')}`
+            + 'hint: Use -f if you really want to add them.\n'
+            + 'hint: Disable this message with "git config set advice.addIgnoredFile false"\n');
+    }
+    let out = '';
+    for (const [path, action] of tracked)
+        out += `${action} '${path}'\n`;
+    for (const path of untracked)
+        out += `add '${path}'\n`;
+    if (dryRun || verbose)
+        await writeBinary(ctx.stdout, out);
+    if (!dryRun) {
+        const removed = tracked.filter(([, action]) => action === 'remove').map(([path]) => path);
+        const added = [...tracked.filter(([, action]) => action === 'add').map(([path]) => path), ...untracked];
+        if (removed.length)
+            await git.remove({ fs, dir: root, filepath: removed, cache });
+        if (added.length)
+            await git.add({ fs, dir: root, filepath: added, parallel: false, force: true, cache });
+    }
+    return ignored.length ? 1 : 0;
 }
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
     + '[--exclude-standard] [-z] [--] [<path>...]\n';
@@ -1292,14 +1454,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     ctx.stdout.write('nothing to commit, working tree clean\n');
                 return 0;
             }
-            case 'add': {
-                const paths = subArgs.filter(a => !a.startsWith('-'));
-                if (paths.length === 0 || paths.includes('.'))
-                    await stageAll(git, fs, dir, false);
-                else
-                    await git.add({ fs, dir, filepath: paths, parallel: false });
-                return 0;
-            }
+            case 'add':
+                return await addCommand(ctx, git, fs, credentialedVfs, subArgs);
             case 'commit': {
                 const { messages, quiet, all } = parseCommitArgs(subArgs);
                 const message = messages.length ? messages.join('\n\n') : 'commit';
@@ -1308,7 +1464,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     return 1;
                 }
                 if (all)
-                    await stageAll(git, fs, dir, true);
+                    await stageTracked(git, fs, dir);
                 const sha = await git.commit({
                     fs, dir, message,
                     author: getAuthor(ctx),
