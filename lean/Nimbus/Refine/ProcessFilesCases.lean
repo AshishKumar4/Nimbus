@@ -1,0 +1,188 @@
+/-
+  Nimbus.Refine.ProcessFilesCases — `lean/fixtures/process-files.json` for the
+  Filesystem lane's phase-2 bridge `tests/unit/process-files-refinement.mjs`.
+
+  Two kinds of case.
+
+  `descriptors`: one backend, with `writeRange` or without (a buffered handle,
+  cap 8 pending bytes per handle; EFBIG past it, nothing acknowledged). Processes
+  open, write, fsync, close, are released (`releaseProcess`: every handle
+  flushed, then later use EBADF) or killed (nothing flushed; the loss report
+  names exactly the handles with pending bytes). A buffered flush reads the file,
+  applies the handle's pending writes in order (an `append` one at the end as it
+  is then), and writes it back. A write-through `append` takes the end in the same
+  call. `read` expects the file's bytes after each step, so two handles on one
+  path are checked at flush granularity (`ProcessFiles` (2)).
+
+  `leases`: a root link `/x → /dst`; owners take and drop leases; mutations
+  (`writeFile`, `unlink`, `mkdir`) as an owner or as none. EBUSY when the literal or
+  the resolved path overlaps another owner's lease; EPERM when an owner mutates
+  outside its own root; `writeFile` returns a receipt whose `after` must equal
+  the path's revision read right after and `before` the one read right before
+  (`ProcessFiles` (3), (4)).
+-/
+
+import Nimbus.Vfs.ProcessFiles
+import Nimbus.Refine.Json
+
+namespace Nimbus.Refine.ProcessFilesCases
+
+open Nimbus.Refine
+
+def cap : Nat := 8
+
+structure H where
+  fd : Nat
+  pid : Nat
+  path : Nat
+  append : Bool
+  pos : Nat
+  /-- Buffered writes: (offset or none for append, bytes). -/
+  pending : List (Option Nat × List Nat)
+  deriving Inhabited
+
+structure D where
+  files : Nat → Option (List Nat)
+  hs : List H
+  dead : List Nat
+  nextFd : Nat
+
+def upd {β : Type} (f : Nat → β) (x : Nat) (b : β) : Nat → β := fun y => if y = x then b else f y
+
+def writeAt (file : List Nat) (off : Nat) (b : List Nat) : List Nat :=
+  let padded := file ++ List.replicate (off + b.length - file.length) 0
+  (List.range padded.length).map fun i => if off ≤ i ∧ i < off + b.length then b.getD (i - off) 0 else padded.getD i 0
+
+def applyPending (file : List Nat) (ws : List (Option Nat × List Nat)) : List Nat :=
+  ws.foldl (fun f (o, b) => writeAt f (o.getD f.length) b) file
+
+def bytesStr (b : List Nat) : String := String.mk (b.map fun n => Char.ofNat (97 + n))
+
+def fname (p : Nat) : String := s!"/f{p}"
+
+def flushH (d : D) (h : H) : D :=
+  { d with files := upd d.files h.path (some (applyPending ((d.files h.path).getD []) h.pending)),
+           hs := d.hs.map fun g => if g.fd = h.fd then { g with pending := [] } else g }
+
+def genDescCase : Gen (Option Json) := do
+  let wr := (← below 2) == 0
+  let mut d : D := ⟨fun _ => none, [], [], 0⟩
+  let mut out : Array Json := #[]
+  let n := (← below 20) + 8
+  for _ in [0:n] do
+    let k ← below 12
+    let live := d.hs
+    if k < 3 || live.isEmpty then
+      let pid := (← below 2) + 1
+      if d.dead.contains pid then continue
+      let p ← below 2
+      let app := (← below 3) == 0
+      let tr := !app && (← below 4) == 0
+      let file := if tr then [] else (d.files p).getD []
+      d := { d with files := upd d.files p (some file), hs := d.hs ++ [⟨d.nextFd, pid, p, app, 0, []⟩], nextFd := d.nextFd + 1 }
+      out := out.push (.obj [("op", .str "open"), ("pid", .ofNat pid), ("fd", .ofNat (d.nextFd - 1)), ("path", .str (fname p)),
+        ("append", .bool app), ("trunc", .bool tr)])
+    else if k < 7 then
+      let h ← pick live
+      let len := (← below 4) + 1
+      let b := (List.range len).map fun i => (h.fd * 3 + i + len) % 26
+      if wr then
+        let file := (d.files h.path).getD []
+        let off := if h.append then file.length else h.pos
+        d := { d with files := upd d.files h.path (some (writeAt file off b)),
+                      hs := d.hs.map fun g => if g.fd = h.fd then { g with pos := off + len } else g }
+        out := out.push (.obj [("op", .str "write"), ("fd", .ofNat h.fd), ("bytes", .str (bytesStr b)), ("expect", .str "ok")])
+      else
+        let used := (h.pending.map (·.2.length)).foldl (· + ·) 0
+        if used + len > cap then
+          out := out.push (.obj [("op", .str "write"), ("fd", .ofNat h.fd), ("bytes", .str (bytesStr b)),
+            ("expect", .obj [("error", .str "EFBIG")])])
+        else
+          let w : Option Nat × List Nat := (if h.append then none else some h.pos, b)
+          d := { d with hs := d.hs.map fun g => if g.fd = h.fd then { g with pending := g.pending ++ [w], pos := g.pos + len } else g }
+          out := out.push (.obj [("op", .str "write"), ("fd", .ofNat h.fd), ("bytes", .str (bytesStr b)), ("expect", .str "ok")])
+    else if k < 8 then
+      let h ← pick live
+      d := flushH d h
+      out := out.push (.obj [("op", .str "fsync"), ("fd", .ofNat h.fd), ("expect", .str "ok")])
+    else if k < 10 then
+      let h ← pick live
+      d := flushH d h
+      d := { d with hs := d.hs.filter (·.fd != h.fd) }
+      out := out.push (.obj [("op", .str "close"), ("fd", .ofNat h.fd), ("expect", .str "ok")])
+    else if k < 11 then
+      let pid := (← pick live).pid
+      for h in d.hs do if h.pid == pid then d := flushH d h
+      let fds := (d.hs.filter (·.pid == pid)).map (·.fd)
+      d := { d with hs := d.hs.filter (·.pid != pid), dead := d.dead ++ [pid] }
+      out := out.push (.obj [("op", .str "release"), ("pid", .ofNat pid)])
+      if let some fd := fds.head? then
+        out := out.push (.obj [("op", .str "write"), ("fd", .ofNat fd), ("bytes", .str "z"), ("expect", .obj [("error", .str "EBADF")])])
+    else
+      let pid := (← pick live).pid
+      let lost := (d.hs.filter fun h => h.pid == pid && !h.pending.isEmpty).map (·.fd)
+      d := { d with hs := d.hs.filter (·.pid != pid), dead := d.dead ++ [pid] }
+      out := out.push (.obj [("op", .str "kill"), ("pid", .ofNat pid), ("lost", .arr (lost.map Json.ofNat))])
+    for p in [0, 1] do
+      out := out.push (.obj [("op", .str "read"), ("path", .str (fname p)),
+        ("expect", match d.files p with | some f => .str (bytesStr f) | none => .null)])
+  return some (.obj [("kind", .str "descriptors"), ("writeRange", .bool wr), ("cap", .ofNat cap), ("steps", .arr out.toList)])
+
+/-! ## Leases -/
+
+abbrev Path := List String
+
+def key (p : Path) : String := "/" ++ "/".intercalate p
+
+def resolveX (p : Path) : Path := Nimbus.Vfs.ProcessFiles.resolve ["x"] ["dst"] p
+
+def overlap := Nimbus.Vfs.ProcessFiles.overlap
+
+def leaseAnswer (leases : List (Nat × Path)) (owner : Nat) (p : Path) : Option String :=
+  let rp := resolveX p
+  if leases.any fun (o, r) => o != owner && (overlap p r || overlap rp r) then some "EBUSY"
+  else match leases.find? (·.1 == owner) with
+    | some (_, r) => if r.isPrefixOf rp then none else some "EPERM"
+    | none => none
+
+def paths : List Path := [["dst"], ["dst", "f"], ["dst", "g"], ["x", "f"], ["x", "g"], ["a"], ["a", "b"]]
+
+def genLeaseCase : Gen (Option Json) := do
+  let mut leases : List (Nat × Path) := []
+  let mut out : Array Json := #[.obj [("op", .str "mkdir"), ("path", .str "/dst"), ("expect", .str "ok")],
+    .obj [("op", .str "symlink"), ("path", .str "/x"), ("target", .str "/dst"), ("expect", .str "ok")],
+    .obj [("op", .str "mkdir"), ("path", .str "/a"), ("expect", .str "ok")]]
+  let n := (← below 14) + 6
+  for _ in [0:n] do
+    let k ← below 10
+    let owner ← below 3
+    let p ← pick paths
+    if k < 2 then
+      if owner != 0 && !(leases.any (·.1 == owner)) then
+        let r := resolveX p
+        if leases.any fun (_, l) => overlap r l then
+          out := out.push (.obj [("op", .str "lease"), ("owner", .ofNat owner), ("path", .str (key p)),
+            ("expect", .obj [("error", .str "EBUSY")])])
+        else
+          leases := leases ++ [(owner, r)]
+          out := out.push (.obj [("op", .str "lease"), ("owner", .ofNat owner), ("path", .str (key p)), ("expect", .str "ok")])
+    else if k < 3 then
+      if leases.any (·.1 == owner) then
+        leases := leases.filter (·.1 != owner)
+        out := out.push (.obj [("op", .str "unlease"), ("owner", .ofNat owner)])
+    else if p != ["dst"] && p != ["a"] then
+      let ans := leaseAnswer leases owner p
+      let expect := match ans with | some e => Json.obj [("error", .str e)] | none => .str "ok"
+      out := out.push (.obj [("op", .str "writeFile"), ("owner", .ofNat owner), ("path", .str (key p)),
+        ("bytes", .str "q"), ("receipt", .bool ans.isNone), ("expect", expect)])
+  return some (.obj [("kind", .str "leases"), ("steps", .arr out.toList)])
+
+def fixture : String :=
+  fixtureText [("fixture", .str "process-files"), ("model", .str "Nimbus.Vfs.ProcessFiles"),
+      ("note", .str "descriptors: bytes are letters; open creates the file (O_CREAT); owner 0 = no lease; leases: a lease root is the resolved path; mutations check literal and resolved paths by overlap")]
+    (runGen 0x50465331 (do
+      let a ← casesOf 120 genDescCase
+      let b ← casesOf 60 genLeaseCase
+      return a ++ b))
+
+end Nimbus.Refine.ProcessFilesCases

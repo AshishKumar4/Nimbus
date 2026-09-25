@@ -409,6 +409,22 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.FastCdc.cuts_tile
 #print axioms Nimbus.Vfs.FastCdc.cutContent_tiles
 
+/-! ## Nimbus/Vfs/ProcessFiles.lean -/
+
+#print axioms Nimbus.Vfs.ProcessFiles.mem_map_upd
+#print axioms Nimbus.Vfs.ProcessFiles.mem_map_keep
+#print axioms Nimbus.Vfs.ProcessFiles.step_accounted
+#print axioms Nimbus.Vfs.ProcessFiles.acked_accounted
+#print axioms Nimbus.Vfs.ProcessFiles.a_kill_that_drops_buffers_loses_silently
+#print axioms Nimbus.Vfs.ProcessFiles.atomic_appends_disjoint
+#print axioms Nimbus.Vfs.ProcessFiles.a_two_step_append_overwrites
+#print axioms Nimbus.Vfs.ProcessFiles.a_buffered_flush_overwrites_a_concurrent_flush
+#print axioms Nimbus.Vfs.ProcessFiles.leases_hold
+#print axioms Nimbus.Vfs.ProcessFiles.a_literal_only_check_is_bypassed
+#print axioms Nimbus.Vfs.ProcessFiles.receipt_sound
+#print axioms Nimbus.Vfs.ProcessFiles.receipt_in_step
+#print axioms Nimbus.Vfs.ProcessFiles.a_late_receipt_names_another_write
+
 /-! ## Nimbus/Vfs/RevisionFloor.lean -/
 
 #print axioms Nimbus.Vfs.RevisionFloor.init_inv

@@ -622,3 +622,29 @@ requirements:
       - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
     remainingEvidence:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
+  VFS-PF-001:
+    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.ProcessFiles.acked_accounted
+      - Nimbus.Vfs.ProcessFiles.a_kill_that_drops_buffers_loses_silently
+      - Nimbus.Vfs.ProcessFiles.atomic_appends_disjoint
+      - Nimbus.Vfs.ProcessFiles.a_two_step_append_overwrites
+      - Nimbus.Vfs.ProcessFiles.a_buffered_flush_overwrites_a_concurrent_flush
+      - Nimbus.Vfs.ProcessFiles.leases_hold
+      - Nimbus.Vfs.ProcessFiles.a_literal_only_check_is_bypassed
+      - Nimbus.Vfs.ProcessFiles.receipt_sound
+      - Nimbus.Vfs.ProcessFiles.receipt_in_step
+      - Nimbus.Vfs.ProcessFiles.a_late_receipt_names_another_write
+      - Nimbus.Vfs.ProcessFiles.mem_map_upd
+      - Nimbus.Vfs.ProcessFiles.mem_map_keep
+      - Nimbus.Vfs.ProcessFiles.step_accounted
+    tsRefs:
+      - packages/core/src/runtime/filesystem-authority.ts#SqliteFilesystemAuthority.releaseProcess
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
+    refinement:
+      - lean/fixtures/process-files.json :: tests/unit/process-files-refinement.mjs
+    remainingEvidence:
+      - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
+      - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
