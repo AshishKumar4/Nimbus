@@ -399,6 +399,18 @@ b/p'`);
     `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
 }
 
+// ── extended regular expressions: -E, -r, --regexp-extended ─────────────────
+// GNU treats -r and --regexp-extended as -E. In an ERE `(` groups and `\(`
+// is a literal parenthesis. (Expected output: GNU sed 4.9.)
+await sh("printf 'foo boo\\na(b)c\\n' > /tmp/ere.txt");
+await expectOut('-r is -E, not a file name', `sed -r 's/(o+)/[\\1]/' /tmp/ere.txt`, 'f[oo] boo\na(b)c\n');
+await expectOut('-E groups and back-references', `sed -E 's/(o+)/[\\1]/g' /tmp/ere.txt`, 'f[oo] b[oo]\na(b)c\n');
+await expectOut('--regexp-extended, where \\( is a literal parenthesis',
+  `sed --regexp-extended -n '/a\\(b\\)/p' /tmp/ere.txt`, 'a(b)c\n');
+await expectOut('-E in a cluster, with an interval', `sed -nE '/o{2}/p' /tmp/ere.txt`, 'foo boo\n');
+await expectOut('-rn, an alternation', `sed -rn 's/(b|c)$/<\\1>/p' /tmp/ere.txt`, 'a(b)<c>\n');
+await expectOut('-E before -e', `sed -E -e 's/x|o/Z/' /tmp/ere.txt`, 'fZo boo\na(b)c\n');
+
 box.destroy();
 
 console.log(failures.length === 0 ? '\nALL PASS' : `\n${failures.length} FAILED`);
