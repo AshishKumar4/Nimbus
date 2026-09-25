@@ -9,10 +9,10 @@
     and `.` stay, `..` pops what has been resolved so far — after any link met
     before it — and never goes above `/`; a root-backend link met at a component is
     substituted there. Inside a mounted backend `..` is lexical (its links are its
-    own). A non-directory or absent component before `..` is popped like any other
-    (a deliberate departure from Linux's ENOTDIR/ENOENT, stated in DESIGN.md §2:
-    only links change resolution). The result is routed to the longest mount point
-    that is a prefix.
+    own). `..` after a component the principal can reach that is not a directory
+    answers ENOTDIR, as Linux lookup does (Main's ruling); `..` after an absent
+    component pops it. The result is routed to the longest mount point that is a
+    prefix.
   - DECIDED: a path is absent for a principal when ANY mount whose point is a prefix
     of it answers null for that principal, not only the longest one. A live mount
     nested under an absent one is unreachable through it.
@@ -178,19 +178,28 @@ def linkAt (S : St) (P : Principal) (q : Path) : Option String :=
     | _ => none
   else none
 
+/-- `..` would leave `done`, a reachable non-directory: ENOTDIR. -/
+def notDirAt (S : St) (P : Principal) (done : Path) : Bool :=
+  done != [] && !absent S.mounts P done && !synth S.mounts P done &&
+    match look (treeAt S done) (rel S.mounts done) with
+    | some .dir => false
+    | some _ => true
+    | none => false
+
 /-- Walk the raw components in order (Linux path lookup): `""` and `.` stay, `..`
     pops what has been resolved so far (so it applies after a link), a name met at a
     root link is replaced by the link's target (absolute from `/`, relative from the
     link's directory), at most `hops` times, then ELOOP. The last component is
     followed only when `follow`. Absent or non-directory components do not stop the
-    walk; the operation answers for them. `steps` bounds the walk (ELOOP past it). -/
-def walk (S : St) (P : Principal) (follow : Bool) : Nat → Nat → Path → List String → Option Path
+    walk; the operation answers for them. `steps` bounds the walk (ELOOP past it). `none`: ELOOP; `some none`:
+    ENOTDIR; `some (some p)`: the resolved path. -/
+def walk (S : St) (P : Principal) (follow : Bool) : Nat → Nat → Path → List String → Option (Option Path)
   | 0, _, _, _ => none
-  | _ + 1, _, done, [] => some done
+  | _ + 1, _, done, [] => some (some done)
   | n + 1, hops, done, c :: rs =>
     if c = "" ∨ c = "." then walk S P follow n hops done rs
-    else if c = ".." then walk S P follow n hops done.dropLast rs
-    else if rs = [] ∧ follow = false then some (done ++ [c])
+    else if c = ".." then (if notDirAt S P done then some none else walk S P follow n hops done.dropLast rs)
+    else if rs = [] ∧ follow = false then some (some (done ++ [c]))
     else match linkAt S P (done ++ [c]) with
       | some t =>
         if hops = 0 then none
@@ -212,7 +221,7 @@ theorem resolve_root_only (S : St) (P : Principal) (q : Path) {t : String} (h : 
 
 /-- A walked path has no `""`, `.` or `..` component. -/
 theorem walk_clean (S : St) (P : Principal) (f : Bool) :
-    ∀ n hops done rest p, Clean done → walk S P f n hops done rest = some p → Clean p := by
+    ∀ n hops done rest p, Clean done → walk S P f n hops done rest = some (some p) → Clean p := by
   intro n
   induction n with
   | zero => intro _ _ _ _ _ h; cases h
@@ -230,7 +239,9 @@ theorem walk_clean (S : St) (P : Principal) (f : Bool) :
       split at h
       · exact ih _ _ _ _ hd h
       · split at h
-        · exact ih _ _ _ _ (fun x hx => hd x ((List.dropLast_sublist _).subset hx)) h
+        · split at h
+          · cases h
+          · exact ih _ _ _ _ (fun x hx => hd x ((List.dropLast_sublist _).subset hx)) h
         · rename_i h1 h2
           have hc : c ≠ "" ∧ c ≠ "." ∧ c ≠ ".." := ⟨fun e => h1 (Or.inl e), fun e => h1 (Or.inr e), h2⟩
           split at h
@@ -243,7 +254,7 @@ theorem walk_clean (S : St) (P : Principal) (f : Bool) :
 
 def maxSteps : Nat := 4096
 
-def walkRaw (S : St) (P : Principal) (follow : Bool) (raw : String) : Option Path :=
+def walkRaw (S : St) (P : Principal) (follow : Bool) (raw : String) : Option (Option Path) :=
   walk S P follow maxSteps fuel [] (raw.splitOn "/")
 
 /-! ## Operations -/
@@ -434,13 +445,15 @@ def execResolved (S : St) (P : Principal) (op : Op) (p q : Path) : Out × St :=
 def exec (S : St) (P : Principal) (op : Op) : Out × St :=
   match walkRaw S P op.follow op.raw with
   | none => (.err "ELOOP", S)
-  | some p =>
+  | some none => (.err "ENOTDIR", S)
+  | some (some p) =>
     match op.raw2 with
     | none => execResolved S P op p []
     | some r2 =>
       match walkRaw S P false r2 with
       | none => (.err "ELOOP", S)
-      | some q => execResolved S P op p q
+      | some none => (.err "ENOTDIR", S)
+      | some (some q) => execResolved S P op p q
 
 /-! ## The refusals -/
 
@@ -498,8 +511,21 @@ theorem linkAt_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 
     linkAt S' P q = linkAt S P q := by
   unfold linkAt; rw [hA.1, hA.2 0 (Ne.symm hb0)]
 
-theorem walk_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (f : Bool) :
-    ∀ n hops done rest, walk S' P f n hops done rest = walk S P f n hops done rest := by
+theorem treeAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
+    {p : Path} (ha : absent S.mounts P p = false) : treeAt S' p = treeAt S p := by
+  unfold treeAt; rw [hA.1]; exact hA.2 _ (route_not_hidden hb ha)
+
+theorem notDirAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
+    (done : Path) : notDirAt S' P done = notDirAt S P done := by
+  unfold notDirAt
+  rw [hA.1]
+  cases ha : absent S.mounts P done
+  · simp only [Bool.not_false, Bool.and_true, Bool.true_and]
+    unfold rel; rw [treeAt_agree hA hb ha]
+  · simp
+
+theorem walk_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
+    (f : Bool) : ∀ n hops done rest, walk S' P f n hops done rest = walk S P f n hops done rest := by
   intro n
   induction n with
   | zero => intro _ _ _; rfl
@@ -509,14 +535,10 @@ theorem walk_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0)
     | nil => rfl
     | cons c rs =>
       simp only [walk]
-      simp only [linkAt_agree hA hb0, ih]
+      simp only [linkAt_agree hA hb.1, notDirAt_agree hA hb, ih]
 
-theorem walkRaw_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (f : Bool)
-    (raw : String) : walkRaw S' P f raw = walkRaw S P f raw := walk_agree hA hb0 P f _ _ _ _
-
-theorem treeAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
-    {p : Path} (ha : absent S.mounts P p = false) : treeAt S' p = treeAt S p := by
-  unfold treeAt; rw [hA.1]; exact hA.2 _ (route_not_hidden hb ha)
+theorem walkRaw_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
+    (f : Bool) (raw : String) : walkRaw S' P f raw = walkRaw S P f raw := walk_agree hA hb f _ _ _ _
 
 theorem listing_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     {p : Path} (ha : absent S.mounts P p = false) : listing S' P p = listing S P p := by
@@ -536,7 +558,7 @@ theorem backendOp_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S 
     the same answer and stay different only in it. -/
 theorem noninterference {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     (op : Op) : (exec S' P op).1 = (exec S P op).1 ∧ Agree (exec S P op).2 (exec S' P op).2 b := by
-  have hr := walkRaw_agree hA hb.1 P
+  have hr := walkRaw_agree hA hb
   have core : ∀ p q, (execResolved S' P op p q).1 = (execResolved S P op p q).1 ∧
       Agree (execResolved S P op p q).2 (execResolved S' P op p q).2 b := by
     intro p q
@@ -565,10 +587,12 @@ theorem noninterference {S S' : St} {P : Principal} {b : Backend} (hA : Agree S 
   rw [hr]
   split
   · exact ⟨rfl, hA⟩
+  · exact ⟨rfl, hA⟩
   · split
     · exact core _ _
     · rw [hr]
       split
+      · exact ⟨rfl, hA⟩
       · exact ⟨rfl, hA⟩
       · exact core _ _
 
