@@ -187,7 +187,7 @@ def directed : List Json :=
        (0, .writeFile "/proc/a/../c" 9), (0, .readFile "/c"), (0, .unlink "/proc/a/../c"),
        (0, .stat "/pc/d/../../proc/a"), (0, .rename "/proc/a/../b" "/proc/b2"),
        (0, .stat "/missing/../b"), (0, .readdir "/missing/.."), (0, .stat "/pc/nope/.."),
-       (0, .writeFile "/b2/x" 1), (0, .rename "/missing/x" "/b2/y"), (0, .rename "/b2" "/missing/y")] ]
+       (0, .writeFile "/proc/b2/x" 1), (0, .rename "/missing/x" "/proc/b2/y"), (0, .rename "/proc/b2/x" "/missing/y")] ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
