@@ -18,9 +18,10 @@
     is pinned or holds a pinned entry; the report names every entry of the subtree
     as removed or kept (`fallback_report_exact`). Only `p`'s backend changes
     (`removeRecursive_stays_in_mount`).
-  - `readRange`, `writeFileIfRevision`, `readFileAtRevision` on a backend without
-    them → ENOTSUP, nothing changes (`unsupported_is_enotsup`); with them the model
-    only asserts support (revisions are `Coherence`'s).
+  - `readRange`, `writeFileIfRevision`, `readFileAtRevision`: lookup first (a
+    missing path is ENOENT, as on Linux — Main's ruling); an existing path on a
+    backend without them → ENOTSUP, nothing changes (`unsupported_is_enotsup`); with
+    them the model only asserts support (revisions are `Coherence`'s).
   - `copy from to recursive`: across mounts allowed. Source: `/` or an ancestor of
     a live mount that is not itself a mount point → ENOTSUP (a tree holding another
     mount is not copied); a live mount point copies its backend. Target: `/`, a
@@ -149,16 +150,19 @@ def execX (S : St) (P : Principal) : X → XOut × St
     | .error e => (.err e, S)
     | .ok p =>
       if synth S.mounts P p then (.err "EISDIR", S)
-      else if !(caps (route S.mounts p).backend).readRange then (.err "ENOTSUP", S)
       else match look (treeAt S p) (rel S.mounts p) with
-        | some (.file v) => (.bytes v, S)
-        | some _ => (.err "EISDIR", S)
         | none => (.err "ENOENT", S)
+        | some e =>
+          if !(caps (route S.mounts p).backend).readRange then (.err "ENOTSUP", S)
+          else match e with
+            | .file v => (.bytes v, S)
+            | _ => (.err "EISDIR", S)
   | .writeFileIfRevision raw =>
     match reach S P true raw with
     | .error e => (.err e, S)
     | .ok p =>
       if synth S.mounts P p then (.err "EISDIR", S)
+      else if (look (treeAt S p) (rel S.mounts p)).isNone then (.err "ENOENT", S)
       else if !(caps (route S.mounts p).backend).cas then (.err "ENOTSUP", S)
       else (.supported, S)
   | .readFileAtRevision raw =>
@@ -166,6 +170,7 @@ def execX (S : St) (P : Principal) : X → XOut × St
     | .error e => (.err e, S)
     | .ok p =>
       if synth S.mounts P p then (.err "EISDIR", S)
+      else if (look (treeAt S p) (rel S.mounts p)).isNone then (.err "ENOENT", S)
       else if !(caps (route S.mounts p).backend).cas then (.err "ENOTSUP", S)
       else (.supported, S)
   | .copy ra rb recursive =>
@@ -238,12 +243,13 @@ theorem removeRecursive_stays_in_mount (S : St) (P : Principal) (raw : String) :
 
 /-- A capability the backend lacks answers ENOTSUP and is never emulated. -/
 theorem unsupported_is_enotsup (S : St) (P : Principal) (raw : String) (p : Path)
-    (hp : reach S P true raw = .ok p) (hs : synth S.mounts P p = false) :
+    (hp : reach S P true raw = .ok p) (hs : synth S.mounts P p = false) {e : Ent}
+    (he : look (treeAt S p) (rel S.mounts p) = some e) :
     ((caps (route S.mounts p).backend).readRange = false → execX caps S P (.readRange raw) = (.err "ENOTSUP", S)) ∧
     ((caps (route S.mounts p).backend).cas = false →
       execX caps S P (.writeFileIfRevision raw) = (.err "ENOTSUP", S) ∧
       execX caps S P (.readFileAtRevision raw) = (.err "ENOTSUP", S)) := by
-  refine ⟨fun h => ?_, fun h => ⟨?_, ?_⟩⟩ <;> simp [execX, hp, hs, h]
+  refine ⟨fun h => ?_, fun h => ⟨?_, ?_⟩⟩ <;> simp [execX, hp, hs, h, he]
 
 /-- `copy` changes only the target's backend (so a source in another mount is
     untouched). -/

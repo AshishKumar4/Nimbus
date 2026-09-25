@@ -667,4 +667,4 @@ requirements:
     remainingEvidence:
       - Pins (entries a fallback's unlink/rmdir refuse) are the model's only failure source; native removeRecursive ignores them and the fixture pins only backends without it
       - With a capability present the model asserts support only; revision semantics are Coherence's
-      - Decided and sent to the Filesystem lane: copy of / or of an ancestor of a live mount is ENOTSUP; copy of a directory onto anything existing is EEXIST; ENOTSUP is checked before the backend's ENOENT
+      - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP)
