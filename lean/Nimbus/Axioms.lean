@@ -372,20 +372,20 @@ import Nimbus.Refine
 
 /-! ## Nimbus/Vfs/Composite.lean -/
 
-#print axioms Nimbus.Vfs.Composite.normParts_clean
-#print axioms Nimbus.Vfs.Composite.norm_clean
 #print axioms Nimbus.Vfs.Composite.pfx_iff
 #print axioms Nimbus.Vfs.Composite.route_fold
 #print axioms Nimbus.Vfs.Composite.route_spec
 #print axioms Nimbus.Vfs.Composite.resolve_root_only
+#print axioms Nimbus.Vfs.Composite.walk_clean
 #print axioms Nimbus.Vfs.Composite.absent_refuses
 #print axioms Nimbus.Vfs.Composite.busy_refuses
 #print axioms Nimbus.Vfs.Composite.exdev_refuses
 #print axioms Nimbus.Vfs.Composite.readdir_live_only
 #print axioms Nimbus.Vfs.Composite.absent_of_prefix
 #print axioms Nimbus.Vfs.Composite.route_not_hidden
-#print axioms Nimbus.Vfs.Composite.firstLink_agree
-#print axioms Nimbus.Vfs.Composite.resolve_agree
+#print axioms Nimbus.Vfs.Composite.linkAt_agree
+#print axioms Nimbus.Vfs.Composite.walk_agree
+#print axioms Nimbus.Vfs.Composite.walkRaw_agree
 #print axioms Nimbus.Vfs.Composite.treeAt_agree
 #print axioms Nimbus.Vfs.Composite.listing_agree
 #print axioms Nimbus.Vfs.Composite.backendOp_agree

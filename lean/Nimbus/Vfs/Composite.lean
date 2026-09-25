@@ -5,9 +5,11 @@
   The refinement fixture `lean/fixtures/composite-vfs.json` is this model's output.
 
   Rules, as modeled (the ones DESIGN.md leaves open are marked DECIDED):
-  - A raw path is normalized in the composite namespace (`""`/`.` dropped, `..` pops,
-    never above `/`), then resolved through the root backend's symlinks, then routed
-    to the longest mount point that is a prefix.
+  - A raw path is walked physically, component by component (Linux lookup): `""`
+    and `.` stay, `..` pops what has been resolved so far — after any link met
+    before it — and never goes above `/`; a root-backend link met at a component is
+    substituted there. Inside a mounted backend `..` is lexical (its links are its
+    own). The result is routed to the longest mount point that is a prefix.
   - DECIDED: a path is absent for a principal when ANY mount whose point is a prefix
     of it answers null for that principal, not only the longest one. A live mount
     nested under an absent one is unreachable through it.
@@ -39,7 +41,7 @@
     ENOENT/ENOTDIR for a missing/non-directory target parent; a rename onto itself
     changes nothing.
 
-  Proved: `route_spec` (longest matching prefix), `normParts_clean`,
+  Proved: `route_spec` (longest matching prefix), `walk_clean`,
   `absent_refuses`, `busy_refuses`, `exdev_refuses` (and none of them touch a
   backend), `resolve_root_only` (the composite substitutes only root links),
   `readdir_live_only` (no absent name is ever listed) and `noninterference`
@@ -77,36 +79,7 @@ def rootMount : Mount := ⟨[], 0, none⟩
 
 /-! ## Normalization -/
 
-def normStep (acc : Path) (c : String) : Path :=
-  if c = "" ∨ c = "." then acc else if c = ".." then acc.dropLast else acc ++ [c]
-
-def normParts (base : Path) (parts : List String) : Path := parts.foldl normStep base
-
-def norm (raw : String) : Path := normParts [] (raw.splitOn "/")
-
 def Clean (p : Path) : Prop := ∀ c ∈ p, c ≠ "" ∧ c ≠ "." ∧ c ≠ ".."
-
-theorem normParts_clean : ∀ (parts : List String) (base : Path), Clean base → Clean (normParts base parts) := by
-  intro parts
-  induction parts with
-  | nil => intro base h; exact h
-  | cons c cs ih =>
-    intro base h
-    apply ih
-    unfold normStep
-    split
-    · exact h
-    · split
-      · intro x hx; exact h x ((List.dropLast_sublist _).subset hx)
-      · rename_i h1 h2
-        intro x hx
-        rcases List.mem_append.mp hx with hx | hx
-        · exact h x hx
-        · simp at hx; subst hx; exact ⟨fun e => h1 (Or.inl e), fun e => h1 (Or.inr e), h2⟩
-
-/-- A normalized path has no `""`, `.` or `..` component. -/
-theorem norm_clean (raw : String) : Clean (norm raw) :=
-  normParts_clean _ [] (fun _ h => by cases h)
 
 /-! ## Routing -/
 
@@ -188,41 +161,87 @@ def treeAt (S : St) (p : Path) : Tree := S.trees (route S.mounts p).backend
 def setTree (S : St) (b : Backend) (t : Tree) : St :=
   { S with trees := fun c => if c = b then t else S.trees c }
 
-/-! ## Root-symlink resolution -/
+/-! ## Physical path walk -/
 
-/-- The first prefix (ending at `limit` components) that is a root link to follow. -/
-def firstLink (S : St) (P : Principal) (p : Path) (limit : Nat) : Option (Nat × String) :=
-  ((List.range limit).map (· + 1)).findSome? fun i =>
-    let q := p.take i
-    if (route S.mounts q).point = [] ∧ synth S.mounts P q = false then
-      match look (S.trees 0) q with
-      | some (.link t) => some (i, t)
-      | _ => none
-    else none
+/-- Linux MAXSYMLINKS. -/
+def fuel : Nat := 40
 
-def resolve (S : St) (P : Principal) (follow : Bool) : Nat → Path → Option Path
-  | 0, _ => none
-  | fuel + 1, p =>
-    match firstLink S P p (if follow then p.length else p.length - 1) with
-    | none => some p
-    | some (i, t) =>
-      resolve S P follow fuel (normParts (if t.startsWith "/" then [] else (p.take i).dropLast) (t.splitOn "/") ++ p.drop i)
+/-- The root link the composite follows at `q`, if any: only where `q` routes to the
+    root backend and is not a synthesized directory. -/
+def linkAt (S : St) (P : Principal) (q : Path) : Option String :=
+  if (route S.mounts q).point = [] ∧ synth S.mounts P q = false then
+    match look (S.trees 0) q with
+    | some (.link t) => some t
+    | _ => none
+  else none
 
-/-- The composite substitutes only links the root backend holds, at prefixes the
-    root backend serves: a link inside a mount is the mount's to resolve. -/
-theorem resolve_root_only (S : St) (P : Principal) (p : Path) (limit : Nat) {i : Nat} {t : String}
-    (h : firstLink S P p limit = some (i, t)) :
-    (route S.mounts (p.take i)).point = [] ∧ look (S.trees 0) (p.take i) = some (.link t) ∧
-      synth S.mounts P (p.take i) = false := by
-  unfold firstLink at h
-  obtain ⟨j, _, hj⟩ := List.exists_of_findSome?_eq_some h
-  simp only at hj
-  split at hj
+/-- Walk the raw components in order (Linux path lookup): `""` and `.` stay, `..`
+    pops what has been resolved so far (so it applies after a link), a name met at a
+    root link is replaced by the link's target (absolute from `/`, relative from the
+    link's directory), at most `hops` times, then ELOOP. The last component is
+    followed only when `follow`. Absent or non-directory components do not stop the
+    walk; the operation answers for them. `steps` bounds the walk (ELOOP past it). -/
+def walk (S : St) (P : Principal) (follow : Bool) : Nat → Nat → Path → List String → Option Path
+  | 0, _, _, _ => none
+  | _ + 1, _, done, [] => some done
+  | n + 1, hops, done, c :: rs =>
+    if c = "" ∨ c = "." then walk S P follow n hops done rs
+    else if c = ".." then walk S P follow n hops done.dropLast rs
+    else if rs = [] ∧ follow = false then some (done ++ [c])
+    else match linkAt S P (done ++ [c]) with
+      | some t =>
+        if hops = 0 then none
+        else walk S P follow n (hops - 1) (if t.startsWith "/" then [] else done) (t.splitOn "/" ++ rs)
+      | none => walk S P follow n hops (done ++ [c]) rs
+
+/-- The composite substitutes only links the root backend holds, at paths the
+    root backend serves and that are not synthesized: a link inside a mount is the
+    mount's to resolve. -/
+theorem resolve_root_only (S : St) (P : Principal) (q : Path) {t : String} (h : linkAt S P q = some t) :
+    (route S.mounts q).point = [] ∧ look (S.trees 0) q = some (.link t) ∧ synth S.mounts P q = false := by
+  unfold linkAt at h
+  split at h
   · rename_i hc
-    split at hj
-    · rename_i t' hl; cases hj; exact ⟨hc.1, hl, hc.2⟩
-    · cases hj
-  · cases hj
+    split at h
+    · rename_i t' hl; cases h; exact ⟨hc.1, hl, hc.2⟩
+    · cases h
+  · cases h
+
+/-- A walked path has no `""`, `.` or `..` component. -/
+theorem walk_clean (S : St) (P : Principal) (f : Bool) :
+    ∀ n hops done rest p, Clean done → walk S P f n hops done rest = some p → Clean p := by
+  intro n
+  induction n with
+  | zero => intro _ _ _ _ _ h; cases h
+  | succ n ih =>
+    intro hops done rest p hd h
+    cases rest with
+    | nil => simp only [walk] at h; cases h; exact hd
+    | cons c rs =>
+      simp only [walk] at h
+      have app : c ≠ "" ∧ c ≠ "." ∧ c ≠ ".." → Clean (done ++ [c]) := by
+        intro hc x hx
+        rcases List.mem_append.mp hx with hx | hx
+        · exact hd x hx
+        · simp at hx; subst hx; exact hc
+      split at h
+      · exact ih _ _ _ _ hd h
+      · split at h
+        · exact ih _ _ _ _ (fun x hx => hd x ((List.dropLast_sublist _).subset hx)) h
+        · rename_i h1 h2
+          have hc : c ≠ "" ∧ c ≠ "." ∧ c ≠ ".." := ⟨fun e => h1 (Or.inl e), fun e => h1 (Or.inr e), h2⟩
+          split at h
+          · cases h; exact app hc
+          · split at h
+            · split at h
+              · cases h
+              · exact ih _ _ _ _ (by split <;> first | exact hd | exact fun _ h => by cases h) h
+            · exact ih _ _ _ _ (app hc) h
+
+def maxSteps : Nat := 4096
+
+def walkRaw (S : St) (P : Principal) (follow : Bool) (raw : String) : Option Path :=
+  walk S P follow maxSteps fuel [] (raw.splitOn "/")
 
 /-! ## Operations -/
 
@@ -246,7 +265,6 @@ inductive Out where
   | err (code : String)
   deriving DecidableEq, Repr
 
-def fuel : Nat := 40
 
 def children (t : Tree) (rp : Path) : List String :=
   (t.filter fun x => x.1.length = rp.length + 1 && pfx rp x.1).filterMap (·.1.getLast?)
@@ -411,13 +429,13 @@ def execResolved (S : St) (P : Principal) (op : Op) (p q : Path) : Out × St :=
     | none => (o, S)
 
 def exec (S : St) (P : Principal) (op : Op) : Out × St :=
-  match resolve S P op.follow fuel (norm op.raw) with
+  match walkRaw S P op.follow op.raw with
   | none => (.err "ELOOP", S)
   | some p =>
     match op.raw2 with
     | none => execResolved S P op p []
     | some r2 =>
-      match resolve S P false fuel (norm r2) with
+      match walkRaw S P false r2 with
       | none => (.err "ELOOP", S)
       | some q => execResolved S P op p q
 
@@ -473,22 +491,25 @@ theorem route_not_hidden {ms : List Mount} {P : Principal} {b : Backend} (hb : H
   · obtain ⟨m', hm', hpm, hl⟩ := hb.2 _ h e
     rw [absent_of_prefix hm' (hpm.trans hpre) hl] at ha; cases ha
 
-theorem firstLink_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (p : Path)
-    (limit : Nat) : firstLink S' P p limit = firstLink S P p limit := by
-  unfold firstLink; rw [hA.1, hA.2 0 (Ne.symm hb0)]
+theorem linkAt_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (q : Path) :
+    linkAt S' P q = linkAt S P q := by
+  unfold linkAt; rw [hA.1, hA.2 0 (Ne.symm hb0)]
 
-theorem resolve_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (f : Bool) :
-    ∀ n p, resolve S' P f n p = resolve S P f n p := by
+theorem walk_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (f : Bool) :
+    ∀ n hops done rest, walk S' P f n hops done rest = walk S P f n hops done rest := by
   intro n
   induction n with
-  | zero => intro p; rfl
+  | zero => intro _ _ _; rfl
   | succ n ih =>
-    intro p
-    simp only [resolve]
-    rw [firstLink_agree hA hb0]
-    split
-    · rfl
-    · exact ih _
+    intro hops done rest
+    cases rest with
+    | nil => rfl
+    | cons c rs =>
+      simp only [walk]
+      simp only [linkAt_agree hA hb0, ih]
+
+theorem walkRaw_agree {S S' : St} {b : Backend} (hA : Agree S S' b) (hb0 : b ≠ 0) (P : Principal) (f : Bool)
+    (raw : String) : walkRaw S' P f raw = walkRaw S P f raw := walk_agree hA hb0 P f _ _ _ _
 
 theorem treeAt_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     {p : Path} (ha : absent S.mounts P p = false) : treeAt S' p = treeAt S p := by
@@ -512,7 +533,7 @@ theorem backendOp_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S 
     the same answer and stay different only in it. -/
 theorem noninterference {S S' : St} {P : Principal} {b : Backend} (hA : Agree S S' b) (hb : Hidden S.mounts P b)
     (op : Op) : (exec S' P op).1 = (exec S P op).1 ∧ Agree (exec S P op).2 (exec S' P op).2 b := by
-  have hr := resolve_agree hA hb.1 P
+  have hr := walkRaw_agree hA hb.1 P
   have core : ∀ p q, (execResolved S' P op p q).1 = (execResolved S P op p q).1 ∧
       Agree (execResolved S P op p q).2 (execResolved S' P op p q).2 b := by
     intro p q

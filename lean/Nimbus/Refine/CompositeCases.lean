@@ -176,7 +176,16 @@ def directed : List Json :=
      (P, .readdir "/data"), (P, .readFile "/data/x/f")]
   [ runDirected [⟨["srv", "data"], 1, none⟩, ⟨["data", "x"], 1, none⟩] [(0, root), (1, b1)] (probe 0 ++ probe 1),
     runDirected [⟨["srv", "data"], 1, some [0]⟩, ⟨["data", "x"], 1, some [0]⟩] [(0, root), (1, b1)]
-      (probe 0 ++ probe 1) ]
+      (probe 0 ++ probe 1),
+    -- `..` is physical: it applies after a link met before it; a cycle before it is ELOOP
+    runDirected [⟨["pc"], 1, none⟩]
+      [(0, [(["proc"], .dir), (["proc", "a"], .link "/pc"), (["proc", "r"], .link "../pc/d"), (["proc", "b"], .file 2),
+          (["b"], .file 4), (["loop"], .link "/loop"), (["pc"], .dir)]), (1, b1)]
+      [(0, .stat "/proc/a/../b"), (0, .readFile "/proc/a/../b"), (0, .readdir "/proc/a/.."),
+       (0, .stat "/proc/r/.."), (0, .readdir "/proc/r/.."), (0, .readFile "/proc/r/../f"),
+       (0, .stat "/loop/.."), (0, .readdir "/loop/../proc"), (0, .stat "/proc/b/../a"),
+       (0, .writeFile "/proc/a/../c" 9), (0, .readFile "/c"), (0, .unlink "/proc/a/../c"),
+       (0, .stat "/pc/d/../../proc/a"), (0, .rename "/proc/a/../b" "/proc/b2")] ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
