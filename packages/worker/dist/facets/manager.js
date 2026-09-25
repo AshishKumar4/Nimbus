@@ -4847,7 +4847,8 @@ export class FacetManager {
             // The handle's route target resolves the RUNNING facet wherever it is
             // hosted; binding it for the pid before the port is announced is what
             // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
-            this.portRegistry.bindFacetStub(pid, handle.routeTarget);
+            // The opencode runner dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
+            this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             resourcesTracked = true;
             this.ctx.waitUntil(handle.done
@@ -5503,7 +5504,8 @@ export class FacetManager {
             }
             this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
             resourcesTracked = true;
-            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
+            // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
+            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
             if (opts.attachedTty) {
                 this.ctx.waitUntil(handle.done
                     .catch((e) => {

@@ -57,6 +57,12 @@ export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>
  */
 export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 /**
+ * The index entries that restoring `restored` replaces (add_index_entry_with_check):
+ * a file at one of a restored path's leading directories, or anything below a
+ * restored path.
+ */
+export declare function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[];
+/**
  * The `git` command handler. Split out from registration so it can be
  * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping
  * this module and its ~106 KB network-facet dependency out of the cold

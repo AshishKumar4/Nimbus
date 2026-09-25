@@ -135,7 +135,7 @@ if (!NPM_OUT_DIR && !ACCOUNT) {
 // time, including while another ingest is in flight against a different bucket.
 if (PIN_ONLY) {
   pinCatalogFromR2();
-  process.exit(0);
+  process.exit();
 }
 
 if (!positionalArgs[0] || !positionalArgs[1]) {
@@ -528,6 +528,7 @@ function pinCatalogFromR2() {
   const workDir = join(tmpdir(), `nimbus-catalog-pin-${process.pid}`);
   mkdirSync(workDir, { recursive: true });
   const local = join(workDir, 'catalog.json');
+  // Failures return rather than process.exit, so the finally removes the download either way.
   try {
     const result = spawnSync(
       WRANGLER,
@@ -538,7 +539,8 @@ function pinCatalogFromR2() {
       console.error(`ERROR: could not read catalog/v1.json from '${BUCKET}'; the pin is unchanged.`);
       const detail = (result.stderr || '').trim();
       if (detail) console.error(`       ${detail.split('\n').slice(-3).join('\n       ')}`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     const bytes = readFileSync(local);
     // A pin over bytes that are not the catalog would disable the cache on
@@ -548,11 +550,13 @@ function pinCatalogFromR2() {
       parsed = JSON.parse(bytes.toString('utf8'));
     } catch (e) {
       console.error(`ERROR: catalog/v1.json is not valid JSON (${e.message}); refusing to pin it`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     if (!parsed || typeof parsed.runtimes !== 'object' || parsed.runtimes === null) {
       console.error('ERROR: catalog/v1.json has no runtimes object; refusing to pin it');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     console.log(`[bundle-runtime] catalog lists: ${Object.keys(parsed.runtimes).join(', ') || '(none)'}`);
     writeCatalogPin(bytes);

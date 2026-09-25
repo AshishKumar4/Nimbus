@@ -1081,6 +1081,18 @@ function enotdir(filepath) {
   return err;
 }
 
+function eisdir(filepath) {
+  const err = new Error('EISDIR: illegal operation on a directory, ' + filepath);
+  err.code = 'EISDIR'; err.errno = -21;
+  return err;
+}
+
+function enotempty(filepath) {
+  const err = new Error('ENOTEMPTY: directory not empty, ' + filepath);
+  err.code = 'ENOTEMPTY'; err.errno = -39;
+  return err;
+}
+
 function einval(filepath) {
   const err = new Error('EINVAL: invalid argument, ' + filepath);
   err.code = 'EINVAL'; err.errno = -22;
@@ -1880,9 +1892,14 @@ function createBufferedFs(
         });
       },
 
+      // unlink(2) and rmdir(2): a buffered delete removes the whole subtree at
+      // its path, so neither may take a directory it would not take on disk.
+      // unlink refuses a directory; rmdir refuses a non-directory and a
+      // directory that still holds anything (untracked files a checkout leaves).
       async unlink(filepath) {
         assertFlushHealthy();
         const p = normalizePath(filepath);
+        if ((await fs.promises.lstat(filepath)).isDirectory()) throw eisdir(filepath);
         return bufferMutation(p, 0, false, async () => {
           if (writeBuffer.has(p)) {
             bufferBytes -= writeBuffer.get(p).length;
@@ -1958,9 +1975,13 @@ function createBufferedFs(
         });
       },
 
-      async rmdir(filepath) {
+      async rmdir(filepath, options) {
         assertFlushHealthy();
         const p = normalizePath(filepath);
+        if (!(options && options.recursive)) {
+          if (!(await fs.promises.lstat(filepath)).isDirectory()) throw enotdir(filepath);
+          if ((await fs.promises.readdir(filepath)).length > 0) throw enotempty(filepath);
+        }
         return bufferMutation(p, 0, false, async () => {
           dirBuffer.delete(p);
           deleteBuffer.add(p);

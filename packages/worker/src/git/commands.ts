@@ -163,7 +163,10 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
       async writeFile(filepath: string, data: any, opts?: any): Promise<void> {
         const p = normalizePath(filepath);
         ensureDirectories(p, false);
-        if (checkedOut(p) && lstatOrNull(p)?.type === 'symlink') vfs.unlink(p);
+        // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
+        const existing = checkedOut(p) ? lstatOrNull(p)?.type : undefined;
+        if (existing === 'symlink') vfs.unlink(p);
+        else if (existing === 'directory') vfs.removeRecursive(p);
         if (typeof data === 'string') {
           vfs.writeFile(p, data);
         } else {
@@ -205,7 +208,8 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
         ensureDirectories(p, false);
         // Checkout retargets a link in place, as the clone facet's adapter does.
         const st = lstatOrNull(p);
-        if (st && st.type !== 'directory') vfs.unlink(p);
+        if (st?.type === 'directory' && checkedOut(p)) vfs.removeRecursive(p);
+        else if (st && st.type !== 'directory') vfs.unlink(p);
         vfs.symlink(target, p);
       },
       async readlink(filepath: string): Promise<string> {
@@ -412,6 +416,7 @@ interface CfGit {
   // Takes an array through the tracked cf-git patch, as add does.
   remove(args: { fs: unknown; dir: string; filepath: string | string[]; cache?: object }): Promise<void>;
   statusMatrix(args: { fs: unknown; dir: string; cache?: object }): Promise<[string, number, number, number][]>;
+  listFiles(args: { fs: unknown; dir: string; cache?: object }): Promise<string[]>;
   walk(args: {
     fs: unknown;
     dir: string;
@@ -769,6 +774,38 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, 
 }
 
 /**
+ * The index entries that restoring `restored` replaces (add_index_entry_with_check):
+ * a file at one of a restored path's leading directories, or anything below a
+ * restored path.
+ */
+export function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[] {
+  // Every leading directory of a restored path, once: an entry there is a file in its way.
+  const leading = new Set<string>();
+  for (const path of restored) {
+    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) leading.add(path.slice(0, at));
+  }
+  return index.filter((path) => {
+    if (restored.has(path)) return false;
+    if (leading.has(path)) return true;
+    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
+      if (restored.has(path.slice(0, at))) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * A checkout cf-git refused, as git reports one: its message on stderr, exit 1. A merge
+ * that is not a fast-forward (`strategy`) refuses as its strategy does, with that line
+ * after it and exit 2. Anything else propagates.
+ */
+async function refusal(ctx: Ctx, error: unknown, strategy?: string): Promise<number> {
+  if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError') throw error;
+  await ctx.stderr.write(`${error.message}\n${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
+  return strategy ? 2 : 1;
+}
+
+/**
  * `git checkout [<tree-ish>] -- <pathspec>...`: every tracked file the
  * pathspecs name, from the index, or from <tree-ish> into the index as well
  * (overlay mode: a path the tree lacks stays). A pathspec naming nothing fails
@@ -793,6 +830,8 @@ async function checkoutPaths(
     return 128;
   }
   const specs = repoPaths(pathArgs, ctx.cwd, root);
+  // A pathspec ending in '/' names a directory: it matches what is below it, never a file or link there.
+  const dirOnly = pathArgs.map((arg, i) => arg.endsWith('/') && specs[i] !== '');
   const fs = createGitFs(vfs, root);
   const cache = {};
   let tree = git.STAGE();
@@ -805,19 +844,22 @@ async function checkoutPaths(
     tree = git.TREE({ ref: oid });
   }
   const files: { path: string; oid: string; mode: number }[] = [];
-  const matched = new Set<string>();
+  const matched = new Set<number>();
   await walkScoped(git, fs, root, cache, [tree], specs, async (path, [entry]) => {
     const type = entry ? await entry.type() : undefined;
     if (type === 'tree') return true;
     // A gitlink is never checked out.
     if (!entry || type !== 'blob') return false;
-    for (const spec of specs) if (spec === '' || path === spec || path.startsWith(`${spec}/`)) matched.add(spec);
+    const matching = specs.flatMap((spec, i) =>
+      spec === '' || path.startsWith(`${spec}/`) || (path === spec && !dirOnly[i]) ? [i] : []);
+    if (matching.length === 0) return false;
+    for (const i of matching) matched.add(i);
     files.push({ path, oid: await entry.oid(), mode: await entry.mode() });
     return false;
   });
   let unmatched = '';
-  specs.forEach((spec, i) => {
-    if (!matched.has(spec)) unmatched += `error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`;
+  pathArgs.forEach((arg, i) => {
+    if (!matched.has(i)) unmatched += `error: pathspec '${arg}' did not match any file(s) known to git\n`;
   });
   if (unmatched) {
     await ctx.stderr.write(unmatched);
@@ -833,8 +875,13 @@ async function checkoutPaths(
       vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
     }
   }
-  // The index takes each file's fresh stat data (and, from a tree, its blob).
-  if (files.length) await git.add({ fs, dir: root, filepath: files.map(({ path }) => path), parallel: false, force: true, cache });
+  // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
+  // restored path replaces goes first, as add_index_entry_with_check replaces it: a file at
+  // one of its leading directories, or anything below it.
+  const restored = new Set(files.map(({ path }) => path));
+  const replaced = replacedIndexEntries(await git.listFiles({ fs, dir: root, cache }), restored);
+  if (replaced.length) await git.remove({ fs, dir: root, filepath: replaced, cache });
+  if (files.length) await git.add({ fs, dir: root, filepath: [...restored], parallel: false, force: true, cache });
   return 0;
 }
 
@@ -1370,23 +1417,27 @@ export async function runGitCommand(
       }
 
       case 'checkout': {
+        // `--` with paths after it restores those paths; a bare `--` only ends the options.
         const dashdash = subArgs.indexOf('--');
-        if (dashdash >= 0) {
-          const source = subArgs.slice(0, dashdash).find(a => !a.startsWith('-'));
+        const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
+        if (dashdash >= 0 && dashdash < subArgs.length - 1) {
+          const source = options.find(a => !a.startsWith('-'));
           return await checkoutPaths(ctx, git, credentialedVfs, source ?? null, subArgs.slice(dashdash + 1));
         }
-        const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
-        const ref = subArgs.find(a => !a.startsWith('-'));
-        if (!ref) { ctx.stderr.write('error: specify a branch\n'); return 1; }
+        const quiet = options.includes('-q') || options.includes('--quiet');
+        const ref = options.find(a => !a.startsWith('-'));
+        // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
+        if ((!ref || ref === 'HEAD') && !options.includes('-b')) return 0;
+        if (!ref) { ctx.stderr.write("error: switch `b' requires a value\n"); return 129; }
         const worktreeFs = createGitFs(credentialedVfs, dir);
-        if (subArgs.includes('-b')) {
-          await git.branch({ fs, dir, ref });
+        const create = options.includes('-b');
+        if (create) await git.branch({ fs, dir, ref });
+        try {
           await git.checkout({ fs: worktreeFs, dir, ref });
-          if (!quiet) ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
-        } else {
-          await git.checkout({ fs: worktreeFs, dir, ref });
-          if (!quiet) ctx.stdout.write(`Switched to branch '${ref}'\n`);
+        } catch (e) {
+          return await refusal(ctx, e);
         }
+        if (!quiet) ctx.stdout.write(create ? `Switched to a new branch '${ref}'\n` : `Switched to branch '${ref}'\n`);
         return 0;
       }
 
@@ -1499,15 +1550,25 @@ export async function runGitCommand(
       }
 
       case 'merge': {
-        const theirs = subArgs[0];
+        const theirs = subArgs.find(a => !a.startsWith('-'));
         if (!theirs) { ctx.stderr.write('usage: git merge <branch>\n'); return 1; }
-        await git.merge({
-          fs, dir, theirs,
+        // Into the current branch, or HEAD when detached. The branch moves only once the worktree
+        // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
+        const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
+        const merged = await git.merge({
+          fs, dir, ours, theirs,
           author: getAuthor(ctx),
+          noUpdateBranch: true,
         });
-        // cf-git's merge moves the branch alone; the worktree follows it as pull's checkout makes it.
-        await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: await git.currentBranch({ fs, dir }) ?? 'HEAD' });
-        ctx.stdout.write(`Merged ${theirs}\n`);
+        if (!merged.alreadyMerged) {
+          try {
+            await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
+          } catch (e) {
+            return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
+          }
+          await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
+        }
+        if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) ctx.stdout.write(`Merged ${theirs}\n`);
         return 0;
       }
 
@@ -1517,15 +1578,17 @@ export async function runGitCommand(
         const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
         const oid = await git.resolveRef({ fs, dir, ref });
 
+        if (hard) {
+          // The index and worktree become the target's, as a forced checkout from the old index
+          // makes them (type changes included), before the branch moves: a failed write leaves it.
+          await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
+        }
+
         // Move the current branch, or a detached HEAD, to the target OID
         const branch = await git.currentBranch({ fs, dir });
         await git.writeRef({ fs, dir, ref: branch ? `refs/heads/${branch}` : 'HEAD', value: oid, force: true });
 
-        if (hard) {
-          // The index and worktree become the target's, as a forced checkout from the old index
-          // makes them (type changes included); HEAD stays where it is.
-          await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
-        } else if (!soft) {
+        if (!hard && !soft) {
           // Reset index (--mixed)
           const matrix = await git.statusMatrix({ fs, dir });
           for (const [filepath] of matrix) {

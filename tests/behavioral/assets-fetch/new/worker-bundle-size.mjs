@@ -15,7 +15,7 @@
 // proxy for what actually costs us — script parse and cold-start.
 
 import { spawnSync } from 'node:child_process';
-import { statSync, mkdtempSync, readFileSync } from 'node:fs';
+import { statSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -48,6 +48,8 @@ const a = makeAsserter('assets-fetch/new/worker-bundle-size');
 const THRESHOLD_BYTES = 7 * 1024 * 1024;
 
 const outDir = mkdtempSync(join(tmpdir(), 'nimbus-bundle-'));
+// Every way out of this probe is process.exit: the hook removes the dry-run output on each.
+process.on('exit', () => rmSync(outDir, { recursive: true, force: true }));
 const repoRoot = new URL('../../../../', import.meta.url).pathname;
 const wranglerBin = join(repoRoot, 'node_modules', '.bin', 'wrangler');
 const hostedDemoDir = join(repoRoot, 'apps', 'hosted-demo');

@@ -307,7 +307,11 @@ suite on those: `_driver.mjs` records each mint and DELETE in a per-run
 ledger, and every minted session without a 2xx DELETE is named with its
 probe. A session created outside the driver (the remote SDK's
 `.sandbox(id)`, the anonymous demo launch) is the probe's to delete in
-`finally`. `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
+`finally`. An anonymous demo session (the `mintSession` fallback on
+`nimbus-os.dev`, below) is the one exception: its DELETE answers 401 by
+design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and
+`run-all` reports it as TTL-reaped rather than leaked.
+`NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
 ### Probe targets
 

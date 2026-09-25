@@ -191,6 +191,8 @@ function makeSupervisor() {
 // and imports it, so the program under test is the real generated runner
 // running the real shims, not a stub.
 const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-observed-residency-'));
+// Removed however the test ends: its assertions run at top level.
+process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
 let runnerN = 0;
 const env = {
   LOADER: {
@@ -308,5 +310,4 @@ assert.ok(
   `a repaired run must not still be failing on residency: ${JSON.stringify(second.stderr)}`,
 );
 
-rmSync(runnerDir, { recursive: true, force: true });
 process.stdout.write('facet-observed-residency: all tests passed\n');

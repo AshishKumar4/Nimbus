@@ -3721,6 +3721,11 @@ const __fsMod = (() => {
     _mkdirAsync(p, opts).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
   }
   function unlink(p, cb) { _unlinkAsync(p).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  // The callback form proper-lockfile (via graceful-fs) releases its lock directory with.
+  function rmdir(p, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    _rmdirAsync(p).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); });
+  }
   function rename(oldP, newP, cb) { _renameAsync(oldP, newP).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
@@ -4719,7 +4724,7 @@ const __fsMod = (() => {
     openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, fsyncSync, fdatasyncSync,
     futimesSync, fchmodSync, fchownSync, readvSync, writevSync,
     open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
-    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, lchmod, chown, lchown, fchown, access,
+    readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rmdir, rename, utimes, lutimes, chmod, lchmod, chown, lchown, fchown, access,
     rm, cp, truncate, copyFile, mkdtemp, link, symlink, readlink, realpath, opendir, statfs,
     Dirent: __Dirent,
     Dir: __Dir,

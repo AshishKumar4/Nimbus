@@ -69,7 +69,8 @@ async function boot({ attached = false, children = null } = {}) {
     cursor: authority.cursor(),
   });
   const ports = new PortRegistry((pid) => _acquireForRoutedRequest(authority.host, pid));
-  ports.bindFacetStub(log.pid, proc);
+  // A node-shims resident, bound as the facet manager binds one: it strips the delivered ACQUIRE.
+  ports.bindFacetStub(log.pid, proc, { deliversAcquire: true });
   ports.register(3000, log.pid);
   return { authority, log, proc, ports };
 }
