@@ -48,16 +48,16 @@ function workspace() {
 
 // ── SQLite at the root, per principal ─────────────────────────────────────
 {
-  const { vfs } = workspace();
+  const { engine, vfs } = workspace();
   const user = vfs.as(USER);
   const other = vfs.as(OTHER);
   await writeText(user, '/home/user/a.txt', 'mine');
   const st = await user.stat('/home/user/a.txt');
   assert.deepEqual([st.type, st.uid, st.gid, (st.mode & 0o777).toString(8)], ['file', 1000, 1000, '644']);
-  assert.equal(typeof st.revision, 'number', 'SQLite stats carry a revision');
+  assert.equal(typeof st.revision, 'string', 'SQLite stats carry a revision');
   const before = st.revision;
   await writeText(user, '/home/user/a.txt', 'changed');
-  assert.ok((await user.stat('/home/user/a.txt')).revision > before, 'a write moves it');
+  assert.notEqual((await user.stat('/home/user/a.txt')).revision, before, 'a write moves it');
   assert.equal(await readText(other, '/home/user/a.txt'), 'changed', 'others may read a 0644 file');
   assert.equal(await code(() => writeText(other, '/home/user/b.txt', 'x')), 'EACCES', "not write in another's directory");
   assert.equal(await code(() => writeText(user, '/etc/hostname', 'x')), 'EACCES', 'nor a root-owned file');
@@ -75,6 +75,19 @@ function workspace() {
   assert.equal((await user.writeFileIfRevision('/home/user/d/e/a.txt', enc.encode('cas'), rev)).ok, true);
   assert.equal((await user.writeFileIfRevision('/home/user/d/e/a.txt', enc.encode('stale'), rev)).ok, false);
   assert.equal(await readText(user, '/home/user/d/e/a.txt'), 'cas');
+  // Through the namespace a CAS is on an existing file (lookup first) ...
+  assert.equal(await code(() => user.writeFileIfRevision('/home/user/fresh.txt', enc.encode('x'), 0)), 'ENOENT');
+  // ... while the backend compares by value, whatever the type: absent is 0 or '0'.
+  const direct = sqliteFiles(engine, USER);
+  assert.equal(direct.writeFileIfRevision('/home/user/fresh.txt', enc.encode('x'), '0').ok, true);
+  assert.equal(direct.writeFileIfRevision('/home/user/fresh2.txt', enc.encode('x'), 0).ok, true);
+  assert.equal(direct.writeFileIfRevision('/home/user/fresh2.txt', enc.encode('y'), 0).ok, false, 'no longer absent');
+  // A revision from before the database's epoch changed (a restore) never
+  // matches after it, though the row's generation is the same.
+  const beforeEpoch = (await user.stat('/home/user/d/e/a.txt')).revision;
+  engine.rotateIncarnation();
+  assert.equal((await user.writeFileIfRevision('/home/user/d/e/a.txt', enc.encode('old epoch'), beforeEpoch)).ok, false);
+  assert.equal(await readText(user, '/home/user/d/e/a.txt'), 'cas');
   // Links are the engine's: followed, readlink'd, and ELOOP when they cycle.
   await user.symlink('/home/user/d/e/a.txt', '/home/user/ln');
   assert.equal(await readText(user, '/home/user/ln'), 'cas');
@@ -87,8 +100,14 @@ function workspace() {
   assert.equal(await user.copy('/home/user/d', '/home/user/d2', { recursive: true }) > 0, true);
   await writeText(user, '/home/user/d2/e/a.txt', 'copied');
   assert.equal(await readText(user, '/home/user/d/e/a.txt'), 'cas');
-  assert.equal(await code(() => user.copy('/home/user/d', '/tmp/d', { recursive: true })), 'EXDEV', 'cp copies bytes across');
-  assert.equal(await code(() => user.copy('/tmp/s', '/tmp/s2')), 'ENOTSUP', 'a backend without its own copy');
+  // Across filesystems the primitive copies bytes (and links as links).
+  assert.equal(await user.copy('/home/user/d', '/tmp/d', { recursive: true }), 3);
+  assert.equal(await readText(user, '/tmp/d/e/a.txt'), 'cas');
+  assert.equal(await code(() => user.copy('/home/user/d', '/tmp/d', { recursive: true })), 'EEXIST', 'a tree is not merged into one');
+  assert.equal(await code(() => vfs.copy('/', '/home/user/all', { recursive: true })), 'ENOTSUP', 'a tree holding mounts is cp -r\'s');
+  await writeText(user, '/tmp/s', 'bytes');
+  assert.equal(await user.copy('/tmp/s', '/tmp/s2'), 1, 'a backend without its own copy is copied byte-wise');
+  assert.equal(await readText(user, '/tmp/s2'), 'bytes');
   await user.removeRecursive('/home/user/d');
   assert.equal(await user.stat('/home/user/d'), null);
   // Across the root and a mount: EXDEV.

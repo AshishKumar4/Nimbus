@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
  * a principal finer than its uid: two agents (or a node and its origin) that
@@ -107,6 +107,18 @@ export declare class CompositeVFS implements VFS {
     /** The root, a live mount point, or a directory above one (rule 2): this namespace's, not a backend's. */
     private isStructural;
     private hasLiveBelow;
+    /**
+     * A capability the backend may lack, asked after lookup (Linux order): a
+     * path that is not there is ENOENT, and ENOTSUP is for a path that exists
+     * on a backend without the capability. (FormalModelsLane
+     * `Vfs/CompositeOps`, unsupported_is_enotsup.)
+     */
+    private capability;
+    /**
+     * readRange and the revision ops: `/` and a mount point are EISDIR;
+     * anything else is the backend's, looked up before its capability is asked.
+     */
+    private onCapability;
     private method;
     /**
      * `input` with every root link on it followed (the last only when
@@ -143,15 +155,29 @@ export declare class CompositeVFS implements VFS {
     private renameAt;
     private renameIn;
     /**
-     * A copy inside one filesystem is that backend's own (SQLite copies rows);
-     * across filesystems, or where the backend has none, ENOTSUP/EXDEV tell the
-     * caller to copy bytes, as cp does.
+     * The copy primitive: one entry or one tree, onto a name that is not there
+     * (or a file onto a file, which it replaces). Within one filesystem it is
+     * the backend's own (SQLite copies rows); across filesystems it copies
+     * bytes, links as links. Returns the entries copied.
+     *
+     * A tree holding another mount point is ENOTSUP: crossing filesystems in
+     * one tree is cp -r's decision (-x stays on one), not this primitive's.
+     * A directory onto an existing path is EEXIST: merging into a directory
+     * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     private copyAt;
+    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+    private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;
+    /**
+     * rm -r of one tree, with an exact report. `removed` lists the maximal
+     * removed subtrees (so a native removal is just the operand), `kept` every
+     * entry still there: one whose own removal failed, and the directories
+     * holding it. A walked removal carries on past a failure, as rm -r does,
+     * and `failures` says why each one stayed.
+     */
     private removeAt;
-    /** Depth-first removal with base operations; a failure names what went and what is left. */
     private walkRemove;
     stat(path: string, options?: {
         follow?: boolean;
@@ -171,7 +197,7 @@ export declare class CompositeVFS implements VFS {
     unlink(path: string): Promise<void>;
     rmdir(path: string): Promise<void>;
     rename(from: string, to: string): Promise<void>;
-    removeRecursive(path: string): Promise<void>;
+    removeRecursive(path: string): Promise<VfsRemoval>;
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;

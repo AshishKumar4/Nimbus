@@ -238,16 +238,19 @@ const cases = {
     let nativeCalls = 0;
     drive.removeRecursive = async (p) => { nativeCalls++; return native(p); };
     vfs.mount('/shared', () => drive);
-    await vfs.removeRecursive('/shared/d');
-    assert.equal(nativeCalls, 1, 'native removal where the backend has it');
+    assert.deepEqual(await vfs.removeRecursive('/shared/d'), { removed: ['/shared/d'], kept: [], failures: [] });
+    assert.equal(nativeCalls, 1, 'native removal where the backend has it: no walk, the operand is the report');
     const flaky = device({ '/d/ok.txt': '1', '/d/bad.txt': '2' });
     const unlink = flaky.unlink;
     flaky.unlink = async (p) => { if (p.endsWith('bad.txt')) throw new VfsError('EACCES', 'no', p); return unlink(p); };
     vfs.mount('/flaky', () => flaky);
-    let error;
-    try { await vfs.removeRecursive('/flaky/d'); } catch (e) { error = e; }
-    assert.ok(isVfsError(error, 'EACCES'), String(error));
-    assert.match(error.message, /only partly removed: gone \[.*\]; still present \[.*bad\.txt.*\]/);
+    // A walk carries on past a failure, as rm -r does, and reports exactly:
+    // removed subtrees by their roots, what is still there, and why.
+    const report = await vfs.removeRecursive('/flaky/d');
+    assert.deepEqual(report.removed, ['/flaky/d/ok.txt']);
+    assert.deepEqual(report.kept, ['/flaky/d', '/flaky/d/bad.txt']);
+    assert.deepEqual(report.failures.map((f) => [f.path, f.error.code]), [['/flaky/d/bad.txt', 'EACCES']]);
+    assert.equal(await vfs.removeRecursive('/flaky/nothing').catch((e) => e.code), 'ENOENT');
   },
 
   async 'rmdir on a backend without it: an emptiness check, then unlink'() {

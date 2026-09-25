@@ -114,7 +114,8 @@ export interface VFS {
   /** Writes `bytes` at `offset`, zero-filling any gap past the end, creating the file. */
   writeRange?(path: string, offset: number, bytes: Uint8Array): Awaitable<void>;
   truncate?(path: string, size: number): Awaitable<void>;
-  removeRecursive?(path: string): Awaitable<void>;
+  /** rm -r; nothing returned means the whole operand went. */
+  removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
   symlink?(target: string, path: string): Awaitable<void>;
   readlink?(path: string): Awaitable<string>;
   chmod?(path: string, mode: number): Awaitable<void>;
@@ -173,7 +174,7 @@ export interface SyncVFS {
   readRange?(path: string, offset: number, length: number): Uint8Array;
   writeRange?(path: string, offset: number, bytes: Uint8Array): void;
   truncate?(path: string, size: number): void;
-  removeRecursive?(path: string): void;
+  removeRecursive?(path: string): VfsRemoval | void;
   symlink?(target: string, path: string): void;
   readlink?(path: string): string;
   chmod?(path: string, mode: number): void;
@@ -201,3 +202,11 @@ export async function readText(vfs: VFS, path: string): Promise<string> {
 export async function writeText(vfs: VFS, path: string, text: string, options?: { mode?: number }): Promise<void> {
   await vfs.writeFile(path, encoder.encode(text), options);
 }
+
+/** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */
+export interface VfsRemoval {
+  removed: string[];
+  kept: string[];
+  failures: VfsRemovalFailure[];
+}
+export interface VfsRemovalFailure { path: string; error: import('./vfs-error.js').VfsError }

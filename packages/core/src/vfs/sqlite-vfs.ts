@@ -1985,6 +1985,7 @@ export class SqliteVFS {
   // ── Filesystem operations ─────────────────────────────────────────────
 
   as(cred: VfsCred): CredentialedVfs {
+    const engine = this;
     const bound = Object.freeze({
       uid: cred.uid,
       gid: cred.gid,
@@ -2051,7 +2052,8 @@ export class SqliteVFS {
       invalidatedSince: (epoch, cursor) => this.invalidatedSince(epoch, cursor, bound),
       storageKey: (path) => this.storageKey(path, bound),
       subscribe: (path, listener) => this.subscribe(path, bound, listener),
-      epoch: this._epoch,
+      // Live: a view outlives rotateIncarnation.
+      get epoch() { return engine._epoch; },
     };
   }
 

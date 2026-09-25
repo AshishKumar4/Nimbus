@@ -1,5 +1,6 @@
 import { VfsError, isVfsError } from './vfs-error.js';
-const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40555, uid: 0, gid: 0 };
+/** A directory this namespace makes (above a mount point, or a backend root with no stat). */
+const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
 const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -231,6 +232,38 @@ export class CompositeVFS {
         }
         return false;
     }
+    /**
+     * A capability the backend may lack, asked after lookup (Linux order): a
+     * path that is not there is ENOENT, and ENOTSUP is for a path that exists
+     * on a backend without the capability. (FormalModelsLane
+     * `Vfs/CompositeOps`, unsupported_is_enotsup.)
+     */
+    capability(ops, name, rel, path, run) {
+        return then(this.softStat(ops, rel, true), (stat) => {
+            if (stat === null)
+                throw new VfsError('ENOENT', 'no such file or directory', path);
+            const fn = ops[name];
+            if (typeof fn !== 'function')
+                throw new VfsError('ENOTSUP', `this filesystem does not support ${String(name)}`, path);
+            return run(fn.bind(ops));
+        });
+    }
+    /**
+     * readRange and the revision ops: `/` and a mount point are EISDIR;
+     * anything else is the backend's, looked up before its capability is asked.
+     */
+    onCapability(input, sync, name, write, run) {
+        return then(this.resolve(input, true, sync), (path) => {
+            this.present(path);
+            if (this.isStructural(path)) {
+                throw new VfsError('EISDIR', 'is a directory', path);
+            }
+            const route = this.route(path);
+            if (write && route.mount.options.readOnly)
+                throw new VfsError('EROFS', `${route.mount.point} is mounted read-only`, path);
+            return then(this.reachable(path, sync), () => this.capability(this.ops(route, sync), name, route.rel, path, (fn) => run(fn, route.rel)));
+        });
+    }
     method(ops, name, path) {
         const fn = ops[name];
         if (typeof fn !== 'function')
@@ -382,7 +415,12 @@ export class CompositeVFS {
                         return null;
                     }
                 };
-                return then(own(), (stat) => (stat !== null && stat.type === 'directory' ? stat : EPOCH_STAT));
+                return then(own(), (stat) => {
+                    if (stat === null || stat.type !== 'directory')
+                        return EPOCH_STAT;
+                    // A backend with no modes still has a mode at its mount point.
+                    return stat.mode === undefined ? { ...stat, mode: EPOCH_STAT.mode } : stat;
+                });
             }
             return then(this.shadowed(path, sync), (hidden) => {
                 if (hidden)
@@ -558,25 +596,81 @@ export class CompositeVFS {
         return ops.rename(source.rel, target.rel);
     }
     /**
-     * A copy inside one filesystem is that backend's own (SQLite copies rows);
-     * across filesystems, or where the backend has none, ENOTSUP/EXDEV tell the
-     * caller to copy bytes, as cp does.
+     * The copy primitive: one entry or one tree, onto a name that is not there
+     * (or a file onto a file, which it replaces). Within one filesystem it is
+     * the backend's own (SQLite copies rows); across filesystems it copies
+     * bytes, links as links. Returns the entries copied.
+     *
+     * A tree holding another mount point is ENOTSUP: crossing filesystems in
+     * one tree is cp -r's decision (-x stays on one), not this primitive's.
+     * A directory onto an existing path is EEXIST: merging into a directory
+     * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     copyAt(fromInput, toInput, options, sync) {
-        return then(this.resolve(fromInput, true, sync), (from) => then(this.resolve(toInput, false, sync), (to) => {
+        return then(this.resolve(fromInput, false, sync), (from) => {
             this.present(from);
-            this.present(to);
-            if (this.isStructural(to))
-                throw new VfsError('EBUSY', 'a mount point cannot be replaced', to);
-            const source = this.route(from);
-            const target = this.route(to);
-            if (source.mount !== target.mount) {
-                throw new VfsError('EXDEV', `${source.mount.point} and ${target.mount.point} are different filesystems`, from);
+            return then(this.resolve(toInput, false, sync), (to) => {
+                this.present(to);
+                const fromMount = this.table.mounts.get(from);
+                if (from === ROOT_POINT || (this.isStructural(from) && fromMount === undefined) || (fromMount === undefined && this.hasLiveBelow(from))) {
+                    throw new VfsError('ENOTSUP', 'a tree holding another filesystem is copied by cp -r, not by this primitive', from);
+                }
+                if (to === ROOT_POINT || this.isStructural(to))
+                    throw new VfsError('EBUSY', 'a mount point cannot be replaced', to);
+                const source = this.route(from);
+                const target = this.route(to);
+                if (target.mount.options.readOnly)
+                    throw new VfsError('EROFS', `${target.mount.point} is mounted read-only`, to);
+                const sourceOps = this.ops(source, sync);
+                return then(this.statAt(from, false, sync), (stat) => {
+                    if (stat === null)
+                        throw new VfsError('ENOENT', 'no such file or directory', from);
+                    const dir = stat.type === 'directory';
+                    if (dir && !options?.recursive)
+                        throw new VfsError('EISDIR', 'is a directory (a tree needs recursive)', from);
+                    return then(this.statAt(parentOf(to), true, sync), (parent) => {
+                        if (parent === null)
+                            throw new VfsError('ENOENT', 'no such file or directory', to);
+                        if (parent.type !== 'directory')
+                            throw new VfsError('ENOTDIR', 'not a directory', to);
+                        if (dir && (to === from || to.startsWith(`${from}/`)))
+                            throw new VfsError('EINVAL', 'a tree cannot be copied into itself', to);
+                        return then(this.statAt(to, false, sync), (existing) => {
+                            if (existing !== null) {
+                                if (dir)
+                                    throw new VfsError('EEXIST', 'file exists', to);
+                                if (existing.type === 'directory')
+                                    throw new VfsError('EISDIR', 'is a directory', to);
+                            }
+                            if (source.mount === target.mount && typeof sourceOps.copy === 'function') {
+                                return sourceOps.copy(source.rel, target.rel, options);
+                            }
+                            return this.copyBytes(sourceOps, source.rel, stat, this.ops(target, sync), target.rel);
+                        });
+                    });
+                });
+            });
+        });
+    }
+    /** Copy an entry (a tree when it is a directory) between backends, links as links. */
+    copyBytes(from, fromRel, stat, to, toRel) {
+        const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
+        if (stat.type === 'symlink') {
+            if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
+                throw new VfsError('ENOTSUP', 'a link cannot be copied between these filesystems', toRel);
             }
-            if (target.mount.options.readOnly)
-                throw new VfsError('EROFS', `${target.mount.point} is mounted read-only`, to);
-            return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => this.method(this.ops(source, sync), 'copy', from)(source.rel, target.rel, options)));
-        }));
+            return then(from.readlink(fromRel), (target) => then(to.symlink(target, toRel), () => 1));
+        }
+        if (stat.type === 'file') {
+            return then(from.readFile(fromRel), (bytes) => then(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }), () => 1));
+        }
+        return then(to.mkdir(toRel, mode === undefined ? undefined : { mode }), () => then(from.readdir(fromRel), (entries) => entries.reduce((count, entry) => then(count, (n) => {
+            const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
+            const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
+            return then(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
+                ? n
+                : then(this.copyBytes(from, child, childStat, to, dest), (m) => n + m)));
+        }), 1)));
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     rmdirAt(input, sync) {
@@ -597,56 +691,79 @@ export class CompositeVFS {
             });
         });
     }
+    /**
+     * rm -r of one tree, with an exact report. `removed` lists the maximal
+     * removed subtrees (so a native removal is just the operand), `kept` every
+     * entry still there: one whose own removal failed, and the directories
+     * holding it. A walked removal carries on past a failure, as rm -r does,
+     * and `failures` says why each one stayed.
+     */
     removeAt(input, sync) {
         return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
             if (this.hasLiveBelow(path))
                 throw new VfsError('EBUSY', 'something is mounted beneath it', path);
             const backend = ops;
-            if (typeof backend.removeRecursive === 'function')
-                return backend.removeRecursive(rel);
+            if (typeof backend.removeRecursive === 'function') {
+                const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
+                return then(backend.removeRecursive(rel), (report) => (report
+                    ? { removed: report.removed.map(at), kept: report.kept.map(at), failures: report.failures.map((f) => ({ ...f, path: at(f.path) })) }
+                    : { removed: [path], kept: [], failures: [] }));
+            }
             return this.walkRemove(backend, rel, path);
         });
     }
-    /** Depth-first removal with base operations; a failure names what went and what is left. */
     walkRemove(ops, rel, path) {
+        const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
         const order = [];
-        const visit = (at) => then(ops.stat(at, { follow: false }), (stat) => {
+        const visit = (r) => then(ops.stat(r, { follow: false }), (stat) => {
             if (stat === null) {
-                if (at === rel)
+                if (r === rel)
                     throw new VfsError('ENOENT', 'no such file or directory', path);
                 return undefined;
             }
-            order.push({ rel: at, dir: stat.type === 'directory' });
+            order.push({ rel: r, dir: stat.type === 'directory' });
             if (stat.type !== 'directory')
                 return undefined;
-            return then(ops.readdir(at), (entries) => entries.reduce((chain, entry) => then(chain, () => visit(at === '/' ? `/${entry.name}` : `${at}/${entry.name}`)), undefined));
+            return then(ops.readdir(r), (entries) => entries.reduce((chain, entry) => then(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)), undefined));
         });
         return then(visit(rel), () => {
             order.reverse();
-            const removed = [];
-            return order.reduce((chain, entry, index) => then(chain, () => {
-                const attempt = () => (entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel));
+            const kept = new Set();
+            const gone = new Set();
+            const failures = [];
+            const keepWithAncestors = (r) => {
+                for (let k = r;; k = parentOf(k)) {
+                    kept.add(k);
+                    if (k === rel || k === '/')
+                        break;
+                }
+            };
+            return then(order.reduce((chain, entry) => then(chain, () => {
+                if (kept.has(entry.rel))
+                    return undefined;
                 const fail = (cause) => {
                     if (isVfsError(cause, 'ENOENT')) {
-                        removed.push(entry.rel);
+                        gone.add(entry.rel);
                         return;
                     }
-                    const left = order.slice(index).map((e) => e.rel).join(', ');
-                    throw new VfsError(isVfsError(cause) ? cause.code : 'EIO', `removing ${entry.rel} failed (${cause instanceof Error ? cause.message : String(cause)}), so ${path} `
-                        + `was only partly removed: gone [${removed.join(', ') || 'none'}]; still present [${left}]`, path, { cause });
+                    keepWithAncestors(entry.rel);
+                    failures.push({ path: at(entry.rel), error: isVfsError(cause) ? cause : new VfsError('EIO', String(cause), at(entry.rel)) });
                 };
                 try {
-                    const out = attempt();
+                    const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
                     if (isPromise(out))
-                        return out.then(() => { removed.push(entry.rel); }, fail);
-                    removed.push(entry.rel);
+                        return out.then(() => { gone.add(entry.rel); }, fail);
+                    gone.add(entry.rel);
                     return undefined;
                 }
                 catch (cause) {
                     fail(cause);
                     return undefined;
                 }
-            }), undefined);
+            }), undefined), () => {
+                const removed = [...gone].filter((r) => r === rel || !gone.has(parentOf(r))).map(at).sort();
+                return { removed, kept: [...kept].map(at).sort(), failures };
+            });
         });
     }
     // ── the VFS surface ──────────────────────────────────────────────────
@@ -660,7 +777,7 @@ export class CompositeVFS {
         return this.onFile(path, true, false, (ops, rel) => ops.readFile(rel));
     }
     async readRange(path, offset, length) {
-        return this.onFile(path, true, false, (ops, rel, at) => this.method(ops, 'readRange', at)(rel, offset, length));
+        return this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length));
     }
     async writeFile(path, data, options) {
         return this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, options));
@@ -705,13 +822,13 @@ export class CompositeVFS {
         return this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs));
     }
     async writeFileIfRevision(path, data, expected) {
-        return this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeFileIfRevision', at)(rel, data, expected));
+        return this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected));
     }
     async copy(from, to, options) {
         return this.copyAt(from, to, options, false);
     }
     async readFileAtRevision(path, revision, range) {
-        return this.onFile(path, true, false, (ops, rel, at) => this.method(ops, 'readFileAtRevision', at)(rel, revision, range));
+        return this.onCapability(path, false, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range));
     }
     describe() {
         const root = this.backend(this.table.mounts.get(ROOT_POINT));
@@ -721,7 +838,7 @@ export class CompositeVFS {
         return {
             stat: (path, options) => this.statAt(path, options?.follow !== false, true),
             readFile: (path) => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)),
-            readRange: (path, offset, length) => this.onFile(path, true, true, (ops, rel, at) => this.method(ops, 'readRange', at)(rel, offset, length)),
+            readRange: (path, offset, length) => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)),
             writeFile: (path, data, options) => this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options)),
             writeRange: (path, offset, bytes) => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)),
             truncate: (path, size) => this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)),
@@ -730,15 +847,15 @@ export class CompositeVFS {
             unlink: (path) => this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)),
             rmdir: (path) => this.rmdirAt(path, true),
             rename: (from, to) => this.renameAt(from, to, true),
-            removeRecursive: (path) => this.removeAt(path, true),
+            removeRecursive: (path) => { this.removeAt(path, true); },
             symlink: (target, path) => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)),
             readlink: (path) => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)),
             chmod: (path, mode) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)),
             chown: (path, uid, gid) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)),
             utimes: (path, a, m) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)),
             copy: (from, to, options) => this.copyAt(from, to, options, true),
-            writeFileIfRevision: (path, data, expected) => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeFileIfRevision', at)(rel, data, expected)),
-            readFileAtRevision: (path, revision, range) => this.onFile(path, true, true, (ops, rel, at) => this.method(ops, 'readFileAtRevision', at)(rel, revision, range)),
+            writeFileIfRevision: (path, data, expected) => this.onCapability(path, true, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)),
+            readFileAtRevision: (path, revision, range) => this.onCapability(path, true, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)),
         };
     }
 }

@@ -12,7 +12,15 @@ function toVfsError(error, path) {
     }
     return error;
 }
-function statOf(stat) {
+/**
+ * A revision is the row's generation qualified by the database's epoch: a
+ * restore or reset can reuse generations, and a revision from before it
+ * must not match one after.
+ */
+function revisionOf(epoch, gen) {
+    return `${epoch}:${gen}`;
+}
+function statOf(stat, epoch) {
     return {
         type: stat.type,
         size: stat.size,
@@ -24,7 +32,7 @@ function statOf(stat) {
         gid: stat.gid,
         ino: stat.ino,
         nlink: stat.nlink,
-        ...(stat.gen !== undefined ? { revision: stat.gen } : {}),
+        ...(stat.gen !== undefined ? { revision: revisionOf(epoch, stat.gen) } : {}),
     };
 }
 export class SqliteFiles {
@@ -72,7 +80,7 @@ export class SqliteFiles {
     }
     stat(path, options) {
         try {
-            return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path));
+            return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
         }
         catch (error) {
             const converted = toVfsError(error, path);
@@ -146,8 +154,9 @@ export class SqliteFiles {
      */
     writeFileIfRevision(path, data, expected) {
         return this.run(path, () => {
+            // Absent is revision 0; revisions compare as strings, so '0' and 0 agree.
             const current = this.stat(path)?.revision ?? 0;
-            if (current !== expected)
+            if (String(current) !== String(expected))
                 return { ok: false, revision: current };
             this.view.writeFile(path, data);
             return { ok: true, revision: this.stat(path)?.revision ?? 0 };
