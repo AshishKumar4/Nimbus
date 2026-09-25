@@ -2924,68 +2924,120 @@ function mkTee(vfs) {
  * `-h` only — `-sh` is a single arg containing both flags. POSIX
  * conformant short-flag stacking.
  */
+/**
+ * GNU du's human-readable size (-h): powers of 1024, rounded up; one decimal
+ * below 10 of a unit, whole units from 10 up, and plain bytes below 1 KiB.
+ */
+function duHuman(bytes) {
+    if (bytes < 1024)
+        return String(bytes);
+    const units = ['K', 'M', 'G', 'T', 'P', 'E'];
+    let value = bytes / 1024;
+    let unit = 0;
+    for (;;) {
+        const shown = value < 10 ? Math.ceil(value * 10) / 10 : Math.ceil(value);
+        if (shown < 1024 || unit === units.length - 1) {
+            return `${shown < 10 ? shown.toFixed(1) : String(shown)}${units[unit]}`;
+        }
+        value /= 1024;
+        unit++;
+    }
+}
+/**
+ * du: disk usage by the blocks each file holds, as GNU du reports it. The VFS
+ * allocates a file ceil(size / 512) 512-byte blocks (stat's %b), a directory
+ * or a link none. Each operand (default `.`) is printed as named, its
+ * descendants below it with '/'; directories after what they hold. -a lists
+ * files too, -s only the operands, -c adds a total, -h is human-readable, -k
+ * (the default) counts KiB, rounded up.
+ */
 function mkDu(vfs) {
     return async (ctx) => {
-        // Parse flags supporting stacked short flags like `-sh`, `-ah`.
-        let showAll = false, human = false, sumOnly = false;
-        const positional = [];
+        let showAll = false, human = false, sumOnly = false, total = false;
+        const operands = [];
+        let options = true;
+        const invalid = async (text) => {
+            await ctx.stderr.write(`du: ${text}\nTry 'du --help' for more information.\n`);
+            return 1;
+        };
         for (const a of ctx.args) {
-            if (a.startsWith('-') && a !== '-' && !a.startsWith('--')) {
-                for (const ch of a.slice(1)) {
-                    if (ch === 'a')
-                        showAll = true;
-                    else if (ch === 'h')
-                        human = true;
-                    else if (ch === 's')
-                        sumOnly = true;
-                }
+            if (!options || a === '-' || !a.startsWith('-')) {
+                operands.push(a);
+                continue;
             }
-            else if (a.startsWith('--')) {
+            if (a === '--') {
+                options = false;
+                continue;
+            }
+            if (a.startsWith('--')) {
                 if (a === '--all')
                     showAll = true;
                 else if (a === '--human-readable')
                     human = true;
                 else if (a === '--summarize')
                     sumOnly = true;
+                else if (a === '--total')
+                    total = true;
+                else if (a === '--kilobytes' || a === '--one-file-system') { /* the default; one filesystem */ }
+                else
+                    return await invalid(`unrecognized option '${a}'`);
+                continue;
             }
-            else {
-                positional.push(a);
+            for (const ch of a.slice(1)) {
+                if (ch === 'a')
+                    showAll = true;
+                else if (ch === 'h')
+                    human = true;
+                else if (ch === 's')
+                    sumOnly = true;
+                else if (ch === 'c')
+                    total = true;
+                else if (ch === 'k' || ch === 'x') { /* the default; one filesystem */ }
+                else
+                    return await invalid(`invalid option -- '${ch}'`);
             }
         }
-        const target = positional[0] || '.';
-        const root = resolvePath(ctx.cwd, target);
-        const fmt = (b) => human ? (b >= 1e6 ? (b / 1e6).toFixed(1) + 'M' : b >= 1e3 ? (b / 1e3).toFixed(1) + 'K' : b + 'B') : String(Math.ceil(b / 1024));
-        let total = 0;
-        async function walk(path) {
-            let size = 0;
-            try {
-                const entries = (await vfs.readdir(path));
-                for (const e of entries) {
-                    const fp = path + '/' + e.name;
-                    if (e.type === 'directory') {
-                        const dirSize = (await walk(fp));
-                        size += dirSize;
-                        if (!sumOnly)
-                            (await ctx.stdout.write(`${fmt(dirSize)}\t/${fp}\n`));
-                    }
-                    else {
-                        try {
-                            const st = (await vfs.stat(fp));
-                            size += st.size;
-                            if (showAll && !sumOnly)
-                                (await ctx.stdout.write(`${fmt(st.size)}\t/${fp}\n`));
-                        }
-                        catch { }
-                    }
-                }
+        if (showAll && sumOnly)
+            return await invalid('cannot both summarize and show all entries');
+        if (operands.length === 0)
+            operands.push('.');
+        const fmt = (bytes) => (human ? duHuman(bytes) : String(Math.ceil(bytes / 1024)));
+        const blocks = (st) => (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0);
+        let failed = false;
+        let grand = 0;
+        // Bytes held at and below `vfsPath`, printed as `shown`; `depth` 0 is the operand.
+        async function walk(vfsPath, shown, depth) {
+            const st = await vfs.lstat(vfsPath);
+            if (st.type !== 'directory') {
+                const size = blocks(st);
+                if (depth === 0 || (showAll && !sumOnly))
+                    await ctx.stdout.write(`${fmt(size)}\t${shown}\n`);
+                return size;
             }
-            catch { }
+            let size = 0;
+            const base = shown.endsWith('/') ? shown : `${shown}/`;
+            for (const e of await vfs.readdir(vfsPath)) {
+                size += await walk(`${vfsPath}/${e.name}`, `${base}${e.name}`, depth + 1);
+            }
+            if (depth === 0 || !sumOnly)
+                await ctx.stdout.write(`${fmt(size)}\t${shown}\n`);
             return size;
         }
-        total = (await walk(root));
-        if (sumOnly || !showAll)
-            (await ctx.stdout.write(`${fmt(total)}\t/${root}\n`));
-        return 0;
+        for (const operand of operands) {
+            const vfsPath = resolvePath(ctx.cwd, operand);
+            try {
+                await vfs.lstat(vfsPath);
+            }
+            catch {
+                await ctx.stderr.write(`du: cannot access '${operand}': No such file or directory\n`);
+                failed = true;
+                continue;
+            }
+            grand += await walk(vfsPath, operand, 0);
+        }
+        if (total)
+            await ctx.stdout.write(`${fmt(grand)}\ttotal\n`);
+        return failed ? 1 : 0;
     };
 }
 function mkDiff(vfs) {
