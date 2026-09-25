@@ -9,7 +9,10 @@
     and `.` stay, `..` pops what has been resolved so far — after any link met
     before it — and never goes above `/`; a root-backend link met at a component is
     substituted there. Inside a mounted backend `..` is lexical (its links are its
-    own). The result is routed to the longest mount point that is a prefix.
+    own). A non-directory or absent component before `..` is popped like any other
+    (a deliberate departure from Linux's ENOTDIR/ENOENT, stated in DESIGN.md §2:
+    only links change resolution). The result is routed to the longest mount point
+    that is a prefix.
   - DECIDED: a path is absent for a principal when ANY mount whose point is a prefix
     of it answers null for that principal, not only the longest one. A live mount
     nested under an absent one is unreachable through it.
