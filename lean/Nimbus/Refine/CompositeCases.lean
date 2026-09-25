@@ -64,8 +64,11 @@ def withParents (t : Tree) (p : Path) : Tree :=
     let q := p.take (i + 1)
     if t.any (·.1 == q) then t else t ++ [(q, if i + 1 = p.length then .dir else .dir)]) t
 
+/-- Add `p` with its parent directories, unless `p` exists or a prefix of it is
+    not a directory: every tree is one a filesystem can hold. -/
 def addEnt (t : Tree) (p : Path) (e : Ent) : Tree :=
-  if t.any (·.1 == p) then t else (withParents t p.dropLast) ++ [(p, e)]
+  let blocked := (List.range p.length).any fun i => t.any fun x => x.1 == p.take (i + 1) && x.2 != .dir
+  if t.any (·.1 == p) || blocked then t else (withParents t p.dropLast) ++ [(p, e)]
 
 def genTree (allowed : Path → Bool) (n : Nat) (withLinks : Bool) : Gen Tree := do
   let mut t : Tree := []
