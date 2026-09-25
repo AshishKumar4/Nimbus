@@ -398,6 +398,20 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeCache.never_cached
 #print axioms Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
 
+/-! ## Nimbus/Vfs/CompositeFeed.lean -/
+
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_mem
+#print axioms Nimbus.Vfs.CompositeFeed.feed_values
+#print axioms Nimbus.Vfs.CompositeFeed.feed_exact
+#print axioms Nimbus.Vfs.CompositeFeed.an_unfiltered_root_feed_stages_a_shadowed_row
+#print axioms Nimbus.Vfs.CompositeFeed.view_table_congr
+#print axioms Nimbus.Vfs.CompositeFeed.step_exact
+#print axioms Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
+#print axioms Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+#print axioms Nimbus.Vfs.CompositeFeed.cas_inv
+#print axioms Nimbus.Vfs.CompositeFeed.revision_unique
+#print axioms Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide
+
 /-! ## Nimbus/Vfs/CompositeOps.lean -/
 
 #print axioms Nimbus.Vfs.CompositeOps.fallback_report_exact

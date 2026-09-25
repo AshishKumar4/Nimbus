@@ -670,3 +670,26 @@ requirements:
       - Pins (entries a fallback's unlink/rmdir refuse) are the model's only failure source; native removeRecursive ignores them and the fixture pins only backends without it
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP)
+  VFS-COMP-004:
+    statement: ProcessFs's staged namespace over the composite equals the composite's staged view when the root feed is filtered to paths the composite routes to the root backend and each changes-mount's feed is re-rooted and filtered to its own paths; a mount-table change poisons (no feed reports it); a mount without changes stages nothing under its point; epoch-qualified CAS revisions identify one write across recoveries that regress gens.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositeFeed.feed_exact
+      - Nimbus.Vfs.CompositeFeed.feed_values
+      - Nimbus.Vfs.CompositeFeed.step_exact
+      - Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+      - Nimbus.Vfs.CompositeFeed.revision_unique
+      - Nimbus.Vfs.CompositeFeed.an_unfiltered_root_feed_stages_a_shadowed_row
+      - Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
+      - Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide
+      - Nimbus.Vfs.CompositeFeed.ownerPt_mem
+      - Nimbus.Vfs.CompositeFeed.view_table_congr
+      - Nimbus.Vfs.CompositeFeed.cas_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-feed.json :: tests/unit/composite-feed-refinement.mjs
+    remainingEvidence:
+      - Closedness of the staged view at answer time is a hypothesis of feed_exact (well-formed backends give it)
+      - One principal's table; per-principal source switches are table changes for that principal
+      - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
