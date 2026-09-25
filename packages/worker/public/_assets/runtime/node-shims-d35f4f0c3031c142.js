@@ -2625,6 +2625,8 @@ const __fsMod = (() => {
         "write", absPath,
         (result) => result,
       ),
+      true,
+      true,
     );
   }
 
@@ -2980,9 +2982,8 @@ const __fsMod = (() => {
     _repairs.push(_learnStat("/" + k, supervisor).catch(() => {}));
   };
 
-  // The authority refused a parked write (vfs-write-ledger): what this view
-  // recorded of the path came from that write, so it is forgotten and the
-  // next access asks the authority.
+  // The authority refused a parked write (vfs-write-ledger): the record may
+  // be that write's, so it is forgotten and the next access asks the authority.
   globalThis.__nimbusVfsWriteRefused = (key) => {
     const k = String(key).replace(/^\/+/, "");
     _createdHere.delete(k);

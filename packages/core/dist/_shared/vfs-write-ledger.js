@@ -374,24 +374,24 @@ function __nimbusUnsupportedVfsAppend(path) {
  * EACCES, EPERM, EISDIR...). The bytes are not the file's and never will
  * be, so the process stops serving them: the parked cell of that generation
  * and any resident copy go, and the shims forget what they recorded of the
- * path, so the next read asks the authority. A synchronous writer never saw
- * an error it could catch, so the refusal is retained (reported at the next
- * durability boundary and at exit), not treated as a verdict it handled.
+ * path, so the next read asks the authority. When no caller will see the
+ * rejection (\`unseen\`: a sync write carried across later), the refusal is
+ * retained and reported at exit; an async writer gets it as its verdict.
  */
-function __nimbusRefuseParkedWrite(snapshot, error) {
+function __nimbusRefuseParkedWrite(snapshot, error, unseen) {
   if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
     delete __vfsWrites[snapshot.key];
     if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[snapshot.key];
     const refused = globalThis.__nimbusVfsWriteRefused;
     if (typeof refused === "function") refused(snapshot.key);
   }
-  if (error && typeof error === "object") {
+  if (unseen && error && typeof error === "object") {
     try { error.nimbusRefusedWriteBack = true; } catch {}
   }
   return error;
 }
 
-function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
+function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen) {
   return __nimbusQueueVfsMutation(snapshot.key, () => __nimbusOwnAcknowledgement(snapshot.key, async () => {
     let value;
     try {
@@ -399,7 +399,7 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
     } catch (error) {
       // A verdict is the authority's answer; anything else (a lost RPC) may
       // have landed, and the parked bytes stay until that is known.
-      if (!__nimbusIsDurabilityFailure(error)) throw __nimbusRefuseParkedWrite(snapshot, error);
+      if (!__nimbusIsDurabilityFailure(error)) throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
       throw error;
     }
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
@@ -671,7 +671,8 @@ function __nimbusEvictLeasedCell(key) {
   if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[key];
 }
 
-function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
+/** \`unseen\`: no caller awaits this flush, so a refusal must be retained to be heard. */
+function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = false) {
   const snapshot = __nimbusCaptureVfsWrite(path);
   if (!snapshot) return Promise.resolve(undefined);
   const existing = __vfsWriteClaims.get(snapshot.key);
@@ -679,7 +680,7 @@ function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
     return existing.promise;
   }
   if (snapshot.append) snapshot.append.claimed = true;
-  const result = __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure);
+  const result = __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen);
   const claim = { generation: snapshot.generation, promise: result };
   __vfsWriteClaims.set(snapshot.key, claim);
   const release = () => {
@@ -759,6 +760,8 @@ async function __nimbusFlushVfsWriteBack(supervisor) {
   await Promise.allSettled(paths.map((path) => __nimbusFlushVfsWrite(
     path,
     (content, snapshot) => __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
+    true,
+    true,
   )));
 }
 
@@ -810,6 +813,7 @@ async function __nimbusDrainVfsWrites(supervisor) {
         (content, snapshot) =>
           __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
         false,
+        true,
       );
       try {
         await persist();

@@ -98,4 +98,25 @@ assert.equal(t(() => fs.unlinkSync('/tmp/mine.txt')), undefined, 'its own file i
 // And no removal from a directory the reader cannot write.
 assert.equal(t(() => fs.unlinkSync(`/${APP}/etc-like/anything`)), 'ERR:EACCES');
 
+// An async writer the authority refuses gets the verdict as its rejection;
+// having caught it, the process still exits clean (the refusal is not also
+// retained, which only a sync write, whose caller never sees it, needs).
+{
+  const refusing = {
+    writeFile: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); },
+    lstat: async () => null, stat: async () => null, readdir: async () => [], mkdir: async () => {},
+  };
+  const run = new Function(
+    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
+    '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+      + '\n;return { fs: __fsMod, drain: __nimbusDrainVfsMutations };',
+  );
+  const home = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
+  const probe = run({}, home, {}, { 'home/user': [] }, refusing, CRED, '/home/user', [], {}, '/home/user/main.js', '/home/user');
+  const caught = await probe.fs.promises.writeFile('/usr/lib/node_modules/.probe', 'x').then(() => null, (e) => e.code);
+  assert.equal(caught, 'EACCES', 'the caller gets the verdict');
+  assert.equal(await probe.drain().then(() => 'clean', (e) => `throws ${e.code}`), 'clean', 'a caught verdict does not fail the exit');
+}
+
 console.log('node-shims-stat-ownership: ok');
