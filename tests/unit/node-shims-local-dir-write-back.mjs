@@ -25,7 +25,12 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
+// The supervisor acts as the process's own credential, as SupervisorRPC
+// does, over a home the process owns.
+const root = rawVfs.as(CRED_KERNEL);
+root.mkdir('home/user', { recursive: true });
+root.chown('home/user', 1000, 1000);
+const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
 const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 const dec = new TextDecoder();
 

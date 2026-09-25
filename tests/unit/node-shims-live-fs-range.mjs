@@ -16,8 +16,15 @@ import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+// The process's home is its own, and so is everything seeded into it.
+const root = rawVfs.as(CRED_KERNEL);
+root.mkdir('home/user', { recursive: true });
+root.chown('home/user', 1000, 1000);
+const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+// The supervisor acts as the process's own credential, as SupervisorRPC does,
+// and the tree the process works in is its own: what it writes back is owned
+// by it, and a stat of it says so.
+const bridge = new SqliteRuntimeFsBridge(rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }), rawVfs);
 rawVfs.activateAppendWriter(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
@@ -67,7 +74,13 @@ const factory = new Function(
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  { 'home/user/log.txt': 'stale-snapshot\n' }, {}, {}, null, supervisor,
+  { 'home/user/log.txt': 'stale-snapshot\n' },
+  // Staged content comes with its record, as every launch stages it.
+  {
+    'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
+    'home/user/log.txt': { type: 'file', size: 15, mode: 0o100644, uid: 1000, gid: 1000 },
+  },
+  {}, null, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );

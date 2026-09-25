@@ -1125,7 +1125,9 @@ function __nsNoteOwnFile(k, size, rev) {
   if (held !== undefined && Number(held.rev) >= rev) return;
   const now = Date.now();
   __nsPut(sql, k, {
-    type: "file", size, mode: held ? Number(held.mode) : 0o100644,
+    // A file the process created: its umask's mode, until the delta reports
+    // the authority's own stat for it.
+    type: "file", size, mode: held ? Number(held.mode) : 0o100666 & ~Number(__nsCred?.umask ?? 0o022),
     uid: held ? Number(held.uid) : Number(__nsCred?.uid ?? 0),
     gid: held ? Number(held.gid) : Number(__nsCred?.gid ?? 0),
     atime: now, mtime: now, ctime: now, ino: held ? Number(held.ino) : 0,

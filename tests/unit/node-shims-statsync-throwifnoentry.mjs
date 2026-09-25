@@ -14,7 +14,10 @@ const factory = new Function(
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  { 'home/user/present.txt': 'hi' }, {}, {}, {}, {}, null,
+  { 'home/user/present.txt': 'hi' },
+  // Staged content comes with its record, as every launch stages it.
+  { 'home/user/present.txt': { type: 'file', size: 2, mode: 0o100644, uid: 1000, gid: 1000 } },
+  {}, {}, {}, null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );

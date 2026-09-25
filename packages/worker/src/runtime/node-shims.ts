@@ -939,7 +939,14 @@ const __fsMod = (() => {
   function _nsMeta(k, follow) {
     if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
-      return { type: "file", size: _byteLen(__vfsWrites[k]), mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+      const size = _byteLen(__vfsWrites[k]);
+      if (_createdHere.has(k)) {
+        return { type: "file", size, mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
+      }
+      // A rewrite of a file that was there: its owner and mode stay what the
+      // authority says they are.
+      const found = __nsResolve(k, follow);
+      if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
@@ -949,10 +956,9 @@ const __fsMod = (() => {
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
     }
-    if (__vfsBundle && k in __vfsBundle) {
-      const cell = __vfsBundle[k];
-      if (_denialCode(cell) === null) return { type: "file", size: _byteLen(cell), mode: 0o100644, uid: cred.uid, gid: cred.gid, own: true };
-    }
+    // The namespace is exact, so a name it lacks is not there, whatever bytes
+    // the module map carries under it (a file removed since the map was
+    // built). Content never stands in for metadata.
     return "absent";
   }
 
@@ -1009,6 +1015,7 @@ const __fsMod = (() => {
   // it, existsSync keeps reporting a file this process already deleted and
   // the sync read path reports that file as merely non-resident.
   function _forgetSyncPath(k) {
+    _createdHere.delete(k);
     _announcedDirs.delete(k);
     if (_nsActive()) _nsOwnSet(k, "absent");
     const metadata = _metadataTable();
@@ -1059,14 +1066,38 @@ const __fsMod = (() => {
    * content carried. One place, because every sync mutation owes all three.
    */
   function _parkWrite(k, cell) {
+    _noteCreation(k);
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
     _announceSyncPath(k);
   }
 
+  /**
+   * The paths this process itself created, whose owner and mode are its own:
+   * its uid and gid, and what its umask leaves. Every other stat answer comes
+   * from the authority's metadata, and a path the authority never described
+   * is not given one. A stat invented from the reader's own credential made a
+   * root-owned file read as the reader's own and writable.
+   *
+   * A path counts as created when nothing was there before the write and the
+   * view KNOWS nothing was there. Unknown is not created: a file the process
+   * never staged may exist at the authority, owned by someone else.
+   */
+  const _createdHere = new Set();
+  function _noteCreation(k) {
+    if (_createdHere.has(k)) return;
+    const absPath = "/" + k;
+    if (_statLadder(absPath) === undefined && (_nsActive() || _absenceIsKnown(absPath))) _createdHere.add(k);
+  }
+  function _forgetCreation(k) {
+    const prefix = k + "/";
+    for (const key of [..._createdHere]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
+  }
+
   function _forgetSyncTree(k) {
     const prefix = k + "/";
+    _forgetCreation(k);
     if (_nsActive()) _nsOwnSet(k, "absentTree");
     for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
     const metadata = _metadataTable();
@@ -1090,9 +1121,19 @@ const __fsMod = (() => {
    */
   function _notResidentError(absPath, displayPath, syscall, asyncForm) {
     const st = _statLadder(absPath);
-    if (st === undefined) {
+    if (st === undefined && !_listedByParent(_strip(absPath))) {
       if (!_absenceIsKnown(absPath)) _recordUnmapped(absPath, syscall);
       return _fsErr("ENOENT", syscall, displayPath);
+    }
+    if (st === undefined) {
+      // Named by a listing, with no record of what it is: it exists, and
+      // neither its bytes nor its stat are here.
+      _recordResidencyMiss(absPath);
+      const err = _fsErr("EAGAIN", syscall, displayPath);
+      err.message += " — '" + String(displayPath) + "' exists but its content is not " +
+        "resident in this facet, and synchronous I/O cannot block to fetch it" +
+        (_supervisor() ? "; " + asyncForm + " reads it from the live filesystem" : "");
+      return err;
     }
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
     _recordResidencyMiss(absPath);
@@ -1412,6 +1453,14 @@ const __fsMod = (() => {
    * there is no branch the program could take that would be right, so the
    * honest EAGAIN is also the useful one.
    */
+  /** Whether a staged listing names \`k\` (without saying what it is or whose). */
+  function _listedByParent(k) {
+    if (!__vfsManifest) return false;
+    const slash = k.lastIndexOf("/");
+    const siblings = __vfsManifest[slash >= 0 ? k.slice(0, slash) : ""];
+    return Array.isArray(siblings) && siblings.indexOf(slash >= 0 ? k.slice(slash + 1) : k) !== -1;
+  }
+
   function _refuseUnmapped(absPath, displayPath, syscall, asyncForm) {
     _recordUnmapped(absPath, syscall);
     const err = _fsErr("EAGAIN", syscall, displayPath);
@@ -2952,6 +3001,7 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
+        await _learnStat(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -2960,6 +3010,7 @@ const __fsMod = (() => {
         const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
         if (text !== null && text !== undefined) {
           _installResident(absPath, text, fill);
+          await _learnStat(absPath, supervisor);
           return encoding ? _asString(text) : __BufferMod.from(text);
         }
       }
@@ -2969,6 +3020,46 @@ const __fsMod = (() => {
 
     throw _fsErr("ENOENT", "open", p);
   }
+
+  /**
+   * Content this view now holds for a path it has no metadata for (a file
+   * read live, or refetched after a barrier dropped its record): the
+   * authority's stat for it, so a sync stat of the path answers with the real
+   * owner and mode rather than nothing, and never with an invented one.
+   */
+  async function _learnStat(absPath, supervisor) {
+    const table = _metadataTable();
+    const k = _strip(absPath);
+    if (_nsActive() || !table || k in table || typeof supervisor.lstat !== "function") return;
+    let stat = null;
+    try { stat = await _fsRpc(supervisor.lstat(absPath), "stat", absPath, (result) => result); } catch { return; }
+    if (!stat || k in table) return;
+    _keepStat(absPath, stat);
+  }
+
+  /** An authority stat, kept as the sync view's record of the path. */
+  function _keepStat(absPath, stat) {
+    const table = _metadataTable();
+    if (_nsActive() || !table || !stat) return;
+    // A record states the owner, group and mode, or it is not one.
+    if (![stat.mode, stat.uid, stat.gid].every((field) => Number.isInteger(Number(field)) && field !== null && field !== undefined)) return;
+    table[_strip(absPath)] = {
+      type: stat.type, size: Number(stat.size), mode: Number(stat.mode), uid: Number(stat.uid), gid: Number(stat.gid),
+      mtime: Number(stat.mtime), atime: Number(stat.atime ?? stat.mtime), ctime: Number(stat.ctime ?? stat.mtime),
+    };
+  }
+
+  /** Paths whose write-back this process issued and the authority accepted. */
+  const _acceptedHere = new Set();
+  globalThis.__nimbusVfsWriteLanded = (key) => {
+    const k = String(key).replace(/^\\/+/, "");
+    _acceptedHere.add(k);
+    const supervisor = _supervisor();
+    const table = _metadataTable();
+    if (!supervisor || _nsActive() || !table || k in table || _createdHere.has(k)) return;
+    // Not awaited by anything: a later sync stat finds the record once it lands.
+    _repairs.push(_learnStat("/" + k, supervisor).catch(() => {}));
+  };
 
   function _concatBytes(parts, total) {
     const out = new Uint8Array(total);
@@ -3042,22 +3133,15 @@ const __fsMod = (() => {
         // directory this very process has enumerated. Names only — size, mode
         // and ownership are not observable here and are never invented.
         if (__vfsManifest) __vfsManifest[key] = entries.map((entry) => entry.name);
-        // Which of the children are directories IS observable here, and it is
-        // the one fact a later synchronous listing cannot recover on its own —
-        // an unwalked subdirectory has no manifest entry, so without this it
-        // reads back as a file. A directory's size is 0 in this filesystem, so
-        // recording it invents nothing; file children are left alone, because
-        // their size is not knowable from a listing and must not be guessed.
-        const metadataTable = _metadataTable();
-        if (metadataTable) {
-          for (const entry of entries) {
-            if (entry.type !== "directory") continue;
-            const child = prefix + entry.name;
-            if (child in metadataTable) continue;
-            metadataTable[child] = {
-              type: "directory", size: 0, mode: 0o755, uid: cred.uid, gid: cred.gid,
-            };
-          }
+        // The listed directory and its child directories get the authority's
+        // own stat: a later synchronous stat or listing of them needs a record
+        // saying what they are, and a record says who owns them, which a
+        // listing does not. So it is asked for, never assumed (one lstat per
+        // child directory, concurrently).
+        if (_metadataTable() && !_nsActive() && typeof supervisor.lstat === "function") {
+          const learn = [absPath];
+          for (const entry of entries) if (entry.type === "directory") learn.push("/" + prefix + entry.name);
+          await Promise.all(learn.map((path) => _learnStat(path, supervisor)));
         }
         if (opts?.withFileTypes) {
           return entries
@@ -3116,6 +3200,8 @@ const __fsMod = (() => {
         _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result)
       );
       _markVfsStale();
+      // Accepted: the authority's stat is what the sync view keeps for it.
+      await _learnStat(absPath, supervisor);
     }
   }
 
@@ -3134,6 +3220,7 @@ const __fsMod = (() => {
       ),
     );
     _markVfsStale();
+    await _learnStat(absPath, supervisor);
   }
 
   // The async structural calls ARE the sync ones, awaited: the same local
@@ -3241,8 +3328,22 @@ const __fsMod = (() => {
     if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", syscall, p);
   }
 
+  /**
+   * chmod(2): only the owner or root changes a mode (EPERM). The local
+   * overlay is what statSync reports and what the local permission checks
+   * read, so a mode set here without that check made a root-owned file
+   * writable in the process's own view.
+   */
+  function _ensureModeOwner(absPath, syscall, p) {
+    if (Number(cred.uid) === 0) return;
+    const stat = _statLadder(absPath);
+    if (stat === undefined) throw _fsErr("ENOENT", syscall, p);
+    if (Number(stat.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
+  }
+
   function chmodSync(p, mode) {
     if (!existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
+    _ensureModeOwner(_resolve(p), "chmod", p);
     // Local-visible immediately (statSync overlay); the live write-through
     // rides the next flush of the same path — same fidelity as utimesSync.
     const k = _strip(_resolve(p));
@@ -3259,6 +3360,7 @@ const __fsMod = (() => {
       throw _fsErr("ENOENT", "chmod", p);
     }
     const m = _coerceMode(mode, "chmod", p);
+    if (localExists) _ensureModeOwner(absPath, "chmod", p);
     _localModes[_strip(absPath)] = m;
     _pendingModes.add(_strip(absPath));
     if (supervisor && typeof supervisor.chmod === "function") {
@@ -3312,6 +3414,18 @@ const __fsMod = (() => {
     }
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
+    // chown(2): root changes anything; the owner may only set the group to
+    // one of its own groups, and never the owner. Checked before the local
+    // row changes: that row is what the local permission checks read.
+    if (Number(cred.uid) !== 0) {
+      const stat = _statLadder(absPath);
+      if (stat === undefined) throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
+      const groups = [Number(cred.gid), ...cred.groups.map(Number)];
+      if (Number(stat.uid) !== Number(cred.uid) || nextUid !== Number(stat.uid)
+        || (nextGid !== Number(stat.gid) && !groups.includes(nextGid))) {
+        throw _fsErr("EPERM", syscall, p);
+      }
+    }
     const meta = _metadata(absPath);
     if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
     // The parked write must be registered on the tail BEFORE the chown is
@@ -3328,21 +3442,25 @@ const __fsMod = (() => {
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown")); }
   function lchmodSync(p, mode) { chmodSync(p, mode); }
 
+  /**
+   * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
+   * META, by POSIX's owner/group/other rule. Only a stat that states the
+   * owner, group and mode can be judged; one that does not is not judged in
+   * the process's favour: absent fields used to default to mode 0644 and
+   * owner 1000, which made any undescribed file the reader's own.
+   */
   function _modeAllows(meta, want) {
     if (want === 0) return true;
-    const mode = Number(meta?.mode ?? 0o644) & 0o777;
+    const mode = Number(meta?.mode);
+    const uid = Number(meta?.uid);
+    const gid = Number(meta?.gid);
+    if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
+    const bits = mode & 0o777;
     const currentUid = Number(cred.uid);
-    const currentGid = Number(cred.gid);
+    if (currentUid === 0) return (want & 1) === 0 || (bits & 0o111) !== 0;
     const groups = cred.groups.map(Number);
-    if (currentUid === 0) {
-      if ((want & 1) !== 0 && (mode & 0o111) === 0) return false;
-      return true;
-    }
-    const shift = currentUid === Number(meta?.uid ?? 1000)
-      ? 6
-      : (currentGid === Number(meta?.gid ?? 1000) || groups.includes(Number(meta?.gid ?? 1000))) ? 3 : 0;
-    const available = (mode >> shift) & 7;
-    return (available & want) === want;
+    const shift = currentUid === uid ? 6 : (Number(cred.gid) === gid || groups.includes(gid)) ? 3 : 0;
+    return (((bits >> shift) & 7) & want) === want;
   }
 
   function _ensureAncestorsTraversable(absPath, syscall, p) {
@@ -3356,21 +3474,33 @@ const __fsMod = (() => {
   function _ensureWritable(absPath, syscall, p) {
     _ensureAncestorsTraversable(absPath, syscall, p);
     const cell = _bundleLookup(absPath);
-    const meta = _metadata(absPath);
+    const denial = _denialCode(cell);
+    if (denial) throw _fsErr(denial, syscall, p);
+    // Judged on what the authority says of the path (or of a file this
+    // process made), never on the bytes held under its name.
+    const stat = _statLadder(absPath);
+    if (stat !== undefined) {
+      if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p);
+      return;
+    }
+    // Staged bytes with nothing saying whose: whether the write is allowed
+    // cannot be decided without the authority, so it is refused as a miss
+    // rather than granted. (Unreachable with complete staged metadata.) The
+    // process's own pending write is judged as that write was, below: by its
+    // parent here, and by the authority when it lands.
+    const k = _strip(absPath);
+    if (cell !== undefined && !(__vfsWrites && k in __vfsWrites) && !_acceptedHere.has(k)) {
+      throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
+    }
     // The ladder rather than existsSync: a write to a path outside the staged
     // view is a legitimate create, and must not be turned into a refusal by
     // the check that guards it.
-    if (meta !== undefined || cell !== undefined || _statLadder(absPath) !== undefined) {
-      const denial = _denialCode(cell);
-      if (denial || !_modeAllows(meta, 2)) throw _fsErr(denial || "EACCES", syscall, p);
-      return;
-    }
 
     const parent = __pathMod.dirname(absPath);
-    const parentMeta = _metadata(parent);
-    if (parentMeta) {
-      if (parentMeta.type && parentMeta.type !== "directory") throw _fsErr("ENOTDIR", syscall, p);
-      if (!_modeAllows(parentMeta, 3)) throw _fsErr("EACCES", syscall, p);
+    const parentStat = _statLadder(parent);
+    if (parentStat !== undefined) {
+      if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p);
+      if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p);
       return;
     }
 
@@ -3394,7 +3524,10 @@ const __fsMod = (() => {
     _ensureAncestorsTraversable(absPath, "access", p);
     const denial = _denialCode(cell);
     if ((requested & 4) !== 0 && denial) throw _fsErr(denial, "access", p);
-    if (!_modeAllows(meta, requested)) throw _fsErr("EACCES", "access", p);
+    if (requested === 0) return;
+    const stat = _statLadder(absPath);
+    if (stat === undefined) throw _refuseUnmapped(absPath, p, "access", "fs.promises.access");
+    if (!_modeAllows(stat, requested)) throw _fsErr("EACCES", "access", p);
   }
 
   async function _accessAsync(p, mode) {
@@ -3599,46 +3732,32 @@ const __fsMod = (() => {
       // and the recorded timestamps stable, so mtime-based change detection
       // (make, tsc --build, watchers) does not see every call as a change.
       if (meta) return _statObject({ ...meta, size }, k);
-      return _localStatObject(
-        k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid,
-      );
+      if (_createdHere.has(k)) {
+        return _localStatObject(k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid);
+      }
+      return undefined;
     }
     const metadata = _metadata(absPath);
-    if (metadata) return _statObject(metadata, k);
-    // Check if it's a known directory written this exec session
-    if (__vfsDirs && k in __vfsDirs) {
-      return _localStatObject(k, true, false, 0, 0o777 & ~__processUmask, cred.uid, cred.gid);
+    if (metadata) {
+      // The owner and mode are the record's; the size is the bytes this view
+      // holds, which a ranged write through a descriptor has moved on since.
+      const held = metadata.type === "file" ? _bundleLookup(absPath) : undefined;
+      return _statObject(held !== undefined && _denialCode(held) === null ? { ...metadata, size: _byteLen(held) } : metadata, k);
     }
-    // W2.5b: consult uncapped manifest first for directory shape.
-    if (__vfsManifest && k in __vfsManifest) {
-      return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
-    }
-    // File with content embedded?
-    const content = _bundleLookup(absPath);
-    if (content !== undefined) {
-      // _byteLen handles both string (UTF-8 encode) and Uint8Array
-      // (byteLength) — fixes binary writes from reporting the
-      // post-corruption byte count.
-      const size = _byteLen(content);
-      return _localStatObject(k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid);
-    }
-    // File listed in parent's manifest but content was capped out — return
-    // a zero-size file stat so callers like fs.stat / fs.statSync see the
-    // file as present (downstream readFileSync will surface ENOENT if it
-    // actually tries to read content; many consumers only need stat).
-    if (__vfsManifest) {
-      const slash = k.lastIndexOf("/");
-      const parent = slash >= 0 ? k.slice(0, slash) : "";
-      const name = slash >= 0 ? k.slice(slash + 1) : k;
-      const sib = __vfsManifest[parent];
-      if (sib && sib.indexOf(name) !== -1) {
-        return _localStatObject(k, false, false, 0, 0o644, cred.uid, cred.gid);
+    if (_createdHere.has(k)) {
+      if (__vfsDirs && k in __vfsDirs) {
+        return _localStatObject(k, true, false, 0, 0o777 & ~__processUmask, cred.uid, cred.gid);
+      }
+      // A file this process made, holding the bytes it made it with.
+      const cell = _bundleLookup(absPath);
+      if (cell !== undefined && _denialCode(cell) === null) {
+        return _localStatObject(k, false, false, _byteLen(cell), 0o666 & ~__processUmask, cred.uid, cred.gid);
       }
     }
-    // Last-resort: bundle prefix scan (legacy path).
-    if (__vfsBundle && __residentAnyUnder(k + "/")) {
-      return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
-    }
+    // Nothing the authority described, and nothing this process made: the
+    // callers classify that (absent, or a first miss). A name in a listing,
+    // bytes in the module map or a directory above them say the path exists,
+    // never who owns it or who may write it.
     return undefined;
   }
 
@@ -3765,8 +3884,9 @@ const __fsMod = (() => {
     if (opts?.recursive) {
       const parts = k.split("/").filter(Boolean);
       let cur = "";
-      for (const part of parts) { cur = cur ? cur + "/" + part : part; __vfsDirs[cur] = true; created.push(cur); }
+      for (const part of parts) { cur = cur ? cur + "/" + part : part; _noteCreation(cur); __vfsDirs[cur] = true; created.push(cur); }
     } else {
+      _noteCreation(k);
       __vfsDirs[k] = true;
       created.push(k);
     }
@@ -3818,6 +3938,12 @@ const __fsMod = (() => {
     // The table still holds the old name until the rename is reported, so the
     // new name reads through to it and the old one reads as gone.
     const nsFrom = _nsActive() ? _nsRealKey(oldK) : null;
+    // What this process created travels with the name; what it did not stays
+    // the authority's, whatever the move does to the local tables.
+    const oldPrefix = oldK + "/";
+    const createdMoved = [..._createdHere]
+      .filter((key) => key === oldK || key.startsWith(oldPrefix))
+      .map((key) => newK + key.slice(oldK.length));
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     if (content !== undefined) {
       _parkWrite(newK, content);
@@ -3845,6 +3971,9 @@ const __fsMod = (() => {
       }
       _forgetSyncTree(oldK);
     }
+    _forgetCreation(oldK);
+    _forgetCreation(newK);
+    for (const key of createdMoved) _createdHere.add(key);
     if (_nsActive()) {
       const prefix = oldK + "/";
       for (const [ok, entry] of [..._nsOwn]) {
@@ -4381,6 +4510,11 @@ const __fsMod = (() => {
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
     let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
+    // The authority answered, so what it said is what the sync view keeps:
+    // its stat when something is there, and when nothing is, the file this
+    // open creates is the process's own.
+    if (liveMeta) _keepStat(absPath, liveMeta);
+    else if (supervisor && !localStat) _createdHere.add(_strip(absPath));
     if (!exists) {
       await _writeFileAsync(path, new Uint8Array(0));
       if (mode !== undefined && mode !== null) {
@@ -4405,6 +4539,7 @@ const __fsMod = (() => {
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
+    if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
@@ -4534,6 +4669,7 @@ const __fsMod = (() => {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
     const k = _strip(handle._abs);
+    _ensureModeOwner(handle._abs, "fchmod", handle._path);
     _localModes[k] = _coerceMode(mode, "fchmod", handle._path);
     _pendingModes.add(k);
   }

@@ -656,7 +656,13 @@ function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
       __vfsWriteClaims.delete(snapshot.key);
     }
   };
-  result.then(release, () => {
+  result.then(() => {
+    release();
+    // The authority accepted the bytes: the shims learn what it made of the
+    // path (owner, mode) for their sync view.
+    const landed = globalThis.__nimbusVfsWriteLanded;
+    if (typeof landed === "function") landed(snapshot.key);
+  }, () => {
     release();
     if (snapshot.append &&
         __vfsAppendWrites[snapshot.key] === snapshot.append) {

@@ -18,8 +18,15 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+// The process's home is its own, and so is everything seeded into it.
+const root = rawVfs.as(CRED_KERNEL);
+root.mkdir('home/user', { recursive: true });
+root.chown('home/user', 1000, 1000);
+const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+// The supervisor acts as the process's own credential, as SupervisorRPC does,
+// and the tree the process works in is its own: what it writes back is owned
+// by it, and a stat of it says so.
+const bridge = new SqliteRuntimeFsBridge(rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }), rawVfs);
 
 const supervisor = {
   readFile: async (p) => { const b = await bridge.readFile(p); return b ? new TextDecoder().decode(b) : null; },
@@ -48,7 +55,8 @@ const dec = new TextDecoder();
 const _bytes = (cell) => (typeof cell === 'string' ? enc.encode(cell) : cell);
 
 const bundle = {};
-const metadata = {};
+// The process's cwd, as every launch stages it.
+const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
 let writes;
 const dirs = {};
 

@@ -36,7 +36,17 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+// The supervisor acts as the process's own credential, as SupervisorRPC does,
+// and the tree the process works in is its own: what it writes back is owned
+// by it, and a stat of it says so.
+const bridge = new SqliteRuntimeFsBridge(rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }), rawVfs);
+function ownTree(path = '') {
+  for (const entry of vfs.readdir(path)) {
+    const at = path ? `${path}/${entry.name}` : entry.name;
+    vfs.chown(at, 1000, 1000);
+    if (entry.type === 'directory') ownTree(at);
+  }
+}
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const dir = '/home/user/p';
@@ -44,6 +54,7 @@ vfs.mkdir(dir, { recursive: true });
 
 const WRITER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 rawVfs.activateAppendWriter(1, WRITER);
+ownTree();
 const supervisor = {
   readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
   writeFile: (p, c) => bridge.writeFile(p, c),

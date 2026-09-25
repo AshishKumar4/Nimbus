@@ -73,8 +73,17 @@ const factory = new Function(
   '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
     + generateShimsCode() + '\n;return builtins;',
 );
+// Every staged file and listed directory comes with its record, as
+// buildVfsMetadata stages them: the stat ladder answers from these.
+const metadata = {};
+for (const [path, text] of Object.entries(bundle)) {
+  metadata[path] = { type: 'file', size: new TextEncoder().encode(text).length, mode: 0o100644, uid: 1000, gid: 1000 };
+}
+for (const dir of Object.keys(manifest)) {
+  metadata[dir] = { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 };
+}
 const builtins = factory(
-  bundle, {}, {}, {}, manifest, null,
+  bundle, metadata, {}, {}, manifest, null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   `/${PROJ}`, [], {}, `/${PROJ}/probe.mjs`, `/${PROJ}`,
 );
