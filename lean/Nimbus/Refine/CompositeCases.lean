@@ -150,10 +150,38 @@ def genCase : Gen (Option Json) := do
   let final := Json.obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b)))
   return some (.obj [("mounts", .arr mountsJson), ("backends", initial), ("steps", .arr steps.toList), ("final", final)])
 
+/-- A root symlink at a directory that exists only above a mount point: the
+    synthesized directory wins for principals the mount answers; for others the
+    link is followed. -/
+def runDirected (ms : List Mount) (trees : List (Backend × Tree)) (steps : List (Principal × Op)) : Json := Id.run do
+  let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
+  let mut out : Array Json := #[]
+  for (P, op) in steps do
+    let (o, S') := exec S P op
+    S := S'
+    out := out.push (opJson P op o)
+  let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
+    ("only", match m.only with | none => .null | some ps => .arr (ps.map fun P => .ofNat (uidOf P)))]
+  .obj [("mounts", .arr mountsJson), ("backends", .obj (trees.map fun (b, t) => (backendName b, treeJson t))),
+    ("steps", .arr out.toList), ("final", .obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b))))]
+
+def directed : List Json :=
+  let root : Tree := [(["srv"], .link "/elsewhere"), (["elsewhere"], .dir), (["elsewhere", "e"], .file 3),
+    (["data"], .link "elsewhere")]
+  let b1 : Tree := [(["f"], .file 5), (["d"], .dir)]
+  let probe (P : Principal) : List (Principal × Op) :=
+    [(P, .stat "/srv"), (P, .readdir "/srv"), (P, .stat "/srv/data"), (P, .readdir "/srv/data"),
+     (P, .readFile "/srv/data/f"), (P, .writeFile "/srv/data/g" 7), (P, .readFile "/srv/data/g"),
+     (P, .stat "/srv/e"), (P, .writeFile "/srv" 8), (P, .rmdir "/srv"), (P, .stat "/data/x"),
+     (P, .readdir "/data"), (P, .readFile "/data/x/f")]
+  [ runDirected [⟨["srv", "data"], 1, none⟩, ⟨["data", "x"], 1, none⟩] [(0, root), (1, b1)] (probe 0 ++ probe 1),
+    runDirected [⟨["srv", "data"], 1, some [0]⟩, ⟨["data", "x"], 1, some [0]⟩] [(0, root), (1, b1)]
+      (probe 0 ++ probe 1) ]
+
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
       ("principals", .arr [.obj [("uid", .ofNat 0), ("gid", .ofNat 0)], .obj [("uid", .ofNat 1000), ("gid", .ofNat 1000)]]),
       ("note", .str "backends: fresh in-memory VFSes holding the entries (paths relative to the backend root, parents listed); a mount's source answers its backend to uids in `only`, null otherwise (only null = everyone); each step runs on composite.as(cred of `as`); `final` is every backend's tree after the steps; readdir names sorted")]
-    (runGen 0x434F4D50 (casesOf 200 genCase))
+    (directed ++ runGen 0x434F4D50 (casesOf 200 genCase))
 
 end Nimbus.Refine.CompositeCases

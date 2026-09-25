@@ -29,6 +29,9 @@
     EBUSY there too), then
     EXDEV (`rename` across mounts), then the backend's own answer. `mkdir -p` of a
     live mount point or ancestor succeeds and changes nothing.
+  - A synthesized directory the serving backend holds as something else (a root link
+    above a mount point) shadows it: under it live only mount names; any other path
+    there is absent (`stat` null, ENOENT), consistent with its `readdir`.
   - The backend is POSIX: a component before the last that is not a directory is
     ENOTDIR for every operation; `mkdir -p` over a file is EEXIST; `rename` replaces a target file, or an empty target
     directory with a directory; ENOTEMPTY over a non-empty directory, ENOTDIR for a
@@ -357,8 +360,24 @@ def backendOp0 (S : St) (P : Principal) : Op → Path → Path → Out × Option
         else if e = .dir then (.err "EISDIR", none)
         else (.ok, some (moveTree (cut t rb) ra rb))
 
+/-- A proper prefix of `p` is a synthesized directory that the serving backend holds
+    as something else (a root link above a mount point): the synthesized directory
+    shadows it, and nothing but mount names lives under it. -/
+def shadowed (S : St) (P : Principal) (p x : Path) : Bool :=
+  (List.range x.length).any fun i =>
+    let q := x.take i
+    q.length ≥ (route S.mounts p).point.length && synth S.mounts P q &&
+      match look (treeAt S p) (q.drop (route S.mounts p).point.length) with
+      | some .dir => false
+      | some _ => true
+      | none => false
+
 def backendOp (S : St) (P : Principal) (op : Op) (p q : Path) : Out × Option Tree :=
-  if !synth S.mounts P p && badPrefix (treeAt S p) (rel S.mounts p) then (.err "ENOTDIR", none)
+  if !synth S.mounts P p && shadowed S P p p then
+    (match op with | .stat _ => .null | _ => .err "ENOENT", none)
+  else if (match op with | .rename _ _ => true | _ => false) && !synth S.mounts P q && shadowed S P p q then
+    (.err "ENOENT", none)
+  else if !synth S.mounts P p && badPrefix (treeAt S p) (rel S.mounts p) then (.err "ENOTDIR", none)
   else if (match op with | .rename _ _ => true | _ => false) && badPrefix (treeAt S p) (rel S.mounts q) then
     (.err "ENOTDIR", none)
   else backendOp0 S P op p q
@@ -484,7 +503,7 @@ theorem backendOp_agree {S S' : St} {P : Principal} {b : Backend} (hA : Agree S 
   have ht := treeAt_agree hA hb ha
   have hl := listing_agree hA hb ha
   have hm := hA.1
-  unfold backendOp
+  unfold backendOp shadowed
   rw [ht, hm]
   cases op <;> simp only [backendOp0, rel, ht, hl, hm]
 
