@@ -15,8 +15,9 @@
     follow the final link) and answer walk errors, then ENXIO, first.
   - `removeRecursive p`: `/`, a live mount point or an ancestor of one → EBUSY.
     Native: the subtree goes. Fallback: post-order, an entry is removed unless it
-    is pinned or holds a pinned entry; the report names every entry of the subtree
-    as removed or kept (`fallback_report_exact`). Only `p`'s backend changes
+    is pinned or holds a pinned entry; the report names the roots of the removed
+    subtrees (native: only the operand, no walk) and every kept entry
+    (`fallback_report_exact`, `roots_exact`). Only `p`'s backend changes
     (`removeRecursive_stays_in_mount`).
   - `readRange`, `writeFileIfRevision`, `readFileAtRevision`: lookup first (a
     missing path is ENOENT, as on Linux — Main's ruling); an existing path on a
@@ -113,6 +114,56 @@ theorem fallback_report_exact (t : Tree) (pins : List Path) (rp : Path) :
   · intro x hx hp
     exact List.mem_filter.mpr ⟨hx, by simp [hp]⟩
 
+/-- The report lists removed subtrees by their roots: a removed entry whose parent
+    was not removed, or which is the operand itself. Native removal reports only the
+    operand, without walking the subtree. -/
+def roots (rp : Path) (removed : List Path) : List Path :=
+  removed.filter fun q => q == rp || !removed.contains q.dropLast
+
+theorem keeps_mono {pins : List Path} {r q : Path} (h : pfx r q = true) (hk : keeps pins q = true) :
+    keeps pins r = true := by
+  obtain ⟨pin, hp, hq⟩ := List.any_eq_true.mp hk
+  exact List.any_eq_true.mpr ⟨pin, hp, pfx_iff.mpr ((pfx_iff.mp h).trans (pfx_iff.mp hq))⟩
+
+/-- The roots report is exact: every removed entry lies under a listed root, and
+    every subtree entry under a listed root was removed. -/
+theorem roots_exact (t : Tree) (pins : List Path) (rp : Path) :
+    let r := fallbackRemove t pins rp
+    (∀ q ∈ r.2.1, ∃ x ∈ roots rp r.2.1, pfx x q = true) ∧
+    (∀ x ∈ roots rp r.2.1, ∀ q ∈ subtree t rp, pfx x q = true → q ∈ r.2.1) := by
+  simp only [fallbackRemove]
+  constructor
+  · intro q
+    induction q using (measure List.length).wf.induction with
+    | _ q ih =>
+    intro hq
+    by_cases hr : (q == rp || !(subtree t rp |>.filter fun q => !keeps pins q).contains q.dropLast) = true
+    · exact ⟨q, List.mem_filter.mpr ⟨hq, hr⟩, pfx_iff.mpr (List.prefix_refl q)⟩
+    · simp only [Bool.or_eq_true, beq_iff_eq, Bool.not_eq_true', not_or] at hr
+      have hpar : q.dropLast ∈ (subtree t rp).filter fun q => !keeps pins q := by
+        have := hr.2; simpa using this
+      have hlen : q.dropLast.length < q.length := by
+        cases q with
+        | nil =>
+          exfalso
+          obtain ⟨hs, _⟩ := List.mem_filter.mp hq
+          obtain ⟨y, hy, hyq⟩ := List.mem_map.mp hs
+          have := (List.mem_filter.mp hy).2
+          rw [hyq] at this
+          have := pfx_iff.mp this
+          exact hr.1 (List.prefix_nil.mp this).symm
+        | cons _ _ => simp [List.length_dropLast]
+      obtain ⟨x, hx, hxp⟩ := ih _ hlen hpar
+      exact ⟨x, hx, pfx_iff.mpr ((pfx_iff.mp hxp).trans (List.dropLast_prefix q))⟩
+  · intro x hx q hq hxq
+    obtain ⟨hxr, _⟩ := List.mem_filter.mp hx
+    obtain ⟨_, hxk⟩ := List.mem_filter.mp hxr
+    refine List.mem_filter.mpr ⟨hq, ?_⟩
+    cases hk : keeps pins q
+    · rfl
+    · have := keeps_mono hxq hk
+      simp [this] at hxk
+
 /-! ## The operations -/
 
 def reach (S : St) (P : Principal) (follow : Bool) (raw : String) : Except String Path :=
@@ -140,10 +191,10 @@ def execX (S : St) (P : Principal) : X → XOut × St
       let rp := rel S.mounts p
       if (look t rp).isNone then (.err "ENOENT", S)
       else if (caps b).removeRecursive then
-        (.report ((subtree t rp).map ((route S.mounts p).point ++ ·)) [], setTree S b (cut t rp))
+        (.report [(route S.mounts p).point ++ rp] [], setTree S b (cut t rp))
       else
         let (t', removed, kept) := fallbackRemove t (caps b).pins rp
-        (.report (removed.map ((route S.mounts p).point ++ ·)) (kept.map ((route S.mounts p).point ++ ·)),
+        (.report ((roots rp removed).map ((route S.mounts p).point ++ ·)) (kept.map ((route S.mounts p).point ++ ·)),
           setTree S b t')
   | .readRange raw =>
     match reach S P true raw with

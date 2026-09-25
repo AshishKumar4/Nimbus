@@ -654,12 +654,14 @@ requirements:
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeOps.fallback_report_exact
+      - Nimbus.Vfs.CompositeOps.roots_exact
       - Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
       - Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
       - Nimbus.Vfs.CompositeOps.copy_stays_in_target
       - Nimbus.Vfs.CompositeOps.mount_point_mode
       - Nimbus.Vfs.CompositeOps.frame_refl
       - Nimbus.Vfs.CompositeOps.frame_set
+      - Nimbus.Vfs.CompositeOps.keeps_mono
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     refinement:

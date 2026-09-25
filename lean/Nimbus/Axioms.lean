@@ -401,6 +401,8 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeOps.lean -/
 
 #print axioms Nimbus.Vfs.CompositeOps.fallback_report_exact
+#print axioms Nimbus.Vfs.CompositeOps.keeps_mono
+#print axioms Nimbus.Vfs.CompositeOps.roots_exact
 #print axioms Nimbus.Vfs.CompositeOps.frame_refl
 #print axioms Nimbus.Vfs.CompositeOps.frame_set
 #print axioms Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
