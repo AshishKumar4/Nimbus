@@ -13,6 +13,7 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 export type Awaitable<T> = T | Promise<T>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
@@ -126,9 +127,25 @@ export interface VFS {
     as?(cred: VfsCred): VFS;
     /** The same operations, completing without waiting. Present only when every call can. */
     readonly sync?: SyncVFS;
+    /**
+     * What changed since a cursor, and a complete listing: what a cache of
+     * this backend (a node process's staged files) is kept coherent with. A
+     * backend without it is never cached.
+     */
+    readonly changes?: VfsChanges;
     watch?(path: string, listener: (event: VfsEvent) => void): () => void;
     describe?(): VfsMountDescription;
     usage?(): Awaitable<VfsUsage | null>;
+}
+/** The change feed of a backend with revisions (SqliteVFS). */
+export interface VfsChanges {
+    /** Changes when revisions could regress or be reused: a cursor from another epoch is a poison. */
+    readonly epoch: string;
+    revision(): number;
+    /** Every path changed in (cursor, now], with its stat when asked; a poison when that cannot be answered. */
+    since(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
+    /** One page of every name, in path order. */
+    list(after: string | null, limit: number): VfsListPage;
 }
 export type VfsCasResult = {
     ok: true;

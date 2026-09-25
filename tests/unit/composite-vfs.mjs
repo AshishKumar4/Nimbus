@@ -193,9 +193,12 @@ const cases = {
     // rename(2) resolves both parents first: a file used as a directory on
     // either side is ENOTDIR before the source's ENOENT, EXDEV or EBUSY.
     assert.equal(await code(vfs.rename('/missing', '/c.txt/x')), 'ENOTDIR');
-    // This layer's own refusals come first (ENXIO, EBUSY, EXDEV), then the backend's.
-    assert.equal(await code(vfs.rename('/c.txt/x', '/pc/y')), 'EXDEV');
-    assert.equal(await code(vfs.rename('/c.txt/x', '/pc')), 'EBUSY');
+    // The walk comes first (Linux lookup: a file used as a directory is
+    // ENOTDIR), then this layer's refusals (ENXIO, EBUSY, EXDEV).
+    assert.equal(await code(vfs.rename('/c.txt/x', '/pc/y')), 'ENOTDIR');
+    assert.equal(await code(vfs.rename('/c.txt/x', '/pc')), 'ENOTDIR');
+    assert.equal(await code(vfs.rename('/missing/x', '/pc/y')), 'ENOENT');
+    assert.equal(await code(vfs.rename('/c.txt', '/pc/y')), 'EXDEV');
     // The device has no rename: EXDEV (mv copies), never an emulated move.
     assert.equal(await code(vfs.rename('/pc/b.txt', '/pc/b2.txt')), 'EXDEV');
     assert.equal(await readText(vfs, '/pc/b.txt'), 'B');
@@ -280,7 +283,7 @@ const cases = {
     assert.ok((await names(a, '/')).includes('pc'));
     assert.equal(await code(b.readFile('/pc/who')), 'ENXIO');
     assert.ok(!(await names(b, '/')).includes('pc'));
-    assert.equal(vfs.as({ uid: 5001, gid: 5001, groups: [5001], umask: 0o022 }), a, 'a view is made once per principal');
+    assert.equal(vfs.as({ uid: 5001, gid: 5001, groups: [5001], umask: 0o022 }), a, 'one view per principal while it is held');
     // Two actors with one credential, different /context each (Kinu node-runtime.ts:71).
     const contexts = new Map([['origin', device({ '/who': 'origin context' })], ['node-7', device({ '/who': 'node-7 context' })]]);
     vfs.mount('/context', ({ actor }) => contexts.get(actor ?? '') ?? null);
@@ -367,6 +370,40 @@ const cases = {
     assert.equal(await readText(vfs, '/srv/data/x.txt'), 'under srv');
     await vfs.unlink('/h');                          // unlink does not follow the final link
     assert.equal(await readText(vfs, '/pc/home/notes.txt'), 'through a link');
+  },
+
+  async "a mount point stats as the mounted backend's root"() {
+    const tmp = new MemoryVFS();
+    tmp.chmod('/', 0o1777);
+    const vfs = new CompositeVFS(new MemoryVFS());
+    vfs.mount('/tmp', tmp);
+    assert.equal(((await vfs.stat('/tmp')).mode & 0o7777).toString(8), '1777', 'what the backend says, sticky bit and all');
+    await vfs.chmod('/tmp', 0o700);
+    assert.equal(((await vfs.stat('/tmp')).mode & 0o7777).toString(8), '700', 'a chmod through the mount point is seen by stat');
+    // A backend that cannot stat its own root still has a directory there.
+    vfs.mount('/sandbox', () => sandbox({ '/w/x': 'x' }));
+    assert.equal((await vfs.stat('/sandbox')).type, 'directory');
+  },
+
+  async 'a root link then .. resolves physically, as Linux does'() {
+    const root = new MemoryVFS();
+    root.mkdir('/home'); root.writeFile('/home/f', bytes('ROOT'));
+    const pc = new MemoryVFS();
+    pc.mkdir('/dir'); pc.writeFile('/f', bytes('PC'));
+    root.symlink('/pc/dir', '/home/l');
+    const vfs = new CompositeVFS(root);
+    vfs.mount('/pc', pc);
+    assert.equal(await readText(vfs, '/home/l/../f'), 'PC', '.. applies after the link: /pc/f, not /home/f');
+    root.symlink('/loop', '/loop');
+    assert.equal(await code(vfs.readdir('/loop/..')), 'ELOOP');
+  },
+
+  async 'views no one holds are not retained'() {
+    const vfs = new CompositeVFS(new MemoryVFS());
+    const probe = new WeakRef(vfs.as({ uid: 1, gid: 1, groups: [1], umask: 0o022 }, 'agent-0'));
+    for (let i = 1; i < 1000; i++) vfs.as({ uid: 1, gid: 1, groups: [1], umask: 0o022 }, `agent-${i}`);
+    for (let i = 0; i < 20 && probe.deref() !== undefined; i++) { Bun.gc(true); await new Promise((r) => setTimeout(r, 0)); }
+    assert.equal(probe.deref(), undefined, 'an unheld view is collected');
   },
 
   async 'the sync view: synchronous backends answer, an async-only mount refuses by name'() {

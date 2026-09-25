@@ -37,6 +37,11 @@ export class CompositeVFS {
     viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     viewed = new WeakMap();
+    /**
+     * Views per principal, held weakly: one per principal while someone holds
+     * it, none once no one does (a table serving thousands of agents does not
+     * keep a view per agent for its life).
+     */
     views;
     syncView;
     constructor(root, options = {}, shared) {
@@ -48,7 +53,11 @@ export class CompositeVFS {
         else {
             this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options }]]), synthesized: new Map() };
             this.viewer = { cred: null };
-            this.views = new Map();
+            const refs = new Map();
+            this.views = { refs, gone: new FinalizationRegistry((key) => {
+                    if (refs.get(key)?.deref() === undefined)
+                        refs.delete(key);
+                }) };
         }
         this.syncView = this.makeSync();
     }
@@ -93,12 +102,13 @@ export class CompositeVFS {
     as(cred, actor) {
         const principal = actor === undefined ? { cred } : { cred, actor };
         const key = principalKey(principal);
-        let view = this.views.get(key);
+        let view = this.views.refs.get(key)?.deref();
         if (view === undefined) {
             view = new CompositeVFS(this.table.mounts.get(ROOT_POINT).source, undefined, {
                 table: this.table, principal, views: this.views,
             });
-            this.views.set(key, view);
+            this.views.refs.set(key, new WeakRef(view));
+            this.views.gone.register(view, key);
         }
         return view;
     }
@@ -233,45 +243,86 @@ export class CompositeVFS {
      * above one is never a link (rule 2); a component inside a mount is left to
      * that backend. ELOOP past MAX_LINK_HOPS.
      */
-    resolve(input, follow, sync) {
-        const walk = (path, hops) => {
-            const parts = path === ROOT_POINT ? [] : path.slice(1).split('/');
+    /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
+    resolve(input, follow, sync, creating = false) {
+        // Linux lookup, component by component. Every component that is not the
+        // last (a trailing "" or "." counts as following) must exist and be a
+        // directory once links are followed: ENOENT or ENOTDIR otherwise, before
+        // any of rule 3's refusals. A root link is substituted where it is met,
+        // and `..` pops the prefix resolved so far, so it applies after a link.
+        // A mount point and a directory above one are directories. A component
+        // under a mount this principal lacks is not read: the op answers ENXIO.
+        // Inside a mounted backend the backend follows its own links.
+        const walk = (components, hops) => {
+            const resolved = [];
+            const lastIndex = components.length - 1;
             const step = (i) => {
-                if (i > parts.length)
-                    return path;
-                const prefix = `/${parts.slice(0, i).join('/')}`;
-                if (this.isStructural(prefix))
-                    return step(i + 1);
-                const route = this.route(prefix);
-                if (route.mount.point !== ROOT_POINT)
-                    return path;
-                if (i === parts.length && !follow)
-                    return path;
-                if (this.absentOn(prefix) !== null)
-                    return path;
-                const ops = this.ops(route, sync);
-                if (typeof ops.readlink !== 'function')
-                    return path;
-                return then(this.softStat(ops, prefix, false), (stat) => {
-                    if (stat === null)
-                        return path;
-                    if (stat.type === 'symlink') {
-                        if (hops >= MAX_LINK_HOPS)
-                            throw new VfsError('ELOOP', 'too many levels of symbolic links', input);
-                        return then(ops.readlink(prefix), (target) => {
-                            const base = target.startsWith('/') ? '' : parentOf(prefix);
-                            const rest = parts.slice(i).join('/');
-                            return walk(normalizePath(`${base}/${target}${rest ? `/${rest}` : ''}`), hops + 1);
-                        });
+                for (; i < components.length; i++) {
+                    const component = components[i];
+                    if (component === '' || component === '.')
+                        continue;
+                    if (component === '..') {
+                        resolved.pop();
+                        continue;
                     }
-                    if (stat.type !== 'directory' && i < parts.length)
-                        return path;
-                    return step(i + 1);
-                });
+                    resolved.push(component);
+                    const prefix = `/${resolved.join('/')}`;
+                    const final = i === lastIndex;
+                    if (this.isStructural(prefix))
+                        continue;
+                    if (this.absentOn(prefix) !== null)
+                        continue;
+                    const route = this.route(prefix);
+                    const inRoot = route.mount.point === ROOT_POINT;
+                    if (final && (!inRoot || !follow))
+                        continue;
+                    const ops = this.ops(route, sync);
+                    const canLink = inRoot && typeof ops.readlink === 'function';
+                    const at = i;
+                    const look = () => {
+                        try {
+                            const out = ops.stat(route.rel, { follow: !canLink });
+                            return isPromise(out) ? out.catch((e) => this.walkMiss(e, prefix)) : out;
+                        }
+                        catch (e) {
+                            return this.walkMiss(e, prefix);
+                        }
+                    };
+                    return then(look(), (stat) => {
+                        if (stat !== null && stat.type === 'symlink' && canLink) {
+                            if (hops >= MAX_LINK_HOPS)
+                                throw new VfsError('ELOOP', 'too many levels of symbolic links', input);
+                            return then(ops.readlink(route.rel), (target) => walk([
+                                ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
+                                ...target.split('/'),
+                                ...components.slice(at + 1),
+                            ], hops + 1));
+                        }
+                        if (!final) {
+                            if (stat === null) {
+                                if (creating)
+                                    return step(at + 1);
+                                throw new VfsError('ENOENT', 'no such file or directory', input);
+                            }
+                            if (stat.type !== 'directory')
+                                throw new VfsError('ENOTDIR', 'not a directory', input);
+                        }
+                        return step(at + 1);
+                    });
+                }
+                return `/${resolved.join('/')}`;
             };
-            return step(1);
+            return step(0);
         };
-        return walk(normalizePath(input), 0);
+        return walk(String(input).split('/'), 0);
+    }
+    /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
+    walkMiss(error, _path) {
+        if (isVfsError(error, 'ENOENT'))
+            return null;
+        if (isVfsError(error, 'ENOTDIR'))
+            return { type: 'file', size: 0, mtimeMs: 0 };
+        throw error;
     }
     // ── operations (one implementation; `sync` selects the backend's sync face) ──
     /**
@@ -312,10 +363,27 @@ export class CompositeVFS {
         return then(this.resolve(input, follow, sync), (path) => {
             if (this.absentOn(path) !== null)
                 return null;
-            // A live mount point and a directory above one are directories of this
-            // namespace; the backend is not asked (some cannot stat their own root).
-            if (path !== ROOT_POINT && this.isStructural(path))
-                return EPOCH_STAT;
+            // A live mount point is the mounted backend's root: its mode, owner
+            // and times are the backend's (chmod of /tmp reaches it, so stat must
+            // too). Only a backend that cannot stat its own root (a container that
+            // derives stat from a parent listing) gets a synthesized directory, as
+            // does a directory that exists only above a mount point.
+            if (path !== ROOT_POINT && this.isStructural(path)) {
+                const mount = this.table.mounts.get(path);
+                if (mount === undefined)
+                    return EPOCH_STAT;
+                const ops = this.ops({ mount, path, rel: '/' }, sync);
+                const own = () => {
+                    try {
+                        const out = ops.stat('/', { follow: true });
+                        return isPromise(out) ? out.catch(() => null) : out;
+                    }
+                    catch {
+                        return null;
+                    }
+                };
+                return then(own(), (stat) => (stat !== null && stat.type === 'directory' ? stat : EPOCH_STAT));
+            }
             return then(this.shadowed(path, sync), (hidden) => {
                 if (hidden)
                     return null;
@@ -415,7 +483,7 @@ export class CompositeVFS {
         });
     }
     mkdirAt(input, options, sync) {
-        return then(this.resolve(input, false, sync), (path) => {
+        return then(this.resolve(input, false, sync, options?.recursive === true), (path) => {
             this.present(path);
             if (this.isStructural(path)) {
                 // mkdir -p of a live mount point (or a directory above one) has nothing to do.
@@ -488,6 +556,27 @@ export class CompositeVFS {
             });
         }
         return ops.rename(source.rel, target.rel);
+    }
+    /**
+     * A copy inside one filesystem is that backend's own (SQLite copies rows);
+     * across filesystems, or where the backend has none, ENOTSUP/EXDEV tell the
+     * caller to copy bytes, as cp does.
+     */
+    copyAt(fromInput, toInput, options, sync) {
+        return then(this.resolve(fromInput, true, sync), (from) => then(this.resolve(toInput, false, sync), (to) => {
+            this.present(from);
+            this.present(to);
+            if (this.isStructural(to))
+                throw new VfsError('EBUSY', 'a mount point cannot be replaced', to);
+            const source = this.route(from);
+            const target = this.route(to);
+            if (source.mount !== target.mount) {
+                throw new VfsError('EXDEV', `${source.mount.point} and ${target.mount.point} are different filesystems`, from);
+            }
+            if (target.mount.options.readOnly)
+                throw new VfsError('EROFS', `${target.mount.point} is mounted read-only`, to);
+            return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => this.method(this.ops(source, sync), 'copy', from)(source.rel, target.rel, options)));
+        }));
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     rmdirAt(input, sync) {
@@ -618,6 +707,9 @@ export class CompositeVFS {
     async writeFileIfRevision(path, data, expected) {
         return this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeFileIfRevision', at)(rel, data, expected));
     }
+    async copy(from, to, options) {
+        return this.copyAt(from, to, options, false);
+    }
     async readFileAtRevision(path, revision, range) {
         return this.onFile(path, true, false, (ops, rel, at) => this.method(ops, 'readFileAtRevision', at)(rel, revision, range));
     }
@@ -644,7 +736,7 @@ export class CompositeVFS {
             chmod: (path, mode) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)),
             chown: (path, uid, gid) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)),
             utimes: (path, a, m) => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, a, m)),
-            copy: undefined,
+            copy: (from, to, options) => this.copyAt(from, to, options, true),
             writeFileIfRevision: (path, data, expected) => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeFileIfRevision', at)(rel, data, expected)),
             readFileAtRevision: (path, revision, range) => this.onFile(path, true, true, (ops, rel, at) => this.method(ops, 'readFileAtRevision', at)(rel, revision, range)),
         };

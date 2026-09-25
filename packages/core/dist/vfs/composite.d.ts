@@ -56,6 +56,10 @@ interface Table {
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
 }
+interface Views {
+    refs: Map<string, WeakRef<CompositeVFS>>;
+    gone: FinalizationRegistry<string>;
+}
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export declare function normalizePath(path: string): string;
 export declare class CompositeVFS implements VFS {
@@ -63,6 +67,11 @@ export declare class CompositeVFS implements VFS {
     private readonly viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     private readonly viewed;
+    /**
+     * Views per principal, held weakly: one per principal while someone holds
+     * it, none once no one does (a table serving thousands of agents does not
+     * keep a view per agent for its life).
+     */
     private readonly views;
     private readonly syncView;
     constructor(root: VfsSource, options?: MountOptions);
@@ -70,7 +79,7 @@ export declare class CompositeVFS implements VFS {
     constructor(root: VfsSource, options: MountOptions | undefined, shared: {
         table: Table;
         principal: Principal;
-        views: Map<string, CompositeVFS>;
+        views: Views;
     });
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     unmount(point: string): void;
@@ -105,7 +114,10 @@ export declare class CompositeVFS implements VFS {
      * above one is never a link (rule 2); a component inside a mount is left to
      * that backend. ELOOP past MAX_LINK_HOPS.
      */
+    /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     private resolve;
+    /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
+    private walkMiss;
     /**
      * Whether the backend holds a directory that exists only above a mount
      * point (not a mount point) as something else, a link or a file. Then that
@@ -130,6 +142,12 @@ export declare class CompositeVFS implements VFS {
     private mkdirAt;
     private renameAt;
     private renameIn;
+    /**
+     * A copy inside one filesystem is that backend's own (SQLite copies rows);
+     * across filesystems, or where the backend has none, ENOTSUP/EXDEV tell the
+     * caller to copy bytes, as cp does.
+     */
+    private copyAt;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;
     private removeAt;
@@ -160,6 +178,10 @@ export declare class CompositeVFS implements VFS {
     chown(path: string, uid: number, gid: number): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult>;
+    copy(from: string, to: string, options?: {
+        recursive?: boolean;
+        preserve?: boolean;
+    }): Promise<number>;
     readFileAtRevision(path: string, revision: VfsRevision, range?: {
         offset: number;
         length: number;
