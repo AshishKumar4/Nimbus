@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b8169c3da13025210918b5d41d7cee8d294604054c96b011a3f4878749aae273",
+  "fingerprint": "be73997f795e384d37dfde8a93c2e9e4f4edec9420804a32ba26602c3364dabe",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1592,9 +1592,9 @@
     "packages/worker/dist/facets/ws-terminal.d.ts": "cd0de8deaa7c18eb949aa9dc8acb6bc22dc0602a8136271c941430deb1650583",
     "packages/worker/dist/facets/ws-terminal.d.ts.map": "709bab9c03df590f322eb43b14d313662b2b9e4516601f1e440f24092a4d5a64",
     "packages/worker/dist/facets/ws-terminal.js": "63922aec572806aaff92999ae6ecf7844e4a1ff642e7728ecd23ed2ceb804cf6",
-    "packages/worker/dist/git-bundle.generated.d.ts": "be288501aa43130f4529476cf7c08bfff0aab7a683981f866590aa02a1141afd",
-    "packages/worker/dist/git-bundle.generated.d.ts.map": "0f6c93a930a0d3baf50d1ca9ab68c2f9036bdd069b27c6d05a0d682b658940d2",
-    "packages/worker/dist/git-bundle.generated.js": "2adcdc9378be1c421d97089cd1c10f6fef5d18a1301fdc571cc5f2a4d2c83678",
+    "packages/worker/dist/git-bundle.generated.d.ts": "aa4358985e46c225bc85ad3c7a87f45416a3ce43c63850b9fe95fa8c0270d0c5",
+    "packages/worker/dist/git-bundle.generated.d.ts.map": "bab520f9f4a27d229b27555deaf62873ceb2333a71676a94df69af96401b348b",
+    "packages/worker/dist/git-bundle.generated.js": "4d7fb4f2347ccdb464adf1c01b2fc7d271102241a164f03bebd29984bbed4024",
     "packages/worker/dist/git/commands.d.ts": "2626722e922779d2c3c7930dcaf9fa6f7518c8fbb4a40be5dd80a45e4fd692fd",
     "packages/worker/dist/git/commands.d.ts.map": "6ce52ed95703b88fa51d0e0b53b565b73a83b27911499575d80b69d7b2aac20f",
     "packages/worker/dist/git/commands.js": "992dae12a9ef37f16fd5a2583481454b11853f37b9125e9775a6a36b5d8ecf40",
@@ -1962,7 +1962,7 @@
     "packages/worker/scripts/bundle-agent-chat.mjs": "ad48e46d1bcbc1b970bbb576c683e2b1d96511faa5ecb2c2775c343349ae77d2",
     "packages/worker/scripts/bundle-esbuild-wasm.mjs": "c8396abed2383740b47b32b6cae9fe189652ba0f52f5d61b782e0b2d6fcc1ad8",
     "packages/worker/scripts/bundle-facet-workers.mjs": "a9da110eb2c25c2d762c2b504a4b696a375634bad592e2b0fe7d0e1b9a7a9d3e",
-    "packages/worker/scripts/bundle-git.mjs": "e5fe082fa2db0a500c09a37ae90a1ad947dae1139ee1918f13b764f5681e07f8",
+    "packages/worker/scripts/bundle-git.mjs": "9bff5b934d5f1435bbe6f96b3dca4f2eda199538d86382ae46a62d26a5313795",
     "packages/worker/scripts/bundle-node-shims.mjs": "b572e3a0673c46540c035e94eac073ccae6c4d42a43b5124ba9c187468a3d347",
     "packages/worker/scripts/bundle-npm-cjs.mjs": "069f750eefcc6c4394028a4c9200e79cc00ddfea114f7e25752ea6c68eab8cbb",
     "packages/worker/scripts/bundle-opencode.mjs": "cfc4f730159ea7f1dd4592280eb05cd444868d317ff7a4d0ef078ee562aad521",
@@ -2021,7 +2021,7 @@
     "packages/worker/src/facets/wasm-image-digest.ts": "61766b304869e37edfc2c8781b7d4583ff2e6b1a16ae270f8d285e932885ef45",
     "packages/worker/src/facets/wasm-swap-registry.ts": "3c2d8e2102b3091a204d2f21e0b352e78e029fb4a085e44be9c71106d16efff7",
     "packages/worker/src/facets/ws-terminal.ts": "ca779c2443a876a5416ba589914247494ddb701d3f4a741b3cad3cd811eeffc7",
-    "packages/worker/src/git-bundle.generated.ts": "4f5035914570c11f5a28b9e8db3b2affa47ec64362c7d5c6be96c0e469b02682",
+    "packages/worker/src/git-bundle.generated.ts": "0205e3aa5731eda454c0779836a3e6869237267631f1203a0cf4d9640ba27fce",
     "packages/worker/src/git/commands.ts": "51afcdb01fb3c4320f6b3c3832e48a3f170f9ac49cc34d2f4b534b6e607c5e45",
     "packages/worker/src/git/network-facet.ts": "e34034c961a62365db3b199e6f20bfc6461d0a516b54d3fe2938865bcc0f3e7c",
     "packages/worker/src/git/unified-diff.ts": "7d322a113cc4895cd699316bcb39a14506d5ed9bef4b72bfd8768b64bd15e905",
