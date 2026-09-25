@@ -23,8 +23,9 @@
     through a final link to a missing path creates it at the target (O_CREAT). The last component is followed for
     `stat`, `readdir`, `readFile` and `writeFile`, never for `mkdir`, `unlink`,
     `rmdir` or `rename`.
-  - Order of refusals: ENXIO, then EBUSY (every mutation — `writeFile`, `mkdir`,
-    `unlink`, `rmdir`, `rename` — of a live mount point or an ancestor of one), then
+  - Order of refusals: ENXIO, then EBUSY (`writeFile`, `mkdir`, `rmdir`, `rename` of a
+    live mount point or an ancestor of one; `unlink` of one is EISDIR, as unlink(2)
+    refuses any directory first), then
     EXDEV (`rename` across mounts), then the backend's own answer. `mkdir -p` of a
     live mount point or ancestor succeeds and changes nothing.
   - The backend is POSIX: a component before the last that is not a directory is
@@ -323,6 +324,7 @@ def backendOp0 (S : St) (P : Principal) : Op → Path → Path → Out × Option
   | .unlink _, p, _ =>
     let t := treeAt S p
     let rp := rel S.mounts p
+    if synth S.mounts P p then (.err "EISDIR", none) else
     match look t rp with
     | some .dir => (.err "EISDIR", none)
     | some _ => (.ok, some (t.filter (·.1 != rp)))
@@ -372,7 +374,7 @@ def Op.raw2 : Op → Option String
   | _ => none
 
 def Op.guarded : Op → Bool
-  | .writeFile _ _ | .mkdir _ | .unlink _ | .rmdir _ | .rename _ _ => true
+  | .writeFile _ _ | .mkdir _ | .rmdir _ | .rename _ _ => true
   | _ => false
 
 /-- The composite's answer on resolved paths `p` (and `q` for `rename`). -/
@@ -405,8 +407,8 @@ theorem absent_refuses (S : St) (P : Principal) (op : Op) (p q : Path) (h : abse
     execResolved S P op p q = ((match op with | .stat _ => .null | _ => .err "ENXIO"), S) := by
   unfold execResolved; rw [if_pos (by simp [h])]
 
-/-- Every mutation (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) of a live mount
-    point or an ancestor of one: EBUSY. -/
+/-- `writeFile`, `mkdir`, `rmdir` and `rename` of a live mount point or an ancestor of
+    one: EBUSY (`unlink` refuses any directory first: EISDIR). -/
 theorem busy_refuses (S : St) (P : Principal) (op : Op) (p q : Path) (hg : op.guarded = true)
     (ha : absent S.mounts P p = false) (ha2 : op.raw2.isSome = false ∨ absent S.mounts P q = false)
     (h : synth S.mounts P p = true) : execResolved S P op p q = (.err "EBUSY", S) := by
