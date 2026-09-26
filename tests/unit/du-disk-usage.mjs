@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +26,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 const GNU_DU = ['gnudu', 'du'].find((bin) => /GNU coreutils/.test(spawnSync(bin, ['--version'], { encoding: 'utf8' }).stdout ?? ''));
 assert.ok(GNU_DU, 'GNU du is required as the oracle (gnudu or du from GNU coreutils)');
 
+const ENV = { ...process.env, LC_ALL: 'C' };
 const disk = mkdtempSync(join(tmpdir(), 'nimbus-du-'));
 process.on('exit', () => rmSync(disk, { recursive: true, force: true }));
 
@@ -38,7 +39,7 @@ box.kernel.vfs.mount('/tmp', new SqliteVFSProvider(rawVfs, 'tmp'));
 registerUnixCommands(box.commands.registry, rawVfs);
 
 /** The same tree on disk and in the VFS. */
-const tree = { 'big.bin': 2 * 1024 * 1024, 'd/g': 4096, 'd/sub/f': 8192, 'e/': 0 };
+const tree = { 'big.bin': 2 * 1024 * 1024, 'd/g': 4096, 'd/sub/f': 8192, 'd/sub/deep/h': 4096, 'e/': 0 };
 for (const [path, size] of Object.entries(tree)) {
   if (path.endsWith('/')) {
     mkdirSync(join(disk, path), { recursive: true });
@@ -55,7 +56,7 @@ root.symlink('big.bin', 'tmp/w/lnk');
 
 let checks = 0;
 async function same(args, { sorted = false } = {}) {
-  const expected = spawnSync(GNU_DU, args, { cwd: disk, encoding: 'utf8' });
+  const expected = spawnSync(GNU_DU, args, { cwd: disk, env: ENV, encoding: 'utf8' });
   const actual = await box.shell.execute(`cd /tmp/w && du ${args.map((a) => `'${a}'`).join(' ')}`, {});
   const order = (text) => (sorted ? text.split('\n').filter(Boolean).sort().join('\n') : text);
   const label = `du ${args.join(' ')}`;
@@ -87,6 +88,54 @@ try {
   await same(['-Q', 'd']);
   await same(['--bogus', 'd']);
   await same(['-as', 'd']);
+  // GNU's other options: depth, units, apparent sizes, links, separators, thresholds, exclusions.
+  await same(['-h', '-d', '1', 'd'], { sorted: true });
+  await same(['--max-depth=1', 'd'], { sorted: true });
+  await same(['-d0', 'd']);
+  await same(['-d', '1', '-a', 'd'], { sorted: true });
+  await same(['-sm', 'big.bin', 'd']);
+  await same(['-sb', 'd']);
+  await same(['-b', 'd'], { sorted: true });
+  await same(['--apparent-size', '-s', 'd']);
+  // Apparent sizes are exact bytes; a 100-byte file's blocks differ by filesystem (tmpfs: a 4 KiB page), so only these look at it.
+  writeFileSync(join(disk, 'small'), new Uint8Array(100));
+  root.writeFile('tmp/w/small', new Uint8Array(100));
+  await same(['--apparent-size', '-h', 'small']);
+  await same(['-b', 'small', 'big.bin']);
+  rmSync(join(disk, 'small'));
+  root.unlink('tmp/w/small');
+  await same(['-sL', '.']);
+  await same(['-aL', 'lnk']);
+  await same(['-sH', 'lnk']);
+  await same(['-sP', '.']);
+  await same(['-S', 'd'], { sorted: true });
+  await same(['-0', '-s', 'd']);
+  await same(['-s', '--si', 'big.bin']);
+  await same(['-B', '1K', '-s', 'd']);
+  await same(['-B', 'M', '-s', 'big.bin']);
+  await same(['-sB1', 'd']);
+  await same(['-sBKB', 'd']);
+  await same(['--block-size=M', '-s', 'd']);
+  await same(['-t', '5K', 'd'], { sorted: true });
+  await same(['--exclude=deep', 'd'], { sorted: true });
+  await same(['-l', '-x', '-s', 'd']);
+  await same(['-d', 'x', 'd']);
+  await same(['-d', '1', '-s', 'd']);
+  await same(['-d', '0', '-s', 'd']);
+  await same(['-B', '0', 'd']);
+  await same(['-B', 'xx', 'd']);
+  // A directory du cannot read is reported, summed as empty, and du goes on (exit 1).
+  mkdirSync(join(disk, 'q/locked'), { recursive: true });
+  writeFileSync(join(disk, 'q/locked/x'), new Uint8Array(4096));
+  writeFileSync(join(disk, 'q/y'), new Uint8Array(8192));
+  chmodSync(join(disk, 'q/locked'), 0);
+  root.mkdir('tmp/w/q/locked', { recursive: true });
+  root.writeFile('tmp/w/q/locked/x', new Uint8Array(4096));
+  root.writeFile('tmp/w/q/y', new Uint8Array(8192));
+  root.chmod('tmp/w/q/locked', 0);
+  await same(['-s', 'q']);
+  await same(['-a', 'q'], { sorted: true });
+  chmodSync(join(disk, 'q/locked'), 0o755);
   console.log(`du-disk-usage: ${checks} invocations match GNU du`);
 } finally {
   box.destroy();

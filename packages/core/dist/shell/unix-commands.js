@@ -2925,42 +2925,102 @@ function mkTee(vfs) {
  * conformant short-flag stacking.
  */
 /**
- * GNU du's human-readable size (-h): powers of 1024, rounded up; one decimal
- * below 10 of a unit, whole units from 10 up, and plain bytes below 1 KiB.
+ * GNU du's human-readable size (-h, or --si with `base` 1000): rounded up,
+ * one decimal below 10 of a unit, whole units from 10 up, bytes below one unit.
  */
-function duHuman(bytes) {
-    if (bytes < 1024)
+function duHuman(bytes, base) {
+    if (bytes < base)
         return String(bytes);
-    const units = ['K', 'M', 'G', 'T', 'P', 'E'];
-    let value = bytes / 1024;
+    const units = base === 1024 ? ['K', 'M', 'G', 'T', 'P', 'E'] : ['k', 'M', 'G', 'T', 'P', 'E'];
+    let value = bytes / base;
     let unit = 0;
     for (;;) {
         const shown = value < 10 ? Math.ceil(value * 10) / 10 : Math.ceil(value);
-        if (shown < 1024 || unit === units.length - 1) {
+        if (shown < base || unit === units.length - 1) {
             return `${shown < 10 ? shown.toFixed(1) : String(shown)}${units[unit]}`;
         }
-        value /= 1024;
+        value /= base;
         unit++;
     }
 }
+/** A GNU size argument (`-B`, `-t`): digits, a unit (K, KiB: 1024s; KB: 1000s; M, G, T, P, E), or both. */
+function parseDuSize(text) {
+    const m = /^(-?\d*)([KMGTPE](?:iB|B)?|[kKMGTPE]B?)?$/.exec(text);
+    if (!m || (m[1] === '' || m[1] === '-') && !m[2])
+        return null;
+    const powers = 'KMGTPE';
+    let factor = 1;
+    if (m[2]) {
+        const letter = m[2][0].toUpperCase();
+        const base = m[2].length === 2 && m[2][1] === 'B' ? 1000 : 1024;
+        factor = base ** (powers.indexOf(letter) + 1);
+    }
+    const count = m[1] === '' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+    // A unit alone is also the suffix du prints; GNU spells the 1000-based kilo `kB`.
+    const suffix = m[1] === '' ? (m[2] ?? '').replace(/^[kK]B$/, 'kB') : '';
+    return { bytes: count * factor, suffix };
+}
+/** A shell glob (`*`, `?`, `[...]`) as a whole-string regular expression, for --exclude. */
+function duGlob(pattern) {
+    let source = '';
+    for (const ch of pattern)
+        source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.+^${}()|\\/]/g, '\\$&');
+    return new RegExp(`^${source}$`);
+}
 /**
- * du: disk usage by the blocks each file holds, as GNU du reports it. The VFS
- * allocates a file ceil(size / 512) 512-byte blocks (stat's %b), a directory
- * or a link none. Each operand (default `.`) is printed as named, its
- * descendants below it with '/'; directories after what they hold. -a lists
- * files too, -s only the operands, -c adds a total, -h is human-readable, -k
- * (the default) counts KiB, rounded up.
+ * du: disk usage, as GNU du reports it. The VFS allocates a file ceil(size /
+ * 512) 512-byte blocks (stat's %b), a directory or a link none; with
+ * --apparent-size (-b) a file or link counts its size. Each operand (default
+ * `.`) is printed as named, its descendants below it with '/', directories
+ * after what they hold, down to -d levels. An entry that cannot be read is
+ * reported and skipped, and du then exits 1, as GNU does.
  */
 function mkDu(vfs) {
     return async (ctx) => {
-        let showAll = false, human = false, sumOnly = false, total = false;
+        let showAll = false, sumOnly = false, total = false, apparent = false, separateDirs = false, nul = false;
+        let countLinks = false;
+        let human = null;
+        let block = { bytes: 1024, suffix: '' };
+        let maxDepth = null;
+        let threshold = 0;
+        let follow = 'never';
+        const excludes = [];
         const operands = [];
-        let options = true;
-        const invalid = async (text) => {
+        const usage = async (text) => {
             await ctx.stderr.write(`du: ${text}\nTry 'du --help' for more information.\n`);
             return 1;
         };
-        for (const a of ctx.args) {
+        const setBlock = async (text, option) => {
+            const size = parseDuSize(text);
+            if (!size || size.bytes <= 0) {
+                await ctx.stderr.write(`du: invalid ${option} argument '${text}'\n`);
+                return false;
+            }
+            block = size;
+            human = null;
+            return true;
+        };
+        const setDepth = async (text) => {
+            if (!/^\d+$/.test(text)) {
+                await usage(`invalid maximum depth '${text}'`);
+                return false;
+            }
+            maxDepth = Number(text);
+            return true;
+        };
+        const setThreshold = async (text) => {
+            const size = parseDuSize(text);
+            if (!size || (size.bytes === 0 && text.startsWith('-'))) {
+                await usage(`invalid --threshold argument '${text}'`);
+                return false;
+            }
+            threshold = size.bytes;
+            return true;
+        };
+        const args = ctx.args;
+        let options = true;
+        for (let i = 0; i < args.length; i++) {
+            const a = args[i];
             if (!options || a === '-' || !a.startsWith('-')) {
                 operands.push(a);
                 continue;
@@ -2970,73 +3030,245 @@ function mkDu(vfs) {
                 continue;
             }
             if (a.startsWith('--')) {
-                if (a === '--all')
-                    showAll = true;
-                else if (a === '--human-readable')
-                    human = true;
-                else if (a === '--summarize')
-                    sumOnly = true;
-                else if (a === '--total')
-                    total = true;
-                else if (a === '--kilobytes' || a === '--one-file-system') { /* the default; one filesystem */ }
-                else
-                    return await invalid(`unrecognized option '${a}'`);
+                const eq = a.indexOf('=');
+                const name = eq < 0 ? a : a.slice(0, eq);
+                const valued = ['--max-depth', '--block-size', '--threshold', '--exclude'];
+                let value = eq < 0 ? undefined : a.slice(eq + 1);
+                if (valued.includes(name) && value === undefined) {
+                    value = args[++i];
+                    if (value === undefined)
+                        return await usage(`option '${name}' requires an argument`);
+                }
+                switch (name) {
+                    case '--all':
+                        showAll = true;
+                        break;
+                    case '--human-readable':
+                        human = 1024;
+                        break;
+                    case '--si':
+                        human = 1000;
+                        break;
+                    case '--summarize':
+                        sumOnly = true;
+                        break;
+                    case '--total':
+                        total = true;
+                        break;
+                    case '--apparent-size':
+                        apparent = true;
+                        break;
+                    case '--bytes':
+                        apparent = true;
+                        block = { bytes: 1, suffix: '' };
+                        human = null;
+                        break;
+                    case '--kilobytes':
+                        block = { bytes: 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case '--megabytes':
+                        block = { bytes: 1024 * 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case '--separate-dirs':
+                        separateDirs = true;
+                        break;
+                    case '--null':
+                        nul = true;
+                        break;
+                    case '--dereference':
+                        follow = 'always';
+                        break;
+                    case '--dereference-args':
+                        follow = 'operands';
+                        break;
+                    case '--no-dereference':
+                        follow = 'never';
+                        break;
+                    case '--count-links':
+                        countLinks = true;
+                        break;
+                    case '--one-file-system': break;
+                    case '--max-depth':
+                        if (!(await setDepth(value)))
+                            return 1;
+                        break;
+                    case '--block-size':
+                        if (!(await setBlock(value, '--block-size')))
+                            return 1;
+                        break;
+                    case '--threshold':
+                        if (!(await setThreshold(value)))
+                            return 1;
+                        break;
+                    case '--exclude':
+                        excludes.push(duGlob(value));
+                        break;
+                    case '--time':
+                    case '--time-style':
+                    case '--exclude-from':
+                    case '--files0-from':
+                    case '--inodes':
+                        await ctx.stderr.write(`du: ${name} is not supported here\n`);
+                        return 1;
+                    default: return await usage(`unrecognized option '${a}'`);
+                }
                 continue;
             }
-            for (const ch of a.slice(1)) {
-                if (ch === 'a')
-                    showAll = true;
-                else if (ch === 'h')
-                    human = true;
-                else if (ch === 's')
-                    sumOnly = true;
-                else if (ch === 'c')
-                    total = true;
-                else if (ch === 'k' || ch === 'x') { /* the default; one filesystem */ }
-                else
-                    return await invalid(`invalid option -- '${ch}'`);
+            for (let j = 1; j < a.length; j++) {
+                const ch = a[j];
+                const valued = 'dBt'.includes(ch);
+                const value = valued ? (a.slice(j + 1) || args[++i]) : undefined;
+                if (valued && value === undefined)
+                    return await usage(`option requires an argument -- '${ch}'`);
+                switch (ch) {
+                    case 'a':
+                        showAll = true;
+                        break;
+                    case 'h':
+                        human = 1024;
+                        break;
+                    case 's':
+                        sumOnly = true;
+                        break;
+                    case 'c':
+                        total = true;
+                        break;
+                    case 'b':
+                        apparent = true;
+                        block = { bytes: 1, suffix: '' };
+                        human = null;
+                        break;
+                    case 'k':
+                        block = { bytes: 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case 'm':
+                        block = { bytes: 1024 * 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case 'S':
+                        separateDirs = true;
+                        break;
+                    case '0':
+                        nul = true;
+                        break;
+                    case 'L':
+                        follow = 'always';
+                        break;
+                    case 'H':
+                    case 'D':
+                        follow = 'operands';
+                        break;
+                    case 'P':
+                        follow = 'never';
+                        break;
+                    case 'l':
+                        countLinks = true;
+                        break;
+                    case 'x': break;
+                    case 'd':
+                        if (!(await setDepth(value)))
+                            return 1;
+                        break;
+                    case 'B':
+                        if (!(await setBlock(value, '-B')))
+                            return 1;
+                        break;
+                    case 't':
+                        if (!(await setThreshold(value)))
+                            return 1;
+                        break;
+                    case 'X':
+                        await ctx.stderr.write('du: -X is not supported here\n');
+                        return 1;
+                    default: return await usage(`invalid option -- '${ch}'`);
+                }
+                if (valued)
+                    break;
             }
         }
         if (showAll && sumOnly)
-            return await invalid('cannot both summarize and show all entries');
+            return await usage('cannot both summarize and show all entries');
+        if (sumOnly && maxDepth !== null && maxDepth !== 0)
+            return await usage(`warning: summarizing conflicts with --max-depth=${maxDepth}`);
+        if (sumOnly && maxDepth === 0)
+            await ctx.stderr.write('du: warning: summarizing is the same as using --max-depth=0\n');
+        if (sumOnly)
+            maxDepth = 0;
         if (operands.length === 0)
             operands.push('.');
-        const fmt = (bytes) => (human ? duHuman(bytes) : String(Math.ceil(bytes / 1024)));
-        const blocks = (st) => (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0);
+        const end = nul ? '\0' : '\n';
+        const fmt = (bytes) => (human !== null
+            ? duHuman(bytes, human)
+            : `${Math.ceil(bytes / block.bytes)}${block.suffix}`);
+        const usageOf = (st) => (apparent
+            ? (st.type === 'directory' ? 0 : st.size)
+            : (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0));
+        const shown = (bytes) => (threshold >= 0 ? bytes >= threshold : bytes <= -threshold);
+        const excluded = (name, path) => excludes.some((re) => re.test(name) || re.test(path));
         let failed = false;
         let grand = 0;
-        // Bytes held at and below `vfsPath`, printed as `shown`; `depth` 0 is the operand.
-        async function walk(vfsPath, shown, depth) {
-            const st = await vfs.lstat(vfsPath);
+        const seen = new Set();
+        const why = (e) => {
+            const code = e?.code;
+            return code === 'EACCES' ? 'Permission denied' : code === 'ENOTDIR' ? 'Not a directory' : 'No such file or directory';
+        };
+        // Bytes at and below `vfsPath`, printed as `name` (a directory under -S: its own files only).
+        async function walk(vfsPath, name, depth) {
+            let st;
+            try {
+                st = follow === 'always' || (follow === 'operands' && depth === 0) ? await vfs.stat(vfsPath) : await vfs.lstat(vfsPath);
+            }
+            catch (e) {
+                await ctx.stderr.write(`du: cannot access '${name}': ${why(e)}\n`);
+                failed = true;
+                return { size: 0, dir: false };
+            }
+            const printable = maxDepth === null || depth <= maxDepth;
+            // Each inode counts once (a hard link, or a link -L follows to a file
+            // already counted), unless -l; one met again is not listed either.
+            const inode = `${st.dev ?? 0}:${st.ino ?? vfsPath}`;
+            if (!countLinks && seen.has(inode))
+                return { size: 0, dir: st.type === 'directory' };
+            seen.add(inode);
             if (st.type !== 'directory') {
-                const size = blocks(st);
-                if (depth === 0 || (showAll && !sumOnly))
-                    await ctx.stdout.write(`${fmt(size)}\t${shown}\n`);
-                return size;
+                const size = usageOf(st);
+                if ((depth === 0 || showAll) && printable && shown(size))
+                    await ctx.stdout.write(`${fmt(size)}\t${name}${end}`);
+                return { size, dir: false };
             }
-            let size = 0;
-            const base = shown.endsWith('/') ? shown : `${shown}/`;
-            for (const e of await vfs.readdir(vfsPath)) {
-                size += await walk(`${vfsPath}/${e.name}`, `${base}${e.name}`, depth + 1);
+            let size = usageOf(st);
+            let own = size;
+            const base = name.endsWith('/') ? name : `${name}/`;
+            let entries = [];
+            try {
+                entries = await vfs.readdir(vfsPath);
             }
-            if (depth === 0 || !sumOnly)
-                await ctx.stdout.write(`${fmt(size)}\t${shown}\n`);
-            return size;
+            catch (e) {
+                await ctx.stderr.write(`du: cannot read directory '${name}': ${why(e)}\n`);
+                failed = true;
+            }
+            for (const e of entries) {
+                const childName = `${base}${e.name}`;
+                if (excluded(e.name, childName))
+                    continue;
+                const child = await walk(`${vfsPath}/${e.name}`, childName, depth + 1);
+                size += child.size;
+                if (!child.dir)
+                    own += child.size;
+            }
+            const printed = separateDirs ? own : size;
+            if (printable && shown(printed))
+                await ctx.stdout.write(`${fmt(printed)}\t${name}${end}`);
+            return { size, dir: true };
         }
         for (const operand of operands) {
-            const vfsPath = resolvePath(ctx.cwd, operand);
-            try {
-                await vfs.lstat(vfsPath);
-            }
-            catch {
-                await ctx.stderr.write(`du: cannot access '${operand}': No such file or directory\n`);
-                failed = true;
-                continue;
-            }
-            grand += await walk(vfsPath, operand, 0);
+            grand += (await walk(resolvePath(ctx.cwd, operand), operand, 0)).size;
         }
         if (total)
-            await ctx.stdout.write(`${fmt(grand)}\ttotal\n`);
+            await ctx.stdout.write(`${fmt(grand)}\ttotal${end}`);
         return failed ? 1 : 0;
     };
 }
