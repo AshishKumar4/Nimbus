@@ -442,7 +442,9 @@ interface CfGit {
   add(args: { fs: unknown; dir: string; filepath: string | string[]; parallel?: boolean; force?: boolean; cache?: object }): Promise<void>;
   // Takes an array through the tracked cf-git patch, as add does.
   remove(args: { fs: unknown; dir: string; filepath: string | string[]; cache?: object }): Promise<void>;
-  statusMatrix(args: { fs: unknown; dir: string; cache?: object; ignored?: boolean; filepaths?: string[] }): Promise<[string, number, number, number][]>;
+  statusMatrix(args: { fs: unknown; dir: string; cache?: object; ignored?: boolean; filepaths?: string[]; deferRefresh?: boolean }): Promise<[string, number, number, number][]>;
+  /** One index write: a deferred statusMatrix refresh under the same cache, the removals, then the additions. */
+  stage(args: { fs: unknown; dir: string; cache?: object; add?: string[]; remove?: string[]; force?: boolean; parallel?: boolean }): Promise<void>;
   listTags(args: { fs: unknown; dir: string }): Promise<string[]>;
   deleteTag(args: { fs: unknown; dir: string; ref: string }): Promise<void>;
   tag(args: { fs: unknown; dir: string; ref: string; object: string; force: boolean }): Promise<void>;
@@ -491,19 +493,22 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
 
 // ── Staging ──────────────────────────────────────────────────────────────
 
-/** `commit -a`'s staging of tracked changes, under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
+/**
+ * `commit -a`'s staging of tracked changes: the status refresh, the removals
+ * and the additions under one index write, as git's, and a path at a time
+ * (1,000 concurrent deflates reset the isolate).
+ */
 async function stageTracked(git: CfGit, fs: unknown, dir: string): Promise<void> {
   const cache = {};
   const added: string[] = [];
   const removed: string[] = [];
-  for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
+  for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache, deferRefresh: true })) {
     if (stage === 0) continue;
     if (head === workdir && workdir === stage) continue;
     if (workdir === 0) removed.push(filepath);
     else added.push(filepath);
   }
-  if (removed.length) await git.remove({ fs, dir, filepath: removed, cache });
-  if (added.length) await git.add({ fs, dir, filepath: added, parallel: false, cache });
+  await git.stage({ fs, dir, cache, add: added, remove: removed, parallel: false });
 }
 
 // ── Repository discovery ─────────────────────────────────────────────────
@@ -782,7 +787,8 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
   const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
   const inSpec = (path: string, spec: string) => spec === '' || path === spec || path.startsWith(`${spec}/`);
   const cache = {};
-  const matrix = await git.statusMatrix({ fs, dir: root, cache });
+  // Its stat refreshes ride in the one index write that stages (git add writes once).
+  const matrix = await git.statusMatrix({ fs, dir: root, cache, deferRefresh: !dryRun });
   // -f takes the ignored files below each pathspec as well.
   const forced = force
     ? await git.statusMatrix({ fs, dir: root, cache, ignored: true, filepaths: specs.map((spec) => spec || '.') })
@@ -843,8 +849,7 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
   if (!dryRun) {
     const removed = tracked.filter(([, action]) => action === 'remove').map(([path]) => path);
     const added = [...tracked.filter(([, action]) => action === 'add').map(([path]) => path), ...untracked];
-    if (removed.length) await git.remove({ fs, dir: root, filepath: removed, cache });
-    if (added.length) await git.add({ fs, dir: root, filepath: added, parallel: false, force: true, cache });
+    await git.stage({ fs, dir: root, cache, add: added, remove: removed, parallel: false, force: true });
   }
   return ignored.length ? 1 : 0;
 }

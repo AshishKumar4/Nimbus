@@ -20,6 +20,10 @@ import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const FILES = 3000;
+// The VFS stamps inodes with Date.now(). One frozen second makes every index
+// entry racily clean (its mtime is not older than the index's own), the case
+// in which git's add refreshes the index in memory and still writes it once.
+Date.now = () => Date.parse('2026-01-01T00:00:00Z');
 const REPO = 'home/user/repo';
 
 const harness = createSqliteVfsTestHarness();
@@ -87,12 +91,13 @@ assert.ok(peakFilesInFlight <= 2, `add -A held ${peakFilesInFlight} files at onc
 await git('commit', '-qm', 'base');
 assert.equal(await git('status'), 'nothing to commit, working tree clean\n');
 
-// Deletions stage under one index write too.
+// Deletions stage under one index write too, the refresh of the racily clean
+// entries included: git refreshes in memory and writes the index once.
 for (let i = 0; i < FILES; i += 2) user.unlink(`${REPO}/${i % 3 ? '' : 'nested/dir/'}f${i}.txt`);
 user.writeFile(`${REPO}/f1.txt`, 'edited\n');
 indexWrites = 0;
 await git('add', '-A');
-assert.ok(indexWrites <= 2, `add -A of ${FILES / 2} deletions and an edit wrote the index ${indexWrites} times`);
+assert.equal(indexWrites, 1, `add -A of ${FILES / 2} deletions and an edit wrote the index ${indexWrites} times`);
 await git('commit', '-qm', 'prune');
 assert.equal(await git('status'), 'nothing to commit, working tree clean\n');
 
