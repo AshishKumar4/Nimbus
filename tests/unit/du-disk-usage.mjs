@@ -119,6 +119,17 @@ try {
   await same(['-t', '5K', 'd'], { sorted: true });
   await same(['--exclude=deep', 'd'], { sorted: true });
   await same(['-l', '-x', '-s', 'd']);
+  // A link back to its own directory: -L walks into it once, and a directory
+  // already on the path (same dev, ino) is skipped, unlisted, not an error.
+  symlinkSync('.', join(disk, 'd/sub/loop'));
+  root.symlink('.', 'tmp/w/d/sub/loop');
+  await same(['-sL', 'd/sub/loop']);
+  await same(['-L', 'd'], { sorted: true });
+  await same(['-aL', 'd'], { sorted: true });
+  await same(['-s', 'd/sub/loop']);
+  await same(['d/sub/loop/deep']);
+  rmSync(join(disk, 'd/sub/loop'));
+  root.unlink('tmp/w/d/sub/loop');
   await same(['-d', 'x', 'd']);
   await same(['-d', '1', '-s', 'd']);
   await same(['-d', '0', '-s', 'd']);

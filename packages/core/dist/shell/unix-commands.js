@@ -3216,10 +3216,19 @@ function mkDu(vfs) {
             return code === 'EACCES' ? 'Permission denied' : code === 'ENOTDIR' ? 'Not a directory' : 'No such file or directory';
         };
         // Bytes at and below `vfsPath`, printed as `name` (a directory under -S: its own files only).
+        // The directories on the current path, by (dev, ino): one met again is a
+        // cycle a followed link made, and is skipped, unlisted, as GNU's fts does.
+        const onPath = new Set();
         async function walk(vfsPath, name, depth) {
             let st;
+            const following = follow === 'always' || (follow === 'operands' && depth === 0);
             try {
-                st = follow === 'always' || (follow === 'operands' && depth === 0) ? await vfs.stat(vfsPath) : await vfs.lstat(vfsPath);
+                st = following ? await vfs.stat(vfsPath) : await vfs.lstat(vfsPath);
+                // A directory reached through a link is walked from where it is, as fts
+                // walks by descriptor: its children are never resolved through the
+                // link again (a path through `loop -> .` would grow without end).
+                if (following && st.type === 'directory')
+                    vfsPath = await vfs.realpath(vfsPath);
             }
             catch (e) {
                 await ctx.stderr.write(`du: cannot access '${name}': ${why(e)}\n`);
@@ -3230,6 +3239,8 @@ function mkDu(vfs) {
             // Each inode counts once (a hard link, or a link -L follows to a file
             // already counted), unless -l; one met again is not listed either.
             const inode = `${st.dev ?? 0}:${st.ino ?? vfsPath}`;
+            if (st.type === 'directory' && onPath.has(inode))
+                return { size: 0, dir: true };
             if (!countLinks && seen.has(inode))
                 return { size: 0, dir: st.type === 'directory' };
             seen.add(inode);
@@ -3250,6 +3261,7 @@ function mkDu(vfs) {
                 await ctx.stderr.write(`du: cannot read directory '${name}': ${why(e)}\n`);
                 failed = true;
             }
+            onPath.add(inode);
             for (const e of entries) {
                 const childName = `${base}${e.name}`;
                 if (excluded(e.name, childName))
@@ -3259,6 +3271,7 @@ function mkDu(vfs) {
                 if (!child.dir)
                     own += child.size;
             }
+            onPath.delete(inode);
             const printed = separateDirs ? own : size;
             if (printable && shown(printed))
                 await ctx.stdout.write(`${fmt(printed)}\t${name}${end}`);
