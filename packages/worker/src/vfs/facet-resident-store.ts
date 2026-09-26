@@ -358,14 +358,30 @@ async function __residentEnsureRoom(bytes) {
 }
 
 /**
- * What holding a cell of \`size\` costs the database: its bytes on overflow
- * pages (1% over, for page headers and the b-tree pages above them), a row
- * per chunk and head, and a page of slack.
+ * What holding a cell costs the database: its bytes (a text cell's UTF-8
+ * length) on overflow pages (1% over, for page headers and the b-tree pages
+ * above them), a row per chunk and head, and a page of slack. The manager
+ * charges a launch's module map the same way (manager.ts residentCellCost).
  */
-function __residentCellBytes(size, isText) {
+function __residentCellCost(cell) {
+  const isText = typeof cell === "string";
+  const size = isText ? cell.length : __residentBytes(cell).byteLength;
   const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
-  return Math.ceil((isText ? size * 3 : size) * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
+  return Math.ceil((isText ? __residentUtf8Length(cell) : size) * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
+}
+
+function __residentUtf8Length(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
+    // A surrogate pair is one 4-byte character; a lone surrogate encodes as 3.
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
 }
 
 /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
@@ -373,7 +389,7 @@ async function __residentRoomForPushed(result) {
   if (__residentCap === null || !result || !Array.isArray(result.paths)) return;
   let bytes = 0;
   for (const entry of result.paths) {
-    if (entry && entry.bytes != null) bytes += __residentCellBytes(__residentBytes(entry.bytes).byteLength, false);
+    if (entry && entry.bytes != null) bytes += __residentCellCost(__residentBytes(entry.bytes));
   }
   if (bytes > 0) await __residentEnsureRoom(bytes);
 }
@@ -821,7 +837,7 @@ function __residentPut(sql, path, cell, rev, ckey) {
   const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
   // Not admitted: nothing is held for the path (its old bytes are gone above).
-  if (!__residentFits(__residentCellBytes(size, isText), stamp !== __RK_OWN_WRITE)) {
+  if (!__residentFits(__residentCellCost(cell), stamp !== __RK_OWN_WRITE)) {
     sql.exec("DELETE FROM file WHERE path = ?", path);
     if (stamp === __RK_OWN_WRITE) __residentHold(path, cell);
     return false;
@@ -1426,7 +1442,19 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   }
   // A store with no cursor holds nothing any incarnation can date.
   __residentClear();
-  const adopted = __residentAdoptModuleBundle(takeBundle(), moduleCursor);
+  const bundle = takeBundle();
+  // The module map is the program's code: it is held whole or the launch
+  // fails. Spawn admitted it (N18); this is room for it now, asked for when
+  // the store's cap does not already cover it.
+  let moduleBytes = 0;
+  for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  if (!(await __residentEnsureRoom(moduleBytes))) {
+    throw Object.assign(new Error(
+      "ENOSPC: workspace storage is full: this process's modules (" + Math.ceil(moduleBytes / 1048576)
+        + " MiB) do not fit in what is left of the session's storage"
+    ), { code: "ENOSPC" });
+  }
+  const adopted = __residentAdoptModuleBundle(bundle, moduleCursor);
   // The pass that just failed is not retried. The store now holds what a
   // cold launch whose fill failed holds, and its first ACQUIRE's delta
   // brings it current the same way.

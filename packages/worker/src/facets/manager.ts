@@ -1363,6 +1363,20 @@ type FacetVfsDenial = { error: 'EACCES' };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
 type FacetVfsMetadata = Pick<VfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid'>;
 
+/**
+ * What the facet store charges itself to hold one cell (facet-resident-store's
+ * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
+ * length) plus 1%, a row per chunk and head, and a page of slack.
+ */
+function residentCellCost(cell: string | Uint8Array): number {
+  const isText = typeof cell === 'string';
+  const size = isText ? cell.length : cell.byteLength;
+  const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
+  const chunks = Math.max(1, Math.ceil(size / limit));
+  const bytes = isText ? new TextEncoder().encode(cell).byteLength : size;
+  return Math.ceil(bytes * 1.01) + (chunks + 1) * LEDGER_ROW_BYTES + 4096;
+}
+
 interface FacetVfsState {
   // hardening-r5: bundle cells may be Uint8Array for binary content
   // (images, wasm modules, sqlite blobs, etc.). Pre-fix every cell was
@@ -4774,11 +4788,17 @@ export class FacetManager {
     });
     trace(`planned ${plan.paths.length}`);
     // What the facet's store will hold (N18), in the cost its store charges
-    // itself (facet-resident-store's __residentCellBytes): the planned bytes on
+    // itself (facet-resident-store's __residentCellCost): the planned bytes on
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
     const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
-    const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + 65_536;
+    // And the module map, which the store adopts at boot: the process's code.
+    let moduleBytes = 0;
+    for (const cell of Object.values(vfsState.bundle)) {
+      // A denial is a head row only.
+      moduleBytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
+    }
+    const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
     return { paths: plan.paths, storageBytes };
   }
 
