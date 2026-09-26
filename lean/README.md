@@ -15,7 +15,7 @@ remains unproven.
 | Build | `cd lean && lake build` | every proof checks, no `sorry` |
 | Axiom audit + manifest | `cd lean && node check-traceability.mjs` | every theorem enrolled in `Nimbus/Axioms.lean`, depending only on `propext`, `Classical.choice`, `Quot.sound`; every requirement's theorems exist, its `tsRefs` resolve, its fixtures are bridged to a test that reads them |
 | Manifest only (no Lean) | `cd lean && node check-traceability.mjs --manifest-only` | the drift part of the above |
-| Negative gate | `cd lean && bash check-no-false.sh` | the probes in `scratch-verification/` (proofs of `False` from tempting axioms) still fail, each for its declared reason; the control compiles |
+| Negative gate | `cd lean && bash check-no-false.sh` | the probes in `negative-probes/` (proofs of `False` from tempting axioms) still fail, each for its declared reason; the control compiles |
 | Fixtures are the models' output | `cd lean && lake build fixtures && .lake/build/bin/fixtures fixtures` then `git diff lean/fixtures` | |
 | Refinement (deployed code on the fixtures) | the unit files `traceability.yaml` names, e.g. `bun tests/unit/revision-floor-refinement.mjs` | |
 | All of it as a unit file | `bun tests/unit/lean-proofs.mjs` (about 20 s from a clean `lean/.lake`) | |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Negative regression gate for the Lean corpus.
 #
-# `scratch-verification/` holds machine-checked proofs of `False` derived from
+# `negative-probes/` holds machine-checked proofs of `False` derived from
 # axioms that are tempting to add to this library and false. Each must NEVER compile: if one does,
 # someone reintroduced a convenient axiom and the corpus is inconsistent again
 # (every theorem in it becomes vacuously derivable).
@@ -25,7 +25,7 @@
 # directory, a moved `$ELAN_HOME`, a `lake env lean` that cannot find the
 # library. `lake build` succeeding does not cover that — `lake env lean <file>`
 # is a different invocation with a different search path, and it is the one the
-# probes use. `scratch-verification/Control.lean` must COMPILE through exactly
+# probes use. `negative-probes/Control.lean` must COMPILE through exactly
 # that invocation first.
 #
 # Exits 0 only when (1) the library builds, (2) the control compiles, (3) every
@@ -38,7 +38,7 @@ cd "$(dirname "$0")"
 LAKE="${LAKE:-lake}"
 command -v "$LAKE" >/dev/null 2>&1 || LAKE="$HOME/.elan/bin/lake"
 
-PROBE_DIR=scratch-verification
+PROBE_DIR=negative-probes
 CONTROL="$PROBE_DIR/Control.lean"
 
 # ── THE FAMILIES, as three parallel arrays ────────────────────────────────────

@@ -22,7 +22,8 @@ def fixtures : List (String × String) :=
    -- process-files.json (ProcessFilesCases.fixture): emitted again when the cutover adds its bridge (VFS-PF-001)
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture),
-   ("quiesce.json", QuiesceCases.fixture)]
+   ("quiesce.json", QuiesceCases.fixture),
+   ("beneath.json", BeneathCases.fixture)]
    -- n18-ledger.json (LedgerCases.fixture) and n17-hydration.json (HydrationCases.fixture):
    -- emitted again when their bridges exist (N18-001, N17-001)
 
