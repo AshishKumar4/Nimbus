@@ -432,6 +432,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_named
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_root_searched
 #print axioms Nimbus.Vfs.CompositeBeneath.walkB_agrees
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_agrees
 #print axioms Nimbus.Vfs.CompositeBeneath.beneath_across_mounts

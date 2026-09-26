@@ -10,13 +10,16 @@
   absolute link; an absolute `path`. `..` elsewhere pops one component, so at a
   mount's root it goes to the mount point's parent, and across the composite's own
   directories above a mount it is the same pop: there is no other way up.
-  Directories above `R` are not searched (the preopen holds `R`).
+  The root itself is resolved by name first: every directory from `/` down to `R`
+  must grant search, else EACCES (as Nimbus re-resolves a descriptor root by path).
 
   Proved:
   - `beneath_contained`: whatever `resolve(R, path)` resolves to lies at or under `R`,
     through any number of links, `..`, mounts and directories above them.
   - `beneath_named`: every directory it passes from `R` down is a directory granting
-    the caller search.
+    the caller search; `beneath_root_searched`: so does every directory from `/` to
+    `R`, because the root is resolved by name first (EACCES otherwise: stricter than
+    Linux, which trusts the preopen's descriptor, and never looser).
   - `beneath_agrees`: when it resolves, it resolves to exactly what the unrestricted
     walk from `R` does: the refusals only refuse, they never pick another file.
   - `beneath_across_mounts` (decided, the f6f6fa6e shape): from a root above a mount
@@ -53,9 +56,16 @@ def walkB (S : St) (c : Cred) (follow : Bool) (R : Path) : Nat → Nat → Path 
       | some (.dir, _) => walkB S c follow R n h q rs
       | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
 
+/-- The root is resolved by name from `/` (a descriptor root re-resolves by its path):
+    every directory above it, and it, must grant the caller search before the walk
+    leaves it. Stricter than Linux (which trusts the open descriptor), never looser. -/
+def rootDenied (S : St) (c : Cred) (R : Path) : Bool :=
+  (List.range R.length).any fun i => !grants c (metaAt S (R.take i)) 1
+
 /-- `path` (its components; `abs` when it began with `/`) resolved beneath `R`. -/
 def resolveB (S : St) (c : Cred) (follow : Bool) (R : Path) (abs : Bool) (raw : List String) : Except String Path :=
-  if abs then .error "ENOTCAPABLE" else walkB S c follow R fuel maxLinks R raw
+  if rootDenied S c R then .error "EACCES"
+  else if abs then .error "ENOTCAPABLE" else walkB S c follow R fuel maxLinks R raw
 
 /-! ## Contained -/
 
@@ -105,6 +115,8 @@ theorem walkB_contained (S : St) (c : Cred) (f : Bool) (R : Path) :
 theorem beneath_contained (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
     (h : resolveB S c f R abs raw = .ok p) : R <+: p := by
   unfold resolveB at h
+  split at h
+  · cases h
   split at h
   · cases h
   · exact walkB_contained S c f R _ _ _ _ p (List.prefix_refl R) h
@@ -187,8 +199,23 @@ theorem beneath_named (S : St) (c : Cred) (f : Bool) (R : Path) (hR : IsDir S R)
   unfold resolveB at h
   split at h
   · cases h
+  split at h
+  · cases h
   · exact walkB_named S c f R _ _ _ _ p (List.prefix_refl R)
       (fun i h1 h2 => absurd h2 (by omega)) hR h
+
+/-- What resolves beneath a root the caller could name: every directory from `/` to the
+    root granted search too. -/
+theorem beneath_root_searched (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
+    (h : resolveB S c f R abs raw = .ok p) : ∀ i < R.length, grants c (metaAt S (R.take i)) 1 = true := by
+  unfold resolveB at h
+  split at h
+  · cases h
+  · rename_i hd
+    intro i hi
+    simp only [rootDenied, List.any_eq_true, List.mem_range, Bool.not_eq_true', not_exists, not_and,
+      Bool.not_eq_false] at hd
+    exact hd i hi
 
 /-! ## The refusals only refuse -/
 
@@ -246,6 +273,8 @@ theorem walkB_agrees (S : St) (c : Cred) (f : Bool) (R : Path) :
 theorem beneath_agrees (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
     (h : resolveB S c f R abs raw = .ok p) : walk S c f fuel maxLinks R raw = .ok p := by
   unfold resolveB at h
+  split at h
+  · cases h
   split at h
   · cases h
   · exact walkB_agrees S c f R _ _ _ _ p h

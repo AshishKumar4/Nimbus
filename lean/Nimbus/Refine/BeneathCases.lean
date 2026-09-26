@@ -98,7 +98,7 @@ def directed : Json :=
 def fixture : String :=
   fixtureText [("fixture", .str "beneath"), ("model", .str "Nimbus.Vfs.CompositeBeneath.resolveB"),
       ("principals", .arr (creds.map credJson)),
-      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root, an absolute link, or an absolute path; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves")]
+      ("note", .str "a lookup of path beneath root (a preopen, RESOLVE_BENEATH) through the composite, the root first resolved from / (EACCES unless every directory from / to root grants search), then as composite-perm's walk (search checked on every directory left from root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at root, an absolute link, or an absolute path; .. elsewhere pops one component, so at a mount's root it reaches the mount point's parent; a missing last component resolves")]
     ([directed] ++ runGen 0x42454E45 (casesOf 150 genCase))
 
 end Nimbus.Refine.BeneathCases
