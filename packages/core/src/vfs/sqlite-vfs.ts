@@ -243,7 +243,12 @@ export interface CredentialedVfs {
   readFileString(path: string): string;
   stat(path: string): VfsStat;
   lstat(path: string): VfsStat;
-  utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
+  /**
+   * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
+   * Only now/omit needs no more than write permission or ownership; an
+   * explicit time needs ownership. `followSymlinks: false` sets a link's own.
+   */
+  utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): void;
   chmod(path: string, mode: number): void;
   /**
    * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as
@@ -2139,7 +2144,7 @@ export class SqliteVFS {
       readFileString: (path) => this.readFileString(path, bound),
       stat: (path) => this.stat(path, bound, true),
       lstat: (path) => this.stat(path, bound, false),
-      utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
+      utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
       chmod: (path, mode) => this.chmod(path, mode, bound),
       setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
       getDefaultAcl: (path) => this.getDefaultAcl(path, bound),
@@ -4235,22 +4240,26 @@ export class SqliteVFS {
 
   private utimes(
     path: string,
-    atimeMs: number | null,
-    mtimeMs: number | null,
+    atimeMs: number | null | undefined,
+    mtimeMs: number | null | undefined,
     cred: VfsCred,
+    followLeaf = true,
   ): void {
-    const resolved = this.checkAccess(path, 0, cred);
+    const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     this.assertMutationsAllowed([inode.path]);
-    const useNow = atimeMs === null && mtimeMs === null;
+    // Nothing explicit: only now (null) and omit (undefined).
+    const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
     if (useNow) {
       if (!this.accessInode(inode, 0o2, cred)) throw vfsError('EACCES', resolved.path);
     } else if (cred.uid !== 0 && cred.uid !== inode.uid) {
       throw vfsError('EPERM', resolved.path);
     }
-    const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
-    const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+    const at = (value: number | null | undefined, kept: number): number => (
+      value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
+    const atime = at(atimeMs, inode.atime);
+    const mtime = at(mtimeMs, inode.mtime);
     this.publishMetadata(inode, { atime, mtime });
   }
 

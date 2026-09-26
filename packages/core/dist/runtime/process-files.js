@@ -445,8 +445,13 @@ export class ProcessView {
             await this.process.chown(path, uid, gid);
         });
     }
-    async utimes(path, atimeMs, mtimeMs) {
-        await this.call(path, () => this.process.utimes(path, atimeMs, mtimeMs));
+    /**
+     * utimensat(2): null is now, undefined leaves that time (only those need
+     * no more than write permission or ownership); an explicit time needs
+     * ownership. `follow: false` sets a link's own times.
+     */
+    async utimes(path, atimeMs, mtimeMs, options) {
+        await this.call(path, () => this.process.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
     }
     /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
     async copy(from, to, options) {
@@ -462,8 +467,8 @@ export class ProcessView {
         await this.call(path, async () => {
             const handle = await this.process.open(path, { write: true, create: true });
             await this.process.close(handle.id);
-            const now = Date.now();
-            await this.process.utimes(path, now, now);
+            // UTIME_NOW: write permission is enough, as for touch(1).
+            await this.process.utimes(path, null, null);
         });
     }
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
@@ -640,7 +645,9 @@ export class NamespaceFs {
         }
         this.fs.chown(path, uid, gid);
     }
-    utimes(path, atimeMs, mtimeMs) { this.fs.utimes(path, atimeMs, mtimeMs); }
+    utimes(path, atimeMs, mtimeMs, options) {
+        this.fs.utimes(path, atimeMs, mtimeMs, options);
+    }
     copyFile(from, to) { this.fs.copyFile(from, to); }
     acquireExclusiveMutation(path, options) {
         return this.fs.acquireExclusiveMutation(path, options);

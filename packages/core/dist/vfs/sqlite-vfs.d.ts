@@ -103,7 +103,14 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
-    utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
+    /**
+     * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
+     * Only now/omit needs no more than write permission or ownership; an
+     * explicit time needs ownership. `followSymlinks: false` sets a link's own.
+     */
+    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+        followSymlinks?: boolean;
+    }): void;
     chmod(path: string, mode: number): void;
     /**
      * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as

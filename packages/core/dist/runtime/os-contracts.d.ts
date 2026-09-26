@@ -222,7 +222,8 @@ export interface RuntimeFsBridge {
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
-    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: {
+    /** utimensat(2): null is now, undefined leaves that time; `followSymlinks: false` sets a link's own times. */
+    utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** Set permission bits (POSIX chmod — follows symlinks). */

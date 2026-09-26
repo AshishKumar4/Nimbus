@@ -51,7 +51,8 @@ class SedParseError extends Error {
   }
 }
 
-type SedScriptCursor = { expr: string; i: number };
+/** `extended`: -E/-r, where `(` groups and `\\(` is a literal parenthesis. */
+type SedScriptCursor = { expr: string; i: number; extended: boolean };
 
 type SedRegexRecord = { source?: string; flags?: string };
 
@@ -103,12 +104,14 @@ function pullFrom(lines: Iterator<SedLogicalLine>): SedLineSource {
 type SedCommandOptions = {
   inPlace: boolean;
   quiet: boolean;
+  /** -E, -r, --regexp-extended: POSIX extended regular expressions. */
+  extended: boolean;
   expressions: string[];
   files: string[];
 };
 
-function parseSedScript(expr: string): SedCommand[] {
-  const cur: SedScriptCursor = { expr, i: 0 };
+function parseSedScript(expr: string, extended: boolean): SedCommand[] {
+  const cur: SedScriptCursor = { expr, i: 0, extended };
   const commands: SedCommand[] = [];
 
   for (;;) {
@@ -217,7 +220,7 @@ function parseDelimitedRegex(cur: SedScriptCursor): SedAddress {
   }
   if (!closed) throw new SedParseError(cur.expr);
 
-  const source = toJavascriptPattern(raw);
+  const source = toJavascriptPattern(raw, cur.extended);
   if (source === '') return { kind: 'empty' };
   try {
     return { kind: 'regex', regex: new RegExp(source) };
@@ -289,7 +292,7 @@ function parseSubstitution(cur: SedScriptCursor): Pick<SedCommand, 'type' | 'pat
     let flags = '';
     if (global) flags += 'g';
     if (insensitive) flags += 'i';
-    const pattern = new RegExp(toJavascriptPattern(patternStr), flags);
+    const pattern = new RegExp(toJavascriptPattern(patternStr, cur.extended), flags);
     return { type: 's', pattern, replacement, global, insensitive, print: flagStr.includes('p') };
   } catch {
     throw new SedParseError(cur.expr);
@@ -329,12 +332,13 @@ function isDigit(value: string | undefined): boolean {
   return code >= 48 && code <= 57;
 }
 
-function toJavascriptPattern(pattern: string): string {
+function toJavascriptPattern(pattern: string, extended: boolean): string {
   let result = '';
   for (let i = 0; i < pattern.length; i++) {
     const char = pattern[i];
     const next = pattern[i + 1];
-    if (char === '\\' && (next === '(' || next === ')' || next === '/')) {
+    // A BRE's `\(`/`\)` group; an ERE's are literal parentheses, as JavaScript's are.
+    if (char === '\\' && (next === '/' || (!extended && (next === '(' || next === ')')))) {
       result += next;
       i++;
       continue;
@@ -465,7 +469,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
   const commands: SedCommand[] = [];
   for (const expr of options.expressions) {
     try {
-      commands.push(...parseSedScript(expr));
+      commands.push(...parseSedScript(expr, options.extended));
     } catch (e) {
       if (e instanceof SedParseError) {
         await ctx.stderr.write(`sed: invalid expression: ${expr}\n`);
@@ -625,6 +629,7 @@ function parseSedArgs(args: string[]): SedCommandOptions {
   const options: SedCommandOptions = {
     inPlace: false,
     quiet: false,
+    extended: false,
     expressions: [],
     files: [],
   };
@@ -638,6 +643,10 @@ function parseSedArgs(args: string[]): SedCommandOptions {
     }
     if (arg === '-n' || arg === '--quiet' || arg === '--silent') {
       options.quiet = true;
+      continue;
+    }
+    if (arg === '-E' || arg === '-r' || arg === '--regexp-extended') {
+      options.extended = true;
       continue;
     }
     if (arg === '-e') {
@@ -668,6 +677,10 @@ function parseSedShortCluster(options: SedCommandOptions, arg: string, args: str
     }
     if (flag === 'i') {
       options.inPlace = true;
+      continue;
+    }
+    if (flag === 'E' || flag === 'r') {
+      options.extended = true;
       continue;
     }
     if (flag === 'e') {

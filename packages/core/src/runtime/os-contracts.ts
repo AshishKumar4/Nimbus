@@ -271,7 +271,8 @@ export interface RuntimeFsBridge {
   }): Awaitable<VfsMutationReceipt>;
   /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
-  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
+  /** utimensat(2): null is now, undefined leaves that time; `followSymlinks: false` sets a link's own times. */
+  utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
   chmod(path: RuntimeFsPath, mode: number): Awaitable<VfsMutationReceipt>;
   /** Check access using the bridge's process credential. */

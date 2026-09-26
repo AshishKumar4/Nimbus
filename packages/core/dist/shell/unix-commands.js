@@ -22,7 +22,7 @@ import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
-import { isCharacterDevice, fileTypeChar, statOrThrow } from '../vfs/vfs.js';
+import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
  * registry takes a command context; the ones registered below read the string
@@ -3027,68 +3027,365 @@ function mkTee(vfs) {
  * `-h` only — `-sh` is a single arg containing both flags. POSIX
  * conformant short-flag stacking.
  */
+/**
+ * GNU du's human-readable size (-h, or --si with `base` 1000): rounded up,
+ * one decimal below 10 of a unit, whole units from 10 up, bytes below one unit.
+ */
+function duHuman(bytes, base) {
+    if (bytes < base)
+        return String(bytes);
+    const units = base === 1024 ? ['K', 'M', 'G', 'T', 'P', 'E'] : ['k', 'M', 'G', 'T', 'P', 'E'];
+    let value = bytes / base;
+    let unit = 0;
+    for (;;) {
+        const shown = value < 10 ? Math.ceil(value * 10) / 10 : Math.ceil(value);
+        if (shown < base || unit === units.length - 1) {
+            return `${shown < 10 ? shown.toFixed(1) : String(shown)}${units[unit]}`;
+        }
+        value /= base;
+        unit++;
+    }
+}
+/** A GNU size argument (`-B`, `-t`): digits, a unit (K, KiB: 1024s; KB: 1000s; M, G, T, P, E), or both. */
+function parseDuSize(text) {
+    const m = /^(-?\d*)([KMGTPE](?:iB|B)?|[kKMGTPE]B?)?$/.exec(text);
+    if (!m || (m[1] === '' || m[1] === '-') && !m[2])
+        return null;
+    const powers = 'KMGTPE';
+    let factor = 1;
+    if (m[2]) {
+        const letter = m[2][0].toUpperCase();
+        const base = m[2].length === 2 && m[2][1] === 'B' ? 1000 : 1024;
+        factor = base ** (powers.indexOf(letter) + 1);
+    }
+    const count = m[1] === '' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
+    // A unit alone is also the suffix du prints; GNU spells the 1000-based kilo `kB`.
+    const suffix = m[1] === '' ? (m[2] ?? '').replace(/^[kK]B$/, 'kB') : '';
+    return { bytes: count * factor, suffix };
+}
+/** A shell glob (`*`, `?`, `[...]`) as a whole-string regular expression, for --exclude. */
+function duGlob(pattern) {
+    let source = '';
+    for (const ch of pattern)
+        source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.+^${}()|\\/]/g, '\\$&');
+    return new RegExp(`^${source}$`);
+}
+/**
+ * du: disk usage, as GNU du reports it. The VFS allocates a file ceil(size /
+ * 512) 512-byte blocks (stat's %b), a directory or a link none; with
+ * --apparent-size (-b) a file or link counts its size. Each operand (default
+ * `.`) is printed as named, its descendants below it with '/', directories
+ * after what they hold, down to -d levels. An entry that cannot be read is
+ * reported and skipped, and du then exits 1, as GNU does.
+ */
 function mkDu(vfs) {
     return async (ctx) => {
-        // Parse flags supporting stacked short flags like `-sh`, `-ah`.
-        let showAll = false, human = false, sumOnly = false;
-        const positional = [];
-        for (const a of ctx.args) {
-            if (a.startsWith('-') && a !== '-' && !a.startsWith('--')) {
-                for (const ch of a.slice(1)) {
-                    if (ch === 'a')
+        let showAll = false, sumOnly = false, total = false, apparent = false, separateDirs = false, nul = false;
+        let countLinks = false;
+        let human = null;
+        let block = { bytes: 1024, suffix: '' };
+        let maxDepth = null;
+        let threshold = 0;
+        let follow = 'never';
+        const excludes = [];
+        const operands = [];
+        const usage = async (text) => {
+            await ctx.stderr.write(`du: ${text}\nTry 'du --help' for more information.\n`);
+            return 1;
+        };
+        const setBlock = async (text, option) => {
+            const size = parseDuSize(text);
+            if (!size || size.bytes <= 0) {
+                await ctx.stderr.write(`du: invalid ${option} argument '${text}'\n`);
+                return false;
+            }
+            block = size;
+            human = null;
+            return true;
+        };
+        const setDepth = async (text) => {
+            if (!/^\d+$/.test(text)) {
+                await usage(`invalid maximum depth '${text}'`);
+                return false;
+            }
+            maxDepth = Number(text);
+            return true;
+        };
+        const setThreshold = async (text) => {
+            const size = parseDuSize(text);
+            if (!size || (size.bytes === 0 && text.startsWith('-'))) {
+                await usage(`invalid --threshold argument '${text}'`);
+                return false;
+            }
+            threshold = size.bytes;
+            return true;
+        };
+        const args = ctx.args;
+        let options = true;
+        for (let i = 0; i < args.length; i++) {
+            const a = args[i];
+            if (!options || a === '-' || !a.startsWith('-')) {
+                operands.push(a);
+                continue;
+            }
+            if (a === '--') {
+                options = false;
+                continue;
+            }
+            if (a.startsWith('--')) {
+                const eq = a.indexOf('=');
+                const name = eq < 0 ? a : a.slice(0, eq);
+                const valued = ['--max-depth', '--block-size', '--threshold', '--exclude'];
+                let value = eq < 0 ? undefined : a.slice(eq + 1);
+                if (valued.includes(name) && value === undefined) {
+                    value = args[++i];
+                    if (value === undefined)
+                        return await usage(`option '${name}' requires an argument`);
+                }
+                switch (name) {
+                    case '--all':
                         showAll = true;
-                    else if (ch === 'h')
-                        human = true;
-                    else if (ch === 's')
+                        break;
+                    case '--human-readable':
+                        human = 1024;
+                        break;
+                    case '--si':
+                        human = 1000;
+                        break;
+                    case '--summarize':
                         sumOnly = true;
+                        break;
+                    case '--total':
+                        total = true;
+                        break;
+                    case '--apparent-size':
+                        apparent = true;
+                        break;
+                    case '--bytes':
+                        apparent = true;
+                        block = { bytes: 1, suffix: '' };
+                        human = null;
+                        break;
+                    case '--kilobytes':
+                        block = { bytes: 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case '--megabytes':
+                        block = { bytes: 1024 * 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case '--separate-dirs':
+                        separateDirs = true;
+                        break;
+                    case '--null':
+                        nul = true;
+                        break;
+                    case '--dereference':
+                        follow = 'always';
+                        break;
+                    case '--dereference-args':
+                        follow = 'operands';
+                        break;
+                    case '--no-dereference':
+                        follow = 'never';
+                        break;
+                    case '--count-links':
+                        countLinks = true;
+                        break;
+                    case '--one-file-system': break;
+                    case '--max-depth':
+                        if (!(await setDepth(value)))
+                            return 1;
+                        break;
+                    case '--block-size':
+                        if (!(await setBlock(value, '--block-size')))
+                            return 1;
+                        break;
+                    case '--threshold':
+                        if (!(await setThreshold(value)))
+                            return 1;
+                        break;
+                    case '--exclude':
+                        excludes.push(duGlob(value));
+                        break;
+                    case '--time':
+                    case '--time-style':
+                    case '--exclude-from':
+                    case '--files0-from':
+                    case '--inodes':
+                        await ctx.stderr.write(`du: ${name} is not supported here\n`);
+                        return 1;
+                    default: return await usage(`unrecognized option '${a}'`);
                 }
+                continue;
             }
-            else if (a.startsWith('--')) {
-                if (a === '--all')
-                    showAll = true;
-                else if (a === '--human-readable')
-                    human = true;
-                else if (a === '--summarize')
-                    sumOnly = true;
-            }
-            else {
-                positional.push(a);
+            for (let j = 1; j < a.length; j++) {
+                const ch = a[j];
+                const valued = 'dBt'.includes(ch);
+                const value = valued ? (a.slice(j + 1) || args[++i]) : undefined;
+                if (valued && value === undefined)
+                    return await usage(`option requires an argument -- '${ch}'`);
+                switch (ch) {
+                    case 'a':
+                        showAll = true;
+                        break;
+                    case 'h':
+                        human = 1024;
+                        break;
+                    case 's':
+                        sumOnly = true;
+                        break;
+                    case 'c':
+                        total = true;
+                        break;
+                    case 'b':
+                        apparent = true;
+                        block = { bytes: 1, suffix: '' };
+                        human = null;
+                        break;
+                    case 'k':
+                        block = { bytes: 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case 'm':
+                        block = { bytes: 1024 * 1024, suffix: '' };
+                        human = null;
+                        break;
+                    case 'S':
+                        separateDirs = true;
+                        break;
+                    case '0':
+                        nul = true;
+                        break;
+                    case 'L':
+                        follow = 'always';
+                        break;
+                    case 'H':
+                    case 'D':
+                        follow = 'operands';
+                        break;
+                    case 'P':
+                        follow = 'never';
+                        break;
+                    case 'l':
+                        countLinks = true;
+                        break;
+                    case 'x': break;
+                    case 'd':
+                        if (!(await setDepth(value)))
+                            return 1;
+                        break;
+                    case 'B':
+                        if (!(await setBlock(value, '-B')))
+                            return 1;
+                        break;
+                    case 't':
+                        if (!(await setThreshold(value)))
+                            return 1;
+                        break;
+                    case 'X':
+                        await ctx.stderr.write('du: -X is not supported here\n');
+                        return 1;
+                    default: return await usage(`invalid option -- '${ch}'`);
+                }
+                if (valued)
+                    break;
             }
         }
-        const target = positional[0] || '.';
-        const root = resolvePath(ctx.cwd, target);
-        const fmt = (b) => human ? (b >= 1e6 ? (b / 1e6).toFixed(1) + 'M' : b >= 1e3 ? (b / 1e3).toFixed(1) + 'K' : b + 'B') : String(Math.ceil(b / 1024));
-        let total = 0;
-        async function walk(path) {
-            let size = 0;
+        if (showAll && sumOnly)
+            return await usage('cannot both summarize and show all entries');
+        if (sumOnly && maxDepth !== null && maxDepth !== 0)
+            return await usage(`warning: summarizing conflicts with --max-depth=${maxDepth}`);
+        if (sumOnly && maxDepth === 0)
+            await ctx.stderr.write('du: warning: summarizing is the same as using --max-depth=0\n');
+        if (sumOnly)
+            maxDepth = 0;
+        if (operands.length === 0)
+            operands.push('.');
+        const end = nul ? '\0' : '\n';
+        const fmt = (bytes) => (human !== null
+            ? duHuman(bytes, human)
+            : `${Math.ceil(bytes / block.bytes)}${block.suffix}`);
+        const usageOf = (st) => (apparent
+            ? (st.type === 'directory' ? 0 : st.size)
+            : (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0));
+        const shown = (bytes) => (threshold >= 0 ? bytes >= threshold : bytes <= -threshold);
+        const excluded = (name, path) => excludes.some((re) => re.test(name) || re.test(path));
+        let failed = false;
+        let grand = 0;
+        const seen = new Set();
+        const why = (e) => {
+            const code = e?.code;
+            return code === 'EACCES' ? 'Permission denied' : code === 'ENOTDIR' ? 'Not a directory' : 'No such file or directory';
+        };
+        // Bytes at and below `vfsPath`, printed as `name` (a directory under -S: its own files only).
+        // The directories on the current path, by (dev, ino): one met again is a
+        // cycle a followed link made, and is skipped, unlisted, as GNU's fts does.
+        const onPath = new Set();
+        async function walk(vfsPath, name, depth) {
+            let st;
+            const following = follow === 'always' || (follow === 'operands' && depth === 0);
             try {
-                const entries = (await vfs.readdir(path));
-                for (const e of entries) {
-                    const fp = path + '/' + e.name;
-                    if (e.type === 'directory') {
-                        const dirSize = (await walk(fp));
-                        size += dirSize;
-                        if (!sumOnly)
-                            (await ctx.stdout.write(`${fmt(dirSize)}\t/${fp}\n`));
-                    }
-                    else {
-                        try {
-                            const st = (await statOrThrow(vfs, fp));
-                            size += st.size;
-                            if (showAll && !sumOnly)
-                                (await ctx.stdout.write(`${fmt(st.size)}\t/${fp}\n`));
-                        }
-                        catch { }
-                    }
-                }
+                st = following ? await statOrThrow(vfs, vfsPath) : await lstatOrThrow(vfs, vfsPath);
+                // A directory reached through a link is walked from where it is, as fts
+                // walks by descriptor: its children are never resolved through the
+                // link again (a path through `loop -> .` would grow without end).
+                if (following && st.type === 'directory')
+                    vfsPath = await vfs.realpath(vfsPath);
             }
-            catch { }
-            return size;
+            catch (e) {
+                await ctx.stderr.write(`du: cannot access '${name}': ${why(e)}\n`);
+                failed = true;
+                return { size: 0, dir: false };
+            }
+            const printable = maxDepth === null || depth <= maxDepth;
+            // Each inode counts once (a hard link, or a link -L follows to a file
+            // already counted), unless -l; one met again is not listed either.
+            const inode = `${st.dev ?? 0}:${st.ino ?? vfsPath}`;
+            if (st.type === 'directory' && onPath.has(inode))
+                return { size: 0, dir: true };
+            if (!countLinks && seen.has(inode))
+                return { size: 0, dir: st.type === 'directory' };
+            seen.add(inode);
+            if (st.type !== 'directory') {
+                const size = usageOf(st);
+                if ((depth === 0 || showAll) && printable && shown(size))
+                    await ctx.stdout.write(`${fmt(size)}\t${name}${end}`);
+                return { size, dir: false };
+            }
+            let size = usageOf(st);
+            let own = size;
+            const base = name.endsWith('/') ? name : `${name}/`;
+            let entries = [];
+            try {
+                entries = await vfs.readdir(vfsPath);
+            }
+            catch (e) {
+                await ctx.stderr.write(`du: cannot read directory '${name}': ${why(e)}\n`);
+                failed = true;
+            }
+            onPath.add(inode);
+            for (const e of entries) {
+                const childName = `${base}${e.name}`;
+                if (excluded(e.name, childName))
+                    continue;
+                const child = await walk(`${vfsPath}/${e.name}`, childName, depth + 1);
+                size += child.size;
+                if (!child.dir)
+                    own += child.size;
+            }
+            onPath.delete(inode);
+            const printed = separateDirs ? own : size;
+            if (printable && shown(printed))
+                await ctx.stdout.write(`${fmt(printed)}\t${name}${end}`);
+            return { size, dir: true };
         }
-        total = (await walk(root));
-        if (sumOnly || !showAll)
-            (await ctx.stdout.write(`${fmt(total)}\t/${root}\n`));
-        return 0;
+        for (const operand of operands) {
+            grand += (await walk(resolvePath(ctx.cwd, operand), operand, 0)).size;
+        }
+        if (total)
+            await ctx.stdout.write(`${fmt(grand)}\ttotal${end}`);
+        return failed ? 1 : 0;
     };
 }
 function mkDiff(vfs) {
@@ -3486,35 +3783,487 @@ function mkRm(vfs) {
         return code;
     };
 }
+/** Whether y-m-d (1-based month) is a real calendar day. */
+function realDay(y, mo, d) {
+    if (mo < 1 || mo > 12 || d < 1)
+        return false;
+    return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+}
+const TOUCH_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const TOUCH_DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const TOUCH_UNITS = {
+    year: ['month', 12], month: ['month', 1], fortnight: ['ms', 14 * 86_400_000], week: ['ms', 7 * 86_400_000],
+    day: ['ms', 86_400_000], hour: ['ms', 3_600_000], minute: ['ms', 60_000], min: ['ms', 60_000],
+    second: ['ms', 1000], sec: ['ms', 1000],
+};
+const touchMonth = (word) => {
+    const w = word.toLowerCase().replace(/\.$/, '');
+    const i = TOUCH_MONTHS.findIndex((m) => w === m || (w.length >= 3 && m.startsWith(w.slice(0, 3)) && `${m}${['uary', 'ruary', 'ch', 'il', '', 'e', 'y', 'ust', 'tember', 'ober', 'ember', 'ember'][TOUCH_MONTHS.indexOf(m)]}`.startsWith(w)));
+    return i < 0 ? null : i + 1;
+};
+const touchDay = (word) => {
+    const w = word.toLowerCase().replace(/[.,]$/, '');
+    const i = TOUCH_DAYS.findIndex((d) => w.startsWith(d) && `${d}${['day', 'day', 'sday', 'nesday', 'rsday', 'day', 'urday'][TOUCH_DAYS.indexOf(d)]}`.startsWith(w));
+    return i < 0 ? null : i;
+};
+const touchUnit = (word) => {
+    const w = word.toLowerCase().replace(/s$/, '');
+    return Object.hasOwn(TOUCH_UNITS, w) ? TOUCH_UNITS[w] : null;
+};
+/**
+ * A GNU `touch -d` date (coreutils' parse_datetime), as milliseconds since the
+ * epoch, or null where GNU says "invalid date format". Order-free items, as
+ * GNU reads them, in the session's zone (UTC) unless one is given:
+ * - `@<seconds>[.<fraction>]`, alone;
+ * - a date: `YYYY-MM-DD`, `YYYYMMDD`, `M/D[/YYYY]`, `Mon D[,] [YYYY]`,
+ *   `D Mon [YYYY]`; with no year, this year;
+ * - a time: `HH:MM[:SS[.frac]]` with `am`/`pm`, or joined to an ISO date by
+ *   `T`; a zone `Z`, `UTC`, `GMT`, `±HH[:]MM`;
+ * - a day of the week (`wed`, `Wednesday,`), alone or with `last`/`this`/`next`;
+ * - relative items: `[+-]N unit[s] [ago]`, `unit ago`, `last`/`next unit`,
+ *   `now`, `today`, `yesterday`, `tomorrow`.
+ * A date or a day sets the time to midnight unless a time is given; relative
+ * items move from what the rest names (now, if nothing). An impossible
+ * calendar date or time is refused, as GNU refuses it.
+ */
+function parseTouchDate(text, now) {
+    const value = text.trim();
+    const epoch = /^@(-?\d+)(?:\.(\d+))?$/.exec(value);
+    // GNU keeps the fraction at nanoseconds; the VFS keeps milliseconds.
+    if (epoch)
+        return Number(epoch[1]) * 1000 + (epoch[2] ? Math.floor(Number(`0.${epoch[2]}`) * 1000) : 0);
+    const base = new Date(now);
+    let date = null;
+    let time = null;
+    let zoneMinutes = null;
+    let weekday = null;
+    let months = 0;
+    let ms = 0;
+    const tokens = value.toLowerCase().replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+    const ordinalWord = (w) => (w === 'last' ? -1 : w === 'this' ? 0 : w === 'next' ? 1 : null);
+    const setDate = (y, mo, d) => {
+        if (date || !realDay(y, mo, d))
+            return false;
+        date = { y, mo, d };
+        return true;
+    };
+    const setTime = (h, mi, s, frac, meridian) => {
+        if (time)
+            return false;
+        if (meridian) {
+            if (h < 1 || h > 12)
+                return false;
+            h = (h % 12) + (meridian === 'pm' ? 12 : 0);
+        }
+        if (h > 23 || mi > 59 || s > 60)
+            return false;
+        time = { h, mi, s, ms: frac ? Math.floor(Number(`0.${frac}`) * 1000) : 0 };
+        return true;
+    };
+    const setZone = (word) => {
+        if (zoneMinutes !== null)
+            return false;
+        if (word === 'z' || word === 'utc' || word === 'gmt' || word === 'ut') {
+            zoneMinutes = 0;
+            return true;
+        }
+        const m = /^([+-])(\d{2}):?(\d{2})$/.exec(word);
+        if (!m)
+            return false;
+        zoneMinutes = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+        return true;
+    };
+    const relative = (count, unit) => {
+        if (unit[0] === 'month')
+            months += count * unit[1];
+        else
+            ms += count * unit[1];
+    };
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        const next = tokens[i + 1];
+        let m;
+        if (t === 'now' || t === 'today')
+            continue;
+        if (t === 'yesterday') {
+            ms -= 86_400_000;
+            continue;
+        }
+        if (t === 'tomorrow') {
+            ms += 86_400_000;
+            continue;
+        }
+        if (t === 'ago')
+            return null;
+        // An ISO date and time joined by T, with an optional zone on the end.
+        if ((m = /^(\d{4})-(\d{2})-(\d{2})t(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(z|[+-]\d{2}:?\d{2})?$/.exec(t))) {
+            if (!setDate(+m[1], +m[2], +m[3]) || !setTime(+m[4], +m[5], +(m[6] ?? 0), m[7], undefined))
+                return null;
+            if (m[8] && !setZone(m[8]))
+                return null;
+            continue;
+        }
+        if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))) {
+            if (!setDate(+m[1], +m[2], +m[3]))
+                return null;
+            continue;
+        }
+        if ((m = /^(\d{4})(\d{2})(\d{2})$/.exec(t))) {
+            if (!setDate(+m[1], +m[2], +m[3]))
+                return null;
+            continue;
+        }
+        if ((m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/.exec(t))) {
+            const y = m[3] === undefined ? base.getUTCFullYear() : m[3].length === 2 ? (+m[3] >= 69 ? 1900 : 2000) + +m[3] : +m[3];
+            if (!setDate(y, +m[1], +m[2]))
+                return null;
+            continue;
+        }
+        // A time, with its meridian as the next word or joined to it, and a zone after it.
+        if ((m = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(am|pm)?(z|[+-]\d{2}:?\d{2})?$/.exec(t))) {
+            let meridian = m[5];
+            if (!meridian && (next === 'am' || next === 'pm')) {
+                meridian = next;
+                i++;
+            }
+            if (!setTime(+m[1], +m[2], +(m[3] ?? 0), m[4], meridian))
+                return null;
+            if (m[6] && !setZone(m[6]))
+                return null;
+            continue;
+        }
+        if (setZone(t))
+            continue;
+        // A month name, with a day and maybe a year around it.
+        const month = touchMonth(t);
+        if (month !== null) {
+            const before = tokens[i - 1];
+            let day = null;
+            if (next && /^\d{1,2}$/.test(next)) {
+                day = +next;
+                i++;
+            }
+            else if (before && /^\d{1,2}$/.test(before) && date === null && !time)
+                day = +before;
+            if (day === null)
+                return null;
+            let year = base.getUTCFullYear();
+            if (tokens[i + 1] && /^\d{4}$/.test(tokens[i + 1])) {
+                year = +tokens[i + 1];
+                i++;
+            }
+            if (!setDate(year, month, day))
+                return null;
+            continue;
+        }
+        // A day of the month before its month name ("1 Jan 2020") is read with the month.
+        if (/^\d{1,2}$/.test(t) && next && touchMonth(next) !== null)
+            continue;
+        // A year after date(1)'s "Wed Jan  1 10:00:00 UTC 2020".
+        if (/^\d{4}$/.test(t) && date !== null && time !== null) {
+            const d = date;
+            if (!realDay(+t, d.mo, d.d))
+                return null;
+            date = { ...d, y: +t };
+            continue;
+        }
+        const ordinal = ordinalWord(t);
+        if (ordinal !== null && next) {
+            const day = touchDay(next);
+            if (day !== null) {
+                if (weekday)
+                    return null;
+                weekday = { day, ordinal };
+                i++;
+                continue;
+            }
+            const unit = touchUnit(next);
+            if (unit) {
+                relative(ordinal, unit);
+                i++;
+                continue;
+            }
+            return null;
+        }
+        const day = touchDay(t);
+        if (day !== null) {
+            // A day beside a date ("Wed, 01 Jan 2020") only names it; alone it moves to that day.
+            if (!weekday)
+                weekday = { day, ordinal: 0 };
+            continue;
+        }
+        // [+-]N unit[s] [ago], or a unit alone ([ago]) meaning one.
+        if ((m = /^([+-]?\d+)$/.exec(t)) && next && touchUnit(next)) {
+            let count = +m[1];
+            i++;
+            if (tokens[i + 1] === 'ago') {
+                count = -count;
+                i++;
+            }
+            relative(count, touchUnit(next));
+            continue;
+        }
+        const unit = touchUnit(t);
+        if (unit) {
+            let count = 1;
+            if (next === 'ago') {
+                count = -1;
+                i++;
+            }
+            relative(count, unit);
+            continue;
+        }
+        return null;
+    }
+    // Compose: the named date (or today), the named time (or now's, or midnight
+    // when a date or a day was named), in the named zone; then the weekday; then
+    // the relative items, months by the calendar.
+    const d = date ?? { y: base.getUTCFullYear(), mo: base.getUTCMonth() + 1, d: base.getUTCDate() };
+    const t = time
+        ?? (date || weekday ? { h: 0, mi: 0, s: 0, ms: 0 } : { h: base.getUTCHours(), mi: base.getUTCMinutes(), s: base.getUTCSeconds(), ms: base.getUTCMilliseconds() });
+    let dayOfMonth = d.d;
+    if (weekday && !date) {
+        const w = weekday;
+        const today = new Date(Date.UTC(d.y, d.mo - 1, d.d)).getUTCDay();
+        // parse_datetime: forward to that day, then whole weeks by the ordinal (today counts as "this").
+        dayOfMonth += ((w.day - today + 7) % 7) + 7 * (w.ordinal - (w.ordinal > 0 && today !== w.day ? 1 : 0));
+    }
+    const at = Date.UTC(d.y, d.mo - 1 + months, dayOfMonth, t.h, t.mi, t.s, t.ms) - (zoneMinutes ?? 0) * 60_000;
+    return at + ms;
+}
+/** A `touch -t` stamp, `[[CC]YY]MMDDhhmm[.ss]`, in UTC, or null. Two-digit years 69-99 are 19xx, 00-68 20xx. */
+function parseTouchStamp(text, now) {
+    const m = /^(\d{8}|\d{10}|\d{12})(?:\.(\d{2}))?$/.exec(text);
+    if (!m)
+        return null;
+    const digits = m[1];
+    let year = new Date(now).getUTCFullYear();
+    let rest = digits;
+    if (digits.length === 12) {
+        year = Number(digits.slice(0, 4));
+        rest = digits.slice(4);
+    }
+    if (digits.length === 10) {
+        const yy = Number(digits.slice(0, 2));
+        year = yy >= 69 ? 1900 + yy : 2000 + yy;
+        rest = digits.slice(2);
+    }
+    const [mo, d, h, mi] = [0, 2, 4, 6].map((i) => Number(rest.slice(i, i + 2)));
+    const sec = m[2] ? Number(m[2]) : 0;
+    // A calendar day that does not exist (Feb 31) is refused, as GNU refuses it.
+    if (!realDay(year, mo, d) || h > 23 || mi > 59 || sec > 60)
+        return null;
+    return Date.UTC(year, mo - 1, d, h, mi, sec);
+}
+/** An error's errno name, as the filesystem gave it. */
+function touchErrno(error) {
+    const code = error?.code;
+    return typeof code === 'string' ? code : 'EIO';
+}
+/** glibc's strerror for the errnos a filesystem call gives; an unlisted one by its name. */
+function strerror(errno) {
+    const text = {
+        EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',
+        EACCES: 'Permission denied', EEXIST: 'File exists', ENOTDIR: 'Not a directory', EISDIR: 'Is a directory',
+        EINVAL: 'Invalid argument', ENOSPC: 'No space left on device', EROFS: 'Read-only file system',
+        ELOOP: 'Too many levels of symbolic links', ENAMETOOLONG: 'File name too long', EBUSY: 'Device or resource busy',
+        ENOTSUP: 'Operation not supported', EOPNOTSUPP: 'Operation not supported', EDQUOT: 'Disk quota exceeded',
+    };
+    return text[errno] ?? errno;
+}
+/**
+ * touch, as GNU touch: each file's atime and mtime to now, to a -d date, a
+ * -t stamp or a -r file's; -a only atime, -m only mtime (--time=atime|mtime);
+ * a missing file is created empty unless -c. A missing parent directory is an
+ * error, as it is for open(2).
+ */
 function mkTouch(vfs) {
     return async (ctx) => {
         const targetVfs = ctx.vfs ?? vfs;
-        for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-            const fp = resolvePath(ctx.cwd, f);
-            // Ensure parent dirs
-            const parts = fp.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                const dir = parts.slice(0, i).join('/');
-                if (dir && !(await targetVfs.exists(dir)))
-                    (await targetVfs.mkdir(dir, { recursive: true }));
-            }
-            if (!(await targetVfs.exists(fp))) {
-                (await targetVfs.writeFile(fp, ''));
+        const usage = async (text) => {
+            await ctx.stderr.write(`touch: ${text}\nTry 'touch --help' for more information.\n`);
+            return 1;
+        };
+        let onlyAtime = false, onlyMtime = false, noCreate = false, noDereference = false;
+        let date = null, stamp = null, reference = null;
+        const files = [];
+        let options = true;
+        const args = ctx.args;
+        for (let i = 0; i < args.length; i++) {
+            const a = args[i];
+            if (!options || a === '-' || !a.startsWith('-')) {
+                files.push(a);
                 continue;
             }
-            // Every view reaching here implements `isDirectory`: the lifo VFS gained
-            // it alongside `isFile`, which is what stopped `touch` failing on an
-            // existing file. The `stat` fallback this replaced narrowed to `never`
-            // once the surface was typed — the type system reporting that the guard
-            // it sat behind can no longer be false.
-            const isDirectory = (await targetVfs.isDirectory(fp));
-            if (!isDirectory) {
-                // Update mtime by re-writing the same content
-                const content = (await targetVfs.readFile(fp));
-                (await targetVfs.writeFile(fp, content));
+            if (a === '--') {
+                options = false;
+                continue;
+            }
+            if (a.startsWith('--')) {
+                const eq = a.indexOf('=');
+                const name = eq < 0 ? a : a.slice(0, eq);
+                const takesValue = ['--date', '--reference', '--time'].includes(name);
+                let value = eq < 0 ? undefined : a.slice(eq + 1);
+                if (takesValue && value === undefined) {
+                    value = args[++i];
+                    if (value === undefined)
+                        return await usage(`option '${name}' requires an argument`);
+                }
+                if (name === '--no-create')
+                    noCreate = true;
+                else if (name === '--no-dereference')
+                    noDereference = true;
+                else if (name === '--date')
+                    date = value;
+                else if (name === '--reference')
+                    reference = value;
+                else if (name === '--time') {
+                    if (value === 'atime' || value === 'access' || value === 'use')
+                        onlyAtime = true;
+                    else if (value === 'mtime' || value === 'modify')
+                        onlyMtime = true;
+                    else
+                        return await usage(`invalid argument '${value}' for '--time'`);
+                }
+                else
+                    return await usage(`unrecognized option '${a}'`);
+                continue;
+            }
+            for (let j = 1; j < a.length; j++) {
+                const ch = a[j];
+                if (ch === 'a')
+                    onlyAtime = true;
+                else if (ch === 'm')
+                    onlyMtime = true;
+                else if (ch === 'c')
+                    noCreate = true;
+                else if (ch === 'h')
+                    noDereference = true;
+                else if (ch === 'f') { /* ignored by GNU too */ }
+                else if (ch === 'd' || ch === 't' || ch === 'r') {
+                    const value = a.slice(j + 1) || args[++i];
+                    if (value === undefined)
+                        return await usage(`option requires an argument -- '${ch}'`);
+                    if (ch === 'd')
+                        date = value;
+                    else if (ch === 't')
+                        stamp = value;
+                    else
+                        reference = value;
+                    break;
+                }
+                else
+                    return await usage(`invalid option -- '${ch}'`);
             }
         }
-        return 0;
+        if (files.length === 0)
+            return await usage('missing file operand');
+        const now = Date.now();
+        // null is "now" (UTIME_NOW), which needs only write permission, as GNU
+        // touch asks for when no time is given; an explicit time needs ownership.
+        let atime = null, mtime = null;
+        if (reference !== null) {
+            try {
+                const st = await statOrThrow(targetVfs, resolvePath(ctx.cwd, reference));
+                atime = st.atimeMs;
+                mtime = st.mtimeMs;
+            }
+            catch {
+                await ctx.stderr.write(`touch: failed to get attributes of '${reference}': No such file or directory\n`);
+                return 1;
+            }
+        }
+        if (date !== null) {
+            const at = parseTouchDate(date, now);
+            if (at === null) {
+                await ctx.stderr.write(`touch: invalid date format '${date}'\n`);
+                return 1;
+            }
+            atime = mtime = at;
+        }
+        if (stamp !== null) {
+            const at = parseTouchStamp(stamp, now);
+            if (at === null) {
+                await ctx.stderr.write(`touch: invalid date format '${stamp}'\n`);
+                return 1;
+            }
+            atime = mtime = at;
+        }
+        // -a and -m together, or neither, set both; the other is left (UTIME_OMIT).
+        const setAtime = onlyAtime || !onlyMtime;
+        const setMtime = onlyMtime || !onlyAtime;
+        const times = [setAtime ? atime : undefined, setMtime ? mtime : undefined];
+        let code = 0;
+        for (const f of files) {
+            // `-` is standard output: its times are the terminal's, not a file named '-'.
+            if (f === '-')
+                continue;
+            const fp = resolvePath(ctx.cwd, f);
+            try {
+                if (noDereference) {
+                    // -h: a link's own times (lutimes), never its target's, and nothing
+                    // created (-h implies -c).
+                    const own = await targetVfs.stat(fp, { follow: false }).catch(() => null);
+                    if (!own)
+                        continue;
+                    await targetVfs.utimes(fp, times[0], times[1], { follow: false });
+                    continue;
+                }
+                // GNU's order (touch.c): open(O_WRONLY|O_CREAT) unless -c, noting its
+                // errno; then set the times. Only a failure to set them is reported,
+                // as the open's errno when it failed ("cannot touch"), else as the
+                // time-setting errno ("setting times of"). -c on a missing file is
+                // silence.
+                let openErrno = null;
+                const exists = await targetVfs.exists(fp);
+                if (!noCreate) {
+                    if (exists) {
+                        try {
+                            await targetVfs.access(fp, 2);
+                        }
+                        catch (e) {
+                            openErrno = touchErrno(e);
+                        }
+                    }
+                    else {
+                        // open(O_CREAT) makes the file, never its directory (the VFS's writeFile would).
+                        const parent = fp.includes('/') ? fp.slice(0, fp.lastIndexOf('/')) : '';
+                        if (parent && !(await targetVfs.isDirectory(parent))) {
+                            openErrno = (await targetVfs.exists(parent)) ? 'ENOTDIR' : 'ENOENT';
+                        }
+                        else {
+                            try {
+                                await targetVfs.writeFile(fp, '');
+                            }
+                            catch (e) {
+                                openErrno = touchErrno(e);
+                            }
+                        }
+                    }
+                }
+                try {
+                    if (!exists && (noCreate || openErrno))
+                        throw Object.assign(new Error(fp), { code: 'ENOENT' });
+                    await targetVfs.utimes(fp, times[0], times[1]);
+                }
+                catch (e) {
+                    const errno = touchErrno(e);
+                    if (openErrno) {
+                        await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(openErrno)}\n`);
+                        code = 1;
+                    }
+                    else if (!(noCreate && errno === 'ENOENT')) {
+                        await ctx.stderr.write(`touch: setting times of '${f}': ${strerror(errno)}\n`);
+                        code = 1;
+                    }
+                }
+            }
+            catch (e) {
+                await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(touchErrno(e))}\n`);
+                code = 1;
+            }
+        }
+        return code;
     };
 }
 /**

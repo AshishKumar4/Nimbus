@@ -1505,7 +1505,7 @@ export class SqliteVFS {
             readFileString: (path) => this.readFileString(path, bound),
             stat: (path) => this.stat(path, bound, true),
             lstat: (path) => this.stat(path, bound, false),
-            utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
+            utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
             chmod: (path, mode) => this.chmod(path, mode, bound),
             setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
             getDefaultAcl: (path) => this.getDefaultAcl(path, bound),
@@ -3288,13 +3288,14 @@ export class SqliteVFS {
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' });
     }
-    utimes(path, atimeMs, mtimeMs, cred) {
-        const resolved = this.checkAccess(path, 0, cred);
+    utimes(path, atimeMs, mtimeMs, cred, followLeaf = true) {
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf });
         const inode = resolved.inode;
         if (!inode)
             throw vfsError('ENOENT', path);
         this.assertMutationsAllowed([inode.path]);
-        const useNow = atimeMs === null && mtimeMs === null;
+        // Nothing explicit: only now (null) and omit (undefined).
+        const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
         if (useNow) {
             if (!this.accessInode(inode, 0o2, cred))
                 throw vfsError('EACCES', resolved.path);
@@ -3302,8 +3303,9 @@ export class SqliteVFS {
         else if (cred.uid !== 0 && cred.uid !== inode.uid) {
             throw vfsError('EPERM', resolved.path);
         }
-        const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
-        const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+        const at = (value, kept) => (value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
+        const atime = at(atimeMs, inode.atime);
+        const mtime = at(mtimeMs, inode.mtime);
         this.publishMetadata(inode, { atime, mtime });
     }
     /**

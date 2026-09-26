@@ -127,7 +127,14 @@ export declare class ProcessView implements VFS {
     chmod(path: string, mode: number): Promise<void>;
     /** chown(2): a null side keeps what the file has (chown -1). */
     chown(path: string, uid: number | null, gid: number | null): Promise<void>;
-    utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+    /**
+     * utimensat(2): null is now, undefined leaves that time (only those need
+     * no more than write permission or ownership); an explicit time needs
+     * ownership. `follow: false` sets a link's own times.
+     */
+    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+        follow?: boolean;
+    }): Promise<void>;
     /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
     copy(from: string, to: string, options?: {
         recursive?: boolean;
@@ -207,7 +214,9 @@ export declare class NamespaceFs {
     resolveSymlink(path: string): string | null;
     chmod(path: string, mode: number): void;
     chown(path: string, uid: number | null, gid: number | null): void;
-    utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+        followSymlinks?: boolean;
+    }): void;
     copyFile(from: string, to: string): void;
     acquireExclusiveMutation(path: string, options?: {
         includeMissingAncestors?: boolean;

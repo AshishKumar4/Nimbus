@@ -358,12 +358,6 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   };
 }
 
-function getAuthor(ctx: Ctx) {
-  return {
-    name: ctx.env.GIT_AUTHOR_NAME || ctx.env.USER || 'user',
-    email: ctx.env.GIT_AUTHOR_EMAIL || 'user@nimbus.dev',
-  };
-}
 
 /** fetch, pull and push: `-q`/`--quiet` wherever it appears; the other words keep their order. */
 function takeQuiet(args: readonly string[]): { quiet: boolean; rest: string[] } {
@@ -372,15 +366,22 @@ function takeQuiet(args: readonly string[]): { quiet: boolean; rest: string[] } 
 }
 
 /** commit's -m (repeatable), -q and -a, bundled as git allows (`-qm msg`, `-mmsg`); other options stay ignored. */
-function parseCommitArgs(args: readonly string[]): { messages: string[]; quiet: boolean; all: boolean } {
+function parseCommitArgs(args: readonly string[]): {
+  messages: string[]; quiet: boolean; all: boolean; cleanup: string | null; allowEmptyMessage: boolean;
+} {
   const messages: string[] = [];
   let quiet = false;
   let all = false;
+  let cleanup: string | null = null;
+  let allowEmptyMessage = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--') break;
     if (arg === '--quiet') quiet = true;
     else if (arg === '--all') all = true;
+    else if (arg === '--allow-empty-message') allowEmptyMessage = true;
+    else if (arg === '--cleanup') cleanup = args[++i] ?? '';
+    else if (arg.startsWith('--cleanup=')) cleanup = arg.slice('--cleanup='.length);
     else if (arg === '--message') messages.push(args[++i] ?? '');
     else if (arg.startsWith('--message=')) messages.push(arg.slice('--message='.length));
     else if (/^-[^-]/.test(arg)) {
@@ -394,7 +395,33 @@ function parseCommitArgs(args: readonly string[]): { messages: string[]; quiet: 
       }
     }
   }
-  return { messages, quiet, all };
+  return { messages, quiet, all, cleanup, allowEmptyMessage };
+}
+
+/**
+ * The message `-m` options make (builtin/commit.c opt_parse_m): each value
+ * ends in a newline, and one after another is joined by a blank line; an
+ * empty value adds nothing.
+ */
+function joinMessageOptions(values: readonly string[]): string {
+  let buf = '';
+  for (const value of values) {
+    if (buf.length) buf += '\n';
+    buf += value;
+    if (buf.length && !buf.endsWith('\n')) buf += '\n';
+  }
+  return buf;
+}
+
+/**
+ * The cleanup mode a commit message gets (builtin/commit.c): --cleanup, else
+ * commit.cleanup. With no editor, as for -m, `default` and `scissors` are
+ * `whitespace`. Null for a mode git does not know.
+ */
+function commitCleanupMode(value: string | undefined): 'strip' | 'whitespace' | 'verbatim' | null {
+  if (value === undefined || value === 'default' || value === 'scissors' || value === 'whitespace') return 'whitespace';
+  if (value === 'strip' || value === 'verbatim') return value;
+  return null;
 }
 
 // ── The cf-git surface below ─────────────────────────────────────────────
@@ -415,7 +442,13 @@ interface CfGit {
   add(args: { fs: unknown; dir: string; filepath: string | string[]; parallel?: boolean; force?: boolean; cache?: object }): Promise<void>;
   // Takes an array through the tracked cf-git patch, as add does.
   remove(args: { fs: unknown; dir: string; filepath: string | string[]; cache?: object }): Promise<void>;
-  statusMatrix(args: { fs: unknown; dir: string; cache?: object }): Promise<[string, number, number, number][]>;
+  statusMatrix(args: { fs: unknown; dir: string; cache?: object; ignored?: boolean; filepaths?: string[] }): Promise<[string, number, number, number][]>;
+  listTags(args: { fs: unknown; dir: string }): Promise<string[]>;
+  deleteTag(args: { fs: unknown; dir: string; ref: string }): Promise<void>;
+  tag(args: { fs: unknown; dir: string; ref: string; object: string; force: boolean }): Promise<void>;
+  writeObject(args: { fs: unknown; dir: string; type: 'tag'; object: Uint8Array; format: 'content' }): Promise<string>;
+  writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean }): Promise<void>;
+  readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' | 'content' }): Promise<{ type: string; object: unknown }>;
   listFiles(args: { fs: unknown; dir: string; cache?: object }): Promise<string[]>;
   walk(args: {
     fs: unknown;
@@ -435,7 +468,10 @@ interface CfGit {
   resolveRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   expandOid(args: { fs: unknown; gitdir: string; oid: string; cache: object }): Promise<string>;
   expandRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
-  currentBranch(args: { fs: unknown; gitdir: string }): Promise<string | undefined>;
+  currentBranch(args: { fs: unknown; gitdir: string; fullname?: boolean }): Promise<string | undefined>;
+  commit(args: {
+    fs: unknown; dir: string; message: string; author: object; committer: object; rawMessage?: boolean;
+  }): Promise<string>;
   getConfig(args: { fs: unknown; dir: string; path: string }): Promise<unknown>;
 }
 
@@ -455,13 +491,13 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
 
 // ── Staging ──────────────────────────────────────────────────────────────
 
-/** `git add -A` under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
-async function stageAll(git: CfGit, fs: unknown, dir: string, trackedOnly: boolean): Promise<void> {
+/** `commit -a`'s staging of tracked changes, under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
+async function stageTracked(git: CfGit, fs: unknown, dir: string): Promise<void> {
   const cache = {};
   const added: string[] = [];
   const removed: string[] = [];
   for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
-    if (trackedOnly && stage === 0) continue;
+    if (stage === 0) continue;
     if (head === workdir && workdir === stage) continue;
     if (workdir === 0) removed.push(filepath);
     else added.push(filepath);
@@ -672,6 +708,604 @@ async function walkScoped(
       return [];
     },
   });
+}
+
+const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
+  + '[-u | --update] [--] <pathspec>...\n';
+/** git add's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
+const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--patch', '--edit', '--intent-to-add',
+  '--unified', '--inter-hunk-context', '--renormalize', '--refresh', '--ignore-errors', '--ignore-missing', '--sparse',
+  '--chmod', '--pathspec-from-file', '--pathspec-file-nul']);
+
+/**
+ * `git add`: what git 2.x stages for its pathspecs. A pathspec takes the
+ * changes, deletions and new files below it (as -A does); -u only tracked
+ * paths, --no-all no deletions, -A or -u with no pathspec the whole tree.
+ * -n prints what would be staged (`add 'p'`, `remove 'p'`, tracked paths
+ * first, then new ones) and stages nothing; -v prints it and stages. A
+ * pathspec that matches nothing fails before anything is staged; one that
+ * names an ignored path is reported (exit 1) unless -f, the rest still added.
+ */
+async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+  let dryRun = false;
+  let verbose = false;
+  let force = false;
+  let all: boolean | null = null;
+  let update = false;
+  let dashdash = false;
+  const pathArgs: string[] = [];
+  for (const arg of args) {
+    if (dashdash || arg === '-' || !arg.startsWith('-')) {
+      pathArgs.push(arg);
+      continue;
+    }
+    if (arg === '--') {
+      dashdash = true;
+      continue;
+    }
+    const flags = arg.startsWith('--') ? [arg.split('=')[0]] : [...arg.slice(1)];
+    for (const flag of flags) {
+      switch (flag) {
+        case 'n': case '--dry-run': dryRun = true; break;
+        case 'v': case '--verbose': verbose = true; break;
+        case 'f': case '--force': force = true; break;
+        case 'A': case '--all': case '--no-ignore-removal': all = true; break;
+        case '--no-all': case '--ignore-removal': all = false; break;
+        case 'u': case '--update': update = true; break;
+        default:
+          if (ADD_UNSUPPORTED.has(flag)) {
+            await ctx.stderr.write(`fatal: git add ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
+            return 128;
+          }
+          await ctx.stderr.write(flag.length === 1
+            ? `error: unknown switch \`${flag}'\n${ADD_USAGE}`
+            : `error: unknown option \`${flag.slice(2)}'\n${ADD_USAGE}`);
+          return 129;
+      }
+    }
+  }
+  const repo = discoverRepo(vfs, ctx.cwd);
+  if (!repo) {
+    await ctx.stderr.write(NOT_A_REPOSITORY);
+    return 128;
+  }
+  const root = repo.worktree;
+  if (!root) {
+    await ctx.stderr.write(NOT_A_WORK_TREE);
+    return 128;
+  }
+  if (pathArgs.length === 0 && all !== true && !update) {
+    await ctx.stderr.write("Nothing specified, nothing added.\nhint: Maybe you wanted to say 'git add .'?\n"
+      + 'hint: Disable this message with "git config set advice.addEmptyPathspec false"\n');
+    return 0;
+  }
+  const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
+  const inSpec = (path: string, spec: string) => spec === '' || path === spec || path.startsWith(`${spec}/`);
+  const cache = {};
+  const matrix = await git.statusMatrix({ fs, dir: root, cache });
+  // -f takes the ignored files below each pathspec as well.
+  const forced = force
+    ? await git.statusMatrix({ fs, dir: root, cache, ignored: true, filepaths: specs.map((spec) => spec || '.') })
+    : [];
+  const rows = new Map<string, [number, number, number]>();
+  for (const [path, head, workdir, stage] of [...matrix, ...forced]) {
+    // -u updates what the index holds and nothing else: a path it does not
+    // hold (never added, or removed with rm --cached) is not git's to update.
+    if (update && stage === 0) continue;
+    if (specs.some((spec) => inSpec(path, spec))) rows.set(path, [head, workdir, stage]);
+  }
+  const ignored: string[] = [];
+  for (const [i, spec] of specs.entries()) {
+    if (spec === '' || [...rows.keys()].some((path) => inSpec(path, spec))) continue;
+    if (update) {
+      // "Known to git" is the index; git names the first pathspec it holds nothing under.
+      await ctx.stderr.write(`error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`);
+      return 128;
+    }
+    let st = null;
+    try { st = vfs.lstat(normalizeVfsPath(`${root}/${spec}`)); } catch { /* absent */ }
+    if (!st) {
+      await ctx.stderr.write(`fatal: pathspec '${pathArgs[i]}' did not match any files\n`);
+      return 128;
+    }
+    // Named but not listed: ignored (reported at the path the ignore rule names), or an empty directory.
+    const parts = spec.split('/');
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const prefix = parts.slice(0, depth).join('/');
+      if (await git.isIgnored({ fs, dir: root, filepath: prefix })) {
+        if (!ignored.includes(prefix)) ignored.push(prefix);
+        break;
+      }
+    }
+  }
+  const tracked: [string, 'add' | 'remove'][] = [];
+  const untracked: string[] = [];
+  for (const [path, [head, workdir, stage]] of [...rows].sort(([a], [b]) => comparePaths(a, b))) {
+    if (head === 0 && stage === 0) {
+      if (workdir !== 0 && !update) untracked.push(path);
+      continue;
+    }
+    if (workdir === 0) {
+      if (stage !== 0 && all !== false) tracked.push([path, 'remove']);
+    } else if (stage !== workdir) {
+      tracked.push([path, 'add']);
+    }
+  }
+  if (ignored.length) {
+    await ctx.stderr.write(`The following paths are ignored by one of your .gitignore files:\n${ignored.map((p) => `${p}\n`).join('')}`
+      + 'hint: Use -f if you really want to add them.\n'
+      + 'hint: Disable this message with "git config set advice.addIgnoredFile false"\n');
+  }
+  let out = '';
+  for (const [path, action] of tracked) out += `${action} '${path}'\n`;
+  for (const path of untracked) out += `add '${path}'\n`;
+  if (dryRun || verbose) await writeBinary(ctx.stdout, out);
+  if (!dryRun) {
+    const removed = tracked.filter(([, action]) => action === 'remove').map(([path]) => path);
+    const added = [...tracked.filter(([, action]) => action === 'add').map(([path]) => path), ...untracked];
+    if (removed.length) await git.remove({ fs, dir: root, filepath: removed, cache });
+    if (added.length) await git.add({ fs, dir: root, filepath: added, parallel: false, force: true, cache });
+  }
+  return ignored.length ? 1 : 0;
+}
+
+const TAG_USAGE = 'usage: git tag [-a] [-f] [-m <msg> | -F <file>] <tagname> [<commit>]\n'
+  + '   or: git tag -d <tagname>...\n'
+  + '   or: git tag [-n[<num>]] [-l] [<pattern>...]\n';
+
+/** git's `whitespace` cleanup of a message given with -m or -F: no trailing blanks, no runs or edges of empty lines. */
+/** A `±hhmm` timezone for an offset in minutes east of UTC. */
+function gitTimezone(minutesEast: number): string {
+  const sign = minutesEast < 0 ? '-' : '+';
+  const abs = Math.abs(minutesEast);
+  return `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
+}
+
+// git's date.c tables, in its order: a name matches from its third letter on.
+const GIT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const GIT_WEEKDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+/** [name, hours east, daylight]: git adds the daylight hour ("This is bogus, but we like summer"). */
+const GIT_ZONES: readonly [string, number, number][] = [
+  ['IDLW', -12, 0], ['NT', -11, 0], ['CAT', -10, 0], ['HST', -10, 0], ['HDT', -10, 1], ['YST', -9, 0], ['YDT', -9, 1],
+  ['PST', -8, 0], ['PDT', -8, 1], ['MST', -7, 0], ['MDT', -7, 1], ['CST', -6, 0], ['CDT', -6, 1], ['EST', -5, 0],
+  ['EDT', -5, 1], ['AST', -3, 0], ['ADT', -3, 1], ['WAT', -1, 0], ['GMT', 0, 0], ['UTC', 0, 0], ['Z', 0, 0],
+  ['WET', 0, 0], ['BST', 0, 1], ['CET', 1, 0], ['MET', 1, 0], ['MEWT', 1, 0], ['MEST', 1, 1], ['CEST', 1, 1],
+  ['MESZ', 1, 1], ['FWT', 1, 0], ['FST', 1, 1], ['EET', 2, 0], ['EEST', 2, 1], ['WAST', 7, 0], ['WADT', 7, 1],
+  ['CCT', 8, 0], ['JST', 9, 0], ['EAST', 10, 0], ['EADT', 10, 1], ['GST', 10, 0], ['NZT', 12, 0], ['NZST', 12, 0],
+  ['NZDT', 12, 1], ['IDLE', 12, 0],
+];
+const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+const isAlpha = (c: string | undefined) => c !== undefined && /[A-Za-z]/.test(c);
+const isAlnum = (c: string | undefined) => isDigit(c) || isAlpha(c);
+
+/** date.c's struct tm, -1 for a field not given. */
+interface GitTm { year: number; mon: number; mday: number; hour: number; min: number; sec: number; wday: number }
+
+/**
+ * A GIT_COMMITTER_DATE as git's date.c parse_date_basic() reads it, ported
+ * routine for routine (match_object_header_date, match_alpha, match_digit,
+ * match_multi_number, set_date, match_tz, tm_to_time_t), so every form git
+ * accepts is accepted and read the same way: `@<secs> ±hhmm` (git's own raw
+ * form), a bare epoch of 9 or more digits, ISO 8601, RFC 2822 (`date -R`),
+ * git's default `Thu Jan 2 03:04:05 2020 -0800`, dotted and slashed dates,
+ * zone names, am/pm. Without a zone, the local one at that time, as mktime()
+ * gives it. Null where git says "invalid date format": no time of day, a
+ * year outside 1970-2099, a date it cannot place.
+ */
+function parseGitDate(text: string, nowSeconds = Math.floor(Date.now() / 1000)): { seconds: number; zone: string } | null {
+  // match_object_header_date: "@<digits> ±hhmm", exactly.
+  const header = /^@(\d+) ([+-])(\d{4})(?:\n|$)/.exec(text);
+  if (header) {
+    const hhmm = Number(header[3]);
+    const minutes = (header[2] === '-' ? -1 : 1) * (Math.floor(hhmm / 100) * 60 + (hhmm % 100));
+    return { seconds: Number(header[1]), zone: gitTimezone(minutes) };
+  }
+  const tm: GitTm = { year: -1, mon: -1, mday: -1, hour: -1, min: -1, sec: -1, wday: -1 };
+  let offset: number | null = null;
+  let gmt = false;
+  // tm_to_time_t: 1970-2099 only, and every field of the time of day given.
+  const toTime = (t: GitTm): number | null => {
+    const days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    const year = t.year - 70;
+    let day = t.mday;
+    if (year < 0 || year > 129 || t.mon < 0 || t.mon > 11) return null;
+    if (t.mon < 2 || (year + 2) % 4) day--;
+    if (t.hour < 0 || t.min < 0 || t.sec < 0) return null;
+    return (year * 365 + Math.floor((year + 1) / 4) + days[t.mon] + day) * 86_400 + t.hour * 3600 + t.min * 60 + t.sec;
+  };
+  const noDate = () => tm.year < 0 && tm.mon < 0 && tm.mday < 0 && tm.hour < 0 && tm.min < 0 && tm.sec < 0;
+  const matchString = (at: number, word: string): number => {
+    let i = 0;
+    for (; at + i < text.length; i++) {
+      const c = text[at + i];
+      if (c === word[i] || c.toUpperCase() === (word[i] ?? '').toUpperCase()) continue;
+      if (!isAlnum(c)) break;
+      return 0;
+    }
+    return i;
+  };
+  // set_date: month and day in range, the year placed as git places it, and
+  // (for a guessed order) no more than ten days into the future.
+  const setDate = (year: number, month: number, day: number, refuseFuture: boolean): boolean => {
+    if (!(month > 0 && month < 13 && day > 0 && day < 32)) return false;
+    const r: GitTm = { ...tm, mon: month - 1, mday: day };
+    if (year === -1) {
+      if (!refuseFuture) return false;
+      r.year = new Date(nowSeconds * 1000).getUTCFullYear() - 1900;
+    } else if (year >= 1970 && year < 2100) r.year = year - 1900;
+    else if (year > 70 && year < 100) r.year = year;
+    else if (year < 38) r.year = year + 100;
+    else return false;
+    if (refuseFuture) {
+      const specified = toTime({ ...r, hour: 0, min: 0, sec: 0 });
+      if (specified !== null && nowSeconds + 10 * 86_400 < specified) return false;
+    }
+    tm.mon = r.mon; tm.mday = r.mday;
+    if (year !== -1 || !refuseFuture) tm.year = r.year;
+    return true;
+  };
+  const readNumber = (at: number): [number, number] => {
+    let end = at;
+    while (isDigit(text[end])) end++;
+    return [Number(text.slice(at, end)), end];
+  };
+  const matchMulti = (num: number, sep: string, at: number, end: number): number => {
+    let num3 = -1;
+    let [num2, next] = readNumber(end + 1);
+    if (text[next] === sep && isDigit(text[next + 1])) [num3, next] = readNumber(next + 1);
+    if (sep === ':') {
+      if (num3 < 0) num3 = 0;
+      if (num < 25 && num2 >= 0 && num2 < 60 && num3 >= 0 && num3 <= 60) {
+        tm.hour = num; tm.min = num2; tm.sec = num3;
+        return next - at;
+      }
+      return 0;
+    }
+    if (num > 70 && (setDate(num, num2, num3, false) || setDate(num, num3, num2, false))) return next - at;
+    if (sep !== '.' && setDate(num3, num, num2, true)) return next - at;
+    if (setDate(num3, num2, num, true)) return next - at;
+    if (sep === '.' && setDate(num3, num, num2, true)) return next - at;
+    return 0;
+  };
+  const matchDigit = (at: number): number => {
+    const [num, end] = readNumber(at);
+    // Seconds since 1970: a number of 9 digits or more, before any date.
+    if (num >= 100_000_000 && noDate()) {
+      const d = new Date(num * 1000);
+      Object.assign(tm, { year: d.getUTCFullYear() - 1900, mon: d.getUTCMonth(), mday: d.getUTCDate(), hour: d.getUTCHours(), min: d.getUTCMinutes(), sec: d.getUTCSeconds() });
+      gmt = true;
+      return end - at;
+    }
+    if ((text[end] === ':' || text[end] === '.' || text[end] === '/' || text[end] === '-') && isDigit(text[end + 1])) {
+      const matched = matchMulti(num, text[end], at, end);
+      if (matched) return matched;
+    }
+    const n = end - at;
+    if (n === 8 || n === 6) {
+      const [a, b, c] = [Math.floor(num / 10000), Math.floor((num % 10000) / 100), num % 100];
+      if (n === 8) setDate(a, b, c, false);
+      else if (a < 25 && b < 60 && c <= 60) {
+        tm.hour = a; tm.min = b; tm.sec = c;
+        if (text[end] === '.' && isDigit(text[end + 1])) return readNumber(end + 1)[1] - at;
+      }
+      return n;
+    }
+    if (n === 4) {
+      if (num <= 1400 && offset === null) offset = Math.floor(num / 100) * 60 + (num % 100);
+      else if (num > 1900 && num < 2100) tm.year = num - 1900;
+      return n;
+    }
+    if (n > 2) return n;
+    if (num > 0 && num < 32 && tm.mday < 0) { tm.mday = num; return n; }
+    if (n === 2 && tm.year < 0) {
+      if (num < 10 && tm.mday >= 0) { tm.year = num + 100; return n; }
+      if (num >= 70) { tm.year = num; return n; }
+    }
+    if (num > 0 && num < 13 && tm.mon < 0) tm.mon = num - 1;
+    return n;
+  };
+  const matchAlpha = (at: number): number => {
+    for (let i = 0; i < 12; i++) { const m = matchString(at, GIT_MONTHS[i]); if (m >= 3) { tm.mon = i; return m; } }
+    for (let i = 0; i < 7; i++) { const m = matchString(at, GIT_WEEKDAYS[i]); if (m >= 3) { tm.wday = i; return m; } }
+    for (const [name, hours, dst] of GIT_ZONES) {
+      const m = matchString(at, name);
+      if (m >= 3 || m === name.length) {
+        if (offset === null) offset = 60 * (hours + dst);
+        return m;
+      }
+    }
+    if (matchString(at, 'PM') === 2) { tm.hour = (tm.hour % 12) + 12; return 2; }
+    if (matchString(at, 'AM') === 2) { tm.hour = tm.hour % 12; return 2; }
+    // ISO 8601's 'T' before a time.
+    if (text[at] === 'T' && isDigit(text[at + 1]) && tm.hour === -1) { tm.min = 0; tm.sec = 0; return 1; }
+    let skip = 0;
+    while (isAlpha(text[at + skip])) skip++;
+    return skip;
+  };
+  const matchTz = (at: number): number => {
+    let [hour, end] = readNumber(at + 1);
+    const n = end - (at + 1);
+    let min = 0;
+    if (n === 4) { min = hour % 100; hour = Math.floor(hour / 100); }
+    else if (n !== 2) min = 99;
+    else if (text[end] === ':') {
+      [min, end] = readNumber(end + 1);
+      if (end - (at + 1) !== 5) min = 99;
+    }
+    if (min < 60 && hour < 24) offset = (text[at] === '-' ? -1 : 1) * (hour * 60 + min);
+    return end - at;
+  };
+  for (let at = 0; at < text.length && text[at] !== '\n';) {
+    const c = text[at];
+    let matched = 0;
+    if (isAlpha(c)) matched = matchAlpha(at);
+    else if (isDigit(c)) matched = matchDigit(at);
+    else if ((c === '-' || c === '+') && isDigit(text[at + 1])) matched = matchTz(at);
+    at += matched || 1;
+  }
+  let seconds = toTime(tm);
+  if (seconds === null) return null;
+  let minutesEast: number;
+  if (offset === null) {
+    // No zone given: the local one at that time, as mktime() reads the same fields.
+    const local = new Date(tm.year + 1900, tm.mon, tm.mday, tm.hour, tm.min, tm.sec).getTime() / 1000;
+    minutesEast = Math.round((seconds - local) / 60);
+  } else minutesEast = offset;
+  if (!gmt) seconds -= minutesEast * 60;
+  return { seconds, zone: gitTimezone(minutesEast) };
+}
+
+/** An identity as cf-git takes it; timezoneOffset is JavaScript's (minutes west of UTC). */
+interface GitIdent { name: string; email: string; timestamp: number; timezoneOffset: number }
+
+/**
+ * The author or committer identity git stamps an object with (ident.c):
+ * GIT_<ROLE>_NAME and GIT_<ROLE>_EMAIL, else user.name and user.email from
+ * the config, then the login name; and GIT_<ROLE>_DATE read by
+ * parseGitDate, or now. A date git cannot read is its error.
+ */
+async function gitIdent(ctx: Ctx, git: CfGit, fs: unknown, dir: string, role: 'AUTHOR' | 'COMMITTER'): Promise<GitIdent | { error: string }> {
+  const config = async (key: string) => {
+    try { const value = await git.getConfig({ fs, dir, path: key }); return typeof value === 'string' ? value : undefined; }
+    catch { return undefined; }
+  };
+  const name = ctx.env[`GIT_${role}_NAME`] || await config('user.name') || ctx.env.USER || 'user';
+  const email = ctx.env[`GIT_${role}_EMAIL`] || await config('user.email') || 'user@nimbus.dev';
+  const raw = ctx.env[`GIT_${role}_DATE`];
+  let seconds: number;
+  let minutesEast: number;
+  if (raw) {
+    const parsed = parseGitDate(raw);
+    if (!parsed) return { error: `fatal: invalid date format: ${raw}\n` };
+    seconds = parsed.seconds;
+    const zone = /^([+-])(\d{2})(\d{2})$/.exec(parsed.zone)!;
+    minutesEast = (zone[1] === '-' ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3]));
+  } else {
+    seconds = Math.floor(Date.now() / 1000);
+    minutesEast = -new Date(seconds * 1000).getTimezoneOffset();
+  }
+  // Not -0: cf-git writes a negative zero offset as -0000, which is git's "zone unknown".
+  return { name, email, timestamp: seconds, timezoneOffset: minutesEast === 0 ? 0 : -minutesEast };
+}
+
+/** An identity as a signature line: `Name <email> <seconds> ±hhmm`. */
+function identLine(ident: GitIdent): string {
+  return `${ident.name} <${ident.email}> ${ident.timestamp} ${gitTimezone(-ident.timezoneOffset)}`;
+}
+
+/** Both identities a commit takes, or git's error for a date it cannot read. */
+async function commitIdents(ctx: Ctx, git: CfGit, fs: unknown, dir: string): Promise<{ author: GitIdent; committer: GitIdent } | { error: string }> {
+  const author = await gitIdent(ctx, git, fs, dir, 'AUTHOR');
+  if ('error' in author) return author;
+  const committer = await gitIdent(ctx, git, fs, dir, 'COMMITTER');
+  if ('error' in committer) return committer;
+  return { author, committer };
+}
+
+/**
+ * git's stripspace (strbuf_stripspace): trailing whitespace, runs of blank
+ * lines and blank lines at either end go, and with `stripComments` (the
+ * `strip` cleanup, the default for a tag message) lines starting with the
+ * comment character too. A non-empty result ends with a newline.
+ */
+function cleanupMessage(text: string, stripComments = true): string {
+  const lines = text.split('\n').filter((line) => !stripComments || !line.startsWith('#')).map((line) => line.replace(/\s+$/, ''));
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line === '' && (out.length === 0 || out[out.length - 1] === '')) continue;
+    out.push(line);
+  }
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  return out.length ? `${out.join('\n')}\n` : '';
+}
+
+/**
+ * Commit the index with exactly `message`, git's cleanup already applied:
+ * one object, written byte for byte (the tracked cf-git patch's rawMessage;
+ * cf-git's own rendering would normalize the newlines of a verbatim message
+ * and refuse an empty one), and the branch, or a detached HEAD, moved by
+ * cf-git.
+ */
+async function writeCommit(
+  git: CfGit, fs: unknown, dir: string, message: string,
+  idents: { author: GitIdent; committer: GitIdent },
+): Promise<string> {
+  return git.commit({ fs, dir, message, ...idents, rawMessage: true });
+}
+
+/** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
+function tagPattern(pattern: string): RegExp {
+  let source = '';
+  for (const ch of pattern) {
+    source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.*+?^${}()|\\/]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * `git tag`: list (-l, patterns, -n<num> with each tag's message or its
+ * commit's subject), create (lightweight, or annotated with -a, -m or -F,
+ * a tag object as git writes it), replace (-f) and delete (-d), with git's
+ * messages and exit codes.
+ */
+async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+  let annotate = false;
+  let force = false;
+  let del = false;
+  let list = false;
+  let lines: number | null = null;
+  const messages: string[] = [];
+  let messageFile: string | null = null;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') { operands.push(...args.slice(i + 1)); break; }
+    if (arg === '-' || !arg.startsWith('-')) { operands.push(arg); continue; }
+    if (arg === '--annotate') { annotate = true; continue; }
+    if (arg === '--force') { force = true; continue; }
+    if (arg === '--delete') { del = true; continue; }
+    if (arg === '--list') { list = true; continue; }
+    if (arg.startsWith('--message=')) { messages.push(arg.slice('--message='.length)); continue; }
+    if (arg === '--message') { messages.push(args[++i] ?? ''); continue; }
+    if (arg.startsWith('--file=')) { messageFile = arg.slice('--file='.length); continue; }
+    if (arg === '--file') { messageFile = args[++i] ?? ''; continue; }
+    if (arg.startsWith('--')) {
+      await ctx.stderr.write(`error: unknown option \`${arg.slice(2)}'\n${TAG_USAGE}`);
+      return 129;
+    }
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if (flag === 'a') annotate = true;
+      else if (flag === 'f') force = true;
+      else if (flag === 'd') del = true;
+      else if (flag === 'l') list = true;
+      else if (flag === 'n') {
+        const digits = /^\d*/.exec(arg.slice(j + 1))?.[0] ?? '';
+        lines = digits ? Number(digits) : 1;
+        j += digits.length;
+      } else if (flag === 'm' || flag === 'F') {
+        const value = arg.slice(j + 1) || args[++i];
+        if (value === undefined) {
+          await ctx.stderr.write(`error: switch \`${flag}' requires a value\n${TAG_USAGE}`);
+          return 129;
+        }
+        if (flag === 'm') messages.push(value);
+        else messageFile = value;
+        break;
+      } else {
+        await ctx.stderr.write(`error: unknown switch \`${flag}'\n${TAG_USAGE}`);
+        return 129;
+      }
+    }
+  }
+  const repo = discoverRepo(vfs, ctx.cwd);
+  if (!repo) {
+    await ctx.stderr.write(NOT_A_REPOSITORY);
+    return 128;
+  }
+  const { gitdir } = repo;
+  const dir = repo.worktree ?? ctx.cwd;
+  const cache = {};
+  const abbrev = (oid: string) => oid.slice(0, 7);
+
+  if (del) {
+    let code = 0;
+    for (const name of operands) {
+      let oid: string;
+      try {
+        oid = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+      } catch {
+        await ctx.stderr.write(`error: tag '${name}' not found.\n`);
+        code = 1;
+        continue;
+      }
+      await git.deleteTag({ fs, dir, ref: name });
+      await ctx.stdout.write(`Deleted tag '${name}' (was ${abbrev(oid)})\n`);
+    }
+    return code;
+  }
+
+  const creating = !list && lines === null && operands.length > 0;
+  if (!creating) {
+    const patterns = operands.map(tagPattern);
+    const names = (await git.listTags({ fs, dir }))
+      .filter((name) => patterns.length === 0 || patterns.some((pattern) => pattern.test(name)))
+      .sort(comparePaths);
+    let out = '';
+    for (const name of names) {
+      if (lines === null) { out += `${name}\n`; continue; }
+      // The tag's own message, or for a lightweight tag its commit's (a tree or blob has none).
+      let text = '';
+      try {
+        const oid = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+        // The raw object, split at its first blank line as git splits it: cf-git's
+        // parsed form normalizes newlines first and misreads an empty message.
+        const { type, object } = await git.readObject({ fs, dir, oid, cache, format: 'content' });
+        if (type === 'tag' || type === 'commit') {
+          const raw = dec.decode(object as Uint8Array);
+          const blank = raw.indexOf('\n\n');
+          text = blank < 0 ? '' : raw.slice(blank + 2).split('\n-----BEGIN PGP SIGNATURE-----')[0];
+        }
+      } catch { /* a broken ref lists bare */ }
+      // The first <num> lines as they are, blank ones too, continuation lines indented.
+      const shown = text.replace(/\n+$/, '').split('\n').slice(0, lines).map((line, i) => (i === 0 ? line : `    ${line}`));
+      out += shown.length && lines > 0 ? `${name.padEnd(15)} ${shown.join('\n')}\n` : `${name}\n`;
+    }
+    await writeBinary(ctx.stdout, out);
+    return 0;
+  }
+
+  const [name, target = 'HEAD', ...extra] = operands;
+  if (extra.length > 0) {
+    await ctx.stderr.write(`error: too many arguments\n${TAG_USAGE}`);
+    return 129;
+  }
+  if (messageFile !== null) {
+    try {
+      messages.push(dec.decode(vfs.readFile(normalizeVfsPath(messageFile.startsWith('/') ? messageFile : `${ctx.cwd}/${messageFile}`))));
+    } catch {
+      await ctx.stderr.write(`fatal: could not open or read '${messageFile}': No such file or directory\n`);
+      return 128;
+    }
+  }
+  if (annotate && messages.length === 0) {
+    // git would open an editor, and this git has none: what git says with no editor to run.
+    await ctx.stderr.write('error: Terminal is dumb, but EDITOR unset\nPlease supply the message using either -m or -F option.\n');
+    return 1;
+  }
+  const object = await resolveRevision(git, fs, gitdir, target, cache);
+  if (!object) {
+    await ctx.stderr.write(`fatal: Failed to resolve '${target}' as a valid ref.\n`);
+    return 128;
+  }
+  let previous: string | null = null;
+  try { previous = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` }); } catch { /* new */ }
+  if (previous !== null && !force) {
+    await ctx.stderr.write(`fatal: tag '${name}' already exists\n`);
+    return 128;
+  }
+  let value: string;
+  if (messages.length > 0) {
+    const ident = await gitIdent(ctx, git, fs, dir, 'COMMITTER');
+    if ('error' in ident) {
+      await ctx.stderr.write(ident.error);
+      return 128;
+    }
+    const tagger = identLine(ident);
+    // The object as git writes it, byte for byte: the headers, a blank line,
+    // then the cleaned message (nothing at all when it is empty). cf-git's
+    // annotatedTag appends a newline after the message, which an empty one
+    // must not have, and its parser then misreads the listing.
+    const { type } = await git.readObject({ fs, dir, oid: object, cache: {}, format: 'parsed' });
+    const body = `object ${object}\ntype ${type}\ntag ${name}\ntagger ${tagger}\n\n${cleanupMessage(messages.join('\n\n'))}`;
+    value = await git.writeObject({ fs, dir, type: 'tag', object: new TextEncoder().encode(body), format: 'content' });
+    await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value, force: true });
+  } else {
+    await git.tag({ fs, dir, ref: name, object, force: true });
+    value = object;
+  }
+  if (previous !== null && previous !== value) await ctx.stdout.write(`Updated tag '${name}' (was ${abbrev(previous)})\n`);
+  return 0;
 }
 
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
@@ -1335,23 +1969,30 @@ export async function runGitCommand(
         return 0;
       }
 
-      case 'add': {
-        const paths = subArgs.filter(a => !a.startsWith('-'));
-        if (paths.length === 0 || paths.includes('.')) await stageAll(git, fs, dir, false);
-        else await git.add({ fs, dir, filepath: paths, parallel: false });
-        return 0;
-      }
+      case 'add':
+        return await addCommand(ctx, git, fs, credentialedVfs, subArgs);
 
       case 'commit': {
-        const { messages, quiet, all } = parseCommitArgs(subArgs);
-        const message = messages.length ? messages.join('\n\n') : 'commit';
-        if (!message) { ctx.stderr.write('error: empty commit message\n'); return 1; }
-        if (all) await stageAll(git, fs, dir, true);
-        const sha = await git.commit({
-          fs, dir, message,
-          author: getAuthor(ctx),
-        });
-        if (!quiet) ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
+        const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
+        let configured: string | undefined;
+        if (cleanup === null) {
+          try { const value = await git.getConfig({ fs, dir, path: 'commit.cleanup' }); if (typeof value === 'string') configured = value; }
+          catch { /* unset */ }
+        }
+        const requested = cleanup ?? configured;
+        const mode = commitCleanupMode(requested);
+        if (!mode) { await ctx.stderr.write(`fatal: Invalid cleanup mode ${requested}\n`); return 128; }
+        const raw = messages.length ? joinMessageOptions(messages) : 'commit\n';
+        const message = mode === 'verbatim' ? raw : cleanupMessage(raw, mode === 'strip');
+        if (!message && !allowEmptyMessage) {
+          await ctx.stderr.write('Aborting commit due to empty commit message.\n');
+          return 1;
+        }
+        if (all) await stageTracked(git, fs, dir);
+        const idents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in idents) { await ctx.stderr.write(idents.error); return 128; }
+        const sha = await writeCommit(git, fs, dir, message, idents);
+        if (!quiet) ctx.stdout.write(`[${sha.slice(0, 7)}] ${message.split('\n')[0]}\n`);
         return 0;
       }
 
@@ -1496,6 +2137,8 @@ export async function runGitCommand(
           ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
           return 1;
         }
+        const pullIdents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in pullIdents) { await ctx.stderr.write(pullIdents.error); return 128; }
         if (!quiet) ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'pull',
@@ -1504,7 +2147,7 @@ export async function runGitCommand(
           remote,
           ref: branch,
           quiet,
-          author: getAuthor(ctx),
+          ...pullIdents,
           auth: {
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
@@ -1555,9 +2198,11 @@ export async function runGitCommand(
         // Into the current branch, or HEAD when detached. The branch moves only once the worktree
         // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
         const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
+        const mergeIdents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in mergeIdents) { await ctx.stderr.write(mergeIdents.error); return 128; }
         const merged = await git.merge({
           fs, dir, ours, theirs,
-          author: getAuthor(ctx),
+          ...mergeIdents,
           noUpdateBranch: true,
         });
         if (!merged.alreadyMerged) {
@@ -1600,20 +2245,8 @@ export async function runGitCommand(
         return 0;
       }
 
-      case 'tag': {
-        if (subArgs.length === 0) {
-          const tags = await git.listTags({ fs, dir });
-          for (const t of tags) ctx.stdout.write(t + '\n');
-        } else if (subArgs.includes('-d')) {
-          const name = subArgs.find(a => !a.startsWith('-'));
-          if (name) await git.deleteTag({ fs, dir, ref: name });
-        } else {
-          const name = subArgs[0];
-          await git.tag({ fs, dir, ref: name });
-          ctx.stdout.write(`Created tag ${name}\n`);
-        }
-        return 0;
-      }
+      case 'tag':
+        return await tagCommand(ctx, git, fs, credentialedVfs, subArgs);
 
       case 'config': {
         const key = subArgs.find(a => !a.startsWith('-'));

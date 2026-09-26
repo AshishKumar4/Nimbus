@@ -660,12 +660,18 @@ try {
   /**
    * Both gits run `args` in `repo`: the same exit, stderr, HEAD, worktree and index (status
    * included). A commit's id differs (its dates and author do), so `commits` compares trees instead.
+   * `sub` runs both from a subdirectory; `stdout` compares what they print; `firstLine` compares
+   * only stderr's first line (a usage text below it is this git's own).
    */
-  const agreeOn = async (label, repo, args, { commits = false } = {}) => {
-    const expected = realGit(repo.disk, args);
-    const actual = await nimbusGit(repo.virtual, args);
+  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false, mask = null, env = {} } = {}) => {
+    const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, args, env);
+    const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, args, env);
     assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
-    assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+    const head = (text) => (firstLine ? text.split('\n')[0] : text);
+    assert.equal(head(actual.stderr), head(expected.stderr), `${label}: stderr`);
+    // `mask` hides what differs by clock alone (a tag object's id: its tagger line carries a time).
+    const shown = (text) => (mask ? text.replace(mask, '<masked>') : text);
+    if (stdout) assert.equal(shown(actual.stdout.toString()), shown(expected.stdout.toString()), `${label}: stdout`);
     const copy = copyOf(repo);
     for (const probe of [commits ? ['rev-parse', 'HEAD^{tree}'] : ['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['ls-files', '-s'],
       ['status', '--porcelain', '--untracked-files=all', '--ignored']]) {
@@ -860,6 +866,281 @@ try {
     await agreeTree('checkout -- a path below a tracked link', repo, ['checkout', '--', 'l/f']);
     rewriteBoth(repo, 't/f', 'changed\n');
     await agreeTree('checkout -- a directory named with its slash', repo, ['checkout', '--', 't/']);
+  }
+
+  // ── git add: what git 2.x stages for a pathspec, -n/--dry-run and -v printing it ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('.gitignore', 'i*\nidir/\n');
+      put('a', 'a\n');
+      put('s/b', 'b\n');
+      put('keep', 'k\n');
+      git('add', 'a', 's', 'keep');
+      git('commit', '-q', '-m', 'c');
+      put('a', 'a2\n');
+      put('ign', 'i\n');
+      put('idir/f', 'f\n');
+      put('sp ace', 's\n');
+      put('tab\tt', 't\n');
+      put('s/n', 'n\n');
+    });
+    removeBoth(repo, 's/b');
+    const dry = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, ...options });
+    await dry('add -n of a file', ['add', '-n', 'a']);
+    await dry('add --dry-run of the tree', ['add', '--dry-run', '.']);
+    await dry('add -n from a subdirectory', ['add', '-n', '.'], { sub: 's' });
+    await dry('add -n -A', ['add', '-n', '-A']);
+    await dry('add -nA from a subdirectory: the whole tree', ['add', '-nA'], { sub: 's' });
+    await dry('add -nu', ['add', '-nu']);
+    await dry('add -n ../a n from a subdirectory', ['add', '-n', '../a', 'n'], { sub: 's' });
+    await dry('add -n --no-all', ['add', '-n', '--no-all', '.']);
+    await dry('add -n of odd names', ['add', '-n', 'sp ace', 'tab\tt']);
+    await dry('add -n of a pathspec that matches nothing', ['add', '-n', 'nope', 'a']);
+    await dry('add -n of an ignored file', ['add', '-n', 'ign', 'a']);
+    await dry('add -n of a file in an ignored directory', ['add', '-n', 'idir/f']);
+    await dry('add -n -f of an ignored directory', ['add', '-n', '-f', 'idir']);
+    await dry('add with nothing specified', ['add']);
+    await dry('add -v', ['add', '-v', 's']);
+    await dry('add -n once staged', ['add', '-n', 's']);
+    await dry('add of an ignored file, the rest staged', ['add', 'ign', 'a']);
+    await dry('add -f of an ignored file', ['add', '-f', 'ign']);
+    await dry('add -A', ['add', '-A']);
+    // -u updates only what the index holds: a path removed from it with rm --cached stays removed.
+    // Nimbus has no git rm, so real git removes it and the index is mirrored in.
+    sh(repo.disk, ['rm', '-q', '--cached', 'keep']);
+    user.writeFile(`${repo.virtual.slice(1)}/.git/index`, readFileSync(join(repo.disk, '.git/index')));
+    await dry('add -u after rm --cached', ['add', '-u']);
+    await dry('add -u of a path the index no longer holds', ['add', '-u', 'keep']);
+    await dry('add of an unknown switch', ['add', '-Q', 'a'], { firstLine: true });
+    await dry('add of an unknown option', ['add', '--bogus', 'a'], { firstLine: true });
+  }
+
+  // ── git tag: lightweight and annotated tags, listing, -f and -d, as git makes them ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('a', 'a\n');
+      git('add', 'a');
+      git('commit', '-q', '-m', 'first\n\nits body');
+      git('branch', 'older');
+      put('a', 'a2\n');
+      git('commit', '-q', '-a', '-m', 'second');
+    });
+    // Both gits stamp tags with the committer git's environment names (GIT_ENV's
+    // committer, and its date), so tag objects are byte-identical, ids included.
+    const committer = { GIT_COMMITTER_NAME: GIT_ENV.GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL: GIT_ENV.GIT_COMMITTER_EMAIL, GIT_COMMITTER_DATE: GIT_ENV.GIT_COMMITTER_DATE };
+    const tag = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, env: committer, ...options });
+    const tags = (cwd) => realGit(cwd, ['for-each-ref',
+      '--format=%(refname) %(objecttype) %(objectname) %(type) %(tag) %(*objectname) %(taggername) %(taggeremail) %(taggerdate:raw) [%(contents)]',
+      'refs/tags']).stdout.toString();
+    const sameTags = (label) => assert.equal(tags(copyOf(repo)), tags(repo.disk), `${label}: refs/tags`);
+    for (const [label, args] of [
+      ['a lightweight tag', ['tag', 'light']],
+      ['a lightweight tag of a named commit', ['tag', 'old', 'older']],
+      ['an annotated tag, -a -m', ['tag', '-a', 'v1', '-m', 'msg']],
+      ['-m alone makes it annotated', ['tag', '-m', 'only m', 'v2']],
+      ['two -m paragraphs, whitespace cleaned', ['tag', '-m', 'a  ', '-m', '\n\nb\n\n', 'v3']],
+      ['-m bundled, of an older commit', ['tag', '-mbundled', 'v4', 'older']],
+    ]) {
+      await tag(label, args);
+      sameTags(label);
+    }
+    await tag('a tag that exists', ['tag', 'v1']);
+    await tag('-a with no message', ['tag', '-a', 'v5']);
+    await tag('-f replaces it', ['tag', '-f', '-a', '-m', 're', 'v2']);
+    sameTags('-f');
+    await tag('-f to the same commit, lightweight', ['tag', '-f', 'light']);
+    await tag('list', ['tag']);
+    await tag('-l with a pattern', ['tag', '-l', 'v*']);
+    await tag('--list with two patterns', ['tag', '--list', 'l*', 'o?d']);
+    await tag('-n', ['tag', '-n']);
+    await tag('-n2', ['tag', '-n2']);
+    await tag('-d', ['tag', '-d', 'v1', 'light']);
+    sameTags('-d');
+    await tag('-d of a tag that does not exist', ['tag', '-d', 'nope']);
+    await tag('a commit that does not exist', ['tag', 'x', 'nosuchref']);
+    await tag('an unknown switch', ['tag', '-Q'], { firstLine: true });
+    // git's strip cleanup: comment lines go; an empty message is an empty body; -n lists it empty.
+    for (const [label, args] of [
+      ['a message with a comment line', ['tag', '-m', '# a comment\nreal line', 'c1']],
+      ['a message that is only a comment', ['tag', '-m', '#only a comment', 'c2']],
+      ['an empty message', ['tag', '-m', '', 'c3']],
+    ]) {
+      await tag(label, args);
+      sameTags(label);
+    }
+    await tag('-n9 over empty and cleaned messages', ['tag', '-n9']);
+    // The tagger is the committer, never the author; a date git cannot read is its error.
+    const people = { ...committer, GIT_AUTHOR_NAME: 'Author', GIT_AUTHOR_EMAIL: 'author@x', GIT_COMMITTER_NAME: 'Committer', GIT_COMMITTER_EMAIL: 'committer@x' };
+    await tag('the tagger is the committer', ['tag', '-m', 'm', 'who'], { env: people });
+    sameTags('the tagger is the committer');
+    await tag('a zoned ISO committer date', ['tag', '-m', 'm', 'iso'], { env: { ...committer, GIT_COMMITTER_DATE: '2020-01-01 10:00:00 +0530' } });
+    sameTags('a zoned ISO committer date');
+    await tag('a committer date git cannot read', ['tag', '-m', 'm', 'bad'], { env: { ...committer, GIT_COMMITTER_DATE: 'garbage' } });
+    // Every absolute form date.c's parse_date_basic reads, read as it reads it; and what it refuses.
+    for (const [i, date] of [
+      'Thu, 02 Jan 2020 03:04:05 -0800', 'Thu Jan 2 03:04:05 2020 -0800', '02 Jan 2020 03:04:05 +0000',
+      '2020.01.02 03:04:05 +0000', '01/02/2020 03:04:05 +0000', '2020-01-02 03:04:05', '2020-01-02T03:04:05Z',
+      '20200102T030405 +0100', 'Jan 2 2020 3:04:05 pm PST', '1700000000', '@1700000000 -0330', '2 January 2020 03:04 CEST',
+      '2020-01-02', '1960-01-02 03:04:05 +0000', 'Thu Jan 2 2020',
+    ].entries()) {
+      const env = { ...committer, GIT_COMMITTER_DATE: date };
+      await tag(`committer date ${JSON.stringify(date)}`, ['tag', '-m', 'm', `date${i}`], { env });
+      sameTags(`committer date ${JSON.stringify(date)}`);
+    }
+  }
+
+  // ── Commits stamp the author and committer git's environment and config name ──
+  // Both gits commit the same tree with the same identities and dates, so the commit
+  // objects (and their ids) are byte-identical; a date git cannot read is its error.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      git('add', 'f');
+      git('commit', '-q', '-m', 'base');
+    });
+    const catHead = (cwd) => realGit(cwd, ['cat-file', 'commit', 'HEAD']).stdout.toString();
+    const identity = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => /^GIT_(AUTHOR|COMMITTER)_/.test(k)));
+    const commitBoth = async (label, content, overrides, extra = {}) => {
+      const env = { ...identity, ...overrides };
+      rewriteBoth(repo, 'f', content);
+      sh(repo.disk, ['add', 'f']);
+      { const r = await nimbusGit(repo.virtual, ['add', 'f'], env); assert.equal(r.code, 0, r.stderr); }
+      const expected = realGit(repo.disk, ['commit', '-q', '-m', 'msg'], env);
+      const actual = await nimbusGit(repo.virtual, ['commit', '-q', '-m', 'msg'], env);
+      assert.equal(actual.code, expected.code, `${label}: exit (${actual.stderr})`);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), `${label}: the commit object`);
+      checks++;
+    };
+    const people = {
+      GIT_AUTHOR_NAME: 'Au Thor', GIT_AUTHOR_EMAIL: 'au@x', GIT_AUTHOR_DATE: 'Thu, 02 Jan 2020 03:04:05 -0800',
+      GIT_COMMITTER_NAME: 'Co Mitter', GIT_COMMITTER_EMAIL: 'co@x', GIT_COMMITTER_DATE: '2021-03-04T05:06:07+05:30',
+    };
+    await commitBoth('a commit with GIT_ENV\'s identities and dates', '2\n', {});
+    await commitBoth('author and committer apart, in two date forms', '3\n', people);
+    await commitBoth('git\'s own date format, and @epoch', '4\n',
+      { ...people, GIT_AUTHOR_DATE: 'Thu Jan 2 03:04:05 2020 -0800', GIT_COMMITTER_DATE: '@1700000000 +0100' });
+    // No name in the environment: user.name and user.email from the config, for both.
+    for (const cwd of [repo.disk]) sh(cwd, ['config', 'user.name', 'Conf Igured'], ['config', 'user.email', 'conf@x']);
+    { const r = await nimbusGit(repo.virtual, ['config', 'user.name', 'Conf Igured']); assert.equal(r.code, 0, r.stderr); }
+    { const r = await nimbusGit(repo.virtual, ['config', 'user.email', 'conf@x']); assert.equal(r.code, 0, r.stderr); }
+    const noNames = { GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '' };
+    const unset = (env) => Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+    {
+      rewriteBoth(repo, 'f', '5\n');
+      sh(repo.disk, ['add', 'f']);
+      assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+      // Real git gets the names removed from its environment; Nimbus gets none.
+      const r = spawnSync('git', ['commit', '-q', '-m', 'msg'], { cwd: repo.disk, env: unset({ ...GIT_ENV, ...noNames }) });
+      assert.equal(r.status, 0, r.stderr.toString());
+      const n = await nimbusGit(repo.virtual, ['commit', '-q', '-m', 'msg'], { GIT_AUTHOR_DATE: GIT_ENV.GIT_AUTHOR_DATE, GIT_COMMITTER_DATE: GIT_ENV.GIT_COMMITTER_DATE });
+      assert.equal(n.code, 0, n.stderr);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), 'identities from the config: the commit object');
+    }
+    // The message as git's cleanup modes leave it (-m has no editor, so `default` and
+    // `scissors` are `whitespace`; `strip` drops comment lines; `verbatim` keeps every byte).
+    const messy = '\n\n  x  \n# c\n\n\n\ny\t\n\n';
+    let n = 10;
+    const commitMessage = async (label, args, env = {}) => {
+      rewriteBoth(repo, 'f', `${n++}\n`);
+      sh(repo.disk, ['add', 'f']);
+      assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+      const both = { ...identity, ...env };
+      const expected = realGit(repo.disk, ['commit', '-q', ...args], both);
+      const actual = await nimbusGit(repo.virtual, ['commit', '-q', ...args], both);
+      assert.equal(actual.code, expected.code, `${label}: exit (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), `${label}: the commit object`);
+      checks++;
+    };
+    for (const mode of [null, 'default', 'strip', 'whitespace', 'verbatim', 'scissors']) {
+      await commitMessage(`-m, cleanup ${mode ?? 'unset'}`, [...(mode ? [`--cleanup=${mode}`] : []), '-m', messy]);
+    }
+    await commitMessage('two -m paragraphs', ['-m', 'a', '-m', 'b']);
+    await commitMessage('an empty -m before another', ['-m', '', '-m', 'b']);
+    await commitMessage('two -m, verbatim', ['--cleanup', 'verbatim', '-m', ' a ', '-m', ' b ']);
+    await commitMessage('a carriage return kept by whitespace', ['-m', 'a\rb']);
+    await commitMessage('a message that cleans to nothing', ['-m', '   ']);
+    await commitMessage('an empty message, allowed', ['--allow-empty-message', '-m', '   ']);
+    await commitMessage('an empty verbatim message', ['--cleanup=verbatim', '-m', '']);
+    await commitMessage('only a comment, stripped', ['--cleanup=strip', '-m', '#only']);
+    await commitMessage('a cleanup mode git does not know', ['--cleanup=bogus', '-m', 'x']);
+    // A byte-exact message is one object: no stray commit or tree is left behind.
+    {
+      const fsck = realGit(copyOf(repo), ['fsck', '--no-progress', '--dangling', '--unreachable']);
+      assert.equal(fsck.code, 0, fsck.stderr);
+      // Blobs staged for the refused commits above are unreachable in both gits; a commit or tree is not.
+      assert.deepEqual(fsck.stdout.toString().split('\n').filter((l) => / (commit|tree) /.test(l)), [], 'no stray commit or tree');
+    }
+    sh(repo.disk, ['config', 'commit.cleanup', 'strip']);
+    { const r = await nimbusGit(repo.virtual, ['config', 'commit.cleanup', 'strip']); assert.equal(r.code, 0, r.stderr); }
+    await commitMessage('commit.cleanup from the config', ['-m', '# c\nz']);
+    await commitMessage('--cleanup over the config', ['--cleanup=whitespace', '-m', '# c\nz']);
+    sh(repo.disk, ['config', '--unset', 'commit.cleanup']);
+    { const r = await nimbusGit(repo.virtual, ['config', '--unset', 'commit.cleanup']); assert.equal(r.code, 0, r.stderr); }
+    rewriteBoth(repo, 'f', '6\n');
+    sh(repo.disk, ['add', 'f']);
+    assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+    await agreeOn('an author date git cannot read', repo, ['commit', '-q', '-m', 'msg'], { env: { ...identity, GIT_AUTHOR_DATE: 'garbage' } });
+  }
+  // On a detached HEAD, git moves HEAD itself: commit (plain and verbatim), merge and tag.
+  // Nimbus used to leave HEAD where it was and write a ref file named after the old commit.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      git('add', 'f');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'side');
+      put('h', 'h\n');
+      git('add', 'h');
+      git('commit', '-q', '-m', 'h');
+      git('checkout', '-q', '--detach', 'main');
+    });
+    const identity = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => /^GIT_(AUTHOR|COMMITTER)_/.test(k)));
+    const detached = async (label, args, content) => {
+      if (content !== undefined) {
+        rewriteBoth(repo, 'f', content);
+        sh(repo.disk, ['add', 'f']);
+        const added = await nimbusGit(repo.virtual, ['add', 'f']);
+        assert.equal(added.code, 0, added.stderr);
+      }
+      const expected = realGit(repo.disk, args, identity);
+      const actual = await nimbusGit(repo.virtual, args, identity);
+      assert.equal(actual.code, expected.code, `${label}: exit (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      const copy = copyOf(repo);
+      for (const probe of [['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['cat-file', '-p', 'HEAD'], ['show-ref']]) {
+        assert.equal(realGit(copy, probe).stdout.toString(), realGit(repo.disk, probe).stdout.toString(), `${label}: git ${probe.join(' ')}`);
+      }
+      const stray = readdirSync(join(copy, '.git')).filter((n) => /^[0-9a-f]{40}$/.test(n));
+      assert.deepEqual(stray, [], `${label}: no .git file named after a commit`);
+      checks++;
+    };
+    await detached('commit on a detached HEAD', ['commit', '-q', '-m', 'on detached'], '2\n');
+    await detached('a verbatim commit on a detached HEAD', ['commit', '-q', '--cleanup=verbatim', '-m', ' verbatim '], '3\n');
+    await detached('a tag on a detached HEAD', ['tag', '-m', 'm', 'det-tag']);
+    await detached('a merge into a detached HEAD', ['merge', '-q', '--no-edit', 'side']);
+  }
+  // A merge that makes a commit stamps both lines the same way.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      put('g', 'g\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'b');
+      put('f', '2\n');
+      git('commit', '-q', '-a', '-m', 'b');
+      git('checkout', '-q', 'main');
+      put('g', 'g2\n');
+      git('commit', '-q', '-a', '-m', 'm');
+    });
+    const people = { GIT_AUTHOR_NAME: 'Au', GIT_AUTHOR_EMAIL: 'au@x', GIT_AUTHOR_DATE: '1600000000 +0200',
+      GIT_COMMITTER_NAME: 'Co', GIT_COMMITTER_EMAIL: 'co@x', GIT_COMMITTER_DATE: '1600000100 -0400' };
+    const expected = realGit(repo.disk, ['merge', '-q', '--no-edit', 'b'], people);
+    const actual = await nimbusGit(repo.virtual, ['merge', '-q', '--no-edit', 'b'], people);
+    assert.equal(actual.code, expected.code, `a merge commit: exit (${actual.stderr})`);
+    const signatures = (cwd) => realGit(cwd, ['cat-file', 'commit', 'HEAD']).stdout.toString().split('\n').filter((l) => /^(author|committer) /.test(l)).join('\n');
+    assert.equal(signatures(copyOf(repo)), signatures(repo.disk), 'a merge commit: its author and committer');
+    checks++;
   }
 
   // ── A same-size rewrite in the second the index was written ──

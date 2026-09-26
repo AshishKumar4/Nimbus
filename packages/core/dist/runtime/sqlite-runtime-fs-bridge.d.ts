@@ -66,7 +66,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
-    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: {
+    utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
     chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt;

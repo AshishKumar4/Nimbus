@@ -40,8 +40,8 @@ function pullFrom(lines) {
         return step.done ? null : step.value;
     };
 }
-function parseSedScript(expr) {
-    const cur = { expr, i: 0 };
+function parseSedScript(expr, extended) {
+    const cur = { expr, i: 0, extended };
     const commands = [];
     for (;;) {
         skipBlanks(cur);
@@ -153,7 +153,7 @@ function parseDelimitedRegex(cur) {
     }
     if (!closed)
         throw new SedParseError(cur.expr);
-    const source = toJavascriptPattern(raw);
+    const source = toJavascriptPattern(raw, cur.extended);
     if (source === '')
         return { kind: 'empty' };
     try {
@@ -227,7 +227,7 @@ function parseSubstitution(cur) {
             flags += 'g';
         if (insensitive)
             flags += 'i';
-        const pattern = new RegExp(toJavascriptPattern(patternStr), flags);
+        const pattern = new RegExp(toJavascriptPattern(patternStr, cur.extended), flags);
         return { type: 's', pattern, replacement, global, insensitive, print: flagStr.includes('p') };
     }
     catch {
@@ -264,12 +264,13 @@ function isDigit(value) {
     const code = value.charCodeAt(0);
     return code >= 48 && code <= 57;
 }
-function toJavascriptPattern(pattern) {
+function toJavascriptPattern(pattern, extended) {
     let result = '';
     for (let i = 0; i < pattern.length; i++) {
         const char = pattern[i];
         const next = pattern[i + 1];
-        if (char === '\\' && (next === '(' || next === ')' || next === '/')) {
+        // A BRE's `\(`/`\)` group; an ERE's are literal parentheses, as JavaScript's are.
+        if (char === '\\' && (next === '/' || (!extended && (next === '(' || next === ')')))) {
             result += next;
             i++;
             continue;
@@ -398,7 +399,7 @@ export async function runSed(ctx) {
     const commands = [];
     for (const expr of options.expressions) {
         try {
-            commands.push(...parseSedScript(expr));
+            commands.push(...parseSedScript(expr, options.extended));
         }
         catch (e) {
             if (e instanceof SedParseError) {
@@ -559,6 +560,7 @@ function parseSedArgs(args) {
     const options = {
         inPlace: false,
         quiet: false,
+        extended: false,
         expressions: [],
         files: [],
     };
@@ -570,6 +572,10 @@ function parseSedArgs(args) {
         }
         if (arg === '-n' || arg === '--quiet' || arg === '--silent') {
             options.quiet = true;
+            continue;
+        }
+        if (arg === '-E' || arg === '-r' || arg === '--regexp-extended') {
+            options.extended = true;
             continue;
         }
         if (arg === '-e') {
@@ -598,6 +604,10 @@ function parseSedShortCluster(options, arg, args, index) {
         }
         if (flag === 'i') {
             options.inPlace = true;
+            continue;
+        }
+        if (flag === 'E' || flag === 'r') {
+            options.extended = true;
             continue;
         }
         if (flag === 'e') {
