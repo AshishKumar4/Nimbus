@@ -178,6 +178,21 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `grep`, `od` and `cut` answer as GNU's do, byte for byte, checked against
+  GNU grep 3.12 and GNU coreutils 9.7 on 415 cases (`tests/fixtures/gnu/`).
+  grep: basic and extended POSIX patterns (a `+` is literal in a basic
+  pattern), `-F`, `-P`, `-e`, `-f`, `-i`, `-w`, `-x`, `-v`, `-c`, `-l`, `-L`,
+  `-m`, `-o`, `-q`, `-s`, `-b`, `-n`, `-H`, `-h`, `--label`, `-T`, `-Z`,
+  `-z`, context (`-A`, `-B`, `-C`, `-NUM`, group separators), `-r`, `-R`,
+  `--include`, `--exclude`, `--exclude-dir`, `-d`, and binary input: a NUL
+  in what one read brings, or a line with an encoding error, is held back and
+  "binary file matches" follows on stderr; `-a`/`--binary-files=text` prints
+  it, `-I` skips the file. An error (an unreadable file, a directory without
+  `-r`) exits 2. od: every `-t` type (`a`, `c`, `d`, `o`, `u`, `x` in 1, 2,
+  4 or 8 bytes, `f` in 2, 4 or 8, the `z` suffix), the one-letter forms,
+  `-A`, `-j`, `-N`, `-S`, `-v`, `-w`, `--endian`, and GNU's lowercase final
+  hex address. cut: `-b`, `-c` and `-f` lists and ranges, `--complement`,
+  `-s`, `-z`, `--output-delimiter`, streamed in bounded reads.
 - `sed`, `nl`, `rev` and the lifo `grep`, `wc`, `uniq`, `cut`, `awk`, `sort`
   and `tail` read every file. They skipped a file as "binary" by its name, so
   `sed -i s/a/b/ f` left a file with no known text extension unedited. GNU's

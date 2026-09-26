@@ -17,6 +17,7 @@ import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
+import { runGrep } from '../substrate/lifo/commands/text/grep.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
@@ -1337,197 +1338,14 @@ function mkFind(vfs, registry) {
  * flag consistently.
  */
 function mkGrep(vfs) {
-    return async (ctx) => {
-        const args = [...ctx.args];
-        // Parse flags. Support combined `-rni` form (single dash + chars).
-        let recursive = false, ignoreCase = false, lineNum = false;
-        let countOnly = false, invertMatch = false, wordMatch = false;
-        let filesOnly = false; // -l
-        let quiet = false; // -q
-        let positional = [];
-        for (let i = 0; i < args.length; i++) {
-            const a = args[i];
-            if (a === '--') {
-                positional.push(...args.slice(i + 1));
-                break;
-            }
-            if (a === '-r' || a === '-R' || a === '--recursive') {
-                recursive = true;
-                continue;
-            }
-            if (a === '-i' || a === '--ignore-case') {
-                ignoreCase = true;
-                continue;
-            }
-            if (a === '-n' || a === '--line-number') {
-                lineNum = true;
-                continue;
-            }
-            if (a === '-c' || a === '--count') {
-                countOnly = true;
-                continue;
-            }
-            if (a === '-v' || a === '--invert-match') {
-                invertMatch = true;
-                continue;
-            }
-            if (a === '-w' || a === '--word-regexp') {
-                wordMatch = true;
-                continue;
-            }
-            if (a === '-l' || a === '--files-with-matches') {
-                filesOnly = true;
-                continue;
-            }
-            if (a === '-q' || a === '--quiet' || a === '--silent') {
-                quiet = true;
-                continue;
-            }
-            if (a === '-E' || a === '--extended-regexp') { /* JS regex is ERE-ish */
-                continue;
-            }
-            if (a === '-F' || a === '--fixed-strings') {
-                // Mark as literal — handled below via escape.
-                args.__fixedStrings = true;
-                continue;
-            }
-            if (a.startsWith('-') && a.length > 1 && !a.startsWith('--')) {
-                // Combined short flags like -rni
-                for (const ch of a.slice(1)) {
-                    if (ch === 'r' || ch === 'R')
-                        recursive = true;
-                    else if (ch === 'i')
-                        ignoreCase = true;
-                    else if (ch === 'n')
-                        lineNum = true;
-                    else if (ch === 'c')
-                        countOnly = true;
-                    else if (ch === 'v')
-                        invertMatch = true;
-                    else if (ch === 'w')
-                        wordMatch = true;
-                    else if (ch === 'l')
-                        filesOnly = true;
-                    else if (ch === 'q')
-                        quiet = true;
-                    else if (ch === 'E') { /* ERE noop */ }
-                    else if (ch === 'F')
-                        args.__fixedStrings = true;
-                }
-                continue;
-            }
-            positional.push(a);
-        }
-        if (positional.length < 1) {
-            (await ctx.stderr.write('Usage: grep [-rnicvlqEFw] PATTERN [FILE...]\n'));
-            return 1;
-        }
-        let pattern = positional[0];
-        const targets = positional.slice(1);
-        if (args.__fixedStrings) {
-            // -F: escape regex metacharacters for literal match.
-            pattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        }
-        if (wordMatch)
-            pattern = `\\b(?:${pattern})\\b`;
-        const flags = ignoreCase ? 'i' : '';
-        let re;
-        try {
-            re = new RegExp(pattern, flags);
-        }
-        catch {
-            (await ctx.stderr.write(`grep: invalid regex: ${pattern}\n`));
-            return 1;
-        }
-        let found = false;
-        let failed = false;
-        async function processLines(lines, label) {
-            let count = 0;
-            let matchedHere = false;
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                // Skip a trailing empty line from a content that ended with \\n.
-                if (i === lines.length - 1 && line === '')
-                    continue;
-                const isMatch = re.test(line);
-                if (isMatch !== invertMatch) {
-                    found = true;
-                    matchedHere = true;
-                    count++;
-                    // -q asks only whether anything matched; printing is the caller's
-                    // way of saying it wants to see it.
-                    if (quiet)
-                        return;
-                    if (filesOnly) {
-                        // -l: emit file label once, stop scanning.
-                        (await ctx.stdout.write(label + '\n'));
-                        return;
-                    }
-                    if (!countOnly) {
-                        const labelPrefix = (targets.length > 1 || recursive) && label ? label + ':' : '';
-                        const linePrefix = lineNum ? (i + 1) + ':' : '';
-                        (await ctx.stdout.write(labelPrefix + linePrefix + line + '\n'));
-                    }
-                }
-            }
-            if (countOnly && !quiet) {
-                const labelPrefix = (targets.length > 1 || recursive) && label ? label + ':' : '';
-                (await ctx.stdout.write(labelPrefix + count + '\n'));
-            }
-            void matchedHere;
-        }
-        async function grepFile(path, label) {
-            try {
-                const content = (await vfs.readFileString(path));
-                (await processLines(content.split('\n'), label));
-            }
-            catch (error) {
-                (await ctx.stderr.write(`grep: ${label}: ${fsErrorMessage(error)}\n`));
-                failed = true;
-            }
-        }
-        async function walkDir(dir) {
-            try {
-                for (const e of (await vfs.readdir(dir))) {
-                    const fp = dir + '/' + e.name;
-                    if (e.type === 'file')
-                        (await grepFile(fp, '/' + fp));
-                    else if (e.type === 'directory')
-                        (await walkDir(fp));
-                }
-            }
-            catch { }
-        }
-        if (targets.length === 0 && recursive) {
-            (await walkDir((ctx.cwd || '/home/user').replace(/^\/+/, '')));
-        }
-        else if (targets.length === 0) {
-            // Read from stdin (if piped) — single virtual "file" with no label.
-            const piped = stdinText(ctx);
-            if (piped) {
-                (await processLines(piped.split('\n'), ''));
-            }
-        }
-        else {
-            for (const target of targets) {
-                const fp = resolvePath(ctx.cwd, target);
-                try {
-                    if ((await vfs.exists(fp)) && (await vfs.isDirectory(fp))) {
-                        if (recursive)
-                            (await walkDir(fp));
-                    }
-                    else {
-                        (await grepFile(fp, target));
-                    }
-                }
-                catch (error) {
-                    (await ctx.stderr.write(`grep: ${target}: ${fsErrorMessage(error)}\n`));
-                    failed = true;
-                }
-            }
-        }
-        return !failed && found ? 0 : 1;
-    };
+    return async (ctx) => (await runGrep({
+        args: ctx.args,
+        cwd: ctx.cwd,
+        vfs,
+        stdout: ctx.stdout,
+        stderr: ctx.stderr,
+        stdin: typeof ctx.stdin === 'string' ? ctx.stdin : undefined,
+    }));
 }
 /**
  * SHELL-R6-B2 follow-on: streaming head.
@@ -5491,74 +5309,285 @@ class RowDedup {
         return 'star';
     }
 }
-/**
- * Row addresses follow the radix (`0000000` octal or decimal, `000000`
- * lowercase hex). The closing total-length line keeps uppercase hex digits —
- * `00001B`, not `00001b` — matching od on this host byte for byte.
- */
-function odAddress(radix, offset, final) {
+/** Row addresses: 7 octal or decimal digits, 6 hex digits, growing as needed. */
+function odAddress(radix, offset) {
     if (radix === 'n')
         return '';
     if (radix === 'o')
         return offset.toString(8).padStart(7, '0');
     if (radix === 'd')
         return String(offset).padStart(7, '0');
-    const digits = offset.toString(16);
-    return (final ? digits.toUpperCase() : digits).padStart(6, '0');
+    return offset.toString(16).padStart(6, '0');
 }
-/** `\0`-style escapes for `-tc`; other non-printables go out as `\NNN`. */
+/** `-tc` escapes; other bytes outside printable ASCII print as three octal digits. */
 const OD_CHAR_ESCAPES = {
     0: '\\0', 7: '\\a', 8: '\\b', 9: '\\t', 10: '\\n', 11: '\\v', 12: '\\f', 13: '\\r',
 };
-const OD_TYPES = {
-    c: {
-        width: 1,
-        natural: 3,
-        render: (c) => {
-            const escaped = OD_CHAR_ESCAPES[c[0]];
-            if (escaped !== undefined)
-                return escaped.padStart(3);
-            if (c[0] >= 32 && c[0] < 127)
-                return String.fromCharCode(c[0]).padStart(3);
-            return c[0].toString(8).padStart(3, '0');
-        },
-    },
-    d1: { width: 1, natural: 4, render: (c) => String((c[0] << 24) >> 24).padStart(4) },
-    d2: { width: 2, natural: 6, render: (c) => { const v = leWord(c); return String(v >= 0x8000 ? v - 0x10000 : v).padStart(6); } },
-    u1: { width: 1, natural: 3, render: (c) => String(c[0]).padStart(3) },
-    u2: { width: 2, natural: 5, render: (c) => String(leWord(c)).padStart(5) },
-    o1: { width: 1, natural: 3, render: (c) => c[0].toString(8).padStart(3, '0') },
-    o2: { width: 2, natural: 6, render: (c) => leWord(c).toString(8).padStart(6, '0') },
-    x1: { width: 1, natural: 2, render: (c) => c[0].toString(16).padStart(2, '0') },
-    x2: { width: 2, natural: 4, render: (c) => leWord(c).toString(16).padStart(4, '0') },
+/** `-ta` names: the byte's low seven bits. */
+const OD_NAMED = [
+    'nul', 'soh', 'stx', 'etx', 'eot', 'enq', 'ack', 'bel', 'bs', 'ht', 'nl', 'vt', 'ff', 'cr', 'so', 'si',
+    'dle', 'dc1', 'dc2', 'dc3', 'dc4', 'nak', 'syn', 'etb', 'can', 'em', 'sub', 'esc', 'fs', 'gs', 'rs', 'us', 'sp',
+];
+const odPrintable = (byte) => byte >= 0x20 && byte < 0x7f;
+/** Field widths (od.c): the widest value of the type, sign included. */
+const OD_INT_WIDTHS = {
+    d: { 1: 4, 2: 6, 4: 11, 8: 20 },
+    u: { 1: 3, 2: 5, 4: 10, 8: 20 },
+    o: { 1: 3, 2: 6, 4: 11, 8: 22 },
+    x: { 1: 2, 2: 4, 4: 8, 8: 16 },
 };
-/**
- * Split a `-t` value into its concatenated specifications: a letter with an
- * optional size (`x1`, `d2`, `c`, …), so `-tx1c` yields x1 then c.
- */
-function splitOdTypes(value) {
-    const specs = [];
-    const pattern = /([xoducXODUC])([01248]?)/g;
-    let consumed = '';
-    for (const match of value.matchAll(pattern)) {
-        consumed += match[0];
-        const letter = match[1].toLowerCase();
-        const size = match[2] === '' ? '' : match[2];
-        if (letter === 'a') {
-            specs.push('c');
-            continue;
-        }
-        specs.push(`${letter}${size}`);
-    }
-    return consumed === value ? specs : [value];
+const OD_INT_NAMED_SIZES = { C: 1, S: 2, I: 4, L: 8 };
+const OD_FLOAT_NAMED_SIZES = { F: '4', D: '8', H: 'H', B: 'B' };
+function odInteger(letter, size) {
+    const width = OD_INT_WIDTHS[letter][size];
+    const read = (view, at, little) => {
+        if (size === 1)
+            return letter === 'd' ? BigInt(view.getInt8(at)) : BigInt(view.getUint8(at));
+        if (size === 2)
+            return BigInt(letter === 'd' ? view.getInt16(at, little) : view.getUint16(at, little));
+        if (size === 4)
+            return BigInt(letter === 'd' ? view.getInt32(at, little) : view.getUint32(at, little));
+        return letter === 'd' ? view.getBigInt64(at, little) : view.getBigUint64(at, little);
+    };
+    return {
+        size, width, trailer: false,
+        render: (view, at, little) => {
+            const value = read(view, at, little);
+            if (letter === 'o')
+                return value.toString(8).padStart(width, '0');
+            if (letter === 'x')
+                return value.toString(16).padStart(width, '0');
+            return value.toString();
+        },
+    };
 }
-/** `-A[o|d|x|n]`, cumulative `-t<spec>`, `-N<count>`, `-v`. */
+/** A half (IEEE binary16) as the float it widens to. */
+function odHalf(bits) {
+    const sign = bits & 0x8000 ? -1 : 1;
+    const exponent = (bits >> 10) & 0x1f;
+    const fraction = bits & 0x3ff;
+    if (exponent === 0)
+        return sign * fraction * 2 ** -24;
+    if (exponent === 0x1f)
+        return fraction === 0 ? sign * Infinity : NaN;
+    return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+}
+/**
+ * C's `%.*g` of `value` at `precision` significant digits: fixed notation
+ * when the exponent is at least -4 and below the precision, else scientific
+ * with at least two exponent digits; trailing zeros dropped.
+ */
+function odFormatG(value, precision) {
+    const [mantissa, exponentText] = value.toExponential(precision - 1).split('e');
+    const exponent = Number(exponentText);
+    const trim = (text) => (text.includes('.') ? text.replace(/0+$/, '').replace(/\.$/, '') : text);
+    if (exponent >= -4 && exponent < precision)
+        return trim(value.toFixed(Math.max(0, precision - 1 - exponent)));
+    const digits = String(Math.abs(exponent)).padStart(2, '0');
+    return `${trim(mantissa)}e${exponent < 0 ? '-' : '+'}${digits}`;
+}
+/**
+ * ftoastr: the fewest significant digits (from the type's DIG, or 1 below its
+ * smallest normal) whose `%g` reads back as the same value.
+ */
+function odFloat(value, negative, single) {
+    if (Number.isNaN(value))
+        return negative ? '-nan' : 'nan';
+    if (!Number.isFinite(value))
+        return value < 0 ? '-inf' : 'inf';
+    if (value === 0)
+        return negative ? '-0' : '0';
+    const smallest = single ? 1.1754943508222875e-38 : 2.2250738585072014e-308;
+    const same = single ? (text) => Math.fround(Number(text)) === value : (text) => Number(text) === value;
+    for (let precision = Math.abs(value) < smallest ? 1 : single ? 6 : 15;; precision++) {
+        const text = odFormatG(value, precision);
+        if (same(text) || precision >= (single ? 9 : 17))
+            return text;
+    }
+}
+function odFloatSpec(kind) {
+    if (kind === '4') {
+        return { size: 4, width: 15, trailer: false, render: (view, at, little) => {
+                const bits = view.getUint32(at, little);
+                return odFloat(view.getFloat32(at, little), (bits >>> 31) === 1, true);
+            } };
+    }
+    if (kind === '8') {
+        return { size: 8, width: 24, trailer: false, render: (view, at, little) => {
+                const high = view.getUint8(at + (little ? 7 : 0));
+                return odFloat(view.getFloat64(at, little), (high & 0x80) !== 0, false);
+            } };
+    }
+    if (kind === 'H' || kind === 'B') {
+        return { size: 2, width: 15, trailer: false, render: (view, at, little) => {
+                const bits = view.getUint16(at, little);
+                const value = kind === 'H' ? odHalf(bits) : new Float32Array(new Uint32Array([bits << 16]).buffer)[0];
+                return odFloat(value, (bits & 0x8000) !== 0, true);
+            } };
+    }
+    return null;
+}
+const OD_CHAR_SPEC = {
+    size: 1, width: 3, trailer: false,
+    render: (view, at) => {
+        const byte = view.getUint8(at);
+        return OD_CHAR_ESCAPES[byte] ?? (odPrintable(byte) ? String.fromCharCode(byte) : byte.toString(8).padStart(3, '0'));
+    },
+};
+const OD_NAMED_SPEC = {
+    size: 1, width: 3, trailer: false,
+    render: (view, at) => {
+        const byte = view.getUint8(at) & 0x7f;
+        return byte === 0x7f ? 'del' : OD_NAMED[byte] ?? String.fromCharCode(byte);
+    },
+};
+/** A `-t` string: letters, each with an optional size and an optional `z`. */
+function parseOdTypes(text) {
+    const specs = [];
+    const invalid = (why) => `od: invalid type string \u2018${text}\u2019;\n${why}`;
+    for (let i = 0; i < text.length;) {
+        const letter = text[i++];
+        let spec;
+        if (letter === 'a' || letter === 'c') {
+            spec = letter === 'a' ? OD_NAMED_SPEC : OD_CHAR_SPEC;
+        }
+        else if (letter === 'd' || letter === 'o' || letter === 'u' || letter === 'x') {
+            let size = 4;
+            const named = OD_INT_NAMED_SIZES[text[i]];
+            if (named !== undefined) {
+                size = named;
+                i++;
+            }
+            else {
+                const digits = /^\d+/.exec(text.slice(i))?.[0];
+                if (digits !== undefined) {
+                    i += digits.length;
+                    size = Number(digits);
+                    if (!(size in OD_INT_WIDTHS[letter]))
+                        return invalid(`this system doesn't provide a ${size}-byte integral type`);
+                }
+            }
+            spec = odInteger(letter, size);
+        }
+        else if (letter === 'f') {
+            let kind = '8';
+            const named = OD_FLOAT_NAMED_SIZES[text[i]];
+            if (named !== undefined) {
+                kind = named;
+                i++;
+            }
+            else if (text[i] === 'L') {
+                return invalid("this system doesn't provide a long double type od can print");
+            }
+            else {
+                const digits = /^\d+/.exec(text.slice(i))?.[0];
+                if (digits !== undefined) {
+                    i += digits.length;
+                    kind = digits === '2' ? 'H' : digits;
+                    if (kind !== 'H' && kind !== '4' && kind !== '8')
+                        return invalid(`this system doesn't provide a ${digits}-byte floating point type`);
+                }
+            }
+            spec = odFloatSpec(kind);
+        }
+        else {
+            return `od: invalid character '${letter}' in type string \u2018${text}\u2019`;
+        }
+        if (spec === null)
+            return `od: invalid type string \u2018${text}\u2019`;
+        if (text[i] === 'z') {
+            spec = { ...spec, trailer: true };
+            i++;
+        }
+        specs.push(spec);
+    }
+    return specs;
+}
+/** GNU's traditional one-letter types. */
+const OD_SHORTHAND = {
+    a: 'a', b: 'o1', c: 'c', d: 'u2', f: 'fF', i: 'dI', l: 'dL', o: 'o2', s: 'd2', x: 'x2',
+    B: 'o2', D: 'u4', e: 'fD', F: 'fD', h: 'x2', H: 'x4', I: 'dL', L: 'dL', O: 'o4', X: 'x4',
+};
+/** GNU od's options: short (grouped, values attached or separate) and long. */
 function parseOdArgs(args) {
     let radix = 'o';
-    const types = [];
+    const specs = [];
+    let skip = 0;
     let limit;
     let verbose = false;
+    let width;
+    let strings;
+    let little = true;
     const files = [];
+    const count = (flag, value) => {
+        const parsed = parseDumpCount(value);
+        return parsed === null || parsed < 0 ? `od: invalid ${flag} argument '${value}'` : parsed;
+    };
+    const apply = (option, value) => {
+        switch (option) {
+            case 'A':
+            case 'address-radix':
+                // GNU reads the first character only (`-Aod` is octal).
+                if (value === undefined || value === '' || !'odxn'.includes(value[0])) {
+                    return `od: invalid output address radix '${value?.[0] ?? ''}'; it must be one character from [doxn]`;
+                }
+                radix = value[0];
+                return undefined;
+            case 'j':
+            case 'skip-bytes':
+            case 'N':
+            case 'read-bytes':
+            case 'S':
+            case 'strings':
+            case 'w':
+            case 'width': {
+                const flag = option.length === 1 ? `-${option}` : `--${option}`;
+                if (value === undefined) {
+                    if (option === 'S' || option === 'strings') {
+                        strings = 3;
+                        return undefined;
+                    }
+                    if (option === 'w' || option === 'width') {
+                        width = 32;
+                        return undefined;
+                    }
+                }
+                const parsed = count(flag, value ?? '');
+                if (typeof parsed === 'string')
+                    return parsed;
+                if (option === 'j' || option === 'skip-bytes')
+                    skip = parsed;
+                else if (option === 'N' || option === 'read-bytes')
+                    limit = parsed;
+                else if (option === 'S' || option === 'strings')
+                    strings = parsed;
+                else
+                    width = parsed;
+                return undefined;
+            }
+            case 't':
+            case 'format': {
+                const parsed = parseOdTypes(value ?? '');
+                if (typeof parsed === 'string')
+                    return parsed;
+                specs.push(...parsed);
+                return undefined;
+            }
+            case 'endian':
+                if (value !== 'big' && value !== 'little')
+                    return `od: invalid argument '${value}' for '--endian'`;
+                little = value === 'little';
+                return undefined;
+            case 'v':
+            case 'output-duplicates':
+                verbose = true;
+                return undefined;
+            default:
+                return `od: unrecognized option '${option}'`;
+        }
+    };
+    const takesValue = new Set(['A', 'j', 'N', 't']);
+    const optionalValue = new Set(['S', 'w']);
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === '--') {
@@ -5569,51 +5598,162 @@ function parseOdArgs(args) {
             files.push(arg);
             continue;
         }
-        const flag = arg[1];
-        let value = arg.slice(2);
-        if (flag === 'v' && value === '') {
-            verbose = true;
+        if (arg.startsWith('--')) {
+            const eq = arg.indexOf('=');
+            const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+            let value = eq === -1 ? undefined : arg.slice(eq + 1);
+            const required = ['address-radix', 'skip-bytes', 'read-bytes', 'format', 'endian'].includes(name);
+            if (required && value === undefined)
+                value = args[++i];
+            if (required && value === undefined)
+                return { error: `od: option '--${name}' requires an argument` };
+            const error = apply(name, value);
+            if (error !== undefined)
+                return { error };
             continue;
         }
-        if (flag !== 'A' && flag !== 't' && flag !== 'N') {
-            return { error: `od: invalid option -- '${flag}'` };
-        }
-        if (value === '') {
-            value = args[i + 1];
-            if (value !== undefined)
-                i++;
-        }
-        if (value === undefined || value === '') {
-            return { error: `od: option requires an argument -- '${flag}'` };
-        }
-        if (flag === 'A') {
-            // Exactly one radix letter per option (`-Aod` is not two glued flags);
-            // repeated valid options are last-wins, like GNU od.
-            if (value.length !== 1 || !'odxn'.includes(value)) {
-                return { error: `od: Radix must be one of [o, d, x, n], got: ${value}` };
+        for (let j = 1; j < arg.length; j++) {
+            const flag = arg[j];
+            if (takesValue.has(flag) || optionalValue.has(flag)) {
+                let value = arg.slice(j + 1);
+                // -w's value is optional and only ever attached; -S's is required.
+                if (value === '')
+                    value = flag === 'w' ? undefined : args[++i];
+                if (value === undefined && flag !== 'w')
+                    return { error: `od: option requires an argument -- '${flag}'` };
+                const error = apply(flag, value);
+                if (error !== undefined)
+                    return { error };
+                break;
             }
-            radix = value;
-        }
-        else if (flag === 't') {
-            // One -t may carry concatenated specifications (`-tx1c`); repeated
-            // -t flags accumulate too. Both render in request order.
-            for (const spec of splitOdTypes(value)) {
-                if (!(spec in OD_TYPES))
-                    return { error: `od: unsupported type specification '${value}'` };
-                types.push(spec);
+            if (flag === 'v') {
+                verbose = true;
+                continue;
             }
-        }
-        else {
-            const parsed = parseDumpCount(value);
-            if (parsed === null || parsed < 0) {
-                return { error: `od: invalid number of bytes '${value}'` };
-            }
-            limit = parsed;
+            const shorthand = OD_SHORTHAND[flag];
+            if (shorthand === undefined)
+                return { error: `od: invalid option -- '${flag}'` };
+            const error = apply('t', shorthand);
+            if (error !== undefined)
+                return { error };
         }
     }
-    if (types.length === 0)
-        types.push('o2');
-    return { radix, types, limit, verbose, files };
+    if (specs.length === 0)
+        specs.push(...parseOdTypes('o2'));
+    return { radix, specs, skip, limit, verbose, width, strings, little, files };
+}
+const odGcd = (a, b) => (b === 0 ? a : odGcd(b, a % b));
+function mkOd() {
+    return async (ctx) => {
+        const parsed = parseOdArgs(ctx.args);
+        if ('error' in parsed) {
+            (await ctx.stderr.write(`${parsed.error}\n`));
+            return 1;
+        }
+        const { radix, specs, little } = parsed;
+        const src = new DumpByteSource(ctx, 'od', parsed.files, parsed.limit === undefined ? undefined : parsed.skip + parsed.limit);
+        for (let skipped = 0; skipped < parsed.skip;) {
+            const chunk = await src.take(Math.min(65536, parsed.skip - skipped));
+            if (chunk === null || chunk.length === 0) {
+                if (!src.failedAll)
+                    (await ctx.stderr.write('od: cannot skip past end of combined input\n'));
+                return 1;
+            }
+            skipped += chunk.length;
+        }
+        const base = parsed.skip;
+        if (parsed.strings !== undefined) {
+            // Runs of at least N printable bytes that end in a NUL; the run's
+            // offset, then the run. A run cut off by the end of input is dropped.
+            const min = Math.max(1, parsed.strings);
+            let run = [];
+            let start = base;
+            let offset = base;
+            for (;;) {
+                const chunk = await src.take(65536);
+                if (chunk === null || chunk.length === 0)
+                    break;
+                for (const byte of chunk) {
+                    if (byte === 0 && run.length >= min) {
+                        const address = odAddress(radix, start);
+                        (await ctx.stdout.write(`${address === '' ? '' : `${address} `}${String.fromCharCode(...run)}\n`));
+                    }
+                    if (odPrintable(byte)) {
+                        if (run.length === 0)
+                            start = offset;
+                        run.push(byte);
+                    }
+                    else {
+                        run = [];
+                    }
+                    offset++;
+                }
+            }
+            return src.failed ? 1 : 0;
+        }
+        const lcm = specs.reduce((acc, spec) => (acc * spec.size) / odGcd(acc, spec.size), 1);
+        let block = lcm < 16 ? lcm * Math.floor(16 / lcm) : lcm;
+        if (parsed.width !== undefined) {
+            if (parsed.width !== 0 && parsed.width % lcm === 0)
+                block = parsed.width;
+            else {
+                (await ctx.stderr.write(`od: warning: invalid width ${parsed.width}; using ${lcm} instead\n`));
+                block = lcm;
+            }
+        }
+        // Every type's line is padded to the widest one's, spread across its fields.
+        const lineWidth = Math.max(...specs.map((spec) => (spec.width + 1) * (block / spec.size)));
+        const pads = specs.map((spec) => lineWidth - (spec.width + 1) * (block / spec.size));
+        const indent = radix === 'n' ? '' : ' '.repeat(odAddress(radix, 0).length);
+        const buffer = new Uint8Array(block + 8);
+        const view = new DataView(buffer.buffer);
+        let previous = null;
+        let starred = false;
+        let offset = base;
+        for (;;) {
+            const row = await src.take(block);
+            if (row === null || row.length === 0)
+                break;
+            const full = row.length === block;
+            if (!parsed.verbose && full && previous !== null && previous.every((byte, i) => byte === row[i])) {
+                if (!starred)
+                    (await ctx.stdout.write('*\n'));
+                starred = true;
+                offset += row.length;
+                continue;
+            }
+            starred = false;
+            previous = full ? row.slice() : null;
+            buffer.fill(0);
+            buffer.set(row);
+            const lines = [];
+            specs.forEach((spec, index) => {
+                const fields = block / spec.size;
+                const blank = Math.floor((block - row.length) / spec.size);
+                const pad = pads[index];
+                let line = index === 0 ? odAddress(radix, offset) : indent;
+                let padLeft = pad;
+                for (let i = fields; i > blank; i--) {
+                    const nextPad = Math.floor((pad * (i - 1)) / fields);
+                    const item = spec.render(view, (fields - i) * spec.size, little);
+                    line += ' ' + item.padStart(padLeft - nextPad + spec.width);
+                    padLeft = nextPad;
+                }
+                if (spec.trailer) {
+                    line += ' '.repeat(blank * (spec.width + 1) + Math.floor((pad * blank) / fields));
+                    line += `  >${Array.from(row, (byte) => (odPrintable(byte) ? String.fromCharCode(byte) : '.')).join('')}<`;
+                }
+                lines.push(line);
+            });
+            (await ctx.stdout.write(lines.join('\n') + '\n'));
+            offset += row.length;
+        }
+        if (src.failedAll)
+            return 1;
+        if (radix !== 'n')
+            (await ctx.stdout.write(`${odAddress(radix, offset)}\n`));
+        return src.failed ? 1 : 0;
+    };
 }
 /**
  * Sequential bytes for a dump tool: each operand in order, stdin once,
@@ -5809,57 +5949,6 @@ class DumpByteSource {
         }
         return out;
     }
-}
-function mkOd() {
-    return async (ctx) => {
-        const parsed = parseOdArgs(ctx.args);
-        if ('error' in parsed) {
-            (await ctx.stderr.write(`${parsed.error}\n`));
-            return 1;
-        }
-        const src = new DumpByteSource(ctx, 'od', parsed.files, parsed.limit);
-        const specs = parsed.types.map((name) => OD_TYPES[name]);
-        // With several -t types every item shares one column width (the widest
-        // natural width plus one); each type prints on its own continuation
-        // line indented under the address — uutils od's grid on this host.
-        const columnWidth = Math.max(...specs.map((spec) => spec.natural)) + 1;
-        const renderRow = (row) => specs.map((spec) => {
-            const items = [];
-            for (let i = 0; i < row.length; i += spec.width) {
-                items.push(spec.render(row.subarray(i, Math.min(i + spec.width, row.length))));
-            }
-            if (specs.length === 1)
-                return items.join(' ');
-            return items.map((item) => item.padStart(columnWidth)).join('');
-        });
-        const dedup = new RowDedup();
-        while (true) {
-            const row = await src.take(16);
-            if (row === null || row.length === 0)
-                break;
-            const address = odAddress(parsed.radix, src.total - row.length, false);
-            const lines = renderRow(row);
-            const key = lines.join('\n');
-            const indent = address === '' ? '' : ' '.repeat(7);
-            const rendered = specs.length === 1
-                ? `${address} ${lines[0]}`
-                : [`${address}${lines[0]}`, ...lines.slice(1).map((line) => `${indent}${line}`)].join('\n');
-            switch (dedup.classify(key, parsed.verbose)) {
-                case 'print':
-                    (await ctx.stdout.write(`${rendered}\n`));
-                    break;
-                case 'star':
-                    (await ctx.stdout.write('*\n'));
-                    break;
-            }
-        }
-        if (parsed.radix !== 'n') {
-            if (src.failedAll)
-                return 1;
-            (await ctx.stdout.write(`${odAddress(parsed.radix, src.total, true)}\n`));
-        }
-        return src.failed ? 1 : 0;
-    };
 }
 const HEXDUMP_WORD_SIZES = { '1': 1, '2': 2, '4': 4, C: 1 };
 /** Field widths an empty iteration pads to, mirroring util-linux. */

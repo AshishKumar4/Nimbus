@@ -45,7 +45,8 @@ for (const [name, args] of [
   ['base64', ['root-secret']],
 ]) {
   const result = await run(name, args, USER);
-  assert.equal(result.exitCode, 1, `${name} rejects unreadable file`);
+  // grep's status for an error is 2, as GNU grep's is.
+  assert.equal(result.exitCode, name === 'grep' ? 2 : 1, `${name} rejects unreadable file`);
   assert.equal(result.stdout, '', `${name} does not disclose unreadable content`);
   assert.match(result.stderr, /Permission denied/, `${name} reports permission denial`);
 }
