@@ -49,7 +49,7 @@ export const ROOT_DIRECTORY_MODE = 0o40755;
  * shape is declared here rather than assumed present.
  */
 const nodeHost = globalThis;
-const INODE_ROW_COLUMNS = 14;
+const INODE_ROW_COLUMNS = 15;
 const CHUNK_ROW_COLUMNS = 4;
 const MANIFEST_ROW_COLUMNS = 4;
 const CONTENT_ROW_COLUMNS = 6;
@@ -78,7 +78,7 @@ const KEYS_PER_SQL_EXEC = SQL_MAX_BOUND_PARAMETERS - 10;
 const MANIFEST_KEPT_BYTES = 256 * CDC_MIN;
 const MANIFEST_WINDOWS = 64;
 /** A history row read as the inode it was: its generation is gen_from. */
-const HISTORY_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen_from AS gen, chunk_id, content_id';
+const HISTORY_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen_from AS gen, chunk_id, content_id, dacl';
 /** Paths one restore transaction changes, and history rows one drop transaction examines. */
 const RESTORE_PAGE_ROWS = 200;
 /** Rows, chunk references and chunk bytes one export page or frame carries. */
@@ -115,7 +115,7 @@ const INODE_KIND_FILE = 0;
 const INODE_KIND_DIRECTORY = 1;
 const INODE_KIND_SYMLINK = 2;
 /** The inode columns `inodeFromRow` reads. */
-const INODE_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id';
+const INODE_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl';
 const INODE_SELECT_COLUMNS_AS_I = INODE_SELECT_COLUMNS.split(', ').map((column) => `i.${column}`).join(', ');
 /** Rows one page of a subtree walk holds: a bound on its heap, not on the tree. */
 const SUBTREE_PAGE_ROWS = 4096;
@@ -860,6 +860,7 @@ export class SqliteVFS {
         gen INTEGER NOT NULL,
         chunk_id INTEGER NULL,
         content_id INTEGER NULL,
+        dacl INTEGER NULL,
         CHECK (chunk_id IS NULL OR content_id IS NULL)
       ) WITHOUT ROWID`);
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_parent ON vfs_inodes(parent_path, kind)');
@@ -910,6 +911,7 @@ export class SqliteVFS {
         ino INTEGER NOT NULL,
         chunk_id INTEGER NULL,
         content_id INTEGER NULL,
+        dacl INTEGER NULL,
         PRIMARY KEY (path, gen_to)
       ) WITHOUT ROWID`);
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
@@ -1026,6 +1028,7 @@ export class SqliteVFS {
             contentId: row.content_id === null || row.content_id === undefined ? null : Number(row.content_id),
             ino: Number(row.ino),
             gen: Number(row.gen),
+            defaultAcl: row.dacl === null || row.dacl === undefined ? null : Number(row.dacl),
         };
     }
     /**
@@ -1341,6 +1344,29 @@ export class SqliteVFS {
     creationMode(requested, cred) {
         return requested & ~cred.umask & (this.isConfined(cred) ? 0o1777 : 0o7777);
     }
+    /**
+     * What a new entry at storage key `key` is made with, from its parent (a
+     * row, or one staged earlier in the same batch):
+     * - a parent with a default ACL gives the requested permissions ANDed with
+     *   its base entries, no umask, and a new directory inherits the ACL;
+     * - a setgid parent gives its group, and a new directory is setgid too
+     *   (Linux; Kinu N26). Otherwise the caller's umask and primary group.
+     */
+    creationAttrs(key, requested, cred, directory, staged) {
+        const parentKey = this.parentPath(key);
+        const parent = staged?.get(parentKey) ?? this.inodes.get(parentKey);
+        const acl = parent?.defaultAcl ?? null;
+        let mode = acl === null
+            ? this.creationMode(requested, cred)
+            : (requested & (this.isConfined(cred) ? 0o1000 : 0o7000)) | (requested & 0o777 & acl);
+        let gid = cred.gid;
+        if (parent !== undefined && (parent.mode & 0o2000) !== 0) {
+            gid = parent.gid;
+            if (directory)
+                mode |= 0o2000;
+        }
+        return { mode, gid, defaultAcl: directory ? acl : null };
+    }
     isConfined(cred) {
         return cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid);
     }
@@ -1442,6 +1468,8 @@ export class SqliteVFS {
             lstat: (path) => this.stat(path, bound, false),
             utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
             chmod: (path, mode) => this.chmod(path, mode, bound),
+            setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
+            getDefaultAcl: (path) => this.getDefaultAcl(path, bound),
             chown: (path, uid, gid, options) => this.chown(path, uid, gid, bound, options?.followSymlinks !== false),
             readdir: (path) => this.readdir(path, bound),
             list: (after, limit) => this.list(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT), bound),
@@ -1644,7 +1672,13 @@ export class SqliteVFS {
         const p = cred === undefined ? normalizeVfsPath(path) : this.storageKey(path, cred);
         if (p === '')
             return this._revision;
-        return this.pathRevision(p);
+        // Mutations stamp the path a name resolves to, so that is the counter.
+        let resolved = p;
+        try {
+            resolved = this.resolvePath(p, cred ?? CRED_KERNEL, true, true).path;
+        }
+        catch { /* the name's own */ }
+        return this.pathRevision(resolved);
     }
     /**
      * A storage key's revision: its own stamp; else, for a file or symlink,
@@ -2109,6 +2143,7 @@ export class SqliteVFS {
     }
     _mkdirSingle(path, requestedMode, cred) {
         const now = this.now();
+        const made = this.creationAttrs(path, requestedMode ?? 0o777, cred, true);
         const builder = this.newPlan();
         builder.addInode({
             path,
@@ -2118,10 +2153,11 @@ export class SqliteVFS {
             size: 0,
             atime: now,
             mtime: now,
-            mode: this.creationMode(requestedMode ?? 0o777, cred),
+            mode: made.mode,
             uid: cred.uid,
-            gid: cred.gid,
+            gid: made.gid,
             content: { type: 'none' },
+            defaultAcl: made.defaultAcl,
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
     }
@@ -2155,6 +2191,7 @@ export class SqliteVFS {
         // POSIX: rewriting an existing file never changes its mode; the mode
         // is chosen only at creation (open(2) O_CREAT).
         const prior = this.inodes.get(effectivePath);
+        const made = prior ? undefined : this.creationAttrs(effectivePath, options?.mode ?? 0o666, cred, false);
         const inode = {
             path: effectivePath,
             parentPath: pp,
@@ -2165,9 +2202,9 @@ export class SqliteVFS {
             mtime: now,
             mode: prior?.kind === 'file'
                 ? prior.mode
-                : this.creationMode(options?.mode ?? 0o666, cred),
+                : made?.mode ?? this.creationMode(options?.mode ?? 0o666, cred),
             uid: prior?.uid ?? cred.uid,
-            gid: prior?.gid ?? cred.gid,
+            gid: prior?.gid ?? made.gid,
             chunkCount,
         };
         try {
@@ -2204,7 +2241,7 @@ export class SqliteVFS {
             mtime: now,
             mode: inodeTypeBits('symlink') | 0o777,
             uid: cred.uid,
-            gid: cred.gid,
+            gid: this.creationAttrs(placed, 0o777, cred, false).gid,
             chunkCount,
         };
         const chunks = Array.from({ length: chunkCount }, (_, chunkId) => ({
@@ -3204,6 +3241,7 @@ export class SqliteVFS {
             gid: fields.gid ?? inode.gid,
             ino: inode.ino,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
+            defaultAcl: fields.defaultAcl,
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' });
     }
@@ -3246,6 +3284,27 @@ export class SqliteVFS {
         this.assertConfinedModeChange(inode, mode, cred, resolved.path);
         this.assertMutationsAllowed([inode.path]);
         this.publishMetadata(inode, { mode: inodeTypeBits(inode.kind) | (mode & 0o7777) });
+    }
+    setDefaultAcl(path, perms, cred) {
+        const resolved = this.checkAccess(path, 0, cred);
+        const inode = resolved.inode;
+        if (!inode)
+            throw vfsError('ENOENT', path);
+        if (!inode.isDir)
+            throw vfsError('ENOTDIR', resolved.path);
+        if (cred.uid !== 0 && cred.uid !== inode.uid)
+            throw vfsError('EPERM', resolved.path);
+        if (perms !== null && (!Number.isSafeInteger(perms) || perms < 0 || perms > 0o777)) {
+            throw vfsError('EINVAL', `default ACL ${String(perms)}`);
+        }
+        this.assertMutationsAllowed([inode.path]);
+        this.publishMetadata(inode, { defaultAcl: perms });
+    }
+    getDefaultAcl(path, cred) {
+        const inode = this.checkAccess(path, 0, cred).inode;
+        if (!inode)
+            throw vfsError('ENOENT', path);
+        return inode.isDir ? inode.defaultAcl : null;
     }
     chown(path, uid, gid, cred, followLeaf) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf });
@@ -3558,13 +3617,15 @@ export class SqliteVFS {
         const target = this.checkAccess(newPath, 0, cred, { followLeaf: false, allowMissingLeaf: true });
         oldPath = source.path;
         newPath = target.path;
-        this.checkParentAccess(oldPath, cred);
-        this.checkParentAccess(newPath, cred);
+        // Linux order (do_renameat2, vfs_rename): the same entry is a no-op before
+        // any permission; a tree into itself is EINVAL; then write on both parents,
+        // the sticky bit, and what the destination is.
         if (oldPath === newPath)
             return;
-        if (newPath.startsWith(`${oldPath}/`)) {
-            throw new Error(`EINVAL: cannot move ${oldPath} inside itself`);
-        }
+        if (newPath.startsWith(`${oldPath}/`))
+            throw vfsError('EINVAL', `cannot move ${oldPath} inside itself`);
+        this.checkParentAccess(oldPath, cred);
+        this.checkParentAccess(newPath, cred);
         this.checkStickyParentMutation(oldPath, inode, cred);
         // W-3 (WASI filesystem WASI): if newPath already exists, unlink it first so the
         // SQL UPDATE doesn't conflict on inodes.path uniqueness. POSIX rename(2)
@@ -3576,25 +3637,21 @@ export class SqliteVFS {
         const destInode = target.inode;
         if (destInode) {
             this.checkStickyParentMutation(newPath, destInode, cred);
-            if (destInode.isDir) {
-                // POSIX semantics: rename onto a non-empty dir is an error
-                // (ENOTEMPTY); rename onto an empty dir is allowed. We surface
-                // both as a thrown error since the WASI shim treats every
-                // unexpected exception as ENOSYS → caller diagnostics.
-                // Conservative: refuse dir overwrite entirely; the WASI fixture
-                // we care about (file → file) is the high-value case.
-                if (inode.isDir) {
-                    throw new Error("ENOTDIR-or-EISDIR: rename onto existing dir not supported");
-                }
-                throw new Error("EISDIR: cannot rename file onto existing directory");
-            }
-            // POSIX: a directory never replaces a non-directory. Refusing it also
-            // keeps an occupied destination to the single-entry file-onto-file
-            // move, whose publication is one transaction — so the destination this
-            // move supersedes is never dropped by a group that later fails.
-            if (inode.isDir) {
-                throw new Error(`ENOTDIR: cannot overwrite non-directory ${newPath} with directory ${oldPath}`);
-            }
+            // POSIX replacement: a file never replaces a directory (EISDIR), a
+            // directory never a file (ENOTDIR), and a directory replaces only an
+            // empty one (ENOTEMPTY, below, with the moved-directory check first).
+            if (destInode.isDir && !inode.isDir)
+                throw vfsError('EISDIR', newPath);
+            if (!destInode.isDir && inode.isDir)
+                throw vfsError('ENOTDIR', newPath);
+        }
+        // A directory moved to another parent has its `..` rewritten: that needs
+        // write permission on the directory itself (Linux may_delete/may_create).
+        if (inode.isDir && this.parentPath(oldPath) !== this.parentPath(newPath) && !this.accessInode(inode, 0o2, cred)) {
+            throw vfsError('EACCES', oldPath);
+        }
+        if (destInode?.isDir && this.collectSubtreeInodes([newPath]).some((entry) => entry.path !== newPath)) {
+            throw vfsError('ENOTEMPTY', newPath);
         }
         // Both questions a rename asks — what moves, and what is already at the
         // destination — are subtree queries, and the index answers them in the
@@ -3664,6 +3721,7 @@ export class SqliteVFS {
                 content: { type: 'ref', chunkId: entry.chunkId, contentId: entry.contentId },
                 // A rename keeps the inode: the number follows the entry, not the path.
                 ino: entry.ino,
+                defaultAcl: entry.defaultAcl,
                 // Only the moved inode itself changes; its descendants keep their ctime.
                 ctime: entry.path === oldPath ? undefined : entry.ctime,
             };
@@ -3840,9 +3898,9 @@ export class SqliteVFS {
             size: inode.size,
             atime: now,
             mtime: now,
-            mode: prior ? prior.mode : this.creationMode(0o666, cred),
+            mode: prior ? prior.mode : this.creationAttrs(target.path, 0o666, cred, false).mode,
             uid: prior?.uid ?? cred.uid,
-            gid: prior?.gid ?? cred.gid,
+            gid: prior?.gid ?? this.creationAttrs(target.path, 0o666, cred, false).gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
@@ -3938,7 +3996,7 @@ export class SqliteVFS {
      */
     runCopyTree(job, id, maxPages = Infinity) {
         const range = subtreeRange(job.src);
-        const columns = 'path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_id, content_id';
+        const columns = 'path, parent_path, kind, size, atime, mtime, mode, uid, gid, chunk_id, content_id, dacl';
         // The rows copied: the live tree, or the snapshot's (live rows it still
         // sees, plus the history rows covering it). Generations are integers.
         const source = job.atGen === undefined
@@ -3967,14 +4025,14 @@ export class SqliteVFS {
                     const lower = cursor === null ? job.src : cursor;
                     const tail = job.src.length + 1;
                     this.sql.exec(`INSERT OR IGNORE INTO vfs_inodes
-                 (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id)
+                 (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)
                SELECT ? || substr(path, ?),
                       CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
                       kind, size,
                       CASE WHEN ? THEN atime ELSE ? END, CASE WHEN ? THEN mtime ELSE ? END, ?,
                       CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE mode & ~? END,
                       CASE WHEN ? THEN uid ELSE ? END, CASE WHEN ? THEN gid ELSE ? END,
-                      ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id
+                      ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id, dacl
                FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`, job.dst, tail, job.src, this.parentPath(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.clearBits, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last);
                     this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
                 }
@@ -4255,6 +4313,8 @@ export class SqliteVFS {
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
             utimes: readOnly,
             chmod: readOnly,
+            setDefaultAcl: readOnly,
+            getDefaultAcl: (path) => { const inode = resolve(path, 0).inode; return inode.isDir ? inode.defaultAcl : null; },
             chown: readOnly,
             readdir: (path) => {
                 const np = this.storageKey(path, bound);
@@ -4439,6 +4499,7 @@ export class SqliteVFS {
                 gid: past.gid,
                 ino: past.ino,
                 content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
+                defaultAcl: past.defaultAcl,
             });
             for (const live of changed) {
                 const past = this.historyAt(live.path, job.g);
@@ -5207,29 +5268,73 @@ export class SqliteVFS {
         return this.coldStore;
     }
     // ── Batch write (npm install fast path) ───────────────────────────────
-    normalizeBatchInode(entry, cred) {
-        const path = this.storageKey(entry.path, cred);
+    /**
+     * Where a new entry at storage key `key` goes: its parent as it resolves
+     * (links followed) plus its own name, as writeFile/unlink/rename place
+     * theirs. A parent that does not exist yet (made in the same batch or
+     * mkdir -p) is placed the same way, recursively. `memo` shares that work
+     * across one operation.
+     */
+    createdPath(key, cred, memo = new Map()) {
+        const known = memo.get(key);
+        if (known !== undefined)
+            return known;
+        const parent = this.parentPath(key);
+        let placed = key;
+        if (parent !== '') {
+            const name = key.slice(parent.length + 1);
+            let resolvedParent;
+            try {
+                resolvedParent = this.resolvePath(parent, cred, true, false).path;
+            }
+            catch (error) {
+                if (error.code !== 'ENOENT')
+                    throw error;
+                resolvedParent = this.createdPath(parent, cred, memo);
+            }
+            placed = resolvedParent ? `${resolvedParent}/${name}` : name;
+        }
+        memo.set(key, placed);
+        return placed;
+    }
+    normalizeBatchInode(entry, cred, memo, staged) {
+        const literal = this.storageKey(entry.path, cred);
+        // The entry must name its own parent, as the caller wrote it; placement
+        // (links followed) comes after.
+        const namedParent = this.storageKey(entry.parentPath, cred);
+        if (namedParent !== this.parentPath(literal)) {
+            throw new Error(`EINVAL: ${literal}: parentPath ${namedParent} does not match ${this.parentPath(literal)}`);
+        }
+        const path = this.createdPath(literal, cred, memo);
         const prior = this.inodes.get(path);
+        const directory = inodeKind(entry) === 'directory';
+        const made = prior ? undefined : this.creationAttrs(path, entry.mode, cred, directory, staged);
         const newUid = cred.uid === 0 ? (entry.uid ?? 1000) : cred.uid;
-        const newGid = cred.uid === 0 ? (entry.gid ?? 1000) : cred.gid;
+        // The kernel restoring a tree names its groups; anyone else gets the rule.
+        const newGid = cred.uid === 0 && entry.gid !== undefined ? entry.gid : (made?.gid ?? cred.gid);
         // ctime is the commit's clock, never the caller's.
         const { ctime: _unsettable, ...fields } = entry;
-        return {
+        const normalized = {
             ...fields,
             path,
-            parentPath: this.storageKey(entry.parentPath, cred),
+            parentPath: this.parentPath(path),
             // A record replacing an inode of another kind (a directory over a link) takes none of its mode.
             mode: prior && prior.kind === inodeKind(entry)
                 ? prior.mode
                 : inodeKind(entry) === 'symlink'
                     ? inodeTypeBits('symlink') | 0o777
-                    : this.creationMode(entry.mode, cred),
+                    : made?.mode ?? this.creationMode(entry.mode, cred),
             uid: prior?.uid ?? newUid,
             gid: prior?.gid ?? newGid,
+            ...(made && directory ? { defaultAcl: made.defaultAcl } : {}),
         };
+        staged?.set(path, { mode: normalized.mode, gid: normalized.gid, defaultAcl: made?.defaultAcl ?? prior?.defaultAcl ?? null });
+        return normalized;
     }
     authorizeBatch(payload, cred) {
-        const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred));
+        const placed = new Map();
+        const staged = new Map();
+        const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged));
         const pending = new Map(inodes.map((entry) => [entry.path, entry]));
         // A batch writes each row at its literal key, so the permission it checks
         // for a row it places has to be the permission of that place: resolving
@@ -5272,8 +5377,14 @@ export class SqliteVFS {
             if (resolved.path !== key)
                 throw unplaceable(this.parentPath(key));
         };
+        // A row left at its literal key (under a link's own name, by an older
+        // build) is removed where it is; otherwise the name is where it resolves.
+        const deleted = (path) => {
+            const key = this.storageKey(path, cred);
+            return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
+        };
         for (const path of payload.deletePaths ?? []) {
-            const normalized = this.storageKey(path, cred);
+            const normalized = deleted(path);
             const existing = this.checkAccess(normalized, 0, cred, {
                 followLeaf: false,
                 allowMissingLeaf: true,
@@ -5289,7 +5400,8 @@ export class SqliteVFS {
         }
         // Chunks name their inode by path, so they take the inodes' storage keys.
         const chunks = payload.chunks.map((chunk) => {
-            const path = this.storageKey(chunk.path, cred);
+            const key = this.storageKey(chunk.path, cred);
+            const path = this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
             if (!pending.has(path))
                 replaced(path);
             return path === chunk.path ? chunk : { ...chunk, path };
@@ -5298,7 +5410,7 @@ export class SqliteVFS {
             ...payload,
             inodes,
             chunks,
-            deletePaths: payload.deletePaths?.map((path) => this.storageKey(path, cred)),
+            deletePaths: payload.deletePaths?.map(deleted),
         };
     }
     /**
@@ -6037,8 +6149,8 @@ export class SqliteVFS {
                     for (let i = 0; i < paths.length; i += KEYS_PER_SQL_EXEC) {
                         const batch = paths.slice(i, i + KEYS_PER_SQL_EXEC);
                         this.sql.exec(`INSERT OR IGNORE INTO vfs_inode_history
-                 (path, gen_to, gen_from, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id)
-               SELECT path, ?, gen, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id
+                 (path, gen_to, gen_from, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl)
+               SELECT path, ?, gen, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl
                FROM vfs_inodes WHERE gen <= ? AND path IN (${batch.map(() => '?').join(',')})`, gen, pinGen, ...batch);
                     }
                 }
@@ -6290,6 +6402,8 @@ export class SqliteVFS {
                     // else takes the counter.
                     inode.ino ??= before?.ino ?? nextIno++;
                     inode.gen = gen;
+                    if (inode.defaultAcl === undefined)
+                        inode.defaultAcl = before?.defaultAcl ?? null;
                     inode.ctime ??= committedAt;
                     if (before) {
                         if (before.chunkId !== null && before.chunkId !== inode.chunkId)
@@ -6305,9 +6419,9 @@ export class SqliteVFS {
                             queue.add(GC_CONTENT, inode.contentId);
                         continue;
                     }
-                    rows.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime, inode.mtime, inode.ctime, inode.mode, inode.uid, inode.gid, inode.ino, gen, inode.chunkId, inode.contentId);
+                    rows.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime, inode.mtime, inode.ctime, inode.mode, inode.uid, inode.gid, inode.ino, gen, inode.chunkId, inode.contentId, inode.defaultAcl);
                 }
-                this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
+                this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
                 const queued = queue.rows();
                 this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
                 if (queued.length > 0)
@@ -6841,6 +6955,7 @@ export class SqliteVFS {
                 uid: entry.uid,
                 gid: entry.gid,
                 content,
+                defaultAcl: entry.defaultAcl,
             });
         }
         return { plan: builder.build(), deletedInodes };
@@ -6960,6 +7075,7 @@ export class SqliteVFS {
                 contentId: entry.contentId ?? null,
                 ino: entry.ino,
                 gen: entry.gen,
+                defaultAcl: entry.defaultAcl ?? null,
             };
             this.inodes.set(entry.path, node);
             published.set(entry.path, node);
@@ -7079,11 +7195,12 @@ export class SqliteVFS {
         const mtime = Date.now();
         const toCreate = [];
         const seen = new Set();
+        const placed = new Map();
         for (const path of paths) {
-            const parts = path.split('/').filter(Boolean);
+            const parts = this.storageKey(path, cred).split('/').filter(Boolean);
             let current = '';
             for (const part of parts) {
-                current = current ? current + '/' + part : part;
+                current = this.createdPath(current ? current + '/' + part : part, cred, placed);
                 if (!seen.has(current) && !this.exists(current, cred)) {
                     seen.add(current);
                     toCreate.push({

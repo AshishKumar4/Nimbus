@@ -9,7 +9,7 @@
  * cache over it can see a change. Errors become VfsError with the engine's
  * code.
  */
-import type { CredentialedVfs, SqliteVFS } from './sqlite-vfs.js';
+import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;

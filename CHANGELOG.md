@@ -16,6 +16,17 @@ published independently in the `@nimbus-sh` npm scope.
   longer `mkdir /foo`; the top-level directories a session has (`/home`,
   `/tmp`, `/usr`, `/var`, `/opt`, `/bin`) are made by the kernel at boot
   and owned by the session user, as before.
+- An entry made, removed or versioned through a directory link (for example
+  `/home/user` -> `/home/main`) is placed where the link resolves, in
+  batches and `mkdir -p` too (Kinu N22).
+- A setgid directory gives what is made in it its group, and a directory
+  made there is setgid too. `setfacl -d -m u::,g::,o::` sets a directory's
+  default ACL base entries: what is made there then gets those permissions
+  instead of the umask, and new directories inherit them. `setfacl -k`
+  removes it, and `getfacl` shows it (Kinu N26).
+- `rename` follows Linux's order and error codes. A directory may replace an
+  empty directory, and moving a directory to another parent needs write
+  permission on it.
 
 ## 2026-09-24
 

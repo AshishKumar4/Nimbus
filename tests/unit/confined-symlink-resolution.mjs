@@ -248,39 +248,35 @@ assert.equal(aFs.realpath(`/${PRIVATE_ROOT}/inner`), '/tmp/renamed.txt', 'its ow
 assert.equal(a.resolveSymlink('/tmp/up1/tmp/inner'), 'tmp/renamed.txt');
 
 // ── Batch and stream writes land where their permission was checked ───────
-// A batch places each entry at its literal path. When that path's parent is
-// a link, the permission was checked on the link's target while the row went
-// under the link: here, into PLAIN's home, which A cannot write.
+// A batch entry's parent is resolved, links followed (Kinu N22), and the
+// row goes where the parent resolves, which is where its permission is
+// checked. Here PLAIN's /home/user/tmp-dir is a link to ../../tmp, which for
+// the confined A is A's own /tmp: the rows land there, never under the link
+// in PLAIN's home. A link to `/` meets the root's permission.
 function rows(prefix) {
   return harness.db.query('SELECT path FROM vfs_inodes WHERE path > ? AND path < ? ORDER BY path')
     .all(prefix, `${prefix.slice(0, -1)}0`).map((row) => row.path);
 }
 const batchFile = (path, parentPath) => ({ path, parentPath, isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 });
-assert.throws(() => a.writeBatch({
+a.writeBatch({
   inodes: [batchFile('/home/user/tmp-dir/planted', '/home/user/tmp-dir')],
   chunks: [{ path: '/home/user/tmp-dir/planted', chunkId: 0, data: enc.encode('x') }],
-}), { code: 'ENOTDIR' });
+});
+assert.equal(a.readFileString('/tmp/planted'), 'x', "the batch landed in A's own /tmp, the link's target");
 assert.throws(() => a.writeBatch({
   inodes: [batchFile('/tmp/root/batched', '/tmp/root')],
   chunks: [{ path: '/tmp/root/batched', chunkId: 0, data: enc.encode('x') }],
-}), { code: 'ENOTDIR' });
-assert.throws(() => a.mkdirBatch(['/home/user/tmp-dir/batch-dir']), { code: 'ENOTDIR' });
+}), { code: 'EACCES' }, 'through a link to `/`: the root is 0755 root:root');
+a.mkdirBatch(['/home/user/tmp-dir/batch-dir']);
+assert.ok(a.isDirectory('/tmp/batch-dir'));
 // A stream frames canonical paths, without the leading slash.
 {
   const result = await a.writeStream(encodeWriteBatchStream({
     inodes: [batchFile('home/user/tmp-dir/streamed', 'home/user/tmp-dir')],
     chunks: [{ path: 'home/user/tmp-dir/streamed', chunkId: 0, data: enc.encode('x') }],
   }));
-  assert.equal(result.ok, false);
-  assert.match(result.error.message, /ENOTDIR/);
-}
-{
-  const result = await a.writeStream(encodeWriteBatchStream({
-    inodes: [{ path: 'home/user/tmp-dir/sub', parentPath: 'home/user/tmp-dir', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }],
-    chunks: [],
-  }));
-  assert.equal(result.ok, false);
-  assert.match(result.error.message, /ENOTDIR/);
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(a.readFileString('/tmp/streamed'), 'x');
 }
 assert.deepEqual(rows('home/user/tmp-dir/'), [], "a row was planted under a link in PLAIN's home");
 assert.deepEqual(rows(`${PRIVATE_ROOT}/root/`), [], 'a row was placed under a link A made');
@@ -347,17 +343,18 @@ assert.equal(root.readFileString(`${PRIVATE_ROOT}/renamed.txt`), 'mine');
 // ── For every caller, creating through a link lands in its target ─────────
 // mkdir and symlink placed the row under the link, and a batch did the same;
 // the link's own name then hid it. They now create inside the directory the
-// link names, and a batch, which places rows literally, refuses.
+// link names, and so does a batch (Kinu N22).
 plain.mkdir('/home/user/real');
 plain.symlink('real', '/home/user/real-link');
 plain.mkdir('/home/user/real-link/made');
 plain.symlink('../notes.txt', '/home/user/real-link/lnk');
 assert.equal(plain.readFileString('/home/user/real/lnk'), 'NOTES');
 assert.deepEqual(plain.readdir('/home/user/real-link').map((entry) => entry.name), ['lnk', 'made']);
-assert.throws(() => plain.writeBatch({
+plain.writeBatch({
   inodes: [batchFile('/home/user/real-link/batched', '/home/user/real-link')],
   chunks: [{ path: '/home/user/real-link/batched', chunkId: 0, data: enc.encode('x') }],
-}), { code: 'ENOTDIR' });
+});
+assert.equal(plain.readFileString('/home/user/real/batched'), 'x');
 assert.deepEqual(rows('home/user/real-link/'), []);
 
 console.log('confined-symlink-resolution: ok');

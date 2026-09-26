@@ -103,6 +103,14 @@ export interface CredentialedVfs {
     lstat(path: string): VfsStat;
     utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
     chmod(path: string, mode: number): void;
+    /**
+     * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as
+     * nine permission bits, or null to remove it (`setfacl -k`). The owner or
+     * root only.
+     */
+    setDefaultAcl(path: string, perms: number | null): void;
+    /** The directory's default ACL base entries, or null (`getfacl`). */
+    getDefaultAcl(path: string): number | null;
     chown(path: string, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     }): void;
@@ -529,6 +537,15 @@ export declare class SqliteVFS {
      * its umask cannot refuse. Sticky only restricts others and is kept.
      */
     private creationMode;
+    /**
+     * What a new entry at storage key `key` is made with, from its parent (a
+     * row, or one staged earlier in the same batch):
+     * - a parent with a default ACL gives the requested permissions ANDed with
+     *   its base entries, no umask, and a new directory inherits the ACL;
+     * - a setgid parent gives its group, and a new directory is setgid too
+     *   (Linux; Kinu N26). Otherwise the caller's umask and primary group.
+     */
+    private creationAttrs;
     private isConfined;
     /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
     releasePrincipal(uid: number): void;
@@ -900,6 +917,8 @@ export declare class SqliteVFS {
      * rows upgrade the first time they are chmod'ed.
      */
     private chmod;
+    private setDefaultAcl;
+    private getDefaultAcl;
     private chown;
     /**
      * Enumerate the filesystem, one bounded page at a time.
@@ -1226,6 +1245,14 @@ export declare class SqliteVFS {
     /** Throw ENODATA if a restore or copy from generation `g` under `root` would publish a cold chunk. */
     private assertSnapshotLocal;
     private requireColdStore;
+    /**
+     * Where a new entry at storage key `key` goes: its parent as it resolves
+     * (links followed) plus its own name, as writeFile/unlink/rename place
+     * theirs. A parent that does not exist yet (made in the same batch or
+     * mkdir -p) is placed the same way, recursively. `memo` shares that work
+     * across one operation.
+     */
+    private createdPath;
     private normalizeBatchInode;
     private authorizeBatch;
     /**

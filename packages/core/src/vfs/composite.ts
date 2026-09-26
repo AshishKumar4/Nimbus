@@ -578,6 +578,9 @@ export class CompositeVFS implements VFS {
     const walk = (components: readonly string[], hops: number): Awaitable<string> => {
       const resolved: string[] = [];
       const lastIndex = components.length - 1;
+      // Set after a structural directory its holder does not hold as a
+      // directory: its other children are absent (they would be under a file).
+      let shadowParent = false;
       const step = (i: number): Awaitable<string> => {
         for (; i < components.length; i++) {
           const component = components[i]!;
@@ -591,12 +594,19 @@ export class CompositeVFS implements VFS {
             // Lookup through a mount point, or a directory above one, needs
             // search permission on what is there, as on Linux: the mounted
             // root, or the directory a backend holds at that path.
+            shadowParent = false;
             if (final) continue;
             const mount = this.table.mounts.get(prefix);
             return then(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
               if (held !== null && !this.permits(held, 1)) throw new VfsError('EACCES', 'permission denied', input);
+              shadowParent = mount === undefined && held === null;
               return step(at + 1);
             });
+          }
+          if (shadowParent) {
+            shadowParent = false;
+            if (!final) throw new VfsError('ENOENT', 'no such file or directory', input);
+            continue;
           }
           if (this.absentOn(prefix) !== null) continue;
           const route = this.route(prefix);
@@ -822,7 +832,24 @@ export class CompositeVFS implements VFS {
         return then(this.reachable(path, sync), () => then(listed(), finish));
       }
       const route = this.route(path);
-      return then(this.reachable(path, sync), () => then((this.ops(route, sync) as SyncVFS).readdir(route.rel), finish));
+      const ops = this.ops(route, sync) as SyncVFS;
+      // opendir(O_DIRECTORY) answers ENOTDIR before a permission check.
+      const notDirectoryFirst = (error: unknown): Awaitable<VfsDirent[]> => {
+        if (!isVfsError(error, 'EACCES')) throw error;
+        return then(this.softStat(ops, route.rel, true), (stat) => {
+          if (stat !== null && stat.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', path);
+          throw error;
+        });
+      };
+      const listed = (): Awaitable<VfsDirent[]> => {
+        try {
+          const out = ops.readdir(route.rel);
+          return isPromise(out) ? out.catch(notDirectoryFirst) : out;
+        } catch (error) {
+          return notDirectoryFirst(error);
+        }
+      };
+      return then(this.reachable(path, sync), () => then(listed(), finish));
     });
   }
 
@@ -834,7 +861,13 @@ export class CompositeVFS implements VFS {
   private onFile<T>(input: string, follow: boolean, sync: boolean, run: (ops: Ops, rel: string, path: string) => Awaitable<T>): Awaitable<T> {
     return then(this.resolve(input, follow, sync), (path) => {
       this.present(path);
-      if (this.isStructural(path)) throw new VfsError('EISDIR', 'is a directory', path);
+      if (this.isStructural(path)) {
+        // open(2) checks read permission before a read answers EISDIR.
+        return then(this.statAt(path, true, sync), (stat) => {
+          if (stat !== null && !this.permits(stat, 4)) throw new VfsError('EACCES', 'permission denied', path);
+          throw new VfsError('EISDIR', 'is a directory', path);
+        });
+      }
       const route = this.route(path);
       return then(this.reachable(path, sync), () => run(this.ops(route, sync), route.rel, path));
     });
@@ -849,7 +882,12 @@ export class CompositeVFS implements VFS {
       // unlink(2) refuses a directory before anything else (Linux), and a
       // mount point is one.
       if (what === 'unlinked' && (path === ROOT_POINT || this.isStructural(path))) {
-        throw new VfsError('EISDIR', 'is a directory', path);
+        // may_delete: write and search on the parent, then EISDIR.
+        if (path === ROOT_POINT) throw new VfsError('EISDIR', 'is a directory', path);
+        return then(this.statAt(parentOf(path), true, sync), (parent) => {
+          if (parent !== null && !this.permits(parent, 3)) throw new VfsError('EACCES', 'permission denied', path);
+          throw new VfsError('EISDIR', 'is a directory', path);
+        });
       }
       const route = this.route(path);
       // chmod, chown and utimes of a mount point change the mounted root, as

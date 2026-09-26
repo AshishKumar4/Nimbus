@@ -9,7 +9,7 @@
  * cache over it can see a change. Errors become VfsError with the engine's
  * code.
  */
-import type { CredentialedVfs, SqliteVFS, VfsStat as SqliteStat } from './sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
 import { VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 
@@ -94,6 +94,10 @@ export class SqliteFiles implements VFS {
   }
 
   stat(path: string, options?: { follow?: boolean }): VfsStat | null {
+    // The root has no row: it is 0755 root:root by definition.
+    if (path.replace(/\/+/g, '') === '') {
+      return { type: 'directory', size: 0, mtimeMs: 0, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0, revision: `${this.view.epoch}:0` };
+    }
     try {
       return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);
     } catch (error) {

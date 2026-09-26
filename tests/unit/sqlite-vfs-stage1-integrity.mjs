@@ -560,7 +560,7 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   vfs.mkdir('onto/inner', { recursive: true });
   vfs.writeFile('onto/inner/b.txt', 'b');
 
-  assert.throws(() => vfs.rename('from', 'onto'), /ENOTDIR-or-EISDIR|ENOTEMPTY/);
+  assert.throws(() => vfs.rename('from', 'onto'), /ENOTEMPTY/);
   assert.equal(vfs.readFileString('from/inner/a.txt'), 'a');
   assert.equal(vfs.readFileString('onto/inner/b.txt'), 'b');
   assert.equal(rawVfs._verifyCounters(), null);

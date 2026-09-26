@@ -600,6 +600,94 @@ function mkUnset(): CmdFn {
   };
 }
 
+const ACL_BITS = { r: 4, w: 2, x: 1 } as const;
+
+function aclTriple(bits: number): string {
+  return `${bits & 4 ? 'r' : '-'}${bits & 2 ? 'w' : '-'}${bits & 1 ? 'x' : '-'}`;
+}
+
+/**
+ * `setfacl -d -m u::rwx,g::rwx,o::r-x DIR` (a directory's default ACL base
+ * entries) and `setfacl -k DIR` (remove it). Named users and groups are not
+ * supported (EINVAL). The ACL is SQLite's directory attribute, set as the
+ * invoking credential.
+ */
+function mkSetfacl(sqliteVfs: SqliteVFS): CmdFn {
+  return async (ctx) => {
+    const cred = requireVfsCred(ctx.cred, 'setfacl');
+    const vfs = sqliteVfs.as(cred);
+    let remove = false;
+    let spec: string | null = null;
+    let isDefault = false;
+    const targets: string[] = [];
+    for (let i = 0; i < ctx.args.length; i++) {
+      const arg = ctx.args[i]!;
+      if (arg === '-k' || arg === '--remove-default') remove = true;
+      else if (arg === '-d' || arg === '--default') isDefault = true;
+      else if (arg === '-m' || arg === '--modify') spec = ctx.args[++i] ?? null;
+      else if (arg.startsWith('-')) {
+        for (const ch of arg.slice(1)) {
+          if (ch === 'k') remove = true;
+          else if (ch === 'd') isDefault = true;
+          else if (ch === 'm') spec = ctx.args[++i] ?? null;
+          else { (await ctx.stderr.write(`setfacl: unsupported option -${ch}\n`)); return 2; }
+        }
+      } else targets.push(arg);
+    }
+    if ((!remove && (spec === null || !isDefault)) || targets.length === 0) {
+      (await ctx.stderr.write('usage: setfacl -d -m u::rwx,g::rwx,o::r-x DIR... | setfacl -k DIR...\n'));
+      return 2;
+    }
+    for (const target of targets) {
+      const path = resolvePath(ctx.cwd, target);
+      try {
+        if (remove) { vfs.setDefaultAcl(path, null); continue; }
+        let perms = vfs.getDefaultAcl(path) ?? 0o755;
+        for (const entry of spec!.split(',')) {
+          const match = /^(u|user|g|group|o|other)::([rwx-]{0,3})$/.exec(entry.trim());
+          if (!match) throw Object.assign(new Error(`only base entries (u::, g::, o::) are supported: ${entry}`), { code: 'EINVAL' });
+          const bits = [...match[2]!].reduce((sum, ch) => sum | (ACL_BITS[ch as keyof typeof ACL_BITS] ?? 0), 0);
+          const shift = match[1]![0] === 'u' ? 6 : match[1]![0] === 'g' ? 3 : 0;
+          perms = (perms & ~(7 << shift)) | (bits << shift);
+        }
+        vfs.setDefaultAcl(path, perms);
+      } catch (error) {
+        (await ctx.stderr.write(`setfacl: ${target}: ${fsErrorMessage(error)}\n`));
+        return 1;
+      }
+    }
+    return 0;
+  };
+}
+
+/** `getfacl DIR...`: owner, group, the access entries and any default base entries. */
+function mkGetfacl(sqliteVfs: SqliteVFS): CmdFn {
+  return async (ctx) => {
+    const cred = requireVfsCred(ctx.cred, 'getfacl');
+    const vfs = sqliteVfs.as(cred);
+    let status = 0;
+    for (const target of ctx.args.filter((arg) => !arg.startsWith('-'))) {
+      const path = resolvePath(ctx.cwd, target);
+      try {
+        const stat = vfs.stat(path);
+        const perms = stat.mode & 0o777;
+        const lines = [
+          `# file: ${path.replace(/^\/+/, '')}`, `# owner: ${stat.uid}`, `# group: ${stat.gid}`,
+          ...(stat.mode & 0o7000 ? [`# flags: ${stat.mode & 0o4000 ? 's' : '-'}${stat.mode & 0o2000 ? 's' : '-'}${stat.mode & 0o1000 ? 't' : '-'}`] : []),
+          `user::${aclTriple(perms >> 6)}`, `group::${aclTriple(perms >> 3)}`, `other::${aclTriple(perms)}`,
+        ];
+        const acl = vfs.getDefaultAcl(path);
+        if (acl !== null) lines.push(`default:user::${aclTriple(acl >> 6)}`, `default:group::${aclTriple(acl >> 3)}`, `default:other::${aclTriple(acl)}`);
+        (await ctx.stdout.write(`${lines.join('\n')}\n\n`));
+      } catch (error) {
+        (await ctx.stderr.write(`getfacl: ${target}: ${fsErrorMessage(error)}\n`));
+        status = 1;
+      }
+    }
+    return status;
+  };
+}
+
 function mkClear(): CmdFn {
   return async (ctx) => { (await ctx.stdout.write('\x1b[2J\x1b[H')); return 0; };
 }
@@ -5225,6 +5313,8 @@ export function registerUnixCommands(
   registry.register('export', wrap(mkExport()));
   registry.register('unset', wrap(mkUnset()));
   registry.register('clear', wrap(mkClear()));
+  registry.register('setfacl', wrap(mkSetfacl(sqliteVfs)));
+  registry.register('getfacl', wrap(mkGetfacl(sqliteVfs)));
   registry.register('date', wrap(mkDate()));
   registry.register('uptime', wrap(mkUptime()));
   registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));

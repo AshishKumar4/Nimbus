@@ -23,6 +23,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const creds = new Map(fixture.principals.map((p) => [p.uid, { uid: p.uid, gid: p.gid, groups: p.groups, umask: 0o022 }]));
 
+const aclBits = (acl) => (acl.user << 6) | (acl.group << 3) | acl.other;
+const aclOf = (bits) => (bits === null ? null : { user: (bits >> 6) & 7, group: (bits >> 3) & 7, other: bits & 7 });
+
 function build(spec) {
   const sqlite = spec.kind === 'sqlite';
   let vfs;
@@ -51,6 +54,7 @@ function build(spec) {
       if (entry.kind === 'symlink') continue;
       vfs.chown(entry.path, entry.uid, entry.gid);
       vfs.chmod(entry.path, entry.mode);
+      if (entry.defaultAcl) vfs.credentialed.setDefaultAcl(entry.path, aclBits(entry.defaultAcl));
     }
   }
   return spec.kind === 'sqlite' ? vfs : vfs;
@@ -66,6 +70,10 @@ function treeOf(vfs, modes) {
       if (stat.type === 'file') row.bytes = dec.decode(vfs.readFile(path));
       if (stat.type === 'symlink') row.target = vfs.readlink(path);
       if (modes && stat.type !== 'symlink') Object.assign(row, { mode: stat.mode & 0o7777, uid: stat.uid, gid: stat.gid });
+      if (modes && stat.type === 'directory') {
+        const acl = aclOf(vfs.credentialed.getDefaultAcl(path));
+        if (acl) row.defaultAcl = acl;
+      }
       out.push(row);
       if (stat.type === 'directory') walk(path);
     }
@@ -80,6 +88,7 @@ function comparable(rows, modes) {
     if (row.bytes !== undefined) out.bytes = row.bytes;
     if (row.target !== undefined) out.target = row.target;
     if (modes && row.kind !== 'symlink') Object.assign(out, { mode: row.mode, uid: row.uid, gid: row.gid });
+    if (modes && row.defaultAcl) out.defaultAcl = row.defaultAcl;
     return out;
   }).sort((a, b) => (a.path < b.path ? -1 : 1));
 }
@@ -102,6 +111,7 @@ async function run(view, step) {
       case 'writeFile': await view.writeFile(step.path, enc.encode(step.bytes)); return 'ok';
       case 'unlink': await view.unlink(step.path); return 'ok';
       case 'mkdir': await view.mkdir(step.path); return 'ok';
+      case 'rename': await view.rename(step.path, step.to); return 'ok';
       default: throw new Error(`unknown op ${step.op}`);
     }
   } catch (error) {
