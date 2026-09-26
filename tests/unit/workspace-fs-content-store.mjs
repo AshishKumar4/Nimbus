@@ -172,6 +172,17 @@ assert.equal(kernel.readFileString('home/user/app/src/a.txt'), 'one');
   const view = store.at('leased-pin');
   assert.equal(view.readFileString('home/user/leased/dst/f'), 'copied');
   assert.equal(view.readFileString('home/user/leased/r'), 'before', 'the pin waited for the holder');
+  // A full restore under the caller's own global lease; another's lease still refuses it.
+  kernel.writeFile('home/user/leased/r', 'again');
+  const global = store.acquireGlobalExclusiveMutation();
+  assert.equal((await store.restoreAsync('leased-base', { mutationOwner: global.owner })).restored > 0, true);
+  assert.equal(kernel.readFileString('home/user/leased/r'), 'before');
+  store.releaseExclusiveMutation(global.owner);
+  const someone = store.acquireExclusiveMutation('home/user/leased');
+  const mine = store.acquireExclusiveMutation('home/user/p');
+  await assert.rejects(() => store.restoreAsync('leased-base', { mutationOwner: mine.owner }), { code: 'EBUSY' });
+  store.releaseExclusiveMutation(someone.owner);
+  store.releaseExclusiveMutation(mine.owner);
   // An owner that is not live is refused, not trusted to bypass the gate.
   await assert.rejects(() => store.restoreAsync('leased-base', { subtree: 'home/user/leased/r', mutationOwner: lease.owner }), { code: 'ESTALE' });
 }
