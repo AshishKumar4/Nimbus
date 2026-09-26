@@ -71,38 +71,10 @@ import { buildSessionSupervisorOps } from './supervisor-op.js';
 import * as _routes from './routes.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
-// Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
-// S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
-import { z } from 'zod/v4';
-const CpFacetDirectPayloadSchema = z.object({
-    command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-    args: z.array(z.unknown()).optional().transform((value) => (value || []).map((item) => String(item))),
-    env: z.record(z.string(), z.unknown()).optional().transform((value) => {
-        const out = {};
-        for (const [key, item] of Object.entries(value || {}))
-            out[key] = String(item);
-        return out;
-    }),
-    cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
-    stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-    processPid: z.number().int().positive(),
-}).passthrough();
-function normalizeCpCommandName(name) {
-    const text = String(name || '').trim();
-    if (!text.startsWith('/'))
-        return text;
-    const slash = text.lastIndexOf('/');
-    const base = slash >= 0 ? text.slice(slash + 1) : text;
-    const dir = text.slice(0, Math.max(0, text.length - base.length));
-    if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
-        return base;
-    }
-    return text;
-}
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
 // import site elsewhere in the codebase.

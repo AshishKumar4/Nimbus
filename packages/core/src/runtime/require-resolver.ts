@@ -3,7 +3,7 @@
  *
  * Runs on the supervisor (which has synchronous VFS access) to trace
  * all require() calls and build a complete file bundle reachable from
- * the entry point. The output is consumed by `facet-manager.ts`'s
+ * the entry point. The output is consumed by worker `facets/manager.ts`'s
  * `buildPrefetchBundle` (W2.6a) to ship ONLY the reachable set into
  * the dynamic-worker module (rather than every file in node_modules
  * up to the legacy cap).
@@ -19,7 +19,7 @@
  *   4. Return Record<string, string> of path → content.
  *
  * Static analysis still misses dynamic requires like `require(variable)`;
- * bounded greedy oversampling in facet-manager.ts:buildPrefetchBundle
+ * bounded greedy oversampling in worker facets/manager.ts buildPrefetchBundle
  * compensates without limiting the statically-proven require closure.
  *
  * History: this file was ARC-A-P1 quarantined after W2 because the
@@ -114,7 +114,7 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // appear at the top of a line (modulo whitespace). Anchoring at start-of-
 // line `(^|\n)\s*` avoids matching the substring `import` inside string
 // literals or identifiers like `obj.import`. Same anchor strategy that
-// `looksLikeEsm` in facet-manager.ts uses (precedent set by W3.5 Fix B).
+// `looksLikeEsm` in worker facets/manager.ts uses (precedent set by W3.5 Fix B).
 //
 // Forms covered by IMPORT_RE:
 //   import 'x';                          ← side-effect (no `from`)
@@ -141,7 +141,7 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 //
 // X.5-Z5 §3 (extended): leading anchor relaxed from (^|\n) to (^|[\n;}])
 // AND the body widened to optionally allow no-whitespace `import{` /
-// `export{` shapes. Same dual-relaxation as src/facet-manager.ts
+// `export{` shapes. Same dual-relaxation as worker facets/manager.ts
 // looksLikeEsm — minified ESM bundles (notably @tailwindcss/vite/dist/
 // index.mjs) put the first `;import{...}from"..."` after a `;` on the
 // same line, which the original anchor missed → prefetch walker silently
@@ -359,7 +359,7 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
  * `<pkgDir>/<subpath>.js`. The stub is a CJS one-liner that
  * re-exports the real target via a relative require — chosen over
  * duplicating the file content so we don't double-apply the
- * ESM→CJS transform in facet-manager.
+ * ESM→CJS transform in worker facets/manager.ts.
  *
  * Returns null if there's no directory match or no readable nested
  * package.json (caller falls through to its existing null return).
@@ -625,7 +625,7 @@ async function resolvePackageSelf(
  * before reading and stops, without reading, on the file that would
  * cross the bound; the result is the typed `closure-exceeds-bound`
  * outcome below, never a partial closure passed off as complete.
- * Bounds for the optional enrichment passes live in facet-manager.ts,
+ * Bounds for the optional enrichment passes live in worker facets/manager.ts,
  * which has a live async read path behind it.
  */
 export interface PrefetchResult {

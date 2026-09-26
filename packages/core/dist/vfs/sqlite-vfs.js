@@ -205,7 +205,6 @@ class TransactionPlanBuilder {
     deletes = [];
     staged = [];
     stagingCreated = [];
-    gcRefs = [];
     affectedPaths = new Set();
     blobBytes = 0;
     pieces = 0;
@@ -313,9 +312,6 @@ class TransactionPlanBuilder {
         if (dereference && prior !== undefined && !prior.isDir)
             this.gcRefCount++;
     }
-    addGcRef(ref) {
-        this.gcRefs.push(ref);
-    }
     wouldExceedPieces(additionalBlobBytes, additionalPieces) {
         return exceededTransactionLimit(this.metricsWith({
             blobBytes: additionalBlobBytes,
@@ -356,8 +352,7 @@ class TransactionPlanBuilder {
         return this.inodes.length === 0
             && this.deletes.length === 0
             && this.staged.length === 0
-            && this.stagingCreated.length === 0
-            && this.gcRefs.length === 0;
+            && this.stagingCreated.length === 0;
     }
     build() {
         return {
@@ -365,7 +360,6 @@ class TransactionPlanBuilder {
             deletes: this.deletes,
             staged: this.staged,
             stagingCreated: this.stagingCreated,
-            gcRefs: this.gcRefs,
             affectedPaths: this.affectedPaths,
             metrics: this.metricsWith({}),
         };
@@ -383,7 +377,7 @@ class TransactionPlanBuilder {
         const manifestRows = this.manifestRows + (addition.manifestRows ?? 0);
         const contentRows = this.contentRows + (addition.contentRows ?? 0);
         // Every replaced or removed file may queue one reference; directories name none.
-        const gcRows = this.gcRefs.length + this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
+        const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
         const historyRows = this.history ? inodeRows + deletes : 0;
         return {
             blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
@@ -6248,8 +6242,6 @@ export class SqliteVFS {
                 let nextContent = Number(state.next_content) - reserve.contents;
                 const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
                 const queue = new GcQueue();
-                for (const ref of plan.gcRefs)
-                    queue.add(ref.kind, ref.id);
                 // Before-images for every row this transaction replaces or removes
                 // that a snapshot can see (gen <= pin_gen). None without a snapshot.
                 if (pinGen > 0) {
@@ -6971,7 +6963,6 @@ export class SqliteVFS {
             deletes: [],
             staged: [],
             stagingCreated: [],
-            gcRefs: [],
             affectedPaths: new Set(),
             metrics,
         };

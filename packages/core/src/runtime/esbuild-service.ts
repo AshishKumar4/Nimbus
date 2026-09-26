@@ -1760,7 +1760,7 @@ export class EsbuildService {
     const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
     const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
 
-    // Path helpers shared with git-commands via ./vfs-path.ts.
+    // Path helpers shared with git/commands.ts via vfs/path.ts.
     // Local aliases preserve the existing call-site readability inside this
     // closure; behavior is identical (the canonical normalizeVfsPath has a
     // bounds check on `..` that the previous local `normalize` lacked, but

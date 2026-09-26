@@ -39,12 +39,7 @@ export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
  */
 export declare const WASI_RESIDENT_FILE_CAP_BYTES: number;
 export declare const NPM_REGISTRY = "https://registry.npmjs.org";
-export declare const NPM_CONCURRENCY = 12;
-export declare const NPM_DECOMPRESS_TIMEOUT = 15000;
 export declare const DEFAULT_VITE_PORT = 5173;
-export declare const DEFAULT_PREVIEW_BASE = "/preview";
-export declare const DEFAULT_WORKER_BASE = "/worker";
-export declare const WRANGLER_DEBOUNCE_MS = 250;
 export declare const NIMBUS_AI_GATEWAY_PORT = 8790;
 export declare const CF_COMPAT_DATE = "2026-04-01";
 export declare const DEFAULT_HOSTNAME = "nimbus";

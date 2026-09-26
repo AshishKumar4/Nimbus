@@ -3,7 +3,7 @@
  *
  * Runs on the supervisor (which has synchronous VFS access) to trace
  * all require() calls and build a complete file bundle reachable from
- * the entry point. The output is consumed by `facet-manager.ts`'s
+ * the entry point. The output is consumed by worker `facets/manager.ts`'s
  * `buildPrefetchBundle` (W2.6a) to ship ONLY the reachable set into
  * the dynamic-worker module (rather than every file in node_modules
  * up to the legacy cap).
@@ -19,7 +19,7 @@
  *   4. Return Record<string, string> of path → content.
  *
  * Static analysis still misses dynamic requires like `require(variable)`;
- * bounded greedy oversampling in facet-manager.ts:buildPrefetchBundle
+ * bounded greedy oversampling in worker facets/manager.ts buildPrefetchBundle
  * compensates without limiting the statically-proven require closure.
  *
  * History: this file was ARC-A-P1 quarantined after W2 because the
@@ -54,7 +54,7 @@ export declare function requireFsOverBridge(bridge: RuntimeFsBridge): RequireFs;
  * before reading and stops, without reading, on the file that would
  * cross the bound; the result is the typed `closure-exceeds-bound`
  * outcome below, never a partial closure passed off as complete.
- * Bounds for the optional enrichment passes live in facet-manager.ts,
+ * Bounds for the optional enrichment passes live in worker facets/manager.ts,
  * which has a live async read path behind it.
  */
 export interface PrefetchResult {

@@ -31,6 +31,7 @@ import {
 } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, VfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { globMatch } from '../substrate/lifo/utils/glob.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { exists, isDirectory, isSymlink } from '../vfs/vfs.js';
 
@@ -222,14 +223,6 @@ async function resolveSymlinkPath(vfs: UnixVfs, startPath: string): Promise<stri
       : resolvePath('/' + (current.includes('/') ? current.slice(0, current.lastIndexOf('/')) : ''), target);
   }
   return null;
-}
-
-function globMatch(pattern: string, name: string): boolean {
-  const re = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-  return new RegExp('^' + re + '$').test(name);
 }
 
 // ── Command implementations ─────────────────────────────────────────────

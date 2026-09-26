@@ -177,6 +177,19 @@ await check(
   { stdout: '', exitCode: 1, stderr: "find: 'nosuchdir': No such file or directory\n" },
 );
 
+// ── -name bracket classes (fnmatch; checked with uutils findutils 0.8.0) ──
+await check('-name matches a bracket class',
+  sorted("find extract -name '[ab]*'"),
+  { stdout: 'extract/proteus/bin\nextract/proteus/src/a.ts\n' });
+
+await check('-name matches a negated range',
+  sorted("find extract -maxdepth 1 -name '[!e-p]*'"),
+  { stdout: 'extract/3k.bin\n' });
+
+await check('-iname folds case inside a class',
+  sorted("find extract -iname '[A-C]*'"),
+  { stdout: 'extract/proteus/bin\nextract/proteus/bin/cli\nextract/proteus/src/a.ts\n' });
+
 // ── operators: the silently-dropped category ──────────────────────────────
 await check('! negates the following test',
   sorted('find extract -maxdepth 1 ! -type d'),

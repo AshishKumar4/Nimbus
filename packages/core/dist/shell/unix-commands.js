@@ -22,6 +22,7 @@ import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, VfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { globMatch } from '../substrate/lifo/utils/glob.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
@@ -123,13 +124,6 @@ async function resolveSymlinkPath(vfs, startPath) {
             : resolvePath('/' + (current.includes('/') ? current.slice(0, current.lastIndexOf('/')) : ''), target);
     }
     return null;
-}
-function globMatch(pattern, name) {
-    const re = pattern
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*/g, '.*')
-        .replace(/\?/g, '.');
-    return new RegExp('^' + re + '$').test(name);
 }
 // ── Command implementations ─────────────────────────────────────────────
 /**

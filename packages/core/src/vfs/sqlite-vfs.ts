@@ -108,8 +108,8 @@ export const ROOT_INODE = 1;
 // CHUNK_SIZE / LRU_MAX_ENTRIES / BATCH_SIZE are imported from ./constants.js
 // (single source of truth). Facet-isolate code-strings duplicate the literal
 // 65_536 by necessity — see the inline `CHUNK_SIZE = 65536` in
-// generateGitNetworkFacetCode (git-network-facet.ts) and the parallel
-// preamble (parallel/generated-workers.ts).
+// generateGitNetworkFacetCode (worker git/network-facet.ts) and the
+// parallel preamble (worker loaders/generated-workers.ts).
 
 /**
  * The Node `process` global as far as this file probes it. workerd provides
@@ -569,11 +569,6 @@ interface StagedPiece {
   named: boolean;
 }
 
-interface GcRef {
-  kind: typeof GC_CHUNK | typeof GC_CONTENT;
-  id: number;
-}
-
 interface TransactionPlanMetrics {
   blobBytes: number;
   logicalRows: number;
@@ -603,7 +598,6 @@ interface TransactionPlan {
   deletes: readonly PlannedDelete[];
   staged: readonly StagedPiece[];
   stagingCreated: readonly StagingContent[];
-  gcRefs: readonly GcRef[];
   affectedPaths: ReadonlySet<string>;
   metrics: TransactionPlanMetrics;
 }
@@ -648,7 +642,6 @@ class TransactionPlanBuilder {
   private readonly deletes: PlannedDelete[] = [];
   private readonly staged: StagedPiece[] = [];
   private readonly stagingCreated: StagingContent[] = [];
-  private readonly gcRefs: GcRef[] = [];
   private readonly affectedPaths = new Set<string>();
   private blobBytes = 0;
   private pieces = 0;
@@ -757,10 +750,6 @@ class TransactionPlanBuilder {
     if (dereference && prior !== undefined && !prior.isDir) this.gcRefCount++;
   }
 
-  addGcRef(ref: GcRef): void {
-    this.gcRefs.push(ref);
-  }
-
   wouldExceedPieces(additionalBlobBytes: number, additionalPieces: number): TransactionLimit | null {
     return exceededTransactionLimit(this.metricsWith({
       blobBytes: additionalBlobBytes,
@@ -806,8 +795,7 @@ class TransactionPlanBuilder {
     return this.inodes.length === 0
       && this.deletes.length === 0
       && this.staged.length === 0
-      && this.stagingCreated.length === 0
-      && this.gcRefs.length === 0;
+      && this.stagingCreated.length === 0;
   }
 
   build(): TransactionPlan {
@@ -816,7 +804,6 @@ class TransactionPlanBuilder {
       deletes: this.deletes,
       staged: this.staged,
       stagingCreated: this.stagingCreated,
-      gcRefs: this.gcRefs,
       affectedPaths: this.affectedPaths,
       metrics: this.metricsWith({}),
     };
@@ -835,7 +822,7 @@ class TransactionPlanBuilder {
     const manifestRows = this.manifestRows + (addition.manifestRows ?? 0);
     const contentRows = this.contentRows + (addition.contentRows ?? 0);
     // Every replaced or removed file may queue one reference; directories name none.
-    const gcRows = this.gcRefs.length + this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
+    const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
     const historyRows = this.history ? inodeRows + deletes : 0;
     return {
       blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
@@ -7282,7 +7269,6 @@ export class SqliteVFS {
         let nextContent = Number(state.next_content) - reserve.contents;
         const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
         const queue = new GcQueue();
-        for (const ref of plan.gcRefs) queue.add(ref.kind, ref.id);
 
         // Before-images for every row this transaction replaces or removes
         // that a snapshot can see (gen <= pin_gen). None without a snapshot.
@@ -8100,7 +8086,6 @@ export class SqliteVFS {
       deletes: [],
       staged: [],
       stagingCreated: [],
-      gcRefs: [],
       affectedPaths: new Set(),
       metrics,
     };

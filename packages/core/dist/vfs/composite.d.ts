@@ -289,11 +289,5 @@ export declare class CompositeVFS implements VFS {
     describe(): VfsMountDescription;
     private makeSync;
 }
-/**
- * Move a file between filesystems: the copy is confirmed before the source
- * goes, and a failure puts both sides back. Directories are refused before
- * any I/O. For callers that must move across mounts (mv does its own).
- */
-export declare function moveAcross(vfs: VFS, from: string, to: string): Promise<void>;
 export {};
 //# sourceMappingURL=composite.d.ts.map

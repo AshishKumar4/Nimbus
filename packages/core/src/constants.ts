@@ -162,7 +162,7 @@ export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 // (shims, runner boot code) and any minor drift in the eviction loop's
 // accounting.
 //
-// facet-manager.ts:buildPrefetchBundle uses TextEncoder().encode().length
+// worker facets/manager.ts buildPrefetchBundle uses TextEncoder().encode().length
 // to measure exact UTF-8 bytes (not JS string .length, which counts UTF-16
 // code units and undercounts non-ASCII content).
 //
@@ -218,7 +218,7 @@ export const PREFETCH_CACHE_MAX_BYTES = 10 * 1024 * 1024;
 // rather than the object.
 export const ESM_TRANSFORM_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 
-// Per-file ceiling for the blind working-tree sweep (facet-manager.ts
+// Per-file ceiling for the blind working-tree sweep (worker facets/manager.ts
 // addCwdProjectFiles). That pass names no file the program asked for — it
 // guesses, so a relative `readFileSync` of a project file resolves — and a
 // guess has no claim on the whole budget. Without it one data file consumes
@@ -251,14 +251,9 @@ export const WASI_RESIDENT_FILE_CAP_BYTES = 8 * 1024 * 1024;
 // PRE_BUNDLE_CONCURRENCY) is a measured platform envelope — see
 // @nimbus-sh/platform/limits.js.
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
-export const NPM_CONCURRENCY = 12;
-export const NPM_DECOMPRESS_TIMEOUT = 15_000;
 
 // ── Dev Server Constants ────────────────────────────────────────────────
 export const DEFAULT_VITE_PORT = 5173;
-export const DEFAULT_PREVIEW_BASE = '/preview';
-export const DEFAULT_WORKER_BASE = '/worker';
-export const WRANGLER_DEBOUNCE_MS = 250;
 
 // ── Session AI gateway ──────────────────────────────────────────────────
 //

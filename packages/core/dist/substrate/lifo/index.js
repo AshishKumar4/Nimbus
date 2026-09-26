@@ -25,12 +25,8 @@ export { createRouteCommand } from './commands/net/route.js';
 export { createNetstatCommand } from './commands/net/netstat.js';
 export { createHostCommand } from './commands/net/host.js';
 export { createIPCommand } from './commands/net/ip.js';
-export { createTunnelCommand } from './commands/net/tunnel.js';
-export { createForwardCommand, createUnforwardCommand } from './commands/net/forward.js';
-export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
-export { createLogoutCommand } from './commands/system/logout.js';
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
@@ -47,5 +43,3 @@ export { createModuleMap, ProcessExitError } from './node-compat/index.js';
 export { Buffer } from './node-compat/buffer.js';
 // Path utilities
 export { resolve, dirname, join, normalize, basename, extname } from './utils/path.js';
-// Color utilities
-export { RESET, BOLD, DIM, ITALIC, UNDERLINE, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, BRIGHT_RED, BRIGHT_GREEN, BRIGHT_YELLOW, BRIGHT_BLUE, BRIGHT_MAGENTA, BRIGHT_CYAN, red, green, yellow, blue, magenta, cyan, bold, dim, } from './utils/colors.js';

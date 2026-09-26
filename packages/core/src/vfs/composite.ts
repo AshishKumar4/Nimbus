@@ -1255,32 +1255,3 @@ export class CompositeVFS implements VFS {
     };
   }
 }
-
-/**
- * Move a file between filesystems: the copy is confirmed before the source
- * goes, and a failure puts both sides back. Directories are refused before
- * any I/O. For callers that must move across mounts (mv does its own).
- */
-export async function moveAcross(vfs: VFS, from: string, to: string): Promise<void> {
-  const stat = await vfs.stat(from);
-  if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', from);
-  if (stat.type === 'directory') throw new VfsError('EISDIR', 'only a file can be moved across filesystems', from);
-  const payload = await vfs.readFile(from);
-  const before = await vfs.stat(to);
-  const previous = before !== null && before.type === 'file' ? await vfs.readFile(to) : null;
-  await vfs.writeFile(to, payload, stat.mode === undefined ? undefined : { mode: stat.mode & 0o7777 });
-  try {
-    const landed = await vfs.stat(to);
-    if (landed === null || landed.size !== payload.length) throw new VfsError('EIO', 'the copy is not there after writing it', to);
-    await vfs.unlink(from);
-  } catch (cause) {
-    try {
-      if (previous !== null) await vfs.writeFile(to, previous);
-      else if ((await vfs.stat(to)) !== null) await vfs.unlink(to);
-      if ((await vfs.stat(from)) === null) await vfs.writeFile(from, payload);
-    } catch (rollback) {
-      throw new VfsError('EIO', `the move failed and could not be undone: ${String(rollback)}`, to, { cause });
-    }
-    throw cause;
-  }
-}
