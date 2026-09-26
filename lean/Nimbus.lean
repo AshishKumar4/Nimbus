@@ -17,6 +17,9 @@ import Nimbus.Vfs.CompositeCache
 import Nimbus.Vfs.CompositeFeed
 import Nimbus.Vfs.CompositePerm
 import Nimbus.Vfs.CompositeBeneath
+import Nimbus.Runtime.Pipes
+import Nimbus.Runtime.PipesProofs
+import Nimbus.Runtime.PipesTraces
 import Nimbus.Vfs.Ledger
 import Nimbus.Vfs.Hydration
 import Nimbus.Vfs.ProcessFiles

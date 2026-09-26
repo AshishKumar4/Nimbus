@@ -24,6 +24,7 @@ def fixtures : List (String × String) :=
    ("composite-perm.json", CompositePermCases.fixture),
    ("quiesce.json", QuiesceCases.fixture),
    ("beneath.json", BeneathCases.fixture)]
+   -- pipes.json (PipesCases.fixture): emitted with its bridge (RT-PIPE-001)
    -- n18-ledger.json (LedgerCases.fixture) and n17-hydration.json (HydrationCases.fixture):
    -- emitted again when their bridges exist (N18-001, N17-001)
 

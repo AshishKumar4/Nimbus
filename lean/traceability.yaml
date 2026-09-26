@@ -872,3 +872,99 @@ requirements:
       - lean/fixtures/beneath.json :: tests/unit/beneath-refinement.mjs
     remainingEvidence:
       - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
+  RT-PIPE-001:
+    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Runtime.Pipes.upd_same
+      - Nimbus.Runtime.Pipes.upd_ne
+      - Nimbus.Runtime.Pipes.sum_snoc
+      - Nimbus.Runtime.Pipes.sumTo_succ
+      - Nimbus.Runtime.Pipes.sumTo_congr
+      - Nimbus.Runtime.Pipes.sumTo_le
+      - Nimbus.Runtime.Pipes.sumTo_upd
+      - Nimbus.Runtime.Pipes.sumTo_eq_zero
+      - Nimbus.Runtime.Pipes.rs_stack
+      - Nimbus.Runtime.Pipes.ws_stack
+      - Nimbus.Runtime.Pipes.rs_pipes
+      - Nimbus.Runtime.Pipes.ws_pipes
+      - Nimbus.Runtime.Pipes.settle_procs
+      - Nimbus.Runtime.Pipes.settle_n
+      - Nimbus.Runtime.Pipes.settle_m
+      - Nimbus.Runtime.Pipes.settle_B
+      - Nimbus.Runtime.Pipes.settle_err
+      - Nimbus.Runtime.Pipes.setProc_pipes
+      - Nimbus.Runtime.Pipes.setProc_n
+      - Nimbus.Runtime.Pipes.setProc_m
+      - Nimbus.Runtime.Pipes.setProc_B
+      - Nimbus.Runtime.Pipes.setProc_err
+      - Nimbus.Runtime.Pipes.rs_settle
+      - Nimbus.Runtime.Pipes.enter_procs
+      - Nimbus.Runtime.Pipes.enter_pipes
+      - Nimbus.Runtime.Pipes.enter_m
+      - Nimbus.Runtime.Pipes.rs_enter
+      - Nimbus.Runtime.Pipes.ws_enter
+      - Nimbus.Runtime.Pipes.core_refuse
+      - Nimbus.Runtime.Pipes.sigpipe_only_readerless
+      - Nimbus.Runtime.Pipes.ignored_is_epipe
+      - Nimbus.Runtime.Pipes.default_is_sigpipe
+      - Nimbus.Runtime.Pipes.eof_only_writerless
+      - Nimbus.Runtime.Pipes.sched_some
+      - Nimbus.Runtime.Pipes.sched_none
+      - Nimbus.Runtime.Pipes.fork_keeps_parked
+      - Nimbus.Runtime.Pipes.fork_child_fresh
+      - Nimbus.Runtime.Pipes.books_settle
+      - Nimbus.Runtime.Pipes.books_upd
+      - Nimbus.Runtime.Pipes.books_procs
+      - Nimbus.Runtime.Pipes.books_finish
+      - Nimbus.Runtime.Pipes.books_abort
+      - Nimbus.Runtime.Pipes.books_core
+      - Nimbus.Runtime.Pipes.books_step
+      - Nimbus.Runtime.Pipes.core_B
+      - Nimbus.Runtime.Pipes.step_B
+      - Nimbus.Runtime.Pipes.books
+      - Nimbus.Runtime.Pipes.accounting
+      - Nimbus.Runtime.Pipes.budget
+      - Nimbus.Runtime.Pipes.drop_only_readerless
+      - Nimbus.Runtime.Pipes.abort_named
+      - Nimbus.Runtime.Pipes.meas_setProc
+      - Nimbus.Runtime.Pipes.meas_pipes
+      - Nimbus.Runtime.Pipes.meas_stack
+      - Nimbus.Runtime.Pipes.meas_settle
+      - Nimbus.Runtime.Pipes.meas_enter
+      - Nimbus.Runtime.Pipes.meas_finish
+      - Nimbus.Runtime.Pipes.meas_abort
+      - Nimbus.Runtime.Pipes.wt_run_pos
+      - Nimbus.Runtime.Pipes.meas_congr
+      - Nimbus.Runtime.Pipes.lt_of_set
+      - Nimbus.Runtime.Pipes.lt_of_set2
+      - Nimbus.Runtime.Pipes.lt_of_abort
+      - Nimbus.Runtime.Pipes.wt_next
+      - Nimbus.Runtime.Pipes.wt_pos
+      - Nimbus.Runtime.Pipes.wt_park
+      - Nimbus.Runtime.Pipes.core_run
+      - Nimbus.Runtime.Pipes.wt_wait
+      - Nimbus.Runtime.Pipes.wt_fin
+      - Nimbus.Runtime.Pipes.enabled_wait
+      - Nimbus.Runtime.Pipes.core_wait
+      - Nimbus.Runtime.Pipes.no_spin
+      - Nimbus.Runtime.Pipes.stuck_is_linux
+      - Nimbus.Runtime.PipesTraces.seq_uniq_wc_whole
+      - Nimbus.Runtime.PipesTraces.seq_uniq_wc_held_kill_loses
+      - Nimbus.Runtime.PipesTraces.fork_loop_whole
+      - Nimbus.Runtime.PipesTraces.parked_fork_keeps_the_write
+      - Nimbus.Runtime.PipesTraces.parked_fork_drops_the_write
+      - Nimbus.Runtime.PipesTraces.yes_head
+      - Nimbus.Runtime.PipesTraces.over_budget_fails_named
+      - Nimbus.Runtime.PipesTraces.over_budget_silent_truncates
+      - Nimbus.Runtime.PipesTraces.bash_middle_whole
+      - Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
+      - Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
+      - Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+    tsRefs:
+      - packages/core/src/runtime/bash/preamble.ts
+    remainingEvidence:
+      - Parked until GitParityLane writes tests/unit/pipes-refinement.mjs; Nimbus.Refine.PipesCases generates lean/fixtures/pipes.json, and RefinementFixtures emits it with the refinement entry
+      - Traces are scaled down (capacity 4, small budgets); the rules do not depend on the sizes. A JSPI-host fixture case sets B large, as B never binds a JSPI writer
+      - SIGPIPE ignored is modeled and proved, but untestable on this runtime (bash.wasm cannot report its disposition); those fixture cases carry "untestable"
+      - A fork is synchronous here; a fork as a pending task on a local host is covered by the rule that a reader with nothing to run stops the command

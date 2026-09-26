@@ -401,6 +401,97 @@ import Nimbus.Refine
 #print axioms Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
 #print axioms Nimbus.Refine.RevisionFloorCases.execBump_reach
 
+/-! ## Nimbus/Runtime/PipesProofs.lean -/
+
+#print axioms Nimbus.Runtime.Pipes.upd_same
+#print axioms Nimbus.Runtime.Pipes.upd_ne
+#print axioms Nimbus.Runtime.Pipes.sum_snoc
+#print axioms Nimbus.Runtime.Pipes.sumTo_succ
+#print axioms Nimbus.Runtime.Pipes.sumTo_congr
+#print axioms Nimbus.Runtime.Pipes.sumTo_le
+#print axioms Nimbus.Runtime.Pipes.sumTo_upd
+#print axioms Nimbus.Runtime.Pipes.sumTo_eq_zero
+#print axioms Nimbus.Runtime.Pipes.rs_stack
+#print axioms Nimbus.Runtime.Pipes.ws_stack
+#print axioms Nimbus.Runtime.Pipes.rs_pipes
+#print axioms Nimbus.Runtime.Pipes.ws_pipes
+#print axioms Nimbus.Runtime.Pipes.settle_procs
+#print axioms Nimbus.Runtime.Pipes.settle_n
+#print axioms Nimbus.Runtime.Pipes.settle_m
+#print axioms Nimbus.Runtime.Pipes.settle_B
+#print axioms Nimbus.Runtime.Pipes.settle_err
+#print axioms Nimbus.Runtime.Pipes.setProc_pipes
+#print axioms Nimbus.Runtime.Pipes.setProc_n
+#print axioms Nimbus.Runtime.Pipes.setProc_m
+#print axioms Nimbus.Runtime.Pipes.setProc_B
+#print axioms Nimbus.Runtime.Pipes.setProc_err
+#print axioms Nimbus.Runtime.Pipes.rs_settle
+#print axioms Nimbus.Runtime.Pipes.enter_procs
+#print axioms Nimbus.Runtime.Pipes.enter_pipes
+#print axioms Nimbus.Runtime.Pipes.enter_m
+#print axioms Nimbus.Runtime.Pipes.rs_enter
+#print axioms Nimbus.Runtime.Pipes.ws_enter
+#print axioms Nimbus.Runtime.Pipes.core_refuse
+#print axioms Nimbus.Runtime.Pipes.sigpipe_only_readerless
+#print axioms Nimbus.Runtime.Pipes.ignored_is_epipe
+#print axioms Nimbus.Runtime.Pipes.default_is_sigpipe
+#print axioms Nimbus.Runtime.Pipes.eof_only_writerless
+#print axioms Nimbus.Runtime.Pipes.sched_some
+#print axioms Nimbus.Runtime.Pipes.sched_none
+#print axioms Nimbus.Runtime.Pipes.fork_keeps_parked
+#print axioms Nimbus.Runtime.Pipes.fork_child_fresh
+#print axioms Nimbus.Runtime.Pipes.books_settle
+#print axioms Nimbus.Runtime.Pipes.books_upd
+#print axioms Nimbus.Runtime.Pipes.books_procs
+#print axioms Nimbus.Runtime.Pipes.books_finish
+#print axioms Nimbus.Runtime.Pipes.books_abort
+#print axioms Nimbus.Runtime.Pipes.books_core
+#print axioms Nimbus.Runtime.Pipes.books_step
+#print axioms Nimbus.Runtime.Pipes.core_B
+#print axioms Nimbus.Runtime.Pipes.step_B
+#print axioms Nimbus.Runtime.Pipes.books
+#print axioms Nimbus.Runtime.Pipes.accounting
+#print axioms Nimbus.Runtime.Pipes.budget
+#print axioms Nimbus.Runtime.Pipes.drop_only_readerless
+#print axioms Nimbus.Runtime.Pipes.abort_named
+#print axioms Nimbus.Runtime.Pipes.meas_setProc
+#print axioms Nimbus.Runtime.Pipes.meas_pipes
+#print axioms Nimbus.Runtime.Pipes.meas_stack
+#print axioms Nimbus.Runtime.Pipes.meas_settle
+#print axioms Nimbus.Runtime.Pipes.meas_enter
+#print axioms Nimbus.Runtime.Pipes.meas_finish
+#print axioms Nimbus.Runtime.Pipes.meas_abort
+#print axioms Nimbus.Runtime.Pipes.wt_run_pos
+#print axioms Nimbus.Runtime.Pipes.meas_congr
+#print axioms Nimbus.Runtime.Pipes.lt_of_set
+#print axioms Nimbus.Runtime.Pipes.lt_of_set2
+#print axioms Nimbus.Runtime.Pipes.lt_of_abort
+#print axioms Nimbus.Runtime.Pipes.wt_next
+#print axioms Nimbus.Runtime.Pipes.wt_pos
+#print axioms Nimbus.Runtime.Pipes.wt_park
+#print axioms Nimbus.Runtime.Pipes.core_run
+#print axioms Nimbus.Runtime.Pipes.wt_wait
+#print axioms Nimbus.Runtime.Pipes.wt_fin
+#print axioms Nimbus.Runtime.Pipes.enabled_wait
+#print axioms Nimbus.Runtime.Pipes.core_wait
+#print axioms Nimbus.Runtime.Pipes.no_spin
+#print axioms Nimbus.Runtime.Pipes.stuck_is_linux
+
+/-! ## Nimbus/Runtime/PipesTraces.lean -/
+
+#print axioms Nimbus.Runtime.PipesTraces.seq_uniq_wc_whole
+#print axioms Nimbus.Runtime.PipesTraces.seq_uniq_wc_held_kill_loses
+#print axioms Nimbus.Runtime.PipesTraces.fork_loop_whole
+#print axioms Nimbus.Runtime.PipesTraces.parked_fork_keeps_the_write
+#print axioms Nimbus.Runtime.PipesTraces.parked_fork_drops_the_write
+#print axioms Nimbus.Runtime.PipesTraces.yes_head
+#print axioms Nimbus.Runtime.PipesTraces.over_budget_fails_named
+#print axioms Nimbus.Runtime.PipesTraces.over_budget_silent_truncates
+#print axioms Nimbus.Runtime.PipesTraces.bash_middle_whole
+#print axioms Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
+#print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
+#print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+
 /-! ## Nimbus/Vfs/Composite.lean -/
 
 #print axioms Nimbus.Vfs.Composite.pfx_iff
