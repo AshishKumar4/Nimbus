@@ -186,6 +186,7 @@ import {
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
 } from '@nimbus-sh/core/constants.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 
 /**
  * Bytes of file content in one row.
@@ -395,6 +396,50 @@ function __residentSetStorage(storage, supervisor) {
 /** The cap this store enforces, for startProcess to report. */
 function __residentStorageCap() {
   return __residentCap;
+}
+
+// An own write the store could not hold (no room in the session's storage)
+// is kept here, so the program still reads what it wrote: a bounded LRU
+// (Map order is recency) of { cell, rev }, dated like a file row (own until
+// its write-back is acknowledged, then the write's revision) and judged by
+// every report like one. A path it could not keep either is remembered by
+// name only, so a miss on it says why.
+const __residentHeld = new Map();
+let __residentHeldBytes = 0;
+const __residentUnheld = new Set();
+const __RESIDENT_HELD_MAX_BYTES = ${FACET_OWN_WRITE_MEMORY_BYTES};
+
+function __residentCellSize(held) {
+  const cell = held.cell;
+  return typeof cell === "string" ? cell.length * 3 : __residentBytes(cell).byteLength;
+}
+
+function __residentForgetHeld(path) {
+  const cell = __residentHeld.get(path);
+  if (cell !== undefined) {
+    __residentHeld.delete(path);
+    __residentHeldBytes -= __residentCellSize(cell);
+  }
+  __residentUnheld.delete(path);
+}
+
+function __residentHold(path, cell) {
+  __residentForgetHeld(path);
+  const size = __residentCellSize({ cell });
+  if (size > __RESIDENT_HELD_MAX_BYTES) { __residentUnheld.add(path); return; }
+  while (__residentHeldBytes + size > __RESIDENT_HELD_MAX_BYTES) {
+    const [oldest, old] = __residentHeld.entries().next().value;
+    __residentHeld.delete(oldest);
+    __residentHeldBytes -= __residentCellSize(old);
+    __residentUnheld.add(oldest);
+  }
+  __residentHeld.set(path, { cell, rev: __RK_OWN_WRITE });
+  __residentHeldBytes += size;
+}
+
+/** Whether a miss on \`path\` is the storage's: its own write was held nowhere. */
+function __residentStorageMiss(path) {
+  return __residentUnheld.has(path);
 }
 const __RK_TEXT = 0;
 const __RK_BINARY = 1;
@@ -612,6 +657,10 @@ function __residentAdmit(result) {
           sql.exec("DELETE FROM file WHERE path = ?", row.path);
           dropped.push(String(row.path));
         }
+        for (const [heldPath, heldCell] of [...__residentHeld]) {
+          if (!heldPath.startsWith(path + "/") || heldCell.rev === __RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) continue;
+          __residentForgetHeld(heldPath);
+        }
         // Names under it may have become hidden or visible without being
         // named: the namespace relists that subtree.
         if (namespaced && entry.subtree && entry.stat && entry.stat.type === "directory") relist.push(path);
@@ -621,6 +670,14 @@ function __residentAdmit(result) {
         held = true; stamped = Number(row.rev); heldKey = row.ckey == null ? null : String(row.ckey);
       }
       if (held && (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev))) { kept++; continue; }
+      // A cell held in memory (an own write the store had no room for) is
+      // judged the same way; superseded, it goes, and the report's bytes, if
+      // any, are held as the store can.
+      const heldCell = __residentHeld.get(path);
+      if (heldCell !== undefined) {
+        if (heldCell.rev === __RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) { kept++; continue; }
+        __residentForgetHeld(path);
+      }
       // The same bytes under a newer revision (a chmod, a touch, a rewrite
       // with identical content): kept, and dated at the report.
       if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
@@ -666,6 +723,7 @@ function __residentDropDated() {
   if (!__residentReady) throw new Error("Nimbus: __residentDropDated before __residentBind");
   __residentSql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
   __residentSql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+  for (const [path, held] of [...__residentHeld]) if (held.rev !== __RK_OWN_WRITE) __residentForgetHeld(path);
 }
 
 /** Re-seal — for a store whose backing is being replaced (slot handover). */
@@ -695,7 +753,13 @@ function __residentHeadOn(sql, path) {
  */
 function __residentGet(path) {
   const head = __residentHead(path);
-  if (head === undefined) return undefined;
+  if (head === undefined) {
+    const held = __residentHeld.get(path);
+    if (held === undefined) return undefined;
+    __residentHeld.delete(path);
+    __residentHeld.set(path, held);
+    return held.cell;
+  }
   const kind = Number(head.kind);
   if (kind === __RK_DENIED) return { error: "EACCES" };
   const sql = __residentRequire();
@@ -737,6 +801,8 @@ function __residentBytes(value) {
  * for. There is no third case: the column refuses one.
  */
 function __residentPut(sql, path, cell, rev, ckey) {
+  // Whatever this puts supersedes a held cell, held or not.
+  __residentForgetHeld(path);
   sql.exec("DELETE FROM chunk WHERE path = ?", path);
   const stamp = typeof rev === "number" ? rev : __RK_OWN_WRITE;
   if (cell && typeof cell === "object" && cell.error) {
@@ -757,6 +823,7 @@ function __residentPut(sql, path, cell, rev, ckey) {
   // Not admitted: nothing is held for the path (its old bytes are gone above).
   if (!__residentFits(__residentCellBytes(size, isText), stamp !== __RK_OWN_WRITE)) {
     sql.exec("DELETE FROM file WHERE path = ?", path);
+    if (stamp === __RK_OWN_WRITE) __residentHold(path, cell);
     return false;
   }
   for (let part = 0; part < chunks; part++) {
@@ -820,7 +887,8 @@ function __residentCopyByKey(sql, path, ckey, rev) {
 }
 
 function __residentDelete(sql, path) {
-  const had = __residentHead(path) !== undefined;
+  const had = __residentHead(path) !== undefined || __residentHeld.has(path);
+  __residentForgetHeld(path);
   sql.exec("DELETE FROM chunk WHERE path = ?", path);
   sql.exec("DELETE FROM file WHERE path = ?", path);
   return had;
@@ -867,6 +935,8 @@ function __residentProvenance(path) {
  * every later write to it by anyone.
  */
 function __residentStamp(path, rev) {
+  const heldCell = __residentHeld.get(path);
+  if (heldCell !== undefined && heldCell.rev === __RK_OWN_WRITE) heldCell.rev = rev;
   const sql = __residentRequire();
   let size = null;
   for (const row of sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, __RK_OWN_WRITE)) size = Number(row.size);
@@ -918,6 +988,8 @@ function __residentFill(path, cell, rev) {
     const held = Number(row.rev);
     if (held === __RK_OWN_WRITE || held > rev) return false;
   }
+  const heldCell = __residentHeld.get(path);
+  if (heldCell !== undefined && (heldCell.rev === __RK_OWN_WRITE || heldCell.rev > rev)) return false;
   return __residentPut(sql, path, cell, rev);
 }
 
@@ -1918,7 +1990,7 @@ const __nimbusResidentBundle = new Proxy(Object.create(null), {
   },
   has(_t, path) {
     if (typeof path !== "string") return false;
-    return __residentHead(path) !== undefined;
+    return __residentHead(path) !== undefined || __residentHeld.has(path);
   },
   set(_t, path, cell) {
     // The program's own write, stamped __RK_OWN_WRITE: not the authority's

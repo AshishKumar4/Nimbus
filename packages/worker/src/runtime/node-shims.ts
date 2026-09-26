@@ -1139,6 +1139,14 @@ const __fsMod = (() => {
       return err;
     }
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
+    if (typeof __residentStorageMiss === "function" && __residentStorageMiss(_strip(absPath))) {
+      // The process's own write, which neither its store nor its heap budget
+      // could hold: the workspace's storage is full.
+      const full = _fsErr("ENOSPC", syscall, displayPath);
+      full.message = "ENOSPC: workspace storage is full; '" + String(displayPath) + "' is readable asynchronously"
+        + (_supervisor() ? " (" + asyncForm + ")" : "");
+      return full;
+    }
     _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
