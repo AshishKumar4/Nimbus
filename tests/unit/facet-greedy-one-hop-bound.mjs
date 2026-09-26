@@ -24,28 +24,8 @@
 
 import assert from 'node:assert/strict';
 import { greedyAddMainEntries, speculativePackageDirs } from '../../packages/worker/src/facets/manager.ts';
+import { launchFs } from './lib/launch-fs.mjs';
 
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  epoch = 'fake'; revision() { return 0; }
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) { const parts = file.split('/'); for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/')); }
-  }
-  exists(p) { p = p.replace(/^\/+/, ''); return this.files.has(p) || this.dirs.has(p); }
-  isDirectory(p) { return this.dirs.has(p.replace(/^\/+/, '')); }
-  readFileString(p) { const v = this.files.get(p.replace(/^\/+/, '')); if (v === undefined) throw new Error('ENOENT ' + p); return v; }
-  readFile(p) { return new TextEncoder().encode(this.readFileString(p)); }
-  lstat(p) { return { size: this.readFileString(p).length }; }
-  readdir(p) {
-    p = p.replace(/^\/+/, '');
-    const out = new Map();
-    for (const f of this.files.keys()) if (f.startsWith(p + '/')) { const n = f.slice(p.length + 1).split('/')[0]; out.set(n, this.files.has(p + '/' + n) ? 'file' : 'directory'); }
-    return [...out].map(([name, type]) => ({ name, type }));
-  }
-}
 const pkg = (root, name, deps = {}, devDeps = {}) => ({
   [`${root}/package.json`]: JSON.stringify({ name, main: 'index.js', dependencies: deps, devDependencies: devDeps }),
   [`${root}/index.js`]: `module.exports = '${name}';`,
@@ -66,7 +46,7 @@ const files = {
   ...pkg(`${NM}/typescript`, 'typescript'),
   ...pkg(`${NM}/unrelated`, 'unrelated'),
 };
-const vfs = new FakeVfs(files);
+const vfs = launchFs(files).fs;
 const name = (dir) => dir.replace(/^.*node_modules\//, '');
 
 // ── 1. empty closure: the project's runtime deps, one hop out ───────────────
@@ -105,12 +85,12 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
 
 // ── 3. nested node_modules resolve the way require does ─────────────────────
 {
-  const nested = new FakeVfs({
+  const nested = launchFs({
     'home/user/app/package.json': JSON.stringify({ name: 'app', dependencies: { a: '*' } }),
     ...pkg(`${NM}/a`, 'a', { b: '*' }),
     ...pkg(`${NM}/a/node_modules/b`, 'b'),
     ...pkg(`${NM}/b`, 'b-hoisted-other-version'),
-  });
+  }).fs;
   const closure = { [`${NM}/a/index.js`]: 'x' };
   assert.deepEqual((await speculativePackageDirs(nested, 'home/user/app', closure)), [`${NM}/a`, `${NM}/a/node_modules/b`], 'the nearest node_modules wins');
   console.log('  nested node_modules resolve nearest-first');

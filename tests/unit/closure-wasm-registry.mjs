@@ -19,59 +19,8 @@ import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-dig
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { launchFs } from './lib/launch-fs.mjs';
 
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  epoch = 'fake-vfs-epoch';
-  revision() { return 0; }
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) {
-      const parts = file.split('/');
-      for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-    }
-  }
-  exists(p) { const s = p.replace(/^\/+/, ''); return this.files.has(s) || this.dirs.has(s); }
-  isDirectory(p) { return this.dirs.has(p.replace(/^\/+/, '')); }
-  readFile(p) {
-    const c = this.files.get(p.replace(/^\/+/, ''));
-    if (c === undefined) throw new Error(`missing file: ${p}`);
-    return c instanceof Uint8Array ? c : new TextEncoder().encode(c);
-  }
-  readFileString(p) {
-    const c = this.files.get(p.replace(/^\/+/, ''));
-    if (c === undefined) throw new Error(`missing file: ${p}`);
-    if (c instanceof Uint8Array) throw new Error(`binary file: ${p}`);
-    return c;
-  }
-  readdir(p) {
-    const s = p.replace(/^\/+/, '');
-    const prefix = s ? `${s}/` : '';
-    const entries = new Map();
-    for (const d of this.dirs) {
-      if (!d.startsWith(prefix)) continue;
-      const rest = d.slice(prefix.length);
-      if (rest && !rest.includes('/')) entries.set(rest, { name: rest, type: 'directory' });
-    }
-    for (const f of this.files.keys()) {
-      if (!f.startsWith(prefix)) continue;
-      const rest = f.slice(prefix.length);
-      if (rest && !rest.includes('/')) entries.set(rest, { name: rest, type: 'file' });
-    }
-    return [...entries.values()];
-  }
-  lstat(p) {
-    const s = p.replace(/^\/+/, '');
-    if (this.dirs.has(s)) return { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000, mtime: 0 };
-    const c = this.files.get(s);
-    if (c === undefined) throw new Error(`missing path: ${s}`);
-    return { type: 'file', size: c.length, mode: 0o644, uid: 1000, gid: 1000, mtime: 0 };
-  }
-  stat(p) { return this.lstat(p); }
-  access(p) { if (!this.exists(p)) throw new Error(`missing path: ${p}`); }
-}
 
 // A minimal valid module (magic + version) and a large one the bundle's
 // 4 MiB per-file cap leaves out: the shape of esbuild-wasm's image.
@@ -88,7 +37,7 @@ const files = {
   [`${PKG}/esbuild.wasm`]: big,
   [`${PKG}/lib/small.wasm`]: small,
 };
-const vfs = new FakeVfs(files);
+const vfs = launchFs(files).fs;
 const esbuild = { async transform(code) { return { code }; } };
 
 // ── the walk records both images, by path and digest ──────────────────

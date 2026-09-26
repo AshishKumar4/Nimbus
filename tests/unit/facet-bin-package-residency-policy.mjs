@@ -17,48 +17,15 @@
 
 import assert from 'node:assert/strict';
 import { addBinTargetSiblings, greedyAddMainEntries } from '../../packages/worker/src/facets/manager.ts';
+import { launchFs } from './lib/launch-fs.mjs';
 
 const MiB = 1024 * 1024;
 
-/** Minimal CredentialedVfs stand-in: a flat path -> size map plus a dir tree. */
+/** A launch filesystem holding `files` (path -> size), each `contents[path]` or that many bytes. */
 function makeVfs(files, contents) {
-  const dirs = new Map();
-  for (const path of Object.keys(files)) {
-    const segs = path.split('/');
-    for (let i = 1; i < segs.length; i++) {
-      const parent = segs.slice(0, i).join('/');
-      const name = segs[i];
-      const isDir = i < segs.length - 1;
-      if (!dirs.has(parent)) dirs.set(parent, new Map());
-      dirs.get(parent).set(name, isDir ? 'directory' : 'file');
-    }
-  }
-  return {
-    readdir(dir) {
-      const d = dirs.get(dir);
-      if (!d) throw new Error('ENOENT ' + dir);
-      return [...d].map(([name, type]) => ({ name, type }));
-    },
-    lstat(path) {
-      const size = files[path];
-      if (size === undefined) throw new Error('ENOENT ' + path);
-      return { size, type: 'file' };
-    },
-    readFile(path) {
-      const size = files[path];
-      if (size === undefined) throw new Error('ENOENT ' + path);
-      return new TextEncoder().encode(contents?.[path] ?? 'x'.repeat(size));
-    },
-    readFileString(path) {
-      return new TextDecoder().decode(this.readFile(path));
-    },
-    exists(path) {
-      return files[path] !== undefined || dirs.has(path);
-    },
-    isDirectory(path) {
-      return dirs.has(path) && files[path] === undefined;
-    },
-  };
+  return launchFs(Object.fromEntries(
+    Object.entries(files).map(([path, size]) => [path, contents?.[path] ?? 'x'.repeat(size)]),
+  )).fs;
 }
 
 // A typescript-shaped package. readdir yields the two huge, never-read

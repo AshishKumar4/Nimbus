@@ -17,80 +17,8 @@ import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
 } from '../../packages/platform/src/limits.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { launchFs } from './lib/launch-fs.mjs';
 
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  // The bundle is stamped with the cursor it was read at, so a stand-in
-  // for the real VFS has to answer for one. A fake never mutates, so the
-  // revision never moves.
-  epoch = 'fake-vfs-epoch';
-  revision() { return 0; }
-
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) {
-      const parts = file.split('/');
-      for (let index = 1; index < parts.length; index++) {
-        this.dirs.add(parts.slice(0, index).join('/'));
-      }
-    }
-  }
-
-  exists(path) {
-    const stripped = path.replace(/^\/+/, '');
-    return this.files.has(stripped) || this.dirs.has(stripped);
-  }
-
-  isDirectory(path) {
-    return this.dirs.has(path.replace(/^\/+/, ''));
-  }
-
-  readFile(path) {
-    return new TextEncoder().encode(this.readFileString(path));
-  }
-
-  readFileString(path) {
-    const stripped = path.replace(/^\/+/, '');
-    const content = this.files.get(stripped);
-    if (content === undefined) throw new Error(`missing file: ${stripped}`);
-    return content;
-  }
-
-  readdir(path) {
-    const stripped = path.replace(/^\/+/, '');
-    const prefix = stripped ? `${stripped}/` : '';
-    const entries = new Map();
-    for (const directory of this.dirs) {
-      if (!directory.startsWith(prefix)) continue;
-      const rest = directory.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'directory');
-    }
-    for (const file of this.files.keys()) {
-      if (!file.startsWith(prefix)) continue;
-      const rest = file.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'file');
-    }
-    return Array.from(entries, ([name, type]) => ({ name, type }));
-  }
-
-  lstat(path) {
-    const stripped = path.replace(/^\/+/, '');
-    if (this.dirs.has(stripped)) {
-      return { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 };
-    }
-    const content = this.files.get(stripped);
-    if (content === undefined) throw new Error(`missing path: ${stripped}`);
-    return { type: 'file', size: content.length, mode: 0o644, uid: 1000, gid: 1000 };
-  }
-
-  access(path) {
-    if (!this.exists(path)) throw new Error(`missing path: ${path}`);
-  }
-}
 
 const globalModules = 'usr/local/lib/node_modules';
 const cliRoot = `${globalModules}/large-cli`;
@@ -116,7 +44,7 @@ const files = {
   }),
   [shebangCommandPath]: 'module.exports = () => "node";',
 };
-const vfs = new FakeVfs(files);
+const vfs = launchFs(files).fs;
 const identityEsbuild = new EsbuildService(undefined, {
   transformHost: async (requests) => requests.map(({ code }) => ({ code, map: '', warnings: [] })),
 });
@@ -172,7 +100,7 @@ assert.equal(
     [`${nm}/native-shard/package.json`]: JSON.stringify({ name: 'native-shard', main: 'binding.node' }),
     [`${nm}/native-shard/binding.node`]: 'not-really-a-binary',
   };
-  const subVfs = new FakeVfs(files);
+  const subVfs = launchFs(files).fs;
   const snap = await buildPrefetchBundle(
     subVfs, '/home/user/app/entry.js', '/home/user/app', files['home/user/app/entry.js'],
     identityEsbuild,
@@ -232,7 +160,7 @@ assert.deepEqual(
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
   const budget = { totalBytes: 0, fileCount: 0 };
-  (await greedyAddMainEntries(new FakeVfs(optionalFiles), cwd, bundle, budget));
+  (await greedyAddMainEntries(launchFs(optionalFiles).fs, cwd, bundle, budget));
 
   assert.equal(bundle[requiredPath].length, VFS_BUNDLE_MAX_BYTES + 1);
   assert.equal(
@@ -276,7 +204,7 @@ assert.deepEqual(
   let evictionSnapshot;
   try {
     evictionSnapshot = await buildPrefetchBundle(
-      new FakeVfs(optionalFiles),
+      launchFs(optionalFiles).fs,
       undefined,
       cwd,
       '',
@@ -404,7 +332,7 @@ assert.deepEqual(
     [`${cwd}/data.bin`]: 'D'.repeat(CWD_SNAPSHOT_MAX_FILE_BYTES + 1),
   };
   const snapshot = await buildPrefetchBundle(
-    new FakeVfs(files),
+    launchFs(files).fs,
     undefined,
     cwd,
     '',
@@ -445,11 +373,7 @@ assert.deepEqual(
   }
   files[bigPath] = 'B'.repeat(3 * MIB);
 
-  class SpyVfs extends FakeVfs {
-    constructor(f) { super(f); this.reads = []; }
-    readFile(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFile(p); }
-  }
-  const vfs = new SpyVfs(files);
+  const { fs: vfs, reads, stats } = launchFs(files);
   const snapshot = await buildPrefetchBundle(
     vfs,
     undefined,
@@ -466,8 +390,8 @@ assert.deepEqual(
     `a candidate past the remaining budget is excluded (bundle keys: ${Object.keys(snapshot.bundle).length})`,
   );
   assert.ok(
-    !vfs.reads.includes(bigPath),
-    `the excluded candidate was never read; totalReads=${vfs.reads.length} bigRead=${vfs.reads.includes(bigPath)}`,
+    !reads.includes(bigPath),
+    `the excluded candidate was never read; totalReads=${reads.length} bigRead=${reads.includes(bigPath)}`,
   );
   // Sanity: the small observed reads did ride along.
   assert.ok(
@@ -496,13 +420,7 @@ assert.deepEqual(
     [`${cwd}/c.js`]: `'${'C'.repeat(10 * MIB)}';`,
   };
 
-  class SpyVfs2 extends FakeVfs {
-    constructor(f) { super(f); this.reads = []; this.stats = []; }
-    stat(p) { this.stats.push(p.replace(/^\/+/, '')); return this.lstat(p); }
-    readFile(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFile(p); }
-    readFileString(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFileString(p); }
-  }
-  const vfs = new SpyVfs2(files);
+  const { fs: vfs, reads, stats } = launchFs(files);
   const bound = 15 * MIB;
 
   let failure;
@@ -524,18 +442,19 @@ assert.deepEqual(
   assert.equal(outcome.entry, `/${entryPath}`);
 
   assert.ok(
-    !vfs.reads.includes(`${cwd}/b.js`) && !vfs.reads.includes(`${cwd}/c.js`),
-    `the bound tripped without reading the crossing file (or after it); reads=${vfs.reads.length}`,
+    !reads.includes(`${cwd}/b.js`) && !reads.includes(`${cwd}/c.js`),
+    `the bound tripped without reading the crossing file (or after it); reads=${reads.length}`,
   );
   assert.ok(
-    vfs.reads.includes(`${cwd}/a.js`),
+    reads.includes(`${cwd}/a.js`),
     'a file that fits is still staged',
   );
 
-  // A closure that fits the bound is unchanged.
+  // A closure that fits the bound is unchanged: the same ~30 MiB under a bound
+  // past it (the default, 24 MiB, is below it).
   const ok = await buildPrefetchBundle(
-    new FakeVfs(files), `/${entryPath}`, cwd, files[entryPath],
-    identityEsbuild, undefined, undefined, undefined, VFS_BUNDLE_MAX_BYTES,
+    launchFs(files).fs, `/${entryPath}`, cwd, files[entryPath],
+    identityEsbuild, undefined, undefined, undefined, 4 * 10 * MIB,
   );
   assert.equal(
     ok.bundle[`${cwd}/c.js`], files[`${cwd}/c.js`],
