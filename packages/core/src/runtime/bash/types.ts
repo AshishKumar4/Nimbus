@@ -36,6 +36,8 @@ export interface BashBootArgs {
   cwd: string;
   cred: Readonly<VfsCred>;
   parking: 'jspi' | 'none';
+  /** FacetHost.memoryBudgetBytes, when the host states one. */
+  memoryBudgetBytes?: number;
   stdinData: string;
   stdinClosed: boolean;
   stdinTty: boolean;
@@ -89,6 +91,8 @@ export interface BashPipe extends BashByteQueue {
   writers: number;
   /** Processes parked reading this pipe. */
   readW: BashReadWaiter[];
+  /** With JSPI: writers parked on this pipe at its capacity, woken when it drains or its readers leave. */
+  writeW: BashReadWaiter[];
 }
 
 export interface BashStdin extends BashByteQueue {
@@ -141,7 +145,7 @@ export interface BashFdReadiness {
 // ── processes ───────────────────────────────────────────────────────────────
 
 /** Why an instance asyncify-unwound; the scheduler dispatches on it. */
-export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'exec' | 'filesystem';
+export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'blockwrite' | 'exec' | 'filesystem';
 
 /** The read a process parked on, recorded so the scheduler can re-issue it. */
 export interface BashPipeReq {
@@ -187,6 +191,8 @@ export interface BashProcCtx {
   waitStatusPtr: number | null;
   /** 'blockread': the read to re-issue once the source produces. */
   pipeReq: BashPipeReq;
+  /** 'blockwrite': the descriptor whose pipe was at capacity. */
+  writeFd: number;
   /** 'exec': the execve arguments. */
   execPath: string;
   execArgv: string[];
@@ -229,6 +235,8 @@ export interface BashProc {
   /** Base of the setjmp slot array, immediately after MAIN_BUF. */
   SLOT0: number;
   pendingRead: BashPendingRead | null;
+  /** A write parked at a pipe's capacity was woken: the rewound fd_write goes ahead. */
+  writeResumed: boolean;
   /** jmp_buf address → the slot index its most recent setjmp captured into. */
   slotByEnv: Map<number, number>;
   freeSlots: number[];
@@ -266,6 +274,12 @@ export interface BashSession {
   fs: RuntimeFsBridge;
   cred: Readonly<VfsCred>;
   parking: 'jspi' | 'none';
+  /**
+   * Without JSPI, the bytes a pipe may hold before its writer runs the
+   * pipe's readers nested (preamble.ts pipeBudget). Unused with JSPI, where
+   * a writer at a pipe's capacity parks instead.
+   */
+  pipeBudget: number;
   pending: Set<Promise<void>>;
   cwd: string;
   argv: string[];
@@ -285,6 +299,10 @@ export interface BashSession {
    * a runnable one.
    */
   deferred: BashProc[];
+  /** While the scheduler awaits pending tasks: wakes it when a process becomes runnable. */
+  wake: (() => void) | null;
+  /** Without JSPI: the pids suspended beneath the nested scheduler, mid-read or mid-write. */
+  suspended: Set<number>;
   /**
    * Reaped-but-unclaimed exit statuses, pid → status and parent.
    *
@@ -323,6 +341,14 @@ export type BashIo = {
    * which is how writing to a read end came to succeed silently.
    */
   write(fd: number, bytes: Uint8Array): number | null;
+  /**
+   * Called once at the start of every fd_write, before any byte is written.
+   * `undefined`: go ahead. A promise: the write waits for it (a JSPI child at
+   * a pipe's capacity). A symbol (preamble.ts WRITE_UNWOUND): the bash process
+   * unwound to park, and the call returns without writing; it is re-entered
+   * whole on the rewind.
+   */
+  writeGate?(fd: number): undefined | Promise<void> | symbol;
   poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): SyscallResult;
 };
 

@@ -1,23 +1,20 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
+import { importCfGitInternals } from './lib/cf-git-internals.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cfGitDir = resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'packages/worker') });
 const sourcePath = resolve(process.env.CF_GIT_SOURCE || join(cfGitDir, 'index.js'));
 const source = readFileSync(sourcePath, 'utf8');
 const hasSeedHelper = /function seedPackfileCache\(/.test(source);
-const instrumentedPath = join(
-  cfGitDir,
-  `.nimbus-checkout-repairs-${process.pid}-${randomUUID()}.mjs`,
-);
 const internalExports = [
   'GitPackIndex',
   'GitWalkerFs',
@@ -28,17 +25,8 @@ const internalExports = [
 ];
 if (hasSeedHelper) internalExports.push('seedPackfileCache');
 
-writeFileSync(
-  instrumentedPath,
-  `${source}\nexport { ${internalExports.join(', ')}, updateIndex as updateIndexInternal };\n`,
-);
-
-let internals;
-try {
-  internals = await import(`${pathToFileURL(instrumentedPath).href}?v=${randomUUID()}`);
-} finally {
-  rmSync(instrumentedPath, { force: true });
-}
+// Staged in this process's TMPDIR, never in node_modules (lib/cf-git-internals.mjs).
+const internals = await importCfGitInternals(source, [...internalExports, 'updateIndex as updateIndexInternal'], { cfGitDir, label: 'checkout-repairs' });
 
 function encodePackObjectHeader(type, size) {
   const bytes = [(type << 4) | (size & 0x0f)];

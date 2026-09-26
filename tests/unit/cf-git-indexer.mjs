@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
   readFileSync,
@@ -11,10 +11,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
 import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
+import { importCfGitInternals } from './lib/cf-git-internals.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const cfGitDir = resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'packages/worker') });
@@ -24,12 +25,6 @@ const patchPath = resolve(
   'packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch',
 );
 const fixturePath = resolve(repoRoot, 'tests/fixtures/cf-git-indexer/real.pack');
-const temporaryPaths = [];
-// Top-level setup below can fail before the cases' try: the exit hook removes what it staged.
-process.on('exit', () => {
-  for (const path of temporaryPaths.reverse()) rmSync(path, { force: true, recursive: true });
-});
-
 function pristineSourceFromPatch(source) {
   // Called before the cases' try, so it removes its own directory, failed or not.
   const directory = mkdtempSync(join(tmpdir(), 'nimbus-cf-git-pristine-'));
@@ -51,27 +46,12 @@ function pristineSourceFromPatch(source) {
   }
 }
 
-function stageInternals(source, label) {
-  const instrumentedPath = join(
-    cfGitDir,
-    `.nimbus-indexer-${label}-${process.pid}-${randomUUID()}.mjs`,
-  );
-  temporaryPaths.push(instrumentedPath);
-  writeFileSync(
-    instrumentedPath,
-    `${source}\nexport { GitPackIndex, pako };\n`,
-  );
-  return instrumentedPath;
-}
-
-// bun resolves a symlinked package directory (the isolated-linker layout)
-// from a listing cached at its first import, so every instrumented copy must
-// exist on disk before either one is imported.
+// Both copies are staged in this process's TMPDIR, never in node_modules
+// (lib/cf-git-internals.mjs).
 const optimizedSource = readFileSync(sourcePath, 'utf8');
-const optimizedPath = stageInternals(optimizedSource, 'optimized');
-const pristinePath = stageInternals(pristineSourceFromPatch(optimizedSource), 'pristine');
-const optimized = await import(`${pathToFileURL(optimizedPath).href}?v=${randomUUID()}`);
-const pristine = await import(`${pathToFileURL(pristinePath).href}?v=${randomUUID()}`);
+const exported = ['GitPackIndex', 'pako'];
+const optimized = await importCfGitInternals(optimizedSource, exported, { cfGitDir, label: 'indexer-optimized' });
+const pristine = await importCfGitInternals(pristineSourceFromPatch(optimizedSource), exported, { cfGitDir, label: 'indexer-pristine' });
 
 function encodePackObjectHeader(type, size) {
   const bytes = [(type << 4) | (size & 0x0f)];
@@ -348,18 +328,14 @@ const cases = [
 ];
 
 const failures = [];
-try {
-  for (const [name, run] of cases) {
-    try {
-      await run();
-      console.log(`cf-git-indexer: ${name}: ok`);
-    } catch (error) {
-      failures.push(new Error(name, { cause: error }));
-      console.error(`cf-git-indexer: ${name}: failed: ${error.message}`);
-    }
+for (const [name, run] of cases) {
+  try {
+    await run();
+    console.log(`cf-git-indexer: ${name}: ok`);
+  } catch (error) {
+    failures.push(new Error(name, { cause: error }));
+    console.error(`cf-git-indexer: ${name}: failed: ${error.message}`);
   }
-} finally {
-  for (const path of temporaryPaths.splice(0).reverse()) rmSync(path, { force: true, recursive: true });
 }
 
 if (failures.length > 0) {

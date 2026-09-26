@@ -187,6 +187,40 @@ const ws = await open({ facets: localFacetHost() });
     assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
   }
   console.log('  ok  a pipeline of three or more stages delivers its last stage');
+
+  // Pipes without JSPI (pipe-rules.ts; under JSPI, bash-pipes-jspi.mjs). A
+  // writer whose readers are gone gets SIGPIPE, 141 as bash reports it; these
+  // match real bash 5.2 with GNU coreutils.
+  for (const [command, want] of [
+    ["yes | head -2; echo \"${PIPESTATUS[*]}\"", 'y\ny\n141 0\n'],
+    ["x=$(yes | head -c 5); echo \"[$x]\"", '[y\ny\ny]\n'],
+    ["seq 1000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n0 0\n'],
+    ["seq 200000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '200000\n0 0 0\n'],
+    ["seq 100000 | cat | while read x; do :; done; echo \"${PIPESTATUS[*]}\"", '0 0 0\n'],
+    ["seq 20000 | uniq -c | wc -l", '20000\n'],
+    // A bash process forking on every iteration, its output past a pipe's 64 KiB.
+    ["i=0; while [ $i -lt 300 ]; do echo \"$(printf %0200d $i)\"; i=$((i+1)); done | wc -c", '60300\n'],
+  ]) {
+    const r = await Promise.race([
+      ws.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
+    ]);
+    assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
+    assert.equal(r.stderr, '', `${command}: stderr`);
+    assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
+  }
+  // Where a child would have to wait for a writer (a WASI child cannot pause
+  // without JSPI) the command fails and says why; it never reports a false end
+  // of input or loses output.
+  for (const command of ['yes | cat | head -1', 'yes | head -c 80000000 | wc -c']) {
+    const r = await Promise.race([
+      ws.exec(`bash -c '${command}'`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
+    ]);
+    assert.equal(r.exitCode, 1, command);
+    assert.match(r.stderr, /^bash: pipe buffer limit \d+ MiB exceeded: this runtime cannot pause a WASI writer without JSPI\n$/, command);
+  }
+  console.log('  ok  without JSPI, pipes match bash or fail saying why');
 }
 
 // ── bash and the durable filesystem are the same filesystem ─────────────────
