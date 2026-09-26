@@ -187,31 +187,6 @@ const ws = await open({ facets: localFacetHost() });
     assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
   }
   console.log('  ok  a pipeline of three or more stages delivers its last stage');
-
-  // A writer that outlives its reader: `yes | head` ends. A pipe holds 64 KiB; a
-  // writer past it would block, and one whose readers are gone gets SIGPIPE, as
-  // bash reports it (141). Expected output is real bash 5.2 with GNU coreutils.
-  // (`seq 100000 | cat | head -1` is left out: Linux itself gives 0 or 141 for seq.)
-  for (const [command, want] of [
-    ["yes | head -2; echo \"${PIPESTATUS[*]}\"", 'y\ny\n141 0\n'],
-    ["while :; do echo y; done | head -3; echo \"${PIPESTATUS[*]}\"", 'y\ny\ny\n141 0\n'],
-    ["yes | cat | head -1; echo \"${PIPESTATUS[*]}\"", 'y\n141 141 0\n'],
-    ["x=$(yes | head -c 5); echo \"[$x]\"", '[y\ny\ny]\n'],
-    ["seq 100000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n141 0\n'],
-    ["seq 1000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n0 0\n'],
-    ["seq 200000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '200000\n0 0 0\n'],
-    ["seq 100000 | while read x; do :; done; echo \"${PIPESTATUS[*]}\"", '0 0\n'],
-    ["seq 100000 | cat | while read x; do :; done; echo \"${PIPESTATUS[*]}\"", '0 0 0\n'],
-  ]) {
-    const r = await Promise.race([
-      ws.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
-    ]);
-    assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
-    assert.equal(r.stderr, '', `${command}: stderr`);
-    assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
-  }
-  console.log('  ok  a writer that outlives its reader ends with SIGPIPE, as in bash');
 }
 
 // ── bash and the durable filesystem are the same filesystem ─────────────────

@@ -89,12 +89,6 @@ export interface BashPipe extends BashByteQueue {
   writers: number;
   /** Processes parked reading this pipe. */
   readW: BashReadWaiter[];
-  /** Processes parked writing to it: it held a pipe's capacity when they came to write. */
-  writeW: BashReadWaiter[];
-  /** Without JSPI: writers suspended mid-write while this pipe's readers run nested. */
-  suspendedWriters: number;
-  /** Without JSPI: writers whose exit waits on this pipe draining (preamble holdOrFinish). */
-  heldWriters: Set<BashProc>;
 }
 
 export interface BashStdin extends BashByteQueue {
@@ -147,7 +141,7 @@ export interface BashFdReadiness {
 // ── processes ───────────────────────────────────────────────────────────────
 
 /** Why an instance asyncify-unwound; the scheduler dispatches on it. */
-export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'blockwrite' | 'exec' | 'filesystem';
+export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'exec' | 'filesystem';
 
 /** The read a process parked on, recorded so the scheduler can re-issue it. */
 export interface BashPipeReq {
@@ -193,8 +187,6 @@ export interface BashProcCtx {
   waitStatusPtr: number | null;
   /** 'blockread': the read to re-issue once the source produces. */
   pipeReq: BashPipeReq;
-  /** 'blockwrite': the descriptor whose pipe was full. */
-  writeFd: number;
   /** 'exec': the execve arguments. */
   execPath: string;
   execArgv: string[];
@@ -237,10 +229,6 @@ export interface BashProc {
   /** Base of the setjmp slot array, immediately after MAIN_BUF. */
   SLOT0: number;
   pendingRead: BashPendingRead | null;
-  /** A write parked on a full pipe was woken: the rewound fd_write proceeds. */
-  writeResumed: boolean;
-  /** Without JSPI: an exit held while this process would still be blocked writing a pipe. */
-  heldExit: { code: number; signal: number } | null;
   /** jmp_buf address → the slot index its most recent setjmp captured into. */
   slotByEnv: Map<number, number>;
   freeSlots: number[];
@@ -335,14 +323,6 @@ export type BashIo = {
    * which is how writing to a read end came to succeed silently.
    */
   write(fd: number, bytes: Uint8Array): number | null;
-  /**
-   * Called once at the start of every fd_write, before any byte is written.
-   * `undefined`: go ahead. A promise: the write waits for it (a pipe's
-   * capacity, under JSPI). A symbol (preamble.ts WRITE_UNWOUND): the process
-   * unwound to wait, and the call returns without writing (it is re-entered
-   * on the rewind).
-   */
-  writeGate?(fd: number): undefined | Promise<void> | symbol;
   poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): SyscallResult;
 };
 
