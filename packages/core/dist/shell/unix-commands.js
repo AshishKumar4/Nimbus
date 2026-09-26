@@ -21,7 +21,7 @@ import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
-import { isVfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
+import { isVfsError, VfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
@@ -4763,37 +4763,214 @@ function mkDirname() {
     };
 }
 /**
- * realpath (GNU's default, -E): every link in every component resolved;
- * all but the last component must exist.
+ * realpath, as GNU coreutils 9.7: -e (every component must exist), -m (none
+ * need), and by default all but the last; -P (default) resolves links as it
+ * meets them, -L resolves `..` before links, -s prints without resolving
+ * links; -q, -z, --relative-to and --relative-base.
  */
 function mkRealpath(_vfs) {
+    const USAGE = "Try 'realpath --help' for more information.\n";
+    const LONG = {
+        'canonicalize-existing': 'e', 'canonicalize-missing': 'm', logical: 'L', physical: 'P',
+        quiet: 'q', strip: 's', 'no-symlinks': 's', zero: 'z',
+    };
     return async (ctx) => {
+        let mode = 'E';
+        let logical = false;
+        let noSymlinks = false;
+        let quiet = false;
+        let zero = false;
+        let relativeTo = null;
+        let relativeBase = null;
+        const operands = [];
+        const refuse = async (message) => {
+            (await ctx.stderr.write(`realpath: ${message}\n${USAGE}`));
+            return 1;
+        };
+        const args = ctx.args;
+        for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (arg === '--') {
+                operands.push(...args.slice(i + 1));
+                break;
+            }
+            if (arg.startsWith('--')) {
+                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
+                if (name === 'relative-to' || name === 'relative-base') {
+                    const value = inline ?? args[++i];
+                    if (value === undefined)
+                        return refuse(`option '--${name}' requires an argument`);
+                    if (name === 'relative-to')
+                        relativeTo = value;
+                    else
+                        relativeBase = value;
+                    continue;
+                }
+                const flag = LONG[name];
+                if (flag === undefined || inline !== undefined)
+                    return refuse(`unrecognized option '${arg}'`);
+                applyFlag(flag);
+                continue;
+            }
+            if (arg.length > 1 && arg.startsWith('-')) {
+                for (const ch of arg.slice(1)) {
+                    if (!'emLPqsz'.includes(ch))
+                        return refuse(`invalid option -- '${ch}'`);
+                    applyFlag(ch);
+                }
+                continue;
+            }
+            operands.push(arg);
+        }
+        function applyFlag(flag) {
+            if (flag === 'e' || flag === 'm')
+                mode = flag;
+            else if (flag === 'L')
+                logical = true;
+            else if (flag === 'P')
+                logical = false;
+            else if (flag === 'q')
+                quiet = true;
+            else if (flag === 's')
+                noSymlinks = true;
+            else if (flag === 'z')
+                zero = true;
+        }
+        if (operands.length === 0)
+            return refuse('missing operand');
+        const canonical = (arg) => canonicalizePath(ctx.vfs, arg.startsWith('/') ? arg : `/${resolvePath(ctx.cwd, '.')}/${arg}`, {
+            mode, logical, noSymlinks,
+        });
         let exit = 0;
-        for (const p of ctx.args.filter((arg) => !arg.startsWith('-'))) {
-            const fp = '/' + resolvePath(ctx.cwd, p);
+        const fail = async (arg, error) => {
+            exit = 1;
+            if (quiet)
+                return;
+            const code = isVfsError(error) ? error.code : undefined;
+            (await ctx.stderr.write(`realpath: ${arg}: ${code ? VFS_STRERROR[code] : errorText(error)}\n`));
+        };
+        let to = null;
+        let base = null;
+        try {
+            if (relativeTo !== null)
+                to = await canonical(relativeTo);
+            if (relativeBase !== null)
+                base = await canonical(relativeBase);
+        }
+        catch (error) {
+            await fail(relativeTo !== null && to === null ? relativeTo : relativeBase ?? '', error);
+            return 1;
+        }
+        if (base !== null && to === null)
+            to = base;
+        // --relative-base: relative only when both the path and the target directory are under it.
+        if (base !== null && to !== null && !isUnder(to, base)) {
+            to = null;
+            base = null;
+        }
+        for (const arg of operands) {
+            let resolved;
             try {
-                let resolved;
-                try {
-                    resolved = await ctx.vfs.realpath(fp);
-                }
-                catch (error) {
-                    if (!isVfsError(error, 'ENOENT'))
-                        throw error;
-                    // The last component may be absent; its directory may not.
-                    const cut = fp.lastIndexOf('/');
-                    const dir = await ctx.vfs.realpath(fp.slice(0, cut) || '/');
-                    resolved = `${dir === '/' ? '' : dir}/${fp.slice(cut + 1)}`;
-                }
-                (await ctx.stdout.write(resolved + '\n'));
+                resolved = await canonical(arg);
             }
             catch (error) {
-                const code = isVfsError(error) ? error.code : undefined;
-                (await ctx.stderr.write(`realpath: ${p}: ${code ? VFS_STRERROR[code] : errorText(error)}\n`));
-                exit = 1;
+                await fail(arg, error);
+                continue;
             }
+            const shown = to !== null && (base === null || isUnder(resolved, base)) ? relativePath(resolved, to) : resolved;
+            (await ctx.stdout.write(shown + (zero ? '\0' : '\n')));
         }
         return exit;
     };
+}
+function isUnder(path, dir) {
+    return dir === '/' || path === dir || path.startsWith(`${dir}/`);
+}
+/** `path` relative to the directory `from`, both canonical and absolute. */
+function relativePath(path, from) {
+    const a = path.split('/').filter(Boolean);
+    const b = from.split('/').filter(Boolean);
+    let common = 0;
+    while (common < a.length && common < b.length && a[common] === b[common])
+        common++;
+    const parts = [...b.slice(common).map(() => '..'), ...a.slice(common)];
+    return parts.length === 0 ? '.' : parts.join('/');
+}
+/**
+ * GNU's canonicalize_filename_mode over a process's view: components are
+ * resolved as they are met (links followed, 40 hops), `..` physically unless
+ * `logical`; `mode` e: every component must exist, E: all but the last, m:
+ * none. A trailing slash asks for a directory.
+ */
+async function canonicalizePath(vfs, absolute, options) {
+    const trailingSlash = absolute.length > 1 && absolute.endsWith('/');
+    let pending = absolute.split('/').filter(Boolean);
+    if (options.logical || options.noSymlinks) {
+        const lexical = [];
+        for (const part of pending) {
+            if (part === '.')
+                continue;
+            if (part === '..')
+                lexical.pop();
+            else
+                lexical.push(part);
+        }
+        pending = lexical;
+    }
+    const resolved = [];
+    let hops = 0;
+    let missing = false;
+    while (pending.length > 0) {
+        const part = pending.shift();
+        if (part === '.')
+            continue;
+        if (part === '..') {
+            resolved.pop();
+            continue;
+        }
+        const candidate = `/${[...resolved, part].join('/')}`;
+        const last = pending.length === 0;
+        if (missing) {
+            resolved.push(part);
+            continue;
+        }
+        let stat;
+        try {
+            // -s keeps a link's name, but whether it is a directory is its target's.
+            stat = await vfs.stat(candidate, { follow: options.noSymlinks });
+        }
+        catch (error) {
+            if (!isVfsError(error, 'ENOTDIR'))
+                throw error;
+            stat = null;
+        }
+        if (stat === null) {
+            if (options.mode === 'e' || (options.mode === 'E' && !last))
+                throw new VfsError('ENOENT', candidate);
+            missing = true;
+            resolved.push(part);
+            continue;
+        }
+        if (stat.type === 'symlink' && !options.noSymlinks) {
+            if (++hops > 40)
+                throw new VfsError('ELOOP', candidate);
+            const target = await vfs.readlink(candidate);
+            if (target.startsWith('/'))
+                resolved.length = 0;
+            pending = [...target.split('/').filter(Boolean), ...pending];
+            continue;
+        }
+        if (stat.type !== 'directory' && !last && options.mode !== 'm')
+            throw new VfsError('ENOTDIR', candidate);
+        resolved.push(part);
+    }
+    const out = `/${resolved.join('/')}`;
+    if (trailingSlash && options.mode !== 'm') {
+        const stat = await vfs.stat(out);
+        if (stat !== null && stat.type !== 'directory')
+            throw new VfsError('ENOTDIR', out);
+    }
+    return out;
 }
 /**
  * shell compatibility (2026-05-11): printf full POSIX format set.
