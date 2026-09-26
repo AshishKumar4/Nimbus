@@ -222,11 +222,11 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
 
 {
   const r = await sh(`sed -n 'p' /tmp/gone.txt /tmp/s1.txt`);
-  // GNU sed reports the unreadable file, exits 1, and still prints every
+  // GNU sed 4.9 reports the unreadable file, exits 2, and still prints every
   // readable file that followed it.
-  check('a missing first file fails with exit 1 and the later files still print',
-    r.exitCode === 1 && r.stdout === '1\n2\n3\n4\n'
-      && /^sed: \/tmp\/gone\.txt: ENOENT\b.*\n$/.test(r.stderr),
+  check('a missing first file fails with exit 2 and the later files still print',
+    r.exitCode === 2 && r.stdout === '1\n2\n3\n4\n'
+      && r.stderr === "sed: can't read /tmp/gone.txt: No such file or directory\n",
     `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
 }
 {
@@ -324,7 +324,7 @@ await expectOut('the edited files restart line numbers per file',
 {
   const r = await sh(`${ABC} | sed 'Z'`);
   check('an unknown command is refused',
-    r.exitCode === 1 && r.stderr === 'sed: invalid expression: Z\n',
+    r.exitCode === 1 && r.stderr === "sed: -e expression #1, char 1: unknown command: `Z'\n",
     `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
 }
 {
@@ -394,7 +394,7 @@ b/p'`);
 {
   const r = await sh('sed');
   check('a missing expression is refused',
-    r.exitCode === 1 && r.stderr === 'sed: missing expression\n',
+    r.exitCode === 1 && r.stderr.startsWith('Usage: sed [OPTION]... {script-only-if-no-other-script} [input-file]...\n'),
     `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
 }
 

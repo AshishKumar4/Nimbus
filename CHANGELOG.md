@@ -178,6 +178,14 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `sed` is GNU sed 4.9's language: every command except `e` (`{}`, `=`,
+  `a`, `b`, `c`, `d`, `D`, `F`, `g`, `G`, `h`, `H`, `i`, `l`, `n`, `N`, `p`,
+  `P`, `q`, `Q`, `r`, `R`, `s`, `t`, `T`, `w`, `W`, `x`, `y`, `z`, labels),
+  GNU's addresses (`first~step`, `0,/re/`, `addr,+N`, `addr,~N`, `I`/`M`),
+  `s` flags `g p N i m w` and `\L \U \l \u \E` in replacements, and `-s`,
+  `-i[SUFFIX]`, `-f`, `-z`, `-l`, with GNU's messages and exit statuses (2
+  for an unreadable input file, 4 for a missing label). Before, it had `s`,
+  `d` and `p` only.
 - `sort`, `uniq`, `tail`, `wc`, `nl`, `tr`, `rev` and `sed` keep bytes: a
   byte that is not valid UTF-8 (Latin-1 text, binary data) passes through
   unchanged, as GNU's tools pass it. Before, input was decoded as UTF-8 and

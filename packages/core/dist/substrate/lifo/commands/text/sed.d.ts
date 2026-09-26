@@ -1,7 +1,6 @@
 import type { Command, CommandInputStream, CommandOutputStream } from '../types.js';
-import type { VfsStat } from '../../../../vfs/vfs.js';
 type SedVfs = {
-    stat(path: string): VfsStat | null | Promise<VfsStat | null>;
+    stat(path: string): unknown;
     readFile(path: string): Uint8Array | Promise<Uint8Array>;
     writeFile(path: string, content: string | Uint8Array): void | Promise<void>;
 };

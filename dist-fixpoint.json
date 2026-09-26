@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "46fd6f5a3a13a4668b5b322b617d279b3302f2272b1930e39eb7b7f72abca9a6",
+  "fingerprint": "59f0ea86a26a399bf8dc1599690bc6907d413d511b7cf1f2db6050fb29c9eb80",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -609,9 +609,9 @@
     "packages/core/dist/substrate/lifo/commands/text/rev.d.ts": "58487613750a8a019262c8a24c56807ec02dac1f9de4d904dc21c0a6d0e0328a",
     "packages/core/dist/substrate/lifo/commands/text/rev.d.ts.map": "a66d0c2b220222d6204daf500491b5a6f07a1b52d35bc4ede28632e0330dab97",
     "packages/core/dist/substrate/lifo/commands/text/rev.js": "ad4c983b69f5168470ce47dd6cbe2958d95a11687bdadf9f37e96681cbf237b5",
-    "packages/core/dist/substrate/lifo/commands/text/sed.d.ts": "d12fdd8e61be4220d84b6fe0f16602770fd404a9061e9443dad7d90afc5b773f",
-    "packages/core/dist/substrate/lifo/commands/text/sed.d.ts.map": "5abe089d3c1e6bbf8b61561e777b4d5ae1153f75be78274b3dbea4a03be658bc",
-    "packages/core/dist/substrate/lifo/commands/text/sed.js": "b16634a0ecde98b5bc7a3389c8c7f5935b2335ec281e3a52412494b9fb3fd523",
+    "packages/core/dist/substrate/lifo/commands/text/sed.d.ts": "d01ed3eb97c5186cb7083c886f236d28be20db4698bd0788f10dd1c0d599b838",
+    "packages/core/dist/substrate/lifo/commands/text/sed.d.ts.map": "71e7b1006f9d77d7aeda06635bc72f5d0d465dbc31f45c23e854086de9e41455",
+    "packages/core/dist/substrate/lifo/commands/text/sed.js": "9cda9b220ed19c7232ef9b50afc758386d08a8acc836144a3ef5ace2b9d924e9",
     "packages/core/dist/substrate/lifo/commands/text/seq.d.ts": "0416bf3d1e9ff672cfa22bb64dac607fe1d5432f4c80f433531fcf6cdb4c42f4",
     "packages/core/dist/substrate/lifo/commands/text/seq.d.ts.map": "8bbbac1d6ab8c65f215ed05c55f5479ba101856de8b7f6b4558293c4f41bf8d9",
     "packages/core/dist/substrate/lifo/commands/text/seq.js": "f71be2530cd8b59a66f85e7588140163b709c5cd74e94ea326b393ecf4a330aa",
@@ -1083,7 +1083,7 @@
     "packages/core/src/substrate/lifo/commands/text/nano.ts": "886f3dbb1220020de639207c06246acb66c545b98ac50768447e68c5fe0a81a7",
     "packages/core/src/substrate/lifo/commands/text/nl.ts": "ea30ae3b0bc805694e9f589ddbe0f6ab91d345d05ffda4bf1f3f4b75f18e4852",
     "packages/core/src/substrate/lifo/commands/text/rev.ts": "af11851c66cabeb11ab1e4154b91b651eb4099f4a2619b97bf085bab1f5d248d",
-    "packages/core/src/substrate/lifo/commands/text/sed.ts": "1410c01927f3e5a50e6428ea616710d3cd67b1d5a2136261cf420135e5359b7b",
+    "packages/core/src/substrate/lifo/commands/text/sed.ts": "ddfbc6bf1640748c2180675c1e258a0afa0dc4fd72ac2a72b4830705df1df3f5",
     "packages/core/src/substrate/lifo/commands/text/seq.ts": "0778f5f76738eeed7abafcbe7d54faedb573eb74e325ef55cd65b169d142c641",
     "packages/core/src/substrate/lifo/commands/text/sort.ts": "c7464ba30b1e49be3f00c39e3f1c593896328b9d04c4b2f087cbb88a7b75b0b1",
     "packages/core/src/substrate/lifo/commands/text/strings.ts": "86372c5e6c47e6870dd5a1a1a04831f77a43d83201826ad5a57f7a3ff21701aa",
