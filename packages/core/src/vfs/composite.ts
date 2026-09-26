@@ -137,6 +137,11 @@ type Ops = VFS | SyncVFS;
 const EPOCH_STAT: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
 /** Where the namespace's own device numbers for mounts start (see Mount.dev). */
 const ANONYMOUS_DEV = 0x10000;
+
+/** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
+export function isAsyncMountRefusal(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { asyncMount?: unknown }).asyncMount === true;
+}
 const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -422,6 +427,13 @@ export class CompositeVFS implements VFS {
     return resolved;
   }
 
+  /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
+  async realpathAsync(path: string): Promise<string> {
+    const resolved = await this.resolve(path, true, false);
+    if ((await this.statAt(resolved, false, false)) === null) throw new VfsError('ENOENT', path);
+    return resolved;
+  }
+
   /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
   as(cred: VfsCred, actor?: string): CompositeVFS {
     const principal: Principal = actor === undefined ? { cred } : { cred, actor };
@@ -542,7 +554,10 @@ export class CompositeVFS implements VFS {
     if (files === null) throw this.absent(route.mount, route.path);
     if (!sync) return files;
     if (files.sync === undefined) {
-      throw new VfsError('EAGAIN', `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`, route.path);
+      throw Object.assign(
+        new VfsError('EAGAIN', `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`, route.path),
+        { asyncMount: true as const },
+      );
     }
     return files.sync;
   }

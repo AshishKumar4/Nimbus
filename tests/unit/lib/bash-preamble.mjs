@@ -67,6 +67,8 @@ export function loadPreamble(opts = {}) {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
   const authority = new ProcessFiles(raw);
+  // Embedder mounts on the namespace, as a workspace's are.
+  for (const [point, vfs] of Object.entries(opts.mounts ?? {})) authority.vfs.mount(point, vfs);
   const root = raw.as(CRED_KERNEL);
   const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   for (const dir of ['bin', 'home/user', 'tmp', ...(opts.dirs ?? [])]) {
@@ -87,7 +89,7 @@ export function loadPreamble(opts = {}) {
   const { pid } = processes.spawn('bash', ['bash'], '/', { cred });
   const store = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
   const bindings = { SUPERVISOR: opts.remote ? remoteSupervisor(createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} }), pid) : vfsSupervisor(store.bridge(pid)) };
-  const parking = opts.remote ? 'jspi' : 'none';
+  const parking = opts.parking ?? (opts.remote ? 'jspi' : 'none');
   return {
     scope, bindings, root, evaluate, cred, applets,
     boot: args => scope.__bashStep({ op: 'boot', cwd: '/', cred, parking, coreutilsRoot: '/bin', ...args }, bindings.SUPERVISOR),

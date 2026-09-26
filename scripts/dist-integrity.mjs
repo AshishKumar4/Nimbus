@@ -78,7 +78,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -180,6 +180,7 @@ export const INPUT_ROOTS = [
   'package.json',
   'bun.lock',
   'scripts/dist-integrity.mjs',
+  'scripts/clean-dist.mjs',
 ];
 
 /** The toolchain is an input: a new bun or node can change what the same src compiles to. */
@@ -552,7 +553,15 @@ export async function assertDistMatchesSource({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {}, useCache = true,
 } = {}) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
+  // An output whose source is gone would ship, and load. The record cannot
+  // vouch for a file no build writes, so the cached path checks first; a
+  // rebuild clears every dist (its removals are drift) and checks after.
+  const refuseOrphans = () => {
+    const orphans = orphanedOutputs({ root });
+    if (orphans.length > 0) throw new Error(orphanReason(orphans));
+  };
   if (useCache && defaultScope) {
+    refuseOrphans();
     const record = readFixpointRecord({ root });
     if (record) {
       const verdict = verifyFixpointRecord({ root, record, log });
@@ -572,6 +581,7 @@ export async function assertDistMatchesSource({
     throw new Error(staleDistReason(drift));
   }
   log('rebuilding changed nothing — dist is the fixpoint of src');
+  if (defaultScope) refuseOrphans();
 
   const assets = await checkFixpointAssets({ root, log });
   if (defaultScope) {
@@ -616,6 +626,75 @@ function logUncommittedOutputs({ root = REPO_ROOT, log = () => {} } = {}) {
     log('NOTE: build output differs from HEAD — dist is committed, so commit these too:');
     for (const line of uncommitted.split('\n')) log(`  ${line}`);
   }
+}
+
+/** What a package's source file may be named, for an output stem. */
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
+/** tsc's outputs for one source, longest suffix first. */
+const OUTPUT_SUFFIXES = ['.d.ts.map', '.d.mts.map', '.d.cts.map', '.js.map', '.mjs.map', '.cjs.map', '.d.ts', '.d.mts', '.d.cts', '.js', '.mjs', '.cjs'];
+
+function filesUnder(dir, prefix = '') {
+  if (!existsSync(dir)) return [];
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...filesUnder(join(dir, entry.name), rel));
+    else out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * Build outputs nothing in the tree produces any more, by path.
+ *
+ * - `packages/<pkg>/dist/**`: a compiled file whose source (same path under
+ *   src/, any source extension) is gone. tsc never deletes an output, and a
+ *   package's `./*.js` export would still serve the old module.
+ * - `packages/worker/public/_assets`: a versioned asset (`<family>/<x.y.z>/…`
+ *   or `<name>-<x.y.z>.<ext>`) that no generated artifact under
+ *   packages/worker/src names: a bundle for a version the worker no longer
+ *   ships.
+ */
+export function orphanedOutputs({ root = REPO_ROOT, packages = BUILT_PACKAGES } = {}) {
+  const orphans = [];
+  for (const pkg of packages) {
+    const base = join(root, 'packages', pkg);
+    for (const rel of filesUnder(join(base, 'dist'))) {
+      const suffix = OUTPUT_SUFFIXES.find((s) => rel.endsWith(s));
+      if (suffix === undefined) {
+        orphans.push(`packages/${pkg}/dist/${rel}`);
+        continue;
+      }
+      const stem = rel.slice(0, -suffix.length);
+      if (!SOURCE_EXTENSIONS.some((ext) => existsSync(join(base, 'src', stem + ext)))) orphans.push(`packages/${pkg}/dist/${rel}`);
+    }
+  }
+  const assets = join(root, STAGED_ASSETS_DIR, '_assets');
+  const generatedDir = join(root, 'packages', 'worker', 'src');
+  if (existsSync(assets) && existsSync(generatedDir)) {
+    const named = readdirSync(generatedDir)
+      .filter((name) => name.endsWith('.generated.ts'))
+      .map((name) => readFileSync(join(generatedDir, name), 'utf8'))
+      .join('\n');
+    const versioned = /^(?:(.+?)\/(\d+\.\d+\.\d+[^/]*)\/|([^/]+?)-(\d+\.\d+\.\d+[^/]*?)\.[a-z0-9]+$)/;
+    for (const rel of filesUnder(assets)) {
+      const match = versioned.exec(rel);
+      if (match === null) continue;
+      const key = match[1] !== undefined ? `_assets/${match[1]}/${match[2]}/` : `_assets/${rel}`;
+      if (!named.includes(key)) orphans.push(`${STAGED_ASSETS_DIR}/_assets/${rel}`);
+    }
+  }
+  return orphans.sort();
+}
+
+function orphanReason(orphans) {
+  return (
+    'refusing — build outputs with no source in this tree (a deleted module still shipped, and importable):\n' +
+    `${orphans.slice(0, 60).map((p) => `  ${p}`).join('\n')}\n` +
+    (orphans.length > 60 ? `  … and ${orphans.length - 60} more\n` : '') +
+    '\nEvery build clears its dist first, so `bun scripts/dist-integrity.mjs --no-cache` removes a ' +
+    'compiled orphan (and reports the removal); remove a stale versioned asset by hand. Commit the removals.'
+  );
 }
 
 function staleDistReason({ changed, added, removed }) {

@@ -107,7 +107,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   stat(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsStat | null {
     const followSymlinks = options.followSymlinks !== false;
-    const located = this.locate(path, followSymlinks);
+    let located: Located | null;
+    try {
+      located = this.locate(path, followSymlinks);
+    } catch (error) {
+      // A component missing on the way is "not there", whatever form the path takes.
+      if (hasErrorCode(error, 'ENOENT')) return null;
+      throw error;
+    }
     if (located === null) throw fsError('ELOOP', 'stat', path);
     if (located.mount) {
       const stat = located.mount.stat(located.path, { follow: followSymlinks });
@@ -201,12 +208,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const located = this.locateMutation(path, true, 'write');
     if (located.mount) {
       if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
+      if (options.createParents === true) mountParents(located.mount, located.path);
       located.mount.writeFile(located.path, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
       return this.rawVfs.revision();
     }
     const p = located.path;
     this.assertExpectedRevision(p, options.expectedRevision);
-    if (options.createParents !== false) this.ensureParent(p);
+    if (options.createParents === true) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
     // Read back in the same synchronous turn as the mutation, so nothing can
     // interleave: this is exactly the revision this write produced. Asking
@@ -258,13 +266,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located.mount) {
       if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
       if (!located.mount.writeRange) throw fsError('ENOTSUP', 'write', path);
+      if (options.createParents === true) mountParents(located.mount, located.path);
       located.mount.writeRange(located.path, offset, bytes);
       return this.mountReceipt();
     }
     const p = located.path;
     this.assertExpectedRevision(p, options.expectedRevision);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
-    if (options.createParents !== false) this.ensureParent(p);
+    if (options.createParents === true) this.ensureParent(p);
     return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
   }
 
@@ -388,7 +397,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
     if (exists) this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
     if (!exists) {
-      this.ensureParent(p);
       this.vfs.writeFile(p, new Uint8Array(0), { mode: flags.mode });
     } else if (normalizedFlags.truncate) {
       this.vfs.truncate(p, 0);
@@ -549,7 +557,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
       throw fsError('EEXIST', 'symlink', path);
     }
-    this.ensureParent(p);
     this.vfs.symlink(target, p);
   }
 
@@ -615,7 +622,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!source.mount && !target.mount) { this.vfs.copyFile(source.path, target.path); return; }
     const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
     if (target.mount) target.mount.writeFile(target.path, bytes);
-    else { this.ensureParent(target.path); this.vfs.writeFile(target.path, bytes); }
+    else this.vfs.writeFile(target.path, bytes);
   }
 
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
@@ -657,9 +664,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
       const root = normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path());
-      if (root !== '') this.stat('/' + root, { followSymlinks: false });
-      if (path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-      return this.resolveBeneath(root, path.path.split('/').filter(Boolean), followSymlinks, path);
+      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred);
+      for (let step = walk.next(); ; ) {
+        if (step.done) return step.value;
+        const lookup = step.value;
+        step = walk.next('readlink' in lookup
+          ? this.readlink(lookup.readlink) ?? ''
+          : lookup.stat === '/' ? this.rootStat() : this.stat(lookup.stat, { followSymlinks: false }));
+      }
     }
     const pending = this.pathArgument(path).split('/').filter(Boolean);
     const resolved: string[] = [];
@@ -720,53 +732,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }
 
     return resolved.join('/');
-  }
-
-  /**
-   * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
-   * namespace walk does it (VFS-COMP-006): each component needs the directory
-   * it leaves to be a searchable directory; `..` at the root, and any
-   * absolute link, is ENOTCAPABLE; a missing component is ENOENT unless it is
-   * the last. Links resolve in the namespace, 40 hops, then null (ELOOP).
-   */
-  private resolveBeneath(root: string, pending: string[], followSymlinks: boolean, path: RuntimeFsPath): string | null {
-    const resolved = root === '' ? [] : root.split('/');
-    const depth = resolved.length;
-    let hops = 0;
-    while (pending.length > 0) {
-      const segment = pending.shift()!;
-      const dir = resolved.join('/');
-      this.searchDirectory(dir, path);
-      if (segment === '.') continue;
-      if (segment === '..') {
-        if (resolved.length === depth) throw fsError('ENOTCAPABLE', 'path', path);
-        resolved.pop();
-        continue;
-      }
-      // Every component already walked is a directory, not a link, so a
-      // lookup by its literal name is the walk's own.
-      const candidate = dir === '' ? segment : `${dir}/${segment}`;
-      const isFinal = pending.length === 0;
-      const stat = this.stat('/' + candidate, { followSymlinks: false });
-      if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
-      if (stat === null || stat.type !== 'symlink' || (isFinal && !followSymlinks)) {
-        resolved.push(segment);
-        continue;
-      }
-      if (++hops > MAX_LINK_HOPS) return null;
-      const target = this.readlink('/' + candidate) ?? '';
-      if (target.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-      pending.unshift(...target.split('/').filter(Boolean));
-    }
-    return resolved.join('/');
-  }
-
-  /** ENOENT, ENOTDIR or EACCES unless `dir` (resolved, no links) is a directory the caller may search. */
-  private searchDirectory(dir: string, path: RuntimeFsPath): void {
-    const stat = dir === '' ? this.rootStat() : this.stat('/' + dir, { followSymlinks: false });
-    if (stat === null) throw fsError('ENOENT', 'path', path);
-    if (stat.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-    if (!modeAllows(stat, 1, this.vfs.cred)) throw fsError('EACCES', 'path', path);
   }
 
   /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
@@ -945,6 +910,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   private getHandle(handleId: number): RuntimeFileHandle { return this.description(handleId).handle; }
 
+  /** The absolute path a descriptor was opened at. */
+  descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.description(handleId).node.path()); }
+
   fstat(handleId: number): RuntimeVfsStat {
     return { ...this.description(handleId).node.stat(), revision: this.rawVfs.revision() };
   }
@@ -981,6 +949,60 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 
+/** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
+export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
+type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
+
+/**
+ * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+ * namespace walk does it (VFS-COMP-006): the root must be reachable (every
+ * directory above it searchable); an absolute path, `..` at the root, and any
+ * absolute link are ENOTCAPABLE; each component needs the directory it leaves
+ * to be a searchable directory; a missing component is ENOENT unless it is
+ * the last. Links resolve (the last only when `follow`), 40 hops, then null
+ * (ELOOP). The one walk for every face: it yields its lookups, which the
+ * synchronous bridge answers at once and a face over asynchronous mounts
+ * awaits. `root` is normalized; the answer is the resolved path, normalized.
+ */
+export function* walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] }): Generator<BeneathLookup, string | null, BeneathAnswer> {
+  const name = typeof path === 'string' ? path : path.path;
+  if (root !== '') yield { stat: '/' + root };
+  if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+  const pending = name.split('/').filter(Boolean);
+  const resolved = root === '' ? [] : root.split('/');
+  const depth = resolved.length;
+  let hops = 0;
+  while (pending.length > 0) {
+    const segment = pending.shift()!;
+    const dir = resolved.join('/');
+    const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
+    if (searched === null) throw fsError('ENOENT', 'path', path);
+    if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+    if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+    if (segment === '.') continue;
+    if (segment === '..') {
+      if (resolved.length === depth) throw fsError('ENOTCAPABLE', 'path', path);
+      resolved.pop();
+      continue;
+    }
+    // Every component already walked is a directory, not a link, so a
+    // lookup by its literal name is the walk's own.
+    const candidate = dir === '' ? segment : `${dir}/${segment}`;
+    const isFinal = pending.length === 0;
+    const stat = (yield { stat: '/' + candidate }) as Exclude<BeneathAnswer, string>;
+    if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
+    if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
+      resolved.push(segment);
+      continue;
+    }
+    if (++hops > MAX_LINK_HOPS) return null;
+    const target = (yield { readlink: '/' + candidate }) as string;
+    if (target.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+    pending.unshift(...target.split('/').filter(Boolean));
+  }
+  return resolved.join('/');
+}
+
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located = { mount: SyncVFS; path: string } | { mount?: undefined; path: string };
 
@@ -1007,7 +1029,7 @@ function removeTree(mount: SyncVFS, path: string): void {
 
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
 /** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
-function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
+export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
   const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
   return {
@@ -1018,7 +1040,7 @@ function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
 }
 
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
-function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
+export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
   const requested = want & 7;
   if (requested === 0 || stat.mode === undefined) return true;
   const perms = stat.mode & 0o777;
@@ -1048,7 +1070,13 @@ interface FsError extends Error {
   path: string;
 }
 
-function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {
+/** mkdir -p of a mounted path's parent. */
+function mountParents(mount: SyncVFS, path: string): void {
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  if (parent !== '') mount.mkdir(parent, { recursive: true });
+}
+
+export function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {
   const name = typeof path === 'string' ? path : path.path;
   return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
 }

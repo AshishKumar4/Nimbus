@@ -8,6 +8,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### Breaking changes for embedders
 
+The published `@nimbus-sh/core` no longer carries the compiled output of the
+modules removed below (`runtime/filesystem-authority.js`, the lifo kernel
+VFS, `SandboxFs`, `ServiceManager`, kernel persistence and storage, and
+`runtime/vfs-manifest.js`). Before, their stale `dist` files still shipped,
+so an import of a removed name type-checked and loaded the old code. Each
+package's build now clears its `dist` first, and `dist-integrity` refuses
+any output whose source is gone.
+
 The workspace has one filesystem: a `CompositeVFS` rooted at SQLite, with
 `/proc` and `/dev` mounted, bound to processes by `ProcessFiles`. The lifo
 kernel no longer has a filesystem. Each removed or changed public import or
@@ -112,9 +120,61 @@ option, with its replacement:
 - The content store's schema is 3. A database a schema-2 build wrote (staging
   and throwaways only) is reset when it opens, and `legacyReset` tells the
   session once.
+- The host's `sql.exec` must return the rows of a statement with
+  `RETURNING` (`INSERT`, `UPDATE`), not only of `SELECT`: the filesystem reads
+  its clock and job ids that way. An adapter that returns rows only for
+  `SELECT`/`WITH`/`PRAGMA` breaks every write.
+- The host must report `sql.databaseSize` (workerd has it). The storage ledger
+  measures the session's database with it; without it the ledger falls back to
+  SQLite's page count.
+- The store's tables changed. Removed: `inodes`, `file_chunks`,
+  `content_lifecycle`, `vfs_schema_migrations`, `vfs_ino_allocator`. Added:
+  `vfs_state`, `vfs_inodes`, `vfs_chunks`, `vfs_contents`,
+  `vfs_content_chunks`, `vfs_inode_history`, `vfs_gc_queue`, `vfs_jobs`,
+  `vfs_snapshots`, `vfs_tombstones`, `vfs_cold_trash`, and the storage
+  ledger's `nimbus_storage_ledger`, `nimbus_storage_reservation`,
+  `nimbus_facet_storage`, `nimbus_image_storage`. `NimbusWorkspace.destroy()`
+  drops the `vfs_*` tables and keeps every `nimbus_*` table.
+- `EsbuildService`, `supervisorEsbuildService`, `installPathExecResolver`
+  (`shell/exec-dispatch`) and `countPackageFiles` take a `NamespaceFs`:
+  pass `filesystem.namespaceFs(cred)`, the namespace as that principal.
+- The SDK runs commands through the session stub's `_rpcExecStream`. A host
+  that answers the SDK must expose it.
+- `/` is 0755 root:root. A fixture that creates top-level directories as the
+  session user gets EACCES; create them as the kernel (`vfs.as(CRED_KERNEL)`).
+- Creating a file never creates its directory. `touch`, a shell redirect
+  (`echo hi > dir/f`), `tee`, `ws.fs.writeFile`, the SDK's `files.write` and
+  a process's `writeFile`/`writeRange`/`open(O_CREAT)` answer ENOENT under a
+  missing parent, as open(2) does. Make the directory first (`mkdir -p`), or
+  pass `createParents: true` to the bridge's `writeFile`/`writeRange`.
+- A path beneath a root (a WASI preopen) that climbs out of it answers
+  ENOTCAPABLE, as does an absolute path or an absolute link beneath it.
+  Kinu's own bridge answered EPERM.
+- A bridge's `stat` answers null for a missing path in any form, a path
+  beneath a root whose middle component is missing included. It used to throw
+  ENOENT for that one. EACCES, ENOTCAPABLE, ENOTDIR and ELOOP still throw.
+
+### Not carried from Kinu's N26 patch
+
+These stay Kinu's policy, applied by Kinu after its own move or chmod with its
+kernel credential, because Nimbus follows POSIX here:
+
+- Renaming an entry into a shared directory keeps the entry's group. POSIX
+  rename(2) does not change ownership.
+- chmod in a setgid directory sets exactly the mode asked for. A default ACL
+  governs creation, not chmod.
+- A confined principal still cannot widen modes (N11).
 
 ### filesystem
 
+- A mount with no synchronous face (an embedder's Drive, `/pc`, `/sandbox`)
+  works for every caller that can wait: shell commands (`ls /`, `cat`, `find
+  /`, redirects), node's `fs.promises`, the supervisor RPC, and bash under
+  JSPI, including paths beneath a WASI preopen and descriptors opened on the
+  mount. Before, any of these that touched the mount got EAGAIN (`ls /`
+  failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
+  without JSPI) still gets EAGAIN, naming the mount.
+- `find /` prints `/home`, not `//home`, as GNU find does.
 - SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name
   directly in it needs write permission on `/`, as on Linux. Before, the
   filesystem skipped that check at the root, so any user (a confined agent
@@ -737,6 +797,8 @@ react 0.1.6.
   kernel callers explicitly pass `vfs.as(CRED_KERNEL)`. Transform-only use
   still needs no VFS. Absolute and transitive imports cannot read beyond the
   supplied view's authority.
+  (Superseded in Unreleased: it now takes a `NamespaceFs`,
+  `filesystem.namespaceFs(cred)`.)
 - Fixed failed VFS metadata writes publishing uncommitted times, modes or
   ownership in memory. Added `SqliteVFS.withTransaction(callback)` for embedders
   committing their SQL rows together with filesystem writes: rollback restores

@@ -222,6 +222,7 @@ export interface RuntimeFsBridge {
      * peer's when {@link RuntimeFsBridge.acquire} reports the path back.
      */
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
+        /** Create missing parent directories (mkdir -p); otherwise a missing parent is ENOENT, as open(O_CREAT). */
         createParents?: boolean;
         expectedRevision?: number;
     }): Awaitable<number>;

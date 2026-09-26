@@ -1277,8 +1277,9 @@ function mkFind(vfs, registry) {
                     if (state.quit)
                         break;
                     await walk({
-                        vfsPath: entry.vfsPath + '/' + child.name,
-                        display: entry.display + '/' + child.name,
+                        // A start path ending in a slash (`/`) is joined without another, as GNU find does.
+                        vfsPath: entry.vfsPath.endsWith('/') ? entry.vfsPath + child.name : entry.vfsPath + '/' + child.name,
+                        display: entry.display.endsWith('/') ? entry.display + child.name : entry.display + '/' + child.name,
                         name: child.name,
                         type: child.type,
                         depth: entry.depth + 1,
@@ -3002,17 +3003,25 @@ function mkTee(vfs) {
         const append = ctx.args.includes('-a');
         const files = ctx.args.filter(a => !a.startsWith('-'));
         (await ctx.stdout.write(input));
+        let status = 0;
+        // A file it cannot write is reported and the rest still get the input (GNU).
         for (const f of files) {
             const fp = resolvePath(ctx.cwd, f);
-            if (append && (await vfs.exists(fp))) {
-                const existing = (await vfs.readFileString(fp));
-                (await vfs.writeFile(fp, existing + input));
+            try {
+                if (append && (await vfs.exists(fp))) {
+                    const existing = (await vfs.readFileString(fp));
+                    (await vfs.writeFile(fp, existing + input));
+                }
+                else {
+                    (await vfs.writeFile(fp, input));
+                }
             }
-            else {
-                (await vfs.writeFile(fp, input));
+            catch (error) {
+                (await ctx.stderr.write(`tee: ${f}: ${fsErrorMessage(error)}\n`));
+                status = 1;
             }
         }
-        return 0;
+        return status;
     };
 }
 /**

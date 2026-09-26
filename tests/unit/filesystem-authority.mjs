@@ -12,9 +12,10 @@ const authority = new ProcessFiles(raw);
 const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
 const bytes = text => new TextEncoder().encode(text);
 const text = data => new TextDecoder().decode(data);
-assert.equal(fs.synchronous, fs);
 fs.writeFile('/file', 'abcdef');
 const opened = fs.open('/file', { read: true, write: true });
+// The synchronous face is the same process: its descriptors are the bound face's.
+assert.equal(text(fs.synchronous.read(opened.id, 0, 6)), 'abcdef');
 const originalIdentity = fs.stat('/file');
 assert.throws(() => fs.open('/file', { write: true, create: true, exclusive: true }), { code: 'EEXIST' });
 assert.throws(() => fs.open('/file', { write: true, truncate: true, directory: true }), { code: 'ENOTDIR' });
@@ -174,6 +175,20 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   assert.throws(() => view.appendOnce('/home/user/private', 9, writer3, moduleId, 1, 'digest', bytes('no')), { code: 'EACCES' });
   assert.equal(journal(), before);
   h3.db.close();
+}
+
+// stat answers null for a missing path whatever form it takes, a component
+// missing on the way included; a refusal still throws.
+{
+  const h4 = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(h4.sql, h4.ctx);
+  engine.as(CRED_KERNEL).mkdir('/home/main', { recursive: true });
+  const { fs: host } = new ProcessFiles(engine).openHost(CRED_KERNEL);
+  for (const path of ['/etc/x', { root: '/', path: 'etc/x', beneath: true }, { root: '/home', path: 'y/z', beneath: true }]) {
+    assert.equal(await host.stat(path), null, JSON.stringify(path));
+  }
+  await assert.rejects(async () => host.stat({ root: '/home/main', path: '../../etc', beneath: true }), { code: 'ENOTCAPABLE' });
+  h4.db.close();
 }
 
 console.log('filesystem authority: live descriptors, namespace isolation, scoped host leases, stream cancel and epoch/version races passed');

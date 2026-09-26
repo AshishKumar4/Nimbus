@@ -432,6 +432,7 @@ export const git = {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
   const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+  vfs.mkdir('outside');
   await bridge.writeFile('/outside/existing.txt', 'outside!!');
   const supervisor = {
     async stat(path) {

@@ -178,6 +178,10 @@ await check(
 );
 
 // ── -name bracket classes (fnmatch; checked with uutils findutils 0.8.0) ──
+await check('a start path of / is joined without a second slash (GNU)',
+  sorted("find / -maxdepth 1 -name home"),
+  { stdout: '/home\n' });
+
 await check('-name matches a bracket class',
   sorted("find extract -name '[ab]*'"),
   { stdout: 'extract/proteus/bin\nextract/proteus/src/a.ts\n' });
