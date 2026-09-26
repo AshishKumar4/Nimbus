@@ -721,7 +721,18 @@ export class CompositeVFS implements VFS {
   }
 
   private statAt(input: string, follow: boolean, sync: boolean): Awaitable<VfsStat | null> {
-    return then(this.resolve(input, follow, sync), (path) => {
+    // Nothing at a component on the way is "not there" too: stat answers null.
+    const walked = (): Awaitable<string | null> => {
+      const absent = (e: unknown): null => { if (isVfsError(e, 'ENOENT')) return null; throw e; };
+      try {
+        const out = this.resolve(input, follow, sync);
+        return isPromise(out) ? out.catch(absent) : out;
+      } catch (e) {
+        return absent(e);
+      }
+    };
+    return then(walked(), (path) => {
+      if (path === null) return null;
       if (this.absentOn(path) !== null) return null;
       // A live mount point is the mounted backend's root: its mode, owner
       // and times are the backend's (chmod of /tmp reaches it, so stat must
@@ -734,7 +745,7 @@ export class CompositeVFS implements VFS {
         if (mount === undefined) {
           return then(this.heldDirectory(path, sync), (held) => {
             if (held === null) return EPOCH_STAT;
-            return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode } : held;
+            return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : held;
           });
         }
         const ops = this.ops({ mount, path, rel: '/' }, sync);
@@ -748,8 +759,8 @@ export class CompositeVFS implements VFS {
         };
         return then(own(), (stat) => {
           if (stat === null || stat.type !== 'directory') return EPOCH_STAT;
-          // A backend with no modes still has a mode at its mount point.
-          return stat.mode === undefined ? { ...stat, mode: EPOCH_STAT.mode } : stat;
+          // A backend with no modes has the namespace's own at its mount point.
+          return stat.mode === undefined ? { ...stat, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : stat;
         });
       }
       return then(this.shadowed(path, sync), (hidden) => {

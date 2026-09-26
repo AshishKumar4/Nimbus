@@ -30,7 +30,14 @@ function build(spec) {
     const harness = createSqliteVfsTestHarness();
     vfs = sqliteFiles(new SqliteVFS(harness.sql, harness.ctx), CRED_KERNEL);
   } else {
-    vfs = new MemoryVFS();
+    // A backend that keeps no modes: its stats carry none.
+    const memory = new MemoryVFS();
+    const bare = (stat) => { if (stat === null) return null; const { mode, uid, gid, ...rest } = stat; return rest; };
+    vfs = Object.assign(Object.create(memory), {
+      stat: (path, options) => bare(memory.stat(path, options)),
+      readdir: (path) => memory.readdir(path).map((e) => ({ ...e, stat: e.stat && bare(e.stat) })),
+    });
+    vfs.sync = vfs;
   }
   for (const entry of spec.entries) {
     if (entry.kind === 'directory') vfs.mkdir(entry.path);
@@ -46,7 +53,7 @@ function build(spec) {
       vfs.chmod(entry.path, entry.mode);
     }
   }
-  return vfs;
+  return spec.kind === 'sqlite' ? vfs : vfs;
 }
 
 function treeOf(vfs, modes) {

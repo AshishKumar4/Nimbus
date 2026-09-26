@@ -128,7 +128,11 @@ export class SqliteFiles implements VFS {
   }
 
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void {
-    this.run(path, () => this.view.mkdir(path, options));
+    this.run(path, () => {
+      // mkdir(2): an existing name is EEXIST (the engine's own mkdir is idempotent).
+      if (!options?.recursive && this.view.exists(path)) throw new VfsError('EEXIST', 'file exists', path);
+      this.view.mkdir(path, options);
+    });
   }
 
   unlink(path: string): void {
