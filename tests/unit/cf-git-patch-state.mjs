@@ -66,7 +66,10 @@ function layout(name, { index, linkTo }) {
   const copy = join(siblings, '@ashishkumar472/cf-git');
   mkdirSync(copy, { recursive: true });
   for (const entry of readdirSync(installed)) {
-    if (entry !== 'index.js') cpSync(join(installed, entry), join(copy, entry), { recursive: true });
+    // The package's own files. A dotfile is not one: cf-git-indexer and
+    // cf-git-checkout-repairs stage instrumented `.nimbus-*.mjs` copies in this
+    // directory while they run, and remove them, so one may vanish mid-copy.
+    if (entry !== 'index.js' && !entry.startsWith('.')) cpSync(join(installed, entry), join(copy, entry), { recursive: true });
   }
   if (linkTo) linkSync(linkTo, join(copy, 'index.js'));
   else writeFileSync(join(copy, 'index.js'), index);
