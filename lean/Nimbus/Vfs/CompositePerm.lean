@@ -77,6 +77,13 @@ structure BEnt where
   m : Meta
   deriving DecidableEq, Repr
 
+/-- A default ACL's base entries (`u::`, `g::`, `o::`), each an rwx triple. -/
+structure Dacl where
+  u : Nat
+  g : Nat
+  o : Nat
+  deriving DecidableEq, Repr
+
 structure Backend where
   /-- The backend checks each access itself (SqliteVFS). -/
   enforces : Bool
@@ -84,6 +91,10 @@ structure Backend where
   reports : Bool
   root : Meta
   ents : List (Path × BEnt)
+  /-- Directories with a default ACL. -/
+  dacls : List (Path × Dacl)
+
+def daclAt (b : Backend) (r : Path) : Option Dacl := (b.dacls.find? (·.1 == r)).map (·.2)
 
 /-- What a backend holds at `r`; its root is a directory. -/
 def look (b : Backend) (r : Path) : Option BEnt :=
@@ -104,18 +115,91 @@ def synthMeta : Meta := ⟨0o755, 0, 0⟩
 
 def setgid (m : Meta) : Bool := m.mode / 1024 % 2 == 1
 
-/-- A new entry in directory `pm`: the writer's, but a setgid directory of a backend
-    with modes gives its group, and to a new directory its setgid bit (N26). -/
-def newMeta (b : Backend) (c : Cred) (pm : Meta) (dir : Bool) : Meta :=
-  let sg := b.reports && setgid pm
-  ⟨(if dir then 0o755 else 0o644) + (if sg && dir then 0o2000 else 0), c.uid, if sg then pm.gid else c.gid⟩
+/-- A create mode masked by a default ACL's base entries, class by class; the umask
+    is not applied. -/
+def aclMode (cm : Nat) (a : Dacl) : Nat :=
+  (cm / 64 % 8 &&& a.u % 8) * 64 + (cm / 8 % 8 &&& a.g % 8) * 8 + (cm % 8 &&& a.o % 8)
 
-theorem setgid_inherits (b : Backend) (c : Cred) (pm : Meta) (dir : Bool) (hr : b.reports = true)
-    (hs : setgid pm = true) : (newMeta b c pm dir).gid = pm.gid ∧ (dir = true → setgid (newMeta b c pm dir) = true) := by
+/-- The create mode: 0666 for a file, 0777 for a directory. -/
+def createMode (dir : Bool) : Nat := if dir then 0o777 else 0o666
+
+/-- A new entry in directory `pm` (default ACL `pd`): the create mode masked by the
+    default ACL if there is one, else by umask 022; the writer's owner, but a setgid
+    directory of a backend with modes gives its group, and to a new directory its
+    setgid bit (N26). A new directory also inherits the default ACL. -/
+def newMeta (b : Backend) (c : Cred) (pm : Meta) (pd : Option Dacl) (dir : Bool) : Meta :=
+  let sg := b.reports && setgid pm
+  let perm := match pd with
+    | some a => aclMode (createMode dir) a
+    | none => createMode dir - 0o022
+  ⟨perm + (if sg && dir then 0o2000 else 0), c.uid, if sg then pm.gid else c.gid⟩
+
+theorem setgid_inherits (b : Backend) (c : Cred) (pm : Meta) (pd : Option Dacl) (dir : Bool) (hr : b.reports = true)
+    (hs : setgid pm = true) :
+    (newMeta b c pm pd dir).gid = pm.gid ∧ (dir = true → setgid (newMeta b c pm pd dir) = true) := by
   refine ⟨by simp [newMeta, hr, hs], fun hd => ?_⟩
   subst hd
   have hs' : pm.mode / 1024 % 2 = 1 := by simpa [setgid] using hs
-  simp [newMeta, hr, hs, setgid, hs']
+  have hp : (match pd with | some a => aclMode (createMode true) a | none => createMode true - 0o022) < 1024 := by
+    cases pd with
+    | none => simp [createMode]
+    | some a =>
+      simp only [aclMode, createMode, if_true]
+      have := @Nat.and_le_left (0o777 / 64 % 8) (a.u % 8)
+      have := @Nat.and_le_left (0o777 / 8 % 8) (a.g % 8)
+      have := @Nat.and_le_left (0o777 % 8) (a.o % 8)
+      omega
+  have hsg : (b.reports && setgid pm) = true := by simp [hr, hs]
+  unfold newMeta
+  have hsg' : (b.reports && pm.mode / 1024 % 2 == 1 && true) = true := by simpa [setgid] using hsg
+  simp only [setgid] at hsg ⊢
+  rw [if_pos hsg']
+  simp only [beq_iff_eq]
+  generalize (match pd with | some a => aclMode (createMode true) a | none => createMode true - 0o022) = P at hp ⊢
+  omega
+
+theorem aclMode_classes (cm : Nat) (a : Dacl) :
+    aclMode cm a / 64 % 8 = (cm / 64 % 8 &&& a.u % 8) ∧ aclMode cm a / 8 % 8 = (cm / 8 % 8 &&& a.g % 8) ∧
+      aclMode cm a % 8 = (cm % 8 &&& a.o % 8) := by
+  have h1 := @Nat.and_le_left (cm / 64 % 8) (a.u % 8)
+  have h2 := @Nat.and_le_left (cm / 8 % 8) (a.g % 8)
+  have h3 := @Nat.and_le_left (cm % 8) (a.o % 8)
+  have : cm / 64 % 8 < 8 := Nat.mod_lt _ (by decide)
+  have : cm / 8 % 8 < 8 := Nat.mod_lt _ (by decide)
+  have : cm % 8 < 8 := Nat.mod_lt _ (by decide)
+  unfold aclMode
+  omega
+
+theorem and_bit {x u w : Nat} (hx : x < 8) (hu : u < 8) (hw : w = 1 ∨ w = 2 ∨ w = 4)
+    (h : (x &&& u) / w % 2 = 1) : x / w % 2 = 1 := by
+  have key : ∀ x : Fin 8, ∀ u : Fin 8, ∀ w : Fin 3,
+      (x.val &&& u.val) / (2 ^ w.val) % 2 = 1 → x.val / (2 ^ w.val) % 2 = 1 := by decide
+  rcases hw with rfl | rfl | rfl
+  · exact key ⟨x, hx⟩ ⟨u, hu⟩ 0 h
+  · exact key ⟨x, hx⟩ ⟨u, hu⟩ 1 h
+  · exact key ⟨x, hx⟩ ⟨u, hu⟩ 2 h
+
+/-- A default ACL never grants more than the create mode asked for: whoever an
+    entry made under it grants read, write or search to, the create mode alone would
+    have granted it too. -/
+theorem acl_never_widens (c : Cred) (cm : Nat) (a : Dacl) (uid gid w : Nat) (hw : w = 1 ∨ w = 2 ∨ w = 4)
+    (h : grants c ⟨aclMode cm a, uid, gid⟩ w = true) : grants c ⟨cm, uid, gid⟩ w = true := by
+  unfold grants classBits at h ⊢
+  obtain ⟨e1, e2, e3⟩ := aclMode_classes cm a
+  simp only at h ⊢
+  rcases Bool.or_eq_true_iff.mp h with h | h
+  · simp [h]
+  · refine Bool.or_eq_true_iff.mpr (Or.inr ?_)
+    simp only [beq_iff_eq] at h ⊢
+    split at h
+    · rw [if_pos ‹_›]; rw [e1] at h
+      exact and_bit (Nat.mod_lt _ (by decide)) (Nat.mod_lt _ (by decide)) hw h
+    · rw [if_neg ‹_›]
+      split at h
+      · rw [if_pos ‹_›]; rw [e2] at h
+        exact and_bit (Nat.mod_lt _ (by decide)) (Nat.mod_lt _ (by decide)) hw h
+      · rw [if_neg ‹_›]; rw [e3] at h
+        exact and_bit (Nat.mod_lt _ (by decide)) (Nat.mod_lt _ (by decide)) hw h
 
 /-! ## A backend's own operations
 
@@ -171,13 +255,21 @@ def children (b : Backend) (r : Path) : List String :=
 def setEnt (b : Backend) (r : Path) (e : BEnt) : Backend :=
   { b with ents := (b.ents.filter (·.1 != r)) ++ [(r, e)] }
 
-def delEnt (b : Backend) (r : Path) : Backend := { b with ents := b.ents.filter (·.1 != r) }
+def delEnt (b : Backend) (r : Path) : Backend :=
+  { b with ents := b.ents.filter (·.1 != r), dacls := b.dacls.filter (·.1 != r) }
 
-/-- Create `r` in its directory, if the backend lets `c` write there. -/
+/-- Create `r` in its directory, if the backend lets `c` write there; a new
+    directory inherits its parent's default ACL. -/
 def create (b : Backend) (c : Cred) (r : Path) (k : K) (dir : Bool) : Out × Option Backend :=
   match look b r.dropLast with
   | some ⟨.dir, pm⟩ =>
-    if bGrants b c pm 2 then (.ok, some (setEnt b r ⟨k, newMeta b c pm dir⟩)) else (.err "EACCES", none)
+    if bGrants b c pm 2 then
+      let pd := if b.reports then daclAt b r.dropLast else none
+      let b' := setEnt b r ⟨k, newMeta b c pm pd dir⟩
+      (.ok, some (match pd, dir with
+        | some a, true => { b' with dacls := b'.dacls ++ [(r, a)] }
+        | _, _ => b'))
+    else (.err "EACCES", none)
   | _ => (.err "ENOENT", none)
 
 /-- The backend's own answer for credential `c` at its relative path `r`. -/
@@ -193,7 +285,7 @@ def bOp (b : Backend) (c : Cred) (op : Op) (r : Path) : Out × Option Backend :=
     | .readdir, some _ => (.err "ENOTDIR", none)
     | .readdir, none => (.err "ENOENT", none)
     | .readFile, some ⟨.file n, m⟩ => if bGrants b c m 4 then (.bytes n, none) else (.err "EACCES", none)
-    | .readFile, some ⟨.dir, _⟩ => (.err "EISDIR", none)
+    | .readFile, some ⟨.dir, m⟩ => if bGrants b c m 4 then (.err "EISDIR", none) else (.err "EACCES", none)
     | .readFile, some _ => (.err "EINVAL", none)
     | .readFile, none => (.err "ENOENT", none)
     | .writeFile n, some ⟨.file _, m⟩ =>
@@ -204,16 +296,63 @@ def bOp (b : Backend) (c : Cred) (op : Op) (r : Path) : Out × Option Backend :=
     | .mkdir, some _ => (.err "EEXIST", none)
     | .mkdir, none => create b c r .dir true
     | .unlink, none => (.err "ENOENT", none)
-    | .unlink, some ⟨.dir, _⟩ => (.err "EISDIR", none)
     | .unlink, some e =>
       if r = [] then (.err "EISDIR", none) else
       match look b r.dropLast with
       | some ⟨.dir, pm⟩ =>
         if !bGrants b c pm 2 then (.err "EACCES", none)
-        else if b.enforces && setSticky pm && c.uid != 0 && c.uid != e.m.uid && c.uid != pm.uid then (.err "EPERM", none)
+        else if stickyDenies b c pm e.m then (.err "EPERM", none)
+        else if e.k = .dir then (.err "EISDIR", none)
         else (.ok, some (delEnt b r))
       | _ => (.err "ENOENT", none)
-where setSticky (m : Meta) : Bool := m.mode / 512 % 2 == 1
+where stickyDenies (b : Backend) (c : Cred) (pm m : Meta) : Bool :=
+  b.enforces && pm.mode / 512 % 2 == 1 && c.uid != 0 && c.uid != m.uid && c.uid != pm.uid
+
+/-- Move `ra` and everything under it to `rb`, entries keeping their meta. -/
+def moveTree (b : Backend) (ra rb : Path) : Backend :=
+  let mv (x : Path) : Path := if ra.isPrefixOf x then rb ++ x.drop ra.length else x
+  let keep (x : Path) : Bool := !rb.isPrefixOf x
+  { b with ents := (b.ents.filter (keep ·.1)).map (fun x => (mv x.1, x.2)),
+           dacls := (b.dacls.filter (keep ·.1)).map (fun x => (mv x.1, x.2)) }
+
+/-- A directory moving to another parent rewrites its `..`: it needs write
+    permission on itself (`vfs_rename`'s `inode_permission(source, MAY_WRITE)`),
+    after both parents' checks and the sticky bit. -/
+def movesDotDot (b : Backend) (c : Cred) (src : BEnt) (ra rb : Path) : Bool :=
+  src.k == .dir && ra.dropLast != rb.dropLast && !bGrants b c src.m 2
+
+/-- rename(2) within one backend: POSIX's replacement rules, write permission on
+    both directories, the sticky bit on either; the moved entries keep their owner,
+    group and mode. -/
+def bRename (b : Backend) (c : Cred) (ra rb : Path) : Out × Option Backend :=
+  match bLookup b c ra, bLookup b c rb with
+  | .error e, _ => (.err e, none)
+  | _, .error e => (.err e, none)
+  | .ok (), .ok () =>
+    match look b ra with
+    | none => (.err "ENOENT", none)
+    | some src =>
+      if ra = rb then (.ok, none)
+      else if ra.isPrefixOf rb then (.err "EINVAL", none)
+      else match look b ra.dropLast, look b rb.dropLast with
+        | some ⟨.dir, pa⟩, some ⟨.dir, pb⟩ =>
+          if !bGrants b c pa 2 || !bGrants b c pb 2 then (.err "EACCES", none)
+          else if bOp.stickyDenies b c pa src.m then (.err "EPERM", none)
+          else match look b rb with
+            | none =>
+              if movesDotDot b c src ra rb then (.err "EACCES", none) else (.ok, some (moveTree b ra rb))
+            | some dst =>
+              if bOp.stickyDenies b c pb dst.m then (.err "EPERM", none)
+              else if src.k = .dir then
+                if dst.k ≠ .dir then (.err "ENOTDIR", none)
+                else if movesDotDot b c src ra rb then (.err "EACCES", none)
+                else if !(children b rb).isEmpty then (.err "ENOTEMPTY", none)
+                else (.ok, some (moveTree b ra rb))
+              else if dst.k = .dir then (.err "EISDIR", none)
+              else (.ok, some (moveTree b ra rb))
+        | some ⟨.dir, _⟩, some _ => (.err "ENOTDIR", none)
+        | some ⟨.dir, _⟩, none => (.err "ENOENT", none)
+        | _, _ => (.err "ENOENT", none)
 
 /-! ## The composite -/
 
@@ -304,10 +443,10 @@ def structOp (S : St) (c : Cred) (op : Op) (p : Path) : Out :=
         | some ⟨.dir, _⟩ => children b (rel S.mounts p)
         | _ => []
       .names (sortNames (own ++ mountNames S.mounts p))
-  | .readFile => .err "EISDIR"
+  | .readFile => if grants c (descMeta S p) 4 then .err "EISDIR" else .err "EACCES"
   | .writeFile _ => .err "EBUSY"
   | .mkdir => .err "EBUSY"
-  | .unlink => .err "EISDIR"
+  | .unlink => if p ≠ [] ∧ !grants c (descMeta S p.dropLast) 2 then .err "EACCES" else .err "EISDIR"
 
 def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
   let k := (ownerOf S.mounts p).bk
@@ -315,10 +454,33 @@ def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
   | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
   | (o, none) => (o, S)
 
+/-- A path directly under a structural directory its holder does not hold as a
+    directory: only mount names live there, so it is absent (Composite's rule). -/
+def underShadow (S : St) (p : Path) : Bool :=
+  p != [] && structural S.mounts p.dropLast && !(look (holder S p.dropLast) (rel S.mounts p.dropLast)).any (·.k == .dir)
+
 def cOp (S : St) (c : Cred) (op : Op) (raw : List String) : Out × St :=
   match resolve S c op.follow raw with
   | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, S)
-  | .ok p => if structural S.mounts p then (structOp S c op p, S) else backendStep S c op p
+  | .ok p =>
+    if structural S.mounts p then (structOp S c op p, S)
+    else if underShadow S p then (if op = .stat then .null else .err "ENOENT", S)
+    else backendStep S c op p
+
+/-- rename(2) through the composite: neither side followed; a structural path is
+    EBUSY; across backends EXDEV; else the holder's own rename. -/
+def cRename (S : St) (c : Cred) (a b : List String) : Out × St :=
+  match resolve S c false a, resolve S c false b with
+  | .error e, _ => (.err e, S)
+  | _, .error e => (.err e, S)
+  | .ok p, .ok q =>
+    if structural S.mounts p || structural S.mounts q then (.err "EBUSY", S)
+    else if ownerOf S.mounts p ≠ ownerOf S.mounts q then (.err "EXDEV", S)
+    else
+      let k := (ownerOf S.mounts p).bk
+      match bRename (S.bks k) c (rel S.mounts p) (rel S.mounts q) with
+      | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
+      | (o, none) => (o, S)
 
 /-! ## Links reach only what the caller could name -/
 
@@ -397,21 +559,28 @@ theorem resolve_named (S : St) (c : Cred) (f : Bool) (raw : List String) (p : Pa
 theorem never_widens (S : St) (c : Cred) (op : Op) (raw : List String) :
     (∃ e, resolve S c op.follow raw = .error e ∧ (cOp S c op raw).2 = S) ∨
       (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = true ∧ cOp S c op raw = (structOp S c op p, S)) ∨
-      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ cOp S c op raw = backendStep S c op p) := by
+      (∃ p, resolve S c op.follow raw = .ok p ∧ underShadow S p = true ∧ (cOp S c op raw).2 = S ∧
+        ((cOp S c op raw).1 = .null ∨ (cOp S c op raw).1 = .err "ENOENT")) ∨
+      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ underShadow S p = false ∧
+        cOp S c op raw = backendStep S c op p) := by
   unfold cOp
   cases h : resolve S c op.follow raw with
   | error e => exact Or.inl ⟨e, rfl, rfl⟩
   | ok p =>
     cases hs : structural S.mounts p
-    · exact Or.inr (Or.inr ⟨p, rfl, hs, by simp [hs]⟩)
+    · cases hu : underShadow S p
+      · exact Or.inr (Or.inr (Or.inr ⟨p, rfl, hs, hu, by simp [hs, hu]⟩))
+      · refine Or.inr (Or.inr (Or.inl ⟨p, rfl, hu, by simp [hs, hu], ?_⟩))
+        simp only [hs, hu, Bool.false_eq_true, if_false, if_true]
+        split <;> simp
     · exact Or.inr (Or.inl ⟨p, rfl, hs, by simp [hs]⟩)
 
 /-- A backend's refusal stands: where it refuses, the composite answers an error. -/
 theorem backend_refusal_stands (S : St) (c : Cred) (op : Op) (raw : List String) (p : Path)
-    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false)
+    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false) (hu : underShadow S p = false)
     {e : String} (hb : (bOp (holder S p) c op (rel S.mounts p)).1 = .err e) : (cOp S c op raw).1 = .err e := by
   unfold cOp
-  simp only [hr, hs, Bool.false_eq_true, if_false, backendStep]
+  simp only [hr, hs, hu, Bool.false_eq_true, if_false, backendStep]
   unfold holder at hb
   revert hb
   cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
@@ -458,7 +627,9 @@ def kernel : Cred := ⟨0, 0, [0]⟩
 def u1 : Cred := ⟨1, 1, [1]⟩
 def u2 : Cred := ⟨2, 2, [2]⟩
 
-def sqlite (ents : List (Path × BEnt)) : Backend := ⟨true, true, synthMeta, ents⟩
+def sqlite (ents : List (Path × BEnt)) (dacls : List (Path × Dacl) := []) : Backend := ⟨true, true, synthMeta, ents, dacls⟩
+
+def memory (ents : List (Path × BEnt)) : Backend := ⟨false, false, synthMeta, ents, []⟩
 
 /-- Root holds `/h` (uid 1, 0700) with `/h/own`; `/h/pc` mounts a backend holding
     `/f` (0644). -/
@@ -495,13 +666,13 @@ def linkTrace : St :=
     bks := fun k =>
       if k = 0 then sqlite [(["etc"], ⟨.dir, ⟨0o755, 0, 0⟩⟩), (["etc", "p"], ⟨.file 5, ⟨0o644, 0, 0⟩⟩),
         (["h"], ⟨.dir, ⟨0o700, 1, 1⟩⟩), (["h", "s"], ⟨.file 6, ⟨0o644, 1, 1⟩⟩)]
-      else if k = 1 then ⟨false, false, synthMeta,
+      else if k = 1 then memory
         [(["l"], ⟨.link true ["etc", "p"], synthMeta⟩), (["r"], ⟨.link false ["..", "etc", "p"], synthMeta⟩),
          (["x"], ⟨.link true ["h", "s"], synthMeta⟩), (["a"], ⟨.link false ["b"], synthMeta⟩),
-         (["b"], ⟨.link false ["a"], synthMeta⟩)]⟩
+         (["b"], ⟨.link false ["a"], synthMeta⟩)]
       else if k = 2 then sqlite [(["self"], ⟨.dir, ⟨0o555, 0, 0⟩⟩), (["self", "fd"], ⟨.dir, ⟨0o500, 2, 2⟩⟩),
         (["self", "fd", "0"], ⟨.file 8, ⟨0o600, 2, 2⟩⟩)]
-      else ⟨false, false, synthMeta, [(["stdin"], ⟨.link true ["proc", "self", "fd", "0"], synthMeta⟩)]⟩ }
+      else memory [(["stdin"], ⟨.link true ["proc", "self", "fd", "0"], synthMeta⟩)] }
 
 theorem links_resolve_in_the_callers_namespace :
     (cOp linkTrace u2 .readFile ["pc", "l"]).1 = .bytes 5 ∧
@@ -525,6 +696,44 @@ theorem a_setgid_directory_passes_its_group_on :
     let S2 := (cOp S1 c .mkdir ["g", "d"]).2
     (cOp S2 c .stat ["g", "f"]).1 = .stat "file" (some ⟨0o644, 1, 10⟩) ∧
       (cOp S2 c .stat ["g", "d"]).1 = .stat "directory" (some ⟨0o2755, 1, 10⟩) := by
+  decide
+
+/-- `/p` and `/q` are 0777; `/p/d` is uid 1's 0555 directory. uid 1 cannot move it
+    to `/q` (its `..` would change) but can rename it within `/p`; uid 0 can move it.
+    `/` is 0755 root:root: uid 1 cannot create, rename or remove directly in it. -/
+def dotdotTrace : St :=
+  { mounts := [], bks := fun _ => sqlite [(["p"], ⟨.dir, ⟨0o777, 0, 0⟩⟩), (["q"], ⟨.dir, ⟨0o777, 0, 0⟩⟩),
+      (["p", "d"], ⟨.dir, ⟨0o555, 1, 1⟩⟩), (["t"], ⟨.file 2, ⟨0o666, 1, 1⟩⟩)] }
+
+theorem moving_a_directory_needs_write_on_it :
+    (cRename dotdotTrace u1 ["p", "d"] ["q", "d"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["p", "d"] ["p", "e"]).1 = .ok ∧
+    (cRename dotdotTrace kernel ["p", "d"] ["q", "d"]).1 = .ok ∧
+    (cOp dotdotTrace u1 (.writeFile 1) ["n"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace u1 .mkdir ["n"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace u1 .unlink ["t"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["t"] ["u"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["t"] ["p", "t"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace kernel .mkdir ["n"]).1 = .ok := by
+  decide
+
+/-- `/a` has default ACL u::rwx g::r-x o::--- and is setgid, group 10; uid 1 makes
+    `/a/f` (0666 asked: 0640), `/a/d` (0777 asked: 02750, inheriting the ACL), and
+    `/a/d/g` (0640 again). Renaming `/a/f` to `/f` keeps its group. -/
+def aclTrace : St :=
+  { mounts := [], bks := fun _ => sqlite [(["a"], ⟨.dir, ⟨0o2777, 0, 10⟩⟩)] [(["a"], ⟨7, 5, 0⟩)] }
+
+theorem a_default_acl_masks_and_is_inherited :
+    let c : Cred := ⟨1, 1, [1, 10]⟩
+    let S1 := (cOp aclTrace c (.writeFile 3) ["a", "f"]).2
+    let S2 := (cOp S1 c .mkdir ["a", "d"]).2
+    let S3 := (cOp S2 c (.writeFile 4) ["a", "d", "g"]).2
+    let S4 := (cRename S3 kernel ["a", "f"] ["f"]).2
+    (cOp S3 c .stat ["a", "f"]).1 = .stat "file" (some ⟨0o640, 1, 10⟩) ∧
+      (cOp S3 c .stat ["a", "d"]).1 = .stat "directory" (some ⟨0o2750, 1, 10⟩) ∧
+      (cOp S3 c .stat ["a", "d", "g"]).1 = .stat "file" (some ⟨0o640, 1, 10⟩) ∧
+      daclAt (S3.bks 0) ["a", "d"] = some ⟨7, 5, 0⟩ ∧
+      (cOp S4 c .stat ["f"]).1 = .stat "file" (some ⟨0o640, 1, 10⟩) := by
   decide
 
 end Nimbus.Vfs.CompositePerm

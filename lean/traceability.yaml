@@ -715,7 +715,7 @@ requirements:
       - One principal's table; per-principal source switches are table changes for that principal
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
   VFS-COMP-005:
-    statement: CompositeVFS resolves paths as Linux does, in the caller's namespace - every symlink, whichever backend holds it (absolute from the caller's root, relative from the link's directory, .. at a mount root to the mount point's parent), search checked with the caller's credential on every directory left, before the next lookup (EACCES before a later component's error), 40 hops then ELOOP; whatever a path resolves to, every directory on it grants the caller search (it reaches only what it could name directly); structural directories are described by the backend that holds them (synthesized 0755 root:root where it holds nothing or reports no modes) and readdir of one needs read; uid 0 passes; the answer at a resolved backend path is that backend's own (never widened), depends only on that backend, and a mutation changes only it; in a setgid directory a new entry takes the directory's group and a new directory is setgid (N26).
+    statement: CompositeVFS resolves paths as Linux does, in the caller's namespace - every symlink, whichever backend holds it (absolute from the caller's root, relative from the link's directory, .. at a mount root to the mount point's parent), search checked with the caller's credential on every directory left, before the next lookup (EACCES before a later component's error), 40 hops then ELOOP; whatever a path resolves to, every directory on it grants the caller search (it reaches only what it could name directly); structural directories are described by the backend that holds them (synthesized 0755 root:root where it holds nothing or reports no modes) and readdir of one needs read; uid 0 passes; the answer at a resolved backend path is that backend's own (never widened), depends only on that backend, and a mutation changes only it; in a setgid directory a new entry takes the directory's group and a new directory is setgid, a directory's default ACL base entries mask a new entry's create mode instead of the umask (never granting more than the create mode asked for) and are inherited by new subdirectories, and rename keeps an entry's owner, group, mode and default ACL (N26); a directory renamed to another parent needs write on itself (its .. changes), uid 0 passing; a sqlite / is 0755 0:0, so non-root creates, renames and removals directly in / are EACCES; open of a directory without r is EACCES before EISDIR, and unlink checks the parent's w and the sticky bit before EISDIR.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositePerm.never_widens
@@ -735,10 +735,15 @@ requirements:
       - Nimbus.Vfs.CompositePerm.resolved_frame
       - Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
       - Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
+      - Nimbus.Vfs.CompositePerm.aclMode_classes
+      - Nimbus.Vfs.CompositePerm.and_bit
+      - Nimbus.Vfs.CompositePerm.acl_never_widens
+      - Nimbus.Vfs.CompositePerm.a_default_acl_masks_and_is_inherited
+      - Nimbus.Vfs.CompositePerm.moving_a_directory_needs_write_on_it
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS
     refinement:
       - lean/fixtures/composite-perm.json :: tests/unit/composite-perm-refinement.mjs
     remainingEvidence:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
-      - No ACLs, no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
+      - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
