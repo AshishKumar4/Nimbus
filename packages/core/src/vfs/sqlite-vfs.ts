@@ -1129,6 +1129,8 @@ export class SqliteVFS {
   private activeReservation: string | null = null;
   /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
   private privileged = false;
+  /** Interrupted copies resumed in this incarnation, each holding its reservation. */
+  private readonly resumedCopies = new Set<number>();
   private ctx: TransactionHost | undefined;
   public readonly events: VfsEventEmitter;
 
@@ -5171,13 +5173,61 @@ export class SqliteVFS {
     })();
   }
 
+  /**
+   * One slice of an interrupted copy (N18). Its first slice after an open
+   * reserves what is left to copy, as a copy does when it starts, so no
+   * writer between the slices can leave it without room. Refused, the job
+   * ends: what it had copied is removed (a pure removal, never refused) and
+   * its row goes, so it is never half-applied.
+   */
+  private resumeCopySlice(id: number, job: CopyTreeJob): boolean {
+    const reservation = `copy-job:${id}`;
+    if (!this.resumedCopies.has(id)) {
+      try {
+        this.ledger.reserve(reservation, this.remainingCopyRows(id, job) * LEDGER_ROW_BYTES);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'ENOSPC') throw error;
+        console.error(`[sqlite-vfs] copy of ${job.src} to ${job.dst} ended: ${this.errorMessage(error)}`);
+        if (this.inodes.get(job.dst) !== undefined) this.removeRecursive(job.dst, CRED_KERNEL);
+        this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
+        return true;
+      }
+      this.resumedCopies.add(id);
+    }
+    let done = true;
+    try {
+      done = this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)).done;
+      return done;
+    } finally {
+      if (done) {
+        this.resumedCopies.delete(id);
+        this.ledger.release(reservation);
+      }
+    }
+  }
+
+  /** Rows a copy job has left: the source's rows past its cursor, and each page's two. */
+  private remainingCopyRows(id: number, job: CopyTreeJob): number {
+    const cursor = String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]!.cursor);
+    const range = subtreeRange(job.src);
+    let rows = 0;
+    if (job.atGen === undefined) {
+      rows = Number([...(range.upper === null
+        ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', cursor)
+        : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', cursor, range.upper))][0]!.n);
+    } else {
+      for (const inode of this.subtreeAt(job.src, job.atGen)) if (inode.path > cursor) rows++;
+    }
+    return rows + 2 * (Math.ceil(rows / COPY_PAGE_ROWS) + 1);
+  }
+
   /** One slice of job `id`; true once it is done (or gone, or failed). */
   private resumeSlice(id: number): boolean {
     const row = [...this.sql.exec('SELECT kind, args, start_gen FROM vfs_jobs WHERE id = ?', id)][0];
     if (row === undefined) return true;
     try {
       const args = JSON.parse(String(row.args));
-      if (row.kind === 'copyTree') return this.runCopyTree(args as CopyTreeJob, id, JOB_SLICE_PAGES).done;
+      if (row.kind === 'copyTree') return this.resumeCopySlice(id, args as CopyTreeJob);
       if (row.kind === 'restore') return this.runRestore(id, args as RestoreJob, Number(row.start_gen), JOB_SLICE_PAGES).done;
       if (row.kind === 'drop') return this.runDrop(id, Number((args as { g: number }).g), JOB_SLICE_PAGES).done;
       throw new Error(`unknown job kind ${String(row.kind)}`);
