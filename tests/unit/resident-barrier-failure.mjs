@@ -18,6 +18,7 @@
 // or at least must not see as the old bytes.
 
 import assert from 'node:assert/strict';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { processBridge } from './lib/process-bridge.mjs';
@@ -31,6 +32,7 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -39,8 +41,14 @@ const DROPPED = () => Promise.reject(new Error('Network connection lost.'));
 const PROGRAM = `
 const fs = require("fs");
 const read = (p) => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return "ERR:" + e.code; } };
+const t = (f) => { try { return f(); } catch (e) { return "ERR:" + e.code; } };
 globalThis.__probe = {
   read,
+  t,
+  fs,
+  own: (p) => t(() => { const s = fs.statSync(p); return { uid: s.uid, gid: s.gid, mode: (s.mode & 0o7777).toString(8) }; }),
+  // One resumption, then \`f\`.
+  resumeWith: (f) => new Promise((resolve) => setTimeout(() => resolve(t(f)), 0)),
   // One resumption, then synchronous reads of every path named.
   resume: (...paths) => new Promise((resolve) => setTimeout(() => resolve(paths.map(read).join(",")), 0)),
 };
@@ -92,6 +100,25 @@ await runScenarios(import.meta.path, {
       'a dropped ACQUIRE is not an empty delta: the rows are reconciled against the listing',
     );
     assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
+  },
+
+  async 'a peer file the dropped barrier missed is the peer\'s, not free: its record, and no write'() {
+    // A failed barrier that were read as "nothing changed" would leave the
+    // listing saying the peer's new name is free: statSync ENOENT, and a
+    // write would pass as a creation owned by the writer.
+    const { authority, fault, probe } = await boot();
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.writeFile('home/user/app/peer.txt', 'theirs');
+    root.chmod('home/user/app/peer.txt', 0o644);
+    fault.fsAcquire = DROPPED;
+    const seen = await probe.resumeWith(() => probe.own('/home/user/app/peer.txt'));
+    fault.fsAcquire = null;
+    assert.ok(coherenceStats().barrierFailures >= 1, 'the barrier did fail');
+    assert.deepEqual(seen, { uid: 0, gid: 0, mode: '644' }, 'the resumption knew the peer\'s file and its owner');
+    assert.equal(probe.t(() => probe.fs.writeFileSync('/home/user/app/peer.txt', 'ours')), 'ERR:EACCES', 'never a creation of its own');
+    await probe.resumeWith(() => null);
+    await sleep(30);
+    assert.equal(authority.read('home/user/app/peer.txt'), 'theirs');
   },
 
   async 'a barrier whose ACQUIRE answers with no cursor'() {
@@ -276,13 +303,16 @@ await runScenarios(import.meta.path, {
       readdir: (p) => bridge.readdir(p),
       exists: async (p) => (await bridge.stat(p)) !== null,
       fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (epoch, cursor) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor)),
+      fsAcquire: (epoch, cursor, options) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor, options)),
+      // What a failed barrier's repair refetches with, as the session serves it.
+      fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
+      fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
     };
     globalThis.__nimbusVfsCursor = authority.cursor();
     const shims = new Function(
       '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
       'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
     )(
       { 'home/user/app/f.txt': 'V1' },

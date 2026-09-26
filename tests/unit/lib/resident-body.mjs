@@ -21,7 +21,7 @@
  */
 import { plugin } from 'bun';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -213,6 +213,8 @@ export async function launchResident({
     nodeFacetSources(generateShimsCode()),
   );
   const dir = mkdtempSync(join(tmpdir(), 'resident-body-'));
+  // The generated worker is imported from here: removed when the test process ends, however it ends.
+  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'worker.mjs'), generated.code);
   for (const [name, source] of Object.entries(generated.modules)) writeFileSync(join(dir, name), source);
   const mod = await import(pathToFileURL(join(dir, 'worker.mjs')).href);

@@ -48,8 +48,12 @@ export interface ExecTelemetryRecord {
    * map and pre-compiling every cell in it.
    */
   bundleBytes: number;
-  manifestBytes: number;
-  metadataBytes: number;
+  /**
+   * Synchronous fs calls the facet refused because its namespace was being
+   * rebuilt after a failed relist (a failure state, repaired at the next
+   * barrier). Zero in a healthy session.
+   */
+  namespaceRefusals: number;
   /** Supervisor RPC writes the facet issued (__queueRpcWrite calls). */
   rpcWrites: number;
   /** Supervisor fs READ round trips the facet issued. A whole-file async
@@ -78,7 +82,7 @@ export interface ExecTelemetryRecord {
  */
 export type ExecDiagSink = Pick<
   ExecTelemetryRecord,
-  'loadMs' | 'runMs' | 'moduleMapBytes' | 'bundleBytes' | 'manifestBytes' | 'metadataBytes'
+  'loadMs' | 'runMs' | 'moduleMapBytes' | 'bundleBytes'
 >;
 
 const EXEC_RING_MAX = 32;

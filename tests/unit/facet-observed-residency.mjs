@@ -37,14 +37,16 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { launchFs } from './lib/launch-fs.mjs';
 import {
   CWD_SNAPSHOT_MAX_FILE_BYTES,
 } from '../../packages/core/src/constants.ts';
+import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //
@@ -57,18 +59,10 @@ import {
     'home/user/pkg/huge.bin': 6 * 1024 * 1024,
     'home/user/pkg/gone.txt': null,
   };
-  const vfs = {
-    lstat(path) {
-      const size = files[path];
-      if (size === undefined || size === null) throw new Error(`ENOENT ${path}`);
-      return { size, type: 'file' };
-    },
-    readFile(path) {
-      const size = files[path];
-      if (size === undefined || size === null) throw new Error(`ENOENT ${path}`);
-      return new TextEncoder().encode('x'.repeat(size));
-    },
-  };
+  // null: observed once, gone since.
+  const vfs = launchFs(Object.fromEntries(
+    Object.entries(files).filter(([, size]) => size !== null).map(([path, size]) => [path, 'x'.repeat(size)]),
+  )).fs;
   const bundle = {};
   const requiredPaths = new Set();
   const budgetState = { totalBytes: 0, fileCount: 0 };
@@ -118,7 +112,8 @@ import {
 // It also brings its static imports, or each of them misses on its own launch.
 {
   const h = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(h.sql, h.ctx).as(CRED_KERNEL);
+  const raw = new SqliteVFS(h.sql, h.ctx);
+  const vfs = raw.as(CRED_KERNEL);
   const dir = 'home/user/app/node_modules/on-change/source';
   vfs.mkdir(dir, { recursive: true });
   vfs.writeFile(`${dir}/index.js`, "import { TARGET } from './constants.js';\nexport default TARGET;\n");
@@ -127,7 +122,7 @@ import {
   const path = `${dir}/index.js`;
   const bundle = { [path]: vfs.readFileString(path) };
   const requiredPaths = new Set();
-  await addObservedReads(vfs, new Set([path]), bundle, requiredPaths, { totalBytes: 0, fileCount: 0 });
+  await addObservedReads(processBridge(raw, vfs), new Set([path]), bundle, requiredPaths, { totalBytes: 0, fileCount: 0 });
   assert.ok(requiredPaths.has(path), 'an observed path already staged is promoted to required');
   for (const dep of [`${dir}/constants.js`, `${dir}/smart-clone.js`]) {
     assert.ok(dep in bundle && requiredPaths.has(dep), `${dep} comes with it, as required`);
@@ -149,7 +144,7 @@ import {
   k.writeFile(`${app}/node_modules/vue/index.js`, "module.exports = require('./dist/vue.cjs.js');\n", { mode: 0o644 });
   k.writeFile(`${app}/node_modules/vue/dist/vue.cjs.js`, 'exports.h = 1;\n', { mode: 0o644 });
   for (const d of ['home/user', app]) k.chown(d, 1000, 1000);
-  const fs = new ExecutionFs(processFiles(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs);
+  const fs = processFiles(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs;
   const state = await buildPrefetchBundle(
     fs, `/${app}/entry.js`, `/${app}`, '', undefined, undefined,
     new Set([`${app}/node_modules/vue/dist/vue.cjs.js`]),
@@ -167,6 +162,7 @@ const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = rawVfs.as(CRED_KERNEL);
 const dec = new TextDecoder();
 let bridge = null;
+const sessionHost = attachSupervisorOps({ sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
 function makeSupervisor() {
   if (!bridge) {
@@ -179,6 +175,11 @@ function makeSupervisor() {
     async readdir(path) { return bridge.readdir(path); },
     async exists(path) { return (await bridge.stat(path)) !== null; },
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
+    // The listing and delta ops as the session serves them: a launch lists its
+    // namespace before any user code runs.
+    fsList: (after, limit) => _rpcFsList(sessionHost, after ?? null, limit ?? null),
+    fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost, requests),
+    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost, epoch, cursor, options),
     async stdout() {}, async stderr() {}, async reportExit() {},
     [Symbol.dispose]() {},
   };
@@ -233,9 +234,12 @@ manager.setVfs(rawVfs, processFiles(rawVfs));
 // A data file too large for the cwd snapshot's per-file bound, reached through
 // a path the program computes — so no static scan of the entry can find it
 // either. That is the residue: a runtime-computed data path.
-const DATA = 'home/user/example-app/dataset.bin';
+// Outside what a launch fills at boot (its cwd and /tmp), so only an
+// observation can stage it.
+const DATA = 'opt/example-data/dataset.bin';
 const DATA_BYTES = CWD_SNAPSHOT_MAX_FILE_BYTES + 4096;
 kernel.mkdir('home/user/example-app', { recursive: true, mode: 0o755 });
+kernel.mkdir('opt/example-data', { recursive: true, mode: 0o755 });
 kernel.writeFile(DATA, 'D'.repeat(DATA_BYTES), { mode: 0o644 });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/example-app', 1000, 1000);
@@ -243,7 +247,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // The premise, asserted rather than assumed: nothing already stages it.
 {
   const state = await buildPrefetchBundle(
-    new ExecutionFs(processFiles(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs),
+    processFiles(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs,
     '/home/user/example-app/entry.js', '/home/user/example-app', '', undefined,
   );
   assert.ok(
@@ -256,7 +260,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // "the file is not there" and carries on with a default.
 const PROGRAM = `
 const fs = require('fs');
-const target = ['', 'home', 'user', 'example-app', 'data' + 'set.bin'].join('/');
+const target = ['', 'opt', 'example-data', 'data' + 'set.bin'].join('/');
 let body = 'FALLBACK';
 try { body = fs.readFileSync(target, 'utf8'); } catch (error) { /* looks like ENOENT */ }
 console.log('bytes=' + body.length);

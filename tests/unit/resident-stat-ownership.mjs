@@ -41,7 +41,7 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
+async function boot({ inBundle = false, inPlan = true, tmp = false, overrides = {}, onAuthority } = {}) {
   const authority = createAuthority();
   const root = authority.rawVfs.as(CRED_KERNEL);
   if (tmp) {
@@ -57,7 +57,8 @@ async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
   root.mkdir(ROOT_DIR, { mode: 0o755 });
   root.chmod(ROOT_DIR, 0o755);
   root.writeFile(`${ROOT_DIR}/conf`, 'c');
-  const { supervisor, log } = facetSupervisor(authority);
+  const { supervisor, log } = facetSupervisor(authority, overrides);
+  onAuthority?.({ host: authority.host, pid: log.pid });
   // The spawn-time tables a launch ships without a metadata row: what the
   // shims used to fill in with the reader's own ownership.
   const bundle = inBundle ? { [ROOT_FILE]: '{"root":true}' } : {};
@@ -220,6 +221,76 @@ await runScenarios(import.meta.path, {
     await probe.resume(() => null);
     await sleep(50);
     assert.deepEqual(await probe.resume(() => probe.own(`/${APP}/private.txt`)), kept, 'after it');
+  },
+
+  async 'a delta entry without owner or mode is no record: nothing invented, the write not granted, the next answer restores it'() {
+    // The authority's answer for a peer's new root-owned file arrives without
+    // its mode, owner and group. The view must not store it as a root-owned
+    // mode-0 file (zeros for what it was not told), nor call the name free:
+    // statSync says it holds no record, a write is not granted, and the
+    // authority's bytes stay theirs. The next complete answer restores it.
+    let strip = false;
+    let stripped = 0;
+    let authorityRef;
+    const { authority, probe } = await boot({
+      overrides: {
+        fsAcquire: async (...args) => {
+          const answer = await authorityRef.host.supervisorOp({ op: 'fsAcquire', args, pid: authorityRef.pid });
+          if (!strip) return answer;
+          strip = false;
+          for (const entry of answer.paths ?? []) {
+            if (entry.path.endsWith('peer.txt') && entry.stat) {
+              delete entry.stat.mode; delete entry.stat.uid; delete entry.stat.gid;
+              stripped++;
+            }
+          }
+          return answer;
+        },
+      },
+      onAuthority: (made) => { authorityRef = made; },
+    });
+    await probe.resume(() => null);
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.writeFile(`${APP}/peer.txt`, 'theirs');
+    root.chmod(`${APP}/peer.txt`, 0o644);
+    strip = true;
+    const first = await probe.resume(() => probe.own(`/${APP}/peer.txt`));
+    assert.equal(stripped, 1, 'the incomplete answer was served');
+    assert.equal(first, 'ERR:EAGAIN', `no record held, none invented: ${JSON.stringify(first)}`);
+    const wrote = probe.t(() => probe.fs.writeFileSync(`/${APP}/peer.txt`, 'ours'));
+    assert.ok(wrote === 'ERR:EAGAIN' || wrote === 'ERR:EACCES', `the write is not granted: ${wrote}`);
+    await probe.resume(() => null);
+    await sleep(30);
+    assert.equal(authority.read(`${APP}/peer.txt`), 'theirs');
+    assert.deepEqual(await probe.resume(() => probe.own(`/${APP}/peer.txt`)), rootOwned, 'the next complete answer restores the record');
+    assert.equal(probe.t(() => probe.fs.writeFileSync(`/${APP}/peer.txt`, 'ours')), 'ERR:EACCES');
+  },
+
+  async 'a record learned by delta answers access and type: a private peer file is not readable, a directory is a directory'() {
+    const { authority, probe } = await boot();
+    await probe.resume(() => null);
+    const root = authority.rawVfs.as(CRED_KERNEL);
+    root.writeFile(`${APP}/private.txt`, 'root only');
+    root.chmod(`${APP}/private.txt`, 0o600);
+    root.mkdir(`${APP}/late-dir`, { mode: 0o755 });
+    root.chmod(`${APP}/late-dir`, 0o755);
+    const R_OK = 4;
+    const seen = await probe.resume(() => [
+      probe.t(() => probe.fs.accessSync(`/${APP}/private.txt`, R_OK)),
+      probe.t(() => probe.fs.accessSync(`/${APP}/private.txt`, 0)),
+      probe.own(`/${APP}/late-dir`),
+      probe.t(() => probe.fs.statSync(`/${APP}/late-dir`).isFile()),
+    ]);
+    assert.deepEqual(seen, ['ERR:EACCES', undefined, { uid: 0, gid: 0, mode: '755', dir: true }, false]);
+  },
+
+  async 'every name the launch lists stats from its record'() {
+    // The launch's manifest names a root-owned directory and the file in it.
+    // Each answers with the authority's record, never ENOENT or EAGAIN.
+    const { probe } = await boot();
+    assert.deepEqual(probe.own(`/${ROOT_DIR}`), { uid: 0, gid: 0, mode: '755', dir: true });
+    assert.deepEqual(probe.own(`/${ROOT_DIR}/conf`), { uid: 0, gid: 0, mode: '644', dir: false });
+    assert.deepEqual(probe.own(`/${ROOT_FILE}`), rootOwned);
   },
 
   async "the process's own new file and directory show its real ownership and umask"() {

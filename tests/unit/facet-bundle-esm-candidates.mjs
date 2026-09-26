@@ -17,60 +17,8 @@ import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { supervisorEsbuildService } from '../../packages/worker/src/facets/esbuild-transform.ts';
+import { launchFs } from './lib/launch-fs.mjs';
 
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  // The bundle is stamped with the cursor it was read at, so a stand-in
-  // for the real VFS has to answer for one. A fake never mutates, so the
-  // revision never moves.
-  epoch = 'fake-vfs-epoch';
-  revision() { return 0; }
-
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) {
-      const parts = file.split('/');
-      for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-    }
-  }
-  exists(p) { const s = p.replace(/^\/+/, ''); return this.files.has(s) || this.dirs.has(s); }
-  isDirectory(p) { return this.dirs.has(p.replace(/^\/+/, '')); }
-  readFile(p) { return new TextEncoder().encode(this.readFileString(p)); }
-  readFileString(p) {
-    const s = p.replace(/^\/+/, '');
-    const c = this.files.get(s);
-    if (c === undefined) throw new Error(`missing file: ${s}`);
-    return c;
-  }
-  readdir(p) {
-    const s = p.replace(/^\/+/, '');
-    const prefix = s ? `${s}/` : '';
-    const entries = new Map();
-    for (const d of this.dirs) {
-      if (!d.startsWith(prefix)) continue;
-      const rest = d.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'directory');
-    }
-    for (const f of this.files.keys()) {
-      if (!f.startsWith(prefix)) continue;
-      const rest = f.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'file');
-    }
-    return Array.from(entries, ([name, type]) => ({ name, type }));
-  }
-  lstat(p) {
-    const s = p.replace(/^\/+/, '');
-    if (this.dirs.has(s)) return { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 };
-    const c = this.files.get(s);
-    if (c === undefined) throw new Error(`missing path: ${s}`);
-    return { type: 'file', size: c.length, mode: 0o644, uid: 1000, gid: 1000 };
-  }
-  access(p) { if (!this.exists(p)) throw new Error(`missing path: ${p}`); }
-}
 
 // A typescript@7-shaped tree: an extensionless ESM bin, an ESM `lib/tsc.js`
 // it side-effect imports, and the `#getExePath` imports-field target that
@@ -104,7 +52,7 @@ const cjsEsbuild = new EsbuildService(undefined, {
   }),
 });
 
-const vfs = new FakeVfs(files);
+const vfs = launchFs(files).fs;
 const state = await buildPrefetchBundle(
   vfs, `${TS}/bin/tsc`, 'home/user', files[`${TS}/bin/tsc`], cjsEsbuild,
 );
@@ -171,7 +119,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   });
   assert.equal(hosted.transformsInIsolate, false);
   const state = await buildPrefetchBundle(
-    new FakeVfs(largeFiles), `/${entry}`, 'home/user', largeFiles[entry], hosted,
+    launchFs(largeFiles).fs, `/${entry}`, 'home/user', largeFiles[entry], hosted,
   );
   assert.equal(calls.length, 1, 'the whole launch is one round trip to the host');
   assert.equal(calls[0].length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
@@ -194,12 +142,12 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     transformHost: async () => { throw new Error('transform facet unavailable'); },
   });
   const down = await buildPrefetchBundle(
-    new FakeVfs(downFiles), `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], failing,
+    launchFs(downFiles).fs, `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], failing,
   );
   assert.throws(() => new Function(down.bundle[`${downRoot}/dep.js`])(),
     /esbuild transform failed for .*dep\.js: transform facet unavailable/);
   const back = await buildPrefetchBundle(
-    new FakeVfs(downFiles), `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], hosted,
+    launchFs(downFiles).fs, `/${downRoot}/cli.js`, 'home/user', downFiles[`${downRoot}/cli.js`], hosted,
   );
   assert.equal(back.bundle[`${downRoot}/dep.js`], '/* hosted-cjs */\n', 'the host failure was not cached');
 }
@@ -222,7 +170,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     },
   });
   const state = await buildPrefetchBundle(
-    new FakeVfs(prepassFiles), `/${root}/cli.js`, 'home/user', prepassFiles[`${root}/cli.js`], host,
+    launchFs(prepassFiles).fs, `/${root}/cli.js`, 'home/user', prepassFiles[`${root}/cli.js`], host,
   );
   for (const cell of [`${root}/cli.js`, `${root}/dep.js`]) {
     assert.equal(state.bundle[cell], '/* hosted-cjs */\n', `${cell} is transformed despite its unreadable sibling`);
@@ -291,8 +239,8 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     files[`${root}/cli.js`] = parts.map((name) => `import "./${name}.js";\n`).join('');
     markers.set(`${root}/cli.js`, 'import "./part_00.js"');
     const launch = (world) => buildPrefetchBundle(
-      new FakeVfs(files), `/${root}/cli.js`, 'home/user', files[`${root}/cli.js`],
-      supervisorEsbuildService(world.ctx, world.env, new FakeVfs(files)),
+      launchFs(files).fs, `/${root}/cli.js`, 'home/user', files[`${root}/cli.js`],
+      supervisorEsbuildService(world.ctx, world.env, launchFs(files).fs),
     );
     const sentIn = (codes, cell) => codes.some((code) => code.includes(markers.get(cell)));
     return { cells: [...markers.keys()], launch, sentIn };

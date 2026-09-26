@@ -171,6 +171,12 @@ export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 // percentOfCeiling accordingly.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 
+// A process facet's own writes its store could not hold (N18: the session's
+// storage is full) are kept in its heap instead, so a write-then-read still
+// works: at most this many bytes, least recently used out first. An eighth
+// of a facet's measured ~208-256 MiB, the rest left to the program.
+export const FACET_OWN_WRITE_MEMORY_BYTES = 32 * 1024 * 1024;
+
 // Shared allowance for transient allocations in the supervisor DO. With the
 // VFS LRU shrunk to 8 MiB during an active reservation, 40 MiB of admitted
 // payload plus the 9 MiB bundle baseline stays below the 64 MiB soft ceiling

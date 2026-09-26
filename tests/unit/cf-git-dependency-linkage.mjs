@@ -21,7 +21,6 @@
 // range must satisfy cf-git's own.
 
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -58,12 +57,16 @@ async function loadLinkedCfGit() {
   });
   assert.ok(relinked > 0, 'no cf-git dependency import was relinked — the probe proves nothing');
 
-  const probe = join(cfGitDir, `.nimbus-linkage-${process.pid}-${randomUUID()}.mjs`);
+  // Every import is now an absolute file: URL, so the probe resolves the same
+  // from anywhere: it is staged in this test's own TMPDIR, never in the
+  // installed package another test may be reading.
+  const dir = mkdtempSync(join(tmpdir(), 'nimbus-cf-git-linkage-'));
+  const probe = join(dir, 'index.mjs');
   writeFileSync(probe, source);
   try {
     return await import(pathToFileURL(probe).href);
   } finally {
-    rmSync(probe, { force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

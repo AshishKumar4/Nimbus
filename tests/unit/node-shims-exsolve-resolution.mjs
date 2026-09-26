@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { transformSync } from 'esbuild';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const PROJ = 'home/user/proj';
 const KIT_MAIN = `/${PROJ}/node_modules/@nuxt/kit/dist/index.mjs`;
@@ -71,7 +72,7 @@ const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
-    + generateShimsCode() + '\n;return builtins;',
+    + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
 );
 // Every staged file and listed directory comes with its record, as
 // buildVfsMetadata stages them: the stat ladder answers from these.

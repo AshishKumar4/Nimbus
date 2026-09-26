@@ -204,7 +204,8 @@ try {
   console.log(`  ok  npm pack → ${tarballs.map((t) => t.split('/').pop()).join(', ')}`);
 
   // ── 2. A clean directory, outside this repo, that installs them ──────────
-  const consumer = mkdtempSync(join(tmpdir(), 'fabric-embedder-'));
+  // Below `work`, so the finally removes it too.
+  const consumer = mkdtempSync(join(work, 'fabric-embedder-'));
   writeFileSync(join(consumer, 'package.json'), `${JSON.stringify({
     name: 'fabric-embedder-acceptance', version: '0.0.0', private: true, type: 'module',
   }, null, 2)}\n`);

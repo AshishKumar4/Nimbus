@@ -563,6 +563,43 @@ requirements:
     remainingEvidence:
       - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
       - An answer arriving while a repair runs is dropped (the barrier joins the repair), as the code does
+  COH-012:
+    statement: Held cells (an own write the facet store had no room for, kept in process memory, undated while its write-back is in flight and dated once acknowledged) are judged exactly like store rows - a dated cell by every delta report and by a poison repair's listing, an undated one kept by both with the listing's revision noted as its report - so every state reachable with held cells satisfies the store's invariant, and after a peer write the authority committed at or before the newest admitted barrier no sync read serves older bytes, held or not, across any poison and repair; an own cell whose write-back committed is not older either once its acknowledgements are settled. As built in c30d304b (a repair judging only the file table) the held cell serves the pre-peer bytes after the repair, and a write-back in flight across the repair misses the listing's report and stamps a stale cell.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.Store.drop_inv
+      - Nimbus.Coherence.Store.held_inv
+      - Nimbus.Coherence.Store.no_stale_of_inv
+      - Nimbus.Coherence.Store.held_no_stale
+      - Nimbus.Coherence.Store.no_pre_peer_bytes
+      - Nimbus.Coherence.Store.held_own_no_pre_peer
+      - Nimbus.Coherence.Store.last_le
+      - Nimbus.Coherence.Store.afterCommit_reach
+      - Nimbus.Coherence.Store.afterAck_reach
+      - Nimbus.Coherence.Store.beforeList_reach
+      - Nimbus.Coherence.Store.beforeRecon_reach
+      - Nimbus.Coherence.Store.hreach_breach
+      - Nimbus.Coherence.Store.afterBuilt_reach
+      - Nimbus.Coherence.Store.afterFixed_reach
+      - Nimbus.Coherence.Store.held_stale_after_repair
+      - Nimbus.Coherence.Store.the_fixed_repair_drops_the_held_cell
+      - Nimbus.Coherence.Store.held_report_missed_across_repair
+      - Nimbus.Coherence.Store.the_fixed_repair_reports_the_held_own_cell
+      - Nimbus.Coherence.Store.reach_core
+      - Nimbus.Coherence.Store.refillOne_reach
+      - Nimbus.Coherence.Store.refills_reach
+      - Nimbus.Coherence.Store.repairAfter_reach
+      - Nimbus.Coherence.Store.xBarrier_reach
+      - Nimbus.Coherence.Store.xFlush_reach
+      - Nimbus.Coherence.Store.exec_reach
+      - Nimbus.Coherence.Store.run_reach
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    refinement:
+      - lean/fixtures/resident-poison-reconcile.json :: tests/unit/resident-poison-reconcile.mjs
+    remainingEvidence:
+      - One supervisor incarnation (the cross-epoch repair, where nothing is comparable and every dated cell goes, is not modeled); the fixture's write-back is committed and acknowledged in one event, so reports never reach an acknowledgement there (the in-flight case is proved and traced in Lean only)
+      - The LRU's budget is abstract (any held cell may be evicted: a miss)
   NS-002:
     statement: Under the visibility rule, applying the reported delta with exact relists for subtree and structural entries, in any order, leaves the reader's namespace exactly its visible tree at answer time; the own-effect overlay serves a process's pending effects over it, and every byte the overlay serves is its own pending write, a write of its committed at a revision the authority still held, or a value the authority held at or after the last barrier.
     status: proved-and-refined

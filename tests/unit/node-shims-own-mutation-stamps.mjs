@@ -32,6 +32,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -76,7 +77,7 @@ const supervisor = {
   utimes: (p, a, m) => bridge.utimes(p, a, m),
   chmod: (p, m) => bridge.chmod(p, m),
   chown: (p, u, g, o) => bridge.chown(p, u, g, o),
-  fsAcquire: (epoch, cursor) => bridge.acquire(epoch, cursor),
+  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
@@ -89,7 +90,7 @@ const rawSleep = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
 );
 const out = factory(

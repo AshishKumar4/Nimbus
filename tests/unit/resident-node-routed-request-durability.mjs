@@ -25,6 +25,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 const PORT = 4471;
 
@@ -51,8 +53,16 @@ function makeSupervisor(props) {
     async stdout() {},
     async stderr() {},
     async reportExit() {},
+    // The listing and delta ops as the session serves them: a launch lists its
+    // namespace before any user code runs.
+    fsList: (after, limit) => _rpcFsList(sessionHost(), after ?? null, limit ?? null),
+    fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost(), requests),
+    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost(), epoch, cursor, options),
   };
 }
+let _sessionHost = null;
+const sessionHost = () => _sessionHost
+  ??= attachSupervisorOps({ sqliteFs: sessionVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
 let sessionVfs;
 const supervisorProps = [];
@@ -98,6 +108,12 @@ const ports = new PortRegistry();
 const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {});
 const harness = createSqliteVfsTestHarness();
 sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
+// The session user's home, as every session is seeded with.
+{
+  const kernel = sessionVfs.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', 1000, 1000);
+}
 manager.setVfs(sessionVfs, processFiles(sessionVfs));
 
 delete globalThis.__portRegistry;

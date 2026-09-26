@@ -6,12 +6,15 @@
  * A total on its own points at nothing. `pi --version` was diagnosed as a
  * snapshot REBUILD on the strength of `bundleMs` — which workerd's frozen
  * clock reports as 0 once the VFS reads are warm — while the seconds actually
- * sat in `runMs`, a fresh isolate taking a 23 MB map. Splitting the total into
- * the three passes that produce it is what makes the next such question
- * answerable from the record instead of from a guess.
+ * sat in `runMs`, a fresh isolate taking a 23 MB map. Naming the part of the
+ * total that is the bundle is what makes the next such question answerable
+ * from the record instead of from a guess.
  *
- * The split is checked against the total it decomposes, so it cannot drift
- * into measuring something else and still look plausible.
+ * The map is the bundle plus the fixed runner and shims: the namespace a
+ * process boots on is listed at boot, never shipped, so a tree's files that
+ * nothing requires cost the map nothing (CUTOVER #13). The part is checked
+ * against the total it decomposes, so it cannot drift into measuring
+ * something else and still look plausible.
  */
 
 import assert from 'node:assert/strict';
@@ -95,29 +98,16 @@ assert.equal(records.length, 1, 'one exec produced one record');
 const [rec] = records;
 
 assert.ok(rec.bundleBytes > 0, 'the bundle part of the map is measured');
-assert.ok(rec.manifestBytes > 0, 'the manifest part of the map is measured');
-assert.ok(rec.metadataBytes > 0, 'the metadata part of the map is measured');
-
-// The three are parts OF the total, so their sum cannot exceed it — that is
-// what stops the split from silently coming to mean something else.
-const parts = rec.bundleBytes + rec.manifestBytes + rec.metadataBytes;
 assert.ok(
-  parts <= rec.moduleMapBytes,
-  `the parts (${parts}) must fit inside the total they decompose (${rec.moduleMapBytes})`,
+  rec.bundleBytes <= rec.moduleMapBytes,
+  `the bundle (${rec.bundleBytes}) must fit inside the total it is part of (${rec.moduleMapBytes})`,
 );
-// …and they have to be most of it, or the record still points at nothing: the
-// remainder is the shim plus the runner boilerplate, which is fixed-size.
+// The remainder is the runner and shims, which are fixed-size: no pass ships
+// a table of the tree's names or stats alongside the bundle.
 assert.ok(
-  rec.moduleMapBytes - parts < 2 * 1024 * 1024,
-  `the unattributed remainder (${rec.moduleMapBytes - parts}) is the fixed runner + shim, not a fourth pass`,
+  rec.moduleMapBytes - rec.bundleBytes < 2 * 1024 * 1024,
+  `the unattributed remainder (${rec.moduleMapBytes - rec.bundleBytes}) is the fixed runner + shim, not a second pass`,
 );
-
-// The metadata describes every path the manifest named, so a tree whose files
-// nothing requires still costs metadata. That is the cost the split exists to
-// make visible.
-assert.ok(
-  rec.metadataBytes > 40 * 'home/user/node_modules/dep/lib/unusedNN.js'.length,
-  'metadata prices the files nothing required, which is what the split reveals',
-);
+assert.equal(rec.namespaceRefusals, 0, 'a healthy launch refuses no synchronous call');
 
 console.log('exec-telemetry-map-composition: ok');

@@ -39,6 +39,7 @@
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { NodeFacetSources } from './node-shims-artifact.js';
+import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-store.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,
@@ -298,10 +299,6 @@ export interface OpencodeRunnerOptions {
    * the SUPERVISOR RPC binding.
    */
   vfsBundle: string;
-  /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
-  vfsManifest: string;
-  /** Serialized VFS inode metadata (JSON) for stat and permission checks. */
-  vfsMetadata: string;
   /** The coherence cursor the snapshot above was read at, as a JSON literal. */
   vfsCursor: string;
   /**
@@ -795,10 +792,16 @@ let stdout = "";
 let stderr = "";
 let exitCode = 0;
 let __supervisor = null;
-const __vfsBundle = ${opts.vfsBundle};
-const __vfsManifest = ${opts.vfsManifest};
-const __vfsMetadata = ${opts.vfsMetadata};
+// The process's view of the filesystem: the same store and namespace a node
+// process boots on (vfs/facet-resident-store.ts), in this facet's heap and
+// bounded there. An opencode facet has no storage allowance of the session's
+// ledger to grow a SQLite store under. Bound and booted by __ocBootStore
+// before the opencode bundle is imported; the shims read it through
+// __nimbusResidentBundle.
+let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
+${opts.sources.residentStore}
+const __vfsBundle = __nimbusResidentBundle;
 ${VFS_CURSOR_SEED_SOURCE}
 ${opts.sources.ledger}
 const __vfsDirs = {};
@@ -1272,9 +1275,33 @@ async function __ocDispatchHttp(request) {
   return globalThis.__nimbusServeHttp(request);
 }
 
+/**
+ * Bind and boot the store, and require its namespace, before any opencode code
+ * runs: every synchronous stat, exists and readdir reads it. Resolves to null,
+ * or to the launch's failure naming why.
+ */
+async function __ocBootStore() {
+  __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+  __residentSetStorage(undefined, __supervisor);
+  __nsSetCred(cred);
+  __residentSetPlan([]);
+  __residentSetPushRoots([cwd || "/home/user", "/tmp"]);
+  const __booted = await __residentBoot(
+    () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
+    __MODULE_VFS_CURSOR,
+    __supervisor,
+  );
+  if (__booted.cursor) {
+    globalThis.__nimbusVfsCursor = { epoch: __booted.cursor.epoch, rev: __booted.cursor.rev };
+  }
+  return __residentRequireNamespace(__supervisor, __booted.failure);
+}
+
 export class NimbusProcess extends __NimbusDurableObject {
   async startProcess() {
     __supervisor = (this.env && this.env.SUPERVISOR) || null;
+    const __bootFailure = await __ocBootStore();
+    if (__bootFailure) throw new Error(__bootFailure);
     // Run the resident lifecycle and hold THIS RPC open until it exits — the
     // same contract the long-running node path uses (its startProcess awaits
     // the resident lifecycle). The open call keeps the caller's stubs live for
@@ -1357,6 +1384,10 @@ async function __ocRunServe() {
 
 async function __ocOneShotFetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
+    const __bootFailure = await __ocBootStore();
+    if (__bootFailure) {
+      return __ocHostResponse.json({ exitCode: 1, stdout: "", stderr: __bootFailure + "\\n", vfsWrites: {} });
+    }
     try {
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
       if (argv[2] === "${OPENCODE_TREE_SITTER_DIAG_ARG}") {

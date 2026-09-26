@@ -10,12 +10,13 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return __fsMod;',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __fsMod;',
 );
 
 const APP = 'home/user/app';
@@ -109,10 +110,15 @@ assert.equal(t(() => fs.unlinkSync(`/${APP}/etc-like/anything`)), 'ERR:EACCES');
   const run = new Function(
     '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
     '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, drain: __nimbusDrainVfsMutations };',
   );
-  const home = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
+  // The namespace names the directory (the session's listing does); its
+  // owner is root, so the write is refused.
+  const home = {
+    'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
+    'usr/lib/node_modules': { type: 'directory', size: 0, mode: 0o40755, uid: 0, gid: 0 },
+  };
   const probe = run({}, home, {}, { 'home/user': [] }, refusing, CRED, '/home/user', [], {}, '/home/user/main.js', '/home/user');
   const caught = await probe.fs.promises.writeFile('/usr/lib/node_modules/.probe', 'x').then(() => null, (e) => e.code);
   assert.equal(caught, 'EACCES', 'the caller gets the verdict');

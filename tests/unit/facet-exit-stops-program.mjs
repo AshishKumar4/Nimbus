@@ -13,33 +13,38 @@
 // supervisor.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { withNamespace } from './lib/listing-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
 
 // The generated module installs its own globals (process, console, timers).
 const realProcess = globalThis.process;
 const realSetTimeout = globalThis.setTimeout;
 const sleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
 const dir = mkdtempSync(join(tmpdir(), 'facet-exit-'));
+process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const sources = nodeFacetSources(generateShimsCode());
 let seq = 0;
 
-async function run(program, state = { bundle: {}, manifest: {}, metadata: {} }) {
+async function run(program, state = { bundle: {} }, seed = () => {}) {
   const generated = await generateEntrypointCode(program, state, false, sources);
   const file = join(dir, `entry-${seq++}.mjs`);
   writeFileSync(file, generated.code);
   const mod = await import(file);
   const events = [];
   const text = (bytes) => new TextDecoder().decode(bytes);
-  const supervisor = {
+  const authority = createAuthority();
+  seed(authority);
+  const { supervisor } = withNamespace({
     stdout: async (b) => { events.push(['stdout', text(b)]); },
     stderr: async (b) => { events.push(['stderr', text(b)]); },
     reportExit: async (code) => { events.push(['exit', code]); },
-  };
+  }, authority);
   const request = new Request('http://facet/', {
     method: 'POST',
     body: JSON.stringify({
@@ -94,11 +99,13 @@ const EXIT_IN_TIMER = (code) => `setTimeout(() => { try { process.exit(${code});
   assert.ok(events.some(([kind, d]) => kind === 'stderr' && /boom-trace/.test(d)), `the trace arrives: ${JSON.stringify(events)}`);
 }
 {
-  // A sync read of a file the launch never staged: the residency report is
-  // written after process.exit and must still be relayed.
+  // A sync read of a file the launch never staged, outside what its store
+  // fills at boot (the cwd and /tmp): the residency report is written after
+  // process.exit and must still be relayed.
   const { body, events } = await run(
-    'try { require("fs").readFileSync("/home/user/unstaged.txt", "utf8"); } catch {}' + EXIT_IN_TIMER(0),
-    { bundle: {}, manifest: { 'home/user': ['unstaged.txt'] }, metadata: { 'home/user/unstaged.txt': { type: 'file', size: 5, mode: 0o644, uid: 1000, gid: 1000 } } },
+    'try { require("fs").readFileSync("/opt/unstaged.txt", "utf8"); } catch {}' + EXIT_IN_TIMER(0),
+    { bundle: {} },
+    ({ kfs }) => kfs.writeFile('opt/unstaged.txt', 'bytes'),
   );
   assert.ok(events.some(([kind, d]) => kind === 'stderr' && /unstaged\.txt/.test(d)), `the residency report arrives: ${JSON.stringify(events)}`);
   assert.equal(body.exitCode, 1);

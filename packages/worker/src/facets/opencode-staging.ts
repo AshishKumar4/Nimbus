@@ -73,12 +73,8 @@ export const OpencodeStageSpecSchema = z.object({
   stdin: z.string(),
   /** Serialized VFS snapshot bundle (`_serializeBundleForFacet` output). */
   vfsBundle: z.string(),
-  /** Serialized VFS directory manifest (JSON). */
-  vfsManifest: z.string(),
-  /** Serialized VFS inode metadata (JSON). */
-  vfsMetadata: z.string(),
   /**
-   * The coherence cursor the three above were read at, as a JSON literal
+   * The coherence cursor the bundle above was read at, as a JSON literal
    * (`null` when the stage carries no VFS). Without it the facet's first
    * ACQUIRE poisons and drops the whole snapshot — see _shared/facet-vfs-cursor.
    */
@@ -260,8 +256,6 @@ export async function assembleOpencodeFacetConfig(
     stdin: spec.stdin,
     sources,
     vfsBundle: spec.vfsBundle,
-    vfsManifest: spec.vfsManifest,
-    vfsMetadata: spec.vfsMetadata,
     vfsCursor: spec.vfsCursor,
     mode: spec.mode,
   });

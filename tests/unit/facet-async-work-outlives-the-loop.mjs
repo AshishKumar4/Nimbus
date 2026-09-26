@@ -25,11 +25,13 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
+// The process's own credential: what it creates is its own, as in a session.
+const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -37,6 +39,8 @@ const cwd = '/home/user/example-app';
 const SRC = '/tpl/hello';
 const TEMPLATE_FILES = ['.editorconfig', '__dot__gitignore', 'package.json', 'wrangler.jsonc', 'vitest.config.js'];
 vfs.mkdir(cwd, { recursive: true });
+// The process's working tree is its own, as a session's home is.
+for (const dir of ['home', 'home/user', 'home/user/example-app']) vfs.chown(dir, 1000, 1000);
 vfs.mkdir(`${SRC}/js/src`, { recursive: true });
 vfs.writeFile(`${SRC}/c3.ts`, enc.encode('x'.repeat(200)));
 for (const name of TEMPLATE_FILES) vfs.writeFile(`${SRC}/js/${name}`, enc.encode('y'.repeat(300)));
@@ -62,9 +66,10 @@ const supervisor = {
   exists: slow(async (p) => (await bridge.stat(p)) !== null),
   mkdir: slow((p) => bridge.mkdir(p, { recursive: true })),
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((epoch, cursor) => bridge.acquire(epoch, cursor)),
+  fsAcquire: slow((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
 };
 
+listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 globalThis.__nimbusRawSetTimeout = rawSetTimeout;
 globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
@@ -73,7 +78,7 @@ globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n' + ENTRYPOINT_EVENT_LOOP
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n' + ENTRYPOINT_EVENT_LOOP
   + '\n;return { fs: __fsMod, runToExit: __nimbusRunEntrypointToExit };',
 );
 const { fs, runToExit } = factory(

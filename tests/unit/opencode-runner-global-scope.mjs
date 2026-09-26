@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   const { generateOpencodeRunnerCode, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME } = await import(

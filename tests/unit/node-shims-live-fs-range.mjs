@@ -13,6 +13,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -67,7 +68,7 @@ const supervisor = {
   fsTruncate: (p, s) => bridge.truncate(p, s),
 };
 
-const code = generateShimsCode();
+const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',

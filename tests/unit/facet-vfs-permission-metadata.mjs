@@ -76,46 +76,19 @@ await manager.exec(
 );
 assert.ok(runnerSource, 'FacetManager emitted a runtime worker');
 
-function moduleConstant(name, nextName) {
-  const startMarker = `const ${name} = `;
-  const start = runnerSource.indexOf(startMarker);
-  assert.ok(start >= 0, `generated worker defines ${name}`);
-  const endMarker = `;\nconst ${nextName}`;
-  const end = runnerSource.indexOf(endMarker, start + startMarker.length);
-  assert.ok(end >= 0, `generated worker terminates ${name}`);
-  return new Function(`return (${runnerSource.slice(start + startMarker.length, end)});`)();
-}
-
-const bundle = moduleConstant('__MODULE_VFS_BUNDLE', '__MODULE_VFS_MANIFEST');
-const manifest = moduleConstant('__MODULE_VFS_MANIFEST', '__MODULE_VFS_METADATA');
-const metadata = moduleConstant('__MODULE_VFS_METADATA', '__compiledModules');
+const match = runnerSource.match(/^const __MODULE_VFS_BUNDLE = (.*);$/m);
+assert.ok(match, 'generated worker defines __MODULE_VFS_BUNDLE');
+const bundle = new Function(`return (${match[1]});`)();
 const prefix = 'home/user/project/';
 
+// The bundle carries bytes this process may read, and nothing else: the
+// stat and permission verdicts on the rest are the namespace's (an unreadable
+// file is EACCES by its mode there; node-shims-permissions).
 assert.equal(bundle[`${prefix}public.txt`], 'public\n');
-assert.deepEqual(
-  bundle[`${prefix}secret.txt`],
-  { error: 'EACCES' },
-  'a present but unreadable file is represented by an EACCES denial cell',
-);
-assert.equal(
-  Object.hasOwn(bundle, `${prefix}missing.txt`),
-  false,
-  'a nonexistent path is absent rather than represented by a denial cell',
-);
-assert.deepEqual(
-  metadata[`${prefix}public.txt`],
-  { type: 'file', size: 7, mode: 0o644, uid: 1000, gid: 1000 },
-  'readable-file metadata preserves stored mode and ownership',
-);
-assert.deepEqual(
-  metadata[`${prefix}secret.txt`],
-  { type: 'file', size: 7, mode: 0o600, uid: 0, gid: 0 },
-  'denied-file metadata remains available for honest statSync results',
-);
-assert.deepEqual(
-  [...manifest['home/user/project']].sort(),
-  ['public.txt', 'secret.txt'],
-  'readdir metadata records present denied children without inventing missing paths',
-);
+assert.equal(Object.hasOwn(bundle, `${prefix}secret.txt`), false,
+  'no bytes of a file this credential cannot read are staged');
+assert.equal(Object.hasOwn(bundle, `${prefix}missing.txt`), false, 'a nonexistent path is absent');
+assert.equal(/__MODULE_VFS_(MANIFEST|METADATA)/.test(runnerSource), false,
+  'the facet carries no spawn-time stat or directory tables: the namespace is its view');
 
 console.log('facet VFS permission metadata: ok');

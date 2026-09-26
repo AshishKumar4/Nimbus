@@ -20,6 +20,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -51,16 +52,25 @@ const supervisor = {
   fsReadRange: record('fsReadRange', first, (p, o, l) => bridge.readRange(p, o, l)),
   fsWriteRange: record('fsWriteRange', first, (p, o, b) => bridge.writeRange(p, o, b)),
   fsTruncate: record('fsTruncate', first, (p, s) => bridge.truncate(p, s)),
-  fsAcquire: (epoch, cursor) => bridge.acquire(epoch, cursor),
+  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, drain: () => __nimbusDrainVfsWrites(__supervisor) };',
 );
+// The process's working tree is its own, as a session's home is: every name
+// the kernel made above is handed to the process's user.
+function ownTree(path = 'home') {
+  vfs.chown(path, 1000, 1000);
+  if (vfs.lstat(path).type !== 'directory') return;
+  for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
+}
+ownTree();
+listAuthority(rawVfs);
 const { fs, drain } = factory(
   {},
   { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },

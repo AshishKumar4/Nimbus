@@ -4,8 +4,8 @@
 //
 // The one-shot path has scoped its map to the load since 14046a83. `spawnNode`
 // — the path every attached-TTY npm bin takes, which is how a real agentic CLI
-// starts — never did: it kept the raw cells, the manifest, the metadata and the
-// generated source alive across `_startResidentProcess`. For pi that is 22.9 MB
+// starts — never did: it kept the raw cells and the generated source (and,
+// then, the spawn-time tables) alive across `_startResidentProcess`. For pi that is 22.9 MB
 // of program held a second time, and a bare `pi` launch reset the session
 // isolate with exceededMemory. An isolate reset tears the terminal WebSocket
 // down with no exit frame, which is the dead screen reading
@@ -59,28 +59,22 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 {
   const state = {
     bundle: { 'home/user/a.js': 'module.exports = 1;\n' },
-    manifest: { 'home/user': ['a.js'] },
-    metadata: { 'home/user/a.js': { size: 20 } },
     cursor: { epoch: 'e', rev: 7 },
     reachableCount: 1,
     truncated: false,
   };
   // The builder's order: serialize, drop the raw cells, then generate.
   state.bundleSource = await buildFacetVfsBundleSource(state.bundle, false);
-  state.serializedManifest = JSON.stringify(state.manifest);
-  state.serializedMetadata = JSON.stringify(state.metadata);
   releaseSerializedSources(state);
   assert.deepEqual(state.bundle, {}, 'the raw cells are gone the moment they are serialized');
 
-  // Generating first is the real order: the map is a total encoding of all
-  // three, which is what makes releasing them a pure drop.
+  // Generating first is the real order: the map is a total encoding of the
+  // bundle source, which is what makes releasing it a pure drop.
   const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
   assert.ok(generated.code.includes('module.exports = 1;'), 'the map carries the program');
 
   releaseGeneratedSources(state);
   assert.equal(state.bundleSource, undefined, 'bundle source released');
-  assert.equal(state.serializedManifest, undefined, 'manifest released');
-  assert.equal(state.serializedMetadata, undefined, 'metadata released');
   assert.deepEqual(state.cursor, { epoch: 'e', rev: 7 },
     'the one field the rest of the launch reads survives the release');
 

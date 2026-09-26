@@ -34,6 +34,8 @@ const installed = realpathSync(resolvePackageDir('isomorphic-git', { start: work
 const storeSiblings = dirname(dirname(installed));
 const images = patchImages(patchFile);
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-cf-git-patch-'));
+// The preconditions below can fail before the cases' try: the exit hook removes the scratch tree however the test ends.
+process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 
 // The installed copy is patched (the suite runs after install); its pristine index.js is the patch reversed.
 assert.ok(blobId(join(installed, 'index.js')).startsWith(images.post), 'this checkout\'s cf-git is not patched');
@@ -66,7 +68,10 @@ function layout(name, { index, linkTo }) {
   const copy = join(siblings, '@ashishkumar472/cf-git');
   mkdirSync(copy, { recursive: true });
   for (const entry of readdirSync(installed)) {
-    if (entry !== 'index.js') cpSync(join(installed, entry), join(copy, entry), { recursive: true });
+    // The package's own files. No test writes into the installed package (each
+    // stages its instrumented copies in its own TMPDIR), so none can vanish
+    // mid-copy; a dotfile is still not one of the package's files.
+    if (entry !== 'index.js' && !entry.startsWith('.')) cpSync(join(installed, entry), join(copy, entry), { recursive: true });
   }
   if (linkTo) linkSync(linkTo, join(copy, 'index.js'));
   else writeFileSync(join(copy, 'index.js'), index);

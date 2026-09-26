@@ -169,6 +169,67 @@ const ws = await open({ facets: localFacetHost() });
   assert.equal(forked.exitCode, 0, `bash failed: ${forked.stderr}`);
   assert.equal(forked.stdout, 'n=1\nn=2\nn=3\nrc=1\n');
   console.log('  ok  loops, pipelines and exit status behave');
+
+  // N24: a pipeline of three or more stages delivers its last stage's output, to
+  // bash's own stdout and to a command substitution alike; every stage a BusyBox
+  // child exec'd without JSPI, so each blocked reader has to wait for the stage
+  // behind it rather than read its end of input early.
+  for (const [command, want] of [
+    ["echo a | cat | cat", 'a\n'],
+    ["seq 3 | cat | cat", '1\n2\n3\n'],
+    ["printf 'c\\nb\\na\\n' | sort | uniq | cat", 'a\nb\nc\n'],
+    ["x=$(echo a | cat | cat); echo \"[$x]\"", '[a]\n'],
+    ["seq 5 | cat | cat | cat | wc -l", '5\n'],
+    ["echo a | (cat | cat)", 'a\n'],
+    ["echo a | cat | cat; echo \"${PIPESTATUS[*]}\"", 'a\n0 0 0\n'],
+  ]) {
+    const r = await ws.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`);
+    assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
+    assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
+  }
+  console.log('  ok  a pipeline of three or more stages delivers its last stage');
+
+  // Pipes without JSPI (pipe-rules.ts; under JSPI, bash-pipes-jspi.mjs). A
+  // writer whose readers are gone gets SIGPIPE, 141 as bash reports it; these
+  // match real bash 5.2 with GNU coreutils.
+  for (const [command, want] of [
+    ["yes | head -2; echo \"${PIPESTATUS[*]}\"", 'y\ny\n141 0\n'],
+    ["x=$(yes | head -c 5); echo \"[$x]\"", '[y\ny\ny]\n'],
+    ["seq 1000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n0 0\n'],
+    ["seq 200000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '200000\n0 0 0\n'],
+    ["seq 100000 | cat | while read x; do :; done; echo \"${PIPESTATUS[*]}\"", '0 0 0\n'],
+    ["seq 20000 | uniq -c | wc -l; echo \"${PIPESTATUS[*]}\"", '20000\n0 0 0\n'],
+    // A writer that exits with more than a pipe's capacity unread would still be
+    // blocked on Linux: its status is held, and is 141 if the reader leaves first.
+    ["seq 1000000 | head -2; echo \"${PIPESTATUS[*]}\"", '1\n2\n141 0\n'],
+    ["seq 100000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n141 0\n'],
+    ["seq 100000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '100000\n0 0 0\n'],
+    // The writer is done once its reader drains the pipe, as on Linux, even
+    // though a background job still holds the read end.
+    ["SECONDS=0; seq 100000 | { cat >/dev/null; sleep 3 >/dev/null 2>&1 & }; echo \"t=$SECONDS ${PIPESTATUS[*]}\"", 't=0 0 0\n'],
+    // A bash process forking on every iteration, its output past a pipe's 64 KiB.
+    ["i=0; while [ $i -lt 300 ]; do echo \"$(printf %0200d $i)\"; i=$((i+1)); done | wc -c", '60300\n'],
+  ]) {
+    const r = await Promise.race([
+      ws.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
+    ]);
+    assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
+    assert.equal(r.stderr, '', `${command}: stderr`);
+    assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
+  }
+  // Where a child would have to wait for a writer (a WASI child cannot pause
+  // without JSPI) the command fails and says why; it never reports a false end
+  // of input or loses output.
+  for (const command of ['yes | cat | head -1', 'yes | head -c 80000000 | wc -c']) {
+    const r = await Promise.race([
+      ws.exec(`bash -c '${command}'`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
+    ]);
+    assert.equal(r.exitCode, 1, command);
+    assert.match(r.stderr, /^bash: pipe buffer limit \d+ MiB exceeded: this runtime cannot pause a WASI writer without JSPI\n$/, command);
+  }
+  console.log('  ok  without JSPI, pipes match bash or fail saying why');
 }
 
 // ── bash and the durable filesystem are the same filesystem ─────────────────

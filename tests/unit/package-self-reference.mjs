@@ -43,6 +43,7 @@ import { dirname, join } from 'node:path';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { packageSelfReferenceSubpath } from '../../packages/core/src/_shared/exports-resolver.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 // ── Fixture tree (VFS paths, no leading slash) ────────────────────────────
 
@@ -196,7 +197,7 @@ try {
   const factory = new Function(
     '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
     '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
   );
   const runtimeResolve = factory(
     FILES, {}, {}, {}, {}, null,

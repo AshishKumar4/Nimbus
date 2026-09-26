@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 // The ledger declares __vfsWrites and the revision stamps beside it, and the
 // shims call into it — so it is spliced in ahead of them exactly as every
@@ -22,7 +23,7 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, Buffer: __BufferMod, writes: __vfsWrites };',
 );
 

@@ -179,6 +179,8 @@ if (NPM_OUT_DIR) {
 const workDir = join(tmpdir(), `bundle-runtime-${RUNTIME}-${VERSION}`);
 rmSync(workDir, { recursive: true, force: true });
 mkdirSync(workDir, { recursive: true });
+// Scratch for this run only (every run starts it empty): removed however the run ends.
+process.on('exit', () => rmSync(workDir, { recursive: true, force: true }));
 
 console.log(`[bundle-runtime] ${RUNTIME} ${VERSION}`);
 console.log(`[bundle-runtime] work dir: ${workDir}`);

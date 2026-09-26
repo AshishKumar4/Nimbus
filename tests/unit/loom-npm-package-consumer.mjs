@@ -90,7 +90,8 @@ try {
   console.log(`  ok  npm pack → ${tarballs.map((t) => t.split('/').pop()).join(', ')}`);
 
   // ── 2. A clean directory, outside this repo, that installs them ──────────
-  const consumer = mkdtempSync(join(tmpdir(), 'loom-embedder-'));
+  // Below `work`, so the finally removes it too.
+  const consumer = mkdtempSync(join(work, 'loom-embedder-'));
   writeFileSync(join(consumer, 'package.json'), `${JSON.stringify({
     name: 'loom-embedder-acceptance', version: '0.0.0', private: true, type: 'module',
   }, null, 2)}\n`);

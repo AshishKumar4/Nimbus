@@ -185,7 +185,9 @@ import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
+  VFS_BUNDLE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 
 /**
  * Bytes of file content in one row.
@@ -219,6 +221,17 @@ export const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
  * loses every path in it. Imported rather than restated as fresh literals so
  * the generated source cannot drift from the endpoint it calls.
  */
+/**
+ * What a one-shot's store may hold in its heap: the closure bound a one-shot
+ * is already held to (VFS_BUNDLE_MAX_BYTES, the module map it adopts) plus
+ * 16 MiB for the namespace image and the data plan. A one-shot runs in a
+ * 128 MiB isolate, and today holds the same module map in its heap as a
+ * table; past this budget the store degrades as the durable one does near
+ * the session's limit: a fill is refused (the read is an honest miss), and an
+ * own write is held within its own bound or named ENOSPC.
+ */
+export const ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
+
 export const RESIDENT_FILL_BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
 export const RESIDENT_FILL_BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
 
@@ -238,10 +251,11 @@ export const RESIDENT_FILL_BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
  * rather than a new one.
  */
 export const FACET_RESIDENT_STORE_SOURCE = `
-// The facet's own SQLite, bound once the DO exists. Module scope has no ctx,
-// so every trap below runs in handler context, which is also the only context
-// that reads the resident set.
-let __residentSql = null;
+// The store's tables (__residentTablesOnSql or __residentTablesInMemory),
+// bound once the process exists. Module scope has no ctx, so every trap below
+// runs in handler context, which is also the only context that reads the
+// resident set.
+let __residentT = null;
 let __residentReady = false;
 
 /**
@@ -309,12 +323,13 @@ let __residentGrantAsk = null;
 const __RESIDENT_ROW_BYTES = 256;
 
 function __residentDbBytes() {
-  const sql = __residentSql;
-  const size = sql && sql.databaseSize;
-  if (typeof size === "number" && size > 0) return size;
-  for (const row of sql.exec("SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()")) return Number(row.n);
-  return 0;
+  // A one-shot's heap is one budget: the store's tables and the own writes
+  // held beside them (__residentHold) count against the same cap.
+  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes : 0);
 }
+
+/** Whether the store is a one-shot's heap (__residentBindInMemory) rather than a facet's SQLite. */
+let __residentInHeap = false;
 
 /**
  * Whether the store may grow by \`bytes\` now; when not, and \`ask\`, more room
@@ -336,7 +351,8 @@ function __residentFits(bytes, ask = true) {
 function __residentAskGrant(bytes) {
   const supervisor = __residentSupervisor;
   if (__residentCap === null) return Promise.resolve(true);
-  if (!supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
+  // A store with no ledger row (a one-shot's heap) has a fixed budget: no one to ask.
+  if (__residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
   if (__residentGrantAsk) return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
   const want = Math.max(0, __residentDbBytes() + bytes - __residentCap);
   __residentGrantAsk = (async () => {
@@ -357,14 +373,30 @@ async function __residentEnsureRoom(bytes) {
 }
 
 /**
- * What holding a cell of \`size\` costs the database: its bytes on overflow
- * pages (1% over, for page headers and the b-tree pages above them), a row
- * per chunk and head, and a page of slack.
+ * What holding a cell costs the database: its bytes (a text cell's UTF-8
+ * length) on overflow pages (1% over, for page headers and the b-tree pages
+ * above them), a row per chunk and head, and a page of slack. The manager
+ * charges a launch's module map the same way (manager.ts residentCellCost).
  */
-function __residentCellBytes(size, isText) {
+function __residentCellCost(cell) {
+  const isText = typeof cell === "string";
+  const size = isText ? cell.length : __residentBytes(cell).byteLength;
   const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
-  return Math.ceil((isText ? size * 3 : size) * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
+  return Math.ceil((isText ? __residentUtf8Length(cell) : size) * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
+}
+
+function __residentUtf8Length(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
+    // A surrogate pair is one 4-byte character; a lone surrogate encodes as 3.
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
 }
 
 /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
@@ -372,7 +404,7 @@ async function __residentRoomForPushed(result) {
   if (__residentCap === null || !result || !Array.isArray(result.paths)) return;
   let bytes = 0;
   for (const entry of result.paths) {
-    if (entry && entry.bytes != null) bytes += __residentCellBytes(__residentBytes(entry.bytes).byteLength, false);
+    if (entry && entry.bytes != null) bytes += __residentCellCost(__residentBytes(entry.bytes));
   }
   if (bytes > 0) await __residentEnsureRoom(bytes);
 }
@@ -380,7 +412,7 @@ async function __residentRoomForPushed(result) {
 /** What the database measures, after a fill batch: the ledger settles to it, or records overshoot. */
 async function __residentReportSize() {
   const supervisor = __residentSupervisor;
-  if (__residentCap === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
+  if (__residentCap === null || __residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
   try { await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes()); } catch {}
 }
 
@@ -395,6 +427,53 @@ function __residentSetStorage(storage, supervisor) {
 /** The cap this store enforces, for startProcess to report. */
 function __residentStorageCap() {
   return __residentCap;
+}
+
+// An own write the store could not hold (no room in the session's storage)
+// is kept here, so the program still reads what it wrote: a bounded LRU
+// (Map order is recency) of { cell, rev }, dated like a file row (own until
+// its write-back is acknowledged, then the write's revision) and judged by
+// every report like one. A path it could not keep either is remembered by
+// name only, so a miss on it says why.
+const __residentHeld = new Map();
+let __residentHeldBytes = 0;
+const __residentUnheld = new Set();
+const __RESIDENT_HELD_MAX_BYTES = ${FACET_OWN_WRITE_MEMORY_BYTES};
+
+function __residentCellSize(held) {
+  const cell = held.cell;
+  return typeof cell === "string" ? cell.length * 3 : __residentBytes(cell).byteLength;
+}
+
+function __residentForgetHeld(path) {
+  const cell = __residentHeld.get(path);
+  if (cell !== undefined) {
+    __residentHeld.delete(path);
+    __residentHeldBytes -= __residentCellSize(cell);
+  }
+  __residentUnheld.delete(path);
+}
+
+function __residentHold(path, cell) {
+  __residentForgetHeld(path);
+  const size = __residentCellSize({ cell });
+  // In a facet the held cells have their own bound. In a one-shot's heap they
+  // share the store's: what the cap leaves beside the tables.
+  const limit = __residentInHeap ? Math.max(0, Number(__residentCap) - __residentT.bytes()) : __RESIDENT_HELD_MAX_BYTES;
+  if (size > limit) { __residentUnheld.add(path); return; }
+  while (__residentHeldBytes + size > limit) {
+    const [oldest, old] = __residentHeld.entries().next().value;
+    __residentHeld.delete(oldest);
+    __residentHeldBytes -= __residentCellSize(old);
+    __residentUnheld.add(oldest);
+  }
+  __residentHeld.set(path, { cell, rev: __RK_OWN_WRITE });
+  __residentHeldBytes += size;
+}
+
+/** Whether a miss on \`path\` is the storage's: its own write was held nowhere. */
+function __residentStorageMiss(path) {
+  return __residentUnheld.has(path);
 }
 const __RK_TEXT = 0;
 const __RK_BINARY = 1;
@@ -418,32 +497,26 @@ const __RK_DENIED = 2;
  */
 const __RK_OWN_WRITE = -1;
 
-function __residentBind(ctx) {
-  const sql = ctx && ctx.storage && ctx.storage.sql;
-  if (!sql || typeof sql.exec !== "function") {
-    throw new Error(
-      "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); " +
-      "the resident set cannot be served and every sync read would raise EAGAIN"
-    );
-  }
-  // 'file' carries one row per path, so existence, size and kind are one query
-  // that never touches content. 'chunk' carries the bytes. Splitting them is
-  // what makes _statLadder and __fileExists cheap: the common case reads a
-  // short row and never pages a megabyte of blob in to answer "is it there".
-  // 'rev' is NOT NULL, and that constraint IS the coherence guarantee rather
-  // than a note about it. An undated row can never be invalidated, so it would
-  // be served stale forever; making the column nullable would leave the rule
-  // to be remembered at every insert, and the one that forgot would be
-  // indistinguishable from the ones that did not. Here the row simply cannot
-  // be written. This is the r2-cache posture — an unverifiable key cannot be
-  // constructed — moved to the only storage layer this store has.
-  //
-  // __RK_OWN_WRITE is the one negative value: this facet's own bytes that the
-  // authority has not acknowledged, which are strictly newer than anything it
-  // can report and are always readable. It is a real provenance, not an
-  // absence of one.
-  // A store written by an earlier schema is dropped whole: it is a cache,
-  // and the boot that follows fills what this launch needs.
+/**
+ * The store's own operations, over the four tables it keeps: 'file' (one row
+ * per held path: kind, size, chunk count, revision, content key), 'chunk'
+ * (the bytes), 'meta' (schema, cursor, namespace readiness) and 'ns' (the
+ * namespace: a stat per visible name, keyed (parent, name)). Everything above
+ * this seam decides; the backing only stores. There are exactly two backings,
+ * with one contract:
+ *
+ * - __residentTablesOnSql: the process facet's own SQLite (ctx.storage.sql),
+ *   durable across the facet's incarnations. Every statement the store has
+ *   ever issued lives here, unchanged.
+ * - __residentTablesInMemory: a one-shot process's store, in its heap, for
+ *   the life of the run (runOnce hosts no SQLite). Same rows, same answers,
+ *   and a byte count that plays the database's size for the store's budget.
+ *
+ * Rows come back as plain objects with the column names as keys: file heads
+ * { kind, size, chunks }, chunks { txt, bin } (bin as the backing holds it;
+ * callers normalise with __residentBytes), ns rows with every stat column.
+ */
+function __residentTablesOnSql(sql) {
   let schema = null;
   for (const row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
   if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
@@ -480,17 +553,359 @@ function __residentBind(ctx) {
       "PRIMARY KEY (parent, name)" +
     ") WITHOUT ROWID"
   );
+  const first = (rows) => { for (const row of rows) return row; return undefined; };
+  const ranged = (select, from, to, tail = "") => to === null
+    ? sql.exec(select + " WHERE path >= ?" + tail, from)
+    : sql.exec(select + " WHERE path >= ? AND path < ?" + tail, from, to);
+  return {
+    bytes() {
+      const size = sql.databaseSize;
+      if (typeof size === "number" && size > 0) return size;
+      for (const row of sql.exec("SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()")) return Number(row.n);
+      return 0;
+    },
+    databaseSize() { return Number(sql.databaseSize ?? 0); },
+    metaGet(k) { const row = first(sql.exec("SELECT v FROM meta WHERE k = ?", k)); return row === undefined ? undefined : String(row.v); },
+    metaSet(k, v) { sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", k, v); },
+    fileHead(path) { return first(sql.exec("SELECT kind, size, chunks FROM file WHERE path = ?", path)); },
+    fileRev(path) { const row = first(sql.exec("SELECT rev FROM file WHERE path = ?", path)); return row === undefined ? undefined : Number(row.rev); },
+    fileRevKey(path) { return first(sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path)); },
+    fileOwnSize(path) {
+      const row = first(sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, __RK_OWN_WRITE));
+      return row === undefined ? undefined : Number(row.size);
+    },
+    filePut(path, kind, size, chunks, rev, ckey) {
+      sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+    },
+    fileSetRev(path, rev) { sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path); },
+    fileStampOwn(path, rev) { sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, __RK_OWN_WRITE); },
+    fileDelete(path) { sql.exec("DELETE FROM file WHERE path = ?", path); },
+    fileByKey(ckey, notPath) {
+      return first(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
+    },
+    filePaths(from, to) { return [...ranged("SELECT path FROM file", from, to)].map((row) => String(row.path)); },
+    fileAny(from, to) { return first(ranged("SELECT path FROM file", from, to, " LIMIT 1")) !== undefined; },
+    fileRevsIn(from, to) { return [...ranged("SELECT path, rev FROM file", from, to)]; },
+    // In key order, as every other scan here is: the primary key's index
+    // serves it, and both backings then answer in one order.
+    fileAllPaths() { return [...sql.exec("SELECT path FROM file ORDER BY path")].map((row) => String(row.path)); },
+    fileRows() { return [...sql.exec("SELECT path, rev, ckey FROM file ORDER BY path")]; },
+    fileOwnPaths() { return [...sql.exec("SELECT path FROM file WHERE rev = ? ORDER BY path", __RK_OWN_WRITE)].map((row) => String(row.path)); },
+    fileStats() { return first(sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file")); },
+    chunkFirst(path) { return first(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path)); },
+    chunkParts(path) { return [...sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path)]; },
+    chunkAddText(path, part, txt) { sql.exec("INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)", path, part, txt); },
+    chunkAddBin(path, part, bin) { sql.exec("INSERT INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bin); },
+    chunkSetBin(path, part, bin) { sql.exec("INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bin); },
+    chunkCopy(to, from) { sql.exec("INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?", to, from); },
+    chunkDelete(path) { sql.exec("DELETE FROM chunk WHERE path = ?", path); },
+    // Own rows are the one provenance a new incarnation cannot date.
+    dropOwn() {
+      sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
+      sql.exec("DELETE FROM file WHERE rev = ?", __RK_OWN_WRITE);
+    },
+    // Every dated row, and any chunk no own row claims.
+    dropDated() {
+      sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
+      sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+    },
+    // Every dated row and its chunks.
+    dropDatedFiles() {
+      sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", __RK_OWN_WRITE);
+      sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+    },
+    clear() {
+      sql.exec("DELETE FROM chunk");
+      sql.exec("DELETE FROM file");
+      sql.exec("DELETE FROM ns");
+      sql.exec("DELETE FROM meta");
+    },
+    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
+      sql.exec(
+        "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target,
+      );
+    },
+    nsGet(parent, name) {
+      return first(sql.exec(
+        "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target FROM ns WHERE parent = ? AND name = ?",
+        parent, name,
+      ));
+    },
+    nsDelete(parent, name) { sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name); },
+    nsDeleteChildren(parent) { sql.exec("DELETE FROM ns WHERE parent = ?", parent); },
+    nsDeleteParents(from, to) {
+      if (to === null) sql.exec("DELETE FROM ns WHERE parent >= ?", from);
+      else sql.exec("DELETE FROM ns WHERE parent >= ? AND parent < ?", from, to);
+    },
+    nsClear() { sql.exec("DELETE FROM ns"); },
+    nsKeys() { return [...sql.exec("SELECT parent, name FROM ns")]; },
+    nsOfKind(kind) { return [...sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind)]; },
+    nsChildren(parent) { return [...sql.exec("SELECT name, kind FROM ns WHERE parent = ?", parent)]; },
+    nsCount() { const row = first(sql.exec("SELECT count(*) AS n FROM ns")); return row === undefined ? 0 : Number(row.n); },
+  };
+}
+
+function __residentBind(ctx) {
+  const sql = ctx && ctx.storage && ctx.storage.sql;
+  if (!sql || typeof sql.exec !== "function") {
+    throw new Error(
+      "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); " +
+      "the resident set cannot be served and every sync read would raise EAGAIN"
+    );
+  }
+  return __residentBindTables(__residentTablesOnSql(sql));
+}
+
+/**
+ * The one-shot backing: the same tables, in the process's heap, for the life
+ * of one run. A one-shot is hosted by runOnce, which gives it no SQLite, and
+ * it keeps nothing after it exits. Its answers are the SQLite backing's:
+ * scans come back in key order (a b-tree's), reads hand back copies (a
+ * program that writes into a Buffer it read must not change the store), and
+ * \`bytes()\` counts what it holds in the units __residentCellCost charges (a
+ * row, and the payload's bytes), so the store's one budget rule serves both.
+ */
+function __residentTablesInMemory() {
+  const files = new Map();
+  const chunks = new Map();
+  const meta = new Map();
+  const ns = new Map();
+  const byKey = new Map();
+  let sorted = null;
+  let used = 0;
+  let names = 0;
+  const utf8 = (text) => __residentUtf8Length(text);
+  // SQLite's binary collation orders TEXT by its UTF-8 bytes: code-point
+  // order, which UTF-16 comparison is not past the BMP.
+  const cmp = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      const x = a.codePointAt(i), y = b.codePointAt(i);
+      if (x !== y) return x < y ? -1 : 1;
+      if (x > 0xffff) i++;
+    }
+    return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+  };
+  const payload = (cell) => (cell.txt != null ? utf8(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
+  const unkey = (path, row) => {
+    if (row && row.ckey != null) {
+      const set = byKey.get(row.ckey);
+      if (set) { set.delete(path); if (set.size === 0) byKey.delete(row.ckey); }
+    }
+  };
+  const paths = () => {
+    if (sorted === null) sorted = [...files.keys()].sort(cmp);
+    return sorted;
+  };
+  const lowerBound = (list, from) => {
+    let lo = 0, hi = list.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (cmp(list[mid], from) < 0) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const inRange = (from, to) => {
+    const list = paths();
+    const out = [];
+    for (let i = lowerBound(list, from); i < list.length && (to === null || cmp(list[i], to) < 0); i++) out.push(list[i]);
+    return out;
+  };
+  const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+  const dropChunks = (path) => {
+    const parts = chunks.get(path);
+    if (!parts) return;
+    for (const cell of parts.values()) used -= __RESIDENT_ROW_BYTES + payload(cell);
+    chunks.delete(path);
+  };
+  const dropFile = (path) => {
+    const row = files.get(path);
+    if (row === undefined) return;
+    unkey(path, row);
+    files.delete(path);
+    sorted = null;
+    used -= __RESIDENT_ROW_BYTES;
+  };
+  const addChunk = (path, part, cell, replace) => {
+    let parts = chunks.get(path);
+    if (!parts) { parts = new Map(); chunks.set(path, parts); }
+    const had = parts.get(part);
+    if (had !== undefined) {
+      if (!replace) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
+      used -= __RESIDENT_ROW_BYTES + payload(had);
+    }
+    parts.set(part, cell);
+    used += __RESIDENT_ROW_BYTES + payload(cell);
+  };
+  const nsRow = (parent, name) => { const dir = ns.get(parent); return dir ? dir.get(name) : undefined; };
+  const nsDrop = (parent, name) => {
+    const dir = ns.get(parent);
+    if (!dir || !dir.delete(name)) return;
+    names--;
+    used -= __RESIDENT_ROW_BYTES;
+    if (dir.size === 0) ns.delete(parent);
+  };
+  const nsDropParent = (parent) => {
+    const dir = ns.get(parent);
+    if (!dir) return;
+    names -= dir.size;
+    used -= dir.size * __RESIDENT_ROW_BYTES;
+    ns.delete(parent);
+  };
+  const byName = cmp;
+  const dropWhere = (keepFile, keepChunkPath) => {
+    for (const path of [...chunks.keys()]) if (!keepChunkPath(path)) dropChunks(path);
+    for (const [path, row] of [...files]) if (!keepFile(row)) dropFile(path);
+  };
+  return {
+    bytes() { return used; },
+    databaseSize() { return used; },
+    metaGet(k) { return meta.get(k); },
+    metaSet(k, v) { meta.set(k, String(v)); },
+    fileHead(path) { const row = files.get(path); return row === undefined ? undefined : { kind: row.kind, size: row.size, chunks: row.chunks }; },
+    fileRev(path) { const row = files.get(path); return row === undefined ? undefined : row.rev; },
+    fileRevKey(path) { const row = files.get(path); return row === undefined ? undefined : { rev: row.rev, ckey: row.ckey }; },
+    fileOwnSize(path) { const row = files.get(path); return row !== undefined && row.rev === __RK_OWN_WRITE ? row.size : undefined; },
+    filePut(path, kind, size, chunkCount, rev, ckey) {
+      if (!(rev >= -1)) throw new Error("CHECK constraint failed: rev >= -1");
+      const had = files.get(path);
+      if (had === undefined) { sorted = null; used += __RESIDENT_ROW_BYTES; } else unkey(path, had);
+      const row = { kind: Number(kind), size: Number(size), chunks: Number(chunkCount), rev: Number(rev), ckey: ckey == null ? null : String(ckey) };
+      files.set(path, row);
+      if (row.ckey !== null) { let set = byKey.get(row.ckey); if (!set) { set = new Set(); byKey.set(row.ckey, set); } set.add(path); }
+    },
+    fileSetRev(path, rev) { const row = files.get(path); if (row !== undefined) row.rev = Number(rev); },
+    fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === __RK_OWN_WRITE) row.rev = Number(rev); },
+    fileDelete(path) { dropFile(path); },
+    fileByKey(ckey, notPath) {
+      const set = byKey.get(String(ckey));
+      if (!set) return undefined;
+      for (const path of set) {
+        const row = files.get(path);
+        if (path !== notPath && row && row.rev >= 0) return { path, kind: row.kind, size: row.size, chunks: row.chunks };
+      }
+      return undefined;
+    },
+    filePaths(from, to) { return inRange(from, to); },
+    fileAny(from, to) { const list = paths(); const i = lowerBound(list, from); return i < list.length && (to === null || cmp(list[i], to) < 0); },
+    fileRevsIn(from, to) { return inRange(from, to).map((path) => ({ path, rev: files.get(path).rev })); },
+    fileAllPaths() { return [...paths()]; },
+    fileRows() { return paths().map((path) => { const row = files.get(path); return { path, rev: row.rev, ckey: row.ckey }; }); },
+    fileOwnPaths() { return paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE); },
+    fileStats() { let b = 0; for (const row of files.values()) b += row.size; return { n: files.size, b }; },
+    chunkFirst(path) { const parts = chunks.get(path); const cell = parts && parts.get(0); return cell === undefined ? undefined : copy(cell); },
+    chunkParts(path) {
+      const parts = chunks.get(path);
+      if (!parts) return [];
+      return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+    },
+    chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
+    chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: __residentBytes(bin).slice() }, false); },
+    chunkSetBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: __residentBytes(bin).slice() }, true); },
+    chunkCopy(to, from) {
+      const parts = chunks.get(from);
+      if (!parts) return;
+      // One statement in SQLite: a conflicting part fails the whole copy, and nothing lands.
+      const held = chunks.get(to);
+      if (held) for (const part of parts.keys()) if (held.has(part)) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
+      for (const [part, cell] of [...parts]) addChunk(to, part, copy(cell), false);
+    },
+    chunkDelete(path) { dropChunks(path); },
+    dropOwn() {
+      const own = new Set(paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE));
+      dropWhere((row) => row.rev !== __RK_OWN_WRITE, (path) => !own.has(path));
+    },
+    dropDated() {
+      const own = new Set(paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE));
+      dropWhere((row) => row.rev === __RK_OWN_WRITE, (path) => own.has(path));
+    },
+    dropDatedFiles() {
+      const dated = new Set(paths().filter((path) => files.get(path).rev !== __RK_OWN_WRITE));
+      dropWhere((row) => row.rev === __RK_OWN_WRITE, (path) => !dated.has(path));
+    },
+    clear() {
+      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
+      sorted = null; used = 0; names = 0;
+    },
+    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
+      let dir = ns.get(parent);
+      if (!dir) { dir = new Map(); ns.set(parent, dir); }
+      if (!dir.has(name)) { names++; used += __RESIDENT_ROW_BYTES; }
+      dir.set(name, {
+        kind: Number(kind), size: Number(size), mode: Number(mode), uid: Number(uid), gid: Number(gid),
+        atime: Number(atime), mtime: Number(mtime), ctime: Number(ctime), ino: Number(ino), rev: Number(rev),
+        target: target == null ? null : String(target),
+      });
+    },
+    nsGet(parent, name) { const row = nsRow(parent, name); return row === undefined ? undefined : { ...row }; },
+    nsDelete(parent, name) { nsDrop(parent, name); },
+    nsDeleteChildren(parent) { nsDropParent(parent); },
+    nsDeleteParents(from, to) {
+      for (const parent of [...ns.keys()]) if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0)) nsDropParent(parent);
+    },
+    nsClear() { used -= names * __RESIDENT_ROW_BYTES; names = 0; ns.clear(); },
+    nsKeys() {
+      const out = [];
+      for (const parent of [...ns.keys()].sort(byName)) for (const name of [...ns.get(parent).keys()].sort(byName)) out.push({ parent, name });
+      return out;
+    },
+    nsOfKind(kind) {
+      const out = [];
+      for (const parent of [...ns.keys()].sort(byName)) {
+        const dir = ns.get(parent);
+        for (const name of [...dir.keys()].sort(byName)) if (dir.get(name).kind === Number(kind)) out.push({ parent, name });
+      }
+      return out;
+    },
+    nsChildren(parent) {
+      const dir = ns.get(parent);
+      if (!dir) return [];
+      return [...dir.keys()].sort(byName).map((name) => ({ name, kind: dir.get(name).kind }));
+    },
+    nsCount() { return names; },
+  };
+}
+
+/**
+ * A one-shot's store: the heap backing, capped at \`budget\` bytes and never
+ * growing past it (there is no ledger row to grow).
+ */
+function __residentBindInMemory(budget) {
+  const t = __residentBindTables(__residentTablesInMemory());
+  __residentInHeap = true;
+  __residentFacet = null;
+  __residentCap = Number(budget);
+  return t;
+}
+
+/**
+ * Bind the store to its tables: a facet's SQLite (__residentBind), or a
+ * one-shot's heap (__residentTablesInMemory).
+ *
+ * 'file' carries one row per path, so existence, size and kind are one query
+ * that never touches content. 'chunk' carries the bytes. Splitting them is
+ * what makes _statLadder and __fileExists cheap: the common case reads a
+ * short row and never pages a megabyte of blob in to answer "is it there".
+ * 'rev' is never undated, and that IS the coherence guarantee rather than a
+ * note about it. An undated row can never be invalidated, so it would be
+ * served stale forever. The SQLite backing makes the column NOT NULL, so such
+ * a row cannot be written; this is the r2-cache posture (an unverifiable key
+ * cannot be constructed) moved to the only storage layer this store has.
+ *
+ * __RK_OWN_WRITE is the one negative value: this facet's own bytes that the
+ * authority has not acknowledged, which are strictly newer than anything it
+ * can report and are always readable. It is a real provenance, not an absence
+ * of one.
+ */
+function __residentBindTables(t) {
   // A store can outlive its process. Own rows left by an earlier one are
   // writes that never reached the authority or cells whose acknowledgement it
   // never saw: neither can be dated, so neither is a file.
-  sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
-  sql.exec("DELETE FROM file WHERE rev = ?", __RK_OWN_WRITE);
-  __residentSql = sql;
+  t.dropOwn();
+  __residentT = t;
   __residentReady = true;
-  __nsLoadLinks(sql);
-  __nsOk = false;
-  for (const row of sql.exec("SELECT v FROM meta WHERE k = 'ns'")) __nsOk = String(row.v) === "1";
-  return sql;
+  __nsLoadLinks(t);
+  __nsOk = t.metaGet("ns") === "1";
+  return t;
 }
 
 function __residentRequire() {
@@ -507,24 +922,21 @@ function __residentRequire() {
       "the program runs; serving a row now would serve bytes of unknown age."
     );
   }
-  return __residentSql;
+  return __residentT;
 }
 
 /** The persisted cursor, or null when this store has never been populated. */
 function __residentCursor() {
   if (!__residentReady) return null;
-  let epoch = null, rev = null;
-  for (const row of __residentSql.exec("SELECT k, v FROM meta WHERE k IN ('epoch','rev')")) {
-    if (row.k === "epoch") epoch = String(row.v);
-    else rev = Number(row.v);
-  }
-  return epoch === null || rev === null ? null : { epoch, rev };
+  const epoch = __residentT.metaGet("epoch");
+  const rev = __residentT.metaGet("rev");
+  return epoch === undefined || rev === undefined ? null : { epoch, rev: Number(rev) };
 }
 
 /** Stamp the store with the authority state its rows are known-good at. */
-function __residentWriteCursor(sql, cursor) {
-  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)", String(cursor.epoch));
-  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('rev', ?)", String(Number(cursor.rev)));
+function __residentWriteCursor(t, cursor) {
+  t.metaSet("epoch", String(cursor.epoch));
+  t.metaSet("rev", String(Number(cursor.rev)));
 }
 
 /**
@@ -542,7 +954,7 @@ function __residentWriteCursor(sql, cursor) {
  */
 function __residentAdmit(result) {
   if (!__residentReady) throw new Error("Nimbus: __residentAdmit before __residentBind");
-  const sql = __residentSql;
+  const t = __residentT;
   const dropped = [];
   const relist = [];
   let kept = 0, pushed = 0;
@@ -569,8 +981,12 @@ function __residentAdmit(result) {
   // stops answering until a listing restores it.
   // An answer naming no path changes no name, with or without stats.
   const namespaced = __nsOk && !!result && !result.poison
-    && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0));
-  if (!namespaced) __nsMarkReady(sql, false);
+    && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
+    && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || __nsDescribes(entry.stat)));
+  if (!namespaced) {
+    __nsMarkReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
+      : "a change reported without the stat every name needs");
+  }
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
     // poison here means nothing the authority dated can be kept.
@@ -585,7 +1001,7 @@ function __residentAdmit(result) {
       if (floor !== null && Number(entry.rev) <= floor) continue;
       const path = entry.path;
       if (namespaced) {
-        const again = __nsApplyEntry(sql, entry);
+        const again = __nsApplyEntry(t, entry);
         if (again !== null) relist.push(again);
       }
       // A row at or above the reported revision already holds that mutation —
@@ -601,46 +1017,56 @@ function __residentAdmit(result) {
       // row there may be stale, or no longer this facet's to be served.
       if (entry.subtree || entry.structural) {
         const end = __residentPrefixEnd(path + "/");
-        const covered = end === null
-          ? [...sql.exec("SELECT path, rev FROM file WHERE path >= ?", path + "/")]
-          : [...sql.exec("SELECT path, rev FROM file WHERE path >= ? AND path < ?", path + "/", end)];
-        for (const row of covered) {
+        for (const row of t.fileRevsIn(path + "/", end)) {
           const stamped = Number(row.rev);
           if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
-          sql.exec("DELETE FROM chunk WHERE path = ?", row.path);
-          sql.exec("DELETE FROM file WHERE path = ?", row.path);
+          t.chunkDelete(row.path);
+          t.fileDelete(row.path);
           dropped.push(String(row.path));
+        }
+        for (const [heldPath, heldCell] of [...__residentHeld]) {
+          if (!heldPath.startsWith(path + "/") || heldCell.rev === __RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) continue;
+          __residentForgetHeld(heldPath);
         }
         // Names under it may have become hidden or visible without being
         // named: the namespace relists that subtree.
         if (namespaced && entry.subtree && entry.stat && entry.stat.type === "directory") relist.push(path);
       }
       let held = false, stamped = 0, heldKey = null;
-      for (const row of sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path)) {
+      const row = t.fileRevKey(path);
+      if (row !== undefined) {
         held = true; stamped = Number(row.rev); heldKey = row.ckey == null ? null : String(row.ckey);
       }
       if (held && (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev))) { kept++; continue; }
+      // A cell held in memory (an own write the store had no room for) is
+      // judged the same way; superseded, it goes, and the report's bytes, if
+      // any, are held as the store can.
+      const heldCell = __residentHeld.get(path);
+      if (heldCell !== undefined) {
+        if (heldCell.rev === __RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) { kept++; continue; }
+        __residentForgetHeld(path);
+      }
       // The same bytes under a newer revision (a chmod, a touch, a rewrite
       // with identical content): kept, and dated at the report.
       if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
-        sql.exec("UPDATE file SET rev = ? WHERE path = ?", Number(entry.rev), path);
+        t.fileSetRev(path, Number(entry.rev));
         kept++;
         continue;
       }
       // Pushed content: the file's bytes at the answer's revision, so dating
       // them at the path's own revision cannot be newer than they are.
       if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
-        if (__residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
+        if (__residentPut(t, path, __residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
         else if (held) dropped.push(path);
         continue;
       }
       if (!held) continue;
-      sql.exec("DELETE FROM chunk WHERE path = ?", path);
-      sql.exec("DELETE FROM file WHERE path = ?", path);
+      t.chunkDelete(path);
+      t.fileDelete(path);
       dropped.push(path);
     }
   }
-  __residentWriteCursor(sql, { epoch, rev });
+  __residentWriteCursor(t, { epoch, rev });
   __residentSealed = false;
   __residentSealReason = "";
   return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
@@ -663,8 +1089,8 @@ function __residentAdmit(result) {
  */
 function __residentDropDated() {
   if (!__residentReady) throw new Error("Nimbus: __residentDropDated before __residentBind");
-  __residentSql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", __RK_OWN_WRITE);
-  __residentSql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+  __residentT.dropDated();
+  for (const [path, held] of [...__residentHeld]) if (held.rev !== __RK_OWN_WRITE) __residentForgetHeld(path);
 }
 
 /** Re-seal — for a store whose backing is being replaced (slot handover). */
@@ -675,13 +1101,7 @@ function __residentSeal(reason) {
 
 /** One row of 'file', or undefined. The existence/shape query. */
 function __residentHead(path) {
-  const sql = __residentRequire();
-  return __residentHeadOn(sql, path);
-}
-
-function __residentHeadOn(sql, path) {
-  for (const row of sql.exec("SELECT kind, size, chunks FROM file WHERE path = ?", path)) return row;
-  return undefined;
+  return __residentRequire().fileHead(path);
 }
 
 /**
@@ -694,21 +1114,26 @@ function __residentHeadOn(sql, path) {
  */
 function __residentGet(path) {
   const head = __residentHead(path);
-  if (head === undefined) return undefined;
+  if (head === undefined) {
+    const held = __residentHeld.get(path);
+    if (held === undefined) return undefined;
+    __residentHeld.delete(path);
+    __residentHeld.set(path, held);
+    return held.cell;
+  }
   const kind = Number(head.kind);
   if (kind === __RK_DENIED) return { error: "EACCES" };
-  const sql = __residentRequire();
+  const t = __residentRequire();
   const chunks = Number(head.chunks);
   if (chunks === 1) {
-    for (const row of sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path)) {
-      return kind === __RK_TEXT ? row.txt : __residentBytes(row.bin);
-    }
-    return undefined;
+    const row = t.chunkFirst(path);
+    if (row === undefined) return undefined;
+    return kind === __RK_TEXT ? row.txt : __residentBytes(row.bin);
   }
   // Chunked: a file past the single-value ceiling. Reassembled here so callers
   // never learn the file was split.
   const parts = [];
-  for (const row of sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path)) {
+  for (const row of t.chunkParts(path)) {
     parts.push(kind === __RK_TEXT ? row.txt : __residentBytes(row.bin));
   }
   if (parts.length === 0) return undefined;
@@ -735,14 +1160,13 @@ function __residentBytes(value) {
  * (read-your-writes) and never mistaken for something the authority vouched
  * for. There is no third case: the column refuses one.
  */
-function __residentPut(sql, path, cell, rev, ckey) {
-  sql.exec("DELETE FROM chunk WHERE path = ?", path);
+function __residentPut(t, path, cell, rev, ckey) {
+  // Whatever this puts supersedes a held cell, held or not.
+  __residentForgetHeld(path);
+  t.chunkDelete(path);
   const stamp = typeof rev === "number" ? rev : __RK_OWN_WRITE;
   if (cell && typeof cell === "object" && cell.error) {
-    sql.exec(
-      "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, 0, 0, ?)",
-      path, __RK_DENIED, stamp
-    );
+    t.filePut(path, __RK_DENIED, 0, 0, stamp, null);
     return true;
   }
   const isText = typeof cell === "string";
@@ -754,26 +1178,24 @@ function __residentPut(sql, path, cell, rev, ckey) {
   const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
   // Not admitted: nothing is held for the path (its old bytes are gone above).
-  if (!__residentFits(__residentCellBytes(size, isText), stamp !== __RK_OWN_WRITE)) {
-    sql.exec("DELETE FROM file WHERE path = ?", path);
+  if (!__residentFits(__residentCellCost(cell), stamp !== __RK_OWN_WRITE)) {
+    t.fileDelete(path);
+    if (stamp === __RK_OWN_WRITE) __residentHold(path, cell);
     return false;
   }
   for (let part = 0; part < chunks; part++) {
     const slice = body.slice(part * limit, (part + 1) * limit);
-    if (isText) sql.exec("INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)", path, part, slice);
-    else sql.exec("INSERT INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, slice);
+    if (isText) t.chunkAddText(path, part, slice);
+    else t.chunkAddBin(path, part, slice);
   }
-  sql.exec(
-    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
-    path, kind, size, chunks, stamp, stamp === __RK_OWN_WRITE || ckey == null ? null : String(ckey)
-  );
+  t.filePut(path, kind, size, chunks, stamp, stamp === __RK_OWN_WRITE || ckey == null ? null : String(ckey));
   return true;
 }
 
 /** One chunk row, written as it arrives. The streaming filler's primitive. */
-function __residentPutChunk(sql, path, part, bytes) {
+function __residentPutChunk(t, path, part, bytes) {
   if (!__residentFits(Math.ceil(bytes.byteLength * 1.01) + __RESIDENT_ROW_BYTES + 4096)) return false;
-  sql.exec("INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bytes);
+  t.chunkSetBin(path, part, bytes);
   return true;
 }
 
@@ -786,11 +1208,10 @@ function __residentPutChunk(sql, path, part, bytes) {
  * a large file leaves chunks nothing can read, never a short file something
  * can. Writing the head first would invert that into a truncated read.
  */
-function __residentPutHead(sql, path, kind, size, chunks, rev, ckey) {
-  sql.exec(
-    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
+function __residentPutHead(t, path, kind, size, chunks, rev, ckey) {
+  t.filePut(
     path, kind, size, chunks, typeof rev === "number" ? rev : __RK_OWN_WRITE,
-    typeof rev === "number" && ckey != null ? String(ckey) : null
+    typeof rev === "number" && ckey != null ? String(ckey) : null,
   );
 }
 
@@ -799,29 +1220,21 @@ function __residentPutHead(sql, path, kind, size, chunks, rev, ckey) {
  * \`ckey\`, by copying rows inside this store: equal keys are equal bytes, so
  * no fetch is needed. Returns whether a source existed.
  */
-function __residentCopyByKey(sql, path, ckey, rev) {
-  let source = null;
-  for (const row of sql.exec(
-    "SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", String(ckey), path,
-  )) source = row;
-  if (source === null) return false;
+function __residentCopyByKey(t, path, ckey, rev) {
+  const source = t.fileByKey(String(ckey), path);
+  if (source === undefined) return false;
   if (!__residentFits(Number(source.size) + (Number(source.chunks) + 1) * __RESIDENT_ROW_BYTES)) return false;
-  sql.exec("DELETE FROM chunk WHERE path = ?", path);
-  sql.exec(
-    "INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?",
-    path, String(source.path),
-  );
-  sql.exec(
-    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
-    path, Number(source.kind), Number(source.size), Number(source.chunks), rev, String(ckey),
-  );
+  t.chunkDelete(path);
+  t.chunkCopy(path, String(source.path));
+  t.filePut(path, Number(source.kind), Number(source.size), Number(source.chunks), rev, String(ckey));
   return true;
 }
 
-function __residentDelete(sql, path) {
-  const had = __residentHead(path) !== undefined;
-  sql.exec("DELETE FROM chunk WHERE path = ?", path);
-  sql.exec("DELETE FROM file WHERE path = ?", path);
+function __residentDelete(t, path) {
+  const had = __residentHead(path) !== undefined || __residentHeld.has(path);
+  __residentForgetHeld(path);
+  t.chunkDelete(path);
+  t.fileDelete(path);
   return had;
 }
 
@@ -839,7 +1252,7 @@ function __residentPopulate(path, cell, rev) {
       "An undated row cannot be invalidated, so it would be served stale forever."
     );
   }
-  return __residentPut(__residentSql, path, cell, rev);
+  return __residentPut(__residentT, path, cell, rev);
 }
 
 /**
@@ -847,8 +1260,7 @@ function __residentPopulate(path, cell, rev) {
  * unacknowledged bytes, or undefined when the path is not held.
  */
 function __residentProvenance(path) {
-  for (const row of __residentRequire().exec("SELECT rev FROM file WHERE path = ?", path)) return Number(row.rev);
-  return undefined;
+  return __residentRequire().fileRev(path);
 }
 
 /**
@@ -866,11 +1278,12 @@ function __residentProvenance(path) {
  * every later write to it by anyone.
  */
 function __residentStamp(path, rev) {
-  const sql = __residentRequire();
-  let size = null;
-  for (const row of sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, __RK_OWN_WRITE)) size = Number(row.size);
-  if (size === null) return;
-  sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, __RK_OWN_WRITE);
+  const heldCell = __residentHeld.get(path);
+  if (heldCell !== undefined && heldCell.rev === __RK_OWN_WRITE) heldCell.rev = rev;
+  const t = __residentRequire();
+  const size = t.fileOwnSize(path);
+  if (size === undefined) return;
+  t.fileStampOwn(path, rev);
   __nsNoteOwnFile(path, size, rev);
 }
 
@@ -887,11 +1300,10 @@ function __residentStamp(path, rev) {
  * the Durable Object's output gate, so that ordering is ordinary.
  */
 function __residentLease(path) {
-  const sql = __residentRequire();
-  let rev;
-  for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) rev = Number(row.rev);
+  const t = __residentRequire();
+  const rev = t.fileRev(path);
   if (rev === undefined || rev === __RK_OWN_WRITE) return undefined;
-  sql.exec("UPDATE file SET rev = ? WHERE path = ?", __RK_OWN_WRITE, path);
+  t.fileSetRev(path, __RK_OWN_WRITE);
   return rev;
 }
 
@@ -912,19 +1324,17 @@ function __residentFill(path, cell, rev) {
       "An undated row cannot be invalidated, so it would be served stale forever."
     );
   }
-  const sql = __residentRequire();
-  for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-    const held = Number(row.rev);
-    if (held === __RK_OWN_WRITE || held > rev) return false;
-  }
-  return __residentPut(sql, path, cell, rev);
+  const t = __residentRequire();
+  const held = t.fileRev(path);
+  if (held !== undefined && (held === __RK_OWN_WRITE || held > rev)) return false;
+  const heldCell = __residentHeld.get(path);
+  if (heldCell !== undefined && (heldCell.rev === __RK_OWN_WRITE || heldCell.rev > rev)) return false;
+  return __residentPut(t, path, cell, rev);
 }
 
 /** Every held path. Backs the Object.keys / for-in scans in the shims. */
 function __residentKeys() {
-  const out = [];
-  for (const row of __residentRequire().exec("SELECT path FROM file")) out.push(String(row.path));
-  return out;
+  return __residentRequire().fileAllPaths();
 }
 
 /**
@@ -933,11 +1343,7 @@ function __residentKeys() {
  * the shims deliver to their owners (\`_settleSkippedReports\`).
  */
 function __residentOwnPaths() {
-  const out = [];
-  for (const row of __residentRequire().exec("SELECT path FROM file WHERE rev = ?", __RK_OWN_WRITE)) {
-    out.push(String(row.path));
-  }
-  return out;
+  return __residentRequire().fileOwnPaths();
 }
 
 /**
@@ -975,12 +1381,7 @@ function __residentPrefixEnd(prefix) {
 function __residentKeysUnder(prefix) {
   const from = String(prefix);
   const to = __residentPrefixEnd(from);
-  const out = [];
-  const rows = to === null
-    ? __residentRequire().exec("SELECT path FROM file WHERE path >= ?", from)
-    : __residentRequire().exec("SELECT path FROM file WHERE path >= ? AND path < ?", from, to);
-  for (const row of rows) out.push(String(row.path));
-  return out;
+  return __residentRequire().filePaths(from, to);
 }
 
 /**
@@ -992,11 +1393,7 @@ function __residentKeysUnder(prefix) {
 function __residentHasUnder(prefix) {
   const from = String(prefix);
   const to = __residentPrefixEnd(from);
-  const rows = to === null
-    ? __residentRequire().exec("SELECT path FROM file WHERE path >= ? LIMIT 1", from)
-    : __residentRequire().exec("SELECT path FROM file WHERE path >= ? AND path < ? LIMIT 1", from, to);
-  for (const _row of rows) return true;
-  return false;
+  return __residentRequire().fileAny(from, to);
 }
 
 // ── The namespace ───────────────────────────────────────────────────────────
@@ -1034,9 +1431,9 @@ function __nsKindCode(type) {
   return type === "directory" ? __NS_DIR : type === "symlink" ? __NS_LINK : __NS_FILE;
 }
 
-function __nsLoadLinks(sql) {
+function __nsLoadLinks(t) {
   __nsLinks = new Set();
-  for (const row of sql.exec("SELECT parent, name FROM ns WHERE kind = ?", __NS_LINK)) {
+  for (const row of t.nsOfKind(__NS_LINK)) {
     const parent = String(row.parent);
     __nsLinks.add(parent ? parent + "/" + String(row.name) : String(row.name));
   }
@@ -1049,18 +1446,42 @@ function __nsReady() {
 
 /** The persisted 'ns' flag, mirrored in heap because every stat asks it. */
 let __nsOk = false;
+/** Why the namespace stopped answering, while it does not: what a refused sync call names. */
+let __nsCause = "the process has not listed it yet";
 
-function __nsMarkReady(sql, ready) {
-  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('ns', ?)", ready ? "1" : "0");
+function __nsMarkReady(t, ready, cause) {
+  t.metaSet("ns", ready ? "1" : "0");
   __nsOk = !!ready;
+  if (!ready) __nsCause = String(cause || "a change it could not follow");
 }
 
-function __nsPut(sql, k, stat, rev, target) {
+/** Why the namespace is not answering (meaningful only while __nsReady() is false). */
+function __nsNotReadyCause() {
+  if (!__residentReady) return "the process's store is not bound";
+  if (__residentSealed) return __residentSealReason || "the store has not reconciled with the session";
+  return __nsCause;
+}
+
+/**
+ * Whether a stat from the authority describes its name: a type, and the
+ * mode, owner and group every permission check reads. One without them is
+ * no record. Stored, its missing fields would become zeros, a root-owned
+ * mode-0 file the authority never reported. The namespace then stops
+ * answering (as for a delta without stats) until a listing that does
+ * describe every name restores it.
+ */
+function __nsDescribes(stat) {
+  if (!stat || typeof stat.type !== "string") return false;
+  for (const field of ["mode", "uid", "gid"]) {
+    if (stat[field] === null || stat[field] === undefined || !Number.isInteger(Number(stat[field]))) return false;
+  }
+  return true;
+}
+
+function __nsPut(t, k, stat, rev, target) {
   const [parent, name] = __nsSplit(k);
   const kind = __nsKindCode(stat.type);
-  sql.exec(
-    "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  t.nsPut(
     parent, name, kind, Number(stat.size) || 0, Number(stat.mode) || 0, Number(stat.uid) || 0,
     Number(stat.gid) || 0, Number(stat.atime) || 0, Number(stat.mtime) || 0, Number(stat.ctime) || 0,
     Number(stat.ino) || 0, Number(rev) || 0, kind === __NS_LINK ? String(target ?? "") : null,
@@ -1069,36 +1490,31 @@ function __nsPut(sql, k, stat, rev, target) {
 }
 
 /** Delete everything beneath \`k\`, and \`k\` itself when \`self\`. */
-function __nsDeleteTree(sql, k, self) {
+function __nsDeleteTree(t, k, self) {
   if (k === "") {
-    sql.exec("DELETE FROM ns");
+    t.nsClear();
     __nsLinks = new Set();
     return;
   }
   const prefix = k + "/";
   const end = __residentPrefixEnd(prefix);
-  sql.exec("DELETE FROM ns WHERE parent = ?", k);
-  if (end === null) sql.exec("DELETE FROM ns WHERE parent >= ?", prefix);
-  else sql.exec("DELETE FROM ns WHERE parent >= ? AND parent < ?", prefix, end);
+  t.nsDeleteChildren(k);
+  t.nsDeleteParents(prefix, end);
   if (self) {
     const [parent, name] = __nsSplit(k);
-    sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
+    t.nsDelete(parent, name);
     __nsLinks.delete(k);
   }
   for (const link of __nsLinks) if (link.startsWith(prefix)) __nsLinks.delete(link);
 }
 
 /** The row at exactly \`k\` (no symlink resolution), or undefined. */
-function __nsRowAt(sql, k) {
+function __nsRowAt(t, k) {
   if (k === "") {
     return { kind: __NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null };
   }
   const [parent, name] = __nsSplit(k);
-  for (const row of sql.exec(
-    "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target FROM ns WHERE parent = ? AND name = ?",
-    parent, name,
-  )) return row;
-  return undefined;
+  return t.nsGet(parent, name);
 }
 
 function __nsJoinTarget(linkPath, target) {
@@ -1118,7 +1534,7 @@ function __nsJoinTarget(linkPath, target) {
  * symlink sits on the path; otherwise it is one lookup.
  */
 function __nsResolve(k, followLeaf) {
-  const sql = __residentRequire();
+  const t = __residentRequire();
   let path = k;
   for (let hops = 0; hops <= __NS_MAX_HOPS; hops++) {
     let redirected = false;
@@ -1128,7 +1544,7 @@ function __nsResolve(k, followLeaf) {
         const prefix = segs.slice(0, i).join("/");
         if (!__nsLinks.has(prefix)) continue;
         if (i === segs.length && !followLeaf) break;
-        const row = __nsRowAt(sql, prefix);
+        const row = __nsRowAt(t, prefix);
         if (!row || Number(row.kind) !== __NS_LINK) break;
         const rest = segs.slice(i).join("/");
         const target = __nsJoinTarget(prefix, row.target);
@@ -1138,7 +1554,7 @@ function __nsResolve(k, followLeaf) {
       }
     }
     if (redirected) continue;
-    const row = __nsRowAt(sql, path);
+    const row = __nsRowAt(t, path);
     return row === undefined ? null : { path, row };
   }
   return "ELOOP";
@@ -1146,11 +1562,7 @@ function __nsResolve(k, followLeaf) {
 
 /** The entries directly under directory \`k\` (already resolved): [{ name, kind }]. */
 function __nsChildren(k) {
-  const out = [];
-  for (const row of __residentRequire().exec("SELECT name, kind FROM ns WHERE parent = ?", k)) {
-    out.push({ name: String(row.name), kind: Number(row.kind) });
-  }
-  return out;
+  return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind) }));
 }
 
 /** Whether the credential may search directory \`row\` (POSIX x). */
@@ -1171,17 +1583,17 @@ function __nsTraversable(row) {
  * subtree must be relisted — one that just became searchable, whose
  * descendants no delta names — or null.
  */
-function __nsApplyEntry(sql, entry) {
+function __nsApplyEntry(t, entry) {
   const k = String(entry.path).replace(/^\\/+/, "");
   if (k === "") return null;
-  if (entry.stat === null) { __nsDeleteTree(sql, k, true); return null; }
-  const before = __nsRowAt(sql, k);
-  __nsPut(sql, k, entry.stat, entry.rev, entry.linkTarget);
-  const after = __nsRowAt(sql, k);
-  if (Number(after.kind) !== __NS_DIR) { __nsDeleteTree(sql, k, false); return null; }
+  if (entry.stat === null) { __nsDeleteTree(t, k, true); return null; }
+  const before = __nsRowAt(t, k);
+  __nsPut(t, k, entry.stat, entry.rev, entry.linkTarget);
+  const after = __nsRowAt(t, k);
+  if (Number(after.kind) !== __NS_DIR) { __nsDeleteTree(t, k, false); return null; }
   const was = before !== undefined && __nsTraversable(before);
   const now = __nsTraversable(after);
-  if (was && !now) __nsDeleteTree(sql, k, false);
+  if (was && !now) __nsDeleteTree(t, k, false);
   if (!was && now && before !== undefined) return k;
   return null;
 }
@@ -1191,13 +1603,13 @@ function __nsApplyEntry(sql, entry) {
  * listing no longer names. \`entries\` are VfsListEntry (path, stat, rev,
  * linkTarget). Called once per enumeration, after its last page.
  */
-function __nsReplace(sql, entries) {
+function __nsReplace(t, entries) {
   const listed = new Set();
   for (const entry of entries) {
     const k = String(entry.path).replace(/^\\/+/, "");
     if (k === "") continue;
     listed.add(k);
-    const held = __nsRowAt(sql, k);
+    const held = __nsRowAt(t, k);
     const s = entry.stat;
     if (held !== undefined
       && Number(held.kind) === __nsKindCode(s.type) && Number(held.size) === Number(s.size)
@@ -1206,16 +1618,16 @@ function __nsReplace(sql, entries) {
       && Number(held.ctime) === Number(s.ctime) && Number(held.ino) === Number(s.ino)
       && Number(held.rev) === Number(entry.rev)
       && (held.target ?? null) === (entry.linkTarget ?? null)) continue;
-    __nsPut(sql, k, s, entry.rev, entry.linkTarget);
+    __nsPut(t, k, s, entry.rev, entry.linkTarget);
   }
   const stale = [];
-  for (const row of sql.exec("SELECT parent, name FROM ns")) {
+  for (const row of t.nsKeys()) {
     const parent = String(row.parent);
     const k = parent ? parent + "/" + String(row.name) : String(row.name);
     if (!listed.has(k)) stale.push([parent, String(row.name), k]);
   }
   for (const [parent, name, k] of stale) {
-    sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
+    t.nsDelete(parent, name);
     __nsLinks.delete(k);
   }
 }
@@ -1229,11 +1641,11 @@ function __nsReplace(sql, entries) {
  */
 function __nsNoteOwnFile(k, size, rev) {
   if (!__nsReady()) return;
-  const sql = __residentSql;
-  const held = __nsRowAt(sql, k);
+  const t = __residentT;
+  const held = __nsRowAt(t, k);
   if (held !== undefined && Number(held.rev) >= rev) return;
   const now = Date.now();
-  __nsPut(sql, k, {
+  __nsPut(t, k, {
     // A file the process created: its umask's mode, until the delta reports
     // the authority's own stat for it.
     type: "file", size, mode: held ? Number(held.mode) : 0o100666 & ~Number(__nsCred?.umask ?? 0o022),
@@ -1241,6 +1653,29 @@ function __nsNoteOwnFile(k, size, rev) {
     gid: held ? Number(held.gid) : Number(__nsCred?.gid ?? 0),
     atime: now, mtime: now, ctime: now, ino: held ? Number(held.ino) : 0,
   }, rev, null);
+}
+
+/**
+ * Record what the authority just said of a name this process asked about (an
+ * async stat, read or accepted write): the sync view answers it at once,
+ * as it would after the delta that reports it. Dated at the store's cursor,
+ * so any row as new is kept, and the next delta naming the path replaces it
+ * with the authority's own dating. \`stat\` null: the authority said it is not
+ * there, and a row older than the cursor goes.
+ */
+function __nsNoteLiveStat(k, stat) {
+  if (!__nsReady()) return;
+  const cursor = __residentCursor();
+  if (cursor === null) return;
+  const t = __residentT;
+  const held = __nsRowAt(t, k);
+  if (held !== undefined && Number(held.rev) >= cursor.rev) return;
+  if (stat === null) {
+    if (held !== undefined) { const [parent, name] = __nsSplit(k); t.nsDelete(parent, name); __nsLinks.delete(k); }
+    return;
+  }
+  if (!__nsDescribes(stat)) return;
+  __nsPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target ?? null);
 }
 
 /**
@@ -1255,11 +1690,9 @@ function __nsNoteOwnFile(k, size, rev) {
  */
 function __residentClear() {
   if (!__residentReady) throw new Error("Nimbus: __residentClear before __residentBind");
-  const sql = __residentSql;
-  sql.exec("DELETE FROM chunk");
-  sql.exec("DELETE FROM file");
-  sql.exec("DELETE FROM ns");
-  sql.exec("DELETE FROM meta");
+  __residentT.clear();
+  // Held cells go with the rows, but for own writes still in flight.
+  for (const [path, held] of [...__residentHeld]) if (held.rev !== __RK_OWN_WRITE) __residentForgetHeld(path);
   __nsLinks = new Set();
   __nsOk = false;
   __residentSeal("the store was cleared");
@@ -1267,16 +1700,15 @@ function __residentClear() {
 
 function __residentStats() {
   if (!__residentReady) throw new Error("Nimbus: __residentStats before __residentBind");
-  const sql = __residentSql;
-  let files = 0, bytes = 0, names = 0;
-  for (const row of sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file")) {
-    files = Number(row.n); bytes = Number(row.b);
-  }
-  for (const row of sql.exec("SELECT count(*) AS n FROM ns")) names = Number(row.n);
+  const t = __residentT;
+  const counted = t.fileStats();
+  const files = counted === undefined ? 0 : Number(counted.n);
+  const bytes = counted === undefined ? 0 : Number(counted.b);
+  const names = t.nsCount();
   return {
     files, bytes, names,
     namespace: __nsReady(),
-    databaseSize: Number(sql.databaseSize ?? 0),
+    databaseSize: t.databaseSize(),
     sealed: __residentSealed,
     undatedSnapshot: __residentUndated,
     cursor: __residentCursor(),
@@ -1335,7 +1767,19 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   }
   // A store with no cursor holds nothing any incarnation can date.
   __residentClear();
-  const adopted = __residentAdoptModuleBundle(takeBundle(), moduleCursor);
+  const bundle = takeBundle();
+  // The module map is the program's code: it is held whole or the launch
+  // fails. Spawn admitted it (N18); this is room for it now, asked for when
+  // the store's cap does not already cover it.
+  let moduleBytes = 0;
+  for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  if (!(await __residentEnsureRoom(moduleBytes))) {
+    throw Object.assign(new Error(
+      "ENOSPC: workspace storage is full: this process's modules (" + Math.ceil(moduleBytes / 1048576)
+        + " MiB) do not fit in what is left of the session's storage"
+    ), { code: "ENOSPC" });
+  }
+  const adopted = __residentAdoptModuleBundle(bundle, moduleCursor);
   // The pass that just failed is not retried. The store now holds what a
   // cold launch whose fill failed holds, and its first ACQUIRE's delta
   // brings it current the same way.
@@ -1411,8 +1855,8 @@ async function __residentCatchUp(supervisor, cursor) {
  * became searchable, whose descendants no delta will ever name.
  */
 async function __nsRelist(supervisor, dir) {
-  if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentSql, false); return; }
-  const sql = __residentSql;
+  if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentT, false, "the session cannot list its filesystem"); return; }
+  const t = __residentT;
   const prefix = dir + "/";
   const seen = [];
   let after = prefix;
@@ -1420,8 +1864,8 @@ async function __nsRelist(supervisor, dir) {
   for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES && !done; page++) {
     let listed;
     try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
-    catch { __nsMarkReady(sql, false); return; }
-    if (!listed || !Array.isArray(listed.entries)) { __nsMarkReady(sql, false); return; }
+    catch (e) { __nsMarkReady(t, false, "a listing of /" + dir + " failed (" + ((e && e.message) || String(e)) + ")"); return; }
+    if (!listed || !Array.isArray(listed.entries)) { __nsMarkReady(t, false, "a listing of /" + dir + " came back without entries"); return; }
     for (const entry of listed.entries) {
       const k = String(entry.path).replace(/^\\/+/, "");
       if (!k.startsWith(prefix)) {
@@ -1433,11 +1877,12 @@ async function __nsRelist(supervisor, dir) {
     if (listed.next === null || listed.next === undefined) done = true;
     else after = listed.next;
   }
-  if (!done) { __nsMarkReady(sql, false); return; }
+  if (!done) { __nsMarkReady(t, false, "a listing of /" + dir + " did not finish"); return; }
+  if (!seen.every((entry) => __nsDescribes(entry.stat))) { __nsMarkReady(t, false, "a listing of /" + dir + " named an entry without its stat"); return; }
   // Exactly what the listing has under the directory: a name it no longer
   // shows (hidden now, or gone) leaves, one it shows is written.
-  __nsDeleteTree(sql, dir, false);
-  for (const entry of seen) __nsPut(sql, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget);
+  __nsDeleteTree(t, dir, false);
+  for (const entry of seen) __nsPut(t, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget);
 }
 
 /**
@@ -1487,7 +1932,7 @@ function __residentAdoptModuleBundle(bundle, moduleCursor) {
   }
   const rev = Number(moduleCursor.rev);
   for (const path of Object.keys(bundle || {})) {
-    __residentPut(__residentSql, path, bundle[path], rev);
+    __residentPut(__residentT, path, bundle[path], rev);
   }
   return __residentAdmit({ poison: false, paths: [], epoch: String(moduleCursor.epoch), rev }).cursor;
 }
@@ -1496,13 +1941,12 @@ function __residentAdoptModuleBundle(bundle, moduleCursor) {
  * Enumerate the whole filesystem, one page at a time.
  *
  * WHAT EXISTS has to come from the authority, not from anything the facet was
- * shipped, and that was measured rather than assumed: for a working tree
- * holding a 25 MiB file outside the cwd, \`__MODULE_VFS_METADATA\` arrived with
- * FOUR entries — "home", "opt", "var", "home/user" — every one a directory.
- * Metadata covers the bundle plus ancestors; the manifest is per-directory
- * child names for the directories that happened to be walked. A store that
- * enumerated from either would hold only what the bundle already had, which is
- * the admission problem it exists to delete.
+ * shipped. That was measured rather than assumed: for a working tree holding a
+ * 25 MiB file outside the cwd, the spawn-time stat table this replaced arrived
+ * with FOUR entries ("home", "opt", "var", "home/user"), every one a
+ * directory. A launch ships only what it staged plus its ancestors; a store
+ * that enumerated from that would hold only what the bundle already had, which
+ * is the admission problem it exists to delete.
  *
  * Every page is dated, and a page whose epoch differs from the first ABORTS
  * the listing. The supervisor was replaced mid-walk, so the pages already
@@ -1585,7 +2029,7 @@ async function __residentEnumerate(supervisor) {
 async function __residentFetchFiles(supervisor, files) {
   // Content already held under another path, or wanted twice in this batch,
   // is fetched once: equal keys are equal bytes (the second copy is local).
-  const sql = __residentSql;
+  const t = __residentT;
   const requested = files.length;
   let copied = 0;
   const wanted = [];
@@ -1593,7 +2037,7 @@ async function __residentFetchFiles(supervisor, files) {
   const fetching = new Set();
   for (const file of files) {
     if (file.ckey != null) {
-      if (__residentCopyByKey(sql, file.path, file.ckey, file.rev)) { copied++; continue; }
+      if (__residentCopyByKey(t, file.path, file.ckey, file.rev)) { copied++; continue; }
       if (fetching.has(file.ckey)) { later.push(file); continue; }
       fetching.add(file.ckey);
     }
@@ -1663,7 +2107,7 @@ async function __residentFetchFiles(supervisor, files) {
         // path this store will not hold, and a read of it falls through to
         // exactly the miss it would have had before.
         if (entry && entry.error && entry.error.code === "EACCES" && range.part === 0) {
-          __residentPut(__residentSql, range.path, { error: "EACCES" }, range.rev);
+          __residentPut(t, range.path, { error: "EACCES" }, range.rev);
           filled++;
         } else failedPaths.add(range.path);
         continue;
@@ -1672,11 +2116,11 @@ async function __residentFetchFiles(supervisor, files) {
       const chunk = __residentBytes(entry.bytes);
       if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
       fetchedBytes += chunk.byteLength;
-      if (!__residentPutChunk(__residentSql, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
+      if (!__residentPutChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
-        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, range.rev, range.ckey);
+        __residentPutHead(t, range.path, __RK_BINARY, range.size, range.parts, range.rev, range.ckey);
         filled++;
       }
     }
@@ -1687,12 +2131,12 @@ async function __residentFetchFiles(supervisor, files) {
   // nothing will ever serve.
   for (const path of failedPaths) {
     failed++;
-    __residentSql.exec("DELETE FROM chunk WHERE path = ?", path);
-    __residentSql.exec("DELETE FROM file WHERE path = ?", path);
+    t.chunkDelete(path);
+    t.fileDelete(path);
   }
 
   for (const file of later) {
-    if (__residentCopyByKey(sql, file.path, file.ckey, file.rev)) copied++;
+    if (__residentCopyByKey(t, file.path, file.ckey, file.rev)) copied++;
     else failed++;
   }
   if (ranges.length > 0) await __residentReportSize();
@@ -1782,7 +2226,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     return { requested: 0, filled: 0, failed: 0, skipped: "fsList reported no authority cursor" };
   }
 
-  const sql = __residentSql;
+  const t = __residentT;
   const held = __residentCursor();
   // May a row this pass cannot prove current be DROPPED? Only against a
   // complete enumeration: a truncated one cannot tell a path that was removed
@@ -1797,7 +2241,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   for (const file of listing.entries) listed.set(file.path, file);
 
   const rows = [];
-  for (const row of sql.exec("SELECT path, rev, ckey FROM file")) {
+  for (const row of t.fileRows()) {
     rows.push({ path: String(row.path), rev: Number(row.rev), ckey: row.ckey == null ? null : String(row.ckey) });
   }
   const current = new Set();
@@ -1820,12 +2264,30 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     // not, or another epoch): kept and dated at the listing. Equal keys are
     // equal bytes, so this needs no comparable clock.
     if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey) {
-      sql.exec("UPDATE file SET rev = ? WHERE path = ?", entry.rev, row.path);
+      t.fileSetRev(row.path, entry.rev);
       current.add(row.path);
       rekeyed++;
       continue;
     }
     dropped.push(row.path);
+  }
+  // Cells held in the heap (own writes the store had no room for) are judged
+  // as file rows are, on every path a file row is (N18). Undated, a write-back
+  // still in flight: newer than anything listed, it stays and is reported as
+  // own. Dated: kept only where the listing proves it current; otherwise it
+  // goes, and is fetched again like any dropped row, so a sync read of it is
+  // a miss rather than bytes the authority has replaced.
+  for (const [path, cell] of [...__residentHeld]) {
+    if (current.has(path)) continue;
+    const entry = listed.get(path);
+    if (cell.rev === __RK_OWN_WRITE) {
+      current.add(path);
+      own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
+      continue;
+    }
+    if ((comparable && entry !== undefined && cell.rev >= entry.rev) || !judgeable) { current.add(path); continue; }
+    __residentForgetHeld(path);
+    dropped.push(path);
   }
   // Sweep what could not be vouched for. When NOTHING could — a new supervisor
   // incarnation, whose revisions say nothing about ours — that is every row but
@@ -1834,12 +2296,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // resetting under exactly that load. So it is a predicate there, and per path
   // where a reconcile has made the set small by construction.
   if (dropped.length > 0 && !comparable && rekeyed === 0) {
-    sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", __RK_OWN_WRITE);
-    sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+    t.dropDatedFiles();
   } else {
     for (const path of dropped) {
-      sql.exec("DELETE FROM chunk WHERE path = ?", path);
-      sql.exec("DELETE FROM file WHERE path = ?", path);
+      t.chunkDelete(path);
+      t.fileDelete(path);
     }
   }
 
@@ -1861,9 +2322,12 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // after a truncated listing they do not: a path in an unwalked page could
   // have moved since the held cursor and would never be reported again.
   if (judgeable) {
-    __nsReplace(sql, listing.names);
-    __residentWriteCursor(sql, listing.cursor);
-    __nsMarkReady(sql, true);
+    // A listing that cannot describe every name restores the rows it vouches
+    // for and the cursor, but not the namespace (see __nsDescribes).
+    const describable = listing.names.every((entry) => __nsDescribes(entry.stat));
+    if (describable) __nsReplace(t, listing.names);
+    __residentWriteCursor(t, listing.cursor);
+    __nsMarkReady(t, describable, "the session's listing named an entry without its stat");
     __residentUndated = false;
     __residentSealed = false;
     __residentSealReason = "";
@@ -1887,6 +2351,22 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
 }
 
 /**
+ * The launch's last step before user code: the namespace must answer, since
+ * every synchronous stat, exists and readdir reads it. A boot that left it
+ * unready (its listing failed, came back short, or could not describe every
+ * name) is repaired once more. Resolves to null when it answers, or to the
+ * launch's failure, naming why; nothing is ever run on a namespace that
+ * does not.
+ */
+async function __residentRequireNamespace(supervisor, bootFailure) {
+  if (__nsReady()) return null;
+  try { await __residentSynchronizeFromSupervisor(supervisor); } catch {}
+  if (__nsReady()) return null;
+  return "node: the process was not started: its view of the filesystem could not be listed ("
+    + __nsNotReadyCause() + (bootFailure ? "; " + bootFailure : "") + ")";
+}
+
+/**
  * The resident set, as the shims have always seen it.
  *
  * Every trap is synchronous, because every reader of __vfsBundle is.
@@ -1898,7 +2378,7 @@ const __nimbusResidentBundle = new Proxy(Object.create(null), {
   },
   has(_t, path) {
     if (typeof path !== "string") return false;
-    return __residentHead(path) !== undefined;
+    return __residentHead(path) !== undefined || __residentHeld.has(path);
   },
   set(_t, path, cell) {
     // The program's own write, stamped __RK_OWN_WRITE: not the authority's

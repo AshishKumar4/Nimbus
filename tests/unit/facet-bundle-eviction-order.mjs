@@ -26,62 +26,8 @@ import {
   isTypescriptDeclarationFile,
 } from '../../packages/worker/src/facets/manager.ts';
 import { BUNDLE_MAX_ENCODED_BYTES } from '../../packages/core/src/constants.ts';
+import { launchFs } from './lib/launch-fs.mjs';
 
-class FakeVfs {
-  get authority() {
-    return {
-      acquire: async () => ({ epoch: this.epoch, rev: this.revision() }),
-      stat: async (path) => this.lstat(path),
-    };
-  }
-
-  epoch = 'fake-vfs-epoch';
-  revision() { return 0; }
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) {
-      const parts = file.split('/');
-      for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-    }
-  }
-  exists(p) { const s = p.replace(/^\/+/, ''); return this.files.has(s) || this.dirs.has(s); }
-  isDirectory(p) { return this.dirs.has(p.replace(/^\/+/, '')); }
-  readFile(p) { return new TextEncoder().encode(this.readFileString(p)); }
-  readFileString(p) {
-    const s = p.replace(/^\/+/, '');
-    const c = this.files.get(s);
-    if (c === undefined) throw new Error(`missing file: ${s}`);
-    return c;
-  }
-  readdir(p) {
-    const s = p.replace(/^\/+/, '');
-    const prefix = s ? `${s}/` : '';
-    const entries = new Map();
-    for (const d of this.dirs) {
-      if (!d.startsWith(prefix)) continue;
-      const rest = d.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'directory');
-    }
-    for (const f of this.files.keys()) {
-      if (!f.startsWith(prefix)) continue;
-      const rest = f.slice(prefix.length);
-      if (!rest || rest.includes('/')) continue;
-      entries.set(rest, 'file');
-    }
-    return Array.from(entries, ([name, type]) => ({ name, type }));
-  }
-  lstat(p) {
-    const s = p.replace(/^\/+/, '');
-    if (this.dirs.has(s)) return { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 };
-    const c = this.files.get(s);
-    if (c === undefined) throw new Error(`missing path: ${s}`);
-    return { type: 'file', size: c.length, mode: 0o644, uid: 1000, gid: 1000 };
-  }
-  stat(p) { return this.lstat(p); }
-  access(p) { if (!this.exists(p)) throw new Error(`missing path: ${p}`); }
-}
 
 const PROJ = 'home/user/proj';
 const filler = (bytes, tag) => `// ${tag}\n${'x'.repeat(Math.max(0, bytes - tag.length - 4))}\n`;
@@ -113,7 +59,7 @@ const files = {
 const DECL = `${PROJ}/types.d.ts`;
 const SIBLING = `${PROJ}/node_modules/chunky/dist/shared/helper-Bf6oL9fm.js`;
 
-const vfs = new FakeVfs(files);
+const vfs = launchFs(files).fs;
 const state = await buildPrefetchBundle(vfs, `${PROJ}/app.js`, PROJ, files[`${PROJ}/app.js`]);
 const bundle = state.bundle;
 

@@ -20,6 +20,7 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  PROBE_BROWSER_ROOT,
   allocateProfileDir,
   cleanupRunProfiles,
   findRunBrowsers,
@@ -27,6 +28,10 @@ import {
   reapRunBrowsers,
   runProfileRoot,
 } from '../behavioral/_probe-browser.mjs';
+
+// The probes' shared browser root: removed at exit only if this test made it,
+// so a root a concurrent probe run is using is left alone.
+if (!existsSync(PROBE_BROWSER_ROOT)) process.on('exit', () => rmSync(PROBE_BROWSER_ROOT, { recursive: true, force: true }));
 
 const RUN_A = `unit-a-${process.pid}`;
 const RUN_B = `unit-b-${process.pid}`;

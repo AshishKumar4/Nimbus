@@ -18,11 +18,12 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
 );
 
 const bundle = {

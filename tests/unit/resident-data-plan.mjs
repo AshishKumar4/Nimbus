@@ -14,8 +14,9 @@
 //   - a file outside every rule is not held: its synchronous read is the
 //     honest EAGAIN naming it, while stat and readdir still answer exactly.
 //
-// The control arm disables the fill: the planned reads the module map does
-// not carry must then fail, so they cannot be coming from it.
+// The control arm disables the fill (the namespace is still listed): the
+// planned reads the module map does not carry must then fail, so they cannot
+// be coming from it.
 
 import assert from 'node:assert/strict';
 
@@ -110,7 +111,8 @@ function makeSupervisor(props) {
      */
     async fsList(after, limit) {
       fsListCalls++;
-      if (!allowFill) throw new Error('probe: fill disabled for the control arm');
+      // The control arm still lists: no launch runs user code before its
+      // namespace answers. Only the content fill is disabled.
       return _rpcFsList(rpcHost, after ?? null, limit ?? null);
     },
     async fsReadBatch(requests) {
