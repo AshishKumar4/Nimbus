@@ -1,6 +1,6 @@
 {
  "tool": "cut",
- "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "cut (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "c1": "YTpiOmMKbm8gZGVsaW0KMToyOjM6NDo1Cgo=",
   "c2": "YTpiOmMKbm8gZGVsaW0KMToyOjM6NDo1",
@@ -217,17 +217,17 @@
   },
   {
    "args": "-b2-3 c4",
-   "stdout": "\u00c3\u00a9\n",
+   "stdout": "Ã©\n",
    "exit": 0
   },
   {
    "args": "-c2-3 c4",
-   "stdout": "\u00c3\u00a9\n",
+   "stdout": "Ã©\n",
    "exit": 0
   },
   {
    "args": "-f1,3 -d ' ' c4",
-   "stdout": "h\u00c3\u00a9llo\n",
+   "stdout": "hÃ©llo\n",
    "exit": 0
   },
   {

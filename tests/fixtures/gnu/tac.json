@@ -1,0 +1,106 @@
+{
+ "tool": "tac",
+ "recorded": "tac (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "ct": "YQliAX+A6cOpCgoKCmMNCmQ=",
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "seps": "MSwyLCwzLAo0LDU=",
+  "crcr": "eA15DQoNDQp6DQ=="
+ },
+ "cases": [
+  {
+   "args": "long",
+   "stdout": "line 29\nline 28\nline 27\nline 26\nline 25\nline 24\nline 23\nline 22\nline 21\nline 20\nline 19\nline 18\nline 17\nline 16\nline 15\nline 14\nline 13\nline 12\nline 11\nline 10\nline 9\nline 8\nline 7\nline 6\nline 5\nline 4\nline 3\nline 2\nline 1\nline 0\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol",
+   "stdout": "cb\na\n",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "d\nc\u0000\na\u0000b\n",
+   "exit": 0
+  },
+  {
+   "args": "l1",
+   "stdout": "hÃ©llo\nplain\nþÿ\nnaïve\ncafé\n",
+   "exit": 0
+  },
+  {
+   "args": "empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "ct",
+   "stdout": "dc\r\n\n\n\na\tb\u0001éÃ©\n",
+   "exit": 0
+  },
+  {
+   "args": "-b ct",
+   "stdout": "\nd\nc\r\n\n\na\tb\u0001éÃ©",
+   "exit": 0
+  },
+  {
+   "args": "-s , seps",
+   "stdout": "5\n4,3,,2,1,",
+   "exit": 0
+  },
+  {
+   "args": "-b -s , seps",
+   "stdout": ",5,\n4,3,,21",
+   "exit": 0
+  },
+  {
+   "args": "-s ,, seps",
+   "stdout": "3,\n4,51,2,,",
+   "exit": 0
+  },
+  {
+   "args": "-r -s '[0-9]' seps",
+   "stdout": ",5,\n4,,3,21",
+   "exit": 0
+  },
+  {
+   "args": "-r -s '[ab]' ct",
+   "stdout": "\u0001éÃ©\n\n\n\nc\r\nd\tba",
+   "exit": 0
+  },
+  {
+   "args": "-s '' ct",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "long noeol",
+   "stdout": "line 29\nline 28\nline 27\nline 26\nline 25\nline 24\nline 23\nline 22\nline 21\nline 20\nline 19\nline 18\nline 17\nline 16\nline 15\nline 14\nline 13\nline 12\nline 11\nline 10\nline 9\nline 8\nline 7\nline 6\nline 5\nline 4\nline 3\nline 2\nline 1\nline 0\ncb\na\n",
+   "exit": 0
+  },
+  {
+   "args": "nope long",
+   "stdout": "line 29\nline 28\nline 27\nline 26\nline 25\nline 24\nline 23\nline 22\nline 21\nline 20\nline 19\nline 18\nline 17\nline 16\nline 15\nline 14\nline 13\nline 12\nline 11\nline 10\nline 9\nline 8\nline 7\nline 6\nline 5\nline 4\nline 3\nline 2\nline 1\nline 0\n",
+   "exit": 1
+  },
+  {
+   "args": "cat long | %T",
+   "stdout": "line 29\nline 28\nline 27\nline 26\nline 25\nline 24\nline 23\nline 22\nline 21\nline 20\nline 19\nline 18\nline 17\nline 16\nline 15\nline 14\nline 13\nline 12\nline 11\nline 10\nline 9\nline 8\nline 7\nline 6\nline 5\nline 4\nline 3\nline 2\nline 1\nline 0\n",
+   "exit": 0
+  },
+  {
+   "args": "-- noeol",
+   "stdout": "cb\na\n",
+   "exit": 0
+  },
+  {
+   "args": "-s '' nul",
+   "stdout": "\nd\nb\nc\u0000a\u0000",
+   "exit": 0
+  }
+ ]
+}

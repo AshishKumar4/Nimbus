@@ -22,6 +22,11 @@ import tailCommand from '../substrate/lifo/commands/text/tail.js';
 import wcCommand from '../substrate/lifo/commands/text/wc.js';
 import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
+import catCommand from '../substrate/lifo/commands/fs/cat.js';
+import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
+import headCommand from '../substrate/lifo/commands/text/head.js';
+import tacCommand from '../substrate/lifo/commands/text/tac.js';
+import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
@@ -51,7 +56,19 @@ function stdinText(ctx) {
  * standard input as the byte stream it is (wrapStreaming), not a decoded string.
  */
 function textCommand(sqliteVfs, command) {
-    return wrapStreaming(withInvocationVfs(sqliteVfs, () => command));
+    const run = withInvocationVfs(sqliteVfs, () => command);
+    // A reader that closed the pipe ends the writer silently, with SIGPIPE's status.
+    const guarded = async (ctx) => {
+        try {
+            return await run(ctx);
+        }
+        catch (error) {
+            if (isBrokenPipe(error))
+                return 141;
+            throw error;
+        }
+    };
+    return wrapStreaming(guarded);
 }
 function withInvocationVfs(_sqliteVfs, factory) {
     return async (ctx) => {
@@ -1333,91 +1350,6 @@ function mkFind(vfs, registry) {
         return status;
     };
 }
-/**
- * SHELL-R6-B2 follow-on: streaming head.
- *
- * When invoked on a pipeline (`producer | head`), receives a pipe
- * reader (object with .read()) — NOT a coalesced string — and reads
- * line-by-line until N lines are emitted. Closes the reader by
- * draining null (or by the SHELL-R6-2 abort cascade kicking in when
- * we return).
- *
- * Why: the original head implementation read via readAll(), which never returns when
- * upstream is `yes`. Our SHELL-R6-2 pipeline abort only fires when
- * the consumer resolves — so head must resolve quickly via its own
- * line-count termination, which then triggers the cascade.
- *
- * Backward compat: file-args (head FILE) and the string-stdin case
- * (when wrap already coalesced) still work via the same code path.
- */
-function mkHead(_vfs) {
-    return async (ctx) => {
-        const parsed = parseHeadArgs(ctx.args);
-        if (parsed.error) {
-            (await ctx.stderr.write(`head: ${parsed.error}\n`));
-            return 1;
-        }
-        const { lines: n, bytes, files } = parsed;
-        if (bytes !== undefined)
-            return (await headBytes(ctx, files, bytes));
-        if (files.length === 0) {
-            // Pipe / stdin case.
-            const stdin = ctx.stdin;
-            if (!stdin)
-                return 0;
-            // Streaming pipe-reader path: read chunks until N lines.
-            if (typeof stdin !== 'string' && typeof stdin.read === 'function') {
-                let buffered = '';
-                let emitted = 0;
-                const out = [];
-                while (emitted < n) {
-                    const chunk = await stdin.read();
-                    if (chunk === null)
-                        break;
-                    buffered += chunk;
-                    // Process complete lines while we have them.
-                    while (emitted < n) {
-                        const nlIdx = buffered.indexOf('\n');
-                        if (nlIdx === -1)
-                            break;
-                        out.push(buffered.substring(0, nlIdx));
-                        buffered = buffered.substring(nlIdx + 1);
-                        emitted++;
-                    }
-                }
-                // Handle a partial line if N hit mid-buffer and producer hasn't
-                // sent a trailing newline yet — emit it only if we haven't
-                // already hit the N-line cap (POSIX head includes partial
-                // tail).
-                if (emitted < n && buffered.length > 0) {
-                    out.push(buffered);
-                }
-                (await ctx.stdout.write(out.join('\n') + '\n'));
-                return 0;
-            }
-            // Legacy string-stdin path (kept for wrap's pre-coalesced case).
-            if (typeof stdin === 'string') {
-                (await ctx.stdout.write(stdin.split('\n').slice(0, n).join('\n') + '\n'));
-                return 0;
-            }
-            return 0;
-        }
-        for (const [index, f] of files.entries()) {
-            const path = absolutePath(ctx.cwd, f);
-            try {
-                const content = (await readWholeFileString(ctx, path));
-                if (files.length > 1)
-                    (await ctx.stdout.write(`${index > 0 ? '\n' : ''}==> ${f} <==\n`));
-                (await ctx.stdout.write(content.split('\n').slice(0, n).join('\n') + '\n'));
-            }
-            catch (error) {
-                (await ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`));
-                return 1;
-            }
-        }
-        return 0;
-    };
-}
 /** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
 function parseHeadArgs(args) {
     const result = { lines: 10, files: [] };
@@ -2502,33 +2434,6 @@ function mkXargs(vfs, registry) {
         return exit;
     };
 }
-function mkTee(vfs) {
-    return async (ctx) => {
-        const input = stdinText(ctx) || '';
-        const append = ctx.args.includes('-a');
-        const files = ctx.args.filter(a => !a.startsWith('-'));
-        (await ctx.stdout.write(input));
-        let status = 0;
-        // A file it cannot write is reported and the rest still get the input (GNU).
-        for (const f of files) {
-            const fp = resolvePath(ctx.cwd, f);
-            try {
-                if (append && (await vfs.exists(fp))) {
-                    const existing = (await vfs.readFileString(fp));
-                    (await vfs.writeFile(fp, existing + input));
-                }
-                else {
-                    (await vfs.writeFile(fp, input));
-                }
-            }
-            catch (error) {
-                (await ctx.stderr.write(`tee: ${f}: ${fsErrorMessage(error)}\n`));
-                status = 1;
-            }
-        }
-        return status;
-    };
-}
 /**
  * shell compatibility (2026-05-11): du flag parsing for combined forms.
  * Pre-fix `du -sh` didn't activate -h because we checked for literal
@@ -3202,68 +3107,6 @@ function mkLs(vfs) {
                 (await ctx.stdout.write(rows.map(e => e.name).join('  ') + '\n'));
             }
         }
-        return exit;
-    };
-}
-/**
- * shell compatibilityc (2026-05-11): registry-level cat (for xargs cross-
- * command dispatch). Behaves like the shell cat command: reads files (or
- * stdin if none), concatenates to stdout.
- *
- * Operands stream through one shared writer, so concatenating six 1 MB files
- * emits 6 MB in 64 KiB steps rather than materialising each file whole.
- */
-function mkCat(vfs) {
-    return async (ctx) => {
-        const files = ctx.args.filter(a => !a.startsWith('-'));
-        if (files.length === 0) {
-            const piped = stdinText(ctx);
-            if (piped)
-                (await ctx.stdout.write(piped));
-            return 0;
-        }
-        // Resolve both native VFS symlinks and the legacy registry before reads.
-        let exit = 0;
-        const writer = new SinkWriter(ctx.stdout);
-        for (const fOrig of files) {
-            const f = (await (async () => {
-                const fp = resolvePath(ctx.cwd, fOrig);
-                const resolved = (await resolveSymlinkPath(vfs, fp));
-                if (resolved === null) {
-                    // ELOOP: too many hops
-                    (await ctx.stderr.write(`cat: ${fOrig}: Too many levels of symbolic links\n`));
-                    return null;
-                }
-                return resolved === fp ? fOrig : '/' + resolved;
-            })());
-            if (f === null) {
-                exit = 1;
-                continue;
-            }
-            try {
-                const path = f.startsWith('/') ? f : `${ctx.cwd}/${f}`;
-                const stat = (await statOrThrow(ctx.vfs, path));
-                if (stat.type === 'directory')
-                    throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
-                if (stat.size > 0) {
-                    // A regular file's size is its exact extent — read precisely that.
-                    (await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
-                        length: stat.size,
-                        signal: ctx.signal,
-                    }));
-                }
-                else {
-                    // Size 0 covers empty files, /dev/null and synthesised /proc entries.
-                    // Endless character devices reject this unbounded read by design.
-                    (await writer.write((await ctx.vfs.readFile(path))));
-                }
-            }
-            catch (error) {
-                (await ctx.stderr.write(`cat: ${fOrig}: ${fsErrorMessage(error)}\n`));
-                exit = 1;
-            }
-        }
-        writer.end();
         return exit;
     };
 }
@@ -4010,8 +3853,7 @@ function mkStat(vfs, sqliteVfs) {
             return 0;
         }
         const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
-        // shell compatibility follow-up: try Kernel.VFS (ctx.vfs) first so /dev
-        // mount paths resolve. Same pattern as mkCat.
+        // Through the process's view, so mounted paths (/dev) resolve.
         const kvfs = ctx.vfs;
         for (const f of files) {
             let st = null;
@@ -6362,7 +6204,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
     // through (head terminates after N lines, triggering the abort
     // cascade for upstream producers like `yes`).
-    registry.register('head', wrapStreaming(withInvocationVfs(sqliteVfs, mkHead)));
+    registry.register('head', textCommand(sqliteVfs, headCommand));
     registry.register('tail', textCommand(sqliteVfs, tailCommand));
     registry.register('wc', textCommand(sqliteVfs, wcCommand));
     registry.register('sort', textCommand(sqliteVfs, sortCommand));
@@ -6370,7 +6212,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('sed', textCommand(sqliteVfs, sedCommand));
     registry.register('awk', wrap(withInvocationVfs(sqliteVfs, mkAwk)));
     registry.register('xargs', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkXargs(vfs, registry))));
-    registry.register('tee', wrap(withInvocationVfs(sqliteVfs, mkTee)));
+    registry.register('tee', textCommand(sqliteVfs, teeCommand));
     registry.register('du', wrap(withInvocationVfs(sqliteVfs, mkDu)));
     registry.register('diff', wrap(withInvocationVfs(sqliteVfs, mkDiff)));
     // Registry-level echo + cat for xargs cross-command dispatch.
@@ -6378,7 +6220,8 @@ export function registerUnixCommands(registry, sqliteVfs) {
     // entry is only reached when a command (xargs etc.) looks them up
     // via the registry path.
     registry.register('echo', wrap(mkEcho()));
-    registry.register('cat', wrap(withInvocationVfs(sqliteVfs, mkCat)));
+    registry.register('cat', textCommand(sqliteVfs, catCommand));
+    registry.register('tac', textCommand(sqliteVfs, tacCommand));
     registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));
     registry.register('rm', wrap(withInvocationVfs(sqliteVfs, mkRm)));
     registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
@@ -6403,29 +6246,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('od', wrapStreaming(mkOd()));
     registry.register('hexdump', wrapStreaming(mkHexdump()));
     registry.register('chown', wrap(mkChown(sqliteVfs)));
-    // ln — symlink stub (no-ops on VFS but doesn't error)
-    /**
-     * SHELL-FOLLOWUPS-4 (2026-05-11): real `ln -s` via SymlinkRegistry.
-     * Pre-fix: ln -s did file-copy; modifications to the "link"
-     * created a new file (no two-way reflection); readlink returned
-     * empty.
-     *
-     * Now:
-     *   - `ln -s TARGET LINKPATH` registers LINKPATH → TARGET in the
-     *     symlink registry.
-     *   - Real GNU `ln -s` doesn't require TARGET to exist (dangling
-     *     symlinks are valid). We allow that.
-     *   - Hard links (`ln` without -s) still do file-copy — Nimbus
-     *     VFS doesn't expose inode-level hard-linking and that's
-     *     documented out of scope.
-     *
-     * Subsequent operations (cat / ls / cat-via-redirect) need to
-     * consult the registry to see through the symlink. That work
-     * lives in mkCat / mkLs wrappers and the SqliteVFS read-path —
-     * for v1, we wire it in the COMMANDS that need it (cat already
-     * goes through Kernel.VFS which doesn't yet know about the
-     * registry; we patch cat directly here to dereference symlinks).
-     */
+    // ln -s makes a symbolic link; the filesystem has no hard links.
     registry.register('ln', wrap(async (ctx) => {
         const symbolic = ctx.args.some(arg => /^-[^-]*s/.test(arg));
         const force = ctx.args.some(arg => /^-[^-]*f/.test(arg));

@@ -1,0 +1,160 @@
+{
+ "tool": "head",
+ "recorded": "head (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "ct": "YQliAX+A6cOpCgoKCmMNCmQ=",
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "seps": "MSwyLCwzLAo0LDU="
+ },
+ "cases": [
+  {
+   "args": "long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n",
+   "exit": 0
+  },
+  {
+   "args": "-n3 long",
+   "stdout": "line 0\nline 1\nline 2\n",
+   "exit": 0
+  },
+  {
+   "args": "-n -3 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 0 long",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-n -0 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c5 long",
+   "stdout": "line ",
+   "exit": 0
+  },
+  {
+   "args": "-c -5 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nlin",
+   "exit": 0
+  },
+  {
+   "args": "-c 1k long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-5 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\n",
+   "exit": 0
+  },
+  {
+   "args": "-3c long",
+   "stdout": "lin",
+   "exit": 0
+  },
+  {
+   "args": "-n2 long noeol",
+   "stdout": "==> long <==\nline 0\nline 1\n\n==> noeol <==\na\nb\n",
+   "exit": 0
+  },
+  {
+   "args": "-q -n1 long noeol",
+   "stdout": "line 0\na\n",
+   "exit": 0
+  },
+  {
+   "args": "-v -n1 noeol",
+   "stdout": "==> noeol <==\na\n",
+   "exit": 0
+  },
+  {
+   "args": "-n2 nope long",
+   "stdout": "==> long <==\nline 0\nline 1\n",
+   "exit": 1
+  },
+  {
+   "args": "-n x long",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "noeol",
+   "stdout": "a\nb\nc",
+   "exit": 0
+  },
+  {
+   "args": "-n -1 noeol",
+   "stdout": "a\nb\n",
+   "exit": 0
+  },
+  {
+   "args": "-c -1 noeol",
+   "stdout": "a\nb\n",
+   "exit": 0
+  },
+  {
+   "args": "-z -n1 nul",
+   "stdout": "a\u0000",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "a\u0000b\nc\u0000\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-c3 l1",
+   "stdout": "caf",
+   "exit": 0
+  },
+  {
+   "args": "empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-n2 - < long",
+   "stdout": "line 0\nline 1\n",
+   "exit": 0
+  },
+  {
+   "args": "cat long | %T -n2",
+   "stdout": "line 0\nline 1\n",
+   "exit": 0
+  },
+  {
+   "args": "cat long | %T -c 10",
+   "stdout": "line 0\nlin",
+   "exit": 0
+  },
+  {
+   "args": "-n 99 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "--lines=2 long",
+   "stdout": "line 0\nline 1\n",
+   "exit": 0
+  },
+  {
+   "args": "--bytes=3 long",
+   "stdout": "lin",
+   "exit": 0
+  }
+ ]
+}

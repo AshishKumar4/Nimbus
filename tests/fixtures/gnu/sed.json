@@ -1,6 +1,6 @@
 {
  "tool": "sed",
- "recorded": "GNU sed 4.9, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "/usr/bin/sed (GNU sed) 4.9, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
   "nul": "YQBiCmMACmQK",

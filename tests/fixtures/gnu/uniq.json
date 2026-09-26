@@ -1,6 +1,6 @@
 {
  "tool": "uniq",
- "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "uniq (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
   "nul": "YQBiCmMACmQK",
@@ -21,17 +21,17 @@
  "cases": [
   {
    "args": "dup",
-   "stdout": "a\nA\nb\nc\n\nd x\nd  x\ne y\n\u00e9\n",
+   "stdout": "a\nA\nb\nc\n\nd x\nd  x\ne y\né\n",
    "exit": 0
   },
   {
    "args": "-c dup",
-   "stdout": "      2 a\n      1 A\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 \u00e9\n",
+   "stdout": "      2 a\n      1 A\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 é\n",
    "exit": 0
   },
   {
    "args": "-d dup",
-   "stdout": "a\nb\n\n\u00e9\n",
+   "stdout": "a\nb\n\né\n",
    "exit": 0
   },
   {
@@ -41,57 +41,57 @@
   },
   {
    "args": "-D dup",
-   "stdout": "a\na\nb\nb\nb\n\n\n\u00e9\n\u00e9\n",
+   "stdout": "a\na\nb\nb\nb\n\n\né\né\n",
    "exit": 0
   },
   {
    "args": "-i dup",
-   "stdout": "a\nb\nc\n\nd x\nd  x\ne y\n\u00e9\n",
+   "stdout": "a\nb\nc\n\nd x\nd  x\ne y\né\n",
    "exit": 0
   },
   {
    "args": "-ic dup",
-   "stdout": "      3 a\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 \u00e9\n",
+   "stdout": "      3 a\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 é\n",
    "exit": 0
   },
   {
    "args": "-f1 dup",
-   "stdout": "a\nd x\nd  x\ne y\n\u00e9\n",
+   "stdout": "a\nd x\nd  x\ne y\né\n",
    "exit": 0
   },
   {
    "args": "-s1 dup",
-   "stdout": "a\nd x\nd  x\ne y\n\u00e9\n",
+   "stdout": "a\nd x\nd  x\ne y\né\n",
    "exit": 0
   },
   {
    "args": "-w1 dup",
-   "stdout": "a\nA\nb\nc\n\nd x\ne y\n\u00e9\n",
+   "stdout": "a\nA\nb\nc\n\nd x\ne y\né\n",
    "exit": 0
   },
   {
    "args": "--all-repeated=separate dup",
-   "stdout": "a\na\n\nb\nb\nb\n\n\n\n\n\u00e9\n\u00e9\n",
+   "stdout": "a\na\n\nb\nb\nb\n\n\n\n\né\né\n",
    "exit": 0
   },
   {
    "args": "--all-repeated=prepend dup",
-   "stdout": "\na\na\n\nb\nb\nb\n\n\n\n\n\u00e9\n\u00e9\n",
+   "stdout": "\na\na\n\nb\nb\nb\n\n\n\n\né\né\n",
    "exit": 0
   },
   {
    "args": "--group dup",
-   "stdout": "a\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\n\u00e9\n\u00e9\n",
+   "stdout": "a\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\né\né\n",
    "exit": 0
   },
   {
    "args": "--group=both dup",
-   "stdout": "\na\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\n\u00e9\n\u00e9\n\n",
+   "stdout": "\na\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\né\né\n\n",
    "exit": 0
   },
   {
    "args": "--group=append dup",
-   "stdout": "a\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\n\u00e9\n\u00e9\n\n",
+   "stdout": "a\na\n\nA\n\nb\nb\nb\n\nc\n\n\n\n\nd x\n\nd  x\n\ne y\n\né\né\n\n",
    "exit": 0
   },
   {
@@ -101,7 +101,7 @@
   },
   {
    "args": "l1",
-   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
    "exit": 0
   },
   {
@@ -131,7 +131,7 @@
   },
   {
    "args": "cat dup | %T -c",
-   "stdout": "      2 a\n      1 A\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 \u00e9\n",
+   "stdout": "      2 a\n      1 A\n      3 b\n      1 c\n      2 \n      1 d x\n      1 d  x\n      1 e y\n      2 é\n",
    "exit": 0
   },
   {
@@ -141,7 +141,7 @@
   },
   {
    "args": "dup - < l1",
-   "stdout": "a\nA\nb\nc\n\nd x\nd  x\ne y\n\u00e9\n",
+   "stdout": "a\nA\nb\nc\n\nd x\nd  x\ne y\né\n",
    "exit": 0
   },
   {

@@ -1,6 +1,6 @@
 {
  "tool": "nl",
- "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "nl (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
   "nul": "YQBiCmMACmQK",
@@ -21,32 +21,32 @@
  "cases": [
   {
    "args": "l1",
-   "stdout": "     1\tcaf\u00e9\n     2\tna\u00efve\n     3\t\u0080\u0081\u00fe\u00ff\n     4\tplain\n     5\th\u00c3\u00a9llo\n",
+   "stdout": "     1\tcafé\n     2\tnaïve\n     3\tþÿ\n     4\tplain\n     5\thÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-ba l1",
-   "stdout": "     1\tcaf\u00e9\n     2\tna\u00efve\n     3\t\u0080\u0081\u00fe\u00ff\n     4\tplain\n     5\th\u00c3\u00a9llo\n",
+   "stdout": "     1\tcafé\n     2\tnaïve\n     3\tþÿ\n     4\tplain\n     5\thÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-bn l1",
-   "stdout": "       caf\u00e9\n       na\u00efve\n       \u0080\u0081\u00fe\u00ff\n       plain\n       h\u00c3\u00a9llo\n",
+   "stdout": "       café\n       naïve\n       þÿ\n       plain\n       hÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-nln l1",
-   "stdout": "1     \tcaf\u00e9\n2     \tna\u00efve\n3     \t\u0080\u0081\u00fe\u00ff\n4     \tplain\n5     \th\u00c3\u00a9llo\n",
+   "stdout": "1     \tcafé\n2     \tnaïve\n3     \tþÿ\n4     \tplain\n5     \thÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-nrz -w3 l1",
-   "stdout": "001\tcaf\u00e9\n002\tna\u00efve\n003\t\u0080\u0081\u00fe\u00ff\n004\tplain\n005\th\u00c3\u00a9llo\n",
+   "stdout": "001\tcafé\n002\tnaïve\n003\tþÿ\n004\tplain\n005\thÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-s: -v5 -i2 l1",
-   "stdout": "     5:caf\u00e9\n     7:na\u00efve\n     9:\u0080\u0081\u00fe\u00ff\n    11:plain\n    13:h\u00c3\u00a9llo\n",
+   "stdout": "     5:café\n     7:naïve\n     9:þÿ\n    11:plain\n    13:hÃ©llo\n",
    "exit": 0
   },
   {
@@ -66,12 +66,12 @@
   },
   {
    "args": "-l2 -ba dup",
-   "stdout": "     1\ta\n     2\ta\n     3\tA\n     4\tb\n     5\tb\n     6\tb\n     7\tc\n       \n     8\t\n     9\td x\n    10\td  x\n    11\te y\n    12\t\u00e9\n    13\t\u00e9\n",
+   "stdout": "     1\ta\n     2\ta\n     3\tA\n     4\tb\n     5\tb\n     6\tb\n     7\tc\n       \n     8\t\n     9\td x\n    10\td  x\n    11\te y\n    12\té\n    13\té\n",
    "exit": 0
   },
   {
    "args": "-bp^b words",
-   "stdout": "     1\tb\n       a\n       B\n       A\n       _x\n       x\n       -x\n       zz\n       Zz\n       \u00c3\u00a9clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "stdout": "     1\tb\n       a\n       B\n       A\n       _x\n       x\n       -x\n       zz\n       Zz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
    "exit": 0
   },
   {
@@ -111,7 +111,7 @@
   },
   {
    "args": "cat l1 | %T -ba",
-   "stdout": "     1\tcaf\u00e9\n     2\tna\u00efve\n     3\t\u0080\u0081\u00fe\u00ff\n     4\tplain\n     5\th\u00c3\u00a9llo\n",
+   "stdout": "     1\tcafé\n     2\tnaïve\n     3\tþÿ\n     4\tplain\n     5\thÃ©llo\n",
    "exit": 0
   },
   {

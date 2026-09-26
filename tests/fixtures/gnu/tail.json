@@ -1,6 +1,6 @@
 {
  "tool": "tail",
- "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "tail (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
   "nul": "YQBiCmMACmQK",
@@ -21,17 +21,17 @@
  "cases": [
   {
    "args": "l1",
-   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-n2 l1",
-   "stdout": "plain\nh\u00c3\u00a9llo\n",
+   "stdout": "plain\nhÃ©llo\n",
    "exit": 0
   },
   {
    "args": "-n +2 l1",
-   "stdout": "na\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "naïve\nþÿ\nplain\nhÃ©llo\n",
    "exit": 0
   },
   {
@@ -41,7 +41,7 @@
   },
   {
    "args": "-c +3 l1",
-   "stdout": "f\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "fé\nnaïve\nþÿ\nplain\nhÃ©llo\n",
    "exit": 0
   },
   {
@@ -101,17 +101,17 @@
   },
   {
    "args": "l1 noeol",
-   "stdout": "==> l1 <==\ncaf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n\n==> noeol <==\na\nb\nc",
+   "stdout": "==> l1 <==\ncafé\nnaïve\nþÿ\nplain\nhÃ©llo\n\n==> noeol <==\na\nb\nc",
    "exit": 0
   },
   {
    "args": "-q l1 noeol",
-   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\na\nb\nc",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\na\nb\nc",
    "exit": 0
   },
   {
    "args": "-v l1",
-   "stdout": "==> l1 <==\ncaf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "==> l1 <==\ncafé\nnaïve\nþÿ\nplain\nhÃ©llo\n",
    "exit": 0
   },
   {
@@ -131,12 +131,12 @@
   },
   {
    "args": "%T -n2 < l1",
-   "stdout": "plain\nh\u00c3\u00a9llo\n",
+   "stdout": "plain\nhÃ©llo\n",
    "exit": 0
   },
   {
    "args": "cat l1 | %T -n1",
-   "stdout": "h\u00c3\u00a9llo\n",
+   "stdout": "hÃ©llo\n",
    "exit": 0
   },
   {
@@ -146,7 +146,7 @@
   },
   {
    "args": "cat l1 | %T -n +3",
-   "stdout": "\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "stdout": "þÿ\nplain\nhÃ©llo\n",
    "exit": 0
   }
  ]

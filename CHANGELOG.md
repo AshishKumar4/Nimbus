@@ -178,6 +178,14 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `cat`, `head`, `tac` and `tee` keep bytes and answer as GNU coreutils
+  9.7's do: `cat -A -b -e -E -n -s -t -T -v` (M- and ^ notation), `head -n/-c`
+  with negative counts and suffixes, `tac -b -r -s`, and a streaming `tee -a`
+  that reports a file it cannot open and still writes the rest. `cat
+  /dev/zero | head -c N` works (cat used to refuse endless devices), and a
+  writer whose reader closed the pipe ends silently with status 141, as
+  SIGPIPE ends it. `scripts/record-gnu-fixtures.mjs` re-records the GNU
+  fixtures from their specs on a host with the reference tools.
 - `sed` is GNU sed 4.9's language: every command except `e` (`{}`, `=`,
   `a`, `b`, `c`, `d`, `D`, `F`, `g`, `G`, `h`, `H`, `i`, `l`, `n`, `N`, `p`,
   `P`, `q`, `Q`, `r`, `R`, `s`, `t`, `T`, `w`, `W`, `x`, `y`, `z`, labels),

@@ -39,6 +39,18 @@ export async function* inputChunks(ctx: ByteInputContext, operand: string | unde
     return;
   }
   const path = resolve(ctx.cwd, operand);
+  const stat = await ctx.vfs.stat(path);
+  if (stat === null) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
+  if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
+  const characterDevice = ((stat.mode ?? 0) & 0o170000) === 0o020000;
+  if (stat.size === 0 && !characterDevice) {
+    // Empty, or a file whose size says nothing (a synthesized /proc entry): read whole.
+    const bytes = await ctx.vfs.readFile(path);
+    if (bytes.length > 0) yield bytes;
+    return;
+  }
+  // A regular file to its end; a character device (/dev/zero) for as long
+  // as its reader keeps asking, which is why this is a generator.
   for (let offset = 0; ; ) {
     const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
     if (chunk.length === 0) return;
@@ -141,6 +153,11 @@ export function encodeLossless(text: string): Uint8Array {
 }
 
 function isHigh(c: number): boolean { return c >= 0xd800 && c <= 0xdbff; }
+
+/** A write to a pipe whose reader has gone: the writer ends there, silently, as SIGPIPE ends it. */
+export function isBrokenPipe(error: unknown): boolean {
+  return (error as { code?: string })?.code === 'EPIPE';
+}
 
 /** GNU's text for a filesystem error. */
 export function fsErrorText(error: unknown): string {

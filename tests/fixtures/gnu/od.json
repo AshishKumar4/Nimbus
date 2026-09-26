@@ -1,6 +1,6 @@
 {
  "tool": "od",
- "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "od (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "t": "YWIACn//IHRhaWw=",
   "z": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",

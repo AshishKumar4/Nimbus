@@ -1,0 +1,181 @@
+{
+ "tool": "cat",
+ "recorded": "cat (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "ct": "YQliAX+A6cOpCgoKCmMNCmQ=",
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "seps": "MSwyLCwzLAo0LDU=",
+  "crcr": "eA15DQoNDQp6DQ=="
+ },
+ "cases": [
+  {
+   "args": "ct",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "-A ct",
+   "stdout": "a^Ib^A^?M-^@M-iM-CM-)$\n$\n$\n$\nc^M$\nd",
+   "exit": 0
+  },
+  {
+   "args": "-v ct",
+   "stdout": "a\tb^A^?M-^@M-iM-CM-)\n\n\n\nc^M\nd",
+   "exit": 0
+  },
+  {
+   "args": "-e ct",
+   "stdout": "a\tb^A^?M-^@M-iM-CM-)$\n$\n$\n$\nc^M$\nd",
+   "exit": 0
+  },
+  {
+   "args": "-t ct",
+   "stdout": "a^Ib^A^?M-^@M-iM-CM-)\n\n\n\nc^M\nd",
+   "exit": 0
+  },
+  {
+   "args": "-n ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n     2\t\n     3\t\n     4\t\n     5\tc\r\n     6\td",
+   "exit": 0
+  },
+  {
+   "args": "-b ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n\n\n\n     2\tc\r\n     3\td",
+   "exit": 0
+  },
+  {
+   "args": "-s ct",
+   "stdout": "a\tb\u0001éÃ©\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "-sn ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n     2\t\n     3\tc\r\n     4\td",
+   "exit": 0
+  },
+  {
+   "args": "-E ct",
+   "stdout": "a\tb\u0001éÃ©$\n$\n$\n$\nc^M$\nd",
+   "exit": 0
+  },
+  {
+   "args": "-T ct",
+   "stdout": "a^Ib\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "-n ct ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n     2\t\n     3\t\n     4\t\n     5\tc\r\n     6\tda\tb\u0001éÃ©\n     7\t\n     8\t\n     9\t\n    10\tc\r\n    11\td",
+   "exit": 0
+  },
+  {
+   "args": "-bs ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n\n     2\tc\r\n     3\td",
+   "exit": 0
+  },
+  {
+   "args": "--show-all ct",
+   "stdout": "a^Ib^A^?M-^@M-iM-CM-)$\n$\n$\n$\nc^M$\nd",
+   "exit": 0
+  },
+  {
+   "args": "--number-nonblank ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n\n\n\n     2\tc\r\n     3\td",
+   "exit": 0
+  },
+  {
+   "args": "l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-v l1",
+   "stdout": "cafM-i\nnaM-ove\nM-^@M-^AM-~M-^?\nplain\nhM-CM-)llo\n",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "a\u0000b\nc\u0000\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "-A nul",
+   "stdout": "a^@b$\nc^@$\nd$\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol",
+   "stdout": "a\nb\nc",
+   "exit": 0
+  },
+  {
+   "args": "-n noeol",
+   "stdout": "     1\ta\n     2\tb\n     3\tc",
+   "exit": 0
+  },
+  {
+   "args": "empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-n empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "ct nope noeol",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nda\nb\nc",
+   "exit": 1
+  },
+  {
+   "args": "-x ct",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "- < ct",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "%T -n < ct",
+   "stdout": "     1\ta\tb\u0001éÃ©\n     2\t\n     3\t\n     4\t\n     5\tc\r\n     6\td",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -A",
+   "stdout": "cafM-i$\nnaM-ove$\nM-^@M-^AM-~M-^?$\nplain$\nhM-CM-)llo$\n",
+   "exit": 0
+  },
+  {
+   "args": "-u l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol -n noeol",
+   "stdout": "     1\ta\n     2\tb\n     3\tca\n     4\tb\n     5\tc",
+   "exit": 0
+  },
+  {
+   "args": "-vET l1",
+   "stdout": "cafM-i$\nnaM-ove$\nM-^@M-^AM-~M-^?$\nplain$\nhM-CM-)llo$\n",
+   "exit": 0
+  },
+  {
+   "args": "-E crcr",
+   "stdout": "x\ry^M$\n\r^M$\nz\r",
+   "exit": 0
+  },
+  {
+   "args": "-A crcr",
+   "stdout": "x^My^M$\n^M^M$\nz^M",
+   "exit": 0
+  }
+ ]
+}

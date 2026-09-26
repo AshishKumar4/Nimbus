@@ -149,7 +149,8 @@ r = await sh('head -c 1K /tmp/f0 > /tmp/hk');
 check('head -c accepts a size suffix', size('tmp/hk') === 1024, `got ${size('tmp/hk')}`);
 
 r = await sh('head -n 1 /tmp/abc');
-check('head -n still works', r.stdout === 'ABCDEFGH\n', JSON.stringify(r.stdout));
+// An unterminated last line comes out as it is: GNU head adds no newline.
+check('head -n still works', r.stdout === 'ABCDEFGH', JSON.stringify(r.stdout));
 
 r = await sh('cat /tmp/abc | head -c 3');
 check('head -c reads from a pipe', r.stdout === 'ABC', JSON.stringify(r.stdout));
@@ -170,10 +171,12 @@ check('stat reports a character special file', /character special file/.test(r.s
 r = await sh('cat /dev/null; echo RC=$?');
 check('cat /dev/null is empty and succeeds', r.stdout === 'RC=0\n', JSON.stringify(r.stdout));
 
-r = await sh('cat /dev/zero > /tmp/endless');
-check('cat of an endless device fails instead of inventing a length', r.exitCode !== 0,
-  `exit=${r.exitCode}`);
-check('cat of an endless device says why', /bounded slice/.test(r.stderr), `stderr=${r.stderr}`);
+// cat streams an endless device, as GNU's does, for as long as its reader
+// reads; the reader closing the pipe ends it silently (SIGPIPE).
+r = await sh('cat /dev/zero | head -c 100000 | wc -c');
+check('cat of an endless device streams to a reader that stops', r.stdout === '100000\n' && r.exitCode === 0,
+  `stdout=${JSON.stringify(r.stdout)} exit=${r.exitCode}`);
+check('the writer ends silently when its reader goes', r.stderr === '', `stderr=${r.stderr}`);
 
 r = await sh('head -c 32 /dev/urandom > /tmp/rand');
 check('head -c on /dev/urandom yields 32 bytes', size('tmp/rand') === 32, `got ${size('tmp/rand')}`);

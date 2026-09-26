@@ -1,98 +1,153 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { asciiBytes, concatBytes, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
 
-import { encode } from '../../utils/encoding.js';
-import { SinkWriter, streamRange } from '../../../../_shared/byte-stream.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
+// GNU head (coreutils 9.7) on bytes: -n [-]N lines, -c [-]N bytes (with
+// GNU's suffixes), the obsolete -N, -q, -v, -z. A positive count stops
+// reading once it has what it prints, so `yes | head` ends.
 
+type Mode = { unit: 'lines' | 'bytes'; count: number; allBut: boolean };
 
-const command: Command = async (ctx) => {
-  let lines = 10;
-  let bytes: number | undefined;
-  const files: string[] = [];
+class HeadUsage extends Error {}
 
-  for (let i = 0; i < ctx.args.length; i++) {
-    const arg = ctx.args[i];
-    if (arg === '-n' || arg === '-c') {
-      const count = parseCount(ctx.args[++i]);
-      if (count === null) { await ctx.stderr.write(`head: invalid count\n`); return 1; }
-      if (arg === '-c') bytes = count; else lines = count;
-    } else if (/^-[nc]\d/.test(arg)) {
-      const count = parseCount(arg.slice(2));
-      if (count === null) { await ctx.stderr.write(`head: invalid count\n`); return 1; }
-      if (arg[1] === 'c') bytes = count; else lines = count;
-    } else if (/^-\d+$/.test(arg)) {
-      lines = Number.parseInt(arg.slice(1), 10);
-    } else {
-      files.push(arg);
-    }
-  }
-
-  if (files.length === 0) {
-    if (!ctx.stdin) { await ctx.stderr.write('head: missing file operand\n'); return 1; }
-    if (bytes === undefined) {
-      await ctx.stdout.write(headLines(await ctx.stdin.readAll(), lines));
-      return 0;
-    }
-    // -c counts bytes, so pull bounded chunks rather than draining the
-    // producer and slicing characters off the end.
-    const writer = new SinkWriter(ctx.stdout);
-    let copied = 0;
-    while (copied < bytes) {
-      const want = bytes - copied;
-      const chunk = ctx.stdin.readBytes ? await ctx.stdin.readBytes(want) : await ctx.stdin.read();
-      if (chunk === null) break;
-      const raw = typeof chunk === 'string' ? encode(chunk) : chunk;
-      const encoded = raw.subarray(0, want);
-      await writer.write(encoded);
-      copied += encoded.length;
-    }
-    await writer.end();
-    return 0;
-  }
-
-  let exitCode = 0;
-  const writer = bytes === undefined ? null : new SinkWriter(ctx.stdout);
-  for (const file of files) {
-    const path = resolve(ctx.cwd, file);
-    try {
-      if (files.length > 1) await ctx.stdout.write(`==> ${file} <==\n`);
-      if (writer === null) {
-        await ctx.stdout.write(headLines((await ctx.vfs.readFileString(path)), lines));
-      } else {
-        // Bounded read: works on regular files and on endless character
-        // devices alike, since neither is ever materialised whole.
-        await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
-          length: bytes,
-          signal: ctx.signal,
-        });
-      }
-    } catch (e) {
-      if (isVfsError(e)) {
-        await ctx.stderr.write(`head: ${file}: ${e.message}\n`);
-        exitCode = 1;
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  await writer?.end();
-  return exitCode;
+const SUFFIX: Record<string, number> = {
+  '': 1, b: 512, kB: 1000, K: 1024, k: 1024, KiB: 1024, MB: 1e6, M: 1048576, MiB: 1048576,
+  GB: 1e9, G: 1073741824, GiB: 1073741824, TB: 1e12, T: 1099511627776, TiB: 1099511627776,
 };
 
-function headLines(text: string, count: number): string {
-  const all = text.split('\n');
-  const selected = all.slice(0, count);
-  return selected.join('\n') + (all.length > count ? '\n' : '');
+function parseCount(value: string, unit: 'lines' | 'bytes'): Mode {
+  const m = /^(-?)(\d+)([A-Za-z]*)$/.exec(value);
+  const factor = m ? SUFFIX[m[3]] : undefined;
+  if (!m || factor === undefined) throw new HeadUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
+  return { unit, count: Number(m[2]) * factor, allBut: m[1] === '-' };
 }
 
-function parseCount(value: string | undefined): number | null {
-  if (!value) return null;
-  const match = /^(\d+)([bkKmMgG]?)$/.exec(value);
-  if (!match) return null;
-  const scale = { '': 1, b: 512, k: 1024, K: 1024, m: 1024 ** 2, M: 1024 ** 2, g: 1024 ** 3, G: 1024 ** 3 };
-  return Number.parseInt(match[1], 10) * scale[match[2] as keyof typeof scale];
+const command: Command = async (ctx) => {
+  let mode: Mode = { unit: 'lines', count: 10, allBut: false };
+  let headers: boolean | null = null;
+  let delim = 0x0a;
+  const files: string[] = [];
+  const usage = async (message: string) => {
+    await ctx.stderr.write(`head: ${message}\nTry 'head --help' for more information.\n`);
+    return 1;
+  };
+  try {
+    const args = ctx.args;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '--') { files.push(...args.slice(i + 1)); break; }
+      if (arg.startsWith('--')) {
+        const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
+        if (name === 'lines' || name === 'bytes') {
+          const value = inline ?? args[++i];
+          if (value === undefined) return usage(`option '--${name}' requires an argument`);
+          mode = parseCount(value, name);
+        } else if (name === 'quiet' || name === 'silent') headers = false;
+        else if (name === 'verbose') headers = true;
+        else if (name === 'zero-terminated') delim = 0;
+        else return usage(`unrecognized option '--${name}'`);
+        continue;
+      }
+      if (!arg.startsWith('-') || arg === '-') { files.push(arg); continue; }
+      if (i === 0 && /^-\d+[bkm]?[cqvlz]*$/.test(arg)) {
+        // The obsolete -N[bkm][c|l][q|v]: N lines, or N bytes with c.
+        const m = /^-(\d+)([bkm]?)([cqvlz]*)$/.exec(arg)!;
+        const scale = m[2] === 'b' ? 512 : m[2] === 'k' ? 1024 : m[2] === 'm' ? 1048576 : 1;
+        mode = { unit: m[3].includes('c') ? 'bytes' : 'lines', count: Number(m[1]) * scale, allBut: false };
+        if (m[3].includes('q')) headers = false;
+        if (m[3].includes('v')) headers = true;
+        if (m[3].includes('z')) delim = 0;
+        continue;
+      }
+      for (let j = 1; j < arg.length; j++) {
+        const flag = arg[j];
+        if (flag === 'n' || flag === 'c') {
+          let value: string | undefined = arg.slice(j + 1);
+          if (value === '') value = args[++i];
+          if (value === undefined) return usage(`option requires an argument -- '${flag}'`);
+          mode = parseCount(value, flag === 'n' ? 'lines' : 'bytes');
+          break;
+        }
+        if (flag === 'q') headers = false;
+        else if (flag === 'v') headers = true;
+        else if (flag === 'z') delim = 0;
+        else return usage(`invalid option -- '${flag}'`);
+      }
+    }
+  } catch (error) {
+    if (error instanceof HeadUsage) return usage(error.message);
+    throw error;
+  }
+  if (files.length === 0) files.push('-');
+  const label = headers ?? files.length > 1;
+  let status = 0;
+  let first = true;
+  for (const file of files) {
+    try {
+      const chunks = inputChunks(ctx, file);
+      // Open (and fail) before the header, as GNU does.
+      const firstChunk = await chunks.next();
+      if (label) await writeBytes(ctx.stdout, asciiBytes(`${first ? '' : '\n'}==> ${file === '-' ? 'standard input' : file} <==\n`));
+      first = false;
+      await copy(firstChunk.done ? null : firstChunk.value, chunks, mode, delim, (bytes) => writeBytes(ctx.stdout, bytes));
+    } catch (error) {
+      await ctx.stderr.write(`head: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+      status = 1;
+    }
+  }
+  return status;
+};
+
+async function copy(
+  first: Uint8Array | null,
+  rest: AsyncGenerator<Uint8Array>,
+  mode: Mode,
+  delim: number,
+  write: (bytes: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const all = async function* () {
+    if (first !== null) yield first;
+    yield* rest;
+  };
+  if (!mode.allBut) {
+    let left = mode.count;
+    if (left === 0) return;
+    for await (const chunk of all()) {
+      if (mode.unit === 'bytes') {
+        const take = chunk.subarray(0, left);
+        await write(take);
+        left -= take.length;
+      } else {
+        let end = chunk.length;
+        for (let at = 0; left > 0; ) {
+          const i = chunk.indexOf(delim, at);
+          if (i === -1) break;
+          left--;
+          at = i + 1;
+          if (left === 0) end = at;
+        }
+        await write(chunk.subarray(0, end));
+      }
+      if (left === 0) {
+        await rest.return(undefined);
+        return;
+      }
+    }
+    return;
+  }
+  // All but the last N: everything is read, the tail held back.
+  const bytes = concatBytes(await (async () => { const parts: Uint8Array[] = []; for await (const c of all()) parts.push(c); return parts; })());
+  if (mode.unit === 'bytes') { await write(bytes.subarray(0, Math.max(0, bytes.length - mode.count))); return; }
+  let end = bytes.length;
+  if (mode.count === 0) { await write(bytes); return; }
+  // Drop the last N lines (a final line without its delimiter is one).
+  let scan = end > 0 && bytes[end - 1] === delim ? end - 1 : end;
+  for (let dropped = 0; dropped < mode.count; dropped++) {
+    const i = scan === 0 ? -1 : bytes.lastIndexOf(delim, scan - 1);
+    if (i === -1) { end = 0; break; }
+    end = i + 1;
+    scan = i;
+  }
+  await write(bytes.subarray(0, end));
 }
 
 export default command;

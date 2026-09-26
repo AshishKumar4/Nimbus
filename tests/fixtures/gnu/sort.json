@@ -1,6 +1,6 @@
 {
  "tool": "sort",
- "recorded": "GNU coreutils 9.7 (glibc 2.43 collation), LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "recorded": "sort (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
   "nul": "YQBiCmMACmQK",
@@ -21,37 +21,37 @@
  "cases": [
   {
    "args": "words",
-   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "-r words",
-   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\n\u00c3\u00a9clair\neclair\nB\nb\nA\na\n",
+   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\nÃ©clair\neclair\nB\nb\nA\na\n",
    "exit": 0
   },
   {
    "args": "-f words",
-   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "-u words",
-   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "-fu words",
-   "stdout": "a\nb\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\n",
+   "stdout": "a\nb\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\n",
    "exit": 0
   },
   {
    "args": "-d words",
-   "stdout": "a\nA\nb\nB\n\u00c3\u00a9clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\nÃ©clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "-b words",
-   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
@@ -136,12 +136,12 @@
   },
   {
    "args": "-k1.2 words",
-   "stdout": "a\nA\nb\nB\nx\n\u00c3\u00a9clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\nx\nÃ©clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "-k1.2,1.3 words",
-   "stdout": "a\nA\nb\nB\nx\n\u00c3\u00a9clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\nx\nÃ©clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
    "exit": 0
   },
   {
@@ -151,12 +151,12 @@
   },
   {
    "args": "l1",
-   "stdout": "\u0080\u0081\u00fe\u00ff\ncaf\u00e9\nh\u00c3\u00a9llo\nna\u00efve\nplain\n",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
    "exit": 0
   },
   {
    "args": "-u l1",
-   "stdout": "\u0080\u0081\u00fe\u00ff\ncaf\u00e9\nh\u00c3\u00a9llo\nna\u00efve\nplain\n",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
    "exit": 0
   },
   {
@@ -186,7 +186,7 @@
   },
   {
    "args": "u8",
-   "stdout": "\u00c3\u0089cole \u00c3\u00a7a\nh\u00c3\u00a9llo w\u00c3\u00b6rld\n\u00f0\u009f\u0098\u0080 x\n\u00e6\u0097\u00a5\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\n",
+   "stdout": "Ãcole Ã§a\nhÃ©llo wÃ¶rld\nð x\næ¥æ¬èª ãã­ã¹ã\n",
    "exit": 0
   },
   {
@@ -206,7 +206,7 @@
   },
   {
    "args": "l1 words",
-   "stdout": "\u0080\u0081\u00fe\u00ff\na\nA\nb\nB\ncaf\u00e9\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\nh\u00c3\u00a9llo\n.hidden\nhidden\n  lead\nlead\nna\u00efve\nplain\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "þÿ\na\nA\nb\nB\ncafé\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\nhÃ©llo\n.hidden\nhidden\n  lead\nlead\nnaïve\nplain\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
@@ -226,12 +226,12 @@
   },
   {
    "args": "cat words | %T",
-   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\neclair\nÃ©clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
    "args": "cat words | %T -r -",
-   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\n\u00c3\u00a9clair\neclair\nB\nb\nA\na\n",
+   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\nÃ©clair\neclair\nB\nb\nA\na\n",
    "exit": 0
   },
   {
@@ -251,17 +251,17 @@
   },
   {
    "args": "dup",
-   "stdout": "\n\n\u00e9\n\u00e9\na\na\nA\nb\nb\nb\nc\nd  x\nd x\ne y\n",
+   "stdout": "\n\né\né\na\na\nA\nb\nb\nb\nc\nd  x\nd x\ne y\n",
    "exit": 0
   },
   {
    "args": "-u dup",
-   "stdout": "\n\u00e9\na\nA\nb\nc\nd  x\nd x\ne y\n",
+   "stdout": "\né\na\nA\nb\nc\nd  x\nd x\ne y\n",
    "exit": 0
   },
   {
    "args": "-i words",
-   "stdout": "a\nA\nb\nB\n\u00c3\u00a9clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "stdout": "a\nA\nb\nB\nÃ©clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
    "exit": 0
   },
   {
