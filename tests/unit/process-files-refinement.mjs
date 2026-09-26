@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Refinement bridge for Nimbus.Vfs.ProcessFiles (FormalModelsLane,
+// Refinement bridge for Nimbus.Vfs.ProcessFiles (FormalModelsLane e32fae61,
 // lean/fixtures/process-files.json, VFS-PF-001).
 //
 // descriptors: processes open, write, fsync, close, are released or killed,
@@ -8,7 +8,8 @@
 // that cannot write in place, whose handles buffer (cap from the case, EFBIG
 // past it, a flush at fsync, the last close and a release; a kill loses the
 // buffered bytes and names the descriptors). After each step the kernel's
-// read of each file must be the model's.
+// read of each file must be the model's, and so must each process's own view
+// (readFd, readAs, statAs: its pending writes merged in, in open order).
 //
 // leases: a root link /x -> /dst; owners take and drop exclusive leases
 // through a process's bridge, and write as an owner (a write stream under the
@@ -87,6 +88,23 @@ function runDescriptors(testCase, where) {
       case 'read': {
         const bytes = kernelRead(step.path);
         got = bytes === null ? null : text(bytes);
+        break;
+      }
+      // A process's own view: its pending writes merged in (page cache);
+      // pid 3 holds nothing and sees the mount.
+      case 'readFd': {
+        const fd = fds.get(step.fd);
+        got = text(bridgeOf(fd.pid).read(fd.id, 0, 1 << 20));
+        break;
+      }
+      case 'readAs': {
+        const bytes = bridgeOf(step.pid).readFile(`${root}${step.path}`);
+        got = bytes === null ? null : text(bytes);
+        break;
+      }
+      case 'statAs': {
+        const stat = bridgeOf(step.pid).stat(`${root}${step.path}`);
+        got = stat === null ? null : { size: stat.size };
         break;
       }
       default: throw new Error(`unknown op ${step.op}`);

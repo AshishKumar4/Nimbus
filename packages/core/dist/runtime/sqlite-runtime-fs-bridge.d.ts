@@ -54,6 +54,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): Uint8Array | null;
+    /**
+     * A mounted file as this process sees it while it holds buffered writes to
+     * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
+     * of this process's descriptions of it applied, in open order. Undefined
+     * when it holds none pending: then the mount's own file is the answer.
+     * Another process's pending writes are never in it.
+     */
+    private processView;
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;

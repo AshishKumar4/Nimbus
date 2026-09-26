@@ -77,6 +77,9 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ELOOP', 'stat', path);
         if (located.mount) {
             const stat = located.mount.stat(located.path, { follow: followSymlinks });
+            const viewed = stat !== null && stat.type === 'file' ? this.processView(located.mount, located.path) : undefined;
+            if (viewed)
+                return { ...runtimeStatOf(stat), size: viewed.byteLength };
             return stat === null ? null : runtimeStatOf(stat);
         }
         const p = located.path;
@@ -133,13 +136,35 @@ export class SqliteRuntimeFsBridge {
         if (located === null)
             return null;
         try {
-            return located.mount ? located.mount.readFile(located.path) : this.vfs.readFile(located.path);
+            if (!located.mount)
+                return this.vfs.readFile(located.path);
+            return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
         }
         catch (error) {
             if (hasErrorCode(error, 'ENOENT'))
                 return null;
             throw error;
         }
+    }
+    /**
+     * A mounted file as this process sees it while it holds buffered writes to
+     * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
+     * of this process's descriptions of it applied, in open order. Undefined
+     * when it holds none pending: then the mount's own file is the answer.
+     * Another process's pending writes are never in it.
+     */
+    processView(mount, name) {
+        let file;
+        const seen = new Set();
+        for (const opened of this.scope.handles.values()) {
+            const node = opened.node;
+            if (seen.has(node) || node.applyPending === undefined || node.path() !== name || (node.pendingBytes?.() ?? 0) === 0)
+                continue;
+            seen.add(node);
+            file ??= mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name);
+            file = node.applyPending(file);
+        }
+        return file;
     }
     writeFile(path, bytes, options = {}) {
         const located = this.locateMutation(path, true, 'write');
@@ -170,6 +195,9 @@ export class SqliteRuntimeFsBridge {
             if (options.expectedEpoch !== undefined)
                 throw fsError('ESTALE', 'read', path);
             const mount = located.mount;
+            const viewed = this.processView(mount, located.path);
+            if (viewed)
+                return viewed.slice(offset, offset + length);
             if (mount.readRange)
                 return mount.readRange(located.path, offset, length);
             return mount.readFile(located.path).slice(offset, offset + length);
@@ -854,10 +882,11 @@ export class SqliteRuntimeFsBridge {
             held += bytes.byteLength;
             return bytes.byteLength;
         };
-        const flush = () => {
-            if (pending.length === 0)
-                return;
-            let file = mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name);
+        // `file` with the pending writes applied in order (an append at the end
+        // as it then is): what a flush writes, and what this process reads.
+        const applyPending = (base) => {
+            // A copy: a backend may hand out its own buffer, which must not change before the flush.
+            let file = base.slice();
             for (const write of pending) {
                 const at = write.offset ?? file.byteLength;
                 if (at + write.bytes.byteLength > file.byteLength) {
@@ -867,10 +896,28 @@ export class SqliteRuntimeFsBridge {
                 }
                 file.set(write.bytes, at);
             }
+            return file;
+        };
+        const flush = () => {
+            if (pending.length === 0)
+                return;
+            const file = applyPending(mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name));
             pending.length = 0;
             held = 0;
             mount.writeFile(name, file);
         };
+        // A read or fstat on the descriptor is this process's view of the file.
+        const mountedRead = node.read;
+        const mountedStat = node.stat;
+        node.read = (offset, length) => {
+            const viewed = this.processView(mount, name);
+            return viewed ? viewed.slice(offset, offset + length) : mountedRead(offset, length);
+        };
+        node.stat = () => {
+            const viewed = this.processView(mount, name);
+            return viewed ? { ...mountedStat(), size: viewed.byteLength } : mountedStat();
+        };
+        node.applyPending = applyPending;
         node.write = take;
         node.writeAppend = (bytes) => take(null, bytes);
         node.flush = flush;

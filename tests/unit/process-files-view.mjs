@@ -85,4 +85,51 @@ await vfs.writeFile('/mnt/s/f', enc.encode('m'));
 assert.equal(new TextDecoder().decode(scratch.readFile('/f')), 'm');
 assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
 
+// A descriptor on a mount that cannot write in place buffers its writes.
+// The process that holds it sees them at once, as Linux's page cache makes a
+// write visible (read on the descriptor, fstat, and read or stat by path);
+// another process sees the mount's own content until the flush.
+{
+  const memory = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const inPlaceless = Object.assign(Object.create(memory), { writeRange: undefined });
+  inPlaceless.sync = inPlaceless;
+  files.vfs.mount('/mnt/buffered', inPlaceless);
+  const writer = files.bind({ pid: 30, cred: USER });
+  const other = files.bind({ pid: 31, cred: USER });
+  const fd = writer.open('/mnt/buffered/f', { read: true, write: true, create: true });
+  writer.write(fd.id, null, enc.encode('abc'));
+  assert.equal(new TextDecoder().decode(writer.read(fd.id, 0, 16)), 'abc', 'read after write on the same descriptor');
+  assert.equal(writer.fstat(fd.id).size, 3, 'fstat');
+  assert.equal(writer.stat('/mnt/buffered/f').size, 3, 'stat by path, same process');
+  assert.equal(new TextDecoder().decode(writer.readFile('/mnt/buffered/f')), 'abc', 'read by path, same process');
+  assert.equal(other.stat('/mnt/buffered/f').size, 0, 'another process sees the mount until the flush');
+  assert.equal(new TextDecoder().decode(other.readFile('/mnt/buffered/f')), '');
+  writer.fsync(fd.id);
+  assert.equal(new TextDecoder().decode(other.readFile('/mnt/buffered/f')), 'abc', 'and the write after it');
+  writer.close(fd.id);
+  files.vfs.unmount('/mnt/buffered');
+}
+
+// A backend that hands out its own buffer (no copy): a process's view never
+// writes into it, so the mount's content is unchanged until the flush.
+{
+  const held = new Map([['/f', new Uint8Array([1, 2, 3])]]);
+  const own = {
+    stat: (p) => (held.has(p) ? { type: 'file', size: held.get(p).byteLength, mtimeMs: 0, mode: 0o100666, uid: 1000, gid: 1000 } : (p === '/' ? { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40777, uid: 0, gid: 0 } : null)),
+    readFile: (p) => held.get(p),
+    writeFile: (p, bytes) => { held.set(p, bytes); },
+    readdir: () => [...held.keys()].map((k) => ({ name: k.slice(1), type: 'file' })),
+  };
+  own.sync = own;
+  files.vfs.mount('/mnt/own', own);
+  const writer = files.bind({ pid: 32, cred: USER });
+  const fd = writer.open('/mnt/own/f', { read: true, write: true });
+  writer.write(fd.id, 0, new Uint8Array([9]));
+  assert.deepEqual([...writer.read(fd.id, 0, 3)], [9, 2, 3]);
+  assert.deepEqual([...held.get('/f')], [1, 2, 3], 'the backend\'s buffer is untouched before the flush');
+  writer.close(fd.id);
+  assert.deepEqual([...held.get('/f')], [9, 2, 3]);
+  files.vfs.unmount('/mnt/own');
+}
+
 console.log('process-files-view: ok');

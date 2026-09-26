@@ -190,6 +190,13 @@ await ws.exec('mount'); // ... r2:team-bucket on /shared type r2 (rw)
 `df` hides a mount whose `usage()` returns `null` unless given `-a` or a path
 on it. `/proc/mounts` never shows usage.
 
+A mounted VFS without `writeRange` cannot write part of a file in place. A
+process's open file on it buffers its writes (at most 8 MiB per descriptor;
+a write past that fails with `EFBIG`) and writes the whole file back on
+`fsync`, on the last `close` and when the process exits. The process that
+wrote reads and stats its own writes at once. Another process sees the
+mount's content, and so the writes only after that write-back.
+
 ## What the worker package adds
 
 Resident processes (long-running servers, attached TUIs), the session

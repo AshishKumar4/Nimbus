@@ -202,6 +202,8 @@ export interface VfsOpenDescription {
   writeAppend?(bytes: Uint8Array): number;
   flush?(): void;
   pendingBytes?(): number;
+  /** `file` with this description's pending writes applied, as flush applies them. */
+  applyPending?(file: Uint8Array): Uint8Array;
 }
 
 export interface VfsStat {
