@@ -18,6 +18,8 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -27,6 +29,7 @@ import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
+const ROOT = resolve(import.meta.dirname, '../..');
 const dec = new TextDecoder();
 
 /** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
@@ -50,7 +53,8 @@ function loadStore() {
     FACET_RESIDENT_STORE_SOURCE
       + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
       + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentStats,'
-      + ' __residentKeys, __residentGet, __residentSetPlan, bundle: __nimbusResidentBundle };',
+      + ' __residentKeys, __residentGet, __residentSetPlan, __residentStamp, __residentSetStorage,'
+      + ' bundle: __nimbusResidentBundle };',
   );
   const store = factory();
   store.__residentBind({ storage: { sql: sqlShim() } });
@@ -296,8 +300,102 @@ assert.ok(
   assert.deepEqual(store.__residentCursor(), before, 'the held cursor is untouched');
 }
 
+// A held own write (N18: the store had no room, so the cell sits in the heap)
+// is part of the store for the repair too. Once its write-back has dated it,
+// a peer's newer write makes it stale: the repair forgets it, so a sync read
+// never serves it again (the store has no room to refetch, so the read is a
+// miss, not the old bytes). Where revisions are not comparable, every dated
+// held cell goes. An undated cell, whose write-back is still in flight, is
+// newer than anything the authority holds, and stays.
+for (const comparable of [true, false]) {
+  const store = loadStore();
+  const supervisor = meteredSupervisor();
+  const full = { ...supervisor, fsStorageGrant: async () => ({ granted: 0 }) };
+  // Comparable: the store is at the authority's epoch. Not comparable: it was
+  // adopted at another epoch's cursor, so none of its revisions can be
+  // compared with the listing's.
+  if (comparable) {
+    store.__residentAdoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+    await store.__residentSynchronizeFromSupervisor(full);
+  } else {
+    store.__residentAdoptModuleBundle({}, { epoch: 'another-epoch', rev: 0 });
+  }
+  // No room at all: every own write is held in the heap.
+  store.__residentSetStorage({ facet: 'held-facet', grant: 0 }, full);
+  const dated = comparable ? 'app/held-dated.txt' : 'app/held-dated-other-epoch.txt';
+  const undated = comparable ? 'app/held-undated.txt' : 'app/held-undated-other-epoch.txt';
+  store.bundle[dated] = 'OWN-V1';
+  store.bundle[undated] = 'OWN-IN-FLIGHT';
+  assert.equal(store.__residentGet(dated), 'OWN-V1', 'a held own write reads back');
+  kfs.writeFile(dated, 'OWN-V1');
+  store.__residentStamp(dated, rawVfs.revision());
+  kfs.writeFile(dated, 'PEER-V2');
+  const repaired = await store.__residentSynchronizeFromSupervisor(full);
+  assert.equal(repaired.reconciled, comparable, `the repair ${comparable ? 'compared' : 'could not compare'} revisions`);
+  assert.notEqual(store.__residentGet(dated), 'OWN-V1',
+    `${comparable ? 'a peer overwrote' : 'across epochs'}: the repair forgets the dated held cell, never serves it`);
+  assert.equal(store.__residentGet(undated), 'OWN-IN-FLIGHT', 'an undated held cell (write-back in flight) stays');
+  assert.ok(repaired.own.some((entry) => entry.path === undated), 'and is reported as own, like an own file row');
+}
+
+// ── the refinement bridge: FormalModelsLane's store coherence model ──────────
+//
+// lean/fixtures/resident-poison-reconcile.json (Nimbus.Coherence.Store.exec,
+// COH-012): each case is one store over one fresh authority, a sequence of
+// peer writes, own writes, write-backs (flush: committed and acknowledged),
+// barriers and repairs (a churn write standing in for the poison it causes),
+// and after every event what __residentGet serves per path (null: a miss).
+// `full` is a store with no room: every own write is held in the heap and
+// nothing fetched is admitted.
+const FIXTURE = 'lean/fixtures/resident-poison-reconcile.json';
+const fixturePath = [join(ROOT, FIXTURE), join(process.env.HOME ?? '', '.cache/nimbus-verify/formal/resident-poison-reconcile.json')].find((p) => existsSync(p));
+let bridged = 0;
+if (fixturePath) {
+  const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
+  for (const c of fixture.cases) {
+    const h = createSqliteVfsTestHarness();
+    const vfs = new SqliteVFS(h.sql, h.ctx, undefined, { tombstoneRows: 0 });
+    const k = vfs.as(CRED_KERNEL);
+    const caseHost = attachSupervisorOps({ sqliteFs: vfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
+    k.mkdir('app', { recursive: true, mode: 0o755 });
+    const supervisor = {
+      fsList: (after, limit) => _rpcFsList(caseHost, after ?? null, limit ?? null),
+      fsReadBatch: (requests) => _rpcFsReadBatch(caseHost, requests),
+      fsAcquire: (epoch, cursor) => _rpcFsAcquire(caseHost, epoch, cursor),
+      fsStorageGrant: async () => ({ granted: 0 }),
+    };
+    const store = new Function(FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
+      + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentGet, __residentSetPlan, __residentStamp,'
+      + ' __residentSetStorage, bundle: __nimbusResidentBundle };')();
+    store.__residentBind({ storage: { sql: sqlShim() } });
+    // No plan and no push roots: a repair refetches only what it dropped.
+    store.__residentSetPlan([]);
+    store.__residentAdoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });
+    await store.__residentSynchronizeFromSupervisor(supervisor);
+    store.__residentSetStorage({ facet: 'bridge', grant: c.full ? 0 : 64 * 1024 * 1024 }, supervisor);
+    for (const [i, e] of c.events.entries()) {
+      const where = `${FIXTURE} case ${fixture.cases.indexOf(c)} event ${i} (${e.event}${e.path ? ' ' + e.path : ''})`;
+      if (e.event === 'peer') k.writeFile(e.path, e.bytes);
+      else if (e.event === 'own') store.bundle[e.path] = e.bytes;
+      else if (e.event === 'flush') { k.writeFile(e.path, e.bytes); store.__residentStamp(e.path, vfs.revision()); }
+      else if (e.event === 'barrier') {
+        const at = store.__residentCursor();
+        store.__residentAdmit(await supervisor.fsAcquire(at.epoch, at.rev));
+      } else if (e.event === 'repair') {
+        k.writeFile(c.churn, e.bytes);
+        await store.__residentSynchronizeFromSupervisor(supervisor);
+      } else throw new Error(`${where}: unknown event`);
+      for (const [path, want] of Object.entries(e.expect)) {
+        const got = store.__residentGet(path);
+        assert.deepEqual(got === undefined ? null : asText(got), want, `${where}: ${path}`);
+      }
+    }
+    bridged++;
+  }
+}
+
 console.log(
-  `resident-poison-reconcile: ok — poison cost ${keepBytes} B / `
+  `resident-poison-reconcile: ${bridged} model cases bridged; ok — poison cost ${keepBytes} B / `
   + `${warm.supervisor.cost.readCalls} read calls, against ${dropBytes} B / `
   + `${FULL_FILL_CALLS} for the drop-and-refill it replaces `
   + `(${FILES} files, ${(FULL_FILL_BYTES / 1024 / 1024).toFixed(1)} MiB tree)`,

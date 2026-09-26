@@ -1349,6 +1349,8 @@ function __residentClear() {
   sql.exec("DELETE FROM file");
   sql.exec("DELETE FROM ns");
   sql.exec("DELETE FROM meta");
+  // Held cells go with the rows, but for own writes still in flight.
+  for (const [path, held] of [...__residentHeld]) if (held.rev !== __RK_OWN_WRITE) __residentForgetHeld(path);
   __nsLinks = new Set();
   __nsOk = false;
   __residentSeal("the store was cleared");
@@ -1915,6 +1917,24 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
       continue;
     }
     dropped.push(row.path);
+  }
+  // Cells held in the heap (own writes the store had no room for) are judged
+  // as file rows are, on every path a file row is (N18). Undated, a write-back
+  // still in flight: newer than anything listed, it stays and is reported as
+  // own. Dated: kept only where the listing proves it current; otherwise it
+  // goes, and is fetched again like any dropped row, so a sync read of it is
+  // a miss rather than bytes the authority has replaced.
+  for (const [path, cell] of [...__residentHeld]) {
+    if (current.has(path)) continue;
+    const entry = listed.get(path);
+    if (cell.rev === __RK_OWN_WRITE) {
+      current.add(path);
+      own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
+      continue;
+    }
+    if ((comparable && entry !== undefined && cell.rev >= entry.rev) || !judgeable) { current.add(path); continue; }
+    __residentForgetHeld(path);
+    dropped.push(path);
   }
   // Sweep what could not be vouched for. When NOTHING could — a new supervisor
   // incarnation, whose revisions say nothing about ours — that is every row but
