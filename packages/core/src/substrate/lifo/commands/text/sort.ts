@@ -1,7 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 
@@ -43,10 +42,6 @@ const command: Command = async (ctx) => {
       const path = resolve(ctx.cwd, file);
       try {
         (await statOrThrow(ctx.vfs, path));
-        if (isBinaryMime(getMimeType(path))) {
-          await ctx.stderr.write(`sort: ${file}: binary file, skipping\n`);
-          continue;
-        }
         text += (await ctx.vfs.readFileString(path));
       } catch (e) {
         if (isVfsError(e)) {

@@ -154,6 +154,9 @@ option, with its replacement:
   beneath a root whose middle component is missing included. It used to throw
   ENOENT for that one. EACCES, ENOTCAPABLE, ENOTDIR and ELOOP still throw.
 
+- `@nimbus-sh/core/substrate/lifo` no longer exports `isBinaryMime` or
+  `getFileCategory`, the file-name guess the text commands used to skip files.
+
 ### Not carried from Kinu's N26 patch
 
 These stay Kinu's policy, applied by Kinu after its own move or chmod with its
@@ -175,6 +178,26 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `grep`, `od` and `cut` answer as GNU's do, byte for byte, checked against
+  GNU grep 3.12 and GNU coreutils 9.7 on 415 cases (`tests/fixtures/gnu/`).
+  grep: basic and extended POSIX patterns (a `+` is literal in a basic
+  pattern), `-F`, `-P`, `-e`, `-f`, `-i`, `-w`, `-x`, `-v`, `-c`, `-l`, `-L`,
+  `-m`, `-o`, `-q`, `-s`, `-b`, `-n`, `-H`, `-h`, `--label`, `-T`, `-Z`,
+  `-z`, context (`-A`, `-B`, `-C`, `-NUM`, group separators), `-r`, `-R`,
+  `--include`, `--exclude`, `--exclude-dir`, `-d`, and binary input: a NUL
+  in what one read brings, or a line with an encoding error, is held back and
+  "binary file matches" follows on stderr; `-a`/`--binary-files=text` prints
+  it, `-I` skips the file. An error (an unreadable file, a directory without
+  `-r`) exits 2. od: every `-t` type (`a`, `c`, `d`, `o`, `u`, `x` in 1, 2,
+  4 or 8 bytes, `f` in 2, 4 or 8, the `z` suffix), the one-letter forms,
+  `-A`, `-j`, `-N`, `-S`, `-v`, `-w`, `--endian`, and GNU's lowercase final
+  hex address. cut: `-b`, `-c` and `-f` lists and ranges, `--complement`,
+  `-s`, `-z`, `--output-delimiter`, streamed in bounded reads.
+- `sed`, `nl`, `rev` and the lifo `grep`, `wc`, `uniq`, `cut`, `awk`, `sort`
+  and `tail` read every file. They skipped a file as "binary" by its name, so
+  `sed -i s/a/b/ f` left a file with no known text extension unedited. GNU's
+  tools have no such skip. `diff` decides binary by content, as GNU does (a
+  NUL byte), and exits 1 when binary files differ (it exited 2).
 - SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name
   directly in it needs write permission on `/`, as on Linux. Before, the
   filesystem skipped that check at the root, so any user (a confined agent

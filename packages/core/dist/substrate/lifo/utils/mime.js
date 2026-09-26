@@ -83,25 +83,3 @@ export function getMimeType(filename) {
     const ext = filename.slice(dot).toLowerCase();
     return mimeTypes.get(ext) ?? 'application/octet-stream';
 }
-export function getFileCategory(mime) {
-    if (mime.startsWith('text/') || mime === 'application/json')
-        return 'text';
-    if (mime.startsWith('image/'))
-        return 'image';
-    if (mime.startsWith('video/'))
-        return 'video';
-    if (mime.startsWith('audio/'))
-        return 'audio';
-    if (mime === 'application/zip' ||
-        mime === 'application/x-tar' ||
-        mime === 'application/gzip' ||
-        mime === 'application/x-bzip2' ||
-        mime === 'application/x-7z-compressed' ||
-        mime === 'application/vnd.rar') {
-        return 'archive';
-    }
-    return 'binary';
-}
-export function isBinaryMime(mime) {
-    return getFileCategory(mime) !== 'text';
-}

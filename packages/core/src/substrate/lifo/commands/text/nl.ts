@@ -2,7 +2,6 @@ import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
 
@@ -28,11 +27,6 @@ const command: Command = async (ctx) => {
     }
   } else {
     const path = resolve(ctx.cwd, positional[0]);
-    if (isBinaryMime(getMimeType(path))) {
-      await ctx.stderr.write(`nl: ${positional[0]}: binary file, skipping
-      `);
-      return 1;
-    }
     try {
       content = (await ctx.vfs.readFileString(path));
     } catch (e) {

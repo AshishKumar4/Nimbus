@@ -90,16 +90,16 @@ function check(name, condition, detail) {
 
 {
   const r = await sh('od -Ax -tc /tmp/h.txt');
-  check('od -tc renders escapes and closes uppercase-hex', r.stdout ===
-    '000000   H   e   l   l   o   ,       W   o   r   l   d   !  \\n\n00000E\n',
+  check('od -tc renders escapes and closes with a lowercase hex address (GNU)', r.stdout ===
+    '000000   H   e   l   l   o   ,       W   o   r   l   d   !  \\n\n00000e\n',
     JSON.stringify(r.stdout));
 }
 
 {
   const r = await sh('od -Ax /tmp/b27.bin');
-  check('od row addresses stay lowercase while the closing one does not', r.stdout ===
+  check('od hex addresses are lowercase, the closing one too (GNU)', r.stdout ===
     '000000 000000 000000 000000 000000 000000 000000 000000 000000\n' +
-    '000010 000000 000000 000000 000000 000000 000000\n00001B\n',
+    '000010 000000 000000 000000 000000 000000 000000\n00001b\n',
     JSON.stringify(r.stdout));
 }
 
@@ -148,7 +148,7 @@ function check(name, condition, detail) {
 {
   const r = await sh('od -Aq /tmp/h.txt');
   check('od rejects an unknown radix loudly', r.exitCode !== 0 &&
-    r.stderr === "od: Radix must be one of [o, d, x, n], got: q\n",
+    r.stderr === "od: invalid output address radix 'q'; it must be one character from [doxn]\n",
     `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
 }
 
@@ -461,10 +461,11 @@ root.writeFile('tmp/neg.bin', bytes([0x01, 0x80, 0xff, 0x7f]), { mode: 0o644 });
 }
 
 {
-  const r = await sh('od -Aod /tmp/h.txt');
-  check('od -A requires exactly one radix letter', r.exitCode !== 0 &&
-    r.stderr === 'od: Radix must be one of [o, d, x, n], got: od\n',
-    `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
+  // GNU reads the first letter of -A's value: -Aod is octal.
+  const r = await sh('od -Aod -c /tmp/h.txt');
+  const octal = await sh('od -Ao -c /tmp/h.txt');
+  check('od -A takes the first letter of its value (GNU)', r.exitCode === 0 && r.stdout === octal.stdout,
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)}`);
 }
 
 {

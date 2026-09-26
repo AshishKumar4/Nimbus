@@ -1,5 +1,4 @@
 import { resolve } from '../../utils/path.js';
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 const command = async (ctx) => {
@@ -41,10 +40,6 @@ const command = async (ctx) => {
         const path = resolve(ctx.cwd, file);
         try {
             (await statOrThrow(ctx.vfs, path));
-            if (isBinaryMime(getMimeType(path))) {
-                await ctx.stderr.write(`tail: ${file}: binary file, skipping\n`);
-                continue;
-            }
             const content = (await ctx.vfs.readFileString(path));
             if (files.length > 1)
                 await ctx.stdout.write(`==> ${file} <==\n`);
