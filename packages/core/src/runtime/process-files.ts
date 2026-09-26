@@ -219,13 +219,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
-  private readonly mountedInos = new Map<string, number>();
-  private readonly mountedIno = (path: string): number => {
-    let ino = this.mountedInos.get(path);
-    if (ino === undefined) this.mountedInos.set(path, ino = this.mountedInos.size + 1);
-    return ino;
-  };
-
   /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
   readonly hydrator: Hydrator | null;
 
@@ -396,7 +389,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno, this.bufferedWriteBytes);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.bufferedWriteBytes);
     return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
   }
 }

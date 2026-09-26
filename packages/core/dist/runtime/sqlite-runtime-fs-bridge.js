@@ -8,7 +8,6 @@ export class SqliteRuntimeFsBridge {
     rawVfs;
     scope;
     namespace;
-    mountedIno;
     bufferedWriteBytes;
     synchronous = this;
     legacySymlinks;
@@ -17,13 +16,11 @@ export class SqliteRuntimeFsBridge {
     mounted;
     constructor(vfs, rawVfs, scope = createSqliteDescriptorScope(), namespace, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    mountedIno = () => 0, 
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes = BUFFERED_WRITE_BYTES) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
-        this.mountedIno = mountedIno;
         this.bufferedWriteBytes = bufferedWriteBytes;
         this.vfs = vfs;
         this.legacySymlinks = getSymlinkRegistry(rawVfs);
@@ -62,7 +59,7 @@ export class SqliteRuntimeFsBridge {
         const stat = mount.stat(path);
         if (stat === null)
             throw fsError('ENOENT', 'stat', path);
-        return runtimeStatOf(stat, this.mountedIno(path));
+        return runtimeStatOf(stat);
     }
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
     rootStat() {
@@ -80,7 +77,7 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ELOOP', 'stat', path);
         if (located.mount) {
             const stat = located.mount.stat(located.path, { follow: followSymlinks });
-            return stat === null ? null : runtimeStatOf(stat, this.mountedIno(located.path));
+            return stat === null ? null : runtimeStatOf(stat);
         }
         const p = located.path;
         if (p === '')
@@ -385,12 +382,10 @@ export class SqliteRuntimeFsBridge {
             return located.mount.readdir(located.path).map((entry) => ({ name: entry.name, type: entry.type }));
         const p = located.path;
         const entries = new Map();
-        // What the namespace mounts directly in `/` (proc, dev, an embedder's) is listed with it.
-        if (p === '' && this.mounted) {
-            for (const entry of this.mounted.readdir('/')) {
-                if (this.namespace.composes('/' + entry.name))
-                    entries.set(entry.name, { name: entry.name, type: entry.type });
-            }
+        // What the namespace itself puts in `/` (proc, dev, an embedder's mounts) is listed with it.
+        if (p === '' && this.namespace) {
+            for (const entry of this.namespace.mountedNames('/'))
+                entries.set(entry.name, { name: entry.name, type: entry.type });
         }
         for (const entry of this.vfs.readdir(p)) {
             const type = entry.type === 'directory'
@@ -980,11 +975,12 @@ function removeTree(mount, path) {
     }
 }
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
-function runtimeStatOf(stat, fallbackIno) {
+/** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
+function runtimeStatOf(stat) {
     const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
     const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
     return {
-        dev: 0, ino: stat.ino ?? fallbackIno, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
+        dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
         ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
         mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: 0,
     };

@@ -15,6 +15,8 @@ const SYNTH_RUNTIME_STAT = {
 };
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
+/** Where the namespace's own device numbers for mounts start (see Mount.dev). */
+const ANONYMOUS_DEV = 0x10000;
 const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -49,6 +51,8 @@ function principalKey(principal) {
 }
 export class CompositeVFS {
     table;
+    /** The last st_dev a mount was given. */
+    nextDev = 0;
     viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     viewed = new WeakMap();
@@ -66,7 +70,7 @@ export class CompositeVFS {
             this.views = shared.views;
         }
         else {
-            this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options }]]), synthesized: new Map() };
+            this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), synthesized: new Map() };
             this.viewer = { cred: null };
             const refs = new Map();
             this.views = { refs, gone: new FinalizationRegistry((key) => {
@@ -242,7 +246,7 @@ export class CompositeVFS {
             throw new VfsError('EBUSY', 'the root is mounted at construction', point);
         if (this.table.mounts.has(at))
             throw new VfsError('EBUSY', 'something is already mounted there', point);
-        this.table.mounts.set(at, { point: at, source, options });
+        this.table.mounts.set(at, { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() });
         this.resynthesize();
     }
     unmount(point) {
@@ -673,6 +677,33 @@ export class CompositeVFS {
                 throw new VfsError('ENOENT', 'no such file or directory', path);
         });
     }
+    /**
+     * The names the namespace itself puts in `dir` (mount points and the
+     * directories above them), as directory entries, whatever `dir`'s own
+     * backend holds.
+     */
+    mountedNames(dir) {
+        const names = this.table.synthesized.get(normalizePath(dir));
+        return names === undefined ? [] : [...names].map((name) => ({ name, type: 'directory' }));
+    }
+    /**
+     * An entry's identity in the namespace: st_dev is its mount's (the root
+     * keeps its backend's), and a backend that numbers no inodes gets numbers
+     * here, per path, stable while it stays mounted.
+     */
+    identify(path, stat) {
+        if (stat === null)
+            return null;
+        const mount = this.table.mounts.get(path) ?? this.route(path).mount;
+        const dev = mount.dev ?? stat.dev ?? 0;
+        let ino = stat.ino;
+        if (ino === undefined || ino === 0) {
+            ino = mount.inos.get(path);
+            if (ino === undefined)
+                mount.inos.set(path, ino = mount.inos.size + 1);
+        }
+        return stat.dev === dev && stat.ino === ino ? stat : { ...stat, dev, ino };
+    }
     statAt(input, follow, sync) {
         // Nothing at a component on the way is "not there" too: stat answers null.
         const walked = () => {
@@ -686,49 +717,49 @@ export class CompositeVFS {
                 return absent(e);
             }
         };
-        return then(walked(), (path) => {
-            if (path === null)
-                return null;
-            if (this.absentOn(path) !== null)
-                return null;
-            // A live mount point is the mounted backend's root: its mode, owner
-            // and times are the backend's (chmod of /tmp reaches it, so stat must
-            // too). Only a backend that cannot stat its own root (a container that
-            // derives stat from a parent listing) gets a synthesized directory, as
-            // does a directory above a mount point that no backend holds; one a
-            // backend holds is that backend's (its mode governs lookup through it).
-            if (path !== ROOT_POINT && this.isStructural(path)) {
-                const mount = this.table.mounts.get(path);
-                if (mount === undefined) {
-                    return then(this.heldDirectory(path, sync), (held) => {
-                        if (held === null)
-                            return EPOCH_STAT;
-                        return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : held;
-                    });
-                }
-                const ops = this.ops({ mount, path, rel: '/' }, sync);
-                const own = () => {
-                    try {
-                        const out = ops.stat('/', { follow: true });
-                        return isPromise(out) ? out.catch(() => null) : out;
-                    }
-                    catch {
-                        return null;
-                    }
-                };
-                return then(own(), (stat) => {
-                    if (stat === null || stat.type !== 'directory')
+        return then(walked(), (path) => (path === null ? null : then(this.statResolved(path, follow, sync), (stat) => this.identify(path, stat))));
+    }
+    /** The stat of a resolved namespace path, before its identity is stamped. */
+    statResolved(path, follow, sync) {
+        if (this.absentOn(path) !== null)
+            return null;
+        // A live mount point is the mounted backend's root: its mode, owner
+        // and times are the backend's (chmod of /tmp reaches it, so stat must
+        // too). Only a backend that cannot stat its own root (a container that
+        // derives stat from a parent listing) gets a synthesized directory, as
+        // does a directory above a mount point that no backend holds; one a
+        // backend holds is that backend's (its mode governs lookup through it).
+        if (path !== ROOT_POINT && this.isStructural(path)) {
+            const mount = this.table.mounts.get(path);
+            if (mount === undefined) {
+                return then(this.heldDirectory(path, sync), (held) => {
+                    if (held === null)
                         return EPOCH_STAT;
-                    // A backend with no modes has the namespace's own at its mount point.
-                    return stat.mode === undefined ? { ...stat, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : stat;
+                    return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : held;
                 });
             }
-            return then(this.shadowed(path, sync), (hidden) => {
-                if (hidden)
+            const ops = this.ops({ mount, path, rel: '/' }, sync);
+            const own = () => {
+                try {
+                    const out = ops.stat('/', { follow: true });
+                    return isPromise(out) ? out.catch(() => null) : out;
+                }
+                catch {
                     return null;
-                const route = this.route(path);
-                return this.softStat(this.ops(route, sync), route.rel, follow);
+                }
+            };
+            return then(own(), (stat) => {
+                if (stat === null || stat.type !== 'directory')
+                    return EPOCH_STAT;
+                // A backend with no modes has the namespace's own at its mount point.
+                return stat.mode === undefined ? { ...stat, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : stat;
             });
+        }
+        return then(this.shadowed(path, sync), (hidden) => {
+            if (hidden)
+                return null;
+            const route = this.route(path);
+            return this.softStat(this.ops(route, sync), route.rel, follow);
         });
     }
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */

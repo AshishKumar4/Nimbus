@@ -201,13 +201,6 @@ export class ProcessFiles {
     namespaces = new Map();
     retired = new Set();
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
-    mountedInos = new Map();
-    mountedIno = (path) => {
-        let ino = this.mountedInos.get(path);
-        if (ino === undefined)
-            this.mountedInos.set(path, ino = this.mountedInos.size + 1);
-        return ino;
-    };
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     hydrator;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
@@ -378,7 +371,7 @@ export class ProcessFiles {
         scope.abort.abort();
     }
     bridgeFor(scope, cred, signal, pid) {
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno, this.bufferedWriteBytes);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.bufferedWriteBytes);
         return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
     }
 }

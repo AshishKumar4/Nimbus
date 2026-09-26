@@ -20,7 +20,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly scope;
     private readonly namespace?;
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    private readonly mountedIno;
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     private readonly bufferedWriteBytes;
     readonly synchronous: RuntimeSynchronousFs;
@@ -30,7 +29,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly mounted;
     constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, namespace?: CompositeVFS | undefined, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    mountedIno?: (path: string) => number, 
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes?: number);
     /**

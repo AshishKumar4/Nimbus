@@ -32,8 +32,6 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly namespaces;
     private readonly retired;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
-    private readonly mountedInos;
-    private readonly mountedIno;
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     readonly hydrator: Hydrator | null;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
