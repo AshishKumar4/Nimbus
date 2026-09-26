@@ -266,7 +266,7 @@ function walkLeanSources(directory) {
     const path = join(directory, entry);
 
     if (statSync(path).isDirectory()) {
-      if (directory === leanRoot && [".lake", "scratch-verification"].includes(entry)) continue;
+      if (directory === leanRoot && [".lake", "negative-probes"].includes(entry)) continue;
       paths.push(...walkLeanSources(path));
     } else if (entry.endsWith(".lean") && !(directory === leanRoot && entry === "lakefile.lean")) {
       paths.push(path);
