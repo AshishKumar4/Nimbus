@@ -43,7 +43,7 @@
 
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
@@ -60,6 +60,7 @@ import {
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { exists } from '../vfs/vfs.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -413,7 +414,7 @@ export function makeCPythonRunnerFactory(deps: {
         // Never absent. Without the capability the facet reads its seed and can
         // never write anything back — the program appears to run and its output
         // never reaches the session.
-        syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+        syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
         preamble: buildCPythonPreamble(),
         wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
       });

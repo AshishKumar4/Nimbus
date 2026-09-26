@@ -55,6 +55,10 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private closeScope;
     private bridgeFor;
 }
+/** A command's view for a process binding, over any binding authority. */
+export declare function bindProcessView(authority: NimbusFilesystemAuthority, binding: NimbusFilesystemBinding): ProcessView;
+/** Host-side work through a credentialed view whose lease is released when the work settles. */
+export declare function withHostView<T>(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, use: (view: ProcessView) => Promise<T>): Promise<T>;
 /** POSIX access(2) modes. */
 export declare const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
 /**
@@ -71,7 +75,15 @@ export declare class ProcessView implements VFS {
     private call;
     stat(path: string, options?: {
         follow?: boolean;
-    }): Promise<VfsStat | null>;
+    }): Promise<ProcessStat | null>;
+    /** Whether anything is at `path` (links followed): access(F_OK). */
+    exists(path: string): Promise<boolean>;
+    isFile(path: string): Promise<boolean>;
+    isDirectory(path: string): Promise<boolean>;
+    /** Whether `path` itself is a symbolic link. */
+    isSymlink(path: string): Promise<boolean>;
+    /** The file's bytes as UTF-8 text. */
+    readFileString(path: string): Promise<string>;
     readFile(path: string): Promise<Uint8Array>;
     /**
      * Text is written as UTF-8, as a process's write(2) of a string would.
@@ -116,10 +128,35 @@ export declare class ProcessView implements VFS {
     touch(path: string): Promise<void>;
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
     readFileUncached(path: string): Promise<Uint8Array>;
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
+    /**
+     * rm: a file, or with `recursive` a tree, whole or not at all; `force`
+     * makes a missing path no error.
+     */
+    remove(path: string, options?: {
+        recursive?: boolean;
+        force?: boolean;
+    }): Promise<void>;
+    /** Each entry of a directory with its own stat (links not followed): ls -l, find, du. */
+    readdirStat(path: string): Promise<Array<ProcessStat & {
+        name: string;
+    }>>;
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     appendFile(path: string, content: Uint8Array | string): Promise<void>;
+}
+/** A process's stat: everything stat(2) answers, which the bridge always has. */
+export interface ProcessStat extends VfsStat {
+    mode: number;
+    uid: number;
+    gid: number;
+    atimeMs: number;
+    ctimeMs: number;
+    ino: number;
+    nlink: number;
+    dev: number;
 }
 //# sourceMappingURL=process-files.d.ts.map

@@ -5,7 +5,7 @@ import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ExecutionFs, withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ProcessView, withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -251,7 +251,7 @@ workspace.runtimes.registerRunner(
             cred,
             setUmask: (mask: number) => ctx.setUmask(mask),
             runAs: (targetCred, argv) => ctx.runAs(targetCred, argv),
-            vfs: new ExecutionFs(workspace.filesystem.bind({ pid, cred })),
+            vfs: new ProcessView(workspace.filesystem.bind({ pid, cred })),
             signal: new AbortController().signal,
             stdout,
             stderr,
@@ -1584,7 +1584,7 @@ registry.register('help', createHelpCommand(registry));
 // Awaited: the runtime is composed with them registered. A failure leaves the
 // shell without those commands, and says so.
 try {
-  await withHostFilesystem(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
+  await withHostView(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
 } catch (error) {
   console.error('[nimbus] global npm commands were not restored:', error);
 }

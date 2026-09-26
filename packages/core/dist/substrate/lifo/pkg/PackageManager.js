@@ -68,7 +68,7 @@ export class PackageManager {
         // Remove files
         const pkgDir = `${MODULES_DIR}/${name}`;
         try {
-            (await this.vfs.rmdirRecursive(pkgDir));
+            (await this.vfs.remove(pkgDir, { recursive: true }));
         }
         catch {
             // Try just unlinking the index.js

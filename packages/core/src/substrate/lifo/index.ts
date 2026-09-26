@@ -1,7 +1,5 @@
-// Sandbox (high-level API)
-export { Sandbox } from './sandbox/index.js';
+// The workspace's command and file surfaces
 export type {
-	SandboxOptions,
 	RunOptions,
 	CommandResult,
 	SandboxCommands,
@@ -90,11 +88,8 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
-export { createSystemctlCommand } from './commands/system/systemctl.js';
 
 // Service manager
-export { ServiceManager } from './kernel/ServiceManager.js';
-export type { ServiceInfo } from './kernel/ServiceManager.js';
 export type { UnitFile } from './kernel/unit-parser.js';
 export { parseUnitFile } from './kernel/unit-parser.js';
 

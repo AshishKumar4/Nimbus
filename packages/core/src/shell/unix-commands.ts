@@ -13,18 +13,13 @@
  */
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { ExecutionFs } from './execution-fs.js';
+import type { ProcessView } from '../runtime/process-files.js';
 import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
-import {
-  fileTypeChar,
-  isCharacterDevice,
-  type FileType,
-  type VFS,
-} from '../substrate/lifo/kernel/vfs/index.js';
+import { type FileType } from '../substrate/lifo/kernel/vfs/index.js';
 import type { Command, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
@@ -35,6 +30,9 @@ import {
   parseChownOwnership,
 } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
+import { isVfsError } from '../vfs/vfs-error.js';
+import { isCharacterDevice, fileTypeChar, statOrThrow } from '../vfs/vfs.js';
+import { exists, isDirectory, isSymlink } from '../vfs/vfs.js';
 
 /**
  * stdin as the shell hands it over: a pipe reader, whose `readAll` resolves
@@ -52,7 +50,7 @@ type ShellStdin = CommandInputStream & {
  * first and `isDirectory` to the second, which is why the paths that want
  * either one probe for it.
  */
-type CtxVfs = ExecutionFs;
+type CtxVfs = ProcessView;
 
 /**
  * A stat as either layer reports it. The kernel's tree leaves out what a mount
@@ -63,9 +61,9 @@ type CtxStat = {
   type: FileType;
   size: number;
   mode: number;
-  mtime: number;
-  ctime: number;
-  atime?: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  atimeMs?: number;
   uid?: number;
   gid?: number;
 };
@@ -97,7 +95,7 @@ type Ctx = {
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
 
-type UnixVfs = ExecutionFs;
+type UnixVfs = ProcessView;
 
 /**
  * A command the registry resolved. A runtime that is known but not installed
@@ -1040,7 +1038,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       unit === 1 ? bytes : Math.ceil(bytes / unit);
 
     const statOf = async (entry: FindEntry) => {
-      try { return (await vfs.stat(entry.vfsPath)); } catch { return null; }
+      try { return (await statOrThrow(vfs, entry.vfsPath)); } catch { return null; }
     };
 
     async function parsePrimary(): Promise<FindNode> {
@@ -1103,7 +1101,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           return async (e) => {
             const st = (await statOf(e));
             if (!st) return false;
-            const age = now - (st.mtime || 0);
+            const age = now - (st.mtimeMs || 0);
             return cmp === '+' ? age > threshold + dayMs
               : cmp === '-' ? age < threshold
               : age >= threshold && age < threshold + dayMs;
@@ -1113,13 +1111,13 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
           const ref = value('-newer');
           let refMtime: number;
           try {
-            refMtime = (await vfs.stat(resolvePath(ctx.cwd, ref))).mtime;
+            refMtime = (await statOrThrow(vfs, resolvePath(ctx.cwd, ref))).mtimeMs;
           } catch {
             throw new FindUsageError(`'${ref}': No such file or directory`);
           }
           return async (e) => {
             const st = (await statOf(e));
-            return !!st && (st.mtime || 0) > refMtime;
+            return !!st && (st.mtimeMs || 0) > refMtime;
           };
         }
         case '-empty':
@@ -1300,7 +1298,7 @@ function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
       const vfsPath = resolvePath(ctx.cwd, startArg);
       let type: string;
       try {
-        type = (await vfs.stat(vfsPath)).type;
+        type = (await statOrThrow(vfs, vfsPath)).type;
       } catch {
         (await ctx.stderr.write(`find: '${startArg}': No such file or directory\n`));
         status = 1;
@@ -1709,7 +1707,7 @@ function absolutePath(cwd: string, target: string): string {
 }
 
 async function readWholeFileString(ctx: Ctx, path: string): Promise<string> {
-  if ((await ctx.vfs.stat(path)).type === 'directory') {
+  if ((await statOrThrow(ctx.vfs, path)).type === 'directory') {
     throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
   }
   return dec.decode((await ctx.vfs.readFile(path)));
@@ -2862,7 +2860,7 @@ function mkDu(vfs: UnixVfs): CmdFn {
             if (!sumOnly) (await ctx.stdout.write(`${fmt(dirSize)}\t/${fp}\n`));
           } else {
             try {
-              const st = (await vfs.stat(fp));
+              const st = (await statOrThrow(vfs, fp));
               size += st.size;
               if (showAll && !sumOnly) (await ctx.stdout.write(`${fmt(st.size)}\t/${fp}\n`));
             } catch {}
@@ -2909,7 +2907,7 @@ function mkDiff(vfs: UnixVfs): CmdFn {
 /**
  * shell compatibility (2026-05-11): POSIX rm with proper -f semantics.
  *
- * The original rm implementation called `r.vfs.stat(...)` and caught `e instanceof VFSError`.
+ * The original rm implementation called `statOrThrow(r.vfs, ...)` and caught `isVfsError(e)`.
  * Our SqliteVFSProvider's stat method delegates to SqliteVFS.stat which
  * throws raw `Error("ENOENT: ...")` — NOT VFSError. That rm path
  * therefore falls through to `else throw e`, the error propagates up,
@@ -3034,8 +3032,8 @@ function mkLs(vfs: UnixVfs): CmdFn {
 
     const kvfs = ctx.vfs;
 
-    function fmtTime(mtime: number): string {
-      const d = new Date(mtime);
+    function fmtTime(mtimeMs: number): string {
+      const d = new Date(mtimeMs);
       const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
       const day = String(d.getDate()).padStart(2, ' ');
       const hh = String(d.getHours()).padStart(2, '0');
@@ -3047,7 +3045,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       name: string;
       type: 'file' | 'directory' | 'symlink';
       size: number;
-      mtime: number;
+      mtimeMs: number;
       mode: number;
       uid: number;
       gid: number;
@@ -3059,7 +3057,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       name: string;
       type: FileType;
       size: number;
-      mtime: number;
+      mtimeMs: number;
       mode: number;
       uid?: number;
       gid?: number;
@@ -3091,7 +3089,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
           name: r.name,
           type,
           size: r.size ?? 0,
-          mtime: r.mtime ?? Date.now(),
+          mtimeMs: r.mtimeMs ?? Date.now(),
           mode: r.mode ?? 0o644,
           uid: r.uid ?? ctx.cred.uid,
           gid: r.gid ?? ctx.cred.gid,
@@ -3112,7 +3110,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       const isLink = e.type === 'symlink';
       const mode = unixModeString(e.mode, isDir, isLink);
       const size = String(e.size).padStart(6, ' ');
-      const time = fmtTime(e.mtime);
+      const time = fmtTime(e.mtimeMs);
       const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
       const user = flagNumeric ? String(e.uid) : (await unixUserLabel(vfs, e.uid));
       const group = flagNumeric ? String(e.gid) : (await unixGroupLabel(vfs, e.gid));
@@ -3133,7 +3131,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
           name: arg,
           type: 'symlink',
           size: target.length,
-          mtime: Date.now(),
+          mtimeMs: Date.now(),
           mode: 0o777,
           uid: ctx.cred.uid,
           gid: ctx.cred.gid,
@@ -3142,7 +3140,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
         continue;
       }
       try {
-        const s: CtxStat = kvfs && typeof kvfs.stat === 'function' ? (await kvfs.stat(fp)) : (await vfs.stat(fp));
+        const s: CtxStat = kvfs && typeof kvfs.stat === 'function' ? (await statOrThrow(kvfs, fp)) : (await statOrThrow(vfs, fp));
         if (s.type === 'directory' && !flagDirectory) {
           dirArgs.push(arg);
         } else {
@@ -3150,7 +3148,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
             name: arg,
             type: s.type === 'directory' ? 'directory' : 'file',
             size: s.size ?? 0,
-            mtime: s.mtime ?? Date.now(),
+            mtimeMs: s.mtimeMs ?? Date.now(),
             mode: s.mode ?? 0o644,
             uid: s.uid ?? ctx.cred.uid,
             gid: s.gid ?? ctx.cred.gid,
@@ -3225,7 +3223,7 @@ function mkCat(vfs: UnixVfs): CmdFn {
       if (f === null) { exit = 1; continue; }
       try {
         const path = f.startsWith('/') ? f : `${ctx.cwd}/${f}`;
-        const stat = (await ctx.vfs.stat(path));
+        const stat = (await statOrThrow(ctx.vfs, path));
         if (stat.type === 'directory') throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
         if (stat.size > 0) {
           // A regular file's size is its exact extent — read precisely that.
@@ -3325,9 +3323,9 @@ interface StatFacts {
   mode: number;
   uid: number;
   gid: number;
-  atime: number;
-  mtime: number;
-  ctime?: number;
+  atimeMs: number;
+  mtimeMs: number;
+  ctimeMs?: number;
 }
 
 interface StatFsFacts {
@@ -3360,7 +3358,7 @@ function statDirective(
 ): string | null {
   const isDir = stat.type === 'directory';
   const isLink = stat.type === 'symlink';
-  const changeTime = stat.ctime ?? stat.mtime;
+  const changeTime = stat.ctimeMs ?? stat.mtimeMs;
   switch (directive) {
     case 'n': return path;
     case 'N': return `'${path}'`;
@@ -3389,10 +3387,10 @@ function statDirective(
     case 'C': return '?';
     case 'w': return '-';
     case 'W': return '0';
-    case 'Y': return String(Math.floor(stat.mtime / 1000));
-    case 'y': return new Date(stat.mtime).toISOString();
-    case 'X': return String(Math.floor(stat.atime / 1000));
-    case 'x': return new Date(stat.atime).toISOString();
+    case 'Y': return String(Math.floor(stat.mtimeMs / 1000));
+    case 'y': return new Date(stat.mtimeMs).toISOString();
+    case 'X': return String(Math.floor(stat.atimeMs / 1000));
+    case 'x': return new Date(stat.atimeMs).toISOString();
     case 'Z': return String(Math.floor(changeTime / 1000));
     case 'z': return new Date(changeTime).toISOString();
     case '%': return '%';
@@ -3569,7 +3567,7 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       // Try Kernel.VFS first (sees mounts).
       if (kvfs && typeof kvfs.stat === 'function') {
         try {
-          st = (await kvfs.stat(f.startsWith('/') ? f : ctx.cwd + '/' + f));
+          st = (await statOrThrow(kvfs, f.startsWith('/') ? f : ctx.cwd + '/' + f));
           displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
         } catch (_e) { /* fall through to SqliteVFS */ }
       }
@@ -3577,7 +3575,7 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       if (!st) {
         try {
           const fp = resolvePath(ctx.cwd, f);
-          st = (await vfs.stat(fp));
+          st = (await statOrThrow(vfs, fp));
           displayPath = '/' + fp;
         } catch (_e) {
           (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
@@ -3596,9 +3594,9 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
         mode: st.mode,
         uid,
         gid,
-        atime: st.atime ?? st.mtime,
-        mtime: st.mtime,
-        ctime: st.ctime,
+        atimeMs: st.atimeMs ?? st.mtimeMs,
+        mtimeMs: st.mtimeMs,
+        ctimeMs: st.ctimeMs,
       };
       if (activeFormat !== null) {
         const expanded = expandStatFormat(
@@ -3616,7 +3614,7 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
       const kind = isCharacterDevice(st.mode) ? 'character special file' : st.type;
       (await ctx.stdout.write(`  Size: ${st.size}\tType: ${kind}\n`));
       (await ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`));
-      (await ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`));
+      (await ctx.stdout.write(`Modify: ${new Date(st.mtimeMs).toISOString()}\n`));
     }
     return 0;
   };
@@ -3730,7 +3728,7 @@ function mkChown(sqliteVfs: SqliteVFS): CmdFn {
 
     let exitCode = 0;
     const apply = async (path: string): Promise<void> => {
-      if (recursive && (await vfs.stat(path)).type === 'directory') {
+      if (recursive && (await statOrThrow(vfs, path)).type === 'directory') {
         for (const child of (await vfs.readdir(path))) (await apply(`${path}/${child.name}`));
       }
       (await vfs.chown(path, ownership.uid, ownership.gid));
@@ -3758,9 +3756,9 @@ function mkTest(sqliteVfs: SqliteVFS): CmdFn {
       if (args[0] === '-r') (await vfs.access(path, 0o4));
       else if (args[0] === '-w') (await vfs.access(path, 0o2));
       else if (args[0] === '-x') (await vfs.access(path, 0o1));
-      else if (args[0] === '-f') return (await vfs.stat(path)).type === 'file' ? 0 : 1;
-      else if (args[0] === '-d') return (await vfs.stat(path)).type === 'directory' ? 0 : 1;
-      else if (args[0] === '-e') (await vfs.stat(path));
+      else if (args[0] === '-f') return (await statOrThrow(vfs, path)).type === 'file' ? 0 : 1;
+      else if (args[0] === '-d') return (await statOrThrow(vfs, path)).type === 'directory' ? 0 : 1;
+      else if (args[0] === '-e') (await statOrThrow(vfs, path));
       else if (args[0] === '-z') return (!args[1] || args[1] === '') ? 0 : 1;
       else if (args[0] === '-n') return args[1] ? 0 : 1;
       else if (args[1] === '=') return args[0] === args[2] ? 0 : 1;

@@ -1,6 +1,7 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+
 
 // ─── ANSI escape helpers ───
 
@@ -108,7 +109,7 @@ async function loadFile(ctx: CommandContext, path: string): Promise<{ lines: str
   }
   return { lines: lines.length === 0 ? [''] : lines, isNew: false };
 } catch (e) {
-  if (e instanceof VFSError && e.message.includes('ENOENT')) {
+  if (isVfsError(e) && e.message.includes('ENOENT')) {
     return { lines: [''], isNew: true };
   }
   throw e;

@@ -1,4 +1,4 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
 
@@ -14,7 +14,7 @@ export interface CompletionContext {
   cursorPos: number;
   cwd: string;
   env: Record<string, string>;
-  vfs: ExecutionFs;
+  vfs: ProcessView;
   registry: CommandRegistry;
   builtinNames: string[];
 }

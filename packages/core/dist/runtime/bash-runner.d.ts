@@ -23,7 +23,7 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
-import { type ExecutionFs } from '../shell/execution-fs.js';
+import { type ProcessView } from './process-files.js';
 import type { FacetHost } from './facet-host.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
@@ -57,7 +57,7 @@ export interface BashFacetSession {
 export declare function createBashFacetSession(deps: {
     facets: FacetHost;
     /** Installed runtime blobs, read through the host lease that owns them. */
-    artifacts: ExecutionFs;
+    artifacts: ProcessView;
     filesystem: RuntimeFsBridge;
     pid: number;
     cred: VfsCred;

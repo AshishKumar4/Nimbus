@@ -1,7 +1,10 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+
 
 const command: Command = async (ctx) => {
   let showLines = false;
@@ -64,7 +67,7 @@ const command: Command = async (ctx) => {
   for (const file of files) {
     const path = resolve(ctx.cwd, file);
     try {
-      (await ctx.vfs.stat(path));
+      (await statOrThrow(ctx.vfs, path));
       if (isBinaryMime(getMimeType(path))) {
         if (showBytes && !showLines && !showWords) {
           // Byte count only: use readFile for accurate binary size
@@ -85,7 +88,7 @@ const command: Command = async (ctx) => {
       totalBytes += counts.bytes;
       await ctx.stdout.write(formatCounts(counts, file));
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`wc: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {

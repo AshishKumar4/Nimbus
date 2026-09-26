@@ -1,6 +1,7 @@
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
     'recursive-upper': { type: 'boolean', short: 'R' },
@@ -51,7 +52,7 @@ const command = async (ctx) => {
         const src = resolve(ctx.cwd, source);
         const target = destIsDir ? resolve(dest, basename(src)) : dest;
         try {
-            const stat = await ctx.vfs.lstat(src);
+            const stat = await lstatOrThrow(ctx.vfs, src);
             if (stat.type === 'directory') {
                 if (!recursive) {
                     await ctx.stderr.write(`cp: -r not specified; omitting directory '${source}'\n`);
@@ -74,7 +75,7 @@ const command = async (ctx) => {
                 await ctx.stdout.write(`'${source}' -> '${target}'\n`);
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`cp: ${e.message}\n`);
                 exitCode = 1;
                 continue;
@@ -86,10 +87,10 @@ const command = async (ctx) => {
 };
 async function isDirectory(ctx, path) {
     try {
-        return (await ctx.vfs.stat(path)).type === 'directory';
+        return (await statOrThrow(ctx.vfs, path)).type === 'directory';
     }
     catch (error) {
-        if (error instanceof VFSError && error.code === 'ENOENT')
+        if (isVfsError(error) && error.code === 'ENOENT')
             return false;
         throw error;
     }
@@ -105,7 +106,7 @@ function errorCode(error) {
 async function copyTree(ctx, src, target, preserve, noClobber) {
     if (!(await ctx.vfs.exists(target))) {
         try {
-            await ctx.vfs.copyTree(src, target, { preserve });
+            await ctx.vfs.copy(src, target, { recursive: true, preserve });
             return;
         }
         catch (error) {
@@ -113,15 +114,15 @@ async function copyTree(ctx, src, target, preserve, noClobber) {
                 throw error;
         }
     }
-    const stat = await ctx.vfs.lstat(src);
+    const stat = await lstatOrThrow(ctx.vfs, src);
     if (!(await ctx.vfs.exists(target)))
         await ctx.vfs.mkdir(target, { mode: stat.mode | 0o700 });
-    else if ((await ctx.vfs.lstat(target)).type !== 'directory')
-        throw new VFSError('ENOTDIR', target);
+    else if ((await lstatOrThrow(ctx.vfs, target)).type !== 'directory')
+        throw new VfsError('ENOTDIR', target);
     for (const entry of await ctx.vfs.readdir(src)) {
         const from = resolve(src, entry.name);
         const to = resolve(target, entry.name);
-        const child = await ctx.vfs.lstat(from);
+        const child = await lstatOrThrow(ctx.vfs, from);
         if (child.type === 'directory')
             await copyTree(ctx, from, to, preserve, noClobber);
         else if (!(noClobber && (await ctx.vfs.exists(to))))
@@ -132,7 +133,7 @@ async function copyTree(ctx, src, target, preserve, noClobber) {
 }
 async function copyEntry(ctx, src, target, stat, preserve) {
     if (!(await ctx.vfs.exists(dirname(target))))
-        throw new VFSError('ENOENT', dirname(target));
+        throw new VfsError('ENOENT', dirname(target));
     if (stat.type === 'symlink') {
         const link = await ctx.vfs.readlink(src);
         if (await ctx.vfs.exists(target))
@@ -140,12 +141,12 @@ async function copyEntry(ctx, src, target, stat, preserve) {
         await ctx.vfs.symlink(link, target);
         return;
     }
-    await ctx.vfs.copyFile(src, target);
+    await ctx.vfs.copy(src, target);
     if (preserve)
         await applyPreserved(ctx, target, stat);
 }
 async function applyPreserved(ctx, target, stat) {
     await ctx.vfs.chmod(target, stat.mode);
-    await ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime);
+    await ctx.vfs.utimes(target, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs);
 }
 export default command;

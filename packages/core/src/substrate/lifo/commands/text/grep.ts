@@ -1,7 +1,10 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+
 
 const command: Command = async (ctx) => {
   const args = ctx.args;
@@ -124,7 +127,7 @@ const command: Command = async (ctx) => {
     for (const file of files) {
       const path = resolve(ctx.cwd, file);
       try {
-        const stat = (await ctx.vfs.stat(path));
+        const stat = (await statOrThrow(ctx.vfs, path));
         if (stat.type === 'directory') {
           if (recursive) {
             const dirFiles = (await walkDir(path));
@@ -153,7 +156,7 @@ const command: Command = async (ctx) => {
         const lines = content.replace(/\n$/, '').split('\n');
         await grepLines(lines, multiFile ? file : null);
       } catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
           await ctx.stderr.write(`grep: ${file}: ${e.message}\n`);
         } else {
           throw e;

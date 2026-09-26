@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 function humanSize(bytes) {
     if (bytes < 1024)
         return bytes + 'B';
@@ -30,7 +31,7 @@ const command = async (ctx) => {
             for (const entry of entries) {
                 const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
                 if (entry.type === 'file') {
-                    const st = (await ctx.vfs.stat(fullPath));
+                    const st = (await statOrThrow(ctx.vfs, fullPath));
                     total += st.size;
                 }
                 else {
@@ -51,7 +52,7 @@ const command = async (ctx) => {
                 const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
                 const displayPath = name === '/' ? '/' + entry.name : name + '/' + entry.name;
                 if (entry.type === 'file') {
-                    const st = (await ctx.vfs.stat(fullPath));
+                    const st = (await statOrThrow(ctx.vfs, fullPath));
                     total += st.size;
                 }
                 else {
@@ -73,7 +74,7 @@ const command = async (ctx) => {
     for (const p of paths) {
         const absPath = resolve(ctx.cwd, p);
         try {
-            const st = (await ctx.vfs.stat(absPath));
+            const st = (await statOrThrow(ctx.vfs, absPath));
             if (st.type === 'file') {
                 const display = human ? humanSize(st.size) : String(st.size);
                 await ctx.stdout.write(display + '\t' + p + '\n');
@@ -90,7 +91,7 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`du: ${p}: ${e.message}\n`);
                 exitCode = 1;
             }

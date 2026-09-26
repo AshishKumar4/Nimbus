@@ -1,7 +1,8 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     unified: { type: 'boolean', short: 'u' },
 };
@@ -225,10 +226,10 @@ const command = async (ctx) => {
     if (binary1 || binary2) {
         // Verify files exist before reporting binary diff
         try {
-            (await ctx.vfs.stat(path1));
+            (await statOrThrow(ctx.vfs, path1));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`diff: ${file1}: ${e.message}
         `);
                 return 2;
@@ -236,10 +237,10 @@ const command = async (ctx) => {
             throw e;
         }
         try {
-            (await ctx.vfs.stat(path2));
+            (await statOrThrow(ctx.vfs, path2));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`diff: ${file2}: ${e.message}
         `);
                 return 2;
@@ -254,7 +255,7 @@ const command = async (ctx) => {
         content1 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file1)));
     }
     catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
             await ctx.stderr.write(`diff: ${file1}: ${e.message}\n`);
             return 2;
         }
@@ -264,7 +265,7 @@ const command = async (ctx) => {
         content2 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file2)));
     }
     catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
             await ctx.stderr.write(`diff: ${file2}: ${e.message}\n`);
             return 2;
         }

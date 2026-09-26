@@ -1,5 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { withHostFilesystem, type ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
+import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { z } from 'zod/v4';
@@ -34,6 +34,7 @@ import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
 import { buildCPythonPreamble } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
@@ -232,10 +233,10 @@ class PythonReplAdapter implements ReplAdapter {
     finally { this.resetPool(); }
   }
   private async ensurePool(): Promise<void> {
-    await withHostFilesystem(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
+    await withHostView(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
   }
 
-  private async ensurePoolFrom(vfs: ExecutionFs): Promise<void> {
+  private async ensurePoolFrom(vfs: ProcessView): Promise<void> {
     const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
     const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
     // A prompt that was open before `pip install numpy` is holding the

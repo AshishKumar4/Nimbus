@@ -1,7 +1,8 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError, isCharacterDevice } from '../../kernel/vfs/index.js';
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { isCharacterDevice, statOrThrow } from '../../../../vfs/vfs.js';
 const SIZE_SUFFIXES = new Map([
     ['c', 1], ['w', 2], ['b', 512],
     ['kB', 1000], ['K', 1024], ['k', 1024], ['KiB', 1024],
@@ -89,7 +90,7 @@ async function readStdinChunk(stdin, want) {
 async function inputLimit(ctx, options, path) {
     if (options.count !== undefined)
         return options.count * options.inputBlockSize;
-    const stat = await ctx.vfs.stat(path);
+    const stat = await statOrThrow(ctx.vfs, path);
     if (isCharacterDevice(stat.mode)) {
         throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
     }
@@ -100,7 +101,7 @@ async function readInput(ctx, path, offset, length, label) {
         return await ctx.vfs.readRange(path, offset, length);
     }
     catch (error) {
-        if (error instanceof VFSError)
+        if (isVfsError(error))
             throw new Error(`${label}: ${error.message}`);
         throw error;
     }

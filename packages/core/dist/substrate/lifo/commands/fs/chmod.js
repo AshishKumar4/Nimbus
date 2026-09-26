@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 /** Parse an octal (755, 0644) or symbolic (+x, u+x, go-w, a=rx, a+rX) mode spec. */
 export function parseModeSpec(spec) {
     if (/^[0-7]{1,4}$/.test(spec)) {
@@ -74,7 +75,7 @@ const command = async (ctx) => {
     }
     let exitCode = 0;
     async function applyChmod(filePath) {
-        const st = (await ctx.vfs.stat(filePath));
+        const st = (await statOrThrow(ctx.vfs, filePath));
         (await ctx.vfs.chmod(filePath, applyModeSpec(spec, st.mode, st.type === 'directory')));
         if (recursive && st.type === 'directory') {
             for (const entry of (await ctx.vfs.readdir(filePath))) {
@@ -87,7 +88,7 @@ const command = async (ctx) => {
             (await applyChmod(resolve(ctx.cwd, file)));
         }
         catch (e) {
-            const message = e instanceof VFSError || e instanceof Error ? e.message : String(e);
+            const message = isVfsError(e) || e instanceof Error ? e.message : String(e);
             await ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
             exitCode = 1;
         }

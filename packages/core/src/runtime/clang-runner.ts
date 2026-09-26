@@ -28,7 +28,7 @@
  */
 
 import type { RuntimeManifest } from './runtime-manifest.js';
-import { type ExecutionFs, withHostFilesystem } from '../shell/execution-fs.js';
+import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetBindings, FacetHost } from './facet-host.js';
 import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
@@ -42,6 +42,7 @@ import {
   type BatchChunkEntry,
   type BatchInodeEntry,
 } from '@nimbus-sh/platform/w7-frame.js';
+import { exists, isFile, statOrThrow } from '../vfs/vfs.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
@@ -68,10 +69,10 @@ export function makeClangRunnerFactory(deps: {
     // Installed toolchain blobs are supervisor-owned artifacts, so they are read
     // through a kernel host lease that lives exactly as long as one invocation.
     return function clangBinHandler(ctx: CommandContext): Promise<number> {
-      return withHostFilesystem(deps.filesystem, CRED_KERNEL, (runtimeVfs) => compileOrLink(ctx, runtimeVfs));
+      return withHostView(deps.filesystem, CRED_KERNEL, (runtimeVfs) => compileOrLink(ctx, runtimeVfs));
     };
 
-    async function compileOrLink(ctx: CommandContext, runtimeVfs: ExecutionFs): Promise<number> {
+    async function compileOrLink(ctx: CommandContext, runtimeVfs: ProcessView): Promise<number> {
       const vfs = ctx.vfs;
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
@@ -170,7 +171,7 @@ export function makeClangRunnerFactory(deps: {
         facet: deps.facets.open({
           tag: `clang-runner-${primaryName}`,
           concurrency: 1,
-          syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+          syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
           preamble: CLANG_RUNNER_PREAMBLE,
           wasmModules: { 'primary.wasm': image },
         }),
@@ -314,10 +315,10 @@ export function makeClangRunnerFactory(deps: {
 }
 
 /** A non-empty regular file at `guestPath`, as the caller sees it. */
-async function producedFile(vfs: ExecutionFs, guestPath: string): Promise<boolean> {
+async function producedFile(vfs: ProcessView, guestPath: string): Promise<boolean> {
   const path = guestPath.replace(/^\/+/, '');
   if (!(await vfs.isFile(path))) return false;
-  return (await vfs.stat(path)).size > 0;
+  return (await statOrThrow(vfs, path)).size > 0;
 }
 
 // ── argv parser ──────────────────────────────────────────────────────
@@ -528,10 +529,10 @@ function parseSysrootStamp(text: string): SysrootStamp | null {
  * W7 stream; the stamp goes last, so a tree without one is re-unpacked from
  * scratch on the next invocation rather than trusted.
  */
-async function ensureSysrootUnpacked(vfs: ExecutionFs, tarVfsPath: string, sysrootDir: string): Promise<void> {
+async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysrootDir: string): Promise<void> {
   const dir = sysrootDir.replace(/^\/+/, '');
   const stampPath = `${dir}/${SYSROOT_STAMP}`;
-  const tarSize = (await vfs.stat(tarVfsPath)).size;
+  const tarSize = (await statOrThrow(vfs, tarVfsPath)).size;
   if (await vfs.isFile(stampPath)) {
     const stamp = parseSysrootStamp(await vfs.readFileString(stampPath));
     if (stamp && stamp.tarSize === tarSize) return;
@@ -570,7 +571,7 @@ async function ensureSysrootUnpacked(vfs: ExecutionFs, tarVfsPath: string, sysro
 
   const write = async (inodes: BatchInodeEntry[]): Promise<void> => {
     const chunks = inodes.flatMap((inode) => chunksByPath.get(inode.path) ?? []);
-    const result = await vfs.authority.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+    const result = await vfs.process.writeStream(encodeWriteBatchStream({ inodes, chunks }));
     if (!result.ok) throw new Error(`sysroot unpack failed at ${inodes[0].path}: ${result.error.message}`);
   };
   for (let i = 0; i < directories.length; i += SYSROOT_WAVE_PATHS) await write(directories.slice(i, i + SYSROOT_WAVE_PATHS));
@@ -611,7 +612,7 @@ async function loadClangToolchain(
     lldVfsPath: string;
     sysrootVfsPath: string;
     sysrootDir: string;
-    vfs: ExecutionFs;
+    vfs: ProcessView;
   },
 ): Promise<ClangToolchain> {
   // Uncached reads: these are one-shot bulk reads of large runtime blobs

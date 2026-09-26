@@ -207,25 +207,60 @@ export async function writeText(vfs: VFS, path: string, text: string, options?: 
   await vfs.writeFile(path, encoder.encode(text), options);
 }
 
+/** File type bits of a mode (st_mode & S_IFMT). */
+export const S_IFMT = 0o170000;
+export const S_IFREG = 0o100000;
+export const S_IFDIR = 0o040000;
+export const S_IFCHR = 0o020000;
+export const S_IFLNK = 0o120000;
+
+/** True for a character device such as `/dev/zero`, which streams rather than stores. */
+export function isCharacterDevice(mode: number | undefined): boolean {
+  return mode !== undefined && (mode & S_IFMT) === S_IFCHR;
+}
+
+/** The `ls -l` type character for a mode, falling back to the entry's type. */
+export function fileTypeChar(mode: number | undefined, type: VfsFileType): string {
+  switch ((mode ?? 0) & S_IFMT) {
+    case S_IFCHR: return 'c';
+    case S_IFLNK: return 'l';
+    case S_IFDIR: return 'd';
+    case S_IFREG: return '-';
+    default: return type === 'directory' ? 'd' : type === 'symlink' ? 'l' : '-';
+  }
+}
+
 /** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
-export async function statOrThrow(vfs: VFS, path: string, options?: { follow?: boolean }): Promise<VfsStat> {
+export async function statOrThrow<S extends VfsStat>(
+  vfs: { stat(path: string, options?: { follow?: boolean }): Awaitable<S | null> },
+  path: string,
+  options?: { follow?: boolean },
+): Promise<S> {
   const stat = await vfs.stat(path, options);
   if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
   return stat;
 }
 
+/** The entry at `path` itself, a link not followed (lstat); ENOENT when nothing is there. */
+export async function lstatOrThrow<S extends VfsStat>(
+  vfs: { stat(path: string, options?: { follow?: boolean }): Awaitable<S | null> },
+  path: string,
+): Promise<S> {
+  return await statOrThrow(vfs, path, { follow: false });
+}
+
 /** Whether `path` is a directory (links followed). */
-export async function isDirectory(vfs: VFS, path: string): Promise<boolean> {
+export async function isDirectory(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
   return (await vfs.stat(path))?.type === 'directory';
 }
 
 /** Whether `path` is a regular file (links followed). */
-export async function isFile(vfs: VFS, path: string): Promise<boolean> {
+export async function isFile(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
   return (await vfs.stat(path))?.type === 'file';
 }
 
 /** Whether `path` itself is a symbolic link. */
-export async function isSymlink(vfs: VFS, path: string): Promise<boolean> {
+export async function isSymlink(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
   return (await vfs.stat(path, { follow: false }))?.type === 'symlink';
 }
 

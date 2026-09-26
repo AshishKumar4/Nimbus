@@ -3,7 +3,7 @@ import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { CRED_KERNEL, type VfsCred, type RuntimeFsBridge, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { createBashFacetSession, type BashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
@@ -109,7 +109,7 @@ class BashReplAdapter implements ReplAdapter {
 
   private async ensureSession(signal: AbortSignal): Promise<ReplPushResult | null> {
     if (this.session) return null;
-    this.session = await withHostFilesystem(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
+    this.session = await withHostView(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
       facets: facetHostForManager(this.deps.facetMgr),
       artifacts,
       filesystem: this.deps.filesystem,

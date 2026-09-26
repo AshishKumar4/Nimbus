@@ -45,6 +45,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { errorText } from '../_shared/error-text.js';
+import { exists } from '../vfs/vfs.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors

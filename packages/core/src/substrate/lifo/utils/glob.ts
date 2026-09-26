@@ -1,5 +1,6 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
+import { exists } from '../../../vfs/vfs.js';
 
 /**
  * Match a glob pattern against a text string.
@@ -103,7 +104,7 @@ function matchCharClass(pattern: string, pos: number, ch: string): { matched: bo
  * Expand a glob pattern against the VFS.
  * Returns sorted matching paths, or [pattern] if no matches.
  */
-export async function expandGlob(pattern: string, cwd: string, vfs: ExecutionFs): Promise<string[]> {
+export async function expandGlob(pattern: string, cwd: string, vfs: ProcessView): Promise<string[]> {
   // If no glob chars, return as-is
   if (!hasGlobChars(pattern)) {
     return [pattern];

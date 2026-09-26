@@ -1,6 +1,7 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 function parseFieldSpec(spec) {
     const fields = [];
     for (const part of spec.split(',')) {
@@ -66,7 +67,7 @@ const command = async (ctx) => {
         for (const file of files) {
             const path = resolve(ctx.cwd, file);
             try {
-                (await ctx.vfs.stat(path));
+                (await statOrThrow(ctx.vfs, path));
                 if (isBinaryMime(getMimeType(path))) {
                     await ctx.stderr.write(`cut: ${file}: binary file, skipping\n`);
                     continue;
@@ -74,7 +75,7 @@ const command = async (ctx) => {
                 text += (await ctx.vfs.readFileString(path));
             }
             catch (e) {
-                if (e instanceof VFSError) {
+                if (isVfsError(e)) {
                     await ctx.stderr.write(`cut: ${file}: ${e.message}\n`);
                     return 1;
                 }

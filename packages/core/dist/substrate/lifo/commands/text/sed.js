@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 class SedParseError extends Error {
     expr;
     constructor(expr) {
@@ -426,7 +427,7 @@ export async function runSed(ctx) {
             for (const file of options.files) {
                 const path = resolve(ctx.cwd, file);
                 try {
-                    await ctx.vfs.stat(path);
+                    await statOrThrow(ctx.vfs, path);
                     if (isBinaryMime(getMimeType(path))) {
                         await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
                         continue;
@@ -472,7 +473,7 @@ export async function runSed(ctx) {
                 const file = options.files[index++];
                 const path = resolve(ctx.cwd, file);
                 try {
-                    await ctx.vfs.stat(path);
+                    await statOrThrow(ctx.vfs, path);
                     if (isBinaryMime(getMimeType(path))) {
                         await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
                         continue;

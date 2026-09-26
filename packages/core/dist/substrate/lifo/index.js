@@ -1,5 +1,3 @@
-// Sandbox (high-level API)
-export { Sandbox } from './sandbox/index.js';
 // Kernel
 export { Kernel } from './kernel/index.js';
 // Network Stack
@@ -42,9 +40,6 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
-export { createSystemctlCommand } from './commands/system/systemctl.js';
-// Service manager
-export { ServiceManager } from './kernel/ServiceManager.js';
 export { parseUnitFile } from './kernel/unit-parser.js';
 // Shell
 export { Shell } from './shell/Shell.js';

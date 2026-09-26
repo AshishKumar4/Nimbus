@@ -1,5 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 function extractStrings(data, minLen) {
     const results = [];
     let current = '';
@@ -55,7 +55,7 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`strings: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }

@@ -1,5 +1,6 @@
 import { resolve, dirname } from '../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
  * Sync VFS behind async interface future-proofs for async persistence.
@@ -31,8 +32,8 @@ export class SandboxFsImpl {
     }
     async stat(path) {
         const abs = this.resolvePath(path);
-        const s = (await this.vfs.stat(abs));
-        return { type: s.type, size: s.size, mtime: s.mtime };
+        const s = await statOrThrow(this.vfs, abs);
+        return { type: s.type, size: s.size, mtime: s.mtimeMs };
     }
     async mkdir(path, options) {
         const abs = this.resolvePath(path);
@@ -40,10 +41,10 @@ export class SandboxFsImpl {
     }
     async rm(path, options) {
         const abs = this.resolvePath(path);
-        const s = (await this.vfs.stat(abs));
+        const s = await statOrThrow(this.vfs, abs);
         if (s.type === 'directory') {
             if (options?.recursive) {
-                (await this.vfs.rmdirRecursive(abs));
+                (await this.vfs.remove(abs, { recursive: true }));
             }
             else {
                 (await this.vfs.rmdir(abs));
@@ -65,7 +66,7 @@ export class SandboxFsImpl {
     async cp(src, dest) {
         const absSrc = this.resolvePath(src);
         const absDest = this.resolvePath(dest);
-        (await this.vfs.copyFile(absSrc, absDest));
+        (await this.vfs.copy(absSrc, absDest));
     }
     async writeFiles(files) {
         for (const { path, content } of files) {
@@ -79,7 +80,7 @@ export class SandboxFsImpl {
         const walk = async (absPath) => {
             if (SandboxFsImpl.SKIP_DIRS.has(absPath))
                 return;
-            const stat = (await this.vfs.stat(absPath));
+            const stat = await statOrThrow(this.vfs, absPath);
             if (stat.type === 'directory') {
                 // Add directory entry (skip root itself)
                 if (absPath !== '/') {
@@ -88,7 +89,7 @@ export class SandboxFsImpl {
                         data: new Uint8Array(0),
                         type: 'directory',
                         mode: stat.mode,
-                        mtime: stat.mtime,
+                        mtime: stat.mtimeMs,
                     });
                 }
                 const children = (await this.vfs.readdir(absPath));
@@ -103,7 +104,7 @@ export class SandboxFsImpl {
                     data: (await this.vfs.readFile(absPath)),
                     type: 'file',
                     mode: stat.mode,
-                    mtime: stat.mtime,
+                    mtime: stat.mtimeMs,
                 });
             }
         };

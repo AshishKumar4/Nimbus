@@ -277,6 +277,20 @@ export class ProcessFiles {
         return new GuardedProcessBridge(target, scope, signal, pid);
     }
 }
+/** A command's view for a process binding, over any binding authority. */
+export function bindProcessView(authority, binding) {
+    return new ProcessView(authority.bind(binding));
+}
+/** Host-side work through a credentialed view whose lease is released when the work settles. */
+export async function withHostView(authority, cred, use) {
+    const lease = authority.openHost(cred);
+    try {
+        return await use(new ProcessView(lease.fs));
+    }
+    finally {
+        await lease.dispose();
+    }
+}
 /** POSIX access(2) modes. */
 export const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
 /**
@@ -302,6 +316,18 @@ export class ProcessView {
     async stat(path, options) {
         const stat = await this.call(path, () => this.process.stat(path, { followSymlinks: options?.follow !== false }));
         return stat === null ? null : vfsStatOf(stat);
+    }
+    /** Whether anything is at `path` (links followed): access(F_OK). */
+    async exists(path) {
+        return (await this.stat(path)) !== null;
+    }
+    async isFile(path) { return (await this.stat(path))?.type === 'file'; }
+    async isDirectory(path) { return (await this.stat(path))?.type === 'directory'; }
+    /** Whether `path` itself is a symbolic link. */
+    async isSymlink(path) { return (await this.stat(path, { follow: false }))?.type === 'symlink'; }
+    /** The file's bytes as UTF-8 text. */
+    async readFileString(path) {
+        return new TextDecoder().decode(await this.readFile(path));
     }
     async readFile(path) {
         const bytes = await this.call(path, () => this.process.readFile(path));
@@ -426,10 +452,15 @@ export class ProcessView {
     }
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
     async readFileUncached(path) {
+        return new Uint8Array(await this.readArrayBufferUncached(path));
+    }
+    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
+    async readArrayBufferUncached(path) {
         const stat = await this.stat(path);
         if (stat === null)
             throw new VfsError('ENOENT', 'no such file or directory', path);
-        const result = new Uint8Array(stat.size);
+        const buffer = new ArrayBuffer(stat.size);
+        const result = new Uint8Array(buffer);
         for (let offset = 0; offset < result.length;) {
             const bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
             if (bytes.length === 0)
@@ -437,7 +468,26 @@ export class ProcessView {
             result.set(bytes, offset);
             offset += bytes.length;
         }
-        return result;
+        return buffer;
+    }
+    /**
+     * rm: a file, or with `recursive` a tree, whole or not at all; `force`
+     * makes a missing path no error.
+     */
+    async remove(path, options = {}) {
+        await this.call(path, () => this.process.remove(path, options));
+    }
+    /** Each entry of a directory with its own stat (links not followed): ls -l, find, du. */
+    async readdirStat(path) {
+        const entries = await this.readdir(path);
+        const base = path.endsWith('/') ? path : `${path}/`;
+        const out = [];
+        for (const entry of entries) {
+            const stat = await this.stat(base + entry.name, { follow: false });
+            if (stat !== null)
+                out.push({ ...stat, name: entry.name });
+        }
+        return out;
     }
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     async access(path, mode) { await this.call(path, () => this.process.access(path, mode)); }

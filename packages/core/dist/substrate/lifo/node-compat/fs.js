@@ -1,9 +1,9 @@
-import { VFSError } from '../kernel/vfs/index.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
 function toNodeStat(stat) {
     const isFile = stat.type === 'file';
     const isDir = stat.type === 'directory';
@@ -312,7 +312,7 @@ export function createFs(vfs, cwd) {
                 cb(null, result);
             }
             catch (e) {
-                if (e instanceof VFSError) {
+                if (isVfsError(e)) {
                     cb(toNodeError(e, '', ''));
                 }
                 else if (e.code) {
@@ -543,7 +543,7 @@ export function createFs(vfs, cwd) {
                 }
             }
             catch (e) {
-                if (options?.force && e instanceof VFSError && e.code === 'ENOENT')
+                if (options?.force && isVfsError(e) && e.code === 'ENOENT')
                     return;
                 throw e;
             }

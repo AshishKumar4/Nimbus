@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   directory: { type: 'boolean' as const, short: 'd' },
@@ -34,7 +35,7 @@ const command: Command = async (ctx) => {
   try {
     // Ensure parent dir exists
     try {
-      (await ctx.vfs.stat(dir));
+      (await statOrThrow(ctx.vfs, dir));
     } catch {
       (await ctx.vfs.mkdir(dir, { recursive: true }));
     }

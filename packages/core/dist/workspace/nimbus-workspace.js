@@ -33,7 +33,7 @@ import { textSink } from '../_shared/bytes.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import { ExecutionFs } from '../shell/execution-fs.js';
+import { ProcessView } from '../runtime/process-files.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
@@ -175,7 +175,7 @@ export class NimbusWorkspace {
         // belonged to is never constructed, so nobody is left to close() it.
         try {
             const runtimes = new RuntimeManager({
-                vfs: new ExecutionFs(runtimeLease.fs),
+                vfs: new ProcessView(runtimeLease.fs),
                 registry,
                 getHome,
                 source: options.runtimeSource

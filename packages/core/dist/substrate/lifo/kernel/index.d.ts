@@ -4,8 +4,6 @@ import type { PersistenceBackend } from './persistence/backends.js';
 import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { NetworkStack } from './network/NetworkStack.js';
 import { PortBridge } from './network/PortBridge.js';
-import { ServiceManager } from './ServiceManager.js';
-import type { CommandRegistry } from '../commands/registry.js';
 export interface VirtualRequest {
     method: string;
     url: string;
@@ -27,7 +25,6 @@ export declare class Kernel {
     portBridge: PortBridge;
     processRegistry: ProcessRegistry;
     networkStack: NetworkStack;
-    serviceManager: ServiceManager | null;
     private persistence;
     /** The /proc provider; a host adds files with `proc.register`. */
     readonly proc: ProcProvider;
@@ -36,8 +33,6 @@ export declare class Kernel {
         persist?: boolean;
     }): Promise<void>;
     initFilesystem(): void;
-    initServiceManager(registry: CommandRegistry, defaultEnv: Record<string, string>): void;
-    bootServices(): Promise<void>;
     getDefaultEnv(): Record<string, string>;
 }
 //# sourceMappingURL=index.d.ts.map

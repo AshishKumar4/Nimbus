@@ -12,7 +12,7 @@ import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/co
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -209,7 +209,7 @@ try {
       env: {},
       cwd: '/',
       stdin,
-      vfs: new ExecutionFs(authority.bind({ pid: cred.uid === 0 ? 2 : 1, cred })),
+      vfs: new ProcessView(authority.bind({ pid: cred.uid === 0 ? 2 : 1, cred })),
       stdout: { write: (value) => { stdout += String(value); } },
       stderr: { write: (value) => { stderr += String(value); } },
       signal: new AbortController().signal,

@@ -1,6 +1,6 @@
 import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
-import type { ExecutionFs as VFS } from './execution-fs.js';
+import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { type ShellInvocationOptions } from './shell-invocation.js';
 type Output = {
     write(s: string): void | Promise<void>;

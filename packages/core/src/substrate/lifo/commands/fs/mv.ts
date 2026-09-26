@@ -1,7 +1,8 @@
 import type { Command, CommandContext } from '../types.js';
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { exists, lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   force: { type: 'boolean' as const, short: 'f' },
@@ -58,7 +59,7 @@ const command: Command = async (ctx) => {
       }
       if (flags.verbose) await ctx.stdout.write(`renamed '${source}' -> '${rawDest}'\n`);
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`mv: ${e.message}\n`);
         exitCode = 1;
         continue;
@@ -71,9 +72,9 @@ const command: Command = async (ctx) => {
 
 async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> {
   try {
-    return (await ctx.vfs.stat(path)).type === 'directory';
+    return (await statOrThrow(ctx.vfs, path)).type === 'directory';
   } catch (error) {
-    if (error instanceof VFSError && error.code === 'ENOENT') return false;
+    if (isVfsError(error) && error.code === 'ENOENT') return false;
     throw error;
   }
 }
@@ -81,15 +82,15 @@ async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> 
 export default command;
 
 async function copyAcrossMounts(ctx: CommandContext, source: string, target: string): Promise<void> {
-  const stat = await ctx.vfs.lstat(source);
+  const stat = await lstatOrThrow(ctx.vfs, source);
   const exists = await ctx.vfs.exists(target);
   if (exists) {
-    const destination = await ctx.vfs.lstat(target);
+    const destination = await lstatOrThrow(ctx.vfs, target);
     if (stat.ino !== undefined && stat.dev !== undefined && stat.ino === destination.ino && stat.dev === destination.dev) {
-      throw new VFSError('EINVAL', 'source and destination are the same file');
+      throw new VfsError('EINVAL', 'source and destination are the same file');
     }
     if (stat.type === 'directory' && (destination.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
-      throw new VFSError('ENOTEMPTY', target);
+      throw new VfsError('ENOTEMPTY', target);
     }
   }
   if (stat.type === 'directory') {
@@ -105,17 +106,17 @@ async function copyAcrossMounts(ctx: CommandContext, source: string, target: str
     return;
   } else {
     await ensureParentDir(ctx, target);
-    await ctx.vfs.copyFile(source, target);
+    await ctx.vfs.copy(source, target);
   }
   // GNU mv preserves attributes best effort (mv.c: require_preserve = false).
-  await preserve(ctx, 'times', target, () => ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime));
+  await preserve(ctx, 'times', target, () => ctx.vfs.utimes(target, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs));
   await preserve(ctx, 'permissions', target, () => ctx.vfs.chmod(target, stat.mode));
 }
 
 async function preserve(ctx: CommandContext, what: string, target: string, apply: () => Promise<void>): Promise<void> {
   try { await apply(); }
   catch (error) {
-    if (!(error instanceof VFSError)) throw error;
+    if (!(isVfsError(error))) throw error;
     await ctx.stderr.write(`mv: preserving ${what} for '${target}': ${error.message}\n`);
   }
 }

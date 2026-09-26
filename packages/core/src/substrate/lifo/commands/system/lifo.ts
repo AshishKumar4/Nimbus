@@ -13,7 +13,7 @@
 
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
-import { ExecutionFs } from '../../../../shell/execution-fs.js';
+import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { ShellExecuteFn } from './npm.js';
 import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
@@ -29,6 +29,7 @@ import {
   readLifoManifest,
   createLifoCommand,
 } from '../../pkg/lifo-runtime.js';
+import { exists } from '../../../../vfs/vfs.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 
@@ -116,7 +117,7 @@ async function lifoRemove(
   }
 
   try {
-    (await ctx.vfs.rmdirRecursive(pkgDir));
+    (await ctx.vfs.remove(pkgDir, { recursive: true }));
   } catch (e) {
     await ctx.stderr.write(`lifo: could not remove ${npmName}: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
@@ -457,7 +458,7 @@ export function createLifoPkgCommand(
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export async function rehydrateGlobalPackages(vfs: ExecutionFs, registry: CommandRegistry): Promise<void> {
+export async function rehydrateGlobalPackages(vfs: ProcessView, registry: CommandRegistry): Promise<void> {
   // 1. Restore dev links
   (await loadDevLinks(vfs, registry));
 

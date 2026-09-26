@@ -6,7 +6,7 @@ import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -53,7 +53,7 @@ function commandContext(filesystem, env, cred = USER) {
   return {
     pid: 41,
     cred,
-    vfs: new ExecutionFs(filesystem.bind({ pid: 41, cred })),
+    vfs: new ProcessView(filesystem.bind({ pid: 41, cred })),
     args: ['-e', 'puts ENV["HOME"]'],
     cwd: '/home/user',
     env,

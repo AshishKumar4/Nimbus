@@ -1,10 +1,10 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 export declare class HistoryManager {
     private readonly filesystem;
     private readonly home;
     private entries;
     private loaded;
-    constructor(filesystem: () => ExecutionFs, home: () => string);
+    constructor(filesystem: () => ProcessView, home: () => string);
     load(): Promise<void>;
     private readHistory;
     save(): Promise<void>;

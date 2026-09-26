@@ -10,7 +10,7 @@ import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-ru
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 export const USER = Object.freeze({
@@ -171,7 +171,7 @@ export function makeInvocationVfs(options = {}) {
     MANIFEST, '/runtime/clang', 'clang', undefined,
   );
 
-  const run = ctx => handler({ ...ctx, vfs: new ExecutionFs(filesystem.bind({ pid: 17, cred: ctx.cred })) });
+  const run = ctx => handler({ ...ctx, vfs: new ProcessView(filesystem.bind({ pid: 17, cred: ctx.cred })) });
   return { root, run, user, calls };
 }
 

@@ -8,7 +8,7 @@
  *   - lifo.resolve()  – resolve a path relative to cwd
  */
 import type { Command } from '../commands/types.js';
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 export interface LifoPackageManifest {
     commands: Record<string, string>;
 }

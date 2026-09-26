@@ -1,8 +1,10 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter, streamRange } from '../../../../_shared/byte-stream.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+
 
 const command: Command = async (ctx) => {
   let lines = 10;
@@ -66,7 +68,7 @@ const command: Command = async (ctx) => {
         });
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`head: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {

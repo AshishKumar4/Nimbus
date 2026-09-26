@@ -8,48 +8,6 @@ import type { FileType, MountProvider } from '../kernel/vfs/types.js';
 
 // ─── Sandbox Options ───
 
-export interface SandboxOptions {
-  /** Enable kernel persistence through the configured backend (default: false). */
-  persist?: boolean;
-  /** Extra environment variables (merged with defaults) */
-  env?: Record<string, string>;
-  /** Initial working directory (default: /home/user) */
-  cwd?: string;
-  /** Pre-populate files: path → content */
-  files?: Record<string, string | Uint8Array>;
-  /** Attach a pre-created ITerminal for visual mode */
-  terminal?: ITerminal;
-  /**
-   * Mount native filesystem directories into the virtual filesystem at boot time.
-   * Only works in Node.js environments (or when a custom fsModule is provided).
-   */
-  mounts?: Array<{
-    /** Path inside the virtual filesystem where the mount will appear */
-    virtualPath: string;
-    /** Host filesystem path to mount */
-    hostPath: string;
-    /** If true, the mount is read-only (default: false) */
-    readOnly?: boolean;
-    /** Custom fs module implementing NativeFsModule. If omitted, node:fs is used. */
-    fsModule?: NativeFsModule;
-  }>;
-  /**
-   * Directories whose storage comes from a provider rather than from the
-   * in-memory tree — a durable filesystem, for instance.
-   *
-   * Applied before anything reads the filesystem, because boot reads it:
-   * `create` sources `/etc/profile`, and a provider that arrived afterwards
-   * would have been invisible to it. Native `mounts` overlay an already-booted
-   * sandbox and keep their existing position.
-   */
-  providerMounts?: Array<{
-    /** Path inside the virtual filesystem where the mount will appear. */
-    virtualPath: string;
-    /** Supplies every operation under `virtualPath`. */
-    provider: MountProvider;
-  }>;
-}
-
 // ─── Command Execution ───
 
 export interface RunOptions {

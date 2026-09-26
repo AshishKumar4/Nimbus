@@ -1,4 +1,5 @@
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
+
 
 const PKG_DIR = '/usr/share/pkg';
 const MODULES_DIR = '/usr/share/pkg/node_modules';
@@ -79,7 +80,7 @@ export class PackageManager {
     // Remove files
     const pkgDir = `${MODULES_DIR}/${name}`;
     try {
-      (await this.vfs.rmdirRecursive(pkgDir));
+      (await this.vfs.remove(pkgDir, { recursive: true }));
     } catch {
       // Try just unlinking the index.js
       try { (await this.vfs.unlink(`${pkgDir}/index.js`)); } catch { /* ignore */ }

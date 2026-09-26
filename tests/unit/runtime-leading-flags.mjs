@@ -5,7 +5,7 @@ import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-ru
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -28,7 +28,7 @@ function outputContext(filesystem, args) {
   return {
     ctx: {
       pid: 17,
-      vfs: new ExecutionFs(filesystem.bind({ pid: 17, cred: USER })),
+      vfs: new ProcessView(filesystem.bind({ pid: 17, cred: USER })),
       cred: USER,
       args,
       cwd: '/home/user',

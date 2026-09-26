@@ -30,3 +30,20 @@ export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, ter
     destroy: () => { void ws.close(); },
   };
 }
+
+/**
+ * A session filesystem in memory with no workspace: `files` (what a Shell
+ * binds its commands to), `root` (the store as the kernel, for setup) and
+ * `view` (a command's view as the session user, uid 1000).
+ */
+export function memoryFiles({ harness = createSqliteVfsTestHarness() } = {}) {
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const files = new ProcessFiles(engine);
+  const root = engine.as(CRED_KERNEL);
+  // A session's home, as seedBaseFilesystem leaves it: the session user's.
+  root.mkdir('home/user', { recursive: true });
+  root.chown('home/user', 1000, 1000);
+  root.mkdir('tmp', { mode: 0o1777 });
+  root.chmod('tmp', 0o1777);
+  return { files, root, view: files.view({ pid: 1, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }) };
+}

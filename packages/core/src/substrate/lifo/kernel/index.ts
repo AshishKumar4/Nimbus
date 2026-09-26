@@ -8,8 +8,6 @@ import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { NetworkStack } from './network/NetworkStack.js';
 import { PortBridge } from './network/PortBridge.js';
 import { installSamples } from './samples.js';
-import { ServiceManager } from './ServiceManager.js';
-import type { CommandRegistry } from '../commands/registry.js';
 import { DEFAULT_PATH } from '../../../constants.js';
 
 const MOTD = `\x1b[1;36m
@@ -81,7 +79,6 @@ export class Kernel {
 	portBridge: PortBridge;
 	processRegistry: ProcessRegistry;
 	networkStack: NetworkStack;
-	serviceManager: ServiceManager | null = null;
 	private persistence: PersistenceManager;
 	/** The /proc provider; a host adds files with `proc.register`. */
 	readonly proc = new ProcProvider();
@@ -185,16 +182,6 @@ export class Kernel {
 
 		// Install example files
 		installSamples(this.vfs);
-	}
-
-	initServiceManager(registry: CommandRegistry, defaultEnv: Record<string, string>): void {
-		this.serviceManager = new ServiceManager(this.vfs, registry, defaultEnv);
-	}
-
-	async bootServices(): Promise<void> {
-		if (this.serviceManager) {
-			await this.serviceManager.bootEnabledServices();
-		}
 	}
 
 	getDefaultEnv(): Record<string, string> {

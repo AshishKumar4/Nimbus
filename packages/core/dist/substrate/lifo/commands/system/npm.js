@@ -488,7 +488,7 @@ async function npmUninstall(ctx, _registry) {
         }
         // Remove the package
         try {
-            (await ctx.vfs.rmdirRecursive(targetDir));
+            (await ctx.vfs.remove(targetDir, { recursive: true }));
         }
         catch (e) {
             await ctx.stderr.write(`npm ERR! could not remove ${name}: ${e instanceof Error ? e.message : String(e)}\n`);

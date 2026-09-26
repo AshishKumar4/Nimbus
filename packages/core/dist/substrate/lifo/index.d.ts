@@ -1,5 +1,4 @@
-export { Sandbox } from './sandbox/index.js';
-export type { SandboxOptions, RunOptions, CommandResult, SandboxCommands, SandboxFs, } from './sandbox/index.js';
+export type { RunOptions, CommandResult, SandboxCommands, SandboxFs, } from './sandbox/index.js';
 export { Kernel } from './kernel/index.js';
 export type { VirtualRequest, VirtualResponse, VirtualRequestHandler } from './kernel/index.js';
 export { NetworkStack } from './kernel/network/index.js';
@@ -40,9 +39,6 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
-export { createSystemctlCommand } from './commands/system/systemctl.js';
-export { ServiceManager } from './kernel/ServiceManager.js';
-export type { ServiceInfo } from './kernel/ServiceManager.js';
 export type { UnitFile } from './kernel/unit-parser.js';
 export { parseUnitFile } from './kernel/unit-parser.js';
 export { Shell } from './shell/Shell.js';

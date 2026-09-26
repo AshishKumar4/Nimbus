@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 
 function extractStrings(data: Uint8Array, minLen: number): string[] {
   const results: string[] = [];
@@ -58,7 +58,7 @@ const command: Command = async (ctx) => {
         await ctx.stdout.write(s + '\n');
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`strings: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {

@@ -1,6 +1,7 @@
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { Command, CommandContext } from '../commands/types.js';
+import { exists } from '../../../vfs/vfs.js';
 
 const METADATA_FILE = '/usr/share/pkg/packages.json';
 const MODULES_DIR = '/usr/share/pkg/node_modules';

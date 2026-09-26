@@ -1,5 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 // ─── ANSI ───
 const CSI = '\x1b[';
 const CLEAR = `${CSI}2J`;
@@ -263,7 +263,7 @@ const command = async (ctx) => {
             fileName = ctx.args[0];
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`less: ${ctx.args[0]}: ${e.message}\n`);
                 return 1;
             }

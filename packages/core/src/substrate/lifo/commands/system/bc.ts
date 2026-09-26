@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
 
+
 // Token types for the calculator
 type TokenType = 'number' | 'ident' | '+' | '-' | '*' | '/' | '%' | '^' | '(' | ')' | '=' | 'newline' | 'eof';
 

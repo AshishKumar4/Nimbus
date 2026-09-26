@@ -23,7 +23,7 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
-import { withHostFilesystem, type ExecutionFs } from '../shell/execution-fs.js';
+import { withHostView, type ProcessView } from './process-files.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
@@ -33,6 +33,7 @@ import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-c
 import type { FacetBindings } from './facet-host.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { exists } from '../vfs/vfs.js';
 
 type BashRunnerFactory = (
   manifest: RuntimeManifest,
@@ -126,7 +127,7 @@ export interface BashFacetSession {
 export async function createBashFacetSession(deps: {
   facets: FacetHost;
   /** Installed runtime blobs, read through the host lease that owns them. */
-  artifacts: ExecutionFs;
+  artifacts: ProcessView;
   filesystem: RuntimeFsBridge;
   pid: number;
   cred: VfsCred;
@@ -327,7 +328,7 @@ export function makeBashRunnerFactory(deps: {
       // through its bound view; only the installed runtime blobs are read
       // through a kernel host lease, as for every other runtime.
       const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
-      const filesystem = ctx.vfs.authority;
+      const filesystem = ctx.vfs.process;
       const argv = [...(ctx.args ?? [])];
       const cwd = ctx.cwd || '/home/user';
 
@@ -361,7 +362,7 @@ export function makeBashRunnerFactory(deps: {
 
       let session: BashFacetSession | null = null;
       try {
-        session = await withHostFilesystem(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
+        session = await withHostView(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
           facets: deps.facets,
           artifacts,
           filesystem,

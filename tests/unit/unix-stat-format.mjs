@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -44,7 +44,7 @@ async function stat(args) {
     cwd: '/home/user',
     env: {},
     cred: CRED_KERNEL,
-    vfs: new ExecutionFs(filesystem.fs),
+    vfs: new ProcessView(filesystem.fs),
     stdout: { write: (d) => out.push(d) },
     stderr: { write: (d) => err.push(d) },
     signal: new AbortController().signal,

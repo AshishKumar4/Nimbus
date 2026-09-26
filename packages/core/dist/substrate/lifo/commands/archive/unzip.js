@@ -1,7 +1,7 @@
 import { resolve, dirname } from '../../utils/path.js';
 import { parseZip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     list: { type: 'boolean', short: 'l' },
     overwrite: { type: 'boolean', short: 'o' },
@@ -97,7 +97,7 @@ const command = async (ctx) => {
         }
     }
     catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
             await ctx.stderr.write(`unzip: ${e.message}\n`);
             return 1;
         }

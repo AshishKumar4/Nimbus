@@ -43,7 +43,7 @@
  *     ruby-init-loadpath, rb-eval-string-protect, cabi_realloc,
  *     canonical_abi_drop_rb-abi-value, memory.
  */
-import { withHostFilesystem } from '../shell/execution-fs.js';
+import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
@@ -201,7 +201,7 @@ export function makeRubyRunnerFactory(deps) {
                 });
             }
             else {
-                result = await dispatchRubyFacet(deps.facets, ctx.vfs.authority, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
+                result = await dispatchRubyFacet(deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
             }
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -214,7 +214,7 @@ export function makeRubyRunnerFactory(deps) {
             return result.exitCode;
         };
         if (deps.registry)
-            await withHostFilesystem(deps.filesystem, CRED_KERNEL, registerGemBins);
+            await withHostView(deps.filesystem, CRED_KERNEL, registerGemBins);
         return rubyBinHandler;
     };
 }

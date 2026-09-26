@@ -1,1 +1,1 @@
-{"version":3,"file":"cp.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/cp.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAkB,MAAM,aAAa,CAAC;AAiB3D,QAAA,MAAM,OAAO,EAAE,OAqEd,CAAC;AAqEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"cp.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/cp.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAkB,MAAM,aAAa,CAAC;AAkB3D,QAAA,MAAM,OAAO,EAAE,OAqEd,CAAC;AAqEF,eAAe,OAAO,CAAC"}

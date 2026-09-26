@@ -5,7 +5,7 @@ import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs
 import type { NimbusHostFilesystemLease, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SandboxFsImpl } from '@nimbus-sh/core/substrate/lifo/sandbox/SandboxFs.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SandboxFs } from '@nimbus-sh/core/substrate/lifo/sandbox/types.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { FacetProcessManager } from '../facets/process.js';
@@ -313,7 +313,7 @@ class RuntimeOwner {
       lease = workspace.filesystem.openHost(identity);
       this.fileLeases.set(key, lease);
     }
-    const view = new SandboxFsImpl(new ExecutionFs(lease.fs), () => workspace.shell.getCwd());
+    const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd());
     return Object.assign(view, { as: (next: VfsCred) => this.files(next) });
   }
 

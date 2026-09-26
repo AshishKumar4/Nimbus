@@ -1,6 +1,6 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve, dirname } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     parents: { type: 'boolean', short: 'p' },
 };
@@ -30,7 +30,7 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`rmdir: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }

@@ -1,11 +1,12 @@
 import type { NodeFilesystem as VFS } from './filesystem.js';
-import { VFSError } from '../kernel/vfs/index.js';
+
 import type { Stat as VfsStat } from '../kernel/vfs/types.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
 
 // ─── Dirent ───
 
@@ -92,7 +93,7 @@ interface NodeError extends Error {
   path: string;
 }
 
-function toNodeError(e: VFSError, syscall: string, path: string): NodeError {
+function toNodeError(e: { message: string; code: string }, syscall: string, path: string): NodeError {
   const err = new Error(e.message) as NodeError;
   err.code = e.code;
   err.errno = -2;
@@ -426,7 +427,7 @@ export function createFs(vfs: VFS, cwd: string) {
         const result = syncFn();
         cb(null, result);
       } catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
           cb(toNodeError(e, '', ''));
         } else if ((e as NodeError).code) {
           cb(e as NodeError);
@@ -679,7 +680,7 @@ export function createFs(vfs: VFS, cwd: string) {
           vfs.unlink(abs);
         }
       } catch (e) {
-        if (options?.force && e instanceof VFSError && e.code === 'ENOENT') return;
+        if (options?.force && isVfsError(e) && e.code === 'ENOENT') return;
         throw e;
       }
     },

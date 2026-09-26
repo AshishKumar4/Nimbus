@@ -5,6 +5,7 @@ import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.j
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
 
+
 type CurlOptions = {
   method: string;
   headers: Record<string, string>;

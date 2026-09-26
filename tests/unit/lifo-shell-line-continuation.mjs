@@ -19,11 +19,11 @@ import assert from 'node:assert/strict';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/index.ts';
+import { memoryFiles } from './lib/test-box.mjs';
 
 function makeShell() {
-  const vfs = new VFS();
-  vfs.mkdir('/home/user', { recursive: true });
+  const { files: vfs, root } = memoryFiles();
+  root.mkdir('home/user', { recursive: true });
   const registry = createDefaultRegistry();
 
   let output = '';

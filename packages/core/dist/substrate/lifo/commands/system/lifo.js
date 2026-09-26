@@ -82,7 +82,7 @@ async function lifoRemove(ctx, registry) {
         }
     }
     try {
-        (await ctx.vfs.rmdirRecursive(pkgDir));
+        (await ctx.vfs.remove(pkgDir, { recursive: true }));
     }
     catch (e) {
         await ctx.stderr.write(`lifo: could not remove ${npmName}: ${e instanceof Error ? e.message : String(e)}\n`);

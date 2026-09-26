@@ -1,7 +1,10 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+
 
 interface AwkRule {
   pattern: RegExp | 'BEGIN' | 'END' | null;
@@ -146,14 +149,14 @@ const command: Command = async (ctx) => {
     for (const file of files) {
       const path = resolve(ctx.cwd, file);
       try {
-        (await ctx.vfs.stat(path));
+        (await statOrThrow(ctx.vfs, path));
         if (isBinaryMime(getMimeType(path))) {
           await ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
           continue;
         }
         text += (await ctx.vfs.readFileString(path));
       } catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
           await ctx.stderr.write(`awk: ${file}: ${e.message}\n`);
           return 1;
         }

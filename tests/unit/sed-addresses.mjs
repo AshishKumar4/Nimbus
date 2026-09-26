@@ -226,7 +226,7 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
   // readable file that followed it.
   check('a missing first file fails with exit 1 and the later files still print',
     r.exitCode === 1 && r.stdout === '1\n2\n3\n4\n'
-      && r.stderr === 'sed: /tmp/gone.txt: ENOENT: /tmp/gone.txt\n',
+      && /^sed: \/tmp\/gone\.txt: ENOENT\b.*\n$/.test(r.stderr),
     `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
 }
 {

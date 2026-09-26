@@ -1,6 +1,6 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
-import type { ExecutionFs as VFS } from '../../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
@@ -16,6 +16,7 @@ import {
   type NpmInstallInvocation,
 } from './npm-install-args.js';
 import { npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
+import { exists } from '../../../../vfs/vfs.js';
 
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
@@ -640,7 +641,7 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 
 		// Remove the package
 		try {
-			(await ctx.vfs.rmdirRecursive(targetDir));
+			(await ctx.vfs.remove(targetDir, { recursive: true }));
 		} catch (e) {
 			await ctx.stderr.write(`npm ERR! could not remove ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
 			return 1;

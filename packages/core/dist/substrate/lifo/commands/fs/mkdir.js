@@ -1,6 +1,6 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     parents: { type: 'boolean', short: 'p' },
 };
@@ -17,7 +17,7 @@ const command = async (ctx) => {
             (await ctx.vfs.mkdir(path, { recursive: flags.parents }));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`mkdir: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }

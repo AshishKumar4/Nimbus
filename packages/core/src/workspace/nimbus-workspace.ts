@@ -43,7 +43,7 @@ import {
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import { ExecutionFs } from '../shell/execution-fs.js';
+import { ProcessView } from '../runtime/process-files.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
@@ -328,7 +328,7 @@ export class NimbusWorkspace {
     // belonged to is never constructed, so nobody is left to close() it.
     try {
       const runtimes = new RuntimeManager({
-        vfs: new ExecutionFs(runtimeLease.fs),
+        vfs: new ProcessView(runtimeLease.fs),
         registry,
         getHome,
         source: options.runtimeSource

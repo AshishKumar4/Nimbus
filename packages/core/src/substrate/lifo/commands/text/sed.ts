@@ -1,9 +1,11 @@
 import type { Command, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import type { VfsStat } from '../../../../vfs/vfs.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 type SedVfs = {
-  stat(path: string): object | Promise<object>;
+  stat(path: string): VfsStat | null | Promise<VfsStat | null>;
   readFileString(path: string): string | Promise<string>;
   writeFile(path: string, content: string | Uint8Array): void | Promise<void>;
 };
@@ -493,7 +495,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       for (const file of options.files) {
         const path = resolve(ctx.cwd, file);
         try {
-          await ctx.vfs.stat(path);
+          await statOrThrow(ctx.vfs, path);
           if (isBinaryMime(getMimeType(path))) {
             await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
             continue;
@@ -536,7 +538,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         const file = options.files[index++];
         const path = resolve(ctx.cwd, file);
         try {
-          await ctx.vfs.stat(path);
+          await statOrThrow(ctx.vfs, path);
           if (isBinaryMime(getMimeType(path))) {
             await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
             continue;

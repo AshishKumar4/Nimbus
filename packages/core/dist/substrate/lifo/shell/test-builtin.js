@@ -2,6 +2,7 @@ import { expandWord } from './expander.js';
 import { globMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../kernel/vfs/types.js';
+import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 /**
  * Implementation of the `test` / `[` shell builtin (POSIX `test`).
  * `bracket` is true for `[`, whose last argument must be `]`.
@@ -296,7 +297,7 @@ const SPECIAL_FILE_FORMATS = { b: 0o060000, c: S_IFCHR, p: 0o010000, S: 0o140000
 const MODE_BITS = { u: 0o4000, g: 0o2000, k: 0o1000 };
 async function statOf(vfs, path, followSymlinks) {
     try {
-        return followSymlinks ? await vfs.stat(path) : await vfs.lstat(path);
+        return followSymlinks ? await statOrThrow(vfs, path) : await lstatOrThrow(vfs, path);
     }
     catch {
         return null;

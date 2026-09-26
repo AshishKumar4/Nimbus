@@ -16,7 +16,7 @@ import type {
   RedirectionNode,
   AssignmentNode,
 } from './types.js';
-import { ExecutionFs, bindExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
+import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type {
@@ -42,6 +42,7 @@ import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
+import { exists, statOrThrow } from '../../../vfs/vfs.js';
 
 /**
  * Bytes a file-backed descriptor holds before committing. Matches the stream
@@ -119,7 +120,7 @@ export interface TrapTable {
 }
 
 export interface BuiltinExecutionContext {
-  vfs: ExecutionFs;
+  vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
   stdin?: CommandInputStream;
@@ -199,7 +200,7 @@ type ExecutionIo = {
     setUmask(mask: number): void;
   };
   runAs?: CommandRunAsHost;
-  vfs?: ExecutionFs;
+  vfs?: ProcessView;
 };
 
 export type TerminalFdState = {
@@ -228,8 +229,8 @@ export interface InterpreterConfig {
   arrays: Map<string, (string | undefined)[]>;
   getCwd: () => string;
   setCwd: (cwd: string) => void;
-  vfs: ExecutionFs;
-  filesystem: ShellFilesystem;
+  vfs: ProcessView;
+  filesystem: NimbusFilesystemAuthority;
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
   jobTable: JobTable;
@@ -340,7 +341,7 @@ export class Interpreter {
     if (options?.commandIdentity) io.commandIdentity = options.commandIdentity;
     if (options?.runAs) io.runAs = options.runAs;
     if (options?.signal) io.signal = options.signal;
-    if (io.commandIdentity) io.vfs = bindExecutionFs(this.config.filesystem, {
+    if (io.commandIdentity) io.vfs = bindProcessView(this.config.filesystem, {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     });
     try {
@@ -819,7 +820,7 @@ export class Interpreter {
   ): Promise<number> {
     const abortCode = this.abortExitCode(io);
     if (abortCode !== null) return abortCode;
-    if (io.commandIdentity) io = { ...io, vfs: bindExecutionFs(this.config.filesystem, {
+    if (io.commandIdentity) io = { ...io, vfs: bindProcessView(this.config.filesystem, {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     }) };
 
@@ -1576,36 +1577,19 @@ export class Interpreter {
     const targetPath = resolve(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
-      if (!vfs.local) {
-        const bridge = vfs.bridge;
-        if ('open' in bridge) {
-          const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
-          const push = async (bytes: Uint8Array) => {
-            let offset = 0;
-            while (offset < bytes.length) {
-              const written = await bridge.write(handle.id, null, bytes.subarray(offset));
-              if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
-              offset += written;
-            }
-          };
-          const stream: CommandOutputStream = { write: text => push(encode(text)), writeBytes: push };
-          fds.opened.set(stream, async () => { await bridge.close(handle.id); });
-          return { stream, terminal: false };
+      const bridge = vfs.process;
+      const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+      const push = async (bytes: Uint8Array) => {
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+          if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
+          offset += written;
         }
-      }
-      if (mode === 'write') {
-        (await vfs.writeFile(targetPath, ''));
-        return { stream: this.createFileWriter(vfs, targetPath, 'truncate'), terminal: false };
-      }
-      if ((await vfs.exists(targetPath))) {
-        if ((await vfs.stat(targetPath)).type === 'directory') {
-          throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
-        }
-        (await vfs.access(targetPath, 0o2));
-      } else {
-        (await vfs.writeFile(targetPath, ''));
-      }
-      return { stream: this.createFileWriter(vfs, targetPath, 'append'), terminal: false };
+      };
+      const stream: CommandOutputStream = { write: text => push(encode(text)), writeBytes: push };
+      fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+      return { stream, terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
     }
@@ -1629,18 +1613,15 @@ export class Interpreter {
       // Open-authorize before the command runs, the way open(2) would: a
       // missing, unreadable, or directory target fails the redirection even
       // when the command never reads a byte.
-      if ((await vfs.stat(targetPath)).type === 'directory') {
+      if ((await statOrThrow(vfs, targetPath)).type === 'directory') {
         throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
       }
       await vfs.access(targetPath, 0o4);
-      const bridge = vfs.bridge;
-      if ('open' in bridge) {
-        const handle = await bridge.open(targetPath, { read: true });
-        const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
-        fds.opened.set(stream, async () => { await bridge.close(handle.id); });
-        return { stream, terminal: false };
-      }
-      return { stream: this.createFileReader(vfs, targetPath), terminal: false };
+      const bridge = vfs.process;
+      const handle = await bridge.open(targetPath, { read: true });
+      const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
+      fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+      return { stream, terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
     }
@@ -1661,12 +1642,12 @@ export class Interpreter {
    * which is O_APPEND: every block lands at whatever the current end is, so
    * two descriptors appending to one file cannot overwrite each other.
    */
-  private createFileWriter(vfs: ExecutionFs, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
+  private createFileWriter(vfs: ProcessView, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
     let offset = 0;
     let pending: Uint8Array[] = [];
     let pendingBytes = 0;
 
-    const endOfFile = async (): Promise<number> => ((await vfs.exists(path)) ? (await vfs.stat(path)).size : 0);
+    const endOfFile = async (): Promise<number> => ((await vfs.exists(path)) ? (await statOrThrow(vfs, path)).size : 0);
 
     const flush = async (): Promise<void> => {
       if (pendingBytes === 0) return;
@@ -1727,7 +1708,7 @@ export class Interpreter {
    * fewer bytes than asked whenever their internal bound is hit; those short
    * nonempty reads advance the offset and continue, exactly like read(2).
    */
-  private createFileReader(vfs: ExecutionFs, path: string, readRange = async (offset: number, length: number) => (await vfs.readRange(path, offset, length))): CommandInputStream {
+  private createFileReader(vfs: ProcessView, path: string, readRange = async (offset: number, length: number) => (await vfs.readRange(path, offset, length))): CommandInputStream {
     const decoder = new TextDecoder('utf-8');
     let offset = 0;
     let eof = false;

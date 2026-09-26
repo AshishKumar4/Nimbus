@@ -1,7 +1,7 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     'body-numbering': { type: 'string', short: 'b' },
     'number-width': { type: 'string', short: 'w' },
@@ -31,7 +31,7 @@ const command = async (ctx) => {
             content = (await ctx.vfs.readFileString(path));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`nl: ${positional[0]}: ${e.message}\n`);
                 return 1;
             }

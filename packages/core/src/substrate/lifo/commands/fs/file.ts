@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve, extname } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const extTypes: Record<string, string> = {
   '.txt': 'ASCII text',
@@ -48,7 +49,7 @@ const command: Command = async (ctx) => {
   for (const arg of ctx.args) {
     const path = resolve(ctx.cwd, arg);
     try {
-      const st = (await ctx.vfs.stat(path));
+      const st = (await statOrThrow(ctx.vfs, path));
 
       if (st.type === 'directory') {
         await ctx.stdout.write(`${arg}: directory\n`);
@@ -75,7 +76,7 @@ const command: Command = async (ctx) => {
         await ctx.stdout.write(`${arg}: data\n`);
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`file: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {

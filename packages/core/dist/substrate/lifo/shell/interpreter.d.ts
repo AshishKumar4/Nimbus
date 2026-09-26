@@ -1,5 +1,6 @@
 import type { ScriptNode } from './types.js';
-import { ExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
+import { ProcessView } from '../../../runtime/process-files.js';
+import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
@@ -38,7 +39,7 @@ export interface TrapTable {
     entries(): IterableIterator<[string, string]>;
 }
 export interface BuiltinExecutionContext {
-    vfs: ExecutionFs;
+    vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
     stdin?: CommandInputStream;
@@ -84,7 +85,7 @@ type ExecutionIo = {
         setUmask(mask: number): void;
     };
     runAs?: CommandRunAsHost;
-    vfs?: ExecutionFs;
+    vfs?: ProcessView;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -104,8 +105,8 @@ export interface InterpreterConfig {
     arrays: Map<string, (string | undefined)[]>;
     getCwd: () => string;
     setCwd: (cwd: string) => void;
-    vfs: ExecutionFs;
-    filesystem: ShellFilesystem;
+    vfs: ProcessView;
+    filesystem: NimbusFilesystemAuthority;
     registry: CommandRegistry;
     builtins: Map<string, BuiltinFn>;
     jobTable: JobTable;

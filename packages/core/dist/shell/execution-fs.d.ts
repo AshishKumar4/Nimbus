@@ -33,7 +33,7 @@ export declare class ExecutionFs {
     writeFile(path: string, bytes: string | Uint8Array): Promise<void>;
     writeRange(path: string, offset: number, bytes: Uint8Array): Promise<number>;
     appendFile(path: string, content: string | Uint8Array): Promise<void>;
-    readdir(path: string): Promise<import("../substrate/lifo/index.js").Dirent[] | import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
+    readdir(path: string): Promise<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
     readdirStat(path: string): Promise<{
         name: string;
         type: import("../substrate/lifo/index.js").FileType;

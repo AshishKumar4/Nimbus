@@ -39,7 +39,7 @@ const ws = await NimbusWorkspace.create({
   cwd: '/home/user',
 });
 ws.registry.register('esbuild', makeEsbuildCommand({
-  run: (args, ctx, output) => globalThis.__esbuildCliRun(args, vfsSupervisor(ctx.vfs.authority), output, wasm),
+  run: (args, ctx, output) => globalThis.__esbuildCliRun(args, vfsSupervisor(ctx.vfs.process), output, wasm),
 }));
 
 const user = ws.vfs.as(USER);
