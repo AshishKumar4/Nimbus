@@ -62,7 +62,7 @@ export interface HydratorOptions {
 
 export type GateState = 'waiting' | 'ok' | { error: 'EIO'; path: string };
 
-type HydrationError = Error & { code: 'EIO'; path: string };
+type HydrationError = Error & { code: 'EIO'; path: string; chunk?: string };
 
 interface Gate {
   named: string[];
@@ -86,8 +86,8 @@ interface Attempts {
   notBefore: number;
 }
 
-function hydrationError(message: string, path: string): HydrationError {
-  return Object.assign(new Error(`EIO: ${message}`), { code: 'EIO' as const, path });
+function hydrationError(message: string, path: string, chunk?: string): HydrationError {
+  return Object.assign(new Error(`EIO: ${message}`), { code: 'EIO' as const, path }, chunk === undefined ? {} : { chunk });
 }
 
 export class Hydrator {
@@ -154,7 +154,7 @@ export class Hydrator {
     if (this.failed.size === 0) return null;
     for (const hash of this.store.pendingChunksOf(path)) {
       const cause = this.failed.get(hash);
-      if (cause !== undefined) return hydrationError(`${path}: import of chunk ${hash} failed: ${cause}`, path);
+      if (cause !== undefined) return hydrationError(`${path}: import of chunk ${hash} failed: ${cause}`, path, hash);
     }
     return null;
   }
@@ -167,13 +167,7 @@ export class Hydrator {
    * ready to fetch.
    */
   async step(): Promise<boolean> {
-    const now = this.now();
-    const front: string[] = [];
-    for (const hash of this.queue) {
-      if (front.length >= this.batch) break;
-      const tried = this.attempts.get(hash);
-      if (tried === undefined || tried.notBefore <= now) front.push(hash);
-    }
+    const front = this.ready();
     if (front.length === 0) return false;
     const taken = this.store.pendingOf([...new Set(front)]);
     const failures = new Map<string, string>();
@@ -204,6 +198,18 @@ export class Hydrator {
     this.resume();
     this.settle();
     return true;
+  }
+
+  /** The hashes the next step takes: the first queued ones not waiting out a backoff. */
+  ready(): string[] {
+    const now = this.now();
+    const front: string[] = [];
+    for (const hash of this.queue) {
+      if (front.length >= this.batch) break;
+      const tried = this.attempts.get(hash);
+      if (tried === undefined || tried.notBefore <= now) front.push(hash);
+    }
+    return front;
   }
 
   /** Run steps in the background until the queue is empty. Never rejects. */
@@ -292,10 +298,12 @@ export class Hydrator {
     for (const gate of this.gates) {
       if (gate.state !== 'waiting') continue;
       const missing = gate.named.find((path) => !this.isLocal(path));
-      const failure = missing === undefined ? null : this.failureOf(missing);
+      // The first named path a failed chunk backs, not merely the first missing.
+      let failure: HydrationError | null = null;
+      if (missing !== undefined) for (const path of gate.named) if ((failure = this.failureOf(path)) !== null) break;
       if (missing === undefined) gate.state = 'ok';
       else if (failure !== null) {
-        gate.state = { error: 'EIO', path: missing };
+        gate.state = { error: 'EIO', path: failure.path };
         gate.error = failure;
       } else if (gate.opened + this.deadlineMs <= now) {
         gate.state = { error: 'EIO', path: missing };
@@ -306,6 +314,8 @@ export class Hydrator {
   }
 
   private fail(hash: string, cause: string): void {
+    // Every entry leaves the queue; it comes back once, at the back, unless it failed for good.
+    this.queue = this.queue.filter((queued) => queued !== hash);
     const tried = this.attempts.get(hash);
     const count = (tried?.count ?? 0) + 1;
     if (count >= this.maxAttempts) {

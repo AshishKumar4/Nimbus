@@ -65,6 +65,7 @@ export type GateState = 'waiting' | 'ok' | {
 type HydrationError = Error & {
     code: 'EIO';
     path: string;
+    chunk?: string;
 };
 export declare class Hydrator {
     private readonly store;
@@ -106,6 +107,8 @@ export declare class Hydrator {
      * ready to fetch.
      */
     step(): Promise<boolean>;
+    /** The hashes the next step takes: the first queued ones not waiting out a backoff. */
+    ready(): string[];
     /** Run steps in the background until the queue is empty. Never rejects. */
     run(): Promise<void>;
     /**

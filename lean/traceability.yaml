@@ -784,21 +784,15 @@ requirements:
       - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
       - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
   N17-001:
-    statement: N17 hydration in an import window, at chunk granularity (a path is local when every chunk hash it names is; chunks are shared by content address, so one hydration can make several paths local) - no reader, sync or async, is ever handed the bytes of a path with a state-1 chunk; hydrated chunks stay hydrated; every remote unhydrated chunk is in the job's queue; a sync read of a non-local path answers EIO naming it and moves its remote chunks to the front; a WASI launch's gate moves its named paths' remote chunks to the front, opens when every named path is local (at once when none has a remote chunk), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind; with only job events after bind, every named path is local within as many hydrations as the named paths had remote chunks.
+    statement: N17 hydration in an import window, at chunk granularity, with fetch failure and reader deadlines - no reader, sync or async, is ever handed the bytes of a path with a chunk that is not local; stored chunks stay stored; every remote chunk neither stored nor failed for good stays queued through any failures, backoffs and retries; a job fetches the first queued hash whose backoff has passed, a failed hash goes to the back with an exponential backoff and after maxAttempts is failed for good and never stored; every read, waiting reader and gate of a path backed by a failed hash has EIO naming the path and chunk; no waiting reader outlives its read deadline and no open gate its launch deadline, whatever the fetches do; a sync read of a non-local path answers EIO and moves its chunks to the front; after a gate opens no sync read of a named path answers EIO; with every queued hash ready and no named chunk failed, the named paths are local after as many successful fetches as they had remote chunks.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Hydration.sync_never_state1
       - Nimbus.Vfs.Hydration.async_never_state1
-      - Nimbus.Vfs.Hydration.resume_local
       - Nimbus.Vfs.Hydration.raw_frame
       - Nimbus.Vfs.Hydration.isLocal_mono
       - Nimbus.Vfs.Hydration.hyd_mono
-      - Nimbus.Vfs.Hydration.settleG_open
-      - Nimbus.Vfs.Hydration.settleG_ok
-      - Nimbus.Vfs.Hydration.settleG_named
       - Nimbus.Vfs.Hydration.raw_gates
-      - Nimbus.Vfs.Hydration.step_gateInv
-      - Nimbus.Vfs.Hydration.gateInv
       - Nimbus.Vfs.Hydration.gate_ok_local
       - Nimbus.Vfs.Hydration.bound_reads_never_eio
       - Nimbus.Vfs.Hydration.gate_bounded
@@ -812,6 +806,44 @@ requirements:
       - Nimbus.Vfs.Hydration.jobs_frame
       - Nimbus.Vfs.Hydration.named_local_within
       - Nimbus.Vfs.Hydration.a_shared_chunk
+      - Nimbus.Vfs.Hydration.settle_files
+      - Nimbus.Vfs.Hydration.settle_remote
+      - Nimbus.Vfs.Hydration.settle_hyd
+      - Nimbus.Vfs.Hydration.settle_queue
+      - Nimbus.Vfs.Hydration.settle_failed
+      - Nimbus.Vfs.Hydration.settle_now
+      - Nimbus.Vfs.Hydration.settle_cfg
+      - Nimbus.Vfs.Hydration.settle_notBefore
+      - Nimbus.Vfs.Hydration.isLocal_settle
+      - Nimbus.Vfs.Hydration.hLocal_settle
+      - Nimbus.Vfs.Hydration.failedChunk_settle
+      - Nimbus.Vfs.Hydration.gateFailed_settle
+      - Nimbus.Vfs.Hydration.failedChunk_spec
+      - Nimbus.Vfs.Hydration.failedChunk_none
+      - Nimbus.Vfs.Hydration.async_failed_eio
+      - Nimbus.Vfs.Hydration.sync_failed_eio
+      - Nimbus.Vfs.Hydration.pick_mem
+      - Nimbus.Vfs.Hydration.jobStep_frame
+      - Nimbus.Vfs.Hydration.prio_sub
+      - Nimbus.Vfs.Hydration.jobStep_covers
+      - Nimbus.Vfs.Hydration.jobStep_core
+      - Nimbus.Vfs.Hydration.raw_core
+      - Nimbus.Vfs.Hydration.core
+      - Nimbus.Vfs.Hydration.failed_not_stored
+      - Nimbus.Vfs.Hydration.failed_not_local
+      - Nimbus.Vfs.Hydration.settleR_spec
+      - Nimbus.Vfs.Hydration.settleG_spec
+      - Nimbus.Vfs.Hydration.settle_RG
+      - Nimbus.Vfs.Hydration.raw_readers
+      - Nimbus.Vfs.Hydration.step_RG
+      - Nimbus.Vfs.Hydration.rg
+      - Nimbus.Vfs.Hydration.reader_ok_local
+      - Nimbus.Vfs.Hydration.reader_bounded
+      - Nimbus.Vfs.Hydration.failed_readers_eio
+      - Nimbus.Vfs.Hydration.failed_gates_eio
+      - Nimbus.Vfs.Hydration.job_head
+      - Nimbus.Vfs.Hydration.a_failure_trace
+      - Nimbus.Vfs.Hydration.a_reader_deadline
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
       - packages/core/src/runtime/hydration.ts#Hydrator

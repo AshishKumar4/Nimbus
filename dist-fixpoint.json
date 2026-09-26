@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a30f159db5cda0963f7a5387a185f5f1b27d7c1fd03435ddffb48b16a1bdabbb",
+  "fingerprint": "b8c46f757e08a6631b9e9838f51f6da56961af61da029bcaefc259921ecd611a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -195,9 +195,9 @@
     "packages/core/dist/runtime/framework-detect.d.ts": "8557524a57836c34627d643f839005bcd15ea452f1fad52bc55f0d2e69209990",
     "packages/core/dist/runtime/framework-detect.d.ts.map": "8fdd1b460ea778e5fa2011ecc69391a24ef0b621f0519990fcb87b02e9d46623",
     "packages/core/dist/runtime/framework-detect.js": "b0bdad7cd40f1234aa8cf5c6db7afaebd7aec2c7f38d8a7d310f479050798170",
-    "packages/core/dist/runtime/hydration.d.ts": "c7a2ad29c9dbb82581719f4bb690da5be4237303f3b65f3a95dbeff63b378653",
-    "packages/core/dist/runtime/hydration.d.ts.map": "5b196aa41756a0d9a4e15f20b5bf10deaf151bcd344ee20fab34d74867ebdd99",
-    "packages/core/dist/runtime/hydration.js": "1ad4eaeec8c2e543d8bed362974fc0a5c52b427c230749345158cf59e274e527",
+    "packages/core/dist/runtime/hydration.d.ts": "b8d0db280732b3f5d61f26cd18c431dddd489c01d2e8bb181e829b4771f6d82a",
+    "packages/core/dist/runtime/hydration.d.ts.map": "f7b51bb9590905ad4cb3c3bc673ae3e83643c8766c98e6482313898557262999",
+    "packages/core/dist/runtime/hydration.js": "94a2c5654d59f901f18c2689791e91623ba4b1c510379f496b7eaef2c688629b",
     "packages/core/dist/runtime/import-meta-transform.d.ts": "411c2733c113c5edc79a5fa44e6bbc662fd8f89351b4b194e9d4ec8721605a17",
     "packages/core/dist/runtime/import-meta-transform.d.ts.map": "5c8cd5f3dffd4c68aa4e50c1860cd15327acec766652712f3281e898f1274e2e",
     "packages/core/dist/runtime/import-meta-transform.js": "5e0572f62de0bbcab635e315bb1c00f294b68b83ba1fd1523e1906227890e581",
@@ -1018,7 +1018,7 @@
     "packages/core/src/runtime/exec-stream.ts": "7d5d94eb140adeeb6f1afdeea016bf49d5d9b74fc698f5673a6ad268426231a9",
     "packages/core/src/runtime/facet-host.ts": "a79f800e2ee6e6c89716012bb9612138f879589fb2e01713a639d159ba0e7577",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",
-    "packages/core/src/runtime/hydration.ts": "ba221df21c352be0a5dcad90fa3438c78961c0d3e41c54ab611a1a7f86b3566d",
+    "packages/core/src/runtime/hydration.ts": "ded4863ddf94649123507fdfb96ac2d42e935af6c3db27e7205b5c2baeb7c576",
     "packages/core/src/runtime/import-meta-transform.ts": "9051cbd081d74ae8e99addc30368173f13345bda719907bf9b556158de6e6c76",
     "packages/core/src/runtime/installed-runtimes.ts": "c39f2173cb54c114a0e3c21dc2d7772a3d7778c39d99736f30780f0f2f0401fd",
     "packages/core/src/runtime/javascript-ast.ts": "3211685b6e65f666216499785e649455ea7067dc22a1669b2f26045e96e9c034",

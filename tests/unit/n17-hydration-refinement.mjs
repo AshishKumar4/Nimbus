@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Refinement bridge for Nimbus.Vfs.Hydration (FormalModelsLane 071dc802,
+// Refinement bridge for Nimbus.Vfs.Hydration (FormalModelsLane 1b9c543d,
 // lean/fixtures/n17-hydration.json, N17-001). Each case builds its files in
 // a source store (one 64 KiB chunk per hash name, the same bytes for the same
 // name), and lazily imports them into the session's store under /imp and
@@ -9,7 +9,9 @@
 // filesystem: a job is one step (fetching from the source), a tick a second
 // on a fake clock, an asynchronous read the hydrator's wait followed by a
 // read, a synchronous read the bridge's own. After every event the answer,
-// the gates and the queue must be the model's.
+// the readers, the gates, the queue and the failed hashes must be the
+// model's. A job's outcome is the fetch's: ok, reject (it throws), mismatch
+// (wrong bytes) or omit (the hash left out).
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -38,7 +40,12 @@ async function runCase(testCase, index) {
 
   const source = new SqliteVFS(...(({ sql, ctx }) => [sql, ctx])(createSqliteVfsTestHarness()));
   const src = source.as(CRED_KERNEL);
-  for (const [path, chunks] of Object.entries(testCase.files)) {
+  // A remote chunk the model names but no file holds is, in the engine, a
+  // chunk of a file nobody reads: an import only names chunks its rows hold.
+  const held = new Set(Object.values(testCase.files).flat());
+  const layout = { ...testCase.files };
+  for (const name of testCase.remote) if (!held.has(name)) layout[`/imp/.unread-${name}`] = [name];
+  for (const [path, chunks] of Object.entries(layout)) {
     src.mkdir(path.slice(1, path.lastIndexOf('/')), { recursive: true });
     const content = new Uint8Array(chunks.length * CHUNK);
     chunks.forEach((name, i) => content.set(bytesOf(name), i * CHUNK));
@@ -50,22 +57,30 @@ async function runCase(testCase, index) {
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   let now = 0;
   const timers = [];
+  const config = testCase.config;
+  let outcome = 'ok';
   const files = new ProcessFiles(engine, {
     hydration: {
-      fetch: async (hashes) => source.exportChunks(hashes, Infinity).chunks,
+      fetch: async (hashes) => {
+        if (outcome === 'reject') throw new Error('rejected');
+        if (outcome === 'omit') return [];
+        if (outcome === 'mismatch') return hashes.map((hash) => ({ hash, data: new TextEncoder().encode('wrong') }));
+        return source.exportChunks(hashes, Infinity).chunks;
+      },
       batch: 1,
       schedule: 'manual',
-      deadlineMs: testCase.deadlineTicks * 1000,
-      // The model's asynchronous readers wait without a deadline (the gate's
-      // is modeled); FormalModelsLane is adding the reader deadline.
-      readDeadlineMs: Infinity,
+      deadlineMs: config.deadlineTicks * 1000,
+      readDeadlineMs: config.readDeadlineTicks * 1000,
+      backoffMs: config.backoffTicks * 1000,
+      maxBackoffMs: config.maxBackoffTicks * 1000,
+      maxAttempts: config.maxAttempts,
       now: () => now,
       setTimer: (fire, ms) => { timers.push({ at: now + ms, fire }); },
     },
   });
   const hydrator = files.hydrator;
   for (const root of ['imp', 'app']) {
-    if (!Object.keys(testCase.files).some((path) => path.startsWith(`/${root}/`))) continue;
+    if (!Object.keys(layout).some((path) => path.startsWith(`/${root}/`))) continue;
     let after = null;
     for (;;) {
       const page = source.exportPage({ at: 's', root, after });
@@ -83,8 +98,14 @@ async function runCase(testCase, index) {
   const proc = files.bind({ pid: 2, cred: USER });
   const kernelRead = (path) => engine.as(CRED_KERNEL).readFile(path.slice(1));
   const gates = [];
-  const waiting = [];
+  const readers = [];
   const failures = [];
+  const errorOf = (error) => ({ error: error.code, path: error.path, ...(error.chunk === undefined ? {} : { chunk: nameOf.get(error.chunk) }) });
+  const expected = (path) => {
+    const out = new Uint8Array(testCase.files[path].length * CHUNK);
+    testCase.files[path].forEach((name, i) => out.set(bytesOf(name), i * CHUNK));
+    return out;
+  };
   for (const [at, event] of testCase.events.entries()) {
     let got = 'ok';
     switch (event.event) {
@@ -95,25 +116,31 @@ async function runCase(testCase, index) {
         }
         break;
       }
-      case 'job': await hydrator.step(); break;
-      case 'asyncRead': {
-        if (hydrator.isLocal(event.path)) { kernelRead(event.path); got = 'bytes'; break; }
-        const entry = { path: event.path, done: false };
-        hydrator.whenLocal(event.path).then(() => { entry.bytes = kernelRead(event.path); entry.done = true; });
-        waiting.push(entry);
-        got = 'wait';
+      case 'job': {
+        outcome = event.outcome;
+        const queued = hydrator.ready()[0];
+        const failedBefore = new Set(hydrator.failures().keys());
+        const pendingBefore = queued === undefined ? [] : engine.pendingOf([queued]);
+        const stepped = await hydrator.step();
+        if (!stepped) got = 'idle';
+        else if (pendingBefore.length === 0) got = { skipped: nameOf.get(queued) };
+        else if (engine.pendingOf([queued]).length === 0) got = { fetched: nameOf.get(queued) };
+        else if (hydrator.failures().has(queued) && !failedBefore.has(queued)) got = { failedForGood: nameOf.get(queued) };
+        else got = { failed: nameOf.get(queued) };
         break;
       }
-      case 'resume': {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const resumed = waiting.filter((entry) => entry.done);
-        for (const entry of resumed) {
-          const expected = new Uint8Array(testCase.files[entry.path].length * CHUNK);
-          testCase.files[entry.path].forEach((name, i) => expected.set(bytesOf(name), i * CHUNK));
-          assert.deepEqual(entry.bytes, expected, `${entry.path}: the bytes read after the wait`);
-          waiting.splice(waiting.indexOf(entry), 1);
-        }
-        got = { resumed: resumed.map((entry) => entry.path) };
+      case 'retry': hydrator.retryFailed(); break;
+      case 'asyncRead': {
+        if (hydrator.isLocal(event.path)) { kernelRead(event.path); got = 'bytes'; break; }
+        const failure = hydrator.failureOf(event.path);
+        if (failure !== null) { got = errorOf(failure); break; }
+        const reader = { state: 'waiting' };
+        readers.push(reader);
+        hydrator.whenLocal(event.path).then(() => {
+          assert.deepEqual(kernelRead(event.path), expected(event.path), `${event.path}: the bytes read after the wait`);
+          reader.state = 'ok';
+        }, (error) => { reader.state = errorOf(error); });
+        got = 'wait';
         break;
       }
       case 'syncRead': {
@@ -121,26 +148,27 @@ async function runCase(testCase, index) {
           proc.readFile(event.path);
           got = 'bytes';
         } catch (error) {
-          got = { error: error.code, path: error.path ?? event.path };
+          got = error.chunk === undefined ? { error: error.code, path: error.path ?? event.path } : errorOf(error);
         }
         break;
       }
       case 'bind': {
         const gate = { state: 'waiting' };
         gates.push(gate);
-        files.gateLaunch(event.named).then(() => { gate.state = 'ok'; }, (error) => { gate.state = { error: error.code, path: error.path }; });
+        files.gateLaunch(event.named).then(() => { gate.state = 'ok'; }, (error) => { gate.state = errorOf(error); });
         break;
       }
       default: throw new Error(`unknown event ${event.event}`);
     }
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
     const state = {
       expect: got,
+      readers: readers.map((reader) => reader.state),
       gates: gates.map((gate) => gate.state),
       queue: hydrator.queued().map((hash) => nameOf.get(hash)),
+      failed: [...hydrator.failures().keys()].map((hash) => nameOf.get(hash)),
     };
-    const want = { expect: event.expect, gates: event.gates, queue: event.queue };
+    const want = { expect: event.expect, readers: event.readers, gates: event.gates, queue: event.queue, failed: event.failed };
     try {
       assert.deepEqual(state, want);
     } catch {

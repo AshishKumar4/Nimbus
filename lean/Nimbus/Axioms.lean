@@ -634,31 +634,63 @@ import Nimbus.Refine
 
 /-! ## Nimbus/Vfs/Hydration.lean -/
 
+#print axioms Nimbus.Vfs.Hydration.settle_files
+#print axioms Nimbus.Vfs.Hydration.settle_remote
+#print axioms Nimbus.Vfs.Hydration.settle_hyd
+#print axioms Nimbus.Vfs.Hydration.settle_queue
+#print axioms Nimbus.Vfs.Hydration.settle_failed
+#print axioms Nimbus.Vfs.Hydration.settle_now
+#print axioms Nimbus.Vfs.Hydration.settle_cfg
+#print axioms Nimbus.Vfs.Hydration.settle_notBefore
+#print axioms Nimbus.Vfs.Hydration.isLocal_settle
+#print axioms Nimbus.Vfs.Hydration.hLocal_settle
+#print axioms Nimbus.Vfs.Hydration.failedChunk_settle
+#print axioms Nimbus.Vfs.Hydration.gateFailed_settle
 #print axioms Nimbus.Vfs.Hydration.sync_never_state1
 #print axioms Nimbus.Vfs.Hydration.async_never_state1
-#print axioms Nimbus.Vfs.Hydration.resume_local
+#print axioms Nimbus.Vfs.Hydration.failedChunk_spec
+#print axioms Nimbus.Vfs.Hydration.failedChunk_none
+#print axioms Nimbus.Vfs.Hydration.async_failed_eio
+#print axioms Nimbus.Vfs.Hydration.sync_failed_eio
+#print axioms Nimbus.Vfs.Hydration.pick_mem
+#print axioms Nimbus.Vfs.Hydration.jobStep_frame
 #print axioms Nimbus.Vfs.Hydration.raw_frame
 #print axioms Nimbus.Vfs.Hydration.hLocal_mono
 #print axioms Nimbus.Vfs.Hydration.isLocal_mono
 #print axioms Nimbus.Vfs.Hydration.hyd_mono
 #print axioms Nimbus.Vfs.Hydration.prio_mem
+#print axioms Nimbus.Vfs.Hydration.prio_sub
+#print axioms Nimbus.Vfs.Hydration.jobStep_covers
 #print axioms Nimbus.Vfs.Hydration.step_covers
 #print axioms Nimbus.Vfs.Hydration.queue_covers
-#print axioms Nimbus.Vfs.Hydration.settleG_open
-#print axioms Nimbus.Vfs.Hydration.settleG_ok
-#print axioms Nimbus.Vfs.Hydration.settleG_named
+#print axioms Nimbus.Vfs.Hydration.jobStep_core
+#print axioms Nimbus.Vfs.Hydration.raw_core
+#print axioms Nimbus.Vfs.Hydration.core
+#print axioms Nimbus.Vfs.Hydration.failed_not_stored
+#print axioms Nimbus.Vfs.Hydration.failed_not_local
+#print axioms Nimbus.Vfs.Hydration.settleR_spec
+#print axioms Nimbus.Vfs.Hydration.settleG_spec
+#print axioms Nimbus.Vfs.Hydration.settle_RG
+#print axioms Nimbus.Vfs.Hydration.raw_readers
 #print axioms Nimbus.Vfs.Hydration.raw_gates
-#print axioms Nimbus.Vfs.Hydration.step_gateInv
-#print axioms Nimbus.Vfs.Hydration.gateInv
+#print axioms Nimbus.Vfs.Hydration.step_RG
+#print axioms Nimbus.Vfs.Hydration.rg
+#print axioms Nimbus.Vfs.Hydration.reader_ok_local
+#print axioms Nimbus.Vfs.Hydration.reader_bounded
+#print axioms Nimbus.Vfs.Hydration.gate_bounded
 #print axioms Nimbus.Vfs.Hydration.gate_ok_local
 #print axioms Nimbus.Vfs.Hydration.bound_reads_never_eio
-#print axioms Nimbus.Vfs.Hydration.gate_bounded
+#print axioms Nimbus.Vfs.Hydration.failed_readers_eio
+#print axioms Nimbus.Vfs.Hydration.failed_gates_eio
 #print axioms Nimbus.Vfs.Hydration.nothing_named_starts
 #print axioms Nimbus.Vfs.Hydration.jobs_mono
 #print axioms Nimbus.Vfs.Hydration.jobs_frame
+#print axioms Nimbus.Vfs.Hydration.job_head
 #print axioms Nimbus.Vfs.Hydration.jobs_hydrate
 #print axioms Nimbus.Vfs.Hydration.named_local_within
 #print axioms Nimbus.Vfs.Hydration.a_shared_chunk
+#print axioms Nimbus.Vfs.Hydration.a_failure_trace
+#print axioms Nimbus.Vfs.Hydration.a_reader_deadline
 
 /-! ## Nimbus/Vfs/Ledger.lean -/
 
