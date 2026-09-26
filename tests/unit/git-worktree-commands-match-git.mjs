@@ -905,6 +905,12 @@ try {
     await dry('add of an ignored file, the rest staged', ['add', 'ign', 'a']);
     await dry('add -f of an ignored file', ['add', '-f', 'ign']);
     await dry('add -A', ['add', '-A']);
+    // -u updates only what the index holds: a path removed from it with rm --cached stays removed.
+    // Nimbus has no git rm, so real git removes it and the index is mirrored in.
+    sh(repo.disk, ['rm', '-q', '--cached', 'keep']);
+    user.writeFile(`${repo.virtual.slice(1)}/.git/index`, readFileSync(join(repo.disk, '.git/index')));
+    await dry('add -u after rm --cached', ['add', '-u']);
+    await dry('add -u of a path the index no longer holds', ['add', '-u', 'keep']);
     await dry('add of an unknown switch', ['add', '-Q', 'a'], { firstLine: true });
     await dry('add of an unknown option', ['add', '--bogus', 'a'], { firstLine: true });
   }

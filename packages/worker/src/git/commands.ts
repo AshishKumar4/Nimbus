@@ -761,11 +761,19 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
     : [];
   const rows = new Map<string, [number, number, number]>();
   for (const [path, head, workdir, stage] of [...matrix, ...forced]) {
+    // -u updates what the index holds and nothing else: a path it does not
+    // hold (never added, or removed with rm --cached) is not git's to update.
+    if (update && stage === 0) continue;
     if (specs.some((spec) => inSpec(path, spec))) rows.set(path, [head, workdir, stage]);
   }
   const ignored: string[] = [];
   for (const [i, spec] of specs.entries()) {
     if (spec === '' || [...rows.keys()].some((path) => inSpec(path, spec))) continue;
+    if (update) {
+      // "Known to git" is the index; git names the first pathspec it holds nothing under.
+      await ctx.stderr.write(`error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`);
+      return 128;
+    }
     let st = null;
     try { st = vfs.lstat(normalizeVfsPath(`${root}/${spec}`)); } catch { /* absent */ }
     if (!st) {
