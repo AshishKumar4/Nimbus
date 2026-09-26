@@ -216,7 +216,7 @@ def genCase : Gen (Option Json) := do
     else
       let op ← genOp S (i + 20)
       if touchesPin S caps P op then continue
-      let (o, S') := exec S P op
+      let (o, S') := execC caps S P op
       S := S'
       steps := steps.push (opJson P op o)
   let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
@@ -233,7 +233,7 @@ def runDirected (ms : List Mount) (trees : List (Backend × Tree)) (steps : List
   let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
   let mut out : Array Json := #[]
   for (P, op) in steps do
-    let (o, S') := exec S P op
+    let (o, S') := execC fullCaps S P op
     S := S'
     out := out.push (opJson P op o)
   let mountsJson := ms.map fun m => Json.obj [("point", .str ("/" ++ key m.point)), ("backend", .str (backendName m.backend)),
@@ -270,7 +270,7 @@ def directedX : Json := Id.run do
   for (P, st) in steps do
     match st with
     | .inl op =>
-      let (o, S') := exec S P op
+      let (o, S') := execC caps S P op
       S := S'; out := out.push (opJson P op o)
     | .inr x =>
       let (o, S') := execX caps S P x

@@ -661,6 +661,7 @@ requirements:
       - Nimbus.Vfs.CompositeOps.frame_refl
       - Nimbus.Vfs.CompositeOps.frame_set
       - Nimbus.Vfs.CompositeOps.keeps_mono
+      - Nimbus.Vfs.CompositeOps.execC_refines
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     refinement:
