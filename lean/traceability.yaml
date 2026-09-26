@@ -645,7 +645,7 @@ requirements:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
     remainingEvidence:
-      - No code refines ProcessFiles yet (CUTOVER.md slice A); the fixture lean/fixtures/process-files.json is generated for tests/unit/process-files-refinement.mjs, which the cutover adds
+      - No code refines ProcessFiles yet (CUTOVER.md slice A); Nimbus.Refine.ProcessFilesCases generates lean/fixtures/process-files.json for tests/unit/process-files-refinement.mjs, and RefinementFixtures emits it again when the cutover adds that test
       - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
       - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
   VFS-COMP-003:
