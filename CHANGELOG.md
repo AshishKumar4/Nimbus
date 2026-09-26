@@ -154,6 +154,9 @@ option, with its replacement:
   beneath a root whose middle component is missing included. It used to throw
   ENOENT for that one. EACCES, ENOTCAPABLE, ENOTDIR and ELOOP still throw.
 
+- `@nimbus-sh/core/substrate/lifo` no longer exports `isBinaryMime` or
+  `getFileCategory`, the file-name guess the text commands used to skip files.
+
 ### Not carried from Kinu's N26 patch
 
 These stay Kinu's policy, applied by Kinu after its own move or chmod with its
@@ -175,6 +178,11 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `sed`, `nl`, `rev` and the lifo `grep`, `wc`, `uniq`, `cut`, `awk`, `sort`
+  and `tail` read every file. They skipped a file as "binary" by its name, so
+  `sed -i s/a/b/ f` left a file with no known text extension unedited. GNU's
+  tools have no such skip. `diff` decides binary by content, as GNU does (a
+  NUL byte), and exits 1 when binary files differ (it exited 2).
 - SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name
   directly in it needs write permission on `/`, as on Linux. Before, the
   filesystem skipped that check at the root, so any user (a confined agent

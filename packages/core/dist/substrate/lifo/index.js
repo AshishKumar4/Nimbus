@@ -8,7 +8,7 @@ export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
 // Bridge
 export { Bridge } from './kernel/network/Bridge.js';
 // Filesystem: the namespace is core/src/vfs (CompositeVFS), bound by ProcessFiles.
-export { getMimeType, getFileCategory, isBinaryMime } from './utils/mime.js';
+export { getMimeType } from './utils/mime.js';
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
 // Factory commands

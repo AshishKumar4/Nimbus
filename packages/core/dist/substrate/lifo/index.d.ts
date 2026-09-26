@@ -6,7 +6,7 @@ export type { IPAddress, SocketType, SocketAddress, NetworkInterface as INetwork
 export { VETHPair } from './kernel/network/tunnel/VETHPair.js';
 export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
 export { Bridge } from './kernel/network/Bridge.js';
-export { getMimeType, getFileCategory, isBinaryMime } from './utils/mime.js';
+export { getMimeType } from './utils/mime.js';
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
 export type { Command, CommandContext, CommandOutputStream, CommandInputStream, } from './commands/types.js';
 export { createPsCommand } from './commands/system/ps.js';

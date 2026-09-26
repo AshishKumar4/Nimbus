@@ -2,9 +2,7 @@ import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { statOrThrow } from '../../../../vfs/vfs.js';
 
 
 const spec = {
@@ -246,51 +244,30 @@ const command: Command = async (ctx) => {
 
   const path1 = resolve(ctx.cwd, file1);
   const path2 = resolve(ctx.cwd, file2);
-  const binary1 = isBinaryMime(getMimeType(path1));
-  const binary2 = isBinaryMime(getMimeType(path2));
-
-  if (binary1 || binary2) {
-    // Verify files exist before reporting binary diff
-    try { (await statOrThrow(ctx.vfs, path1)); } catch (e) {
+  const read = async (path: string, file: string): Promise<Uint8Array | null> => {
+    try {
+      return await ctx.vfs.readFile(path);
+    } catch (e) {
       if (isVfsError(e)) {
-        await ctx.stderr.write(`diff: ${file1}: ${e.message}
-        `);
-        return 2;
+        await ctx.stderr.write(`diff: ${file}: ${e.message}\n`);
+        return null;
       }
       throw e;
     }
-    try { (await statOrThrow(ctx.vfs, path2)); } catch (e) {
-      if (isVfsError(e)) {
-        await ctx.stderr.write(`diff: ${file2}: ${e.message}
-        `);
-        return 2;
-      }
-      throw e;
-    }
-    await ctx.stdout.write(`Binary files ${file1} and ${file2} differ
-    `);
-    return 2;
+  };
+  const bytes1 = await read(path1, file1);
+  if (bytes1 === null) return 2;
+  const bytes2 = await read(path2, file2);
+  if (bytes2 === null) return 2;
+  // GNU's rule: a file with a NUL byte is binary, compared whole.
+  if (bytes1.includes(0) || bytes2.includes(0)) {
+    if (bytes1.length === bytes2.length && bytes1.every((byte, i) => byte === bytes2[i])) return 0;
+    await ctx.stdout.write(`Binary files ${file1} and ${file2} differ\n`);
+    return 1;
   }
-
-  try {
-    content1 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file1)));
-  } catch (e) {
-    if (isVfsError(e)) {
-      await ctx.stderr.write(`diff: ${file1}: ${e.message}\n`);
-      return 2;
-    }
-    throw e;
-  }
-
-  try {
-    content2 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file2)));
-  } catch (e) {
-    if (isVfsError(e)) {
-      await ctx.stderr.write(`diff: ${file2}: ${e.message}\n`);
-      return 2;
-    }
-    throw e;
-  }
+  const decoder = new TextDecoder();
+  content1 = decoder.decode(bytes1);
+  content2 = decoder.decode(bytes2);
 
   if (content1 === content2) {
     return 0;

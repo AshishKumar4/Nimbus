@@ -1,6 +1,5 @@
 import type { Command, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import type { VfsStat } from '../../../../vfs/vfs.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 
@@ -499,10 +498,6 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         const path = resolve(ctx.cwd, file);
         try {
           await statOrThrow(ctx.vfs, path);
-          if (isBinaryMime(getMimeType(path))) {
-            await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
-            continue;
-          }
           const content = await ctx.vfs.readFileString(path);
           // One buffered pass per file: nothing touches the file until its
           // whole result exists, keeping the rewrite all-or-nothing.
@@ -542,10 +537,6 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         const path = resolve(ctx.cwd, file);
         try {
           await statOrThrow(ctx.vfs, path);
-          if (isBinaryMime(getMimeType(path))) {
-            await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
-            continue;
-          }
           lines = iterateLogicalLines(await ctx.vfs.readFileString(path));
         } catch (e) {
           const message = fsErrorMessage(e);

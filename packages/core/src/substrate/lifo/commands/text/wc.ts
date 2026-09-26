@@ -1,7 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 
@@ -68,19 +67,6 @@ const command: Command = async (ctx) => {
     const path = resolve(ctx.cwd, file);
     try {
       (await statOrThrow(ctx.vfs, path));
-      if (isBinaryMime(getMimeType(path))) {
-        if (showBytes && !showLines && !showWords) {
-          // Byte count only: use readFile for accurate binary size
-          const data = (await ctx.vfs.readFile(path));
-          const counts = { lines: 0, words: 0, bytes: data.byteLength };
-          totalBytes += counts.bytes;
-          await ctx.stdout.write(formatCounts(counts, file));
-        } else {
-          await ctx.stderr.write(`wc: ${file}: binary file, skipping
-          `);
-        }
-        continue;
-      }
       const content = (await ctx.vfs.readFileString(path));
       const counts = countText(content);
       totalLines += counts.lines;

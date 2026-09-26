@@ -1,5 +1,4 @@
 import { resolve } from '../../utils/path.js';
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 const command = async (ctx) => {
@@ -150,9 +149,6 @@ const command = async (ctx) => {
                         const dirFiles = (await walkDir(path));
                         for (const f of dirFiles) {
                             try {
-                                if (isBinaryMime(getMimeType(f))) {
-                                    continue;
-                                }
                                 const content = (await ctx.vfs.readFileString(f));
                                 const lines = content.replace(/\n$/, '').split('\n');
                                 await grepLines(lines, f);
@@ -165,10 +161,6 @@ const command = async (ctx) => {
                     else {
                         await ctx.stderr.write(`grep: ${file}: Is a directory\n`);
                     }
-                    continue;
-                }
-                if (isBinaryMime(getMimeType(path))) {
-                    await ctx.stderr.write(`grep: ${file}: binary file, skipping\n`);
                     continue;
                 }
                 const content = (await ctx.vfs.readFileString(path));

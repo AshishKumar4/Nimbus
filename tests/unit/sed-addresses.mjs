@@ -207,8 +207,8 @@ await expectOut('$ lands on the last readable file',
   `sed -n '$p' /tmp/s1.txt /tmp/s2.txt`, '7\n');
 await expectOut('an empty file in the list shifts no numbering',
   `sed -n '$p' /tmp/s2.txt /tmp/sempty.txt`, '7\n');
-await expectOut('a skipped binary file shifts no numbering',
-  `sed -n '$p' /tmp/s2.txt /tmp/skip.png`, '7\n');
+await expectOut('a file of any name is read: $ is its last line (GNU)',
+  `sed -n '$p' /tmp/s2.txt /tmp/skip.png`, 'not text');
 await expectOut('a numeric range runs across the boundary',
   `sed -n '3,5p' /tmp/s1.txt /tmp/s2.txt`, '3\n4\n5\n');
 await expectOut('a range open at a boundary continues into the next file',
