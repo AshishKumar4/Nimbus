@@ -13,6 +13,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { moduleMapBundle } from './lib/module-map-bundle.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -28,6 +29,7 @@ kernel.writeFile('home/user/project/secret.txt', 'secret\n', { mode: 0o600 });
 kernel.chown('home/user/project/secret.txt', 0, 0);
 
 let runnerSource = '';
+let runnerModules = {};
 const entrypoint = {
   async fetch() {
     return Response.json({ pid: 1, exitCode: 0, stdout: '', stderr: '', durationMs: 0 });
@@ -42,6 +44,7 @@ const env = {
   LOADER: {
     load(config) {
       runnerSource = config.modules['runner.js'];
+      runnerModules = config.modules;
       return worker;
     },
     get() { throw new Error('unexpected keyed loader call'); },
@@ -76,9 +79,7 @@ await manager.exec(
 );
 assert.ok(runnerSource, 'FacetManager emitted a runtime worker');
 
-const match = runnerSource.match(/^const __MODULE_VFS_BUNDLE = (.*);$/m);
-assert.ok(match, 'generated worker defines __MODULE_VFS_BUNDLE');
-const bundle = new Function(`return (${match[1]});`)();
+const bundle = moduleMapBundle(runnerModules, 'runner.js');
 const prefix = 'home/user/project/';
 
 // The bundle carries bytes this process may read, and nothing else: the

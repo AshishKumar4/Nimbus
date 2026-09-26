@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { transformSync } from 'esbuild';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const PROJ = 'home/user/proj';
 const KIT_MAIN = `/${PROJ}/node_modules/@nuxt/kit/dist/index.mjs`;
@@ -69,8 +69,7 @@ const manifest = {
 
 const NativeURL = globalThis.URL;
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
-  '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
     + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
 );
@@ -83,11 +82,18 @@ for (const [path, text] of Object.entries(bundle)) {
 for (const dir of Object.keys(manifest)) {
   metadata[dir] = { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 };
 }
-const builtins = factory(
-  bundle, metadata, {}, {}, manifest, null,
+const builtins = (declareNamespace({ metadata: metadata, manifest: manifest }), factory(
+  bundle,
+  {},
+  {},
+  null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  `/${PROJ}`, [], {}, `/${PROJ}/probe.mjs`, `/${PROJ}`,
-);
+  `/${PROJ}`,
+  [],
+  {},
+  `/${PROJ}/probe.mjs`,
+  `/${PROJ}`,
+));
 const ShimURL = builtins.url.URL;
 // Installing the shims took over the realm's URL. Give it back while this
 // file does its own host-side work (reading and transforming exsolve), and

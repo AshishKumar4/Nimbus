@@ -18,7 +18,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 // The platform's timer, captured before the shims wrap setTimeout in the
 // resumption barrier: a wait that must not itself be a barriered resumption.
@@ -66,18 +66,22 @@ const supervisor = {
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
 );
 const metadata = { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
-const out = factory(
+const out = (declareNamespace({ metadata: metadata, manifest: { 'home/user': ['p'], 'home/user/p': [] } }), factory(
   {},
-  metadata,
-  {}, { 'home/user': ['p'], 'home/user/p': [] }, supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/s.mjs`, dir,
-);
+  {},
+  supervisor,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  dir,
+  [],
+  {},
+  `${dir}/s.mjs`,
+  dir,
+));
 const { fs } = out;
 const stats = globalThis.__nimbusVfsCoherence;
 

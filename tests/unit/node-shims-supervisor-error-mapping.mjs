@@ -53,16 +53,19 @@ function facetWithFailure(failure) {
     fsTruncate: crossed,
   };
   return new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() +
       '\n;return { fs: __fsMod };',
   )(
     {},
-    { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
-    {}, { home: ['user'], 'home/user': [] }, supervisor,
+    {},
+    supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
   ).fs;
 }
 

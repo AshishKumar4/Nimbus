@@ -195,14 +195,20 @@ try {
   }
 
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
-    '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
   );
   const runtimeResolve = factory(
-    FILES, {}, {}, {}, {}, null,
+    FILES,
+    {},
+    {},
+    null,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/pkg/lib/main.js', '/home/user/pkg/lib',
+    '/home/user',
+    [],
+    {},
+    '/home/user/pkg/lib/main.js',
+    '/home/user/pkg/lib',
   );
   /** The runtime's answer: a tree-relative path, or null. */
   function runtime(file, specifier) {

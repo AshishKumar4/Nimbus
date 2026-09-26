@@ -29,6 +29,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { moduleMapText } from './lib/module-map-bundle.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -147,7 +148,7 @@ async function settle(world) {
   const [config] = [...world.configs.values()];
   const entrySource = config.modules['worker.js'];
   assert.ok(
-    entrySource.includes('marker-first'),
+    moduleMapText(config.modules).includes('marker-first'),
     'a launch spread across turns still carries the program it was asked to run',
   );
 

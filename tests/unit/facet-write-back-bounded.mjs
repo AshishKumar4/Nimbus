@@ -14,7 +14,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -54,17 +54,21 @@ globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n' + ENTRYPOINT_EVENT_LOOP
   + '\n;return { fs: __fsMod, runToExit: __nimbusRunEntrypointToExit, drain: __nimbusDrainVfsWrites };',
 );
-const { fs, runToExit, drain } = factory(
+const { fs, runToExit, drain } = (declareNamespace({ metadata: { 'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user/app': [] } }), factory(
   {},
-  { 'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
-  {}, { 'home/user/app': [] }, supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, cwd, [], {}, `${cwd}/seed.js`, cwd,
-);
+  {},
+  supervisor,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  cwd,
+  [],
+  {},
+  `${cwd}/seed.js`,
+  cwd,
+));
 
 const DIRS = 'abcdefghij'.split('');
 const PER_DIR = 25;

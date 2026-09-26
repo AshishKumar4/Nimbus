@@ -52,9 +52,7 @@ function installBridge({ columns = 80, rows = 24 } = {}) {
     stderr: { write: (s) => { stderr.push(s); return true; } },
   };
   const setSize = new Function(
-    'process',
-    '__nimbusTtyColumns',
-    '__nimbusTtyRows',
+    'process', '__nimbusTtyColumns', '__nimbusTtyRows',
     `${OPENTUI_RESIZE_BRIDGE_SRC}\n` +
       'return (cols, rows) => { __nimbusTtyColumns = cols; __nimbusTtyRows = rows; };',
   )(proc, columns, rows);

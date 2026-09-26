@@ -16,7 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 
 const READER = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const OWNER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -53,11 +53,13 @@ for (const dir of ['d', 'g', 'k']) {
 }
 // The process starts at the authority's cursor, as a launch does.
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-const factory = new Function('__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };');
+const factory = new Function(
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };'
+);
 listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-const out = factory(bundle, metadata, {}, manifest, supervisor, READER, '/home/user', [], {}, '/home/user/s.mjs', '/home/user');
+const out = (declareNamespace({ metadata: metadata, manifest: manifest }), factory(bundle, {}, supervisor, READER, '/home/user', [], {}, '/home/user/s.mjs', '/home/user'));
 const { fs } = out;
 
 /** A synchronous read inside a timer callback, after the barrier it runs behind. */

@@ -20,7 +20,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -65,20 +65,21 @@ globalThis.fetch = async () => {
 };
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod, fetch: globalThis.fetch };',
 );
-const out = factory(
+const out = (declareNamespace({ metadata: { 'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user': ['t'], 'home/user/t': [] } }), factory(
   {},
-  { 'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
   {},
-  { 'home/user': ['t'], 'home/user/t': [] },
   supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir, [], {}, `${dir}/s.mjs`, dir,
-);
+  dir,
+  [],
+  {},
+  `${dir}/s.mjs`,
+  dir,
+));
 const { fs } = out;
 
 // Writes are already parked when the request is issued, and more keep landing

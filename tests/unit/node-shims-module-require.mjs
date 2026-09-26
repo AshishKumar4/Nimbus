@@ -3,14 +3,23 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
-  '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __require;',
 );
-const requireFromFacet = factory(
+const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
+    'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],
+    'home/user/kit dist': ['index.mjs'],
+    'home/user/app': ['main.js', 'node_modules'],
+    'home/user/app/node_modules': ['rolldown', '@rolldown', 'left-pad'],
+    'home/user/app/node_modules/rolldown': ['dist'],
+    'home/user/app/node_modules/rolldown/dist': ['binding.mjs'],
+    'home/user/app/node_modules/@rolldown': ['binding-wasm32-wasi'],
+    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi': ['binding.cjs'],
+    'home/user/app/node_modules/left-pad': ['index.js'],
+  } }), factory(
   {
     'home/user/module-require.js': 'module.exports = module.require("node:process").version;\n',
     'home/user/local-require.js': 'const require = () => "local"; module.exports = require();\n',
@@ -23,21 +32,16 @@ const requireFromFacet = factory(
     'home/user/app/node_modules/@rolldown/binding-wasm32-wasi/binding.cjs': 'throw new Error("Cannot find module \'node:wasi\'");\n',
     'home/user/app/node_modules/left-pad/index.js': 'throw new Error("left-pad failed");\n',
   },
-  {}, {}, {}, {
-    'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],
-    'home/user/kit dist': ['index.mjs'],
-    'home/user/app': ['main.js', 'node_modules'],
-    'home/user/app/node_modules': ['rolldown', '@rolldown', 'left-pad'],
-    'home/user/app/node_modules/rolldown': ['dist'],
-    'home/user/app/node_modules/rolldown/dist': ['binding.mjs'],
-    'home/user/app/node_modules/@rolldown': ['binding-wasm32-wasi'],
-    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi': ['binding.cjs'],
-    'home/user/app/node_modules/left-pad': ['index.js'],
-  },
+  {},
+  {},
   null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-);
+  '/home/user',
+  [],
+  {},
+  '/home/user/main.mjs',
+  '/home/user',
+));
 
 // Node's Module object exposes the same scoped resolver as the wrapper's
 // require parameter. The bounded ESM rewrite uses it so an upstream module may

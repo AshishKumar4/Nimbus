@@ -34,8 +34,7 @@ const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
 
 // The wrapper declares the facet's reported result; the shims append to it.
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
-  '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO',
+  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO',
   '"use strict"; let stdout = "", stderr = "";' + SHIMS_STORE_PRELUDE + generateShimsCode()
     + '\n;return { cp: __childProcessMod, process: __processMod, fs: __fsMod, reported: () => ({ stdout, stderr }) };',
 );
@@ -71,9 +70,19 @@ const supervisor = {
   },
   cpDrainOutput: async () => ({ stdout: new Uint8Array(0), stderr: new Uint8Array(0), stdoutClosed: true, stderrClosed: true }),
 };
-const { cp, process: childProcess, fs: childFs, reported } = factory({}, {}, {}, {}, {}, supervisor,
+const { cp, process: childProcess, fs: childFs, reported } = factory(
+  {},
+  {},
+  {},
+  supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/main.mjs', '/home/user', []);
+  '/home/user',
+  [],
+  {},
+  '/home/user/main.mjs',
+  '/home/user',
+  []
+);
 
 const child = cp.spawn('node', ['service.js'], { stdio: ['pipe', 'pipe', 'pipe'] });
 await sleep(40);

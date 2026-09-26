@@ -6,22 +6,26 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
-const sandbox = factory(
+const sandbox = (declareNamespace({ metadata: // Staged content comes with its record, as every launch stages it.
+  { 'home/user/present.txt': { type: 'file', size: 2, mode: 0o100644, uid: 1000, gid: 1000 } }, manifest: {} }), factory(
   { 'home/user/present.txt': 'hi' },
-  // Staged content comes with its record, as every launch stages it.
-  { 'home/user/present.txt': { type: 'file', size: 2, mode: 0o100644, uid: 1000, gid: 1000 } },
-  {}, {}, {}, null,
+  {},
+  {},
+  null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-);
+  '/home/user',
+  [],
+  {},
+  '/home/user/main.mjs',
+  '/home/user',
+));
 const fs = sandbox.fs;
 
 // Missing path + throwIfNoEntry:false → undefined (no throw).

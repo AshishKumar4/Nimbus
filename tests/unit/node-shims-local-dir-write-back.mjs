@@ -22,7 +22,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -69,22 +69,23 @@ const supervisor = {
 // The process starts at the authority's cursor, as a launch does.
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod };',
 );
 
 function spawnFacet() {
-  return factory(
+  return (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
     {},
-    { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
     {},
-    { home: ['user'], 'home/user': [] },
     supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  ).fs;
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
+  )).fs;
 }
 
 // ── the opencode shape: mkdirSync -p a log tree, append to it, reopen 'w' ───
@@ -158,15 +159,17 @@ function spawnFacet() {
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
   listAuthority(rawVfs);
   globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-  const counting = factory(
+  const counting = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
     {},
-    { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
     {},
-    { home: ['user'], 'home/user': [] },
     counted,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  ).fs;
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
+  )).fs;
   counting.appendFileSync('/home/user/live/a.log', 'one\n');
   await counting.promises.appendFile('/home/user/live/a.log', 'two\n');
   assert.equal(mkdirCalls, 0, 'a live parent directory is never re-announced');
@@ -179,15 +182,17 @@ function spawnFacet() {
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
   listAuthority(rawVfs);
   globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-  const fs = factory(
+  const fs = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
     {},
-    { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
     {},
-    { home: ['user'], 'home/user': [] },
     counted,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  ).fs;
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
+  )).fs;
   fs.mkdirSync('/home/user/chatty', { recursive: true });
   for (let i = 0; i < 5; i++) await fs.promises.appendFile('/home/user/chatty/a.log', `line ${i}\n`);
   assert.equal(mkdirCalls, 1, 'the local-only parent is announced once, not once per write');

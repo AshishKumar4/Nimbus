@@ -17,9 +17,10 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
@@ -77,6 +78,7 @@ manager.setVfs(sessionVfs, processFiles(sessionVfs));
 }
 /** The generated worker source the facet actually booted from. */
 const residentWorkerSource = () => world.boots.at(-1).config.modules['worker.js'];
+const residentModules = () => world.boots.at(-1).config.modules;
 const cellText = (content) => content instanceof Uint8Array
   ? new TextDecoder().decode(content)
   : String(content);
@@ -157,8 +159,7 @@ function withTestAppendAuthority(supervisor) {
 function makeShimFsFacet(supervisor, bundle = {}) {
   withTestAppendAuthority(supervisor);
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
 ;return {
   fs: builtins.fs,
@@ -177,11 +178,17 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   for (const [path, cell] of Object.entries(bundle)) {
     metadata[path] = { type: 'file', size: typeof cell === 'string' ? new TextEncoder().encode(cell).length : cell.length, mode: 0o100644, uid: 1000, gid: 1000 };
   }
-  return factory(
-    bundle, metadata, {}, {}, supervisor,
+  return (declareNamespace({ metadata: metadata, manifest: {} }), factory(
+    bundle,
+    {},
+    supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  );
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
+  ));
 }
 
 async function assertAsyncFlushPreservesNewerWrite(initial, newer) {
@@ -1087,10 +1094,7 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
 }
 
 async function loadGeneratedWorker() {
-  const source = residentWorkerSource().replace(
-    'import { DurableObject } from "cloudflare:workers";',
-    'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }',
-  ) + `
+  const source = residentWorkerSource() + `
 export function __nimbusTestPendingIOLength() {
   return __nimbusRuntime ? __nimbusRuntime.pendingIO.length : -1;
 }
@@ -1099,12 +1103,7 @@ export function __nimbusTestRuntimeState() {
     ? { pendingIOLength: __nimbusRuntime.pendingIO.length, settledIO: __nimbusRuntime.settledIO }
     : null;
 }`;
-  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  try {
-    return await import(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  return importModuleSet({ ...residentModules(), 'worker.js': source }, 'worker.js');
 }
 
 function request(path = 'first') {
@@ -1646,14 +1645,8 @@ process.exit(0);
           getEntrypoint() {
             return {
               async fetch(runRequest) {
-                const source = config.modules['runner.js'];
-                const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-                try {
-                  const generated = await import(url);
-                  return generated.default.fetch(runRequest, config.env);
-                } finally {
-                  URL.revokeObjectURL(url);
-                }
+                const generated = await importModuleSet(config.modules, 'runner.js');
+                return generated.default.fetch(runRequest, config.env);
               },
             };
           },

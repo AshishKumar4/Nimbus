@@ -1884,7 +1884,13 @@ export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
   pacer?: TurnBudget,
+  { consume = false }: { consume?: boolean } = {},
 ): Promise<FacetVfsBundleSource> {
+  // \`consume\`: the caller releases the raw cells right after (a launch's
+  // build), so each is taken as its side module is serialized and the map is
+  // never held twice. Side modules always: an inline expression is copied
+  // again into the runner's own source.
+  if (consume) forceSideModules = true;
   // Size the inline form before building it. A bundle that will be split has
   // no use for the whole-bundle expression, and building one to read its
   // length off cost a second full copy of the largest string this DO makes.
@@ -1941,49 +1947,55 @@ export async function buildFacetVfsBundleSource(
     return pieces;
   }
 
-  const chunks: FacetVfsBundle[] = [];
-  let chunk: FacetVfsBundle = {};
-  let estimatedBytes = 0;
-
-  function flushChunk(): void {
-    if (Object.keys(chunk).length === 0) return;
-    chunks.push(chunk);
-    chunk = {};
-    estimatedBytes = 0;
-  }
-
-  for (const [path, cell] of Object.entries(bundle)) {
-    for (const [piecePath, pieceCell] of splitCell(path, cell)) {
-      const pieceBytes = sourceBytes(piecePath, pieceCell);
-      if (
-        piecePath in chunk
-        || (estimatedBytes > 0 && estimatedBytes + pieceBytes > maxModuleBytes)
-      ) {
-        flushChunk();
-      }
-      chunk[piecePath] = pieceCell;
-      estimatedBytes += pieceBytes;
-    }
-  }
-  flushChunk();
-
   const modules: Record<string, string> = {};
   const imports: string[] = [];
   const aliases: string[] = [];
-  for (let index = 0; index < chunks.length; index++) {
+  let chunk: FacetVfsBundle = {};
+  let chunkPaths: string[] = [];
+  let estimatedBytes = 0;
+
+  // A chunk becomes its side module the moment it is full, so the cells it
+  // carries and their serialization are never both held for the whole map:
+  // consumed, a cell leaves the bundle as its module is written.
+  async function flushChunk(): Promise<void> {
+    // Pieces of a split cell fill chunks before the cell's path is complete,
+    // so emptiness is the chunk's own, not its finished paths'.
+    if (estimatedBytes === 0) return;
+    const index = aliases.length;
     const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
     const alias = `__nimbusVfsBundle${index}`;
-    const source = _facetBundleModuleSource(chunks[index]);
+    const source = _facetBundleModuleSource(chunk);
     if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
       throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
     }
     modules[moduleName] = source;
     imports.push(`import ${alias} from "${moduleName}";`);
     aliases.push(alias);
+    if (consume) for (const path of chunkPaths) delete bundle[path];
+    chunk = {};
+    chunkPaths = [];
+    estimatedBytes = 0;
     // Each side module is an independent serialization of its own cells, so
     // the turn may end between any two of them.
     if (pacer) await pacer.spend(source.length);
   }
+
+  for (const path of Object.keys(bundle)) {
+    const cell = bundle[path];
+    for (const [piecePath, pieceCell] of splitCell(path, cell)) {
+      const pieceBytes = sourceBytes(piecePath, pieceCell);
+      if (
+        piecePath in chunk
+        || (estimatedBytes > 0 && estimatedBytes + pieceBytes > maxModuleBytes)
+      ) {
+        await flushChunk();
+      }
+      chunk[piecePath] = pieceCell;
+      estimatedBytes += pieceBytes;
+    }
+    chunkPaths.push(path);
+  }
+  await flushChunk();
 
   const expression =
     `(function(__parts){const __out={};for(const __part of __parts){` +
@@ -2512,7 +2524,7 @@ export async function addStaticReadFileAssets(
  *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
  *
  * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (manifest pass at buildManifest enumerates it). But the runtime
+ * (the namespace lists it). But the runtime
  * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
  * `__vfsBundle` only, and none of the existing bundle-population
  * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
@@ -4186,12 +4198,12 @@ export class FacetManager {
    * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
    * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
    * exec — dominant wall-clock on large node_modules. This memoizes the
-   * result (including the serialized facet bundle + manifest) keyed on
+   * result (including the serialized facet bundle) keyed on
    * (bundleProfile, cwd, scriptPath, entryCode identity).
    *
    * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
    * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
-   * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+   * pulls absolute-path literals like /tmp/x),
    * so a cwd-scoped subtree revision cannot guarantee invalidation. The
    * global revision bumps on ANY write, so the cache invalidates on every
    * mutation that could change any file the bundle reads — provably
@@ -4766,14 +4778,15 @@ export class FacetManager {
     );
     vfsState.bundleKey = key;
     vfsState.bundlePaths = Object.keys(vfsState.bundle);
+    // The only consumer of the raw cells past serialization is a single
+    // boolean, so it is answered first; the serialization then consumes them.
+    vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
     vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
       pacer,
+      { consume: true },
     );
-    // The only consumer of the raw cells past this point is a single boolean,
-    // so answer it now rather than hold ~17 MB (pi) to answer it later.
-    vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
     vfsState.cacheHit = false;
 
     // Serialization is total: bundleSource/serializedManifest/serializedMetadata

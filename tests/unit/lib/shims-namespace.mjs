@@ -2,14 +2,13 @@
 // boots on (vfs/facet-resident-store.ts).
 //
 // A test that evaluates the shims on its own (`new Function('__vfsBundle',
-// '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor', 'cred', ...)`)
-// splices SHIMS_STORE_PRELUDE in ahead of generateShimsCode(). The prelude
-// declares the real store, binds it in the process's heap (the one-shot
-// backing), adopts the test's bundle cells, and fills the namespace with what
-// the test's fixture says exists:
+// '__vfsDirs', '__supervisor', 'cred', ...)`) splices SHIMS_STORE_PRELUDE in
+// ahead of generateShimsCode(). The prelude declares the real store, binds it
+// in the process's heap (the one-shot backing), adopts the test's bundle
+// cells, and fills the namespace with what the test's fixture says exists:
 // - every bundle cell is a file;
-// - every metadata record is its own stat;
-// - every directory the manifest or __vfsDirs names is a directory, and so
+// - every metadata record declareNamespace() gave is its own stat;
+// - every directory its manifest or __vfsDirs names is a directory, and so
 //   is every ancestor.
 // A name the fixture lists but does not describe (a bundle cell, a manifest
 // entry) is what the session's authority would list for something nobody
@@ -37,8 +36,11 @@ const SEED = `
   const cursor = (globalThis.__nimbusVfsCursor && globalThis.__nimbusVfsCursor.epoch != null)
     ? globalThis.__nimbusVfsCursor : { epoch: "test-epoch", rev: 1 };
   const bundle = (typeof __vfsBundle !== "undefined" && __vfsBundle) || {};
-  const metadata = (typeof __vfsMetadata !== "undefined" && __vfsMetadata) || {};
-  const manifest = (typeof __vfsManifest !== "undefined" && __vfsManifest) || {};
+  // Taken once, by the factory it was declared for.
+  const declared = globalThis.__nimbusTestNamespace || {};
+  delete globalThis.__nimbusTestNamespace;
+  const metadata = declared.metadata || {};
+  const manifest = declared.manifest || {};
   const dirs = (typeof __vfsDirs !== "undefined" && __vfsDirs) || {};
   const cells = {};
   for (const [k, v] of Object.entries(bundle)) cells[String(k).replace(/^\\/+/, "")] = v;
@@ -96,6 +98,16 @@ const SEED = `
   if (typeof __vfsBundle !== "undefined") __vfsBundle = __nimbusResidentBundle;
 })();
 `;
+
+/**
+ * What the test's authority lists beyond its bundle cells: a stat per name
+ * (\`metadata\`, keyed by path) and directory entries (\`manifest\`, path ->
+ * child names). Call before the factory; the namespace is seeded from it as
+ * from a session's listing.
+ */
+export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
+  globalThis.__nimbusTestNamespace = { metadata, manifest };
+}
 
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
 export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n`;

@@ -32,7 +32,7 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -309,15 +309,17 @@ await runScenarios(import.meta.path, {
       fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
     };
     globalThis.__nimbusVfsCursor = authority.cursor();
+    declareNamespace({
+      metadata: { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
+      manifest: { 'home/user': ['app'], 'home/user/app': ['f.txt'] },
+    });
     const shims = new Function(
-      '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-      'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+      '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
       '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
     )(
       { 'home/user/app/f.txt': 'V1' },
-      { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
-      {}, { 'home/user': ['app'], 'home/user/app': ['f.txt'] }, supervisor,
+      {}, supervisor,
       { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, `/home/user/app/s.js`, '/home/user/app',
     );
     assert.equal(shims.fs.readFileSync(F, 'utf8'), 'V1');

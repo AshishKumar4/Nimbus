@@ -36,6 +36,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 const PROJECT = '/home/user/proj';
 /** A project file past the bundle's byte cap and the single-value ceiling: chunked. */
@@ -137,20 +138,11 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => makeSupervisor(props) });
 
 let facetSeq = 0;
 const world = createFacetWorld(async (config, info) => {
-  const source = config.modules['worker.js'].replace(
-    'import { DurableObject } from "cloudflare:workers";',
-    'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }',
+  const generated = await importModuleSet(config.modules, 'worker.js');
+  return new generated.NimbusProcess(
+    createProcessFacetCtx(`${info.facetName}-${++facetSeq}`),
+    { SUPERVISOR: config.env.SUPERVISOR },
   );
-  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  try {
-    const generated = await import(url);
-    return new generated.NimbusProcess(
-      createProcessFacetCtx(`${info.facetName}-${++facetSeq}`),
-      { SUPERVISOR: config.env.SUPERVISOR },
-    );
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 });
 
 /** A shared read profile (R2, in memory): what one session misses, the next holds. */
