@@ -154,9 +154,15 @@ export interface CredentialedVfs {
      * may change between slices: each page is consistent, the whole copy is
      * point-in-time only with `at`.
      */
+    /**
+     * copyTree in slices. `mutationOwner`: the live exclusive lease this copy
+     * runs under (its holder awaits it), so it writes inside the lease and a
+     * quiescing snapshot never holds it.
+     */
     copyTreeAsync(src: string, dest: string, options?: {
         preserve?: boolean;
         at?: string;
+        mutationOwner?: string;
     }): Promise<number>;
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
@@ -1102,9 +1108,15 @@ export declare class SqliteVFS {
     }): {
         restored: number;
     };
-    /** restore in slices with a yield between, for a restore of any size in workerd. */
+    /**
+     * restore in slices with a yield between, for a restore of any size in
+     * workerd. `mutationOwner`: the live exclusive lease it runs under (its
+     * holder awaits it), so it restores inside the lease and a quiescing
+     * snapshot never holds it.
+     */
     restoreAsync(name: string, options?: {
         subtree?: string;
+        mutationOwner?: string;
     }): Promise<{
         restored: number;
     }>;

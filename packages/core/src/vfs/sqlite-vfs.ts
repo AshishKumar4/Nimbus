@@ -291,7 +291,12 @@ export interface CredentialedVfs {
    * may change between slices: each page is consistent, the whole copy is
    * point-in-time only with `at`.
    */
-  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string }): Promise<number>;
+  /**
+   * copyTree in slices. `mutationOwner`: the live exclusive lease this copy
+   * runs under (its holder awaits it), so it writes inside the lease and a
+   * quiescing snapshot never holds it.
+   */
+  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string; mutationOwner?: string }): Promise<number>;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   writeStream(
     stream: ReadableStream<Uint8Array>,
@@ -2159,8 +2164,9 @@ export class SqliteVFS {
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
       copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
       copyTreeAsync: (src, dest, options) => {
-        const job = this.planCopyTree(src, dest, bound, options);
-        return this.spanning(() => this.copyTreeInSlices(job));
+        const owner = options?.mutationOwner;
+        const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
+        return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
@@ -4931,12 +4937,13 @@ export class SqliteVFS {
     return job;
   }
 
-  private async copyTreeInSlices(job: CopyTreeJob): Promise<number> {
-    let slice = this.runCopyTree(job, null, JOB_SLICE_PAGES);
+  private async copyTreeInSlices(job: CopyTreeJob, owner?: string): Promise<number> {
+    let slice = this.withMutationOwner(owner, () => this.runCopyTree(job, null, JOB_SLICE_PAGES));
     let copied = slice.copied;
     while (!slice.done) {
       await yieldToStorage();
-      slice = this.runCopyTree(job, slice.id, JOB_SLICE_PAGES);
+      const id = slice.id;
+      slice = this.withMutationOwner(owner, () => this.runCopyTree(job, id, JOB_SLICE_PAGES));
       copied += slice.copied;
     }
     return copied;
@@ -5455,16 +5462,22 @@ export class SqliteVFS {
     return { restored: this.runRestore(id, job, startGen).restored };
   }
 
-  /** restore in slices with a yield between, for a restore of any size in workerd. */
-  restoreAsync(name: string, options: { subtree?: string } = {}): Promise<{ restored: number }> {
-    return this.spanning(() => this.restoreInSlices(name, options));
+  /**
+   * restore in slices with a yield between, for a restore of any size in
+   * workerd. `mutationOwner`: the live exclusive lease it runs under (its
+   * holder awaits it), so it restores inside the lease and a quiescing
+   * snapshot never holds it.
+   */
+  restoreAsync(name: string, options: { subtree?: string; mutationOwner?: string } = {}): Promise<{ restored: number }> {
+    return this.spanning(() => this.restoreInSlices(name, options), options.mutationOwner);
   }
 
-  private async restoreInSlices(name: string, options: { subtree?: string }): Promise<{ restored: number }> {
-    const { id, job, startGen } = this.restoreJob(name, options);
+  private async restoreInSlices(name: string, options: { subtree?: string; mutationOwner?: string }): Promise<{ restored: number }> {
+    const owner = options.mutationOwner;
+    const { id, job, startGen } = this.withMutationOwner(owner, () => this.restoreJob(name, options));
     let restored = 0;
     for (;;) {
-      const slice = this.runRestore(id, job, startGen, JOB_SLICE_PAGES);
+      const slice = this.withMutationOwner(owner, () => this.runRestore(id, job, startGen, JOB_SLICE_PAGES));
       restored += slice.restored;
       if (slice.done) return { restored };
       await yieldToStorage();

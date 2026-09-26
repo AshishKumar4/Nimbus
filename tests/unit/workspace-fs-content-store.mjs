@@ -150,6 +150,32 @@ assert.equal(kernel.readFileString('home/user/app/src/a.txt'), 'one');
   assert.equal(store.at('late-lease').exists('home/user/unrelated'), false, 'unowned work was held until the pin');
 }
 
+// FormalModelsLane's two proved deadlock shapes (CS-008 hypothesis WF), made
+// impossible by construction: a lease holder that awaits a copy or a
+// restore passes its owner, and that work is never held.
+{
+  kernel.mkdir('home/user/leased/src', { recursive: true });
+  kernel.writeFile('home/user/leased/src/f', 'copied');
+  kernel.writeFile('home/user/leased/r', 'before');
+  store.snapshot('leased-base');
+  kernel.writeFile('home/user/leased/r', 'after');
+  const within = (promise, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`deadlock: ${what}`)), 3000))]);
+  const lease = store.acquireExclusiveMutation('home/user/leased');
+  const holder = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await kernel.copyTreeAsync('home/user/leased/src', 'home/user/leased/dst', { mutationOwner: lease.owner });
+    await store.restoreAsync('leased-base', { subtree: 'home/user/leased/r', mutationOwner: lease.owner });
+    store.releaseExclusiveMutation(lease.owner);
+  })();
+  const pinned = store.snapshot('leased-pin', { quiesce: true });
+  await within(Promise.all([holder, pinned]), 'a lease holder awaiting its copy and restore');
+  const view = store.at('leased-pin');
+  assert.equal(view.readFileString('home/user/leased/dst/f'), 'copied');
+  assert.equal(view.readFileString('home/user/leased/r'), 'before', 'the pin waited for the holder');
+  // An owner that is not live is refused, not trusted to bypass the gate.
+  await assert.rejects(() => store.restoreAsync('leased-base', { subtree: 'home/user/leased/r', mutationOwner: lease.owner }), { code: 'ESTALE' });
+}
+
 store.dropSnapshot('first');
 assert.equal(store.snapshots().some((s) => s.name === 'first'), false);
 

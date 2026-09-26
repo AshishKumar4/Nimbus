@@ -1520,8 +1520,9 @@ export class SqliteVFS {
             copyFile: (src, dest) => this.copyFile(src, dest, bound),
             copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
             copyTreeAsync: (src, dest, options) => {
-                const job = this.planCopyTree(src, dest, bound, options);
-                return this.spanning(() => this.copyTreeInSlices(job));
+                const owner = options?.mutationOwner;
+                const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
+                return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
             writeStream: (stream, options) => this.writeStream(stream, options, bound),
@@ -4005,12 +4006,13 @@ export class SqliteVFS {
         };
         return job;
     }
-    async copyTreeInSlices(job) {
-        let slice = this.runCopyTree(job, null, JOB_SLICE_PAGES);
+    async copyTreeInSlices(job, owner) {
+        let slice = this.withMutationOwner(owner, () => this.runCopyTree(job, null, JOB_SLICE_PAGES));
         let copied = slice.copied;
         while (!slice.done) {
             await yieldToStorage();
-            slice = this.runCopyTree(job, slice.id, JOB_SLICE_PAGES);
+            const id = slice.id;
+            slice = this.withMutationOwner(owner, () => this.runCopyTree(job, id, JOB_SLICE_PAGES));
             copied += slice.copied;
         }
         return copied;
@@ -4514,15 +4516,21 @@ export class SqliteVFS {
         const { id, job, startGen } = this.restoreJob(name, options);
         return { restored: this.runRestore(id, job, startGen).restored };
     }
-    /** restore in slices with a yield between, for a restore of any size in workerd. */
+    /**
+     * restore in slices with a yield between, for a restore of any size in
+     * workerd. `mutationOwner`: the live exclusive lease it runs under (its
+     * holder awaits it), so it restores inside the lease and a quiescing
+     * snapshot never holds it.
+     */
     restoreAsync(name, options = {}) {
-        return this.spanning(() => this.restoreInSlices(name, options));
+        return this.spanning(() => this.restoreInSlices(name, options), options.mutationOwner);
     }
     async restoreInSlices(name, options) {
-        const { id, job, startGen } = this.restoreJob(name, options);
+        const owner = options.mutationOwner;
+        const { id, job, startGen } = this.withMutationOwner(owner, () => this.restoreJob(name, options));
         let restored = 0;
         for (;;) {
-            const slice = this.runRestore(id, job, startGen, JOB_SLICE_PAGES);
+            const slice = this.withMutationOwner(owner, () => this.runRestore(id, job, startGen, JOB_SLICE_PAGES));
             restored += slice.restored;
             if (slice.done)
                 return { restored };
