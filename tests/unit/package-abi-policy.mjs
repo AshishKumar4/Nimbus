@@ -30,6 +30,7 @@ import {
 } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { registryEntryFromResolved } from '../../packages/worker/src/npm/resolver.ts';
+import { parseRegistryRequest } from '../../packages/worker/src/npm/resolve-one-facet.ts';
 
 // ── 1. Preamble parity: extract the injected policy + functions ────────
 
@@ -95,14 +96,61 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
   assert.equal(lookupReject(swap.from), undefined, `${swap.from} owns one role`);
 }
 
-// applySwaps rewrites and is idempotent.
+// applySwaps rewrites a swap into an alias RANGE under the declared KEY —
+// `esbuild@npm:esbuild-wasm@^0.20.0` — and is idempotent. The key is what
+// names the install directory, so renaming it is what left
+// `require('esbuild')` unresolvable after `npm install esbuild`.
 {
   const { specs, swaps } = applySwaps({ esbuild: '^0.20.0', react: '^18.0.0' });
-  assert.deepEqual(specs, { 'esbuild-wasm': '^0.20.0', react: '^18.0.0' });
+  assert.deepEqual(specs, { esbuild: 'npm:esbuild-wasm@^0.20.0', react: '^18.0.0' });
   assert.equal(swaps.length, 1);
   const again = applySwaps(specs);
   assert.deepEqual(again.specs, specs);
   assert.equal(again.swaps.length, 0);
+}
+
+// Every swap entry takes the alias form; every key the caller declared
+// survives. A sibling spec naming the swap TARGET directly is a distinct
+// key and must not be overwritten by the swap (the old key rename did).
+{
+  const declared = {};
+  for (const swap of PACKAGE_ABI_POLICY.swaps) declared[swap.from] = '^1.0.0';
+  for (const swap of PACKAGE_ABI_POLICY.swaps) declared[swap.to] = '^2.0.0';
+  const { specs, swaps } = applySwaps(declared);
+  assert.equal(swaps.length, PACKAGE_ABI_POLICY.swaps.length);
+  assert.deepEqual(Object.keys(specs).sort(), Object.keys(declared).sort(), 'no declared key is lost');
+  for (const swap of PACKAGE_ABI_POLICY.swaps) {
+    assert.equal(specs[swap.from], `npm:${swap.to}@^1.0.0`, `${swap.from} aliases its target`);
+    assert.equal(specs[swap.to], '^2.0.0', `${swap.to} keeps its own spec`);
+  }
+}
+
+// An explicit alias the user typed is authoritative; a bare name with no
+// range aliases `latest`.
+{
+  const { specs, swaps } = applySwaps({ esbuild: 'npm:some-other@0.19.0', 'esbuild-wasm': '' });
+  assert.deepEqual(specs, { esbuild: 'npm:some-other@0.19.0', 'esbuild-wasm': '' });
+  assert.deepEqual(swaps, []);
+  const bare = applySwaps({ esbuild: '' });
+  assert.deepEqual(bare.specs, { esbuild: 'npm:esbuild-wasm@latest' });
+  assert.deepEqual(bare.swaps.map((s) => s.from), ['esbuild']);
+}
+
+// The alias range applySwaps writes is the one the resolver facet's own
+// parser reads back: the target as registry name, the user's range as the
+// range, the declared key as the install name.
+{
+  const { specs } = applySwaps({ esbuild: '^0.20.0' });
+  assert.deepEqual(parseRegistryRequest('esbuild', specs.esbuild), {
+    installName: 'esbuild', registryName: 'esbuild-wasm', range: '^0.20.0', alias: true,
+  });
+}
+
+// Staged artifacts are not swaps: they keep their own name and range.
+for (const staged of PACKAGE_ABI_POLICY.stagedArtifacts) {
+  const { specs, swaps } = applySwaps({ [staged.from]: '^1.0.0' });
+  assert.deepEqual(specs, { [staged.from]: '^1.0.0' }, `${staged.from} is not rewritten`);
+  assert.equal(swaps.length, 0);
 }
 
 // findRejects: every table entry is 'fail' now, so 'top' and

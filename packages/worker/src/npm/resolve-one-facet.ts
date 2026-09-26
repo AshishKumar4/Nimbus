@@ -337,18 +337,29 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   };
 
   // 1. Registry policy.
+  //
+  // A swap is an npm alias the policy declares for the package: the
+  // packument comes from the swap target, the package installs under the
+  // requested name (`request.installName`) — exactly the shape an explicit
+  // `name@npm:target@range` spec already has. Policy applies to the
+  // REGISTRY identity, placement to the declared name: a top-level swap the
+  // supervisor already rewrote (applySwaps, which also announced it)
+  // arrives naming the WASM target and is not swapped again, while a user's
+  // explicit alias to the native package (`build@npm:esbuild`) still needs
+  // its target swapped — and keeps its own install name.
   let effName = request.registryName;
   // @ts-ignore — preamble.
-  const __swap = SHOULD_SWAP(spec.name);
+  const __swap = SHOULD_SWAP(request.registryName);
   if (__swap) {
     messages.push(`[npm] \x1b[33m[swap]\x1b[0m ${__swap.from} → ${__swap.to}`);
     events.push({ type: 'swap', from: __swap.from, to: __swap.to, ctx: 'transitive' });
     effName = __swap.to;
   } else {
     // @ts-ignore — preamble.
-    const __fail = SHOULD_REJECT_FAIL(spec.name);
+    const __fail = SHOULD_REJECT_FAIL(request.registryName);
     // A listed package resolves and installs — npm parity; the
-    // advisory names the reason it cannot run here.
+    // advisory names the reason it cannot run here. An alias of a listed
+    // package (`img@npm:sharp`) is that package.
     if (__fail) emitAdvisory(__fail);
   }
 

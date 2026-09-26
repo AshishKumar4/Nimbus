@@ -166,15 +166,40 @@ export function resolvePackageEntry(pkg, subpath = '.', conditions = DEFAULT_ESM
     // 3. Non-root subpath without exports — caller probes raw subpath
     return subpath;
 }
+/**
+ * Node's LOAD_PACKAGE_SELF: from inside a package, a bare specifier whose
+ * package name is the enclosing package's own `name` resolves through that
+ * package's `exports` map — and only then. A package without `exports` does
+ * not self-reference (Node falls through to node_modules), and the scope is
+ * the NEAREST enclosing package.json: the caller finds it by walking up
+ * from the requiring file to the first package.json, and never past a
+ * nearer package of a different name to a matching ancestor.
+ *
+ * Returns the exports subpath to resolve (`'.'` for the bare name,
+ * `'./sub'` for `<name>/sub`), or null when the rule does not apply. The
+ * caller resolves that subpath against `pkg.exports` with its conditions.
+ */
+export function packageSelfReferenceSubpath(pkg, specifier) {
+    if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0)
+        return null;
+    if (pkg.exports === undefined || pkg.exports === null)
+        return null;
+    if (specifier === pkg.name)
+        return '.';
+    if (!specifier.startsWith(`${pkg.name}/`))
+        return null;
+    return `.${specifier.slice(pkg.name.length)}`;
+}
 // ─── JS-source emission for embedding into facet preambles ───────────────
 /**
  * Returns the resolver source as plain JavaScript (no TypeScript syntax),
  * suitable for embedding into a generated worker preamble or shim string.
  *
- * The emitted source declares three top-level functions in scope:
+ * The emitted source declares four top-level functions in scope:
  *   - resolveExports(exports, subpath, conditions)
  *   - resolveConditionValue(target, conditions)        (helper)
  *   - resolvePackageEntry(pkg, subpath, conditions)
+ *   - packageSelfReferenceSubpath(pkg, specifier)
  *
  * It also declares two arrays:
  *   - DEFAULT_ESM_CONDITIONS
@@ -278,6 +303,14 @@ function resolvePackageEntry(pkg, subpath, conditions) {
     return null;
   }
   return subpath;
+}
+
+function packageSelfReferenceSubpath(pkg, specifier) {
+  if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
+  if (pkg.exports === undefined || pkg.exports === null) return null;
+  if (specifier === pkg.name) return '.';
+  if (!specifier.startsWith(pkg.name + '/')) return null;
+  return '.' + specifier.slice(pkg.name.length);
 }
 // ── end exports-resolver.js ────────────────────────────────────────────
 `;

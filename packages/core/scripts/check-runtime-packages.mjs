@@ -26,7 +26,7 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -150,6 +150,10 @@ async function main() {
   const registry = npmRegistry();
   const root = mkdtempSync(join(tmpdir(), 'nimbus-runtime-release-'));
   let failed = 0;
+  // A check that throws is a failure too: say where its packages were kept, as a FAIL does.
+  process.once('exit', (code) => {
+    if (code && existsSync(root)) console.error(`Built packages kept under ${root}.`);
+  });
   for (const { runtime, version, name, npmVersion } of npmRuntimeSpecs()) {
     const dir = join(root, name.split('/').pop());
     const args = ['scripts/bundle-runtime.mjs', runtime, version, '--npm-package', dir];
@@ -177,7 +181,6 @@ async function main() {
     return;
   }
   console.error(`\n${failed} runtime package(s) not released; core must not publish ahead of them.`);
-  console.error(`Built packages kept under ${root}.`);
   process.exitCode = 1;
 }
 

@@ -161,7 +161,8 @@ try {
   console.log(`  ok  npm pack → ${tarballs.map((t) => t.split('/').pop()).join(', ')}`);
 
   // ── 3. A clean directory, outside this repo, that installs them ──────────
-  const consumer = mkdtempSync(join(tmpdir(), 'nimbus-embedder-'));
+  // Outside the repo, and below `work`, so the finally removes it too.
+  const consumer = mkdtempSync(join(work, 'nimbus-embedder-'));
   writeFileSync(join(consumer, 'package.json'), `${JSON.stringify({
     name: 'nimbus-embedder-acceptance', version: '0.0.0', private: true, type: 'module',
   }, null, 2)}\n`);

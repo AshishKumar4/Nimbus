@@ -11,7 +11,8 @@
 // 503 the page re-asks on its own refresh.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -39,6 +40,8 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 // routes.ts transitively imports `cloudflare:workers`; bundle it with a stub,
 // the same as the other route tests.
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-durable-port-test-'));
+// Removed however the test ends: its assertions run at top level.
+process.on('exit', () => rmSync(outputDir, { recursive: true, force: true }));
 const build = await Bun.build({
   entrypoints: ['./packages/worker/src/session/port-capability.ts', './packages/worker/src/facets/compose.ts'],
   outdir: outputDir,
@@ -401,4 +404,3 @@ function routeHost(fm, portRegistry) {
 }
 
 console.log('ok - durable port recovery (silent port re-drives and routes, absent is 502, failed is 503 self-refreshing, reserved ports are durable across kinds)');
-await rm(outputDir, { recursive: true, force: true });

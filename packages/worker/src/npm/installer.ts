@@ -1389,6 +1389,13 @@ export class NpmInstaller {
    * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
    * to a top-level spec map. Emits `[swap]` notices via onProgress.
    *
+   * A swap rewrites the spec's RANGE to an npm alias of the swap target
+   * (`esbuild` → `npm:esbuild-wasm@<range>`), never its key: the key names
+   * the install directory, so `resolved`, node_modules, the bin links, the
+   * lockfile and package.json all keep the name the user declared. The
+   * resolver facet treats the alias as authoritative and does not announce
+   * the swap a second time.
+   *
    * G2: rejects are advisories — a listed package stays in the spec map
    * and installs like any other (npm parity: it cannot run here, but
    * install is the wrong place to say so). Each gets one `[npm] note:`
@@ -1516,7 +1523,8 @@ export class NpmInstaller {
     const nested = new Map<string, ResolvedPackage>();
     const unresolved = new Map<string, string>();
     const rejected: RejectedPackage[] = [];
-    const swapSpecs: Record<string, string> = {};
+    // Swapped lock entries by placement: each resolves its swap target at its own locked version.
+    const swapPlacements: { placement: string; folderName: string; spec: string }[] = [];
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (key === '') continue;
       if (production && entry.dev === true) continue;
@@ -1541,8 +1549,11 @@ export class NpmInstaller {
         rejected.push({ name, reason: platformReject.reason, required: entry.optional !== true });
         continue;
       }
+      // Policy follows the registry identity (`name`), placement the folder the lock
+      // names: an aliased entry (`node_modules/build`, name `esbuild`) resolves as
+      // the alias `build@npm:esbuild@<locked>`, so the swap target lands in build.
       if (lookupSwap(name)) {
-        if (!(name in swapSpecs)) swapSpecs[name] = version;
+        swapPlacements.push({ placement, folderName, spec: folderName === name ? version : `npm:${name}@${version}` });
         continue;
       }
       if (entry.link === true || typeof entry.resolved !== 'string' || !version) {
@@ -1572,10 +1583,24 @@ export class NpmInstaller {
       (placement.includes('/node_modules/') ? nested : resolved).set(placement, pkg);
     }
 
-    if (Object.keys(swapSpecs).length > 0) {
-      const swapped = await this.resolveTreeViaFanout(swapSpecs, log, { registry });
-      for (const [placement, pkg] of swapped.resolved) if (!resolved.has(placement)) resolved.set(placement, pkg);
-      for (const [placement, pkg] of swapped.nested) if (!nested.has(placement)) nested.set(placement, pkg);
+    // Root placements resolve together, as top-level specs. A nested one is its own
+    // resolution, rebased under its placement: its package there, anything it
+    // brings below it, unless the lock already placed that path.
+    const rootSwaps = swapPlacements.filter(({ placement }) => !placement.includes('/node_modules/'));
+    const batches: { at: string | null; specs: Record<string, string> }[] = [];
+    if (rootSwaps.length > 0) batches.push({ at: null, specs: Object.fromEntries(rootSwaps.map(({ folderName, spec }) => [folderName, spec])) });
+    for (const { placement, folderName, spec } of swapPlacements) {
+      if (placement.includes('/node_modules/')) batches.push({ at: placement, specs: { [folderName]: spec } });
+    }
+    for (const { at, specs } of batches) {
+      const swapped = await this.resolveTreeViaFanout(specs, log, { registry });
+      const [folder] = Object.keys(specs);
+      const rebase = (path: string) => (at === null ? path : path === folder ? at : `${at}/node_modules/${path}`);
+      for (const [path, pkg] of [...swapped.resolved, ...swapped.nested]) {
+        const target = rebase(path);
+        const into = target.includes('/node_modules/') ? nested : resolved;
+        if (!into.has(target)) into.set(target, pkg);
+      }
       for (const [name, reason] of swapped.unresolved) unresolved.set(name, reason);
       rejected.push(...swapped.rejected);
     }
@@ -1731,21 +1756,12 @@ export class NpmInstaller {
       if (!pkgJson.dependencies) pkgJson.dependencies = {};
 
       for (const spec of explicitPackages) {
-        // Find the resolved package matching this spec
+        // `resolved` is keyed by the name the user typed — a swapped
+        // package resolves as an alias under that name (applySwaps), so
+        // `esbuild` is found as `esbuild` and package.json records the
+        // user's key, never the swap target.
         const { name } = parseExplicitPackageSpec(spec);
-
-        // W6: if a swap fired, the user typed `name` but `resolved` is
-        // keyed by the swap target (e.g. user typed 'esbuild', resolved
-        // has 'esbuild-wasm'). Look up via lookupSwap to bridge the
-        // gap; write the user's original key into package.json so the
-        // file remains the user's source-of-truth and isn't silently
-        // mutated to the swap target (which would break cross-environment
-        // pushes).
-        let pkg = resolved.get(name);
-        if (!pkg) {
-          const swap = lookupSwap(name);
-          if (swap) pkg = resolved.get(swap.to);
-        }
+        const pkg = resolved.get(name);
         if (pkg) {
           pkgJson.dependencies[name] = '^' + pkg.version;
         }

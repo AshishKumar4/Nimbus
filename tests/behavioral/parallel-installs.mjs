@@ -32,12 +32,20 @@ const installs = await Promise.allSettled(
 let success = 0;
 let capError = 0;
 let other = 0;
+// What each install that did not finish said, so a failure names its cause.
+const failures = [];
 for (const res of installs) {
-  if (res.status === 'rejected') { other++; continue; }
-  const { output } = res.value;
+  if (res.status === 'rejected') {
+    other++;
+    failures.push(`rejected: ${String(res.reason?.stack ?? res.reason).split('\n').slice(0, 3).join(' | ')}`);
+    continue;
+  }
+  const { i, sid, output } = res.value;
   if (/Too many concurrent dynamic workers/i.test(output)) capError++;
   if (/added \d+ packages|installed \d+ packages|Done!\s+\d+ packages/i.test(output)) success++;
+  else failures.push(`#${i} ${sid}: ${JSON.stringify(output.slice(-600))}`);
 }
+for (const failure of failures) console.log(`      ${failure}`);
 
 a.check(`${N}/${N} installs completed (added/installed marker)`,
   success === N, `success=${success} capError=${capError} other=${other}`);

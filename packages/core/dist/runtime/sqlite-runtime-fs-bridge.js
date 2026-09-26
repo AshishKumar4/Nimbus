@@ -419,6 +419,9 @@ export class SqliteRuntimeFsBridge {
             return;
         }
         const p = located.path;
+        // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
+        if (!this.vfs.exists(p) && !this.legacySymlinks.isSymlink(this.legacyKey(p)))
+            throw fsError('ENOENT', 'rmdir', path);
         if (!this.vfs.isDirectory(p))
             throw fsError('ENOTDIR', 'rmdir', path);
         this.vfs.rmdir(p);

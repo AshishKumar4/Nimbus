@@ -49,14 +49,17 @@ export declare function createPortCapability(): string;
 /**
  * The header a forwarded request carries its process's ACQUIRE in. An
  * `x-nimbus-*` name, so one a client sent is stripped before the hop
- * (`sanitizeUntrustedHeaders`), and the process removes it before its handler
- * sees the request.
+ * (`sanitizeUntrustedHeaders`). It is attached only for a process bound with
+ * `deliversAcquire` (a node-shims resident), which removes it before its
+ * handler sees the request; any other target would hand it to user code.
  */
 export declare const DELIVERED_ACQUIRE_HEADER = "X-Nimbus-Vfs-Acquired";
 export declare class PortRegistry {
     private readonly deliveredAcquire;
     private ports;
     private facetStubsByPid;
+    /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
+    private acquireDeliveredPids;
     private portWaitersByPid;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
@@ -67,8 +70,14 @@ export declare class PortRegistry {
      *   request is forwarded bare; either way the process then asks.
      */
     constructor(deliveredAcquire?: ((pid: number) => Promise<unknown>) | null);
-    /** Remember the available facet capabilities for a running process. */
-    bindFacetStub(pid: number, facetStub: unknown): void;
+    /**
+     * Remember the available facet capabilities for a running process.
+     * `deliversAcquire`: the target strips DELIVERED_ACQUIRE_HEADER before user
+     * code runs, so requests routed to it carry one.
+     */
+    bindFacetStub(pid: number, facetStub: unknown, { deliversAcquire }?: {
+        deliversAcquire?: boolean;
+    }): void;
     /**
      * Register a process as listening on a port. The route target comes from
      * the pid's binding — one target per process, owned by whoever started it —

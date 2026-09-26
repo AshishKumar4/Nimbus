@@ -65,6 +65,12 @@ async function main() {
         'node:*',
         'cloudflare:workers',
       ],
+      // The bundle ships as a string inside the supervisor Worker, which has a
+      // size budget (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs).
+      // Whitespace and syntax minification take ~200 KB off it; identifiers
+      // are kept, so stack traces from the facet still name cf-git's functions.
+      minifyWhitespace: true,
+      minifySyntax: true,
       write: false,
       logLevel: 'warning',
     });

@@ -91,6 +91,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, basename } from 'node:path';
 
 import { RUN_ID, cleanupRunProfiles, reapRunBrowsers } from './_probe-browser.mjs';
+import { sessionOutcomes } from './_ledger.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -483,28 +484,12 @@ if (fail > 0) {
   }
 }
 
-/** Per minted sid: the probe that minted it, and the DELETE (if any) that got a 2xx. */
-function readLedger() {
-  let text = '';
-  try { text = readFileSync(LEDGER_PATH, 'utf8'); } catch { /* no probe minted a session */ }
-  const sessions = new Map();
-  for (const line of text.split('\n')) {
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    const s = sessions.get(e.sid) ?? { probe: e.probe, deletedBy: null, last: 'none' };
-    if (e.event !== 'mint') {
-      s.last = e.status;
-      if (typeof e.status === 'number' && e.status >= 200 && e.status < 300) s.deletedBy = e.event;
-    }
-    sessions.set(e.sid, s);
-  }
-  return sessions;
-}
-
-const sessions = readLedger();
-const leaks = [...sessions].filter(([, s]) => !s.deletedBy);
-const byExitHook = [...sessions.values()].filter((s) => s.deletedBy === 'exit-delete').length;
-console.log(`──── sessions: ${sessions.size} minted, ${sessions.size - leaks.length} deleted (${byExitHook} by the driver's exit hook)`);
+let ledgerText = '';
+try { ledgerText = readFileSync(LEDGER_PATH, 'utf8'); } catch { /* no probe minted a session */ }
+const { deleted, byExitHook, leaks, ttlReaped } = sessionOutcomes(ledgerText);
+console.log(`──── sessions: ${deleted + leaks.length + ttlReaped.length} minted, ${deleted} deleted (${byExitHook} by the driver's exit hook)`
+  + (ttlReaped.length ? `, ${ttlReaped.length} anonymous left to the demo's TTL` : ''));
+for (const [sid, s] of ttlReaped) console.log(`  ttl-reaped: ${s.probe}: ${sid} (DELETE: ${s.last})`);
 if (leaks.length > 0) {
   console.log(`SESSION LEAKS: ${leaks.length} minted session${leaks.length === 1 ? '' : 's'} never got a 2xx DELETE (ledger: ${LEDGER_PATH})`);
   for (const [sid, s] of leaks) console.log(`  - ${s.probe}: ${sid} (last DELETE: ${s.last})`);

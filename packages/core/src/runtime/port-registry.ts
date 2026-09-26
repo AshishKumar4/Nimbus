@@ -129,14 +129,17 @@ export function createPortCapability(): string {
 /**
  * The header a forwarded request carries its process's ACQUIRE in. An
  * `x-nimbus-*` name, so one a client sent is stripped before the hop
- * (`sanitizeUntrustedHeaders`), and the process removes it before its handler
- * sees the request.
+ * (`sanitizeUntrustedHeaders`). It is attached only for a process bound with
+ * `deliversAcquire` (a node-shims resident), which removes it before its
+ * handler sees the request; any other target would hand it to user code.
  */
 export const DELIVERED_ACQUIRE_HEADER = 'X-Nimbus-Vfs-Acquired';
 
 export class PortRegistry {
   private ports = new Map<number, PortEntry>();
   private facetStubsByPid = new Map<number, RouteableFacetTarget>();
+  /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
+  private acquireDeliveredPids = new Set<number>();
   private portWaitersByPid = new Map<number, Set<() => void>>();
 
   /**
@@ -151,11 +154,17 @@ export class PortRegistry {
     private readonly deliveredAcquire: ((pid: number) => Promise<unknown>) | null = null,
   ) {}
 
-  /** Remember the available facet capabilities for a running process. */
-  bindFacetStub(pid: number, facetStub: unknown): void {
+  /**
+   * Remember the available facet capabilities for a running process.
+   * `deliversAcquire`: the target strips DELIVERED_ACQUIRE_HEADER before user
+   * code runs, so requests routed to it carry one.
+   */
+  bindFacetStub(pid: number, facetStub: unknown, { deliversAcquire = false }: { deliversAcquire?: boolean } = {}): void {
     const target = routeableFacetTarget(facetStub);
     if (!target) return;
     this.facetStubsByPid.set(pid, target);
+    if (deliversAcquire) this.acquireDeliveredPids.add(pid);
+    else this.acquireDeliveredPids.delete(pid);
     this.attachFacetStubByPid(pid, target);
     this.notifyPortWaiters(pid);
   }
@@ -193,6 +202,7 @@ export class PortRegistry {
       }
     }
     this.facetStubsByPid.delete(pid);
+    this.acquireDeliveredPids.delete(pid);
     return count;
   }
 
@@ -359,7 +369,9 @@ export class PortRegistry {
       // coherence answer the process applies before its handler runs (see
       // the constructor). Set after the strip above, so a client cannot
       // supply one.
-      const acquired = this.deliveredAcquire ? await this.deliveredAcquire(entry.pid) : undefined;
+      const acquired = this.deliveredAcquire && this.acquireDeliveredPids.has(entry.pid)
+        ? await this.deliveredAcquire(entry.pid)
+        : undefined;
       if (acquired !== undefined) headers.set(DELIVERED_ACQUIRE_HEADER, JSON.stringify(acquired));
       // A Response cannot carry an encoded body across this hop, so the
       // target is asked for the one coding that survives it. See

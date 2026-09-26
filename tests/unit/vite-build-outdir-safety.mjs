@@ -16,7 +16,7 @@
 // faked: bundling correctness is esbuild-vite-assets.mjs's job; this
 // file exists to pin the filesystem safety around it.
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,7 +28,10 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 // vite-command.ts transitively imports `cloudflare:workers` (ViteDevServer
 // → real-vite-hmr); bundle it with the same stub the route tests use.
+// The bundle is needed only until it is imported; the finally removes it even when the build fails.
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-vite-outdir-test-'));
+let createViteCommand;
+try {
 const bundle = await Bun.build({
   entrypoints: ['./packages/worker/src/session/vite-command.ts'],
   outdir: outputDir,
@@ -51,7 +54,10 @@ const bundle = await Bun.build({
 assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
 const entry = bundle.outputs.find((output) => output.path.endsWith('/vite-command.js'));
 assert.ok(entry, 'the vite-command bundle was emitted');
-const { createViteCommand } = await import(pathToFileURL(entry.path).href);
+({ createViteCommand } = await import(pathToFileURL(entry.path).href));
+} finally {
+  await rm(outputDir, { recursive: true, force: true });
+}
 
 const CWD = '/home/user';
 
