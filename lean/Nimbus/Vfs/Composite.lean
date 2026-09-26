@@ -18,6 +18,8 @@
     of it answers null for that principal, not only the longest one. A live mount
     nested under an absent one is unreachable through it.
   - Absent: `stat` → null; every other op → ENXIO. Never an empty directory.
+  - `stat` answers null for ENOENT anywhere in its walk (VFS.stat: null = absent);
+    other walk errors stand.
   - Synthesized directories: a live, reachable mount point and each ancestor of one
     `stat`s as a directory and shows in its parent's `readdir`. A name whose path is
     absent for the principal is never listed, even if a backend holds it.
@@ -466,7 +468,7 @@ def execResolved (S : St) (P : Principal) (op : Op) (p q : Path) : Out × St :=
 def exec (S : St) (P : Principal) (op : Op) : Out × St :=
   match walkRaw S P op.follow op.raw op.lenient with
   | none => (.err "ELOOP", S)
-  | some (.error e) => (.err e, S)
+  | some (.error e) => (match op with | .stat _ => if e = "ENOENT" then .null else .err e | _ => .err e, S)
   | some (.ok p) =>
     match op.raw2 with
     | none => execResolved S P op p []
