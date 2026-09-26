@@ -304,6 +304,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const stat = located.mount.stat(located.path);
       if (stat === null) throw fsError('ENOENT', 'access', path);
       if (!modeAllows(stat, mode, this.vfs.cred)) throw fsError('EACCES', 'access', path);
+    } else if (located.path === '') {
+      // `/` has no row: its mode is ROOT_DIRECTORY_MODE, owned by root.
+      if (!modeAllows(this.rootStat(), mode, this.vfs.cred)) throw fsError('EACCES', 'access', path);
     } else this.vfs.access(located.path, mode);
   }
 

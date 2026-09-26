@@ -11,20 +11,10 @@
  */
 import { ROOT_DIRECTORY_MODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
-import { VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
+import { toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;
-}
-
-function toVfsError(error: unknown, path: string): unknown {
-  if (error instanceof VfsError) return error;
-  const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && code in VFS_ERRNO) {
-    const message = error instanceof Error ? error.message.replace(new RegExp(`^${code}: `), '') : String(error);
-    return new VfsError(code as VfsErrorCode, message, path, { cause: error });
-  }
-  return error;
 }
 
 /**

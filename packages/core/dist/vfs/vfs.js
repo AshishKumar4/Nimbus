@@ -13,6 +13,7 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
+import { VfsError } from './vfs-error.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /** Whether anything is at `path`. */
@@ -26,4 +27,23 @@ export async function readText(vfs, path) {
 /** Write `text` as UTF-8. */
 export async function writeText(vfs, path, text, options) {
     await vfs.writeFile(path, encoder.encode(text), options);
+}
+/** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
+export async function statOrThrow(vfs, path, options) {
+    const stat = await vfs.stat(path, options);
+    if (stat === null)
+        throw new VfsError('ENOENT', 'no such file or directory', path);
+    return stat;
+}
+/** Whether `path` is a directory (links followed). */
+export async function isDirectory(vfs, path) {
+    return (await vfs.stat(path))?.type === 'directory';
+}
+/** Whether `path` is a regular file (links followed). */
+export async function isFile(vfs, path) {
+    return (await vfs.stat(path))?.type === 'file';
+}
+/** Whether `path` itself is a symbolic link. */
+export async function isSymlink(vfs, path) {
+    return (await vfs.stat(path, { follow: false }))?.type === 'symlink';
 }

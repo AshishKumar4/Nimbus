@@ -16,6 +16,8 @@
 
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 
+import { VfsError } from './vfs-error.js';
+
 export type Awaitable<T> = T | Promise<T>;
 
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
@@ -40,6 +42,8 @@ export interface VfsStat {
   ctimeMs?: number;
   ino?: number;
   nlink?: number;
+  /** The filesystem the entry lives on (st_dev): distinct per mount. */
+  dev?: number;
 }
 
 /** A directory entry; `stat` when the backend has it for free (it saves a call per child). */
@@ -203,10 +207,32 @@ export async function writeText(vfs: VFS, path: string, text: string, options?: 
   await vfs.writeFile(path, encoder.encode(text), options);
 }
 
+/** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
+export async function statOrThrow(vfs: VFS, path: string, options?: { follow?: boolean }): Promise<VfsStat> {
+  const stat = await vfs.stat(path, options);
+  if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+  return stat;
+}
+
+/** Whether `path` is a directory (links followed). */
+export async function isDirectory(vfs: VFS, path: string): Promise<boolean> {
+  return (await vfs.stat(path))?.type === 'directory';
+}
+
+/** Whether `path` is a regular file (links followed). */
+export async function isFile(vfs: VFS, path: string): Promise<boolean> {
+  return (await vfs.stat(path))?.type === 'file';
+}
+
+/** Whether `path` itself is a symbolic link. */
+export async function isSymlink(vfs: VFS, path: string): Promise<boolean> {
+  return (await vfs.stat(path, { follow: false }))?.type === 'symlink';
+}
+
 /** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */
 export interface VfsRemoval {
   removed: string[];
   kept: string[];
   failures: VfsRemovalFailure[];
 }
-export interface VfsRemovalFailure { path: string; error: import('./vfs-error.js').VfsError }
+export interface VfsRemovalFailure { path: string; error: VfsError }

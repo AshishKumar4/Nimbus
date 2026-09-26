@@ -14,6 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import { VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
@@ -35,6 +36,8 @@ export interface VfsStat {
     ctimeMs?: number;
     ino?: number;
     nlink?: number;
+    /** The filesystem the entry lives on (st_dev): distinct per mount. */
+    dev?: number;
 }
 /** A directory entry; `stat` when the backend has it for free (it saves a call per child). */
 export interface VfsDirent {
@@ -204,6 +207,16 @@ export declare function readText(vfs: VFS, path: string): Promise<string>;
 export declare function writeText(vfs: VFS, path: string, text: string, options?: {
     mode?: number;
 }): Promise<void>;
+/** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
+export declare function statOrThrow(vfs: VFS, path: string, options?: {
+    follow?: boolean;
+}): Promise<VfsStat>;
+/** Whether `path` is a directory (links followed). */
+export declare function isDirectory(vfs: VFS, path: string): Promise<boolean>;
+/** Whether `path` is a regular file (links followed). */
+export declare function isFile(vfs: VFS, path: string): Promise<boolean>;
+/** Whether `path` itself is a symbolic link. */
+export declare function isSymlink(vfs: VFS, path: string): Promise<boolean>;
 /** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */
 export interface VfsRemoval {
     removed: string[];
@@ -212,6 +225,6 @@ export interface VfsRemoval {
 }
 export interface VfsRemovalFailure {
     path: string;
-    error: import('./vfs-error.js').VfsError;
+    error: VfsError;
 }
 //# sourceMappingURL=vfs.d.ts.map

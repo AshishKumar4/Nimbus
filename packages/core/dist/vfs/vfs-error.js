@@ -25,3 +25,18 @@ export class VfsError extends Error {
 export function isVfsError(error, code) {
     return error instanceof VfsError && (code === undefined || error.code === code);
 }
+/**
+ * An error from a layer that throws `{ code }` errors (the SQLite engine, a
+ * process bridge), as a VfsError on `path`; anything without a known code is
+ * returned as it is.
+ */
+export function toVfsError(error, path) {
+    if (error instanceof VfsError)
+        return error;
+    const code = error?.code;
+    if (typeof code === 'string' && code in VFS_ERRNO) {
+        const message = error instanceof Error ? error.message.replace(new RegExp(`^${code}: `), '') : String(error);
+        return new VfsError(code, message, path, { cause: error });
+    }
+    return error;
+}

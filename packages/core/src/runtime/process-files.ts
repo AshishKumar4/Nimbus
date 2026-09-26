@@ -22,6 +22,8 @@ import { CompositeVFS } from '../vfs/composite.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
+import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
   CRED_KERNEL,
@@ -213,13 +215,22 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
     let scope = this.processes.get(pid);
     if (!scope) { scope = createSqliteDescriptorScope(); this.processes.set(pid, scope); }
-    return this.view(scope, immutableCredential(cred), signal, pid);
+    return this.bridgeFor(scope, immutableCredential(cred), signal, pid);
   }
 
   openHost(cred: Readonly<VfsCred>, options: { signal?: AbortSignal } = {}): NimbusHostFilesystemLease {
     const scope = createSqliteDescriptorScope();
-    const fs = this.view(scope, immutableCredential(cred), options.signal);
+    const fs = this.bridgeFor(scope, immutableCredential(cred), options.signal);
     return { fs, dispose: async () => this.closeScope(scope) };
+  }
+
+  /**
+   * What a command sees: the namespace as `cred`, through this process's
+   * bridge, so every mutation passes the lease check (EBUSY on another
+   * owner's lease) and every path is routed as the process's own syscalls are.
+   */
+  view(binding: NimbusFilesystemBinding): ProcessView {
+    return new ProcessView(this.bind(binding));
   }
 
   /** Host work over a credentialed lease released when the work settles. */
@@ -278,8 +289,132 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     scope.abort.abort();
   }
 
-  private view(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
+  private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno);
     return new GuardedProcessBridge(target, scope, signal, pid);
   }
+}
+
+/** POSIX access(2) modes. */
+export const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
+
+/**
+ * A process's namespace as a `VFS` over its bound bridge, plus the process
+ * syscalls a `VFS` has no word for (access, realpath, append). Absent is
+ * null from `stat`; every failure is a `VfsError`.
+ */
+export class ProcessView implements VFS {
+  constructor(
+    /** The bridge itself: what a runtime hands a guest as its syscall surface. */
+    readonly process: RuntimeFsBridge,
+  ) {}
+
+  private async call<T>(path: string, run: () => T | Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      throw toVfsError(error, path);
+    }
+  }
+
+  async stat(path: string, options?: { follow?: boolean }): Promise<VfsStat | null> {
+    const stat = await this.call(path, () => this.process.stat(path, { followSymlinks: options?.follow !== false }));
+    return stat === null ? null : vfsStatOf(stat);
+  }
+  async readFile(path: string): Promise<Uint8Array> {
+    const bytes = await this.call(path, () => this.process.readFile(path));
+    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    return bytes;
+  }
+  async writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Promise<void> {
+    await this.call(path, () => this.process.writeFile(path, data));
+    if (options?.mode !== undefined) await this.chmod(path, options.mode);
+  }
+  async readdir(path: string): Promise<VfsDirent[]> {
+    const entries = await this.call(path, () => this.process.readdir(path));
+    return entries.map((entry) => ({ name: entry.name, type: entry.type }));
+  }
+  async mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void> {
+    await this.call(path, () => this.process.mkdir(path, options));
+  }
+  async unlink(path: string): Promise<void> { await this.call(path, () => this.process.unlink(path)); }
+  async rmdir(path: string): Promise<void> { await this.call(path, () => this.process.rmdir(path)); }
+  async rename(from: string, to: string): Promise<void> { await this.call(from, () => this.process.rename(from, to)); }
+  async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+    const bytes = await this.call(path, () => this.process.readRange(path, offset, length));
+    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    return bytes;
+  }
+  /** A ranged read that neither consults nor fills the session's content cache. */
+  async readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array> {
+    const bytes = await this.call(path, () => this.process.readRange(path, offset, length, { cached: false }));
+    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    return bytes;
+  }
+  async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
+    await this.call(path, () => this.process.writeRange(path, offset, bytes));
+  }
+  async truncate(path: string, size: number): Promise<void> { await this.call(path, () => this.process.truncate(path, size)); }
+  /**
+   * rm -r: what went, by the roots removed, what is still there, and why.
+   * The engine removes a tree in one step or refuses it whole, so its report
+   * is the operand or the refusal.
+   */
+  async removeRecursive(path: string): Promise<VfsRemoval> {
+    try {
+      await this.process.remove(path, { recursive: true });
+      return { removed: [path], kept: [], failures: [] };
+    } catch (error) {
+      const converted = toVfsError(error, path);
+      if (!(converted instanceof VfsError) || converted.code === 'ENOENT') throw converted;
+      const failure: VfsRemovalFailure = { path, error: converted };
+      return { removed: [], kept: [path], failures: [failure] };
+    }
+  }
+  async symlink(target: string, path: string): Promise<void> { await this.call(path, () => this.process.symlink(target, path)); }
+  async readlink(path: string): Promise<string> {
+    const target = await this.call(path, () => this.process.readlink(path));
+    if (target === null) throw new VfsError('EINVAL', 'not a symbolic link', path);
+    return target;
+  }
+  async chmod(path: string, mode: number): Promise<void> { await this.call(path, () => this.process.chmod(path, mode)); }
+  async chown(path: string, uid: number, gid: number): Promise<void> { await this.call(path, () => this.process.chown(path, uid, gid)); }
+  async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
+    await this.call(path, () => this.process.utimes(path, atimeMs, mtimeMs));
+  }
+  /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
+  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
+    return await this.call(from, async () => {
+      if (options?.recursive) return await this.process.copyTree(from, to, { preserve: options.preserve });
+      await this.process.copyFile(from, to);
+      return 1;
+    });
+  }
+  /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
+  async access(path: string, mode: number): Promise<void> { await this.call(path, () => this.process.access(path, mode)); }
+  async realpath(path: string): Promise<string> { return await this.call(path, () => this.process.realpath(path)); }
+  /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
+  async appendFile(path: string, data: Uint8Array): Promise<void> {
+    await this.call(path, async () => {
+      const handle = await this.process.open(path, { write: true, append: true, create: true });
+      try {
+        let offset = 0;
+        while (offset < data.length) {
+          const written = await this.process.write(handle.id, null, data.subarray(offset));
+          if (written <= 0 || written > data.length - offset) throw new VfsError('EIO', 'short append', path);
+          offset += written;
+        }
+      } finally {
+        await this.process.close(handle.id);
+      }
+    });
+  }
+}
+
+function vfsStatOf(stat: RuntimeVfsStat): VfsStat {
+  return {
+    type: stat.type, size: stat.size, mode: stat.mode, uid: stat.uid, gid: stat.gid,
+    mtimeMs: stat.mtime, atimeMs: stat.atime, ctimeMs: stat.ctime,
+    ino: stat.ino, nlink: stat.nlink, dev: stat.dev, revision: stat.revision,
+  };
 }
