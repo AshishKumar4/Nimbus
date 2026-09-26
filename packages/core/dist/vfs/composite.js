@@ -355,6 +355,16 @@ export class CompositeVFS {
     // component, and at the last for the operations POSIX follows), so a root
     // link into a mount reaches the mount. A link inside a mounted backend is
     // that backend's.
+    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
+    writesInPlace(path) {
+        const route = this.route(normalizePath(path));
+        try {
+            return typeof this.ops(route, true).writeRange === 'function';
+        }
+        catch {
+            return false;
+        }
+    }
     route(path) {
         for (let at = path;; at = parentOf(at)) {
             const mount = this.table.mounts.get(at);

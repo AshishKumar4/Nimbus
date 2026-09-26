@@ -36,8 +36,11 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly mountedIno;
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     readonly hydrator: Hydrator | null;
+    /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
+    private readonly bufferedWriteBytes;
     constructor(engine: SqliteVFS, options?: {
         hydration?: HydratorOptions;
+        bufferedWriteBytes?: number;
     });
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -81,6 +84,14 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
     releaseProcess(pid: number): Promise<void>;
+    /**
+     * The process died without closing its descriptors: nothing is flushed,
+     * and what that loses is reported, the descriptors whose buffered writes
+     * are gone. Later use of its descriptors is EBADF, as after a release.
+     */
+    killProcess(pid: number): {
+        lost: number[];
+    };
     activateAppendWriter(pid: number, writerId: string): Promise<void>;
     revokeAppendWriter(pid: number, writerId: string): Promise<void>;
     revokeAppendWriters(pid: number): Promise<void>;

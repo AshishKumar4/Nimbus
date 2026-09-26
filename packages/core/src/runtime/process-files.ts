@@ -229,8 +229,12 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
   readonly hydrator: Hydrator | null;
 
-  constructor(readonly engine: SqliteVFS, options: { hydration?: HydratorOptions } = {}) {
+  /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
+  private readonly bufferedWriteBytes: number | undefined;
+
+  constructor(readonly engine: SqliteVFS, options: { hydration?: HydratorOptions; bufferedWriteBytes?: number } = {}) {
     this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
+    this.bufferedWriteBytes = options.bufferedWriteBytes;
     this.namespace = engine.namespace;
     this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
     this.proc = standardProc();
@@ -328,6 +332,31 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.engine.revokeAppendWriters(pid);
   }
 
+  /**
+   * The process died without closing its descriptors: nothing is flushed,
+   * and what that loses is reported, the descriptors whose buffered writes
+   * are gone. Later use of its descriptors is EBADF, as after a release.
+   */
+  killProcess(pid: number): { lost: number[] } {
+    this.retired.add(pid);
+    const scope = this.processes.get(pid);
+    this.processes.delete(pid);
+    this.engine.revokeAppendWriters(pid);
+    if (!scope || scope.closed) return { lost: [] };
+    const lost: number[] = [];
+    for (const [id, opened] of scope.handles) {
+      if ((opened.node.pendingBytes?.() ?? 0) > 0) lost.push(id);
+      // Dropped unflushed; a description another process still holds stays open.
+      opened.refs--;
+    }
+    scope.handles.clear();
+    scope.closed = true;
+    scope.abort.abort();
+    for (const unsubscribe of scope.subscriptions) unsubscribe();
+    scope.subscriptions.clear();
+    return { lost };
+  }
+
   async activateAppendWriter(pid: number, writerId: string): Promise<void> {
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
     this.engine.activateAppendWriter(pid, writerId);
@@ -367,7 +396,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno, this.bufferedWriteBytes);
     return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
   }
 }

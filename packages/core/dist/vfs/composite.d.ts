@@ -160,6 +160,8 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): SyncVFS;
     private resynthesize;
+    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
+    writesInPlace(path: string): boolean;
     private route;
     private backend;
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */

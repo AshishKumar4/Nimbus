@@ -58,6 +58,15 @@ export interface VfsOpenDescription {
     chown(uid: number, gid: number): void;
     utimes(atime: number, mtime: number): void;
     close(): void;
+    /**
+     * A description whose backend cannot write in place buffers its writes
+     * (VFS-PF-001): an append goes at the end as it stands at the flush,
+     * `flush` applies what is pending, and `pendingBytes` is what a process
+     * killed now would lose. Absent: every write is in place and durable.
+     */
+    writeAppend?(bytes: Uint8Array): number;
+    flush?(): void;
+    pendingBytes?(): number;
 }
 export interface VfsStat {
     dev: number;

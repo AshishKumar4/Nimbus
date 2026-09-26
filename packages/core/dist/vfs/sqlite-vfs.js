@@ -2181,12 +2181,8 @@ export class SqliteVFS {
     assertMutationsAllowed(paths) {
         for (const path of paths) {
             const normalized = normalizeVfsPath(path);
-            if (this.activeMutationOwner !== null) {
-                const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
-                if (!ownedRoot || (normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
-                    throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
-                }
-            }
+            // Another owner's lease first (EBUSY), whoever asks; then a lease
+            // holder's own root (EPERM), which bounds where its work may land.
             if (this.activeMutationOwner === null &&
                 normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
                 this.exclusiveMutationLeases.size > 0) {
@@ -2196,6 +2192,12 @@ export class SqliteVFS {
                 if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                     continue;
                 throw vfsError('EBUSY', `${normalized} is locked by exclusive mutation at ${root || '/'}`);
+            }
+            if (this.activeMutationOwner !== null) {
+                const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+                if (!ownedRoot || (normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
+                    throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
+                }
             }
         }
     }
@@ -6112,9 +6114,12 @@ export class SqliteVFS {
                         // tree, so pending directories become visible first.
                         flushDirectories();
                         phase = 'validation';
-                        this.withMutationOwner(options.mutationOwner, () => {
-                            this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred);
-                            this.assertMutationsAllowed([record.inode.path]);
+                        // The file lands where its name resolves (links followed, as a
+                        // batch places it), and that is the path its lease is checked on.
+                        const placedInode = this.withMutationOwner(options.mutationOwner, () => {
+                            const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred).inodes;
+                            this.assertMutationsAllowed([placed.path]);
+                            return placed;
                         });
                         phase = 'stage';
                         // Close the group before the file that would overflow it, so a
@@ -6125,7 +6130,8 @@ export class SqliteVFS {
                         const whole = group.wouldExceedFile(record.inode.size) === null;
                         activeFile = {
                             streamContentId: record.streamContentId,
-                            inode: record.inode,
+                            named: record.inode.path,
+                            inode: placedInode,
                             received: 0,
                             nextChunk: 0,
                             cutter: new ContentCutter(),
@@ -6142,7 +6148,7 @@ export class SqliteVFS {
                         const file = activeFile;
                         if (!file
                             || record.streamContentId !== file.streamContentId
-                            || record.path !== file.inode.path) {
+                            || record.path !== file.named) {
                             throw new Error(`EINVAL: streamed chunk ownership mismatch: ${record.path}`);
                         }
                         if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {

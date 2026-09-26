@@ -9,6 +9,7 @@ export class SqliteRuntimeFsBridge {
     scope;
     namespace;
     mountedIno;
+    bufferedWriteBytes;
     synchronous = this;
     legacySymlinks;
     vfs;
@@ -16,11 +17,14 @@ export class SqliteRuntimeFsBridge {
     mounted;
     constructor(vfs, rawVfs, scope = createSqliteDescriptorScope(), namespace, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    mountedIno = () => 0) {
+    mountedIno = () => 0, 
+    /** Bytes one buffered handle may hold before a write is EFBIG. */
+    bufferedWriteBytes = BUFFERED_WRITE_BYTES) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
         this.mountedIno = mountedIno;
+        this.bufferedWriteBytes = bufferedWriteBytes;
         this.vfs = vfs;
         this.legacySymlinks = getSymlinkRegistry(rawVfs);
         this.mounted = namespace?.sync;
@@ -351,6 +355,11 @@ export class SqliteRuntimeFsBridge {
         if (!handle.flags.write)
             throw fsError('EBADF', 'write', handle.path);
         const node = this.description(handleId).node;
+        if (handle.flags.append && node.writeAppend) {
+            node.writeAppend(bytes);
+            handle.position += bytes.byteLength;
+            return bytes.byteLength;
+        }
         const start = handle.flags.append
             ? node.stat().size
             : offset == null ? handle.position : Math.max(0, offset);
@@ -508,9 +517,10 @@ export class SqliteRuntimeFsBridge {
         this.vfs.symlink(target, p);
     }
     fsync(handleId) {
+        // SqliteVFS writes are synchronously durable before their calls return; a
+        // buffered mount handle flushes.
         if (handleId !== undefined)
-            this.description(handleId);
-        // SqliteVFS writes are synchronously durable before their calls return.
+            this.description(handleId).node.flush?.();
     }
     /**
      * Every per-path revision here is the caller's: `p` is its own name for a
@@ -824,12 +834,53 @@ export class SqliteRuntimeFsBridge {
             chown: (uid, gid) => mountOp(mount.chown, 'fchown', path)(name, uid, gid),
             utimes: (atime, mtime) => mountOp(mount.utimes, 'futimes', path)(name, atime, mtime), close: () => { },
         };
+        if (stat.type === 'file' && !this.namespace.writesInPlace(name))
+            this.buffer(node, mount, name, path);
         const handle = {
             id: this.scope.nextId++, path: name, flags: Object.freeze(flags),
             position: flags.append ? stat.size : 0, closed: false,
         };
         this.scope.handles.set(handle.id, { handle, node, refs: 1 });
         return { ...handle };
+    }
+    /**
+     * A mount that cannot write in place (no writeRange): the handle buffers
+     * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
+     * buffered), and a flush (fsync, the last close, the process's release)
+     * reads the file, applies them in order and writes it back.
+     */
+    buffer(node, mount, name, path) {
+        const pending = [];
+        let held = 0;
+        const take = (offset, bytes) => {
+            if (held + bytes.byteLength > this.bufferedWriteBytes)
+                throw fsError('EFBIG', 'write', path);
+            pending.push({ offset, bytes: bytes.slice() });
+            held += bytes.byteLength;
+            return bytes.byteLength;
+        };
+        const flush = () => {
+            if (pending.length === 0)
+                return;
+            let file = mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name);
+            for (const write of pending) {
+                const at = write.offset ?? file.byteLength;
+                if (at + write.bytes.byteLength > file.byteLength) {
+                    const grown = new Uint8Array(at + write.bytes.byteLength);
+                    grown.set(file);
+                    file = grown;
+                }
+                file.set(write.bytes, at);
+            }
+            pending.length = 0;
+            held = 0;
+            mount.writeFile(name, file);
+        };
+        node.write = take;
+        node.writeAppend = (bytes) => take(null, bytes);
+        node.flush = flush;
+        node.pendingBytes = () => held;
+        node.close = flush;
     }
     ensureParent(path) {
         const parent = parentVfsPath(path);
@@ -907,6 +958,8 @@ export class SqliteRuntimeFsBridge {
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
+/** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
+export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 function mountOp(fn, syscall, path) {
     if (typeof fn !== 'function')
         throw fsError('ENOTSUP', syscall, path);
