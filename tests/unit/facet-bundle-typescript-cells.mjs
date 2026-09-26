@@ -134,9 +134,6 @@ assert.deepEqual(touched, ['ts'], 'esbuild ran once, for the one source; never f
 // The CommonJS compiler cells are as staged.
 assert.equal(bundle[`${TS}/lib/_tsc.js`], files[`${TS}/lib/_tsc.js`]);
 assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
-// Metadata describes paths only; the compiled key is not a file.
-assert.equal(compiledKey in state.metadata, false, 'metadata carries no entry for the compiled key');
-assert.ok(`${PROJ}/src/index.ts` in state.metadata, 'metadata describes the source');
 
 // ── The facet-side pre-compile loop, exactly as generated ───────────────
 // Both generated facets splice the same loop, so one evaluation covers both.

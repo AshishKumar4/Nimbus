@@ -133,18 +133,14 @@ function seedProgram(vfs, marker) {
 
 const ENTRY = { filename: '/home/user/run.js', cwd: '/home/user' };
 
-/** The three snapshot declarations a generated facet body carries. */
+/** The snapshot declaration a generated facet body carries: its module bundle. */
 function snapshotDeclarations(source) {
   const pick = (name) => {
     const match = source.match(new RegExp(`^(?:const|let) ${name} = (.*);$`, 'm'));
     assert.ok(match, `the generated body declares ${name}`);
     return match[1];
   };
-  return {
-    bundle: pick('__MODULE_VFS_BUNDLE'),
-    manifest: pick('__MODULE_VFS_MANIFEST'),
-    metadata: pick('__MODULE_VFS_METADATA'),
-  };
+  return { bundle: pick('__MODULE_VFS_BUNDLE') };
 }
 
 async function settle(predicate, label) {
@@ -192,7 +188,7 @@ async function settle(predicate, label) {
 //
 // Two managers on identically seeded filesystems: one builds through exec,
 // the other through a resident launch. The snapshot each facet boots on has
-// to be byte-identical — same cells, same manifest, same metadata — or the
+// to be byte-identical (same cells) or the
 // two paths are still two builders.
 {
   const execTurns = { count: 0 };

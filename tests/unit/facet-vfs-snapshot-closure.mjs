@@ -131,15 +131,6 @@ assert.equal(
   true,
   'an oversized required closure is marked for bounded Worker Loader side modules',
 );
-assert.ok(
-  snapshot.manifest[globalModules].includes('shebang-command'),
-  'a global bin manifest enumerates hoisted dependency siblings',
-);
-assert.deepEqual(
-  snapshot.manifest[`${globalModules}/shebang-command`].sort(),
-  ['index.js', 'package.json'],
-  'the hoisted dependency tree is represented in the runtime manifest',
-);
 
 {
   const cwd = 'home/user';
@@ -252,25 +243,24 @@ assert.deepEqual(
 // payload exists; the number it reports has to stay exactly the number the
 // materializing form reported.
 {
-  const exact = (bundle, manifest) =>
-    new TextEncoder().encode(JSON.stringify({ bundle, manifest })).length;
+  const exact = (bundle) => new TextEncoder().encode(JSON.stringify({ bundle })).length;
   const cases = [
-    [{}, {}],
-    [{ 'a.js': 'x' }, {}],
-    [{ 'a.js': 'x', 'b/c.js': 'yy' }, { b: ['c.js'] }],
-    [{ 'ü/né.js': 'héllo "quoted"\n\tand\\slashes', x: ' \u{1F600}' }, { 'ü': ['né.js'] }],
-    [{ 'bin.dat': new Uint8Array([0, 1, 255]), 't.js': 'ok' }, { '.': ['bin.dat', 't.js'] }],
-    [{ 'd.txt': { error: 'EACCES' } }, {}],
+    [{}],
+    [{ 'a.js': 'x' }],
+    [{ 'a.js': 'x', 'b/c.js': 'yy' }],
+    [{ 'ü/né.js': 'héllo "quoted"\n\tand\\slashes', x: ' \u{1F600}' }],
+    [{ 'bin.dat': new Uint8Array([0, 1, 255]), 't.js': 'ok' }],
+    [{ 'd.txt': { error: 'EACCES' } }],
     // Every escape class JSON.stringify distinguishes: two-character escapes,
     // \u00XX controls, multi-byte code points, a surrogate pair, and a lone
     // surrogate — the string length is computed, not measured, so each one
     // has to be counted right.
-    [{ 'esc.js': '\b\t\n\f\r\v\0\x1f "q" \\ é € \u{1F600} \ud800 \udfff' }, { '.': ['esc.js'] }],
+    [{ 'esc.js': '\b\t\n\f\r\v\0\x1f "q" \\ é € \u{1F600} \ud800 \udfff' }],
   ];
-  for (const [bundle, manifest] of cases) {
+  for (const [bundle] of cases) {
     assert.equal(
-      encodedBundleSize(bundle, manifest).bytes,
-      exact(bundle, manifest),
+      encodedBundleSize(bundle).bytes,
+      exact(bundle),
       `incremental encoded size is exact for ${JSON.stringify(Object.keys(bundle))}`,
     );
   }
@@ -299,8 +289,9 @@ assert.deepEqual(
   };
   try {
     assert.equal(
-      encodedBundleSize({ 'data.bin': binary }, {}).bytes,
-      38 + encodedBinaryBytes,
+      encodedBundleSize({ 'data.bin': binary }).bytes,
+      // `{"bundle":{` + `"data.bin":` + `}}`, around the cell's own bytes.
+      24 + encodedBinaryBytes,
       'a large binary cell is sized exactly without materializing its numeric-key JSON',
     );
   } finally {
@@ -308,14 +299,13 @@ assert.deepEqual(
   }
 
   const bundle = { a: 'aaa', b: 'bbbb', c: 'cc' };
-  const manifest = { '.': ['a', 'b', 'c'] };
-  const size = encodedBundleSize(bundle, manifest);
+  const size = encodedBundleSize(bundle);
   for (const key of ['b', 'a', 'c']) {
     delete bundle[key];
     size.remove(key);
     assert.equal(
       size.bytes,
-      exact(bundle, manifest),
+      exact(bundle),
       `incremental encoded size stays exact after evicting ${key}`,
     );
   }

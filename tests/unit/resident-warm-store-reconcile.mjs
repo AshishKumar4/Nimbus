@@ -74,6 +74,20 @@ async function keptStore() {
 }
 
 /** The first reads must not be the rows the previous launch left behind. */
+/**
+ * A launch that cannot list its namespace is not started (CUTOVER #13): it
+ * fails naming why, and no instruction of the program ran, so no kept byte
+ * was served either.
+ */
+async function assertNotStarted(launch, cause) {
+  await assert.rejects(launch, (error) => {
+    assert.match(String(error?.message ?? error), /node: the process was not started: its view of the filesystem could not be listed/);
+    assert.match(String(error?.message ?? error), cause);
+    return true;
+  });
+  assert.equal(globalThis.__first, undefined, 'the program never ran');
+}
+
 function assertNothingStale(first) {
   assert.notEqual(first.staged, 'OLD-STAGED', 'a staged file was served from the kept row');
   assert.notEqual(first.kept, 'OLD-KEPT', 'a changed file was served from the kept row');
@@ -86,8 +100,10 @@ await runScenarios(import.meta.path, {
     const { supervisor } = facetSupervisor(authority, {
       async fsList() { throw new Error('Network connection lost.'); },
     });
-    await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
-    assertNothingStale(globalThis.__first);
+    await assertNotStarted(
+      launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor }),
+      /Network connection lost/,
+    );
   },
 
   async 'a kept store whose listing comes back short'() {
@@ -100,14 +116,20 @@ await runScenarios(import.meta.path, {
         return page++ === 0 ? { ...listed, next: listed.entries.at(-1).path } : { ...listed, epoch: 'a-new-incarnation' };
       },
     });
+    // The walk that stopped short is taken again before any user code (the
+    // launch requires its namespace), and answers from another incarnation.
+    // No revision the store holds is comparable with it, so every dated row
+    // goes (COH-012), the launch's own snapshot included: a read of one is an
+    // honest miss, never the kept bytes.
     await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, bundle, cursor });
-    assertNothingStale(globalThis.__first);
+    const first = globalThis.__first;
+    assert.notEqual(first.staged, 'OLD-STAGED', 'a staged file was served from the kept row');
+    assert.notEqual(first.kept, 'OLD-KEPT', 'a changed file was served from the kept row');
   },
 
   async 'a kept store with no supervisor to reconcile against'() {
     const { sql, cursor, bundle } = await keptStore();
-    await launchResident({ program: PROGRAM, env: {}, sql, bundle, cursor });
-    assertNothingStale(globalThis.__first);
+    await assertNotStarted(launchResident({ program: PROGRAM, env: {}, sql, bundle, cursor }), /./);
   },
 
   async 'a kept store that reconciles'() {

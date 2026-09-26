@@ -181,12 +181,13 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   assert.deepEqual([...heap.chunkFirst('p').bin], [1, 2, 3], 'a read is a copy');
 }
 
-// The heap backing's budget: a one-shot's store never grows past it, and near
-// it degrades as the durable store does near the session's limit. A fill
-// that does not fit is refused, so the read is an honest miss. An own write
-// that does not fit is held in the heap within its own bound, and past that
-// its miss is named storage (ENOSPC in the shims). No ledger is ever asked:
-// the heap has no row there to grow.
+// The heap backing's budget, one for everything a one-shot holds: the
+// store's tables and the own writes held beside them. Near it the store
+// degrades as the durable one does near the session's limit. A fill that does
+// not fit is refused, so the read is an honest miss. An own write is held if
+// it fits what the cap leaves and reads back; one that does not fit is named
+// storage (ENOSPC in the shims). The total never exceeds the budget, and no
+// ledger is asked: the heap has no row there to grow.
 {
   const s = freshStore();
   const BUDGET = 256 * 1024;
@@ -199,14 +200,15 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   assert.equal(s.get('home/user/a.txt'), text(64 * 1024, 'a'));
   assert.equal(s.fill('home/user/big.txt', text(512 * 1024, 'b'), 2), false, 'a fill past the budget is refused');
   assert.equal(s.get('home/user/big.txt'), undefined, 'and its read is a miss, not partial bytes');
-  assert.ok(s.bytes() <= BUDGET, `the store holds ${s.bytes()} B, within its ${BUDGET} B budget`);
-  s.bundle['home/user/mine.txt'] = text(300 * 1024, 'm');
-  assert.equal(s.get('home/user/mine.txt'), text(300 * 1024, 'm'), 'an own write past the budget is held in the heap and reads back');
-  assert.equal(s.storageMiss('home/user/mine.txt'), false);
-  const tooBig = s.heldMax + 1;
-  s.bundle['home/user/huge.bin'] = new Uint8Array(tooBig);
-  assert.equal(s.get('home/user/huge.bin'), undefined, 'an own write past the held bound is not held');
-  assert.equal(s.storageMiss('home/user/huge.bin'), true, 'and its miss is named the storage\'s (ENOSPC), not EAGAIN');
+  // Own writes: the first fits what is left and is held; the second does not.
+  s.bundle['home/user/mine.bin'] = new Uint8Array(96 * 1024).fill(7);
+  assert.equal(s.get('home/user/mine.bin')?.[0], 7, 'an own write that fits what the budget leaves reads back');
+  assert.equal(s.storageMiss('home/user/mine.bin'), false);
+  assert.ok(s.bytes() <= BUDGET, `tables and held writes hold ${s.bytes()} B, within the ${BUDGET} B budget`);
+  s.bundle['home/user/more.bin'] = new Uint8Array(160 * 1024).fill(9);
+  assert.equal(s.storageMiss('home/user/more.bin'), true, 'one that does not fit is named the storage\'s (ENOSPC), not EAGAIN');
+  assert.ok(s.bytes() <= BUDGET, `and the total stays ${s.bytes()} B, within the budget`);
+  assert.ok(s.heldMax > BUDGET, 'the facet\'s own held bound is not what limits a one-shot');
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(grants, 0, 'the heap backing never asks the ledger for room');
 }

@@ -826,9 +826,11 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
-    // Also check writes
+    // The parked write first, as _writtenCell reads: it is this process's own,
+    // newer than anything the store holds, and it is the live cell (a store
+    // read reassembles a copy, which a write loop would pay for per write).
     if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
+    if (__vfsBundle && k in __vfsBundle) return __vfsBundle[k];
     // The same bytes under the name they are held by: through a symlink, or
     // under the old name of a rename this process has not seen land yet.
     if (__vfsBundle && _nsActive()) {
@@ -838,16 +840,8 @@ const __fsMod = (() => {
     return undefined;
   }
 
-  // __vfsMetadata is not declared in every embedding of these shims, so the
-  // one guarded reference lives here and every other reader goes through it.
-  function _metadataTable() {
-    return (typeof __vfsMetadata !== "undefined" && __vfsMetadata) ? __vfsMetadata : null;
-  }
-
-  // Same guard, same reason: the SQLite resident store is spliced into the
-  // resident-process body only. The one-shot exec path runs in a stateless
-  // loaded worker with no facet storage at all, so these shims must still work
-  // with the resident set on the heap and this is the single place that asks.
+  // Whether the store is bound: every embedding of these shims boots one (a
+  // facet's SQLite, or a one-shot's heap), and this is the single place that asks.
   function _residentStorePresent() {
     return typeof __residentAdmit === "function" && typeof __residentReady !== "undefined" && __residentReady;
   }
@@ -858,8 +852,9 @@ const __fsMod = (() => {
   // its stat, exact at the cursor (vfs/facet-resident-store.ts). While it
   // does, it answers every synchronous metadata question — stat, exists,
   // readdir, realpath, access — and an absent name is known absent, so none
-  // of them records a miss or refuses. The spawn-time tables (__vfsMetadata,
-  // __vfsManifest) answer only when it does not.
+  // of them records a miss or refuses. While it does not (a relist failed,
+  // until the next barrier repairs it), each of them is refused by name
+  // (_nsRequire).
   //
   // What the table cannot know is this process's own structural effects that
   // the authority has not reported back yet, so those sit in an overlay, one
@@ -871,6 +866,19 @@ const __fsMod = (() => {
   // mutation committed, so the table then shows it or anything later.
   function _nsActive() {
     return typeof __nsReady === "function" && __nsReady();
+  }
+  // The namespace answers every synchronous metadata question, or none. While
+  // it is not ready (a relist failed, until the next barrier repairs it) a
+  // synchronous call is refused, naming why and the asynchronous form that
+  // answers now. A launch never runs user code before it is ready.
+  function _nsRequire(syscall, displayPath, asyncForm) {
+    if (_nsActive()) return;
+    _stats.namespaceRefusals++;
+    const why = typeof __nsNotReadyCause === "function" ? __nsNotReadyCause() : "the process was started without one";
+    const err = _fsErr("EAGAIN", syscall, displayPath);
+    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': the namespace is being rebuilt after " + why
+      + (_supervisor() ? "; use " + asyncForm : "");
+    throw err;
   }
   const _nsOwn = new Map();
   let _nsFresh = [];
@@ -951,8 +959,11 @@ const __fsMod = (() => {
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
-    if (!own || own.alias !== undefined) {
-      const found = __nsResolve(own ? own.alias : k, follow);
+    // A directory this process made hides what the namespace held under its
+    // name before, but not what this process has put there since: those rows
+    // are its own writes, recorded when the authority accepted them.
+    if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
+      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
     }
@@ -997,12 +1008,9 @@ const __fsMod = (() => {
   }
 
   function _metadata(absPath) {
-    if (_nsActive()) {
-      const meta = _nsMeta(_strip(absPath), true);
-      return meta === "absent" || meta === "ELOOP" ? undefined : meta;
-    }
-    const table = _metadataTable();
-    return table ? table[_strip(absPath)] : undefined;
+    _nsRequire("stat", absPath, "fs.promises.stat");
+    const meta = _nsMeta(_strip(absPath), true);
+    return meta === "absent" || meta === "ELOOP" ? undefined : meta;
   }
 
   function _denialCode(cell) {
@@ -1010,54 +1018,13 @@ const __fsMod = (() => {
       typeof cell.error === "string" ? cell.error : null;
   }
 
-  // Removal retracts the path from the sync existence view — __vfsMetadata
-  // (spawn-time stat records) and __vfsManifest (directory shape). Without
-  // it, existsSync keeps reporting a file this process already deleted and
-  // the sync read path reports that file as merely non-resident.
+  // Removal retracts the path from the sync existence view: the namespace's
+  // overlay of this process's own effects says it is gone until a barrier's
+  // delta does.
   function _forgetSyncPath(k) {
     _createdHere.delete(k);
     _announcedDirs.delete(k);
-    if (_nsActive()) _nsOwnSet(k, "absent");
-    const metadata = _metadataTable();
-    if (metadata) delete metadata[k];
-    if (!__vfsManifest) return;
-    delete __vfsManifest[k];
-    const slash = k.lastIndexOf("/");
-    const parent = slash >= 0 ? k.slice(0, slash) : "";
-    const name = slash >= 0 ? k.slice(slash + 1) : k;
-    const siblings = __vfsManifest[parent];
-    if (!siblings) return;
-    const at = siblings.indexOf(name);
-    if (at !== -1) siblings.splice(at, 1);
-  }
-
-  /**
-   * Put a path into the sync EXISTENCE view — the inverse of _forgetSyncPath.
-   *
-   * A content cell is not existence. An invalidation drops content and is
-   * documented to leave the name behind so existsSync cannot fabricate an
-   * ENOENT for a file that was merely rewritten — but a file this process just
-   * created has no manifest entry and no spawn-time stat record, so its cell
-   * WAS the name, and evicting it retracted a file the program had written
-   * itself. Recording the name where every other name lives is what makes that
-   * documented asymmetry true.
-   *
-   * The parent's listing is the right home for it. Where the parent has no
-   * listing the entry is created only for a directory this process made, since
-   * that is the only case in which it knows the whole contents and calling the
-   * directory enumerated is honest.
-   */
-  function _announceSyncPath(k) {
-    if (_nsActive() || !__vfsManifest || k === "") return;
-    const slash = k.lastIndexOf("/");
-    const parent = slash >= 0 ? k.slice(0, slash) : "";
-    const name = slash >= 0 ? k.slice(slash + 1) : k;
-    let siblings = __vfsManifest[parent];
-    if (!Array.isArray(siblings)) {
-      if (!__vfsDirs || !(parent in __vfsDirs)) return;
-      siblings = __vfsManifest[parent] = [];
-    }
-    if (siblings.indexOf(name) === -1) siblings.push(name);
+    _nsOwnSet(k, "absent");
   }
 
   /**
@@ -1070,7 +1037,6 @@ const __fsMod = (() => {
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
-    _announceSyncPath(k);
   }
 
   /**
@@ -1088,10 +1054,9 @@ const __fsMod = (() => {
   function _noteCreation(k) {
     if (_createdHere.has(k)) return;
     const absPath = "/" + k;
-    // Known absent, not merely settled by a listing: a name the parent's
-    // listing shows is someone's file whose record this view lacks.
-    if (_statLadder(absPath) !== undefined || _listedByParent(k)) return;
-    if (_nsActive() || _absenceIsKnown(absPath)) _createdHere.add(k);
+    // Known absent: the namespace names everything this credential can see.
+    if (_statLadder(absPath) !== undefined) return;
+    _createdHere.add(k);
   }
   function _forgetCreation(k) {
     const prefix = k + "/";
@@ -1101,44 +1066,26 @@ const __fsMod = (() => {
   function _forgetSyncTree(k) {
     const prefix = k + "/";
     _forgetCreation(k);
-    if (_nsActive()) _nsOwnSet(k, "absentTree");
+    _nsOwnSet(k, "absentTree");
     for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
-    const metadata = _metadataTable();
-    if (metadata) {
-      for (const mk of Object.keys(metadata)) if (mk.startsWith(prefix)) delete metadata[mk];
-    }
-    if (__vfsManifest) {
-      for (const dk of Object.keys(__vfsManifest)) if (dk.startsWith(prefix)) delete __vfsManifest[dk];
-    }
     _forgetSyncPath(k);
   }
 
   /**
    * The honest error for a sync read the resident view cannot serve. A facet
    * has no synchronous I/O primitive, so a sync read is limited to content
-   * staged into this process — but the sync existence view (__vfsMetadata +
-   * __vfsManifest) knows far more paths than the content bundle carries.
-   * ENOENT is only correct when the path is unknown there too; for a path
-   * that demonstrably exists it sends the caller hunting for a missing file
-   * instead of awaiting the read that would return it.
+   * staged into this process, but the namespace names every path the
+   * credential can see. ENOENT is correct only when it names none; for a path
+   * that exists it would send the caller hunting for a missing file instead
+   * of awaiting the read that would return it.
    */
   function _notResidentError(absPath, displayPath, syscall, asyncForm) {
     const st = _statLadder(absPath);
-    if (st === undefined && !_listedByParent(_strip(absPath))) {
-      if (!_absenceIsKnown(absPath)) _recordUnmapped(absPath, syscall);
-      return _fsErr("ENOENT", syscall, displayPath);
-    }
-    if (st === undefined) {
-      // Named by a listing, with no record of what it is: it exists, and
-      // neither its bytes nor its stat are here.
-      _recordResidencyMiss(absPath);
-      const err = _fsErr("EAGAIN", syscall, displayPath);
-      err.message += " — '" + String(displayPath) + "' exists but its content is not " +
-        "resident in this facet, and synchronous I/O cannot block to fetch it" +
-        (_supervisor() ? "; " + asyncForm + " reads it from the live filesystem" : "");
-      return err;
-    }
+    if (st === undefined) return _fsErr("ENOENT", syscall, displayPath);
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
+    // Unreadable to this credential: the namespace's mode says so, and no
+    // bytes could have been staged for it.
+    if (!_modeAllows(st, 4)) return _fsErr("EACCES", syscall, displayPath);
     if (typeof __residentStorageMiss === "function" && __residentStorageMiss(_strip(absPath))) {
       // The process's own write, which neither its store nor its heap budget
       // could hold: the workspace's storage is full.
@@ -1320,202 +1267,40 @@ const __fsMod = (() => {
     }
   };
 
-  /**
-   * Has this directory's content been enumerated, or merely mentioned?
-   *
-   * __vfsManifest is a walk of SELECTED roots — the cwd subtree, its
-   * node_modules, the entry script's own package — not of the filesystem. A
-   * directory with an entry there was listed by that walk, so its child list
-   * is complete and a name that is not in it is genuinely not there. A
-   * directory with no entry was never opened, and knows nothing. __vfsDirs
-   * holds the directories this process created itself, which it therefore
-   * knows the contents of by construction.
-   *
-   * Conflating the two is what let a synchronous readdir of a real directory
-   * outside the walk answer with an empty array — not an error, not a refusal,
-   * a positive assertion that a populated directory is empty. Every caller
-   * that used to end in "not found, so absent" goes through here first.
-   */
-  function _dirEnumerated(k) {
-    if (_nsActive()) return true;
-    return (!!__vfsManifest && k in __vfsManifest) || (!!__vfsDirs && k in __vfsDirs);
-  }
 
-  /** Does the content bundle itself describe children under this directory? */
-  function _bundleHasChildren(k) {
-    if (!__vfsBundle) return false;
-    return __residentAnyUnder(k ? k + "/" : "");
+
+
+
+
+
+
+
+
+  // What the authority says of a path after this process's own async request
+  // (a stat, read or accepted write) is what the sync view answers for it
+  // from then on, as it would after the delta that reports it
+  // (facet-resident-store's __nsNoteLiveStat).
+  async function _learnLive(absPath, supervisor) {
+    if (!supervisor || typeof supervisor.lstat !== "function") return;
+    let stat;
+    // Counted as every supervisor call a program waits on is (__nimbusUseRpcResult):
+    // an uncounted round trip reads as an idle loop, and the program ends.
+    try { stat = await __nimbusUseRpcResult(supervisor.lstat(absPath), (result) => result); } catch { return; }
+    __nsNoteLiveStat(_strip(absPath), stat ?? null);
   }
 
   /**
-   * Can the view say this path is ABSENT, as opposed to say nothing at all?
-   *
-   * With no supervisor bound there is no authority to be ignorant of: the
-   * staged tables ARE the filesystem, the async form reads out of those same
-   * tables, and a name that is not in them is not anywhere. Ignorance is a
-   * property of the gap between a process and an authority it cannot reach
-   * synchronously, so where there is no authority there is no gap.
-   */
-  function _absenceIsKnown(absPath) {
-    if (!_supervisor() || _nsActive()) return true;
-    const k = _strip(absPath);
-    if (k === "") return true;
-    const segments = k.split("/");
-    // Deepest enumerated ancestor, because that is the only one that can
-    // testify. Walking up rather than looking only at the immediate parent is
-    // what makes a whole missing subtree answerable from one listing: if
-    // $HOME was enumerated and holds no .config, then nothing under .config
-    // is there either, and a program probing three levels down deserves that
-    // answer rather than three refusals.
-    for (let i = segments.length - 1; i >= 0; i--) {
-      const dir = segments.slice(0, i).join("/");
-      if (!_dirEnumerated(dir)) continue;
-      const child = segments.slice(0, i + 1).join("/");
-      const children = (__vfsManifest && __vfsManifest[dir]) || [];
-      const present = children.indexOf(segments[i]) !== -1
-        || (!!__vfsDirs && child in __vfsDirs)
-        || (!!__vfsBundle && child in __vfsBundle);
-      // The component is not in a directory that was listed: absent, and so is
-      // everything below it. If it IS there, only its own enumeration settles
-      // what it contains, so nothing short of the immediate parent will do.
-      if (!present) return true;
-      return i === segments.length - 1;
-    }
-    return false;
-  }
-
-  /**
-   * A path the sync view never mapped: record the ignorance, and repair it.
-   *
-   * Sibling of _notResidentError and the same bargain — the file may well be
-   * there, the process simply cannot look without blocking. The callers answer
-   * ENOENT, which is provisional rather than fabricated: this records the miss
-   * and pulls in the listing that settles the question, and the exit report
-   * reads the ledger. If the path was genuinely absent the repair proves it
-   * and the entry retires — the program's not-found branch was the right
-   * branch and it reached it through the right errno. If the path WAS there,
-   * the entry survives and the run is failed by name.
-   *
-   * EAGAIN was tried here and is the wrong answer to hand a program even
-   * though it is the honest description of the situation. It cannot arise from
-   * a real POSIX filesystem, so nothing branches on it, and the catch block
-   * that receives it was written for a missing file and rethrows instead:
-   * measured, create-next-app reads $HOME/.config/<tool>/config.json through
-   * the conf package, is handed EAGAIN for a file that was never there, and
-   * dies before writing one template file. Read a config, treat ENOENT as "no
-   * config yet", rethrow anything else is the near-universal shape. Refusing
-   * bought nothing the ledger was not already delivering, and cost every
-   * program that idiom.
-   *
-   * A LISTING is the exception and still refuses — see readdirSync. An array is
-   * a complete enumeration by definition, so there is no provisional form of
-   * it: an empty one asserts that a directory nothing ever opened is empty,
-   * which is how a scaffolder was told its template directory held nothing,
-   * wrote nothing, and exited 0.
-   */
-  function _recordUnmapped(absPath, syscall) {
-    const k = _strip(absPath);
-    _recordMiss(k);
-    // A listing wants the path's own contents; a read wants its bytes. Both
-    // also want the boundary listing, which is the only thing that can prove
-    // the path was not there — and fetching one repair and then the other
-    // would refuse the same access twice, once for being unmapped and once for
-    // having no resident content. _faultOnce collapses them where they meet.
-    _faultInBoundary(k);
-    if (syscall === "scandir") { _faultInDirectory(k); return; }
-    _faultIn(k);
-  }
-
-  /**
-   * The shallowest directory on this path whose contents the view does not
-   * know: the child of the deepest ancestor that WAS enumerated.
-   *
-   * That, not the immediate parent, is the listing a refusal has to pull in.
-   * For a path that is not there the parent is usually not there either, so
-   * its readdir fails, the view learns nothing, and the ledger keeps an entry
-   * no repair can ever retire — the run is failed over a file that was simply
-   * absent. The boundary directory is different: the enumerated ancestor's own
-   * listing already proved it is present, so it can be read, and reading it
-   * either names the next component or proves the whole subtree absent.
-   *
-   * With nothing enumerated at all the boundary is the root, which is one
-   * listing away from making the next level answerable.
-   */
-  function _unknownBoundary(k) {
-    const segments = k.split("/");
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (_dirEnumerated(segments.slice(0, i).join("/"))) {
-        return segments.slice(0, i + 1).join("/");
-      }
-    }
-    return "";
-  }
-
-  function _faultInBoundary(k) {
-    _faultInDirectory(_unknownBoundary(k));
-  }
-
-  /**
-   * The refusal, for the two callers that have no provisional answer to give.
-   *
-   * A listing cannot say "not found" usefully, and neither can a write that
-   * needs the prior content it is splicing onto. Everywhere else the sync view
-   * answers ENOENT and lets the exit report settle whether that was true; here
-   * there is no branch the program could take that would be right, so the
-   * honest EAGAIN is also the useful one.
-   */
-  /** Whether a staged listing names \`k\` (without saying what it is or whose). */
-  function _listedByParent(k) {
-    if (!__vfsManifest) return false;
-    const slash = k.lastIndexOf("/");
-    const siblings = __vfsManifest[slash >= 0 ? k.slice(0, slash) : ""];
-    return Array.isArray(siblings) && siblings.indexOf(slash >= 0 ? k.slice(slash + 1) : k) !== -1;
-  }
-
-  function _refuseUnmapped(absPath, displayPath, syscall, asyncForm) {
-    _recordUnmapped(absPath, syscall);
-    const err = _fsErr("EAGAIN", syscall, displayPath);
-    err.message += " — '" + String(displayPath) + "' lies outside the filesystem view "
-      + "staged into the process, so a synchronous call cannot tell what is there, "
-      + "and synchronous I/O cannot block to find out"
-      + (_supervisor() ? "; " + asyncForm + " answers from the live filesystem" : "");
-    return err;
-  }
-
-  /**
-   * Pull a directory listing in. _readdirAsync already records what it learns
-   * into __vfsManifest, so one call both answers the fault and converges the
-   * sync view on the async one — there is no second merge path to keep honest.
-   */
-  function _faultInDirectory(k) {
-    if (!_supervisor() || _dirEnumerated(k) || !_faultOnce("listing", k)) return;
-    try { _repairs.push(_readdirAsync("/" + k, undefined).catch(() => {})); }
-    catch { /* speculative */ }
-  }
-
-  /**
-   * Retire the refusals a repair turned into honest absence.
-   *
-   * A refusal is only a wrong answer when the path was THERE and the process
-   * was denied it. Where the listing comes back and shows the name is simply
-   * not present, the program's not-found branch was the right branch all
-   * along — it merely reached it through the wrong errno — and failing the run
-   * over that would fail every module resolver, which probes dozens of paths
-   * that do not exist by design. So what stays in the ledger is exactly the
-   * harmful set: content that exists and was not served.
+   * Retire the misses a repair turned into honest absence. A miss is a wrong
+   * answer only when the path was THERE and the process was denied it: one on
+   * a name the namespace does not have (or the authority did not have when it
+   * was asked) was the program's not-found branch, taken for the right
+   * reason. Failing the run over those would fail every module resolver,
+   * which probes dozens of paths that do not exist by design.
    */
   function _settleProvenAbsences() {
     if (_residencyMisses.size === 0) return;
     for (const k of [..._residencyMisses]) {
-      const absPath = "/" + k;
-      // The authority did not have it when we asked, so nothing was withheld —
-      // whatever is at the path now, this process put there.
-      if (_observedAbsent.has(k)) { _residencyMisses.delete(k); continue; }
-      if (_statLadder(absPath) !== undefined) continue;
-      if (_absenceIsKnown(absPath)) { _residencyMisses.delete(k); continue; }
-      // Still unprovable, because the listing that would settle it lies below
-      // the one already fetched. Ask for the next one; the settle loop waits.
-      _faultInBoundary(k);
+      if (_observedAbsent.has(k) || (_nsActive() && _statLadder("/" + k) === undefined)) _residencyMisses.delete(k);
     }
   }
 
@@ -1612,11 +1397,9 @@ const __fsMod = (() => {
       atimeMs: _coerceTimeMs(atime, syscall, p),
       mtimeMs: _coerceTimeMs(mtime, syscall, p),
     };
+    // The sync view answers these times ahead of the namespace's (_statObject)
+    // until the utimes is reported back, as a write's own bytes are.
     _localTimes[k] = time;
-    // A spawn-time stat record answers statSync ahead of _localTimes, so it
-    // must carry the new times too or the sync view keeps the old mtime.
-    const meta = _metadata(absPath);
-    if (meta) { meta.atime = time.atimeMs; meta.mtime = time.mtimeMs; }
     return time;
   }
 
@@ -1670,7 +1453,7 @@ const __fsMod = (() => {
   // ══ Cache coherence: ACQUIRE + read-through fill ═════════════════════
   //
   // The supervisor's SQLite VFS is the only authority. Everything in this
-  // facet — __vfsBundle, __vfsMetadata, __vfsManifest, __vfsDirs — is a
+  // facet — the resident store, __vfsBundle, __vfsDirs — is a
   // cache of it, and __vfsWrites is this process's own not-yet-flushed
   // mutations.
   //
@@ -1744,6 +1527,9 @@ const __fsMod = (() => {
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
+      // The namespace's failure state (a relist failed): synchronous calls
+      // refused with its cause (_nsRequire), and barriers that repaired it.
+      namespaceRefusals: 0, namespaceRepairs: 0,
     });
 
   /**
@@ -1776,8 +1562,6 @@ const __fsMod = (() => {
     let evicted = false;
     delete __vfsBundleRevisions[k];
     if (__vfsBundle && k in __vfsBundle) { delete __vfsBundle[k]; evicted = true; }
-    const metadata = _metadataTable();
-    if (metadata && k in metadata) { delete metadata[k]; evicted = true; }
     return evicted;
   }
 
@@ -1882,7 +1666,7 @@ const __fsMod = (() => {
     if (!entry.subtree && !entry.structural) return [entry.path];
     const under = entry.path + "/";
     const cells = new Set();
-    for (const table of [__vfsBundle, __vfsBundleRevisions, _metadataTable()]) {
+    for (const table of [__vfsBundle, __vfsBundleRevisions]) {
       if (!table) continue;
       for (const k of Object.keys(table)) if (k === entry.path || k.startsWith(under)) cells.add(k);
     }
@@ -1926,35 +1710,10 @@ const __fsMod = (() => {
     // report, and __vfsBundle is what sync reads consult first, so installing
     // over it would serve the program bytes older than its own write.
     if (__vfsWrites && k in __vfsWrites) return;
-    if (_residentStorePresent()) {
-      // The store dates the row at the read's cursor, so the next delta that
-      // names the path above it evicts it. It declines, itself, to replace
-      // own bytes or a row dated later than this read can vouch for.
-      if (!__residentFill(k, bytes, fill.rev)) return;
-    } else {
-      // A STAMPED cell is this facet's own flushed write, and the barrier this
-      // read passed on the way in reported nobody else has touched the path
-      // since — so the bytes are already what is being installed, and the only
-      // thing the install would change is to drop the stamp. It did: a
-      // speculative repair issued by an earlier refused read landed after the
-      // flush, unstamped the cell, and the next ACQUIRE evicted the facet's own
-      // output. Measured at selfWrites 0 / invalidations 1 / fills 2 for one
-      // written file, against 1 / 0 / 0 with the repair absent.
-      if (__vfsBundleRevisions[k] !== undefined) return;
-      __vfsBundle[k] = bytes;
-    }
-    // Keep the stat view consistent with the bytes now held. Without this
-    // the content view is fresh while statSync still reports the
-    // spawn-time length, so a program can read N bytes and be told the
-    // file is M — an inconsistency introduced BY the fill. Only the size
-    // is corrected: type, mode, ownership and timestamps stay as the
-    // authority last reported them, so mtime-based change detection
-    // (make, tsc --build, watchers) does not see every read as a change.
-    const metadata = _metadataTable();
-    if (metadata && k in metadata) {
-      metadata[k] = { ...metadata[k], size: _byteLen(bytes) };
-    }
-    _announceSyncPath(k);
+    // The store dates the row at the read's cursor, so the next delta that
+    // names the path above it evicts it. It declines, itself, to replace own
+    // bytes or a row dated later than this read can vouch for.
+    if (!__residentFill(k, bytes, fill.rev)) return;
     _stats.fills++;
     _stats.filledBytes += _byteLen(bytes);
   }
@@ -2149,11 +1908,17 @@ const __fsMod = (() => {
     // opens onto rows a previous one wrote while every heap-side stamp that
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
-    if (_residentStorePresent()) {
+    {
+      // A namespace that stopped answering (a relist failed) is a failure
+      // state, not a mode: every barrier the process reaches repairs it, once,
+      // until a listing restores it.
+      let namespaceAsked = false;
       for (let joins = 0; ; joins++) {
         const joining = _residentRepair !== null;
-        const needsRepair = result === null || result.poison === true || _storeRepairOwed;
+        const namespaceOwed = !namespaceAsked && !_nsActive();
+        const needsRepair = result === null || result.poison === true || _storeRepairOwed || namespaceOwed;
         if (!joining && !needsRepair) break;
+        if (namespaceOwed) { namespaceAsked = true; _stats.namespaceRepairs++; }
         if (needsRepair) {
           if (result !== null && result.poison === true) _stats.poisons++;
           _spoilFills();
@@ -2204,44 +1969,6 @@ const __fsMod = (() => {
       await _awaitReportedOwnWrites();
       return applied.dropped;
     }
-    // Paths that held content before this eviction are the ones worth
-    // refetching at a resumption boundary — a later sync read of any of them
-    // would otherwise miss. Collected before the delete so the membership
-    // test is against the pre-eviction bundle.
-    const wereResident = [];
-    if (result === null || result.poison === true) {
-      if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
-      if (result !== null) _stats.poisons++;
-      _spoilFills();
-      // Nothing says what changed, so a parked write the authority may have
-      // applied before some peer's is judged as though the peer came after.
-      __nimbusNoteUnnamedReports();
-    } else if (Array.isArray(result.paths)) {
-      for (const entry of result.paths) {
-        // This cursor is about to advance past the report, so a path with
-        // one of this facet's own writes in flight keeps the number: only
-        // that write's own revision, when it arrives, can say whether the
-        // report was itself or a peer. Everything else ignores it.
-        _noteReport(entry);
-        for (const k of _coveredCells(entry)) {
-          if (__vfsBundleRevisions[k] >= entry.rev) {
-            if (k === entry.path) _stats.selfWrites++;
-            continue;
-          }
-          const held = !!(__vfsBundle && k in __vfsBundle);
-          if (_evictResident(k)) _stats.invalidations++;
-          if (held) wereResident.push(k);
-        }
-      }
-    }
-    // A barrier with no answer has no cursor to adopt; the held one is still
-    // owed every change since, and the next delta delivers them.
-    if (result !== null) {
-      _cursor.epoch = result.epoch;
-      _cursor.rev = result.rev;
-    }
-    await _awaitReportedOwnWrites();
-    return wereResident;
   }
 
   /**
@@ -2830,8 +2557,11 @@ const __fsMod = (() => {
     const atime = new Date(Number(meta?.atime || meta?.mtime || Date.now()));
     const mode = Number(meta?.mode ?? (isDir ? 0o755 : 0o644));
     const stat = _localStatObject(key, isDir, isSymlink, size, mode, meta?.uid, meta?.gid);
-    stat.atime = atime;
-    stat.mtime = mtime;
+    // This process's own utimes, until it is reported back, ahead of the
+    // namespace's (_recordLocalTimes).
+    const own = key === undefined ? undefined : _localTimes[key];
+    stat.atime = own && Number.isFinite(own.atimeMs) ? new Date(own.atimeMs) : atime;
+    stat.mtime = own && Number.isFinite(own.mtimeMs) ? new Date(own.mtimeMs) : mtime;
     stat.ctime = new Date(Number(meta?.ctime ?? meta?.mtime ?? Date.now()));
     stat.birthtime = stat.ctime;
     return stat;
@@ -3016,7 +2746,7 @@ const __fsMod = (() => {
         }
         const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
         _installResident(absPath, bytes, fill);
-        await _learnStat(absPath, supervisor);
+        await _learnLive(absPath, supervisor);
         return encoding ? _asString(bytes) : __BufferMod.from(bytes);
       }
 
@@ -3025,7 +2755,7 @@ const __fsMod = (() => {
         const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
         if (text !== null && text !== undefined) {
           _installResident(absPath, text, fill);
-          await _learnStat(absPath, supervisor);
+          await _learnLive(absPath, supervisor);
           return encoding ? _asString(text) : __BufferMod.from(text);
         }
       }
@@ -3036,44 +2766,13 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", p);
   }
 
-  /**
-   * Content this view now holds for a path it has no metadata for (a file
-   * read live, or refetched after a barrier dropped its record): the
-   * authority's stat for it, so a sync stat of the path answers with the real
-   * owner and mode rather than nothing, and never with an invented one.
-   */
-  async function _learnStat(absPath, supervisor) {
-    const table = _metadataTable();
-    const k = _strip(absPath);
-    if (_nsActive() || !table || k in table || typeof supervisor.lstat !== "function") return;
-    let stat = null;
-    try { stat = await _fsRpc(supervisor.lstat(absPath), "stat", absPath, (result) => result); } catch { return; }
-    if (!stat || k in table) return;
-    _keepStat(absPath, stat);
-  }
 
-  /** An authority stat, kept as the sync view's record of the path. */
-  function _keepStat(absPath, stat) {
-    const table = _metadataTable();
-    if (_nsActive() || !table || !stat) return;
-    // A record states the owner, group and mode, or it is not one.
-    if (![stat.mode, stat.uid, stat.gid].every((field) => Number.isInteger(Number(field)) && field !== null && field !== undefined)) return;
-    table[_strip(absPath)] = {
-      type: stat.type, size: Number(stat.size), mode: Number(stat.mode), uid: Number(stat.uid), gid: Number(stat.gid),
-      mtime: Number(stat.mtime), atime: Number(stat.atime ?? stat.mtime), ctime: Number(stat.ctime ?? stat.mtime),
-    };
-  }
 
   /** Paths whose write-back this process issued and the authority accepted. */
   const _acceptedHere = new Set();
   globalThis.__nimbusVfsWriteLanded = (key) => {
     const k = String(key).replace(/^\\/+/, "");
     _acceptedHere.add(k);
-    const supervisor = _supervisor();
-    const table = _metadataTable();
-    if (!supervisor || _nsActive() || !table || k in table || _createdHere.has(k)) return;
-    // Not awaited by anything: a later sync stat finds the record once it lands.
-    _repairs.push(_learnStat("/" + k, supervisor).catch(() => {}));
   };
 
   // The authority refused a parked write (vfs-write-ledger): the record may
@@ -3082,8 +2781,6 @@ const __fsMod = (() => {
     const k = String(key).replace(/^\\/+/, "");
     _createdHere.delete(k);
     _acceptedHere.delete(k);
-    const table = _metadataTable();
-    if (table && !_nsActive()) delete table[k];
   };
 
   function _concatBytes(parts, total) {
@@ -3157,17 +2854,11 @@ const __fsMod = (() => {
         // its shape: the sync existence view must not go on contradicting a
         // directory this very process has enumerated. Names only — size, mode
         // and ownership are not observable here and are never invented.
-        if (__vfsManifest) __vfsManifest[key] = entries.map((entry) => entry.name);
         // The listed directory and its child directories get the authority's
         // own stat: a later synchronous stat or listing of them needs a record
         // saying what they are, and a record says who owns them, which a
         // listing does not. So it is asked for, never assumed (one lstat per
         // child directory, concurrently).
-        if (_metadataTable() && !_nsActive() && typeof supervisor.lstat === "function") {
-          const learn = [absPath];
-          for (const entry of entries) if (entry.type === "directory") learn.push("/" + prefix + entry.name);
-          await Promise.all(learn.map((path) => _learnStat(path, supervisor)));
-        }
         if (opts?.withFileTypes) {
           return entries
             .map((entry) => _direntObject(entry.name, entry.type, absPath))
@@ -3226,7 +2917,7 @@ const __fsMod = (() => {
       );
       _markVfsStale();
       // Accepted: the authority's stat is what the sync view keeps for it.
-      await _learnStat(absPath, supervisor);
+      await _learnLive(absPath, supervisor);
     }
   }
 
@@ -3245,7 +2936,7 @@ const __fsMod = (() => {
       ),
     );
     _markVfsStale();
-    await _learnStat(absPath, supervisor);
+    await _learnLive(absPath, supervisor);
   }
 
   // The async structural calls ARE the sync ones, awaited: the same local
@@ -3444,7 +3135,7 @@ const __fsMod = (() => {
     // row changes: that row is what the local permission checks read.
     if (Number(cred.uid) !== 0) {
       const stat = _statLadder(absPath);
-      if (stat === undefined) throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
+      if (stat === undefined) throw _fsErr("ENOENT", syscall, p);
       const groups = [Number(cred.gid), ...cred.groups.map(Number)];
       if (Number(stat.uid) !== Number(cred.uid) || nextUid !== Number(stat.uid)
         || (nextGid !== Number(stat.gid) && !groups.includes(nextGid))) {
@@ -3508,22 +3199,7 @@ const __fsMod = (() => {
       if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p);
       return;
     }
-    // Staged bytes with nothing saying whose: whether the write is allowed
-    // cannot be decided without the authority, so it is refused as a miss
-    // rather than granted. (Unreachable with complete staged metadata.) The
-    // process's own pending write is judged as that write was, below: by its
-    // parent here, and by the authority when it lands.
-    const k = _strip(absPath);
-    // Something is there (bytes staged, or a name a listing shows) and
-    // nothing says whose: whether the write is allowed cannot be decided
-    // without the authority, so it is refused as a miss rather than granted.
-    if ((cell !== undefined || _listedByParent(k)) && !(__vfsWrites && k in __vfsWrites) && !_acceptedHere.has(k)
-      && !_createdHere.has(k)) {
-      throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
-    }
-    // The ladder rather than existsSync: a write to a path outside the staged
-    // view is a legitimate create, and must not be turned into a refusal by
-    // the check that guards it.
+    // Nothing there: a create, judged by the parent the namespace describes.
 
     const parent = __pathMod.dirname(absPath);
     const parentStat = _statLadder(parent);
@@ -3533,16 +3209,12 @@ const __fsMod = (() => {
       return;
     }
 
-    const parentKey = _strip(parent);
-    const parentIsLocal = parent === cwd || parent === "/" ||
-      (!!__vfsDirs && parentKey in __vfsDirs) ||
-      (!!__vfsManifest && parentKey in __vfsManifest);
-    if (parentIsLocal || _supervisor()) return;
     throw _fsErr("ENOENT", syscall, p);
   }
 
   function accessSync(p, mode) {
     const absPath = _resolve(p);
+    _nsRequire("access", p, "fs.promises.access");
     const cell = _bundleLookup(absPath);
     const meta = _metadata(absPath);
     if (cell === undefined && meta === undefined && !existsSync(p)) throw _fsErr("ENOENT", "access", p);
@@ -3555,7 +3227,7 @@ const __fsMod = (() => {
     if ((requested & 4) !== 0 && denial) throw _fsErr(denial, "access", p);
     if (requested === 0) return;
     const stat = _statLadder(absPath);
-    if (stat === undefined) throw _refuseUnmapped(absPath, p, "access", "fs.promises.access");
+    if (stat === undefined) throw _fsErr("ENOENT", "access", p);
     if (!_modeAllows(stat, requested)) throw _fsErr("EACCES", "access", p);
   }
 
@@ -3667,46 +3339,11 @@ const __fsMod = (() => {
   // ── existsSync ──
   function existsSync(p) {
     const absPath = _resolve(p);
-    const k = _strip(absPath);
-    if (_nsActive()) {
-      _residencySatisfied(absPath);
-      return _statLadder(absPath) !== undefined;
-    }
-    if (_metadata(absPath) !== undefined || _nameHeld(k)) { _residencySatisfied(absPath); return true; }
-    // Nothing found — which is only an answer if the enclosing directory was
-    // enumerated. Node's existsSync never throws, so the false below is
-    // provisional: the miss is recorded, the listing that settles it is pulled
-    // in, and the exit report fails the run if the path turns out to have been
-    // there all along.
-    if (!_absenceIsKnown(absPath)) {
-      _recordUnmapped(absPath, "access");
-      return false;
-    }
+    _nsRequire("access", p, "fs.promises.access");
     _residencySatisfied(absPath);
-    return false;
+    return _statLadder(absPath) !== undefined;
   }
 
-  /**
-   * Whether the view holds evidence that a name exists without a record of
-   * it: bytes under it (the module map, this process's writes), a directory
-   * entry, a launch listing that names it, or bytes beneath it. Evidence of
-   * existence says nothing about who owns it or who may write it.
-   */
-  function _nameHeld(k) {
-    if (__vfsBundle && k in __vfsBundle) return true;
-    if (__vfsWrites && k in __vfsWrites) return true;
-    if (__vfsDirs && k in __vfsDirs) return true;
-    // The manifest before the O(N) bundle-prefix scan: it is uncapped and
-    // always reflects the real directory shape, even when the content of a
-    // directory's files was excluded by the content cap.
-    if (__vfsManifest) {
-      if (k in __vfsManifest) return true;
-      const slash = k.lastIndexOf("/");
-      const sib = __vfsManifest[slash >= 0 ? k.slice(0, slash) : ""];
-      if (sib && sib.indexOf(slash >= 0 ? k.slice(slash + 1) : k) !== -1) return true;
-    }
-    return !!(__vfsBundle && __residentAnyUnder(k + "/"));
-  }
 
   // ── statSync ──
   function statSync(p, opts) {
@@ -3720,22 +3357,12 @@ const __fsMod = (() => {
   // classify a miss without redoing the resolve and ancestor walk it just
   // performed — that path runs on every module-resolution probe.
   function _statResolved(absPath, p, opts) {
+    _nsRequire("stat", p, "fs.promises.stat");
     const stat = _statLadder(absPath);
-    // An answer settles the path, including the honest "not there" below —
-    // what the ledger is for is reads that went unanswered, not reads that came
-    // back with news the caller did not want. A PROVISIONAL not-there is not an
-    // answer, so the unmapped branch deliberately leaves the record standing.
-    if (stat !== undefined) { _residencySatisfied(absPath); return stat; }
-    // The view knows the name is there but holds no record of it (a listing
-    // named it, bytes arrived for it, the authority's answer did not describe
-    // it). ENOENT would be a lie: a program told "not there" creates it. The
-    // record is one async stat away; throwIfNoEntry does not suppress this,
-    // because the path is not missing.
-    if (!_nsActive() && _nameHeld(_strip(absPath))) throw _refuseUnmapped(absPath, p, "stat", "fs.promises.stat");
-    // Nothing in the view describes the path, and there are two very different
-    // reasons for that. Only one of them means the file is not there.
-    if (_absenceIsKnown(absPath)) _residencySatisfied(absPath);
-    else _recordUnmapped(absPath, "stat");
+    // An answer settles the path, including the honest "not there": the
+    // namespace names every path this credential can see.
+    _residencySatisfied(absPath);
+    if (stat !== undefined) return stat;
     // Node's statSync honors { throwIfNoEntry: false } by returning undefined
     // for a missing path instead of throwing.
     if (opts && opts.throwIfNoEntry === false) return undefined;
@@ -3750,57 +3377,18 @@ const __fsMod = (() => {
    */
   function _statLadder(absPath, noFollow) {
     const k = _strip(absPath);
-    if (_nsActive()) {
-      const meta = _nsMeta(k, !noFollow);
-      if (meta === "absent" || meta === "ELOOP") return undefined;
-      return meta.own
-        ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
-        : _statObject(meta, k);
-    }
-    // Content written this exec session is newer than the spawn-time
-    // metadata snapshot, so it — not __vfsMetadata — is authoritative for
-    // size. Without this, fstatSync/statSync on a file we just wrote report
-    // the pre-write length.
-    if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
-      const meta = _metadata(absPath);
-      const size = _byteLen(__vfsWrites[k]);
-      // Correct only the size — reusing the metadata record keeps the type
-      // and the recorded timestamps stable, so mtime-based change detection
-      // (make, tsc --build, watchers) does not see every call as a change.
-      if (meta) return _statObject({ ...meta, size }, k);
-      if (_createdHere.has(k)) {
-        return _localStatObject(k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid);
-      }
-      return undefined;
-    }
-    const metadata = _metadata(absPath);
-    if (metadata) {
-      // The owner and mode are the record's; the size is the bytes this view
-      // holds, which a ranged write through a descriptor has moved on since.
-      const held = metadata.type === "file" ? _bundleLookup(absPath) : undefined;
-      return _statObject(held !== undefined && _denialCode(held) === null ? { ...metadata, size: _byteLen(held) } : metadata, k);
-    }
-    if (_createdHere.has(k)) {
-      if (__vfsDirs && k in __vfsDirs) {
-        return _localStatObject(k, true, false, 0, 0o777 & ~__processUmask, cred.uid, cred.gid);
-      }
-      // A file this process made, holding the bytes it made it with.
-      const cell = _bundleLookup(absPath);
-      if (cell !== undefined && _denialCode(cell) === null) {
-        return _localStatObject(k, false, false, _byteLen(cell), 0o666 & ~__processUmask, cred.uid, cred.gid);
-      }
-    }
-    // Nothing the authority described, and nothing this process made: the
-    // callers classify that (absent, or a first miss). A name in a listing,
-    // bytes in the module map or a directory above them say the path exists,
-    // never who owns it or who may write it.
-    return undefined;
+    _nsRequire("stat", absPath, "fs.promises.stat");
+    const meta = _nsMeta(k, !noFollow);
+    if (meta === "absent" || meta === "ELOOP") return undefined;
+    return meta.own
+      ? _localStatObject(k, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
+      : _statObject(meta, k);
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
   function lstatSync(p, opts) {
-    if (!_nsActive()) return statSync(p, opts);
     const absPath = _resolve(p);
+    _nsRequire("lstat", p, "fs.promises.lstat");
     _ensureAncestorsTraversable(absPath, "lstat", p);
     const stat = _statLadder(absPath, true);
     if (stat !== undefined) return stat;
@@ -3809,104 +3397,23 @@ const __fsMod = (() => {
   }
 
   // ── readdirSync ──
-  // W2.5b root-cause fix: prefer the uncapped __vfsManifest for directory
-  // listings. The legacy bundle-prefix scan is kept as a fallback for paths
-  // not in the manifest (e.g. dirs created at exec time via mkdirSync) and
-  // is unioned with __vfsWrites so newly-written files become visible.
+  // The namespace's listing of the directory, with this process's own
+  // structural effects over it (_nsList).
   function readdirSync(p, opts) {
     const absPath = _resolve(p);
+    _nsRequire("scandir", p, "fs.promises.readdir");
     _ensureAncestorsTraversable(absPath, "scandir", p);
     const metadata = _metadata(absPath);
     if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
-    if (_nsActive()) {
-      const st = _statLadder(absPath);
-      if (st === undefined) throw _fsErr("ENOENT", "scandir", p);
-      if (!st.isDirectory()) throw _fsErr("ENOTDIR", "scandir", p);
-      _residencySatisfied(absPath);
-      const listed = _nsList(k);
-      const sorted = [...listed.keys()].sort();
-      if (!opts?.withFileTypes) return sorted;
-      return sorted.map((n) => _direntObject(n, listed.get(n), absPath));
-    }
-    // A listing is the one answer with no way to express doubt: an array is a
-    // complete enumeration by definition, so returning what happens to be
-    // known asserts that nothing else is there. Only a directory the walk
-    // enumerated, or one this process created, can honestly be listed.
-    if (!_dirEnumerated(k) && !_bundleHasChildren(k)) {
-      // An authority exists that this call cannot reach, so an empty array
-      // would be a claim about a directory nothing ever opened. Refuse, and
-      // pull the listing in for the next one.
-      //
-      // This is the one caller that keeps refusing. Everywhere else the sync
-      // view answers a path it cannot map with the not-found the program was
-      // written to handle, provisionally, and lets the exit report settle
-      // whether that answer was true. A listing has no such answer to give:
-      // "no config yet, write one" is an idiom every program implements, and
-      // there is no counterpart for a directory — a caller handed ENOENT for a
-      // template tree has nowhere to go but the same wrong branch an empty
-      // array sent it down, and the array at least it could not detect.
-      if (_supervisor()) {
-        throw _refuseUnmapped(absPath, p, "scandir", "fs.promises.readdir");
-      }
-      // No authority: the staged tables are the whole filesystem. A path they
-      // do not describe is missing, and one they describe with no children is
-      // genuinely empty.
-      if (_statLadder(absPath) === undefined) throw _fsErr("ENOENT", "scandir", p);
-    }
-    const prefix = k ? k + "/" : "";
-    const names = new Set();
-    // 1. Manifest-supplied children (the authoritative source for installed pkgs).
-    if (__vfsManifest && k in __vfsManifest) {
-      for (const n of __vfsManifest[k]) names.add(n);
-    }
-    // 2. Bundle-prefix fallback (covers older paths or runtime-mkdir'd ones
-    //    that aren't in the manifest yet).
-    if (__vfsBundle) {
-      for (const bk of __residentUnder(prefix)) {
-        const seg = bk.substring(prefix.length).split("/")[0];
-        if (seg) names.add(seg);
-      }
-    }
-    // 3. Files written during this exec session.
-    if (__vfsWrites) {
-      for (const wk in __vfsWrites) {
-        if (wk.startsWith(prefix)) {
-          const rest = wk.substring(prefix.length);
-          const seg = rest.split("/")[0];
-          if (seg) names.add(seg);
-        }
-      }
-    }
-    // 4. Dirs created during this exec session.
-    if (__vfsDirs) {
-      for (const dk in __vfsDirs) {
-        if (dk.startsWith(prefix)) {
-          const rest = dk.substring(prefix.length);
-          const seg = rest.split("/")[0];
-          if (seg) names.add(seg);
-        }
-      }
-    }
+    const st = _statLadder(absPath);
+    if (st === undefined) throw _fsErr("ENOENT", "scandir", p);
+    if (!st.isDirectory()) throw _fsErr("ENOTDIR", "scandir", p);
     _residencySatisfied(absPath);
-    const arr = [...names].sort();
-    if (opts?.withFileTypes) {
-      return arr.map(n => {
-        const fp = prefix + n;
-        // Manifest is the definitive isDir source; fall back to bundle scan.
-        // The metadata record sits between them: a directory that was listed
-        // but never walked has no manifest entry of its own, and calling it a
-        // file is how a template tree full of subdirectories reads back as a
-        // tree full of nothing.
-        const isDir =
-          (!!__vfsManifest && fp in __vfsManifest) ||
-          (!!__vfsDirs && fp in __vfsDirs) ||
-          _metadata(fp)?.type === "directory" ||
-          (!!__vfsBundle && __residentAnyUnder(fp + "/"));
-        return _direntObject(n, isDir ? "directory" : "file", absPath);
-      });
-    }
-    return arr;
+    const listed = _nsList(k);
+    const sorted = [...listed.keys()].sort();
+    if (!opts?.withFileTypes) return sorted;
+    return sorted.map((n) => _direntObject(n, listed.get(n), absPath));
   }
 
   // ── mkdirSync ──
@@ -3926,11 +3433,9 @@ const __fsMod = (() => {
       __vfsDirs[k] = true;
       created.push(k);
     }
-    if (_nsActive()) {
-      for (const dir of created) {
-        const was = _nsMeta(dir, true);
-        if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
-      }
+    for (const dir of created) {
+      const was = _nsMeta(dir, true);
+      if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
     }
     const queued = _queueStructuralMutation(absPath, "mkdir", p, (supervisor) => supervisor.mkdir(absPath));
     // Told, not merely known locally: _announceLocalDirs must not issue a
@@ -3957,10 +3462,7 @@ const __fsMod = (() => {
     if ((Number(parent.mode) & 0o1000) === 0 || Number(cred.uid) === 0 || Number(parent.uid) === Number(cred.uid)) return;
     if (_createdHere.has(k)) return;
     const target = _statLadder(absPath, true);
-    if (target === undefined) {
-      if (_listedByParent(k) || _bundleLookup(absPath) !== undefined) throw _refuseUnmapped(absPath, p, syscall, "fs.promises." + syscall);
-      return;
-    }
+    if (target === undefined) return;
     if (Number(target.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
   }
 
@@ -3997,13 +3499,13 @@ const __fsMod = (() => {
     // The name leaves its directory and lands in another (replacing what is
     // there): both are removals by POSIX's rule.
     _ensureRemovable(oldAbs, "rename", oldP);
-    if (_statLadder(newAbs, true) !== undefined || _listedByParent(_strip(newAbs))) _ensureRemovable(newAbs, "rename", newP);
+    if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", newP);
     else _ensureWritable(newAbs, "rename", newP);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     // The table still holds the old name until the rename is reported, so the
     // new name reads through to it and the old one reads as gone.
-    const nsFrom = _nsActive() ? _nsRealKey(oldK) : null;
+    const nsFrom = _nsRealKey(oldK);
     // What this process created travels with the name; what it did not stays
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
@@ -4016,13 +3518,7 @@ const __fsMod = (() => {
       if (__vfsBundle) delete __vfsBundle[oldK];
       delete __vfsBundleRevisions[oldK];
       delete __vfsWrites[oldK];
-      // The stat record travels with the content: dropping it would lose the
-      // mode/ownership, and leaving it behind would keep the source path
-      // reporting as an existing file this rename already moved away.
-      const metadata = _metadataTable();
-      const moved = metadata ? metadata[oldK] : undefined;
       _forgetSyncPath(oldK);
-      if (moved) metadata[newK] = moved;
     } else if (__vfsDirs && oldK in __vfsDirs) {
       // A directory this process made travels under its new name, so the
       // sync view stops listing the old one and _announceLocalDirs cannot
@@ -4040,16 +3536,13 @@ const __fsMod = (() => {
     _forgetCreation(oldK);
     _forgetCreation(newK);
     for (const key of createdMoved) _createdHere.add(key);
-    if (_nsActive()) {
-      const prefix = oldK + "/";
-      for (const [ok, entry] of [..._nsOwn]) {
-        if ((ok === oldK || ok.startsWith(prefix)) && entry.state === "dir") {
-          _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
-        }
+    for (const [ok, entry] of [..._nsOwn]) {
+      if ((ok === oldK || ok.startsWith(oldPrefix)) && entry.state === "dir") {
+        _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
       }
-      if (nsFrom !== null && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom });
-      _nsOwnSet(oldK, "absentTree");
     }
+    if (nsFrom !== null && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom });
+    _nsOwnSet(oldK, "absentTree");
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
       (supervisor) => supervisor.rename(oldAbs, newAbs),
@@ -4218,7 +3711,7 @@ const __fsMod = (() => {
   // .native static is required by TypeScript's getNodeSystem at
   function realpathSync(p, opts) {
     const absPath = _resolve(String(p));
-    if (!_nsActive()) return absPath;
+    _nsRequire("realpath", p, "fs.promises.realpath");
     const k = _strip(absPath);
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
@@ -4314,11 +3807,8 @@ const __fsMod = (() => {
     // Non-resident and non-empty: writing onto a zero-filled base would
     // silently destroy the bytes we cannot see. Refuse instead.
     if (st !== undefined && st.size !== 0) throw _notResidentError(absPath, p, syscall, asyncForm);
-    // Absent or empty — an empty base IS the true prior content, but only
-    // where absence is knowledge. A path the view never mapped may hold bytes
-    // this process cannot see, and an O_APPEND descriptor onto a zero-filled
-    // base would overwrite the file with the fragment it meant to add.
-    if (st === undefined && !_absenceIsKnown(absPath)) throw _refuseUnmapped(absPath, p, syscall, asyncForm);
+    // Absent or empty: an empty base is the true prior content (the namespace
+    // names every path this credential can see).
     return new Uint8Array(0);
   }
 
@@ -4584,8 +4074,7 @@ const __fsMod = (() => {
     // The authority answered, so what it said is what the sync view keeps:
     // its stat when something is there, and when nothing is, the file this
     // open creates is the process's own.
-    if (liveMeta) _keepStat(absPath, liveMeta);
-    else if (supervisor && !localStat) _createdHere.add(_strip(absPath));
+    if (!liveMeta && supervisor && !localStat) _createdHere.add(_strip(absPath));
     if (!exists) {
       await _writeFileAsync(path, new Uint8Array(0));
       if (mode !== undefined && mode !== null) {
@@ -5082,15 +4571,16 @@ const __fsMod = (() => {
       // not just the local cache — is required so a subsequent async fs op
       // (e.g. fs.promises.rename of a copied file, as create-cloudflare
       // does for __dot__gitignore) sees the copy in the VFS instead of
-      // ENOENT.
-      __vfsDirs[destK] = true;
+      // ENOENT. Each directory is made as mkdir makes it, so the namespace's
+      // overlay lists it for the writes beneath it.
+      await _mkdirAsync("/" + destK, { recursive: true });
       const walk = async (relDir) => {
         const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
         const ents = await _readdirAsync(absDir, { withFileTypes: true });
         for (const ent of ents) {
           const rel = relDir ? relDir + "/" + ent.name : ent.name;
           if (ent.isDirectory && ent.isDirectory()) {
-            __vfsDirs[destK + "/" + rel] = true;
+            await _mkdirAsync("/" + destK + "/" + rel, { recursive: true });
             await walk(rel);
           } else {
             await _writeFileAsync("/" + destK + "/" + rel, await _readFileAsync(srcAbs + "/" + rel));
@@ -8882,26 +8372,8 @@ function __readFileOr(path, fallback) {
 }
 function __fileExists(path) {
   const k = path.replace(/^\\/+/, "");
-  // A resident facet's namespace answers exactly (vfs/facet-resident-store.ts).
-  if (typeof __nsReady === "function" && __nsReady()) return __fsMod.existsSync("/" + k);
-  if (__vfsBundle && k in __vfsBundle) return true;
-  if (__vfsWrites && k in __vfsWrites) return true;
-  if (__vfsDirs && k in __vfsDirs) return true;
-  // Consult the uncapped manifest (directory shape) so resolution sees
-  // installed files whose content was excluded from the bounded snapshot
-  // (e.g. web-streams-polyfill's ponyfill/package.json, reached via a
-  // parent-relative main). Mirrors existsSync's manifest probe.
-  if (__vfsManifest) {
-    if (k in __vfsManifest) return true;
-    const slash = k.lastIndexOf("/");
-    const parent = slash >= 0 ? k.slice(0, slash) : "";
-    const name = slash >= 0 ? k.slice(slash + 1) : k;
-    const sib = __vfsManifest[parent];
-    if (sib && sib.indexOf(name) !== -1) return true;
-  }
-  // Check for directory by looking for any key with this prefix
-  if (__vfsBundle && __residentAnyUnder(k + "/")) return true;
-  return false;
+  // The namespace answers exactly (vfs/facet-resident-store.ts).
+  return __fsMod.existsSync("/" + k);
 }
 // W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
 // directories (it has to — __resolveNodeModule and __resolveImportsField call
@@ -8913,30 +8385,8 @@ function __fileExists(path) {
 // the fastify ret/dist/types failure.
 function __pathIsFile(path) {
   const k = path.replace(/^\\/+/, "");
-  if (typeof __nsReady === "function" && __nsReady()) {
-    const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
-    return !!st && st.isFile();
-  }
-  if (__vfsBundle && k in __vfsBundle) return true;
-  if (__vfsWrites && k in __vfsWrites) return true;
-  // Consult the manifest as a strict-file probe: a name listed in its
-  // parent's manifest entry is a file (directories are manifest KEYS).
-  // This lets resolution find files whose content was excluded from the
-  // bounded snapshot without re-introducing the directory short-circuit
-  // (__vfsManifest[k] being a directory key is deliberately NOT matched).
-  if (__vfsManifest) {
-    const slash = k.lastIndexOf("/");
-    const parent = slash >= 0 ? k.slice(0, slash) : "";
-    const name = slash >= 0 ? k.slice(slash + 1) : k;
-    const sib = __vfsManifest[parent];
-    if (sib && sib.indexOf(name) !== -1 && !(k in __vfsManifest)) return true;
-  }
-  // Last resort: the full fs view (live SQLite VFS) for paths outside the
-  // bounded snapshot/manifest entirely — e.g. the /tmp/.npx-cache tree,
-  // which the project snapshot never covers. stat-as-file only.
-  try { const st = __fsMod.statSync("/" + k); if (st && st.isFile && st.isFile()) return true; } catch {}
-  // Deliberately does NOT consult __vfsDirs nor do the prefix scan.
-  return false;
+  const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
+  return !!st && st.isFile();
 }
 function __resolveFile(base) {
   // Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):

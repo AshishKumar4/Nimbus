@@ -15,6 +15,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -47,6 +48,8 @@ const supervisor = {
   chmod: (p, m) => bridge.chmod(p, m),
   chown: (p, u, g, o) => bridge.chown(p, u, g, o),
   fsRemove: (p, o) => bridge.remove(p, o),
+  // The barrier's delta, as every session serves it.
+  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 
 const enc = new TextEncoder();
@@ -60,13 +63,17 @@ const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid
 let writes;
 const dirs = {};
 
-const code = generateShimsCode();
+const code = SHIMS_STORE_PRELUDE + generateShimsCode();
+// The process starts at the authority's cursor, as a launch does.
+globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
     '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins, drain: __nimbusDrainVfsMutations };'
 );
+listAuthority(rawVfs);
+globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const sandbox = factory(
   bundle, metadata, dirs, null, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -300,15 +307,15 @@ fs.closeSync(aefd);
 assert.equal(fs.readFileSync('/home/user/asyncenc.bin', 'utf8'), 'hello');
 
 // ── statSync must not invent a new mtime on every call ──
-metadata['home/user/stable.txt'] = {
-  type: 'file', size: 4, mode: 0o644, uid: 1000, gid: 1000, mtime: 1_700_000_000_000,
-};
+// The write sets it (POSIX: a write updates mtime); every stat after that
+// answers the same instant until the next write.
+const before = Date.now();
 fs.writeFileSync('/home/user/stable.txt', 'abcdefg');
 const s1 = fs.statSync('/home/user/stable.txt');
 const s2 = fs.statSync('/home/user/stable.txt');
 assert.equal(s1.size, 7, 'size reflects the write');
 assert.equal(s1.mtime.getTime(), s2.mtime.getTime(), 'mtime is stable across calls');
-assert.equal(s1.mtime.getTime(), 1_700_000_000_000, 'mtime comes from the metadata record');
+assert.ok(s1.mtime.getTime() >= before - 1000, 'mtime is the write\'s own, not a stale or zero instant');
 
 // ── the resident/live boundary ──
 // Documented limit: a file that appeared in SQLite AFTER the facet booted is
@@ -321,14 +328,12 @@ assert.throws(() => fs.readFileSync('/home/user/born-later.bin'), (e) => e.code 
 // ...while the async form sees it, because it can reach the supervisor.
 assert.equal(await fs.promises.readFile('/home/user/born-later.bin', 'utf8'), 'UNSEEN');
 
-// The interesting case: the path IS known to the sync view (the spawn-time
-// prefetch records metadata for the whole tree) but its CONTENT was capped
-// out and lives only in SQLite. open succeeds; sync I/O must then refuse
-// loudly rather than serve bytes it does not have.
+// The interesting case: the path IS known to the sync view (a peer wrote it,
+// and the next barrier's delta named it with its stat) but its CONTENT lives
+// only in the authority. open succeeds; sync I/O must then refuse loudly
+// rather than serve bytes it does not have.
 vfs.writeFile('home/user/live-only.bin', enc.encode('LIVEDATA-0123456789'));
-metadata['home/user/live-only.bin'] = {
-  type: 'file', size: 19, mode: 0o644, uid: 1000, gid: 1000, mtime: Date.now(),
-};
+await new Promise((resolve) => setTimeout(resolve, 0));
 const lfd = fs.openSync('/home/user/live-only.bin', 'r+');
 assert.throws(() => fs.readSync(lfd, buf, 0, 4, 0), (e) => {
   assert.equal(e.code, 'EAGAIN', 'non-resident sync read must be EAGAIN');

@@ -180,7 +180,7 @@ export interface FacetExecResult {
    * exec-telemetry.ts); the supervisor folds them with its own phase timings
    * before recording.
    */
-  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number };
+  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number; namespaceRefusals?: number };
 }
 
 /**
@@ -595,8 +595,6 @@ export async function generateEntrypointCode(
 ): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
-  const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
-  const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
   return {
     code: `
 ${bundleSource.imports}
@@ -616,10 +614,8 @@ try {
   __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
 }
 
-// VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
+// The module bundle and its pre-compiled modules, at module level (startup time).
 const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __MODULE_VFS_MANIFEST = ${safeManifest};
-const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 // Precompile JS modules AND extensionless CJS entries (bin scripts and
@@ -645,8 +641,6 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __vfsManifest = __MODULE_VFS_MANIFEST;
-    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
@@ -664,8 +658,11 @@ ${sources.residentStore}
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
-    if (__residentBooted.failure) {
-      try { globalThis.__nimbusResidentFillError = __residentBooted.failure; } catch {}
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13).
+    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    if (__namespaceFailure) {
+      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", vfsWrites: {}, residencyMisses: [] });
     }
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
@@ -832,7 +829,10 @@ ${RESIDENCY_MISS_REPORT}
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
       residencyMisses: __nimbusStagingMisses(),
-      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
+      ...(__diag ? { diag: {
+        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
+        namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
+      } } : {}),
     });
   }
 };
@@ -952,8 +952,6 @@ export async function generateLongRunningNodeCode(
     cred: opts.cred,
   });
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-  const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
-  const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
   return {
     code: `
 ${bundleSource.imports}
@@ -980,8 +978,6 @@ try {
 // and this object are the same bytes twice, and for pi that is the largest
 // single allocation in the facet before the program starts.
 let __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __MODULE_VFS_MANIFEST = ${safeManifest};
-const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 // Module evaluation is the ONLY place workerd allows a string to become code —
@@ -1060,8 +1056,6 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __vfsManifest = __MODULE_VFS_MANIFEST;
-    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
     // The resident set lives in this facet's own SQLite rather than its heap.
     // A synchronous read cannot block and no JS stack here can be suspended, so
@@ -1111,12 +1105,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
-    if (__residentBooted.failure) {
-      // A boot that fell short is a smaller resident set, not a dead process:
-      // every path it did not reach reads exactly as it would have without this
-      // store. Surfacing beats a silent capability loss.
-      try { globalThis.__nimbusResidentFillError = __residentBooted.failure; } catch {}
-    }
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
+    // namespace cannot be listed fails here, naming why.
+    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    if (__namespaceFailure) throw new Error(__namespaceFailure);
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
@@ -1368,19 +1361,12 @@ export class NimbusProcess extends DurableObject {
  *               requires and synchronous filesystem reads. Required files
  *               are never removed to satisfy an enrichment budget.
  *
- *   - manifest: path → child names map for directory listings (uncapped,
- *               unchanged from W2.5b). Walks the SqliteVFS regardless of
- *               the content cap so that fs.readdirSync / fs.statSync(dir)
- *               inside the facet see the *true* directory shape rather
- *               than just the subset that fit in the content bundle.
- *
- * Sizing: a manifest entry is one short string per file/dir name. For
- * 1928 files / 319 dirs (fastify install) total manifest JSON is ~50 KiB
- * — three orders of magnitude smaller than the content bundle.
+
+ * The process's view of names and stats is the namespace its store boots on
+ * (vfs/facet-resident-store.ts), never a spawn-time table.
  */
 type FacetVfsDenial = { error: 'EACCES' };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
-type FacetVfsMetadata = Pick<VfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid'>;
 
 /**
  * What the facet store charges itself to hold one cell (facet-resident-store's
@@ -1405,8 +1391,6 @@ interface FacetVfsState {
   // read returned 3× the original byte count. See
   // for the canonical 256→512 byte demo.
   bundle: FacetVfsBundle;
-  manifest: Record<string, string[]>;
-  metadata: Record<string, FacetVfsMetadata>;
   /**
    * The VFS cursor these cells were read at.
    *
@@ -1437,9 +1421,6 @@ interface FacetVfsState {
    * not exceed the main module's text-size ceiling.
    */
   bundleSource?: FacetVfsBundleSource;
-  /** Memoized `JSON.stringify(manifest)`, cached for the same reason. */
-  serializedManifest?: string;
-  serializedMetadata?: string;
   /** Move the bundle out of the main module when combined state exceeds its ceiling. */
   bundleSideModulesRequired?: boolean;
   /**
@@ -1485,10 +1466,9 @@ interface ProcessBundleSpec {
 /**
  * Drop the raw forms of everything that has been serialized, in place.
  *
- * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
- * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
- * a state carrying both from one carrying only the serialized halves, because
- * both facet generators read the serialized halves and nothing else does.
+ * `bundleSource` is a total encoding of `bundle`: no caller can distinguish
+ * a state carrying both from one carrying only the serialized half, because
+ * both facet generators read the serialized half and nothing else does.
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
@@ -1500,15 +1480,13 @@ interface ProcessBundleSpec {
  */
 export function releaseSerializedSources(vfsState: FacetVfsState): void {
   if (vfsState.bundleSource) vfsState.bundle = {};
-  if (vfsState.serializedManifest !== undefined) vfsState.manifest = {};
-  if (vfsState.serializedMetadata !== undefined) vfsState.metadata = {};
 }
 
 /**
  * Drop the serialized forms once a module map has been generated from them.
  *
- * The generated source is a total encoding of all three: every byte of the
- * bundle expression, the manifest and the metadata is inside it. Holding them
+ * The generated source is a total encoding of it: every byte of the bundle
+ * expression is inside it. Holding them
  * afterwards keeps a second copy of the largest thing this DO builds alive for
  * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
  * the isolate was being reset. For the one-shot path that window is the run;
@@ -1525,8 +1503,6 @@ export function releaseSerializedSources(vfsState: FacetVfsState): void {
  */
 export function releaseGeneratedSources(vfsState: FacetVfsState): void {
   vfsState.bundleSource = undefined;
-  vfsState.serializedManifest = undefined;
-  vfsState.serializedMetadata = undefined;
   vfsState.generatedSourcesReleased = true;
 }
 
@@ -1649,8 +1625,6 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     bytes += source.expression.length + source.imports.length;
     for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
   }
-  bytes += state.serializedManifest?.length ?? 0;
-  bytes += state.serializedMetadata?.length ?? 0;
   return bytes;
 }
 
@@ -1713,8 +1687,8 @@ function _jsonEncodedBytes(value: unknown): number {
   return bytes;
 }
 
-/** `{"bundle":` + `,"manifest":` + `}` — the frame around the two members. */
-const ENCODED_PAYLOAD_FRAME_BYTES = 23;
+/** `{"bundle":` + `}`: the frame around the one member. */
+const ENCODED_PAYLOAD_FRAME_BYTES = 11;
 
 /**
  * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
@@ -1731,10 +1705,9 @@ const ENCODED_PAYLOAD_FRAME_BYTES = 23;
  * the total is a sum of independent per-cell terms: exact, incremental, and
  * never holding more than one cell's worth of scratch.
  */
-export function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<string, string[]>) {
+export function encodedBundleSize(bundle: FacetVfsBundle) {
   const cells = new Map<string, number>();
   let cellSum = 0;
-  const manifestBytes = _jsonEncodedBytes(manifest);
   const self = {
     add(path: string, cell: FacetVfsBundle[string]): void {
       if (cells.has(path)) return;
@@ -1750,7 +1723,7 @@ export function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<strin
     },
     get bytes(): number {
       const separators = Math.max(0, cells.size - 1);
-      return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators + manifestBytes;
+      return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators;
     },
   };
   for (const [path, cell] of Object.entries(bundle)) self.add(path, cell);
@@ -2076,152 +2049,8 @@ function _fnv1a(s: string): string {
 
 const MANIFEST_MAX_DEPTH = 12;
 
-/**
- * Build the manifest pass — uncapped path→child-names map. UNCHANGED
- * from W2.5b; this is the W2.5b root-cause fix and continues to keep
- * fs.readdirSync / fs.statSync honest regardless of which subset of
- * file CONTENT we ship.
- */
-async function buildManifest(
-  vfs: LaunchFs,
-  cwd: string,
-  scriptPath?: string,
-): Promise<Record<string, string[]>> {
-  const manifest: Record<string, string[]> = {};
-  async function walk(dirPath: string, depth = 0) {
-    if (depth > MANIFEST_MAX_DEPTH) return;
-    const stripped = dirPath.replace(/^\/+/, '');
-    if (stripped in manifest) return;
-    let entries: { name: string; type: string }[];
-    try { entries = (await vfs.readdir(stripped)); }
-    catch { return; }
-    manifest[stripped] = entries.map((e) => e.name);
-    for (const entry of entries) {
-      if (entry.type === 'directory') {
-        const childPath = stripped ? stripped + '/' + entry.name : entry.name;
-        (await walk(childPath, depth + 1));
-      }
-    }
-  }
-  const cwdStripped = cwd.replace(/^\/+/, '');
-  // ── The path from the root down to the working directory ──────────────
-  //
-  // One level each, before the deep walks, so that every directory on that
-  // chain is ENUMERATED rather than merely mentioned. It is what makes a
-  // synchronous "not there" honest for the shape programs probe most: node's
-  // resolver walks upward asking for `<dir>/node_modules` at every level, and
-  // a config lookup asks for a dotfile directory in $HOME. Those paths mostly
-  // do not exist, and answering that requires having listed the directory
-  // they would be in — otherwise the only honest answer is a refusal, and the
-  // resolver pays a round trip per rung to hear it.
-  //
-  // Cheap by construction: one readdir per component, names only, and the
-  // recursion below each stops immediately.
-  {
-    const segments = cwdStripped ? cwdStripped.split('/') : [];
-    for (let i = 0; i < segments.length; i++) {
-      (await walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH));
-    }
-  }
-  (await walk(cwdStripped, 0));
-  const nmDir = cwdStripped + '/node_modules';
-  if ((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir))) {
-    (await walk(nmDir, 0));
-  }
-  // ── Bin-target package + hoisted dependency roots ─────────────────────
-  //
-  // When the entry script lives in a node_modules outside cwd (npx-cache
-  // packages, globally-installed bins, etc.), buildManifest's cwd walk
-  // misses the package's sibling files. The bin's index.js gets
-  // require-walked + greedy-added to the BUNDLE, but the MANIFEST
-  // (which is the source of truth for `fs.readdirSync`) was empty for
-  // those paths — so `readdirSync('/tmp/.npx-cache/.../template-X')`
-  // returned [] and `create-vite` scaffolded zero files.
-  //
-  // Walk the innermost `node_modules/<pkg>/` of `scriptPath` so its
-  // entire package tree is enumerable via readdir. Also walk that
-  // `node_modules` directory itself: global npm bins resolve hoisted
-  // transitive dependencies as siblings of the bin's own package.
-  // Bounded by MANIFEST_MAX_DEPTH; same depth budget as the cwd walk.
-  if (scriptPath) {
-    const sp = scriptPath.replace(/^\/+/, '');
-    const segs = sp.split('/');
-    let nmIdx = -1;
-    for (let i = segs.length - 1; i >= 0; i--) {
-      if (segs[i] === 'node_modules') { nmIdx = i; break; }
-    }
-    if (nmIdx >= 0) {
-      const isScoped = segs[nmIdx + 1]?.startsWith('@');
-      const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
-      if (pkgEnd <= segs.length) {
-        const pkgRoot = segs.slice(0, pkgEnd).join('/');
-        if ((await filesOf(vfs).exists(pkgRoot)) && (await filesOf(vfs).isDirectory(pkgRoot))) {
-          (await walk(pkgRoot, 0));
-        }
-      }
-      const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
-      if ((await filesOf(vfs).exists(nodeModulesRoot)) && (await filesOf(vfs).isDirectory(nodeModulesRoot))) {
-        (await walk(nodeModulesRoot, 0));
-      }
-    }
-  }
-  return manifest;
-}
 
-async function buildVfsMetadata(
-  vfs: LaunchFs,
-  manifest: Record<string, string[]>,
-  bundle: FacetVfsBundle,
-): Promise<Record<string, FacetVfsMetadata>> {
-  const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
-  for (const [directory, children] of Object.entries(manifest)) {
-    paths.add(directory);
-    for (const child of children) {
-      paths.add(directory ? `${directory}/${child}` : child);
-    }
-  }
 
-  const metadata: Record<string, FacetVfsMetadata> = {};
-  for (const path of paths) {
-    try {
-      const stat = await vfs.stat(path, { followSymlinks: false });
-      if (!stat) continue;
-      metadata[path] = {
-        type: stat.type,
-        size: stat.size,
-        mode: stat.mode,
-        uid: stat.uid,
-        gid: stat.gid,
-      };
-    } catch {
-      // The credentialed lookup is authoritative; inaccessible ancestors do
-      // not reveal whether a leaf exists.
-    }
-  }
-  return metadata;
-}
-
-async function addUnreadableDenialCells(
-  vfs: LaunchFs,
-  bundle: FacetVfsBundle,
-  metadata: Record<string, FacetVfsMetadata>,
-): Promise<void> {
-  for (const [path, stat] of Object.entries(metadata)) {
-    if (stat.type === 'directory' || path in bundle) continue;
-    try {
-      (await vfs.access(path, 0o4));
-    } catch (error: unknown) {
-      if (
-        typeof error === 'object'
-        && error !== null
-        && 'code' in error
-        && error.code === 'EACCES'
-      ) {
-        bundle[path] = { error: 'EACCES' };
-      }
-    }
-  }
-}
 
 /**
  * Greedy-oversample every installed package's main entry. The static
@@ -3944,7 +3773,6 @@ async function _buildPrefetchBundle(
   //    from content cap so fs.readdirSync remains honest even if the
   //    content for a given file was capped out.
   await paceAfterPass();
-  const manifest = (await buildManifest(vfs, cwd, scriptPath));
   await paceAfterPass();
 
   // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
@@ -3955,7 +3783,7 @@ async function _buildPrefetchBundle(
   //    Evicting an enrichment file is a real loss — the sync fs reads it
   //    exists for cannot fall back to the supervisor — so the paths that
   //    went are named rather than silently dropped.
-  const size = encodedBundleSize(bundle, manifest);
+  const size = encodedBundleSize(bundle);
   if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
     // A compiled cell goes with its source: required when the source is.
     //
@@ -4001,12 +3829,6 @@ async function _buildPrefetchBundle(
   }
 
   const fileCount = Object.keys(bundle).length;
-  const metadata = (await buildVfsMetadata(vfs, manifest, bundle));
-  (await addUnreadableDenialCells(vfs, bundle, metadata));
-  await paceAfterPass();
-  // Denial cells land after the eviction pass, so account for them before
-  // deciding where the bundle has to live.
-  for (const [path, cell] of Object.entries(bundle)) size.add(path, cell);
   const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
 
   // Suppress lint: `greedy.added` is observed only via diagnostics.
@@ -4016,8 +3838,6 @@ async function _buildPrefetchBundle(
 
   return {
     bundle,
-    manifest,
-    metadata,
     cursor,
     reachableCount: fileCount,
     truncated,
@@ -4907,7 +4727,7 @@ export class FacetManager {
     pacer: TurnBudget,
   ): Promise<FacetVfsState> {
     if (!this.vfs) {
-      return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+      return { bundle: {}, reachableCount: 0, truncated: false };
     }
     this.imageStore.ensureDir();
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
@@ -4951,10 +4771,6 @@ export class FacetManager {
       vfsState.bundleSideModulesRequired,
       pacer,
     );
-    vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
-    vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
-    // Two more serializations of the same weight as the passes before them.
-    await pacer.spend(vfsState.serializedManifest.length + vfsState.serializedMetadata.length);
     // The only consumer of the raw cells past this point is a single boolean,
     // so answer it now rather than hold ~17 MB (pi) to answer it later.
     vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
@@ -5255,7 +5071,7 @@ export class FacetManager {
     }
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const diagSink: ExecDiagSink | undefined = diagOn
-      ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
+      ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
       : undefined;
     const abortController = new AbortController();
     // Ctrl-C / kill on a user program has to end the in-flight run, not just
@@ -5289,8 +5105,7 @@ export class FacetManager {
           drainPasses: result.diag?.drainPasses ?? 0,
           moduleMapBytes: diagSink.moduleMapBytes,
           bundleBytes: diagSink.bundleBytes,
-          manifestBytes: diagSink.manifestBytes,
-          metadataBytes: diagSink.metadataBytes,
+          namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
           rpcWrites: result.diag?.rpcWrites ?? 0,
           fsRpcReads: result.diag?.fsRpcReads ?? 0,
           cacheHit: vfsState.cacheHit ?? false,
@@ -5433,8 +5248,6 @@ export class FacetManager {
               for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
                 diagSink.bundleBytes += _encodedSourceBytes(source);
               }
-              diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
-              diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
             }
             if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
             if (diagSink) __loadStart = Date.now();
@@ -5489,7 +5302,7 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean },
+    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean },
   ): Promise<StagedArtifactExecResult> {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);
@@ -5596,7 +5409,7 @@ export class FacetManager {
           processVfs, undefined, opts.cwd, '', this.esbuild || undefined,
           DEFAULT_FACET_BUNDLE_PROFILE,
         )
-      : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+      : { bundle: {}, reachableCount: 0, truncated: false };
 
     const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
     assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
@@ -5609,8 +5422,6 @@ export class FacetManager {
       cwd: opts.cwd,
       stdin: opts.stdin ?? '',
       vfsBundle,
-      vfsManifest: JSON.stringify(vfsState.manifest),
-      vfsMetadata: JSON.stringify(vfsState.metadata),
       vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
     };
 
@@ -6398,8 +6209,6 @@ export class FacetManager {
       }
       moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
     }
-    const manifestBytes = diagOn ? _encodedSourceBytes(vfsState.serializedManifest ?? '') : 0;
-    const metadataBytes = diagOn ? _encodedSourceBytes(vfsState.serializedMetadata ?? '') : 0;
     const cacheHit = vfsState.cacheHit ?? false;
 
     const vfsCursor = vfsState.cursor;
@@ -6478,8 +6287,7 @@ export class FacetManager {
           // when it stayed inline it rides inside worker.js and shows up only
           // in the total.
           bundleBytes,
-          manifestBytes,
-          metadataBytes,
+          namespaceRefusals: 0,
           rpcWrites: 0,
           fsRpcReads: 0,
           cacheHit,

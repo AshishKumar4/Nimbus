@@ -17,12 +17,18 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
 
 let supervisorFactory = () => ({});
-adoptCtxExports({ SupervisorRPC: (...args) => supervisorFactory(...args) });
+// Every facet lists its namespace before its program runs: the session's own
+// listing and delta ops back whatever a case's supervisor does not define.
+let listingOps = null;
+adoptCtxExports({ SupervisorRPC: (...args) => asLaunchSupervisor(supervisorFactory(...args)) });
 
 // The spawn goes through the real fabric: the facet's module map is assembled
 // in the loader's cache-miss callback, which is where the generated worker's
@@ -55,7 +61,20 @@ const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {})
 // and boots from the path, so the manager needs a real disk.
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
+{
+  const kernel = sessionVfs.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', 1000, 1000);
+}
 manager.setVfs(sessionVfs, processFiles(sessionVfs));
+{
+  const host = attachSupervisorOps({ sqliteFs: sessionVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
+  listingOps = {
+    fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null),
+    fsReadBatch: (requests) => _rpcFsReadBatch(host, requests),
+    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options),
+  };
+}
 /** The generated worker source the facet actually booted from. */
 const residentWorkerSource = () => world.boots.at(-1).config.modules['worker.js'];
 const cellText = (content) => content instanceof Uint8Array
@@ -102,6 +121,17 @@ await manager.spawnNode(userCode, {
 assert.equal(world.boots.length, 1, 'the spawn evaluated the generated worker exactly once');
 assert.ok(residentWorkerSource().includes('NimbusProcess'), 'the facet booted the generated worker');
 
+/**
+ * A launched facet's SUPERVISOR: the case's stub, over the session's listing
+ * and delta ops for anything it does not define, since a facet lists its
+ * namespace before its program runs. (A shims-only factory has its own
+ * authority, and never gets these.)
+ */
+function asLaunchSupervisor(supervisor) {
+  if (listingOps) for (const [name, op] of Object.entries(listingOps)) if (!(name in supervisor)) supervisor[name] = op;
+  return withTestAppendAuthority(supervisor);
+}
+
 function withTestAppendAuthority(supervisor) {
   if (
     typeof supervisor.fsAppend !== 'function'
@@ -129,7 +159,7 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   const factory = new Function(
     '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${generateShimsCode()}
+    `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
 ;return {
   fs: builtins.fs,
   writes: __vfsWrites,
@@ -1008,13 +1038,18 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   const truncateGate = new Promise((resolve) => { releaseTruncate = resolve; });
   const truncateCall = new Promise((resolve) => { truncateStarted = resolve; });
   let durable = 'abcdef';
+  // Revisions as the session's authority dates them: each mutation answers
+  // with the receipt a real one does.
+  let rev = 1;
   const supervisor = {
     async fsTruncate(_path, size) {
       truncateStarted();
       await truncateGate;
       durable = durable.slice(0, size);
+      const before = rev; rev += 1;
+      return { before, after: rev };
     },
-    async writeFile(_path, content) { durable = cellText(content); },
+    async writeFile(_path, content) { durable = cellText(content); rev += 1; return rev; },
   };
   const path = '/home/user/truncate-race.txt';
   const { fs, flushVfsWrite, writes } = makeShimFsFacet(
@@ -1098,7 +1133,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
   const response = await worker.handleHttpRequest(request());
@@ -1153,7 +1188,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-append'));
   assert.equal(response.status, 200);
@@ -1188,7 +1223,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-appends'));
   assert.equal(response.status, 200);
@@ -1211,7 +1246,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   for (let index = 0; index < 32; index++) {
     const response = await worker.handleHttpRequest(request(`retention-${index}`));
@@ -1249,7 +1284,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   const first = worker.handleHttpRequest(request('pending-drain'));
   await started;
@@ -1294,7 +1329,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
 
@@ -1337,7 +1372,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
   const raced = worker.handleHttpRequest(request('race'));
@@ -1384,7 +1419,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
   const raced = worker.handleHttpRequest(request('same-race'));
@@ -1417,7 +1452,7 @@ function request(path = 'first') {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
   await assert.rejects(
@@ -1504,7 +1539,7 @@ http.createServer((req, res) => {
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+    { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
   const mutationRequest = (path) => new Request(`http://127.0.0.1:${port}/${path}`, {
     headers: { 'X-Nimbus-Port': String(port) },
@@ -1557,7 +1592,7 @@ process.exit(0);
   const worker = new generated.NimbusProcess(
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     {
-      SUPERVISOR: {
+      SUPERVISOR: asLaunchSupervisor({
         async fsAppend() {
           const error = new Error('injected append failure after exit intent');
           error.code = 'EIO';
@@ -1567,7 +1602,7 @@ process.exit(0);
         async reportExit(code) { reports.push(code); },
         async stdout() {},
         async stderr() {},
-      },
+      }),
     },
   );
   await assert.rejects(

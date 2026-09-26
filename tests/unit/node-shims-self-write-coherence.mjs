@@ -18,6 +18,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 // The platform's timer, captured before the shims wrap setTimeout in the
 // resumption barrier: a wait that must not itself be a barriered resumption.
@@ -54,7 +55,7 @@ const supervisor = {
   access: (p, m) => bridge.access(p, m),
   mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor) => bridge.acquire(epoch, cursor),
+  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 
 // The supervisor stamps a facet's bundle with the cursor it was read at, and
@@ -67,13 +68,10 @@ globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
 );
-const metadataDeletes = [];
-const metadata = new Proxy({ 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, {
-  deleteProperty(target, key) { metadataDeletes.push(key); return Reflect.deleteProperty(target, key); },
-});
+const metadata = { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
 const out = factory(
   {},
   metadata,
@@ -114,15 +112,16 @@ assert.equal(stats.poisons, 0, 'a seeded cursor is never poisoned');
 assert.equal(stats.fills, 0, `no cell was refetched (was ${stats.fills})`);
 assert.ok(stats.selfWrites >= FILES, 'the barrier recognised the writes as this facet own');
 
-// Every mutation also reports its PARENT, and that one entry is still
-// honoured: the parent is deliberately left unstamped. A write stamps only
-// the file it wrote, because the same revision on the directory would also
-// vouch for a peer's earlier change to the directory itself — a chmod at an
-// unacquired revision — that this facet has never applied. So exactly one
-// record goes, once, instead of one per written file.
+// Every mutation also reports its PARENT, and that entry is still honoured:
+// the parent is deliberately left unstamped. A write stamps only the file it
+// wrote, because the same revision on the directory would also vouch for a
+// peer's earlier change to the directory itself (a chmod at an unacquired
+// revision) that this facet has never applied. The namespace takes the
+// directory's new stat from the delta; there are no bytes of a directory to
+// drop, so nothing is invalidated, the files' cells least of all.
 assert.equal(
-  stats.invalidations, 1,
-  `only the parent directory record is dropped (was ${stats.invalidations})`,
+  stats.invalidations, 0,
+  `no cached bytes are dropped for the facet's own writes (was ${stats.invalidations})`,
 );
 
 // The other direction, and the reason a name-only rule is unsound: a peer
@@ -161,7 +160,7 @@ assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored aga
   // Under /opt, which no ancestor in this facet manifest enumerates — so the
   // first read cannot be answered from knowledge and a repair is put in flight.
   const CFG = '/opt/tool-nodejs/config.json';
-  const before = { fills: stats.fills, invalidations: stats.invalidations, self: stats.selfWrites, metadataDeletes: metadataDeletes.length };
+  const before = { fills: stats.fills, invalidations: stats.invalidations, self: stats.selfWrites };
 
   // The refused read, which is what puts a repair in flight for this path.
   assert.throws(() => fs.readFileSync(CFG, 'utf8'), (error) => error.code === 'ENOENT');
@@ -186,11 +185,9 @@ assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored aga
     'the barrier must recognise the write as this facet own despite the repair',
   );
   assert.equal(
-    stats.invalidations, before.invalidations + 1,
-    'only the newly announced, unstamped parent directory is invalidated',
+    stats.invalidations, before.invalidations,
+    'the newly announced parent directory is a namespace row, and no cached bytes are dropped for it',
   );
-  assert.equal(Object.hasOwn(metadata, 'opt'), false, 'the single invalidation removes the parent metadata');
-  assert.deepEqual(metadataDeletes.slice(before.metadataDeletes), ['opt'], 'no file metadata is invalidated');
   assert.equal(
     stats.fills, before.fills,
     `and nothing was refetched that never left (was ${stats.fills - before.fills})`,

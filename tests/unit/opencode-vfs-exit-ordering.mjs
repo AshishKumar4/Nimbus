@@ -12,8 +12,6 @@ const source = generateOpencodeRunnerCode({
   stdin: '',
   sources: nodeFacetSources('const __nimbusTestShimMarker = true;'),
   vfsBundle: '{}',
-  vfsManifest: '{}',
-  vfsMetadata: '{}',
   mode: 'server',
 });
 
@@ -47,7 +45,9 @@ assert.ok(
   'serve mode performs its final VFS drain before terminal reporting',
 );
 
-const oneShot = source.slice(oneShotStart);
+// Past the launch's own refusal (a namespace that could not be listed, before
+// any opencode code ran and so with nothing to drain): the program's result.
+const oneShot = source.slice(source.indexOf('try {', oneShotStart));
 assert.ok(
   oneShot.indexOf('await __ocDrainVfsWrites();')
     < oneShot.indexOf('return __ocHostResponse.json({'),

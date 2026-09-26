@@ -323,8 +323,13 @@ let __residentGrantAsk = null;
 const __RESIDENT_ROW_BYTES = 256;
 
 function __residentDbBytes() {
-  return __residentT.bytes();
+  // A one-shot's heap is one budget: the store's tables and the own writes
+  // held beside them (__residentHold) count against the same cap.
+  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes : 0);
 }
+
+/** Whether the store is a one-shot's heap (__residentBindInMemory) rather than a facet's SQLite. */
+let __residentInHeap = false;
 
 /**
  * Whether the store may grow by \`bytes\` now; when not, and \`ask\`, more room
@@ -452,8 +457,11 @@ function __residentForgetHeld(path) {
 function __residentHold(path, cell) {
   __residentForgetHeld(path);
   const size = __residentCellSize({ cell });
-  if (size > __RESIDENT_HELD_MAX_BYTES) { __residentUnheld.add(path); return; }
-  while (__residentHeldBytes + size > __RESIDENT_HELD_MAX_BYTES) {
+  // In a facet the held cells have their own bound. In a one-shot's heap they
+  // share the store's: what the cap leaves beside the tables.
+  const limit = __residentInHeap ? Math.max(0, Number(__residentCap) - __residentT.bytes()) : __RESIDENT_HELD_MAX_BYTES;
+  if (size > limit) { __residentUnheld.add(path); return; }
+  while (__residentHeldBytes + size > limit) {
     const [oldest, old] = __residentHeld.entries().next().value;
     __residentHeld.delete(oldest);
     __residentHeldBytes -= __residentCellSize(old);
@@ -863,6 +871,7 @@ function __residentTablesInMemory() {
  */
 function __residentBindInMemory(budget) {
   const t = __residentBindTables(__residentTablesInMemory());
+  __residentInHeap = true;
   __residentFacet = null;
   __residentCap = Number(budget);
   return t;
@@ -974,7 +983,10 @@ function __residentAdmit(result) {
   const namespaced = __nsOk && !!result && !result.poison
     && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
     && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || __nsDescribes(entry.stat)));
-  if (!namespaced) __nsMarkReady(t, false);
+  if (!namespaced) {
+    __nsMarkReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
+      : "a change reported without the stat every name needs");
+  }
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
     // poison here means nothing the authority dated can be kept.
@@ -1434,10 +1446,20 @@ function __nsReady() {
 
 /** The persisted 'ns' flag, mirrored in heap because every stat asks it. */
 let __nsOk = false;
+/** Why the namespace stopped answering, while it does not: what a refused sync call names. */
+let __nsCause = "the process has not listed it yet";
 
-function __nsMarkReady(t, ready) {
+function __nsMarkReady(t, ready, cause) {
   t.metaSet("ns", ready ? "1" : "0");
   __nsOk = !!ready;
+  if (!ready) __nsCause = String(cause || "a change it could not follow");
+}
+
+/** Why the namespace is not answering (meaningful only while __nsReady() is false). */
+function __nsNotReadyCause() {
+  if (!__residentReady) return "the process's store is not bound";
+  if (__residentSealed) return __residentSealReason || "the store has not reconciled with the session";
+  return __nsCause;
 }
 
 /**
@@ -1634,6 +1656,29 @@ function __nsNoteOwnFile(k, size, rev) {
 }
 
 /**
+ * Record what the authority just said of a name this process asked about (an
+ * async stat, read or accepted write): the sync view answers it at once,
+ * as it would after the delta that reports it. Dated at the store's cursor,
+ * so any row as new is kept, and the next delta naming the path replaces it
+ * with the authority's own dating. \`stat\` null: the authority said it is not
+ * there, and a row older than the cursor goes.
+ */
+function __nsNoteLiveStat(k, stat) {
+  if (!__nsReady()) return;
+  const cursor = __residentCursor();
+  if (cursor === null) return;
+  const t = __residentT;
+  const held = __nsRowAt(t, k);
+  if (held !== undefined && Number(held.rev) >= cursor.rev) return;
+  if (stat === null) {
+    if (held !== undefined) { const [parent, name] = __nsSplit(k); t.nsDelete(parent, name); __nsLinks.delete(k); }
+    return;
+  }
+  if (!__nsDescribes(stat)) return;
+  __nsPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target ?? null);
+}
+
+/**
  * Drop every cell AND the cursor, and re-seal.
  *
  * This is slot handover, not invalidation: a returned slot must not hand the
@@ -1810,7 +1855,7 @@ async function __residentCatchUp(supervisor, cursor) {
  * became searchable, whose descendants no delta will ever name.
  */
 async function __nsRelist(supervisor, dir) {
-  if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentT, false); return; }
+  if (!supervisor || typeof supervisor.fsList !== "function") { __nsMarkReady(__residentT, false, "the session cannot list its filesystem"); return; }
   const t = __residentT;
   const prefix = dir + "/";
   const seen = [];
@@ -1819,8 +1864,8 @@ async function __nsRelist(supervisor, dir) {
   for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES && !done; page++) {
     let listed;
     try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
-    catch { __nsMarkReady(t, false); return; }
-    if (!listed || !Array.isArray(listed.entries)) { __nsMarkReady(t, false); return; }
+    catch (e) { __nsMarkReady(t, false, "a listing of /" + dir + " failed (" + ((e && e.message) || String(e)) + ")"); return; }
+    if (!listed || !Array.isArray(listed.entries)) { __nsMarkReady(t, false, "a listing of /" + dir + " came back without entries"); return; }
     for (const entry of listed.entries) {
       const k = String(entry.path).replace(/^\\/+/, "");
       if (!k.startsWith(prefix)) {
@@ -1832,7 +1877,8 @@ async function __nsRelist(supervisor, dir) {
     if (listed.next === null || listed.next === undefined) done = true;
     else after = listed.next;
   }
-  if (!done || !seen.every((entry) => __nsDescribes(entry.stat))) { __nsMarkReady(t, false); return; }
+  if (!done) { __nsMarkReady(t, false, "a listing of /" + dir + " did not finish"); return; }
+  if (!seen.every((entry) => __nsDescribes(entry.stat))) { __nsMarkReady(t, false, "a listing of /" + dir + " named an entry without its stat"); return; }
   // Exactly what the listing has under the directory: a name it no longer
   // shows (hidden now, or gone) leaves, one it shows is written.
   __nsDeleteTree(t, dir, false);
@@ -1895,13 +1941,12 @@ function __residentAdoptModuleBundle(bundle, moduleCursor) {
  * Enumerate the whole filesystem, one page at a time.
  *
  * WHAT EXISTS has to come from the authority, not from anything the facet was
- * shipped, and that was measured rather than assumed: for a working tree
- * holding a 25 MiB file outside the cwd, \`__MODULE_VFS_METADATA\` arrived with
- * FOUR entries — "home", "opt", "var", "home/user" — every one a directory.
- * Metadata covers the bundle plus ancestors; the manifest is per-directory
- * child names for the directories that happened to be walked. A store that
- * enumerated from either would hold only what the bundle already had, which is
- * the admission problem it exists to delete.
+ * shipped. That was measured rather than assumed: for a working tree holding a
+ * 25 MiB file outside the cwd, the spawn-time stat table this replaced arrived
+ * with FOUR entries ("home", "opt", "var", "home/user"), every one a
+ * directory. A launch ships only what it staged plus its ancestors; a store
+ * that enumerated from that would hold only what the bundle already had, which
+ * is the admission problem it exists to delete.
  *
  * Every page is dated, and a page whose epoch differs from the first ABORTS
  * the listing. The supervisor was replaced mid-walk, so the pages already
@@ -2282,7 +2327,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     const describable = listing.names.every((entry) => __nsDescribes(entry.stat));
     if (describable) __nsReplace(t, listing.names);
     __residentWriteCursor(t, listing.cursor);
-    __nsMarkReady(t, describable);
+    __nsMarkReady(t, describable, "the session's listing named an entry without its stat");
     __residentUndated = false;
     __residentSealed = false;
     __residentSealReason = "";
@@ -2303,6 +2348,22 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     cursor: judgeable ? listing.cursor : null,
     ...(listing.reason ? { incomplete: listing.reason } : {}),
   };
+}
+
+/**
+ * The launch's last step before user code: the namespace must answer, since
+ * every synchronous stat, exists and readdir reads it. A boot that left it
+ * unready (its listing failed, came back short, or could not describe every
+ * name) is repaired once more. Resolves to null when it answers, or to the
+ * launch's failure, naming why; nothing is ever run on a namespace that
+ * does not.
+ */
+async function __residentRequireNamespace(supervisor, bootFailure) {
+  if (__nsReady()) return null;
+  try { await __residentSynchronizeFromSupervisor(supervisor); } catch {}
+  if (__nsReady()) return null;
+  return "node: the process was not started: its view of the filesystem could not be listed ("
+    + __nsNotReadyCause() + (bootFailure ? "; " + bootFailure : "") + ")";
 }
 
 /**

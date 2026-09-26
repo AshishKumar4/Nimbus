@@ -16,6 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
 
 const READER = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const OWNER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -39,7 +40,7 @@ const supervisor = {
   readdir: (p) => bridge.readdir(p), exists: async (p) => (await bridge.stat(p)) !== null,
   access: (p, m) => bridge.access(p, m), mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor) => bridge.acquire(epoch, cursor),
+  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 const bundle = {};
 const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
@@ -50,8 +51,12 @@ for (const dir of ['d', 'g', 'k']) {
   metadata[`home/user/${dir}/f.txt`] = { type: 'file', size: 4, mode: 0o644, uid: 1000, gid: 1000 };
   manifest[`home/user/${dir}`] = ['f.txt'];
 }
+// The process starts at the authority's cursor, as a launch does.
+globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function('__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };');
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };');
+listAuthority(rawVfs);
+globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const out = factory(bundle, metadata, {}, manifest, supervisor, READER, '/home/user', [], {}, '/home/user/s.mjs', '/home/user');
 const { fs } = out;
 

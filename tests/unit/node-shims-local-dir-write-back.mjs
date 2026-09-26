@@ -22,6 +22,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -65,10 +66,12 @@ const supervisor = {
     bridge.acknowledgeAppend(APPEND_PID, writerId, moduleId, Number(opId)),
 };
 
+// The process starts at the authority's cursor, as a launch does.
+globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() +
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod };',
 );
 
@@ -153,6 +156,8 @@ function spawnFacet() {
   const fs = spawnFacet();
   let mkdirCalls = 0;
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
+  listAuthority(rawVfs);
+  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
   const counting = factory(
     {},
     { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
@@ -172,6 +177,8 @@ function spawnFacet() {
 {
   let mkdirCalls = 0;
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
+  listAuthority(rawVfs);
+  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
   const fs = factory(
     {},
     { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },

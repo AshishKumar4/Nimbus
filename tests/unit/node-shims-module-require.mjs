@@ -3,11 +3,12 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + generateShimsCode() + '\n;return __require;',
+  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __require;',
 );
 const requireFromFacet = factory(
   {

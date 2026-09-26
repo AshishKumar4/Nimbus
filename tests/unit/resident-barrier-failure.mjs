@@ -32,6 +32,7 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -302,13 +303,16 @@ await runScenarios(import.meta.path, {
       readdir: (p) => bridge.readdir(p),
       exists: async (p) => (await bridge.stat(p)) !== null,
       fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (epoch, cursor) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor)),
+      fsAcquire: (epoch, cursor, options) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor, options)),
+      // What a failed barrier's repair refetches with, as the session serves it.
+      fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
+      fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
     };
     globalThis.__nimbusVfsCursor = authority.cursor();
     const shims = new Function(
       '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
       'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
     )(
       { 'home/user/app/f.txt': 'V1' },

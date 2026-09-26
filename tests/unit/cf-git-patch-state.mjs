@@ -68,9 +68,9 @@ function layout(name, { index, linkTo }) {
   const copy = join(siblings, '@ashishkumar472/cf-git');
   mkdirSync(copy, { recursive: true });
   for (const entry of readdirSync(installed)) {
-    // The package's own files. A dotfile is not one: cf-git-indexer and
-    // cf-git-checkout-repairs stage instrumented `.nimbus-*.mjs` copies in this
-    // directory while they run, and remove them, so one may vanish mid-copy.
+    // The package's own files. No test writes into the installed package (each
+    // stages its instrumented copies in its own TMPDIR), so none can vanish
+    // mid-copy; a dotfile is still not one of the package's files.
     if (entry !== 'index.js' && !entry.startsWith('.')) cpSync(join(installed, entry), join(copy, entry), { recursive: true });
   }
   if (linkTo) linkSync(linkTo, join(copy, 'index.js'));

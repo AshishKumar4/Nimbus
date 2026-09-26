@@ -25,6 +25,7 @@ import {
   generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 // Captured before the shims install their timer barrier over the global.
@@ -35,7 +36,7 @@ const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
 const factory = new Function(
   '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO',
-  '"use strict"; let stdout = "", stderr = "";' + generateShimsCode()
+  '"use strict"; let stdout = "", stderr = "";' + SHIMS_STORE_PRELUDE + generateShimsCode()
     + '\n;return { cp: __childProcessMod, process: __processMod, fs: __fsMod, reported: () => ({ stdout, stderr }) };',
 );
 

@@ -45,6 +45,8 @@ import { launchFs } from './lib/launch-fs.mjs';
 import {
   CWD_SNAPSHOT_MAX_FILE_BYTES,
 } from '../../packages/core/src/constants.ts';
+import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //
@@ -160,6 +162,7 @@ const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = rawVfs.as(CRED_KERNEL);
 const dec = new TextDecoder();
 let bridge = null;
+const sessionHost = attachSupervisorOps({ sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
 function makeSupervisor() {
   if (!bridge) {
@@ -172,6 +175,11 @@ function makeSupervisor() {
     async readdir(path) { return bridge.readdir(path); },
     async exists(path) { return (await bridge.stat(path)) !== null; },
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
+    // The listing and delta ops as the session serves them: a launch lists its
+    // namespace before any user code runs.
+    fsList: (after, limit) => _rpcFsList(sessionHost, after ?? null, limit ?? null),
+    fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost, requests),
+    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost, epoch, cursor, options),
     async stdout() {}, async stderr() {}, async reportExit() {},
     [Symbol.dispose]() {},
   };
@@ -226,9 +234,12 @@ manager.setVfs(rawVfs, processFiles(rawVfs));
 // A data file too large for the cwd snapshot's per-file bound, reached through
 // a path the program computes — so no static scan of the entry can find it
 // either. That is the residue: a runtime-computed data path.
-const DATA = 'home/user/example-app/dataset.bin';
+// Outside what a launch fills at boot (its cwd and /tmp), so only an
+// observation can stage it.
+const DATA = 'opt/example-data/dataset.bin';
 const DATA_BYTES = CWD_SNAPSHOT_MAX_FILE_BYTES + 4096;
 kernel.mkdir('home/user/example-app', { recursive: true, mode: 0o755 });
+kernel.mkdir('opt/example-data', { recursive: true, mode: 0o755 });
 kernel.writeFile(DATA, 'D'.repeat(DATA_BYTES), { mode: 0o644 });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/example-app', 1000, 1000);
@@ -249,7 +260,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // "the file is not there" and carries on with a default.
 const PROGRAM = `
 const fs = require('fs');
-const target = ['', 'home', 'user', 'example-app', 'data' + 'set.bin'].join('/');
+const target = ['', 'opt', 'example-data', 'data' + 'set.bin'].join('/');
 let body = 'FALLBACK';
 try { body = fs.readFileSync(target, 'utf8'); } catch (error) { /* looks like ENOENT */ }
 console.log('bytes=' + body.length);
