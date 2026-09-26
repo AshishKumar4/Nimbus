@@ -21,6 +21,7 @@ import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
 import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { routeRuntimeLoopback } from '../session/loopback.js';
@@ -91,6 +92,7 @@ class RuntimeOwner {
   private flushScheduled = false;
   private janitorScheduled = false;
   private recoveryNotice = false;
+  private legacyNotice: string | null = null;
   private readonly scheduling = new Set<Promise<void>>();
   private readonly fileLeases = new Map<string, NimbusHostFilesystemLease>();
   private readonly services: ReturnType<typeof services.bindRuntimeServices>;
@@ -145,6 +147,8 @@ class RuntimeOwner {
   ensureRuntimeReady(): Promise<void> {
     this.assertOpen();
     this.readyPromise ??= (async () => {
+      // Files a pre-v2 Nimbus wrote are not read: say so, and start cold.
+      this.legacyNotice = takeLegacyResetNotice(this.sqliteFs, this.ctx);
       const saved = loadShellState(this.ctx);
       this.recoveryNotice = saved.hasPersistedState;
       if (saved.cwd) this.shell.setCwd(saved.cwd);
@@ -270,6 +274,10 @@ class RuntimeOwner {
     if (this.recoveryNotice) {
       this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
       this.recoveryNotice = false;
+    }
+    if (this.legacyNotice) {
+      this.terminal.write(`\r\n[${this.legacyNotice}]\r\n`);
+      this.legacyNotice = null;
     }
     if (!this.shell.running) this.shell.printPrompt();
     this.terminal.flushNow();

@@ -168,7 +168,8 @@ export function chunkBytesWritten(harness, from = 0) {
   let bytes = 0;
   for (const statement of harness.statements.slice(from)) {
     if (/^\s*INSERT INTO vfs_chunks\b/.test(statement.sql)) {
-      for (let i = 3; i < statement.params.length; i += 4) bytes += statement.params[i].byteLength;
+      // (id, hash, data) per row: size is length(data).
+      for (let i = 2; i < statement.params.length; i += 3) bytes += statement.params[i].byteLength;
     } else if (/^\s*UPDATE vfs_chunks SET hash/.test(statement.sql)) {
       bytes += statement.params[2].byteLength;
     }
