@@ -709,6 +709,8 @@ export async function runGrep(ctx) {
             await searchSource({ chunks: fileChunks(ctx.vfs, path), name: display });
         }
         catch (e) {
+            if (e?.code === 'EPIPE')
+                throw e;
             await errorMessage(`${display}: ${errorText(e)}`);
         }
     };

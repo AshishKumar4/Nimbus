@@ -19,6 +19,7 @@
  * the shell before the host can register a command of its own. A session
  * routed through it would silently acquire all of that.
  */
+import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
@@ -166,6 +167,8 @@ export class NimbusWorkspace {
         registry.register('node', createNodeCommand(kernel));
         registry.register('curl', createCurlCommand(kernel));
         registry.register('wget', createWgetCommand(kernel));
+        // kill signals this workspace's own processes and jobs (bash's builtin).
+        registry.register('kill', createKillCommand(kernel.processRegistry));
         const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
         const kernelFs = vfs.as(CRED_KERNEL);
         const runtimeLease = filesystem.openHost(CRED_KERNEL);

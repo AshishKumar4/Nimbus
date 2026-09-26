@@ -14,8 +14,12 @@ export interface ByteOutput {
     write(text: string): unknown;
     writeBytes?(bytes: Uint8Array): unknown;
 }
-/** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
-export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined): AsyncGenerator<Uint8Array>;
+/**
+ * An operand's bytes in bounded chunks; `-` or undefined is standard input.
+ * `readSize` is how much one read asks of a pipe: a reader that stops early
+ * leaves the rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
+ */
+export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, readSize?: number): AsyncGenerator<Uint8Array>;
 /** All of an operand's bytes. */
 export declare function readAllInput(ctx: ByteInputContext, operand: string | undefined): Promise<Uint8Array>;
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;

@@ -11,6 +11,7 @@ export declare class PipeChannel {
     private waiting;
     private decoder;
     private queuedBytes;
+    /** A host that can park a writer (the wasm bash's JSPI host): pipe-rules.ts decides. */
     private readonly capacity;
     private drained;
     private readerClosed;

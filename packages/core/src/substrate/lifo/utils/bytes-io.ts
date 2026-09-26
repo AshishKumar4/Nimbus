@@ -21,8 +21,12 @@ export interface ByteOutput {
 const enc = new TextEncoder();
 const CHUNK = 65536;
 
-/** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
-export async function* inputChunks(ctx: ByteInputContext, operand: string | undefined): AsyncGenerator<Uint8Array> {
+/**
+ * An operand's bytes in bounded chunks; `-` or undefined is standard input.
+ * `readSize` is how much one read asks of a pipe: a reader that stops early
+ * leaves the rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
+ */
+export async function* inputChunks(ctx: ByteInputContext, operand: string | undefined, readSize = CHUNK): AsyncGenerator<Uint8Array> {
   if (operand === undefined || operand === '-') {
     const stdin = ctx.stdin;
     if (stdin === undefined) return;
@@ -32,7 +36,7 @@ export async function* inputChunks(ctx: ByteInputContext, operand: string | unde
       return;
     }
     if (stdin.readBytes) {
-      for (let chunk = await stdin.readBytes(CHUNK); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(CHUNK)) yield chunk;
+      for (let chunk = await stdin.readBytes(readSize); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(readSize)) yield chunk;
       return;
     }
     for (let text = await stdin.read(); text !== null; text = await stdin.read()) yield encodeLossless(text);

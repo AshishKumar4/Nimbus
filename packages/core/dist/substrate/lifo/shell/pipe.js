@@ -1,4 +1,5 @@
 import { encode } from '../utils/encoding.js';
+import { decideWrite, PIPE_CAPACITY } from '../../../runtime/bash/pipe-rules.js';
 /**
  * A shell pipe that carries the producer's exact bytes. Text writes are
  * encoded once at the write side, `writeBytes` stores bytes verbatim, and
@@ -11,7 +12,8 @@ export class PipeChannel {
     waiting = [];
     decoder = new TextDecoder('utf-8');
     queuedBytes = 0;
-    capacity = 64 * 1024;
+    /** A host that can park a writer (the wasm bash's JSPI host): pipe-rules.ts decides. */
+    capacity = PIPE_CAPACITY;
     drained = [];
     readerClosed = false;
     unlinkSignal;
@@ -26,11 +28,14 @@ export class PipeChannel {
     }
     async push(bytes) {
         for (let offset = 0; offset < bytes.length;) {
-            while (this.queuedBytes >= this.capacity && !this.closed) {
+            for (;;) {
+                const readers = this.closed || this.readerClosed ? 0 : 1;
+                const decision = decideWrite({ queued: this.queuedBytes, readers, writers: 1 }, bytes.length - offset, 'jspi', this.capacity, Infinity);
+                if (decision === 'sigpipe')
+                    throw Object.assign(new Error('EPIPE: pipe reader closed'), { code: 'EPIPE' });
+                if (decision === 'write')
+                    break;
                 await new Promise((resolve) => this.drained.push(resolve));
-            }
-            if (this.closed || this.readerClosed) {
-                throw Object.assign(new Error('EPIPE: pipe reader closed'), { code: 'EPIPE' });
             }
             const length = Math.min(bytes.length - offset, this.capacity - this.queuedBytes);
             this.deliver(bytes.slice(offset, offset + length), 'back');

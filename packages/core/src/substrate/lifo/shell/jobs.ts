@@ -9,10 +9,10 @@ export interface Job {
 
 export class JobTable {
   private jobs = new Map<number, Job>();
-  private nextId = 1;
 
   add(command: string, promise: Promise<number>, abortController: AbortController): number {
-    const id = this.nextId++;
+    // bash: one more than the highest job still in the table.
+    const id = Math.max(0, ...this.jobs.keys()) + 1;
     const job: Job = {
       id,
       command,

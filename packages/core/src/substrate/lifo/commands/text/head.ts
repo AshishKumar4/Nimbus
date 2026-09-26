@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, fsErrorText, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
 
 // GNU head (coreutils 9.7) on bytes: -n [-]N lines, -c [-]N bytes (with
 // GNU's suffixes), the obsolete -N, -q, -v, -z. A positive count stops
@@ -83,13 +83,15 @@ const command: Command = async (ctx) => {
   let first = true;
   for (const file of files) {
     try {
-      const chunks = inputChunks(ctx, file);
+      // GNU head reads BUFSIZ (8 KiB) at a time: what it leaves unread decides a writer's SIGPIPE.
+      const chunks = inputChunks(ctx, file, 8192);
       // Open (and fail) before the header, as GNU does.
       const firstChunk = await chunks.next();
       if (label) await writeBytes(ctx.stdout, asciiBytes(`${first ? '' : '\n'}==> ${file === '-' ? 'standard input' : file} <==\n`));
       first = false;
       await copy(firstChunk.done ? null : firstChunk.value, chunks, mode, delim, (bytes) => writeBytes(ctx.stdout, bytes));
     } catch (error) {
+      if (isBrokenPipe(error)) throw error;
       await ctx.stderr.write(`head: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
       status = 1;
     }

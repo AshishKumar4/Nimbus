@@ -8,7 +8,6 @@ export interface Job {
 }
 export declare class JobTable {
     private jobs;
-    private nextId;
     add(command: string, promise: Promise<number>, abortController: AbortController): number;
     list(): Job[];
     get(id: number): Job | undefined;

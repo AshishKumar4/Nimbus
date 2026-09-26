@@ -164,13 +164,13 @@ export class ProcessRegistry {
   /**
    * Get process information by job ID.
    */
+  /** The newest process holding job number `jobId` (numbers are reused once a job is reaped). */
   getByJobId(jobId: number): Process | undefined {
+    let found: Process | undefined;
     for (const proc of this.processes.values()) {
-      if (proc.jobId === jobId) {
-        return proc;
-      }
+      if (proc.jobId === jobId && (found === undefined || proc.pid > found.pid)) found = proc;
     }
-    return undefined;
+    return found;
   }
 
   /**

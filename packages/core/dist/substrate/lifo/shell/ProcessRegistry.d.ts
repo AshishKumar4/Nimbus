@@ -75,6 +75,7 @@ export declare class ProcessRegistry {
     /**
      * Get process information by job ID.
      */
+    /** The newest process holding job number `jobId` (numbers are reused once a job is reaped). */
     getByJobId(jobId: number): Process | undefined;
     /**
      * Check if a process exists.

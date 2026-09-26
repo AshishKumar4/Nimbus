@@ -1,8 +1,12 @@
 import { resolve } from './path.js';
 const enc = new TextEncoder();
 const CHUNK = 65536;
-/** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
-export async function* inputChunks(ctx, operand) {
+/**
+ * An operand's bytes in bounded chunks; `-` or undefined is standard input.
+ * `readSize` is how much one read asks of a pipe: a reader that stops early
+ * leaves the rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
+ */
+export async function* inputChunks(ctx, operand, readSize = CHUNK) {
     if (operand === undefined || operand === '-') {
         const stdin = ctx.stdin;
         if (stdin === undefined)
@@ -14,7 +18,7 @@ export async function* inputChunks(ctx, operand) {
             return;
         }
         if (stdin.readBytes) {
-            for (let chunk = await stdin.readBytes(CHUNK); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(CHUNK))
+            for (let chunk = await stdin.readBytes(readSize); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(readSize))
                 yield chunk;
             return;
         }

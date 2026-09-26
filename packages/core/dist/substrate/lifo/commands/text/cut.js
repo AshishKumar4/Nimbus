@@ -270,7 +270,7 @@ const command = async (ctx) => {
         }
         catch (error) {
             const code = error.code;
-            if (code === undefined)
+            if (code === undefined || code === 'EPIPE')
                 throw error;
             const reason = code === 'ENOENT' ? 'No such file or directory' : code === 'EACCES' ? 'Permission denied' : code === 'EISDIR' ? 'Is a directory' : error.message;
             await ctx.stderr.write(`cut: ${file}: ${reason}\n`);

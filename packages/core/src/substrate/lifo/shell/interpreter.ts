@@ -395,6 +395,9 @@ export class Interpreter {
       });
       const waitable = this.config.processRegistry.get(pid)?.promise ?? promise;
       const jobId = this.config.jobTable.add(commandText, waitable, abortController);
+      // `%N` (kill, fg, wait) names the job by the table's number.
+      const registered = this.config.processRegistry.get(pid);
+      if (registered) registered.jobId = jobId;
       this.config.env['!'] = String(pid);
 
       this.writeTerminal(io, `[${jobId}] ${pid} (background)\n`);
@@ -453,12 +456,17 @@ export class Interpreter {
 
     let exitCode: number;
 
+    let statuses: number[];
     if (commands.length === 1) {
       // Single command -- no piping needed
       exitCode = await this.executeCommand(commands[0], io);
+      statuses = [exitCode];
     } else {
-      exitCode = await this.executePipelineCommands(commands, io);
+      ({ exitCode, statuses } = await this.executePipelineCommands(commands, io));
     }
+    // Every element's status, as bash's PIPESTATUS (before `!` negates the pipeline's).
+    this.config.arrays.set('PIPESTATUS', statuses.map(String));
+    delete this.config.env.PIPESTATUS;
 
     if (pipeline.negated) {
       exitCode = exitCode === 0 ? 1 : 0;
@@ -467,7 +475,7 @@ export class Interpreter {
     return exitCode;
   }
 
-  private async executePipelineCommands(commands: CompoundCommandNode[], io: ExecutionIo): Promise<number> {
+  private async executePipelineCommands(commands: CompoundCommandNode[], io: ExecutionIo): Promise<{ exitCode: number; statuses: number[] }> {
     const pipes: PipeChannel[] = [];
     const promises: Promise<number>[] = [];
     const pipelineAbortController = new AbortController();
@@ -483,7 +491,7 @@ export class Interpreter {
     try {
       for (let i = 0; i < commands.length; i++) {
         const abortCode = this.abortExitCode(io);
-        if (abortCode !== null) return abortCode;
+        if (abortCode !== null) return { exitCode: abortCode, statuses: [abortCode] };
 
         const stdin = i > 0 ? pipes[i - 1].reader : undefined;
         let stdout: CommandOutputStream | undefined;
@@ -517,15 +525,16 @@ export class Interpreter {
             if (e instanceof ExitSignal) {
               return e.exitCode;
             }
+            // A builtin wrote to a pipe whose reader is gone: in bash that kills
+            // the element's own subshell, so the element ends with SIGPIPE's status.
+            if ((e as { code?: string })?.code === 'EPIPE') return 141;
             throw e;
           } finally {
+            // Only the closed pipe reaches the other elements: each goes on
+            // until it writes to a pipe nobody reads (bash; no abort here).
             if (i > 0) pipes[i - 1].cancel();
             if (i < commands.length - 1) {
               pipes[i].close();
-            }
-            if (isLast) {
-              pipelineAbortController.abort();
-              for (const pipe of pipes) pipe.cancel();
             }
           }
         })();
@@ -536,10 +545,10 @@ export class Interpreter {
       const results = await Promise.all(promises);
       if (this.config.options.pipefail) {
         for (let i = results.length - 1; i >= 0; i--) {
-          if (results[i] !== 0) return results[i] ?? 1;
+          if (results[i] !== 0) return { exitCode: results[i] ?? 1, statuses: results };
         }
       }
-      return results[results.length - 1] ?? 0;
+      return { exitCode: results[results.length - 1] ?? 0, statuses: results };
     } finally {
       unlinkParentSignal?.();
     }
@@ -634,6 +643,18 @@ export class Interpreter {
     }));
   }
 
+  private loopTicks = 0;
+
+  /**
+   * A loop whose body never waits on I/O would run entirely on microtasks,
+   * and no timer, Ctrl-C or `kill` could reach it. Every 64 iterations it
+   * lets the event loop run. (Counted, not timed: workerd's clock stands
+   * still while code runs.)
+   */
+  private async loopTick(): Promise<void> {
+    if (++this.loopTicks % 64 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
   private async executeFor(node: ForNode, io: ExecutionIo): Promise<number> {
     return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       const expandCtx = this.createExpandContext(redirIo);
@@ -647,6 +668,7 @@ export class Interpreter {
       }
 
       for (const val of values) {
+        await this.loopTick();
         const abortCode = this.abortExitCode(redirIo);
         if (abortCode !== null) return abortCode;
 
@@ -679,6 +701,7 @@ export class Interpreter {
       let exitCode = 0;
 
       while (true) {
+        await this.loopTick();
         const abortCode = this.abortExitCode(redirIo);
         if (abortCode !== null) return abortCode;
 
@@ -710,6 +733,7 @@ export class Interpreter {
       let exitCode = 0;
 
       while (true) {
+        await this.loopTick();
         const abortCode = this.abortExitCode(redirIo);
         if (abortCode !== null) return abortCode;
 
@@ -1036,6 +1060,9 @@ export class Interpreter {
               } catch (e) {
                 if (e instanceof Error && e.name === 'AbortError') {
                   exitCode = 130;
+                } else if ((e as { code?: string })?.code === 'EPIPE') {
+                  // Killed by SIGPIPE: this command alone, silently.
+                  exitCode = 141;
                 } else {
                   (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
                   exitCode = 1;

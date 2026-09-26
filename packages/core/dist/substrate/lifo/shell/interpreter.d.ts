@@ -169,6 +169,14 @@ export declare class Interpreter {
     private executeCommand;
     private executeIf;
     private executeDoubleBracket;
+    private loopTicks;
+    /**
+     * A loop whose body never waits on I/O would run entirely on microtasks,
+     * and no timer, Ctrl-C or `kill` could reach it. Every 64 iterations it
+     * lets the event loop run. (Counted, not timed: workerd's clock stands
+     * still while code runs.)
+     */
+    private loopTick;
     private executeFor;
     private executeWhile;
     private executeUntil;

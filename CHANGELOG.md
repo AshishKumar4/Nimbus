@@ -178,6 +178,16 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- A pipe's closed read end ends only the command that writes to it, as
+  SIGPIPE does in bash: `{ cat big; touch mark; } | head -1` runs `touch`, a
+  loop goes on after its `cat` dies (status 141), and a builtin writing there
+  ends its own pipeline element. Before, the whole left side stopped when the
+  last command exited. `PIPESTATUS` holds each element's status, and a writer
+  that exits with more than a pipe's capacity unread gets 141, as on Linux
+  (`head` reads 8 KiB at a time, as GNU's does). Loops let the event loop run
+  every 64 iterations, so Ctrl-C and `kill` reach one that never waits on
+  I/O. The workspace shell has `kill`, and job numbers are reused as bash
+  reuses them (`wait` reaps finished jobs).
 - New: `md5sum`, `sha1sum`, `sha224sum`, `sha384sum`, `sha512sum`, `b2sum`,
   `cksum` (CRC, `-a` any of them, tagged, `--base64`, `--raw`) and `sum`
   (BSD and System V), with `sha256sum` on the same engine: `--tag`, `-b`,

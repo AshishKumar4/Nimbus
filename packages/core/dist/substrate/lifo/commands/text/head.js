@@ -1,4 +1,4 @@
-import { asciiBytes, concatBytes, fsErrorText, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, fsErrorText, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
 class HeadUsage extends Error {
 }
 const SUFFIX = {
@@ -98,7 +98,8 @@ const command = async (ctx) => {
     let first = true;
     for (const file of files) {
         try {
-            const chunks = inputChunks(ctx, file);
+            // GNU head reads BUFSIZ (8 KiB) at a time: what it leaves unread decides a writer's SIGPIPE.
+            const chunks = inputChunks(ctx, file, 8192);
             // Open (and fail) before the header, as GNU does.
             const firstChunk = await chunks.next();
             if (label)
@@ -107,6 +108,8 @@ const command = async (ctx) => {
             await copy(firstChunk.done ? null : firstChunk.value, chunks, mode, delim, (bytes) => writeBytes(ctx.stdout, bytes));
         }
         catch (error) {
+            if (isBrokenPipe(error))
+                throw error;
             await ctx.stderr.write(`head: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
             status = 1;
         }

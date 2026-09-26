@@ -1469,6 +1469,11 @@ export class Shell {
         .filter((job) => job.status === 'running')
         .map((job) => ({ promise: job.promise }))
       : await Promise.all(targets.map((target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
+    // A bare `wait` reaps every job, as bash's does: their numbers are free again.
+    if (targets.length === 0) {
+      await Promise.all(waitables.map((w) => w?.promise.catch(() => undefined)));
+      for (const job of this.jobTable.list()) if (job.status === 'done') this.jobTable.remove(job.id);
+    }
 
     let last = 0;
     for (const waitable of waitables) {

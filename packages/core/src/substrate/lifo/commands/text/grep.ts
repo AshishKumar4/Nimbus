@@ -547,6 +547,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
     try {
       await searchSource({ chunks: fileChunks(ctx.vfs, path), name: display });
     } catch (e) {
+      if ((e as { code?: string })?.code === 'EPIPE') throw e;
       await errorMessage(`${display}: ${errorText(e)}`);
     }
   };

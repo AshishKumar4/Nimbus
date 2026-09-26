@@ -1,8 +1,8 @@
 export class JobTable {
     jobs = new Map();
-    nextId = 1;
     add(command, promise, abortController) {
-        const id = this.nextId++;
+        // bash: one more than the highest job still in the table.
+        const id = Math.max(0, ...this.jobs.keys()) + 1;
         const job = {
             id,
             command,
