@@ -1309,7 +1309,13 @@ export class SqliteVFS {
   /** Snapshot generations by name, loaded on first use. */
   private snapshotGens: Map<string, number> | null = null;
   /** writeStreams in flight, for snapshot's quiesce. */
-  private readonly activeStreams = new Set<Promise<unknown>>();
+  /**
+   * Work that spans awaits and changes the tree across them (writeStream,
+   * restoreAsync, sliced copyTree), for snapshot's quiesce.
+   */
+  private readonly activeWork = new Set<Promise<unknown>>();
+  /** Set while a quiesced snapshot waits: new spanning work starts after it. */
+  private quiesceGate: Promise<void> | null = null;
   /** Content keys computed for manifests whose digest could not be stored. */
   private readonly contentKeyMemo = new Map<number, string>();
 
@@ -2152,7 +2158,10 @@ export class SqliteVFS {
       rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
       copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
-      copyTreeAsync: (src, dest, options) => this.copyTreeInSlices(this.planCopyTree(src, dest, bound, options)),
+      copyTreeAsync: (src, dest, options) => {
+        const job = this.planCopyTree(src, dest, bound, options);
+        return this.spanning(() => this.copyTreeInSlices(job));
+      },
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -5120,10 +5129,50 @@ export class SqliteVFS {
   snapshot(name: string, options: { quiesce?: boolean } = {}): SnapshotInfo | Promise<SnapshotInfo> {
     if (typeof name !== 'string' || name === '' || name.length > 256) throw vfsError('EINVAL', 'invalid snapshot name');
     if (!options.quiesce) return this.pinSnapshot(name);
+    return this.quiesced(() => this.pinSnapshot(name));
+  }
+
+  /**
+   * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+   * check and `pin` run in one turn, so nothing can start between them. New
+   * spanning work waits behind the gate until then (Kinu N14: await, never
+   * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+   * is waited out too.
+   */
+  private quiesced<T>(pin: () => T): Promise<T> {
+    const previous = this.quiesceGate ?? Promise.resolve();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const chained = previous.then(() => gate);
+    this.quiesceGate = chained;
     return (async () => {
-      while (this.activeStreams.size > 0) await Promise.allSettled([...this.activeStreams]);
-      return this.pinSnapshot(name);
+      try {
+        await previous;
+        for (;;) {
+          if (this.activeWork.size > 0) { await Promise.allSettled([...this.activeWork]); continue; }
+          if (this.exclusiveMutationLeases.size > 0) { await yieldToStorage(); continue; }
+          return pin();
+        }
+      } finally {
+        open();
+        if (this.quiesceGate === chained) this.quiesceGate = null;
+      }
     })();
+  }
+
+  /** Spanning work: held behind a quiescing snapshot, and awaited by the next one. */
+  private spanning<T>(start: () => Promise<T>): Promise<T> {
+    // Tracked once started: the snapshot waits for running work, never for
+    // work it is itself holding back.
+    const begin = (): Promise<T> => {
+      const run = start();
+      this.activeWork.add(run);
+      const settled = (): void => { this.activeWork.delete(run); };
+      run.then(settled, settled);
+      return run;
+    };
+    const gate = this.quiesceGate;
+    return gate === null ? begin() : gate.then(begin);
   }
 
   private pinSnapshot(name: string): SnapshotInfo {
@@ -5401,7 +5450,11 @@ export class SqliteVFS {
   }
 
   /** restore in slices with a yield between, for a restore of any size in workerd. */
-  async restoreAsync(name: string, options: { subtree?: string } = {}): Promise<{ restored: number }> {
+  restoreAsync(name: string, options: { subtree?: string } = {}): Promise<{ restored: number }> {
+    return this.spanning(() => this.restoreInSlices(name, options));
+  }
+
+  private async restoreInSlices(name: string, options: { subtree?: string }): Promise<{ restored: number }> {
     const { id, job, startGen } = this.restoreJob(name, options);
     let restored = 0;
     for (;;) {
@@ -6587,11 +6640,7 @@ export class SqliteVFS {
     options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string } = {},
     cred: VfsCred,
   ): Promise<WriteBatchStreamResult> {
-    const run = this.consumeStream(stream, options, cred);
-    this.activeStreams.add(run);
-    const settled = (): void => { this.activeStreams.delete(run); };
-    run.then(settled, settled);
-    return run;
+    return this.spanning(() => this.consumeStream(stream, options, cred));
   }
 
   private async consumeStream(

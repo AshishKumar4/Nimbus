@@ -691,7 +691,13 @@ export class SqliteVFS {
     /** Snapshot generations by name, loaded on first use. */
     snapshotGens = null;
     /** writeStreams in flight, for snapshot's quiesce. */
-    activeStreams = new Set();
+    /**
+     * Work that spans awaits and changes the tree across them (writeStream,
+     * restoreAsync, sliced copyTree), for snapshot's quiesce.
+     */
+    activeWork = new Set();
+    /** Set while a quiesced snapshot waits: new spanning work starts after it. */
+    quiesceGate = null;
     /** Content keys computed for manifests whose digest could not be stored. */
     contentKeyMemo = new Map();
     // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
@@ -1513,7 +1519,10 @@ export class SqliteVFS {
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
             copyFile: (src, dest) => this.copyFile(src, dest, bound),
             copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
-            copyTreeAsync: (src, dest, options) => this.copyTreeInSlices(this.planCopyTree(src, dest, bound, options)),
+            copyTreeAsync: (src, dest, options) => {
+                const job = this.planCopyTree(src, dest, bound, options);
+                return this.spanning(() => this.copyTreeInSlices(job));
+            },
             writeBatch: (payload) => this.writeBatch(payload, bound),
             writeStream: (stream, options) => this.writeStream(stream, options, bound),
             mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -4176,11 +4185,56 @@ export class SqliteVFS {
             throw vfsError('EINVAL', 'invalid snapshot name');
         if (!options.quiesce)
             return this.pinSnapshot(name);
+        return this.quiesced(() => this.pinSnapshot(name));
+    }
+    /**
+     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+     * check and `pin` run in one turn, so nothing can start between them. New
+     * spanning work waits behind the gate until then (Kinu N14: await, never
+     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+     * is waited out too.
+     */
+    quiesced(pin) {
+        const previous = this.quiesceGate ?? Promise.resolve();
+        let open;
+        const gate = new Promise((resolve) => { open = resolve; });
+        const chained = previous.then(() => gate);
+        this.quiesceGate = chained;
         return (async () => {
-            while (this.activeStreams.size > 0)
-                await Promise.allSettled([...this.activeStreams]);
-            return this.pinSnapshot(name);
+            try {
+                await previous;
+                for (;;) {
+                    if (this.activeWork.size > 0) {
+                        await Promise.allSettled([...this.activeWork]);
+                        continue;
+                    }
+                    if (this.exclusiveMutationLeases.size > 0) {
+                        await yieldToStorage();
+                        continue;
+                    }
+                    return pin();
+                }
+            }
+            finally {
+                open();
+                if (this.quiesceGate === chained)
+                    this.quiesceGate = null;
+            }
         })();
+    }
+    /** Spanning work: held behind a quiescing snapshot, and awaited by the next one. */
+    spanning(start) {
+        // Tracked once started: the snapshot waits for running work, never for
+        // work it is itself holding back.
+        const begin = () => {
+            const run = start();
+            this.activeWork.add(run);
+            const settled = () => { this.activeWork.delete(run); };
+            run.then(settled, settled);
+            return run;
+        };
+        const gate = this.quiesceGate;
+        return gate === null ? begin() : gate.then(begin);
     }
     pinSnapshot(name) {
         if (this.snapshotGen(name) !== undefined)
@@ -4454,7 +4508,10 @@ export class SqliteVFS {
         return { restored: this.runRestore(id, job, startGen).restored };
     }
     /** restore in slices with a yield between, for a restore of any size in workerd. */
-    async restoreAsync(name, options = {}) {
+    restoreAsync(name, options = {}) {
+        return this.spanning(() => this.restoreInSlices(name, options));
+    }
+    async restoreInSlices(name, options) {
         const { id, job, startGen } = this.restoreJob(name, options);
         let restored = 0;
         for (;;) {
@@ -5562,11 +5619,7 @@ export class SqliteVFS {
      * stored exactly as the same bytes written any other way.
      */
     writeStream(stream, options = {}, cred) {
-        const run = this.consumeStream(stream, options, cred);
-        this.activeStreams.add(run);
-        const settled = () => { this.activeStreams.delete(run); };
-        run.then(settled, settled);
-        return run;
+        return this.spanning(() => this.consumeStream(stream, options, cred));
     }
     async consumeStream(stream, options, cred) {
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();

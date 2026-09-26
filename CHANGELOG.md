@@ -71,14 +71,17 @@ option, with its replacement:
 - The mount listing (`mounts(cred)`, `df`, `mount`, `/proc/mounts`) is in
   mount order (`/`, `/proc`, `/dev`, then the embedder's), as on Linux.
 - `ws.fs` (`SandboxFs`) no longer has `exportSnapshot()`/`importSnapshot()`
-  (a tar.gz of the whole tree). It has the content store instead:
+  (a tar.gz of the whole tree). The content store is the embedder's, with
+  kernel authority, on `ws.vfs` (the workspace's `SqliteVFS`):
   `snapshot(name, { quiesce })`, `snapshots()`, `dropSnapshot(name)`,
-  `diff(from, to, { after, limit })`, `at(name)` (read-only), `restore(name,
-  { subtree })`, `exportPage`/`exportChunks`/`importPage`/`pageDigest` and
-  `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts. `restore`
-  through `ws.fs` changes only what the session user may write, and refuses
-  with EACCES, before any change, otherwise. The kernel restores through
-  `ws.vfs.restore()`.
+  `diff(from, to, { after, limit })`, `at(name, cred?)`, `restore`/
+  `restoreAsync(name, { subtree })`, `exportPage`/`exportChunks`/
+  `importPage`/`pageDigest`. `ws.fs` and the per-credential handles carry
+  only `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts.
+- `snapshot(name, { quiesce: true })` waits for spanning work (writeStream,
+  restoreAsync, sliced copyTree) and for exclusive leases, and holds
+  spanning work that starts meanwhile until the snapshot is taken. It
+  waits; it never answers EBUSY.
 - The content store's schema is 3. A database a schema-2 build wrote (staging
   and throwaways only) is reset when it opens, and `legacyReset` tells the
   session once.

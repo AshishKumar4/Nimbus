@@ -1,38 +1,55 @@
 #!/usr/bin/env bun
-// ws.fs, the embedder's handle as the session user, carries the content
-// store (Kinu N14-N16): snapshot (quiesced or not), diff by generation,
-// restore (only what the session user may write), a read-only view at a
-// snapshot, and the paged export/import/digest between workspaces. The tar
-// export of the whole tree is gone.
+// The content store (Kinu N14-N16) is the embedder's, with kernel authority:
+// it lives on ws.vfs, the workspace's SQLite filesystem. ws.fs (the session
+// user's view) and every per-credential handle carry only its diagnostic,
+// so nothing a user holds can read past permissions, forge ownership, or
+// undo a change through a snapshot. On ws.vfs it round-trips: snapshot,
+// paged diff, a view at a snapshot, restore, and the paged export/import
+// between workspaces, where the importer keeps the exported ownership.
+// A quiesced snapshot waits for spanning work (a restore in slices) and
+// never captures it half-done.
 
 import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
-const code = async (run) => { try { await run(); return 'ok'; } catch (error) { return error.code ?? error.message; } };
+const STORE_OPS = ['snapshot', 'snapshots', 'dropSnapshot', 'diff', 'at', 'restore', 'exportPage', 'exportChunks', 'importPage', 'pageDigest', 'exportSnapshot', 'importSnapshot'];
+const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+const text = (bytes) => new TextDecoder().decode(bytes);
 const open = async () => {
   const harness = createSqliteVfsTestHarness();
   return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
 };
 
 const ws = await open();
-const fs = ws.fs;
-assert.equal('exportSnapshot' in fs, false, 'the tar snapshot is gone');
+const store = ws.vfs;
+const kernel = store.as(CRED_KERNEL);
 
-await fs.mkdir('/home/user/app/src', { recursive: true });
-await fs.writeFile('/home/user/app/src/a.txt', 'one');
-await fs.writeFile('/home/user/app/b.txt', 'bee');
-const first = await fs.snapshot('first', { quiesce: true });
-assert.equal(first.name, 'first');
-assert.deepEqual((await fs.snapshots()).map((s) => s.name), ['first']);
+// Nothing a user holds carries the store.
+for (const op of STORE_OPS) assert.equal(op in ws.fs, false, `ws.fs.${op}`);
+assert.equal(typeof (await ws.fs.storeStats()).chunks, 'number', 'the diagnostic stays');
 
-await fs.writeFile('/home/user/app/src/a.txt', 'two');
-await fs.writeFile('/home/user/app/c.txt', 'sea');
-await fs.rm('/home/user/app/b.txt');
+// A root-only file stays root's: a user never reaches the store to export it.
+kernel.mkdir('root', { mode: 0o700 });
+kernel.writeFile('root/secret', 'TOP SECRET');
+kernel.chmod('root/secret', 0o600);
+
+kernel.mkdir('home/user/app/src', { recursive: true });
+kernel.writeFile('home/user/app/src/a.txt', 'one');
+kernel.writeFile('home/user/app/b.txt', 'bee');
+kernel.mkdir('opt/src', { recursive: true });
+kernel.writeFile('opt/src/su', 'binary');
+kernel.chmod('opt/src/su', 0o4755);
+assert.equal((await store.snapshot('first', { quiesce: true })).name, 'first');
+assert.deepEqual(store.snapshots().map((s) => s.name), ['first']);
+
+kernel.writeFile('home/user/app/src/a.txt', 'two');
+kernel.writeFile('home/user/app/c.txt', 'sea');
+kernel.unlink('home/user/app/b.txt');
 const changed = [];
-for (let after = undefined; ;) {
-  const page = await fs.diff('first', null, { after, limit: 2 });
+for (let after; ;) {
+  const page = store.diff('first', null, { after, limit: 2 });
   changed.push(...page.entries.map((e) => `${e.change} ${e.path}`));
   if (page.next === null) break;
   after = page.next;
@@ -40,49 +57,67 @@ for (let after = undefined; ;) {
 assert.deepEqual(changed.filter((line) => line.includes('/app/')).sort(), [
   'added home/user/app/c.txt', 'modified home/user/app/src/a.txt', 'removed home/user/app/b.txt',
 ]);
+assert.equal(store.at('first').readFileString('home/user/app/src/a.txt'), 'one');
+assert.throws(() => store.at('first', USER).readFile('root/secret'), { code: 'EACCES' }, 'a view at a snapshot keeps permissions');
 
-// The read-only view at the snapshot.
-const past = fs.at('first');
-assert.equal(await past.readFile('/home/user/app/src/a.txt'), 'one');
-assert.equal(await code(() => past.writeFile('/home/user/app/x', 'x')), 'EROFS');
-
-// Export the snapshot page by page, import into another workspace, equal digests.
+// Export into another workspace: the kernel's import keeps ownership and mode.
 const other = await open();
-let after = null;
-for (;;) {
-  const page = await fs.exportPage({ at: 'first', root: '/home/user/app', after });
-  let result = await other.fs.importPage('/home/user/copy', page);
-  while (result.want.length > 0) {
-    const { chunks } = await fs.exportChunks(result.want);
-    result = await other.fs.importPage('/home/user/copy', page, chunks);
+const copyOf = async (root, dst) => {
+  for (let after = null; ;) {
+    const page = store.exportPage({ at: 'first', root, after });
+    let result = other.vfs.importPage(dst, page);
+    while (result.want.length > 0) result = other.vfs.importPage(dst, page, store.exportChunks(result.want).chunks);
+    if (page.next === null) return;
+    after = page.next;
   }
-  if (page.next === null) break;
-  after = page.next;
-}
-const copy = await other.fs.snapshot('copy');
-assert.equal(await other.fs.readFile('/home/user/copy/src/a.txt'), 'one');
+};
+await copyOf('home/user/app', 'home/user/copy');
+await copyOf('opt/src', 'opt/copy');
+const copy = other.vfs.snapshot('copy');
+assert.equal(other.vfs.as(CRED_KERNEL).readFileString('home/user/copy/src/a.txt'), 'one');
+const su = other.vfs.as(CRED_KERNEL).stat('opt/copy/su');
+assert.deepEqual([su.uid, (su.mode & 0o7777).toString(8)], [0, '4755'], 'the kernel import keeps ownership, exactly as before');
 assert.equal(
-  (await fs.pageDigest({ at: 'first', root: '/home/user/app' })).digest,
-  (await other.fs.pageDigest({ at: copy.name, root: '/home/user/copy' })).digest,
+  store.pageDigest({ at: 'first', root: 'home/user/app' }).digest,
+  other.vfs.pageDigest({ at: copy.name, root: 'home/user/copy' }).digest,
   'the same tree digests the same in both workspaces',
 );
 
-// Restore brings the tree back, as far as the session user may write.
-await fs.restore('first', { subtree: '/home/user/app' });
-assert.equal(await fs.readFile('/home/user/app/src/a.txt'), 'one');
-assert.equal(await fs.readFile('/home/user/app/b.txt'), 'bee');
-assert.equal(await fs.exists('/home/user/app/c.txt'), false);
+// Restore, as the embedder.
+await store.restoreAsync('first', { subtree: 'home/user/app' });
+assert.equal(kernel.readFileString('home/user/app/src/a.txt'), 'one');
+assert.equal(kernel.readFileString('home/user/app/b.txt'), 'bee');
+assert.equal(kernel.exists('home/user/app/c.txt'), false);
 
-// A snapshot of a path the user cannot write is not restored through ws.fs.
-ws.vfs.as(CRED_KERNEL).writeFile('etc/owned', 'root');
-await fs.snapshot('with-root');
-ws.vfs.as(CRED_KERNEL).writeFile('etc/owned', 'changed');
-assert.equal(await code(() => fs.restore('with-root')), 'EACCES');
-assert.equal(ws.vfs.as(CRED_KERNEL).readFileString('etc/owned'), 'changed', 'nothing was restored');
+// A quiesced snapshot waits for a restore in slices; the tree it pins is whole.
+const N = 3000;
+kernel.mkdir('home/user/p');
+for (let i = 0; i < N; i++) kernel.writeFile(`home/user/p/f${i}`, 'A');
+store.snapshot('base');
+for (let i = 0; i < N; i++) kernel.writeFile(`home/user/p/f${i}`, 'B');
+const restoring = store.restoreAsync('base', { subtree: 'home/user/p' });
+const mid = await store.snapshot('mid', { quiesce: true });
+await restoring;
+const view = store.at(mid.name);
+const seen = new Set();
+for (let i = 0; i < N; i++) seen.add(view.readFileString(`home/user/p/f${i}`));
+assert.deepEqual([...seen], ['A'], 'the snapshot waited for the restore: never a torn tree');
+// Work that starts while a quiesced snapshot waits runs after it is taken.
+kernel.writeFile('home/user/app/src/a.txt', 'three');
+const lease = store.acquireExclusiveMutation('home/user/p');
+let taken = false;
+const waiting = store.snapshot('held', { quiesce: true }).then((snap) => { taken = true; return snap; });
+const late = store.restoreAsync('first', { subtree: 'home/user/app' });
+for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(taken, false, 'a held lease is waited out, not refused');
+store.releaseExclusiveMutation(lease.owner);
+await waiting;
+await late;
+assert.equal(store.at('held').readFileString('home/user/app/src/a.txt'), 'three', 'the restore that started meanwhile ran after the snapshot');
+assert.equal(kernel.readFileString('home/user/app/src/a.txt'), 'one');
 
-assert.equal(typeof (await fs.storeStats()).chunks, 'number');
-await fs.dropSnapshot('first');
-assert.deepEqual((await fs.snapshots()).map((s) => s.name), ['with-root']);
+store.dropSnapshot('first');
+assert.equal(store.snapshots().some((s) => s.name === 'first'), false);
 
 await ws.close();
 await other.close();

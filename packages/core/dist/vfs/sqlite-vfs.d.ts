@@ -395,7 +395,13 @@ export declare class SqliteVFS {
     /** Snapshot generations by name, loaded on first use. */
     private snapshotGens;
     /** writeStreams in flight, for snapshot's quiesce. */
-    private readonly activeStreams;
+    /**
+     * Work that spans awaits and changes the tree across them (writeStream,
+     * restoreAsync, sliced copyTree), for snapshot's quiesce.
+     */
+    private readonly activeWork;
+    /** Set while a quiesced snapshot waits: new spanning work starts after it. */
+    private quiesceGate;
     /** Content keys computed for manifests whose digest could not be stored. */
     private readonly contentKeyMemo;
     private _activeTransaction;
@@ -1050,6 +1056,16 @@ export declare class SqliteVFS {
     snapshot(name: string, options: {
         quiesce: true;
     }): Promise<SnapshotInfo>;
+    /**
+     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+     * check and `pin` run in one turn, so nothing can start between them. New
+     * spanning work waits behind the gate until then (Kinu N14: await, never
+     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+     * is waited out too.
+     */
+    private quiesced;
+    /** Spanning work: held behind a quiescing snapshot, and awaited by the next one. */
+    private spanning;
     private pinSnapshot;
     private snapshotGen;
     private requireSnapshot;
@@ -1087,6 +1103,7 @@ export declare class SqliteVFS {
     }): Promise<{
         restored: number;
     }>;
+    private restoreInSlices;
     /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
     private restoreJob;
     private runRestore;

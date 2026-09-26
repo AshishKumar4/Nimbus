@@ -274,7 +274,7 @@ class RuntimeOwner {
             lease = workspace.filesystem.openHost(identity);
             this.fileLeases.set(key, lease);
         }
-        const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd(), workspace.vfs, identity);
+        const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd(), workspace.vfs);
         return Object.assign(view, { as: (next) => this.files(next) });
     }
     close() {
