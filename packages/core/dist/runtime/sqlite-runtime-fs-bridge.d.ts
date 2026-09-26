@@ -121,6 +121,16 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     releaseExclusiveMutation(owner: string): void;
     private pathArgument;
     private resolveDataPath;
+    /**
+     * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+     * namespace walk does it (VFS-COMP-006): each component needs the directory
+     * it leaves to be a searchable directory; `..` at the root, and any
+     * absolute link, is ENOTCAPABLE; a missing component is ENOENT unless it is
+     * the last. Links resolve in the namespace, 40 hops, then null (ELOOP).
+     */
+    private resolveBeneath;
+    /** ENOENT, ENOTDIR or EACCES unless `dir` (resolved, no links) is a directory the caller may search. */
+    private searchDirectory;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
     private locateMutation;

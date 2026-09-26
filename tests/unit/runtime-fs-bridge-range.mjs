@@ -1177,7 +1177,7 @@ const CRED_OTHER = Object.freeze({
 
   await bridge.symlink('two', '/loop/one');
   await bridge.symlink('one', '/loop/two');
-  assert.equal(await bridge.stat('/loop/one'), null, 'symlink loops must not resolve to arbitrary data');
+  await assert.rejects(async () => bridge.stat('/loop/one'), { code: 'ELOOP' }, 'a link loop is ELOOP, as stat(2) says');
   assert.equal(await bridge.readFile('/loop/one'), null);
 
   getSymlinkRegistry(rawVfs).set('/legacy/link.txt', '/real/dir/file.txt');

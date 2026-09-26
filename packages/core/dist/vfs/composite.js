@@ -274,12 +274,26 @@ export class CompositeVFS {
     }
     /**
      * Whether the namespace answers `path` itself rather than the root
-     * backend alone: a path on another mount, or a directory above a mount
-     * point (whose listing includes the mount's name).
+     * backend alone: a path on another mount, a directory above a mount point
+     * (whose listing includes the mount's name), or a path under such a
+     * directory that the root holds none of (absent there, whatever the root
+     * holds through a link or file higher up).
      */
     composes(path) {
         const at = normalizePath(path);
-        return this.route(at).mount.point !== ROOT_POINT || (at !== ROOT_POINT && this.isStructural(at));
+        if (this.route(at).mount.point !== ROOT_POINT)
+            return true;
+        if (at === ROOT_POINT)
+            return false;
+        if (this.isStructural(at))
+            return true;
+        for (let dir = at.slice(0, at.lastIndexOf('/')); dir !== ''; dir = dir.slice(0, dir.lastIndexOf('/'))) {
+            if (!this.isStructural(dir))
+                continue;
+            const held = this.heldDirectory(dir, true);
+            return !isPromise(held) && held === null;
+        }
+        return false;
     }
     /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
     realpath(path) {
@@ -567,20 +581,28 @@ export class CompositeVFS {
     /**
      * The directory a backend holds at a path above a mount point, or null
      * when it holds none there (then the namespace makes one: EPOCH_STAT).
+     * Held means literally: under a directory the backend holds, never through
+     * a link or file it holds higher up (the namespace's directory wins there).
      */
     heldDirectory(path, sync) {
         const route = this.route(path);
-        const held = (stat) => (stat !== null && stat.type === 'directory' ? stat : null);
-        // A file above it (ENOTDIR) or no stat at all (ENOTSUP): the backend holds no directory there.
-        const unsupported = (error) => { if (isVfsError(error, 'ENOTSUP') || isVfsError(error, 'ENOTDIR'))
-            return null; throw error; };
-        try {
-            const out = this.softStat(this.ops(route, sync), route.rel, false);
-            return isPromise(out) ? out.then(held, unsupported) : held(out);
-        }
-        catch (error) {
-            return unsupported(error);
-        }
+        const parent = path.slice(0, path.lastIndexOf('/')) || ROOT_POINT;
+        const own = () => {
+            const held = (stat) => (stat !== null && stat.type === 'directory' ? stat : null);
+            // A file above it (ENOTDIR) or no stat at all (ENOTSUP): the backend holds no directory there.
+            const unsupported = (error) => { if (isVfsError(error, 'ENOTSUP') || isVfsError(error, 'ENOTDIR'))
+                return null; throw error; };
+            try {
+                const out = this.softStat(this.ops(route, sync), route.rel, false);
+                return isPromise(out) ? out.then(held, unsupported) : held(out);
+            }
+            catch (error) {
+                return unsupported(error);
+            }
+        };
+        if (parent === route.mount.point)
+            return own();
+        return then(this.heldDirectory(parent, sync), (above) => (above === null ? null : own()));
     }
     /** A mounted backend's root, or null when it cannot stat it. */
     mountRoot(mount, point, sync) {
@@ -614,31 +636,25 @@ export class CompositeVFS {
     }
     // ── operations (one implementation; `sync` selects the backend's sync face) ──
     /**
-     * Whether the backend holds a directory that exists only above a mount
-     * point (not a mount point) as something else, a link or a file. Then that
-     * directory holds only its mount names (rule 2 applied to ancestors: a
-     * mount covers everything under its path).
+     * Whether `path` lies under a directory above a mount point (not a mount
+     * point, and not `path` itself as a mount name there) that its backend does
+     * not hold as a directory: that directory holds only its mount names (rule 2
+     * applied to ancestors: a mount covers everything under its path), whatever
+     * the backend has there through a link or file.
      */
-    coversNonDirectory(dir, sync) {
-        const route = this.route(dir);
-        return then(this.softStat(this.ops(route, sync), route.rel, false), (stat) => stat !== null && stat.type !== 'directory');
-    }
-    /** Whether `path` lies under such a covered directory (and is not itself a mount name there). */
     shadowed(path, sync) {
         if (this.isStructural(path))
             return false;
         // Only directories the path's own backend serves: one above the path's
         // mount point belongs to another filesystem, which the mount covers.
         const point = this.route(path).mount.point;
-        const covered = [];
         for (let at = parentOf(path); at !== ROOT_POINT && at !== point && at.length > point.length; at = parentOf(at)) {
-            if (this.isStructural(at) && !this.table.mounts.has(at))
-                covered.push(at);
+            if (this.isStructural(at) && !this.table.mounts.has(at)) {
+                // heldDirectory checks every directory above it in turn.
+                return then(this.heldDirectory(at, sync), (held) => held === null);
+            }
         }
-        const next = (i) => (i >= covered.length
-            ? false
-            : then(this.coversNonDirectory(covered[i], sync), (hidden) => hidden || next(i + 1)));
-        return next(0);
+        return false;
     }
     /** ENOENT when `path` is shadowed. */
     reachable(path, sync) {
@@ -745,8 +761,8 @@ export class CompositeVFS {
                 // A directory above a live mount: the backend's own entries if it
                 // holds a directory there, else only the mount points.
                 const route = this.route(path);
-                const listed = () => then(this.coversNonDirectory(path, sync), (covers) => {
-                    if (covers)
+                const listed = () => then(this.heldDirectory(path, sync), (held) => {
+                    if (held === null)
                         return [];
                     try {
                         const out = this.ops(route, sync).readdir(route.rel);

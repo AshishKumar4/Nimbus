@@ -107,7 +107,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   stat(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsStat | null {
     const followSymlinks = options.followSymlinks !== false;
     const located = this.locate(path, followSymlinks);
-    if (located === null) return null;
+    if (located === null) throw fsError('ELOOP', 'stat', path);
     if (located.mount) {
       const stat = located.mount.stat(located.path, { follow: followSymlinks });
       return stat === null ? null : runtimeStatOf(stat, this.mountedIno(located.path));
@@ -557,6 +557,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   realpath(path: RuntimeFsPath): string {
     const resolved = this.resolveDataPath(path, true);
     if (resolved === null) throw fsError('ELOOP', 'realpath', path);
+    if (resolved === '') return '/';
     if (this.namespace?.composes('/' + resolved)) return this.namespace.realpath('/' + resolved);
     this.vfs.stat(resolved);
     return '/' + resolved;
@@ -622,9 +623,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean): string | null {
-    const rooted = typeof path !== 'string' && path.beneath;
-    const root = rooted ? normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path()) : null;
-    if (rooted && path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+    if (typeof path !== 'string' && path.beneath) {
+      // The root is found by name, so every directory above it must grant
+      // search (VFS-COMP-006) before anything is looked up beneath it.
+      const root = normalizeVfsPath('root' in path ? path.root : this.description(path.directory).node.path());
+      if (root !== '') this.stat('/' + root, { followSymlinks: false });
+      if (path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+      return this.resolveBeneath(root, path.path.split('/').filter(Boolean), followSymlinks, path);
+    }
     const pending = this.pathArgument(path).split('/').filter(Boolean);
     const resolved: string[] = [];
     let hops = 0;
@@ -634,7 +640,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (segment === undefined) break;
       if (segment === '.') continue;
       if (segment === '..') {
-        if (root !== null && resolved.join('/') === root) throw fsError('ENOTCAPABLE', 'path', path);
         resolved.pop();
         continue;
       }
@@ -646,8 +651,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       // On a mount, or a directory above one, the namespace answers whether
       // this component is a link (the SQLite rows it covers, links among
-      // them, are never followed). The walk itself (`..`, the beneath
-      // check) stays here, component by component.
+      // them, are never followed). The walk itself stays here.
       if (this.namespace?.composes('/' + candidate)) {
         const link = this.mountedLink('/' + candidate);
         if (link === null) {
@@ -655,11 +659,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           continue;
         }
         if (++hops > MAX_LINK_HOPS) return null;
-        if (link.startsWith('/')) {
-          const absolute = normalizeVfsPath(link);
-          if (root !== null && root !== '' && absolute !== root && !absolute.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
-          resolved.length = 0;
-        }
+        if (link.startsWith('/')) resolved.length = 0;
         pending.unshift(...link.split('/').filter(Boolean));
         continue;
       }
@@ -690,12 +690,58 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // Hops are counted, as Linux does (40): a link met again on a longer
       // path is one more hop, not a cycle.
       if (++hops > MAX_LINK_HOPS) return null;
-      if (root !== null && root !== '' && target !== root && !target.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
       pending.unshift(...target.split('/').filter(Boolean));
       resolved.length = 0;
     }
 
     return resolved.join('/');
+  }
+
+  /**
+   * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+   * namespace walk does it (VFS-COMP-006): each component needs the directory
+   * it leaves to be a searchable directory; `..` at the root, and any
+   * absolute link, is ENOTCAPABLE; a missing component is ENOENT unless it is
+   * the last. Links resolve in the namespace, 40 hops, then null (ELOOP).
+   */
+  private resolveBeneath(root: string, pending: string[], followSymlinks: boolean, path: RuntimeFsPath): string | null {
+    const resolved = root === '' ? [] : root.split('/');
+    const depth = resolved.length;
+    let hops = 0;
+    while (pending.length > 0) {
+      const segment = pending.shift()!;
+      const dir = resolved.join('/');
+      this.searchDirectory(dir, path);
+      if (segment === '.') continue;
+      if (segment === '..') {
+        if (resolved.length === depth) throw fsError('ENOTCAPABLE', 'path', path);
+        resolved.pop();
+        continue;
+      }
+      // Every component already walked is a directory, not a link, so a
+      // lookup by its literal name is the walk's own.
+      const candidate = dir === '' ? segment : `${dir}/${segment}`;
+      const isFinal = pending.length === 0;
+      const stat = this.stat('/' + candidate, { followSymlinks: false });
+      if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
+      if (stat === null || stat.type !== 'symlink' || (isFinal && !followSymlinks)) {
+        resolved.push(segment);
+        continue;
+      }
+      if (++hops > MAX_LINK_HOPS) return null;
+      const target = this.readlink('/' + candidate) ?? '';
+      if (target.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+      pending.unshift(...target.split('/').filter(Boolean));
+    }
+    return resolved.join('/');
+  }
+
+  /** ENOENT, ENOTDIR or EACCES unless `dir` (resolved, no links) is a directory the caller may search. */
+  private searchDirectory(dir: string, path: RuntimeFsPath): void {
+    const stat = dir === '' ? this.rootStat() : this.stat('/' + dir, { followSymlinks: false });
+    if (stat === null) throw fsError('ENOENT', 'path', path);
+    if (stat.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+    if (!modeAllows(stat, 1, this.vfs.cred)) throw fsError('EACCES', 'path', path);
   }
 
   /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
