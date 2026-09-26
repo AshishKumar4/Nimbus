@@ -54,6 +54,9 @@ export interface BuiltinExecutionContext {
     executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
     /** Bind a name to the running function. False outside one, where it is an error. */
     declareLocal(name: string): boolean;
+    /** The state of the shell running the builtin: a child shell's own, after a fork. */
+    shell: InterpreterConfig;
+    getLastExitCode(): number;
 }
 export interface InlineExecutionOptions {
     positionals?: string[];
@@ -143,6 +146,16 @@ export declare class Interpreter {
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
     constructor(config: InterpreterConfig);
+    /**
+     * A child shell, as fork(2) makes one: its own copy of every piece of shell
+     * state (variables and arrays, cwd, options, traps, readonly names,
+     * aliases, functions, $?, the open descriptors), so nothing it changes
+     * reaches this shell. Shared: the process registry, job table, filesystem,
+     * command registry and terminal; `$$` stays this shell's. Traps reset to
+     * the default, except ignored ones, and the child runs its own EXIT trap
+     * when it finishes (`finishChild`).
+     */
+    fork(): Interpreter;
     getLastExitCode(): number;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
     private executeScriptWithIo;
@@ -211,6 +224,8 @@ export declare class Interpreter {
     executeCapture(input: string, io?: ExecutionIo): Promise<CapturedCommand>;
     private executeInline;
     private executeLineWithIo;
+    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    private finishChild;
     private runExitTrap;
     private createTerminalIo;
     private createCommandIo;

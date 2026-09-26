@@ -133,6 +133,43 @@ export class Interpreter {
     constructor(config) {
         this.config = config;
     }
+    /**
+     * A child shell, as fork(2) makes one: its own copy of every piece of shell
+     * state (variables and arrays, cwd, options, traps, readonly names,
+     * aliases, functions, $?, the open descriptors), so nothing it changes
+     * reaches this shell. Shared: the process registry, job table, filesystem,
+     * command registry and terminal; `$$` stays this shell's. Traps reset to
+     * the default, except ignored ones, and the child runs its own EXIT trap
+     * when it finishes (`finishChild`).
+     */
+    fork() {
+        const parent = this.config;
+        let cwd = parent.getCwd();
+        const env = { ...parent.env };
+        const config = {
+            ...parent,
+            env,
+            arrays: new Map(Array.from(parent.arrays, ([name, elements]) => [name, [...elements]])),
+            getCwd: () => cwd,
+            setCwd: (next) => { cwd = next; env.PWD = next; },
+            options: { ...parent.options },
+            traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
+            readonlyNames: new Set(parent.readonlyNames),
+            aliases: parent.aliases ? new Map(parent.aliases) : undefined,
+        };
+        const child = new Interpreter(config);
+        child.lastExitCode = this.lastExitCode;
+        child.functions = new Map(this.functions);
+        child.persistentOutputFds = new Map(this.persistentOutputFds);
+        child.persistentInputFds = new Map(this.persistentInputFds);
+        child.persistentTerminalOutputFds = new Set(this.persistentTerminalOutputFds);
+        child.persistentTerminalInputFds = new Set(this.persistentTerminalInputFds);
+        child.persistentOutputHandles = new Map(this.persistentOutputHandles);
+        child.persistentInputHandles = new Map(this.persistentInputHandles);
+        child.localFrames = this.localFrames.map((frame) => new Map(frame));
+        child.errexitSuppressionDepth = this.errexitSuppressionDepth;
+        return child;
+    }
     getLastExitCode() {
         return this.lastExitCode;
     }
@@ -217,8 +254,9 @@ export class Interpreter {
             backgroundIo.signal = abortController.signal;
             backgroundIo.registerProcess = false;
             backgroundIo.positionals = this.forkPositionals(io);
+            const child = this.fork();
             const promise = (async () => {
-                return await this.executeListEntries(list.entries, backgroundIo);
+                return await child.finishChild(async () => (await child.executeListEntries(list.entries, backgroundIo)), backgroundIo);
             })();
             const pid = this.config.processRegistry.spawn({
                 command: commandText.split(' ')[0] || 'unknown',
@@ -261,10 +299,15 @@ export class Interpreter {
             if (abortCode !== null)
                 return abortCode;
             if (!skipNext) {
-                exitCode = await this.executePipeline(entry.pipeline, io);
+                // Every command of an and-or list but the last runs with errexit ignored.
+                exitCode = entry.connector === '&&' || entry.connector === '||'
+                    ? await this.withErrexitSuppressed(async () => (await this.executePipeline(entry.pipeline, io)))
+                    : await this.executePipeline(entry.pipeline, io);
             }
+            // A status carried past a skipped command came from a guarded one.
+            if (!skipNext)
+                this.enforceErrexit(entry.connector, exitCode);
             skipNext = false;
-            this.enforceErrexit(entry.connector, exitCode);
             if (entry.connector === '&&' && exitCode !== 0) {
                 skipNext = true;
             }
@@ -342,9 +385,11 @@ export class Interpreter {
                 };
                 cmdIo.signal = pipelineAbortController.signal;
                 cmdIo.positionals = this.forkPositionals(io);
+                // Each element runs in a child shell (bash forks every one).
+                const element = this.fork();
                 const cmdPromise = (async () => {
                     try {
-                        return await this.executeCommand(cmd, cmdIo);
+                        return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
                     }
                     catch (e) {
                         if (e instanceof ExitSignal) {
@@ -450,6 +495,8 @@ export class Interpreter {
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                 executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
                 declareLocal: (name) => this.declareLocal(name),
+                shell: this.config,
+                getLastExitCode: () => this.lastExitCode,
             })));
             this.lastExitCode = exitCode;
             return exitCode;
@@ -600,34 +647,10 @@ export class Interpreter {
         return exitCode;
     }
     async executeSubshell(node, io) {
-        const savedCwd = this.config.getCwd();
-        const savedEnv = { ...this.config.env };
-        const savedArrays = new Map();
-        for (const [name, elements] of this.config.arrays)
-            savedArrays.set(name, [...elements]);
-        let exitCode = 0;
+        const child = this.fork();
         const subshellIo = this.createCommandIo(io);
         subshellIo.positionals = this.forkPositionals(io);
-        try {
-            exitCode = await this.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await this.executeCompoundList(node.body, redirIo)));
-        }
-        catch (e) {
-            if (e instanceof ExitSignal) {
-                exitCode = e.exitCode;
-            }
-            else {
-                throw e;
-            }
-        }
-        finally {
-            this.config.setCwd(savedCwd);
-            for (const key of Object.keys(this.config.env))
-                delete this.config.env[key];
-            Object.assign(this.config.env, savedEnv);
-            this.config.arrays.clear();
-            for (const [name, elements] of savedArrays)
-                this.config.arrays.set(name, elements);
-        }
+        const exitCode = await child.executeWithRedirections(node.redirections, subshellIo, async (redirIo) => (await child.finishChild(async () => (await child.executeCompoundList(node.body, redirIo)), redirIo)));
         this.lastExitCode = exitCode;
         return exitCode;
     }
@@ -766,6 +789,8 @@ export class Interpreter {
                             setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                             executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
                             declareLocal: (name) => this.declareLocal(name),
+                            shell: this.config,
+                            getLastExitCode: () => this.lastExitCode,
                         });
                     }
                     else {
@@ -1024,7 +1049,9 @@ export class Interpreter {
         const captureIo = this.createCommandIo(io);
         captureIo.stdout = stdout;
         captureIo.positionals = this.forkPositionals(io);
-        const exitCode = await this.executeLineWithIo(input, captureIo);
+        // $( ) runs in a child shell.
+        const child = this.fork();
+        const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
         return { output: captured, exitCode };
     }
     async executeInline(input, io, options = {}) {
@@ -1038,6 +1065,19 @@ export class Interpreter {
         const tokens = lex(input);
         const script = parse(tokens);
         return (await this.executeScriptWithIo(script, io));
+    }
+    /** A child shell's end: its EXIT trap runs, and an `exit` inside it ends only it. */
+    async finishChild(run, io) {
+        let exitCode;
+        try {
+            exitCode = await run();
+        }
+        catch (e) {
+            if (!(e instanceof ExitSignal))
+                throw e;
+            exitCode = e.exitCode;
+        }
+        return (await this.runExitTrap(exitCode, io, true));
     }
     async runExitTrap(exitCode, io, enabled) {
         if (!enabled || this.exitTrapDepth > 0)

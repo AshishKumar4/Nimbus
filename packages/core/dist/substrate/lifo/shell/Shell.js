@@ -68,6 +68,10 @@ export class Shell {
     jobTable;
     processRegistry;
     builtins;
+    /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
+    ownBuiltins = new Map();
+    /** A child shell's view of this Shell, one per forked state. */
+    forkViews = new WeakMap();
     shellOptions = {
         errexit: false,
         nounset: false,
@@ -116,9 +120,11 @@ export class Shell {
                 defaultCred = { ...defaultCred, umask: mask };
             },
         };
-        // Initialize builtins
         this.builtins = new Map();
         this.registerBuiltins();
+        for (const name of this.ownBuiltins.keys()) {
+            this.builtins.set(name, async (args, stdout, stderr, stdin, context) => (await this.forContext(context).ownBuiltins.get(name)(args, stdout, stderr, stdin, context)));
+        }
         // Initialize job table (legacy - still used for backward compat)
         this.jobTable = new JobTable();
         // Use shared process registry from Kernel
@@ -146,37 +152,63 @@ export class Shell {
         };
         this.interpreter = new Interpreter(this.interpreterConfig);
     }
+    /**
+     * The Shell a builtin acts on: this one, or for a child shell (a subshell,
+     * pipeline element, `$( )` or background job) a view whose variables, cwd,
+     * options, traps, readonly names and aliases are that child's.
+     */
+    forContext(context) {
+        const state = context?.shell;
+        if (state === undefined || state === this.interpreterConfig)
+            return this;
+        const cached = this.forkViews.get(state);
+        if (cached !== undefined)
+            return cached;
+        const view = Object.create(this, {
+            env: { value: state.env },
+            arrays: { value: state.arrays },
+            cwd: { get: () => state.getCwd(), set: (cwd) => { state.setCwd(cwd); } },
+            shellOptions: { value: state.options },
+            traps: { value: state.traps },
+            readonlyNames: { value: state.readonlyNames },
+            aliases: { value: state.aliases ?? new Map() },
+            ownBuiltins: { value: new Map() },
+        });
+        view.registerBuiltins();
+        this.forkViews.set(state, view);
+        return view;
+    }
     registerBuiltins() {
-        this.builtins.set('cd', async (args, _stdout, stderr) => (await this.builtinCd(args, stderr)));
-        this.builtins.set('pwd', async (_args, stdout) => (await this.builtinPwd(stdout)));
-        this.builtins.set('echo', async (args, stdout) => (await this.builtinEcho(args, stdout)));
-        this.builtins.set('clear', async () => (await this.builtinClear()));
-        this.builtins.set('export', async (args, _stdout, stderr) => (await this.builtinExport(args, stderr)));
-        this.builtins.set('exit', async (args, _stdout, stderr) => (await this.builtinExit(args, stderr)));
-        this.builtins.set('true', () => Promise.resolve(0));
-        this.builtins.set('false', () => Promise.resolve(1));
-        this.builtins.set(':', () => Promise.resolve(0));
-        this.builtins.set('set', async (args, stdout, stderr, _stdin, context) => (await this.builtinSet(args, stdout, stderr, context)));
-        this.builtins.set('shift', async (args, _stdout, stderr, _stdin, context) => (await this.builtinShift(args, stderr, context)));
-        this.builtins.set('trap', async (args, stdout, stderr) => (await this.builtinTrap(args, stdout, stderr)));
-        this.builtins.set('hash', async (args, stdout, stderr) => (await this.builtinHash(args, stdout, stderr)));
-        this.builtins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
-        this.builtins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
-        this.builtins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
-        this.builtins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
-        this.builtins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
-        this.builtins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
-        this.builtins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
-        this.builtins.set('jobs', async (_args, stdout) => (await this.builtinJobs(stdout)));
-        this.builtins.set('fg', async (args, stdout, stderr) => (await this.builtinFg(args, stdout, stderr)));
-        this.builtins.set('bg', async (args, stdout, stderr) => (await this.builtinBg(args, stdout, stderr)));
-        this.builtins.set('history', async (_args, stdout) => (await this.builtinHistory(stdout)));
-        this.builtins.set('source', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
-        this.builtins.set('.', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
-        this.builtins.set('alias', async (args, stdout) => (await this.builtinAlias(args, stdout)));
-        this.builtins.set('unalias', async (args, _stdout, stderr) => (await this.builtinUnalias(args, stderr)));
-        this.builtins.set('test', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
-        this.builtins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context, true)));
+        this.ownBuiltins.set('cd', async (args, _stdout, stderr) => (await this.builtinCd(args, stderr)));
+        this.ownBuiltins.set('pwd', async (_args, stdout) => (await this.builtinPwd(stdout)));
+        this.ownBuiltins.set('echo', async (args, stdout) => (await this.builtinEcho(args, stdout)));
+        this.ownBuiltins.set('clear', async () => (await this.builtinClear()));
+        this.ownBuiltins.set('export', async (args, _stdout, stderr) => (await this.builtinExport(args, stderr)));
+        this.ownBuiltins.set('exit', async (args, _stdout, stderr, _stdin, context) => (await this.builtinExit(args, stderr, context)));
+        this.ownBuiltins.set('true', () => Promise.resolve(0));
+        this.ownBuiltins.set('false', () => Promise.resolve(1));
+        this.ownBuiltins.set(':', () => Promise.resolve(0));
+        this.ownBuiltins.set('set', async (args, stdout, stderr, _stdin, context) => (await this.builtinSet(args, stdout, stderr, context)));
+        this.ownBuiltins.set('shift', async (args, _stdout, stderr, _stdin, context) => (await this.builtinShift(args, stderr, context)));
+        this.ownBuiltins.set('trap', async (args, stdout, stderr) => (await this.builtinTrap(args, stdout, stderr)));
+        this.ownBuiltins.set('hash', async (args, stdout, stderr) => (await this.builtinHash(args, stdout, stderr)));
+        this.ownBuiltins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
+        this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
+        this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
+        this.ownBuiltins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
+        this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
+        this.ownBuiltins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
+        this.ownBuiltins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
+        this.ownBuiltins.set('jobs', async (_args, stdout) => (await this.builtinJobs(stdout)));
+        this.ownBuiltins.set('fg', async (args, stdout, stderr) => (await this.builtinFg(args, stdout, stderr)));
+        this.ownBuiltins.set('bg', async (args, stdout, stderr) => (await this.builtinBg(args, stdout, stderr)));
+        this.ownBuiltins.set('history', async (_args, stdout) => (await this.builtinHistory(stdout)));
+        this.ownBuiltins.set('source', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
+        this.ownBuiltins.set('.', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
+        this.ownBuiltins.set('alias', async (args, stdout) => (await this.builtinAlias(args, stdout)));
+        this.ownBuiltins.set('unalias', async (args, _stdout, stderr) => (await this.builtinUnalias(args, stderr)));
+        this.ownBuiltins.set('test', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+        this.ownBuiltins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context, true)));
     }
     getJobTable() {
         return this.jobTable;
@@ -1468,13 +1500,13 @@ export class Shell {
         replaceMap(this.traps, frame.traps);
         replaceSet(this.readonlyNames, frame.readonlyNames);
     }
-    async builtinExit(args, stderr) {
+    async builtinExit(args, stderr, context) {
         if (args.length > 1) {
             (await stderr.write('exit: too many arguments\n'));
             return 1;
         }
         if (args.length === 0) {
-            throw new ExitSignal(this.interpreter.getLastExitCode());
+            throw new ExitSignal(context?.getLastExitCode() ?? this.interpreter.getLastExitCode());
         }
         const status = parseShellExitStatus(args[0] ?? '');
         if (status === null) {

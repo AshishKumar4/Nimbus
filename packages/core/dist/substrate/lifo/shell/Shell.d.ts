@@ -70,6 +70,10 @@ export declare class Shell {
     private jobTable;
     private processRegistry;
     private builtins;
+    /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
+    private ownBuiltins;
+    /** A child shell's view of this Shell, one per forked state. */
+    private readonly forkViews;
     private shellOptions;
     private traps;
     private readonlyNames;
@@ -94,6 +98,12 @@ export declare class Shell {
      */
     typeAhead: string[];
     constructor(terminal: ITerminal, filesystem: NimbusFilesystemAuthority, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
+    /**
+     * The Shell a builtin acts on: this one, or for a child shell (a subshell,
+     * pipeline element, `$( )` or background job) a view whose variables, cwd,
+     * options, traps, readonly names and aliases are that child's.
+     */
+    private forContext;
     private registerBuiltins;
     getJobTable(): JobTable;
     getProcessRegistry(): ProcessRegistry;
