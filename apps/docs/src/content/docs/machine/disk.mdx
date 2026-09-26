@@ -27,6 +27,11 @@ The shell, all four runtimes, the editor, `box.files` in the SDK, and the
 agent's tools see the same bytes. A compiled C program can read with
 `fopen("./data.txt", "r")` what `cat` sees.
 
+The 10 GB covers everything the session stores: the disk, and each running
+process's own copy of the files it reads. A write that would go past it fails
+with `ENOSPC` ("No space left on device") before anything is written, as on
+a full disk, and the files already there stay as they were.
+
 Process writes stream to the supervisor with credit backpressure. A process
 with no credit cannot send more. That lets a parallel `npm install` or an
 84,000-file checkout fit inside a 128 MiB isolate. `fsync` and process exit

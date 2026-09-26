@@ -107,6 +107,42 @@ option, with its replacement:
 - `rename` follows Linux's order and error codes. A directory may replace an
   empty directory, and moving a directory to another parent needs write
   permission on it.
+- Storage admission (Kinu N18). One 10 GB limit covers the session and every
+  process facet under it. A write past it used to reset the whole object and
+  empty the destination. Now every write is admitted before it is made, and
+  a write that would cross the limit fails with `ENOSPC` and changes
+  nothing. The ledger counts the session's database, each facet's database
+  (live, dead or kept for a durable app, until `facets.delete`), and
+  namespace images, which are evicted oldest first when a write needs their
+  room. A sliced `copyTree` and an `importPage` reserve their room when they
+  start, so a writer between their slices can't leave them half done. A
+  copy resumed after a reset reserves again, or ends and removes what it
+  had copied. A running node process's store asks for room before it grows;
+  what it can't hold it reads from the session. The last 1% of the limit
+  (at least 16 MiB) is kept for the kernel. `ws.fs.storeStats().ledger`
+  reports used, the limit and each part.
+- Lazy imports (Kinu N17). `ProcessFiles(vfs, { hydration: { fetch } })` and
+  `importPage(dst, page, chunks, { lazy: true })` commit an import's rows at
+  once and fetch the bytes it did not carry in the background, through your
+  `fetch(hashes)`. An asynchronous read of such a file waits for its bytes.
+  A synchronous one fails with `EIO` ("still being imported") and moves the
+  file to the front. A WASI launch (bash, python, ruby, clang, a .wasm) waits
+  up to 30 s for the files it names, then fails with `EIO`; a launch naming
+  none of them starts at once. A fetch that fails, returns wrong bytes or leaves
+  hashes out is retried with backoff. After 8 tries a chunk has failed: its
+  readers get `EIO` naming the file, the chunk and the cause, and
+  `hydrator.retryFailed()` tries again. An asynchronous reader also waits
+  at most 30 s.
+- `head -c N /dev/zero` and `/dev/urandom` work under bash. A device was read
+  whole on open, which fails for an endless one.
+- `realpath` takes GNU's options (`-e`, `-m`, `-L`, `-P`, `-s`, `-q`, `-z`,
+  `--relative-to`, `--relative-base`), and `find -name` matches bracket
+  classes, `\` escapes and a lone `[` as GNU does.
+- `touch` sets times to "now" with write permission alone, as GNU does, and
+  `touch -h` sets a link's own times.
+- SECURITY: a lookup rooted at a WASI preopen (or any `beneath` path) checks
+  search permission on each directory it leaves and refuses every absolute
+  link and every `..` above its root, across mounts too.
 
 ## 2026-09-24
 

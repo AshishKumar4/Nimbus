@@ -76,37 +76,28 @@ only after the `put` resolves.
 
 ## Host mounts in df and mount
 
-`df`, `mount` and `/proc/mounts` read the filesystem authority's
-`mounts(cred)` listing: the SQLite store as `/` with its real usage, then each
-other kernel mount (`/proc`, `/dev`, yours). A wrapper that serves its own
-paths lists them by overriding `mounts` and calling `super`:
+The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,
+with SQLite at `/`, `/proc` and `/dev`. Mount your own filesystems on it, and
+`df`, `mount` and `/proc/mounts` list them in mount order. A mounted VFS
+describes itself with `describe()` and `usage()`:
 
 ```ts
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
-import type { NimbusMountEntry, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { NimbusWorkspace } from '@nimbus-sh/core';
+import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 
-class HostMounts extends SqliteFilesystemAuthority {
-  override mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
-    return [
-      ...super.mounts(cred),
-      {
-        mountPoint: '/shared',
-        source: 'r2:team-bucket',
-        type: 'r2',
-        options: ['rw'],
-        usage: async () => null, // or { size, used, available } in bytes
-      },
-    ];
-  }
-}
+const ws = await NimbusWorkspace.create({ sql, transactions, generation });
 
-const ws = await NimbusWorkspace.create({
-  sql, transactions, generation,
-  filesystem: (base) => new HostMounts((base as SqliteFilesystemAuthority).vfs),
+// Any VFS can be mounted. This one also says what it is, for df and mount.
+const shared = Object.assign(new MemoryVFS(), {
+  describe: () => ({ source: 'r2:team-bucket', type: 'r2', options: ['rw'] }),
+  usage: async () => null, // or { size, used, available } in bytes
 });
+ws.filesystem.vfs.mount('/shared', shared);
+
+await ws.exec('mount'); // ... r2:team-bucket on /shared type r2 (rw)
 ```
 
-An entry whose `usage()` returns `null` shows in `df -a`, in `df <path>` for a
+A mount whose `usage()` returns `null` shows in `df -a`, in `df <path>` for a
 path on it, and in `mount` and `/proc/mounts`.
 
 ## The hosted runtime in your Durable Object
