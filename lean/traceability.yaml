@@ -565,7 +565,7 @@ requirements:
       - An answer arriving while a repair runs is dropped (the barrier joins the repair), as the code does
   COH-012:
     statement: Held cells (an own write the facet store had no room for, kept in process memory, undated while its write-back is in flight and dated once acknowledged) are judged exactly like store rows - a dated cell by every delta report and by a poison repair's listing, an undated one kept by both with the listing's revision noted as its report - so every state reachable with held cells satisfies the store's invariant, and after a peer write the authority committed at or before the newest admitted barrier no sync read serves older bytes, held or not, across any poison and repair; an own cell whose write-back committed is not older either once its acknowledgements are settled. As built in c30d304b (a repair judging only the file table) the held cell serves the pre-peer bytes after the repair, and a write-back in flight across the repair misses the listing's report and stamps a stale cell.
-    status: proved-in-abstract-model
+    status: proved-and-refined
     theorems:
       - Nimbus.Coherence.Store.drop_inv
       - Nimbus.Coherence.Store.held_inv
@@ -595,8 +595,9 @@ requirements:
       - Nimbus.Coherence.Store.run_reach
     tsRefs:
       - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    refinement:
+      - lean/fixtures/resident-poison-reconcile.json :: tests/unit/resident-poison-reconcile.mjs
     remainingEvidence:
-      - Parked until GitParityLane bridges tests/unit/resident-poison-reconcile.mjs; Nimbus.Refine.HeldCases generates lean/fixtures/resident-poison-reconcile.json, and RefinementFixtures emits it with the refinement entry
       - One supervisor incarnation (the cross-epoch repair, where nothing is comparable and every dated cell goes, is not modeled); the fixture's write-back is committed and acknowledged in one event, so reports never reach an acknowledgement there (the in-flight case is proved and traced in Lean only)
       - The LRU's budget is abstract (any held cell may be evicted: a miss)
   NS-002:
