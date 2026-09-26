@@ -1,0 +1,273 @@
+{
+ "tool": "sort",
+ "recorded": "GNU coreutils 9.7 (glibc 2.43 collation), LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "crlf": "b25lDQp0d28NCg==",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "u8": "aMOpbGxvIHfDtnJsZArDiWNvbGUgw6dhCuaXpeacrOiqniDjg4bjgq3jgrnjg4gK8J+YgCB4Cg==",
+  "nums": "MTAKOQotMwoxLDAwMAoyLjUKMWUzCjB4MTAKYWJjCgogNwotMAorNAoxLjVLCjJNCjUxMgo=",
+  "words": "YgphCkIKQQpfeAp4Ci14Cnp6Clp6CsOpY2xhaXIKZWNsYWlyCmZvbyBiYXIKZm9vCmZvbzEwCmZvbzIKLmhpZGRlbgpoaWRkZW4KICBsZWFkCmxlYWQK",
+  "kv": "YiAyIHgKYSAxMCB5CmMgMSB6CmEgMiB3CmIgIDMgdgo=",
+  "csv": "cGVhciwzLHoKYXBwbGUsMTAsYQpmaWcsMixtCmFwcGxlLDIsYgo=",
+  "months": "TWFyCkpBTgpmZWIKeHl6CiBkZWMKQXByCg==",
+  "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
+  "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo="
+ },
+ "cases": [
+  {
+   "args": "words",
+   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-r words",
+   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\n\u00c3\u00a9clair\neclair\nB\nb\nA\na\n",
+   "exit": 0
+  },
+  {
+   "args": "-f words",
+   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-u words",
+   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-fu words",
+   "stdout": "a\nb\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\n",
+   "exit": 0
+  },
+  {
+   "args": "-d words",
+   "stdout": "a\nA\nb\nB\n\u00c3\u00a9clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-b words",
+   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-n nums",
+   "stdout": "-3\n\n-0\n0x10\n+4\nabc\n1e3\n1.5K\n2M\n2.5\n 7\n9\n10\n512\n1,000\n",
+   "exit": 0
+  },
+  {
+   "args": "-rn nums",
+   "stdout": "1,000\n512\n10\n9\n 7\n2.5\n2M\n1.5K\n1e3\nabc\n+4\n0x10\n-0\n\n-3\n",
+   "exit": 0
+  },
+  {
+   "args": "-g nums",
+   "stdout": "\nabc\n-3\n-0\n1,000\n1.5K\n2M\n2.5\n+4\n 7\n9\n10\n0x10\n512\n1e3\n",
+   "exit": 0
+  },
+  {
+   "args": "-h nums",
+   "stdout": "-3\n\n-0\n0x10\n+4\nabc\n1e3\n2.5\n 7\n9\n10\n512\n1,000\n1.5K\n2M\n",
+   "exit": 0
+  },
+  {
+   "args": "-M months",
+   "stdout": "xyz\nJAN\nfeb\nMar\nApr\n dec\n",
+   "exit": 0
+  },
+  {
+   "args": "-V vers",
+   "stdout": ".x\na-1.2~rc1\na-1.2\na-1.2a\na-1.9\na-1.10\nb\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2 kv",
+   "stdout": "a 10 y\nc 1 z\na 2 w\nb 2 x\nb  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2,2 kv",
+   "stdout": "c 1 z\na 10 y\na 2 w\nb 2 x\nb  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2n kv",
+   "stdout": "c 1 z\na 2 w\nb 2 x\nb  3 v\na 10 y\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2,2n -k1,1 kv",
+   "stdout": "c 1 z\na 2 w\nb 2 x\nb  3 v\na 10 y\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2,2nr kv",
+   "stdout": "a 10 y\nb  3 v\na 2 w\nb 2 x\nc 1 z\n",
+   "exit": 0
+  },
+  {
+   "args": "-t, -k2n csv",
+   "stdout": "apple,2,b\nfig,2,m\npear,3,z\napple,10,a\n",
+   "exit": 0
+  },
+  {
+   "args": "-t, -k1,1 -k2,2n csv",
+   "stdout": "apple,2,b\napple,10,a\nfig,2,m\npear,3,z\n",
+   "exit": 0
+  },
+  {
+   "args": "-t, -k3 csv",
+   "stdout": "apple,10,a\napple,2,b\nfig,2,m\npear,3,z\n",
+   "exit": 0
+  },
+  {
+   "args": "-s -k1,1 kv",
+   "stdout": "a 10 y\na 2 w\nb 2 x\nb  3 v\nc 1 z\n",
+   "exit": 0
+  },
+  {
+   "args": "-u -k1,1 kv",
+   "stdout": "a 10 y\nb 2 x\nc 1 z\n",
+   "exit": 0
+  },
+  {
+   "args": "-k1.2 words",
+   "stdout": "a\nA\nb\nB\nx\n\u00c3\u00a9clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-k1.2,1.3 words",
+   "stdout": "a\nA\nb\nB\nx\n\u00c3\u00a9clair\neclair\nlead\n.hidden\nhidden\n  lead\nfoo\nfoo10\nfoo2\nfoo bar\n-x\n_x\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-t, -k2,2 -n csv",
+   "stdout": "apple,2,b\nfig,2,m\npear,3,z\napple,10,a\n",
+   "exit": 0
+  },
+  {
+   "args": "l1",
+   "stdout": "\u0080\u0081\u00fe\u00ff\ncaf\u00e9\nh\u00c3\u00a9llo\nna\u00efve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "-u l1",
+   "stdout": "\u0080\u0081\u00fe\u00ff\ncaf\u00e9\nh\u00c3\u00a9llo\nna\u00efve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol",
+   "stdout": "a\nb\nc\n",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "a\u0000b\nc\u0000\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "-z nul",
+   "stdout": "a\u0000b\nc\u0000\nd\n\u0000",
+   "exit": 0
+  },
+  {
+   "args": "crlf",
+   "stdout": "one\r\ntwo\r\n",
+   "exit": 0
+  },
+  {
+   "args": "empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "u8",
+   "stdout": "\u00c3\u0089cole \u00c3\u00a7a\nh\u00c3\u00a9llo w\u00c3\u00b6rld\n\u00f0\u009f\u0098\u0080 x\n\u00e6\u0097\u00a5\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\n",
+   "exit": 0
+  },
+  {
+   "args": "-c words",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-C words",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-c empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "l1 words",
+   "stdout": "\u0080\u0081\u00fe\u00ff\na\nA\nb\nB\ncaf\u00e9\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\nh\u00c3\u00a9llo\n.hidden\nhidden\n  lead\nlead\nna\u00efve\nplain\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "nope",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-k0 words",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-t xx words",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "cat words | %T",
+   "stdout": "a\nA\nb\nB\neclair\n\u00c3\u00a9clair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "cat words | %T -r -",
+   "stdout": "Zz\nzz\nx\n_x\n-x\nlead\n  lead\nhidden\n.hidden\nfoo bar\nfoo2\nfoo10\nfoo\n\u00c3\u00a9clair\neclair\nB\nb\nA\na\n",
+   "exit": 0
+  },
+  {
+   "args": "-nk2 kv",
+   "stdout": "c 1 z\na 2 w\nb 2 x\nb  3 v\na 10 y\n",
+   "exit": 0
+  },
+  {
+   "args": "-k2b,2 kv",
+   "stdout": "c 1 z\na 10 y\na 2 w\nb 2 x\nb  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "-bk2,2 kv",
+   "stdout": "c 1 z\na 10 y\na 2 w\nb 2 x\nb  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "dup",
+   "stdout": "\n\n\u00e9\n\u00e9\na\na\nA\nb\nb\nb\nc\nd  x\nd x\ne y\n",
+   "exit": 0
+  },
+  {
+   "args": "-u dup",
+   "stdout": "\n\u00e9\na\nA\nb\nc\nd  x\nd x\ne y\n",
+   "exit": 0
+  },
+  {
+   "args": "-i words",
+   "stdout": "a\nA\nb\nB\n\u00c3\u00a9clair\neclair\nfoo\nfoo10\nfoo2\nfoo bar\n.hidden\nhidden\n  lead\nlead\n-x\n_x\nx\nzz\nZz\n",
+   "exit": 0
+  },
+  {
+   "args": "-rk1,1 -k2n kv",
+   "stdout": "c 1 z\nb 2 x\nb  3 v\na 2 w\na 10 y\n",
+   "exit": 0
+  }
+ ]
+}

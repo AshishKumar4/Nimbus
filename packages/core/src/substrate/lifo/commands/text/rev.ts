@@ -1,44 +1,65 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { concatBytes, fsErrorText, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
 
-import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { statOrThrow } from '../../../../vfs/vfs.js';
-
-
-function reverseLines(text: string): string {
-  return text.split('\n').map(line => [...line].reverse().join('')).join('\n');
-}
+// util-linux rev (2.41) in a UTF-8 locale: each line's characters reversed,
+// its newline kept (a last line without one gets none). A NUL is a
+// character. A byte sequence that is not valid UTF-8 stops it, as it stops
+// util-linux: the lines before it are printed, the error follows, status 1.
 
 const command: Command = async (ctx) => {
-  if (ctx.args.length === 0) {
-    if (ctx.stdin) {
-      const content = await ctx.stdin.readAll();
-      await ctx.stdout.write(reverseLines(content));
-      return 0;
-    }
-    await ctx.stderr.write('rev: missing operand\n');
-    return 1;
-  }
-
-  let exitCode = 0;
-
+  const files: string[] = [];
   for (const arg of ctx.args) {
-    const path = resolve(ctx.cwd, arg);
+    if (arg.startsWith('-') && arg !== '-' && arg !== '--') {
+      await ctx.stderr.write(`rev: invalid option -- '${arg.slice(1, 2)}'\nTry 'rev --help' for more information.\n`);
+      return 1;
+    }
+    if (arg !== '--') files.push(arg);
+  }
+  let status = 0;
+  for (const file of files.length > 0 ? files : ['-']) {
+    let bytes: Uint8Array;
     try {
-      (await statOrThrow(ctx.vfs, path));
-      const content = (await ctx.vfs.readFileString(path));
-      await ctx.stdout.write(reverseLines(content));
-    } catch (e) {
-      if (isVfsError(e)) {
-        await ctx.stderr.write(`rev: ${arg}: ${e.message}\n`);
-        exitCode = 1;
-      } else {
-        throw e;
+      const parts: Uint8Array[] = [];
+      for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
+      bytes = concatBytes(parts);
+    } catch (error) {
+      await ctx.stderr.write(`rev: cannot open ${file}: ${fsErrorText(error)}\n`);
+      status = 1;
+      continue;
+    }
+    const out: Uint8Array[] = [];
+    let at = 0;
+    let failed = false;
+    while (at < bytes.length) {
+      const nl = bytes.indexOf(0x0a, at);
+      const end = nl === -1 ? bytes.length : nl;
+      // The line's characters, as byte ranges.
+      const chars: [number, number][] = [];
+      for (let i = at; i < end;) {
+        const len = utf8SequenceLength(bytes, i);
+        if (len === 0 || i + len > end) { failed = true; break; }
+        chars.push([i, i + len]);
+        i += len;
       }
+      if (failed) break;
+      const line = new Uint8Array(end - at + (nl === -1 ? 0 : 1));
+      let w = 0;
+      for (let k = chars.length - 1; k >= 0; k--) {
+        const [s, e] = chars[k];
+        line.set(bytes.subarray(s, e), w);
+        w += e - s;
+      }
+      if (nl !== -1) line[w] = 0x0a;
+      out.push(line);
+      at = end + 1;
+    }
+    await writeBytes(ctx.stdout, concatBytes(out));
+    if (failed) {
+      await ctx.stderr.write('rev: fgetwc() failed: Invalid or incomplete multibyte or wide character\n');
+      return 1;
     }
   }
-
-  return exitCode;
+  return status;
 };
 
 export default command;

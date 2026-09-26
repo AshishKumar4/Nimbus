@@ -1,0 +1,183 @@
+{
+ "tool": "wc",
+ "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "crlf": "b25lDQp0d28NCg==",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "u8": "aMOpbGxvIHfDtnJsZArDiWNvbGUgw6dhCuaXpeacrOiqniDjg4bjgq3jgrnjg4gK8J+YgCB4Cg==",
+  "nums": "MTAKOQotMwoxLDAwMAoyLjUKMWUzCjB4MTAKYWJjCgogNwotMAorNAoxLjVLCjJNCjUxMgo=",
+  "words": "YgphCkIKQQpfeAp4Ci14Cnp6Clp6CsOpY2xhaXIKZWNsYWlyCmZvbyBiYXIKZm9vCmZvbzEwCmZvbzIKLmhpZGRlbgpoaWRkZW4KICBsZWFkCmxlYWQK",
+  "kv": "YiAyIHgKYSAxMCB5CmMgMSB6CmEgMiB3CmIgIDMgdgo=",
+  "csv": "cGVhciwzLHoKYXBwbGUsMTAsYQpmaWcsMixtCmFwcGxlLDIsYgo=",
+  "months": "TWFyCkpBTgpmZWIKeHl6CiBkZWMKQXByCg==",
+  "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
+  "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo="
+ },
+ "cases": [
+  {
+   "args": "l1",
+   "stdout": " 5  5 29 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-l l1",
+   "stdout": "5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-w l1",
+   "stdout": "5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-m l1",
+   "stdout": "22 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-c l1",
+   "stdout": "29 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-L l1",
+   "stdout": "5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "-lwmcL l1",
+   "stdout": " 5  5 22 29  5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "u8",
+   "stdout": " 4  8 55 u8\n",
+   "exit": 0
+  },
+  {
+   "args": "-m u8",
+   "stdout": "34 u8\n",
+   "exit": 0
+  },
+  {
+   "args": "-L u8",
+   "stdout": "15 u8\n",
+   "exit": 0
+  },
+  {
+   "args": "-w u8",
+   "stdout": "8 u8\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol",
+   "stdout": "2 3 5 noeol\n",
+   "exit": 0
+  },
+  {
+   "args": "-l noeol",
+   "stdout": "2 noeol\n",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "3 3 9 nul\n",
+   "exit": 0
+  },
+  {
+   "args": "-L nul",
+   "stdout": "2 nul\n",
+   "exit": 0
+  },
+  {
+   "args": "crlf",
+   "stdout": " 2  2 10 crlf\n",
+   "exit": 0
+  },
+  {
+   "args": "-L crlf",
+   "stdout": "3 crlf\n",
+   "exit": 0
+  },
+  {
+   "args": "empty",
+   "stdout": "0 0 0 empty\n",
+   "exit": 0
+  },
+  {
+   "args": "l1 u8",
+   "stdout": " 5  5 29 l1\n 4  8 55 u8\n 9 13 84 total\n",
+   "exit": 0
+  },
+  {
+   "args": "-l l1 u8",
+   "stdout": " 5 l1\n 4 u8\n 9 total\n",
+   "exit": 0
+  },
+  {
+   "args": "nope",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "nope l1",
+   "stdout": " 5  5 29 l1\n 5  5 29 total\n",
+   "exit": 1
+  },
+  {
+   "args": "l1 nope",
+   "stdout": " 5  5 29 l1\n 5  5 29 total\n",
+   "exit": 1
+  },
+  {
+   "args": "--total=only l1 u8",
+   "stdout": "9 13 84\n",
+   "exit": 0
+  },
+  {
+   "args": "--total=always l1",
+   "stdout": " 5  5 29 l1\n 5  5 29 total\n",
+   "exit": 0
+  },
+  {
+   "args": "--total=never l1 u8",
+   "stdout": " 5  5 29 l1\n 4  8 55 u8\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T",
+   "stdout": "      5       5      29\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -l",
+   "stdout": "5\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -l -w",
+   "stdout": "      5       5\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -c -",
+   "stdout": "29 -\n",
+   "exit": 0
+  },
+  {
+   "args": "-L long",
+   "stdout": "7 long\n",
+   "exit": 0
+  },
+  {
+   "args": "words",
+   "stdout": "19 20 87 words\n",
+   "exit": 0
+  }
+ ]
+}

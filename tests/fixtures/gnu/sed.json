@@ -1,0 +1,148 @@
+{
+ "tool": "sed",
+ "recorded": "GNU sed 4.9, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "crlf": "b25lDQp0d28NCg==",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "u8": "aMOpbGxvIHfDtnJsZArDiWNvbGUgw6dhCuaXpeacrOiqniDjg4bjgq3jgrnjg4gK8J+YgCB4Cg==",
+  "nums": "MTAKOQotMwoxLDAwMAoyLjUKMWUzCjB4MTAKYWJjCgogNwotMAorNAoxLjVLCjJNCjUxMgo=",
+  "words": "YgphCkIKQQpfeAp4Ci14Cnp6Clp6CsOpY2xhaXIKZWNsYWlyCmZvbyBiYXIKZm9vCmZvbzEwCmZvbzIKLmhpZGRlbgpoaWRkZW4KICBsZWFkCmxlYWQK",
+  "kv": "YiAyIHgKYSAxMCB5CmMgMSB6CmEgMiB3CmIgIDMgdgo=",
+  "csv": "cGVhciwzLHoKYXBwbGUsMTAsYQpmaWcsMixtCmFwcGxlLDIsYgo=",
+  "months": "TWFyCkpBTgpmZWIKeHl6CiBkZWMKQXByCg==",
+  "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
+  "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo="
+ },
+ "cases": [
+  {
+   "args": "s/a/X/ l1",
+   "stdout": "cXf\u00e9\nnX\u00efve\n\u0080\u0081\u00fe\u00ff\nplXin\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n p l1",
+   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/./X/g' l1",
+   "stdout": "XXX\u00e9\nXX\u00efXX\n\u0080\u0081\u00fe\u00ff\nXXXXX\nXXXXX\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/\\(.\\)\\(.\\)/\\2\\1/' l1",
+   "stdout": "acf\u00e9\nan\u00efve\n\u0080\u0081\u00fe\u00ff\nlpain\n\u00c3\u00a9hllo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '$p' noeol",
+   "stdout": "c",
+   "exit": 0
+  },
+  {
+   "args": "'s/b/B/' noeol",
+   "stdout": "a\nB\nc",
+   "exit": 0
+  },
+  {
+   "args": "p nul",
+   "stdout": "a\u0000b\na\u0000b\nc\u0000\nc\u0000\nd\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/\\x00/@/g' nul",
+   "stdout": "a@b\nc@\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "s/one/1/ crlf",
+   "stdout": "1\r\ntwo\r\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/$/!/' l1",
+   "stdout": "caf\u00e9!\nna\u00efve!\n\u0080\u0081\u00fe\u00ff!\nplain!\nh\u00c3\u00a9llo!\n",
+   "exit": 0
+  },
+  {
+   "args": "'2d' l1",
+   "stdout": "caf\u00e9\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[^a-z]//g' l1",
+   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/\\x80/p' l1",
+   "stdout": "\u0080\u0081\u00fe\u00ff\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/h/H/' u8",
+   "stdout": "H\u00c3\u00a9llo w\u00c3\u00b6rld\n\u00c3\u0089cole \u00c3\u00a7a\n\u00e6\u0097\u00a5\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\n\u00f0\u009f\u0098\u0080 x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/./X/' u8",
+   "stdout": "X\u00c3\u00a9llo w\u00c3\u00b6rld\nXcole \u00c3\u00a7a\nX\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\nX x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/caf/CAF/' l1",
+   "stdout": "CAF\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/.*/[&]/' l1",
+   "stdout": "[caf]\u00e9\n[na]\u00efve\n[]\u0080\u0081\u00fe\u00ff\n[plain]\n[h\u00c3\u00a9llo]\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T 's/i/I/'",
+   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplaIn\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-e 's/a/b/' -e 's/b/c/' words",
+   "stdout": "c\nc\nB\nA\n_x\nx\n-x\nzz\nZz\n\u00c3\u00a9clcir\neclcir\nfoo cbr\nfoo\nfoo10\nfoo2\n.hidden\nhidden\n  lecd\nlecd\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[a-z]/_/g' u8",
+   "stdout": "_____ _____\n\u00c3\u0089____ __\n\u00e6\u0097\u00a5\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\n\u00f0\u009f\u0098\u0080 _\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[A-Z]/_/g' u8",
+   "stdout": "h\u00c3\u00a9llo w\u00c3\u00b6rld\n_cole \u00c3\u00a7a\n\u00e6\u0097\u00a5\u00e6\u009c\u00ac\u00e8\u00aa\u009e \u00e3\u0083\u0086\u00e3\u0082\u00ad\u00e3\u0082\u00b9\u00e3\u0083\u0088\n\u00f0\u009f\u0098\u0080 x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[^a-z ]/_/g' u8",
+   "stdout": "h\u00c3\u00a9llo w\u00c3\u00b6rld\n_cole \u00c3\u00a7a\n___ ____\n_ x\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/[a-z]/p' l1",
+   "stdout": "caf\u00e9\nna\u00efve\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[[:alpha:]]/_/g' u8",
+   "stdout": "_____ _____\n_____ __\n___ ____\n\u00f0\u009f\u0098\u0080 _\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[b-d]/_/g' l1",
+   "stdout": "_af\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  }
+ ]
+}

@@ -1,4 +1,6 @@
 import { resolve } from '../../utils/path.js';
+import { decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
+import { translate } from '../../utils/posix-regex.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 class SedParseError extends Error {
     expr;
@@ -156,7 +158,7 @@ function parseDelimitedRegex(cur) {
     if (source === '')
         return { kind: 'empty' };
     try {
-        return { kind: 'regex', regex: new RegExp(source) };
+        return { kind: 'regex', regex: new RegExp(source, 'u') };
     }
     catch {
         throw new SedParseError(cur.expr);
@@ -221,7 +223,7 @@ function parseSubstitution(cur) {
         return { type: 's', emptyPattern: true, replacement, global, insensitive, print: flagStr.includes('p') };
     }
     try {
-        let flags = '';
+        let flags = 'u';
         if (global)
             flags += 'g';
         if (insensitive)
@@ -263,20 +265,9 @@ function isDigit(value) {
     const code = value.charCodeAt(0);
     return code >= 48 && code <= 57;
 }
+/** A sed BRE or ERE as a JavaScript pattern for the `u` flag (posix-regex.ts). */
 function toJavascriptPattern(pattern, extended) {
-    let result = '';
-    for (let i = 0; i < pattern.length; i++) {
-        const char = pattern[i];
-        const next = pattern[i + 1];
-        // A BRE's `\(`/`\)` group; an ERE's are literal parentheses, as JavaScript's are.
-        if (char === '\\' && (next === '/' || (!extended && (next === '(' || next === ')')))) {
-            result += next;
-            i++;
-            continue;
-        }
-        result += char;
-    }
-    return result;
+    return translate(pattern, { extended, sed: true });
 }
 // One pass over a logical-line stream: per-command range state, cycle
 // numbering, and GNU footnote-8 newline handling live here. A non-in-place
@@ -408,11 +399,14 @@ export async function runSed(ctx) {
             throw e;
         }
     }
-    const streamOut = async (chunk) => (await ctx.stdout.write(chunk));
+    // Text is held losslessly (bytes-io.ts): an invalid byte goes out as it came in.
+    const streamOut = async (chunk) => (await writeBytes(ctx.stdout, encodeLossless(chunk)));
+    const readText = async (path) => decodeLossless(await ctx.vfs.readFile(path));
     try {
         if (options.files.length === 0) {
-            if (ctx.stdin) {
-                const lines = iterateLogicalLines(await ctx.stdin.readAll());
+            if (ctx.stdin !== undefined) {
+                const input = await readAllInput({ cwd: ctx.cwd, vfs: ctx.vfs, stdin: ctx.stdin }, '-');
+                const lines = iterateLogicalLines(decodeLossless(input));
                 await new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(pullFrom(lines));
             }
             else {
@@ -427,13 +421,13 @@ export async function runSed(ctx) {
                 const path = resolve(ctx.cwd, file);
                 try {
                     await statOrThrow(ctx.vfs, path);
-                    const content = await ctx.vfs.readFileString(path);
+                    const content = await readText(path);
                     // One buffered pass per file: nothing touches the file until its
                     // whole result exists, keeping the rewrite all-or-nothing.
                     const chunks = [];
                     await new SedPass(commands, options.quiet, (chunk) => { chunks.push(chunk); }, lastRegex)
                         .runAll(pullFrom(iterateLogicalLines(content)));
-                    await ctx.vfs.writeFile(path, chunks.join(''));
+                    await ctx.vfs.writeFile(path, encodeLossless(chunks.join('')));
                 }
                 catch (e) {
                     const message = fsErrorMessage(e);
@@ -469,7 +463,7 @@ export async function runSed(ctx) {
                 const path = resolve(ctx.cwd, file);
                 try {
                     await statOrThrow(ctx.vfs, path);
-                    lines = iterateLogicalLines(await ctx.vfs.readFileString(path));
+                    lines = iterateLogicalLines(await readText(path));
                 }
                 catch (e) {
                     const message = fsErrorMessage(e);

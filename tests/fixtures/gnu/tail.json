@@ -1,0 +1,153 @@
+{
+ "tool": "tail",
+ "recorded": "GNU coreutils 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "crlf": "b25lDQp0d28NCg==",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "u8": "aMOpbGxvIHfDtnJsZArDiWNvbGUgw6dhCuaXpeacrOiqniDjg4bjgq3jgrnjg4gK8J+YgCB4Cg==",
+  "nums": "MTAKOQotMwoxLDAwMAoyLjUKMWUzCjB4MTAKYWJjCgogNwotMAorNAoxLjVLCjJNCjUxMgo=",
+  "words": "YgphCkIKQQpfeAp4Ci14Cnp6Clp6CsOpY2xhaXIKZWNsYWlyCmZvbyBiYXIKZm9vCmZvbzEwCmZvbzIKLmhpZGRlbgpoaWRkZW4KICBsZWFkCmxlYWQK",
+  "kv": "YiAyIHgKYSAxMCB5CmMgMSB6CmEgMiB3CmIgIDMgdgo=",
+  "csv": "cGVhciwzLHoKYXBwbGUsMTAsYQpmaWcsMixtCmFwcGxlLDIsYgo=",
+  "months": "TWFyCkpBTgpmZWIKeHl6CiBkZWMKQXByCg==",
+  "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
+  "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo="
+ },
+ "cases": [
+  {
+   "args": "l1",
+   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n2 l1",
+   "stdout": "plain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n +2 l1",
+   "stdout": "na\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-c3 l1",
+   "stdout": "lo\n",
+   "exit": 0
+  },
+  {
+   "args": "-c +3 l1",
+   "stdout": "f\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "noeol",
+   "stdout": "a\nb\nc",
+   "exit": 0
+  },
+  {
+   "args": "-n1 noeol",
+   "stdout": "c",
+   "exit": 0
+  },
+  {
+   "args": "-c1 noeol",
+   "stdout": "c",
+   "exit": 0
+  },
+  {
+   "args": "-3 long",
+   "stdout": "line 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "long",
+   "stdout": "line 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n0 long",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-n +0 long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "nul",
+   "stdout": "a\u0000b\nc\u0000\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "-z -n1 nul",
+   "stdout": "\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "crlf",
+   "stdout": "one\r\ntwo\r\n",
+   "exit": 0
+  },
+  {
+   "args": "-n1 empty",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "l1 noeol",
+   "stdout": "==> l1 <==\ncaf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n\n==> noeol <==\na\nb\nc",
+   "exit": 0
+  },
+  {
+   "args": "-q l1 noeol",
+   "stdout": "caf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\na\nb\nc",
+   "exit": 0
+  },
+  {
+   "args": "-v l1",
+   "stdout": "==> l1 <==\ncaf\u00e9\nna\u00efve\n\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 2 nope noeol",
+   "stdout": "==> noeol <==\nb\nc",
+   "exit": 1
+  },
+  {
+   "args": "-n x l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-c 1k long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "%T -n2 < l1",
+   "stdout": "plain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -n1",
+   "stdout": "h\u00c3\u00a9llo\n",
+   "exit": 0
+  },
+  {
+   "args": "cat noeol | %T -c2",
+   "stdout": "\nc",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T -n +3",
+   "stdout": "\u0080\u0081\u00fe\u00ff\nplain\nh\u00c3\u00a9llo\n",
+   "exit": 0
+  }
+ ]
+}

@@ -1,6 +1,6 @@
 {
  "tool": "grep",
- "recorded": "GNU grep 3.12, LANG=en_US.UTF-8",
+ "recorded": "GNU grep 3.12, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
  "inputs": {
   "gn": "YgBjCmZvbwo=",
   "gp": "cGxhaW4gYwo=",
@@ -101,7 +101,7 @@
   },
   {
    "args": "-a c g8",
-   "stdout": "x\ufffdy c\nok c\n",
+   "stdout": "x\u0080y c\nok c\n",
    "exit": 0
   },
   {
@@ -531,27 +531,27 @@
   },
   {
    "args": "-i '\u00e9cole' u",
-   "stdout": "\u00c9cole\n",
+   "stdout": "\u00c3\u0089cole\n",
    "exit": 0
   },
   {
    "args": "'caf.' u",
-   "stdout": "na\u00efve caf\u00e9\n",
+   "stdout": "na\u00c3\u00afve caf\u00c3\u00a9\n",
    "exit": 0
   },
   {
    "args": "-o '..' u",
-   "stdout": "h\u00e9\nll\no \nw\u00f6\nrl\n\u00c9c\nol\nna\n\u00efv\ne \nca\nf\u00e9\n",
+   "stdout": "h\u00c3\u00a9\nll\no \nw\u00c3\u00b6\nrl\n\u00c3\u0089c\nol\nna\n\u00c3\u00afv\ne \nca\nf\u00c3\u00a9\n",
    "exit": 0
   },
   {
    "args": "-w 'na.ve' u",
-   "stdout": "na\u00efve caf\u00e9\n",
+   "stdout": "na\u00c3\u00afve caf\u00c3\u00a9\n",
    "exit": 0
   },
   {
    "args": "'[[:alpha:]]*' -o u",
-   "stdout": "h\u00e9llo\nw\u00f6rld\n\u00c9cole\nna\u00efve\ncaf\u00e9\n",
+   "stdout": "h\u00c3\u00a9llo\nw\u00c3\u00b6rld\n\u00c3\u0089cole\nna\u00c3\u00afve\ncaf\u00c3\u00a9\n",
    "exit": 0
   },
   {
@@ -701,7 +701,7 @@
   },
   {
    "args": "-a -n c g9",
-   "stdout": "1:c1\n2:\ufffd c\n3:c3\n",
+   "stdout": "1:c1\n2:\u0080 c\n3:c3\n",
    "exit": 0
   },
   {
