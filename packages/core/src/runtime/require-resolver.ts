@@ -27,7 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 
-import type { Awaitable, RuntimeFsBridge } from './os-contracts.js';
+import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 
 /**
  * The filesystem the resolver reads: the four questions it asks, nothing
@@ -42,19 +42,42 @@ export interface RequireFs {
   stat(path: string): Awaitable<{ size: number } | null>;
 }
 
-/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
-export function requireFsOverBridge(bridge: RuntimeFsBridge): RequireFs {
+/**
+ * The resolver's filesystem over a bound process bridge (supervisor RPC or
+ * in-process), plus the two reads a launch builder needs. Every probe answers
+ * a missing path (ENOENT, however the bridge reports it) with null or false;
+ * other errors are the bridge's.
+ */
+export interface BridgeRequireFs extends RequireFs {
+  stat(path: string): Promise<RuntimeVfsStat | null>;
+  /** The entry itself, a final link not followed. */
+  lstat(path: string): Promise<RuntimeVfsStat | null>;
+  readBytes(path: string): Promise<Uint8Array | null>;
+}
+
+export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
   const decoder = new TextDecoder();
-  const stat = async (path: string) => await bridge.stat(path);
+  const absent = <T>(read: () => Awaitable<T | null>): Promise<T | null> => (async () => {
+    try {
+      return await read();
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+      throw error;
+    }
+  })();
+  const stat = (path: string) => absent(() => bridge.stat(path));
+  const readBytes = (path: string) => absent(() => bridge.readFile(path));
   return {
     exists: async (path) => (await stat(path)) !== null,
     isDirectory: async (path) => (await stat(path))?.type === 'directory',
     readFileString: async (path) => {
-      const bytes = await bridge.readFile(path);
+      const bytes = await readBytes(path);
       if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       return decoder.decode(bytes);
     },
     stat,
+    lstat: (path) => absent(() => bridge.stat(path, { followSymlinks: false })),
+    readBytes,
   };
 }
 import {

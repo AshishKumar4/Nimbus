@@ -26,20 +26,32 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
 export function requireFsOverBridge(bridge) {
     const decoder = new TextDecoder();
-    const stat = async (path) => await bridge.stat(path);
+    const absent = (read) => (async () => {
+        try {
+            return await read();
+        }
+        catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')
+                return null;
+            throw error;
+        }
+    })();
+    const stat = (path) => absent(() => bridge.stat(path));
+    const readBytes = (path) => absent(() => bridge.readFile(path));
     return {
         exists: async (path) => (await stat(path)) !== null,
         isDirectory: async (path) => (await stat(path))?.type === 'directory',
         readFileString: async (path) => {
-            const bytes = await bridge.readFile(path);
+            const bytes = await readBytes(path);
             if (bytes === null)
                 throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
             return decoder.decode(bytes);
         },
         stat,
+        lstat: (path) => absent(() => bridge.stat(path, { followSymlinks: false })),
+        readBytes,
     };
 }
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, packageSelfReferenceSubpath, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
