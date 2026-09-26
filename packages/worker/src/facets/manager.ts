@@ -2893,6 +2893,12 @@ export async function collectClosureWasmImages(
  * Admitted smallest-first for the same reason as the entry-package walk: the
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
+ *
+ * `room` is what the snapshot bound leaves after what is already committed
+ * (the static closure, and for learned entries this session's own misses), in
+ * raw bytes: evidence fills that room and never pushes the snapshot past the
+ * bound, so it can never be the reason a launch fails. `bytes` is what this
+ * call staged, in the same unit.
  */
 export async function addObservedReads(
   vfs: LaunchFs,
@@ -2900,8 +2906,10 @@ export async function addObservedReads(
   bundle: Record<string, string | Uint8Array>,
   requiredPaths: Set<string>,
   budgetState: { totalBytes: number; fileCount: number },
-): Promise<{ added: number }> {
-  if (!observed || observed.size === 0) return { added: 0 };
+  room = Infinity,
+): Promise<{ added: number; bytes: number }> {
+  if (!observed || observed.size === 0) return { added: 0, bytes: 0 };
+  let bytes = 0;
 
   const candidates: { path: string; size: number }[] = [];
   for (const path of observed) {
@@ -2923,8 +2931,11 @@ export async function addObservedReads(
     try { content = (await _readBundleCell(vfs, candidate.path)); } catch { continue; }
     const cellLen = _bundleCellLength(content);
     if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
+    const raw = _bundleCellRawBytes(content);
+    if (bytes + raw > room) continue;
     bundle[candidate.path] = content;
     requiredPaths.add(candidate.path);
+    bytes += raw;
     budgetState.totalBytes += cellLen;
     budgetState.fileCount++;
     added++;
@@ -2941,14 +2952,17 @@ export async function addObservedReads(
       const cellLen = _bundleCellLength(content);
       if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
+      const raw = _bundleCellRawBytes(content);
+      if (bytes + raw > room) continue;
       bundle[dep] = content;
       requiredPaths.add(dep);
+      bytes += raw;
       budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
     }
   }
-  return { added };
+  return { added, bytes };
 }
 
 const RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS = new Set([
@@ -3661,9 +3675,14 @@ async function _buildPrefetchBundle(
   const closurePaths: ReadonlySet<string> = new Set(
     Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)),
   );
-  // Grows with evidence; `closurePaths` stays the static closure. An observed
-  // subpath is not the closure choosing that corner of a package.
-  const requiredPaths = new Set(closurePaths);
+  // Evidence is kept apart from the closure: an observed subpath is not the
+  // closure choosing that corner of a package, and only the closure can fail
+  // a launch. The room evidence may fill is what the closure leaves under the
+  // bound, this session's own misses first, then what other sessions learned.
+  const observedPaths = new Set<string>();
+  const learnedPaths = new Set<string>();
+  let room = maxBundleBytes;
+  for (const path of closurePaths) room -= _bundleCellRawBytes(bundle[path]);
   let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
   // Each enrichment pass below re-scans the bundle accumulated so far, so a
@@ -3689,13 +3708,12 @@ async function _buildPrefetchBundle(
   // Other sessions' misses in the packages this closure can load
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
-  let observed = observedReads;
-  if (learnedFor) {
-    const learned = await learnedFor(Object.keys(bundle)).catch(() => []);
-    if (learned.length > 0) observed = new Set([...(observedReads ?? []), ...learned]);
-  }
-  const observedAdd = (await addObservedReads(vfs, observed, bundle, requiredPaths, budgetState));
-  void observedAdd;
+  const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+  const own = await addObservedReads(vfs, observedReads, bundle, observedPaths, budgetState, Math.max(0, room));
+  room -= own.bytes;
+  const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
+  await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room));
+  for (const path of observedPaths) learnedPaths.delete(path);
   await paceAfterPass();
 
   // 2. Greedy oversample — every installed pkg's pkg.json + main.
@@ -3844,17 +3862,21 @@ async function _buildPrefetchBundle(
     rawTotal += bytes;
   }
   if (rawTotal > maxBundleBytes) {
-    let requiredBytes = 0;
-    for (const [path, bytes] of rawBytes) {
-      if (requiredPaths.has(compiledCellPath(path) ?? path)) requiredBytes += bytes;
+    // Only the walk's closure can fail a launch, and the path it names is the
+    // one whose bytes (with its compiled cell) crossed the bound, in walk order.
+    let closureBytes = 0;
+    let crossedAt: string | null = null;
+    for (const path of closurePaths) {
+      closureBytes += (rawBytes.get(path) ?? 0) + (rawBytes.get(compiledCellKey(path)) ?? 0);
+      if (crossedAt === null && closureBytes > maxBundleBytes) crossedAt = path;
     }
-    if (requiredBytes > maxBundleBytes) {
+    if (crossedAt !== null) {
       throw new ClosureBoundExceededError({
         kind: 'closure-exceeds-bound',
         entry: scriptPath ?? 'entry code',
-        bytesSeen: requiredBytes,
+        bytesSeen: closureBytes,
         bound: maxBundleBytes,
-        lastPath: [...requiredPaths].at(-1) ?? scriptPath ?? '',
+        lastPath: crossedAt,
       });
     }
     // A compiled cell goes with its source: required when the source is.
@@ -3872,8 +3894,16 @@ async function _buildPrefetchBundle(
     for (const path of prefetch.speculative) speculativeRank.set(path, speculativeRank.size);
     const rankOf = (path: string): number =>
       speculativeRank.get(compiledCellPath(path) ?? path) ?? -1;
-    const evictable = Object.keys(bundle)
-      .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
+    // Evidence goes after all enrichment: what others learned before this
+    // session's own misses, each tier last-admitted first.
+    const tierOf = (path: string): number => {
+      const source = compiledCellPath(path) ?? path;
+      return closurePaths.has(source) ? 3 : observedPaths.has(source) ? 2 : learnedPaths.has(source) ? 1 : 0;
+    };
+    const lastAdmittedFirst = (tier: Set<string>): string[] =>
+      [...tier].reverse().flatMap((path) => [compiledCellKey(path), path]).filter((path) => bundle[path] !== undefined);
+    const enrichment = Object.keys(bundle)
+      .filter((path) => tierOf(path) === 0)
       .sort((a, b) => {
         const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
         if (loadable !== 0) return loadable;
@@ -3882,6 +3912,7 @@ async function _buildPrefetchBundle(
         if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
         return (rawBytes.get(b) ?? 0) - (rawBytes.get(a) ?? 0);
       });
+    const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
     const evicted: BundleCellSize[] = [];
     for (const k of evictable) {
       if (rawTotal <= maxBundleBytes) break;
