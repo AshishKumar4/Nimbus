@@ -53,7 +53,7 @@ function sqlShim(meter) {
 function loadStore(meter) {
   const factory = new Function(
     FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdmit, __residentPopulate, __residentClear,'
+      + '\nreturn { __residentBind, __residentAdmit, __residentFill, __residentClear,'
       + ' __residentStamp, __residentCursor, __residentStats, __residentKeysUnder,'
       + ' __residentHasUnder, __residentSeal, bundle: __nimbusResidentBundle };',
   );
@@ -96,11 +96,11 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   const s = loadStore();
   s.__residentAdmit(CURSOR);
   assert.throws(
-    () => s.__residentPopulate('a.txt', 'A', undefined),
+    () => s.__residentFill('a.txt', 'A', undefined),
     /no authority revision/,
     'an undated row cannot be invalidated, so it must not be writable',
   );
-  s.__residentPopulate('a.txt', 'A', 7);
+  s.__residentFill('a.txt', 'A', 7);
   assert.equal(s.bundle['a.txt'], 'A');
 }
 
@@ -110,9 +110,9 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   const s = loadStore();
   s.__residentAdmit(CURSOR);
   const bin = new Uint8Array([0, 1, 2, 250, 255]);
-  s.__residentPopulate('t.txt', 'café — 日本語', 7);
-  s.__residentPopulate('b.bin', bin, 7);
-  s.__residentPopulate('d', { error: 'EACCES' }, 7);
+  s.__residentFill('t.txt', 'café — 日本語', 7);
+  s.__residentFill('b.bin', bin, 7);
+  s.__residentFill('d', { error: 'EACCES' }, 7);
 
   assert.equal(s.bundle['t.txt'], 'café — 日本語', 'multi-byte text survives');
   assert.deepEqual(s.bundle['b.bin'], bin, 'binary stays binary');
@@ -133,13 +133,13 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   s.__residentAdmit(CURSOR);
   const big = new Uint8Array(RESIDENT_CHUNK_BYTES * 2 + 1234);
   for (let i = 0; i < big.length; i++) big[i] = (i * 7 + 3) & 0xff;
-  s.__residentPopulate('big.bin', big, 7);
+  s.__residentFill('big.bin', big, 7);
   const got = s.bundle['big.bin'];
   assert.equal(got.byteLength, big.length, 'a chunked file reassembles to its size');
   assert.deepEqual(got, big, 'and to its exact bytes');
 
   const bigText = 'ü'.repeat(RESIDENT_CHUNK_BYTES);
-  s.__residentPopulate('big.txt', bigText, 7);
+  s.__residentFill('big.txt', bigText, 7);
   assert.equal(s.bundle['big.txt'], bigText, 'chunked text reassembles exactly');
 }
 
@@ -148,9 +148,9 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const s = loadStore();
   s.__residentAdmit(CURSOR);
-  s.__residentPopulate('a.txt', 'A@7', 7);
-  s.__residentPopulate('b.txt', 'B@7', 7);
-  s.__residentPopulate('e.txt', 'E@7', 7);
+  s.__residentFill('a.txt', 'A@7', 7);
+  s.__residentFill('b.txt', 'B@7', 7);
+  s.__residentFill('e.txt', 'E@7', 7);
   s.bundle['c.txt'] = 'C-mine'; // this facet's own write…
   s.__residentStamp('c.txt', 9); // …flushed at the revision it produced
   s.__residentStamp('b.txt', 99); // an acknowledgement dates own bytes, never a row it did not write
@@ -189,7 +189,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const s = loadStore();
   s.__residentAdmit(CURSOR);
-  s.__residentPopulate('tenant/a.txt', 'previous tenant', 7);
+  s.__residentFill('tenant/a.txt', 'previous tenant', 7);
   s.__residentClear();
   assert.equal(s.__residentStats().files, 0, 'a returned slot keeps no files');
   assert.equal(s.__residentCursor(), null, 'and no cursor to vouch for them');
@@ -206,7 +206,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   const s = loadStore();
   s.__residentAdmit(CURSOR);
   for (const p of ['home/u/a.js', 'home/u/deep/b.js', 'home/user2/c.js', 'var/d.js']) {
-    s.__residentPopulate(p, 'x', 7);
+    s.__residentFill(p, 'x', 7);
   }
   assert.deepEqual(
     s.__residentKeysUnder('home/u/').sort(),
@@ -222,8 +222,8 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const s = loadStore();
   s.__residentAdmit(CURSOR);
-  s.__residentPopulate('od%d/a.js', 'x', 7);
-  s.__residentPopulate('odxd/b.js', 'y', 7);
+  s.__residentFill('od%d/a.js', 'x', 7);
+  s.__residentFill('odxd/b.js', 'y', 7);
   assert.deepEqual(
     s.__residentKeysUnder('od%d/').sort(),
     ['od%d/a.js'],
@@ -247,8 +247,8 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   const s = loadStore(meter);
   s.__residentAdmit(CURSOR);
   const body = 'x'.repeat(4096);
-  for (let i = 0; i < 400; i++) s.__residentPopulate(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
-  for (let i = 0; i < 400; i++) s.__residentPopulate(`var/other/f${i}.js`, body, 7);
+  for (let i = 0; i < 400; i++) s.__residentFill(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
+  for (let i = 0; i < 400; i++) s.__residentFill(`var/other/f${i}.js`, body, 7);
 
   meter.contentReads = 0; meter.contentBytes = 0; meter.selects = 0;
   assert.equal(s.__residentHasUnder('usr/lib/node_modules/p3/'), true);
@@ -288,12 +288,12 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const sql = sqlShim();
   const make = () => new Function(
-    FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentPopulate, bundle: __nimbusResidentBundle };',
+    FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentFill, bundle: __nimbusResidentBundle };',
   )();
   const first = make();
   first.__residentBind({ storage: { sql } });
   first.__residentAdmit(CURSOR);
-  first.__residentPopulate('lib/x.js', 'X', 5);
+  first.__residentFill('lib/x.js', 'X', 5);
   first.bundle['tmp/unflushed.txt'] = 'never written back';
   const paths = () => sql.exec('SELECT path FROM file ORDER BY path').map((r) => r.path);
   assert.deepEqual(paths(), ['lib/x.js', 'tmp/unflushed.txt']);
@@ -308,9 +308,9 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const s = loadStore();
   s.__residentAdmit({ poison: false, paths: [], epoch: 'e1', rev: 5 });
-  s.__residentPopulate('d/a.txt', 'A', 4);
-  s.__residentPopulate('d/sub/b.txt', 'B', 6);
-  s.__residentPopulate('dx.txt', 'X', 4);
+  s.__residentFill('d/a.txt', 'A', 4);
+  s.__residentFill('d/sub/b.txt', 'B', 6);
+  s.__residentFill('dx.txt', 'X', 4);
   s.bundle['d/own.txt'] = 'mine';
   const applied = s.__residentAdmit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], epoch: 'e1', rev: 6 });
   assert.deepEqual(applied.dropped.sort(), ['d/a.txt'], 'a row under it stamped below the report goes');

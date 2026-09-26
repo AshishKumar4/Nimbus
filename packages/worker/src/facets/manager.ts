@@ -3787,16 +3787,18 @@ async function _buildPrefetchBundle(
   await paceAfterPass();
   await paceAfterPass();
 
-  // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
-  //    units) because that is what workerd charges against the per-module
-  //    text-size budget. Only OPTIONAL enrichment is evictable, largest
-  //    first; the manifest and the static require closure stay.
+  // 4. The snapshot's size guard: the JSON-encoded UTF-8 bytes of the whole
+  //    map, against what the session DO can build and pass on
+  //    (VFS_BUNDLE_MAX_BYTES, measured in module-map bytes:
+  //    platform/limits.ts). The per-module text limit is met by side modules
+  //    and is not a reason to evict. Only OPTIONAL enrichment is evictable;
+  //    the static require closure stays.
   //
   //    Evicting an enrichment file is a real loss — the sync fs reads it
   //    exists for cannot fall back to the supervisor — so the paths that
   //    went are named rather than silently dropped.
   const size = encodedBundleSize(bundle);
-  if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
+  if (size.bytes > VFS_BUNDLE_MAX_BYTES) {
     // A compiled cell goes with its source: required when the source is.
     //
     // Order matters as much as the bound. Largest-first alone ranks a cell by
@@ -3824,7 +3826,7 @@ async function _buildPrefetchBundle(
       });
     const evicted: BundleCellSize[] = [];
     for (const k of evictable) {
-      if (size.bytes <= BUNDLE_MAX_ENCODED_BYTES) break;
+      if (size.bytes <= VFS_BUNDLE_MAX_BYTES) break;
       evicted.push([k, _bundleCellLength(bundle[k])]);
       delete bundle[k];
       size.remove(k);
@@ -3832,7 +3834,7 @@ async function _buildPrefetchBundle(
     if (evicted.length > 0) {
       truncated = true;
       console.warn(
-        `[facet-manager] prefetch snapshot exceeded ${BUNDLE_MAX_ENCODED_BYTES} encoded `
+        `[facet-manager] prefetch snapshot exceeded ${VFS_BUNDLE_MAX_BYTES} encoded `
           + `bytes; evicted ${evicted.length} optional file(s). They still exist and `
           + `async reads still return them; synchronous reads raise EAGAIN: `
           + `${describeBundleCells(evicted)}`,
@@ -5750,11 +5752,6 @@ export class FacetManager {
     this.launchPump.close();
     while (this.launchTasks.size > 0) await Promise.allSettled([...this.launchTasks]);
     await Promise.all(this.rowAmendments.values());
-  }
-
-  /** Whether any launch is suspended waiting for a turn. */
-  get hasPendingLaunchTurns(): boolean {
-    return this.launchPump.hasPending;
   }
 
   /** Allocate a free loopback port for a resident server facet (from 4096 up). */

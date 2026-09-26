@@ -6,7 +6,7 @@
  * `@nimbus-sh/platform/limits.js`.
  */
 
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES, ONE_SHOT_MODULE_MAP_MAX_BYTES } from '@nimbus-sh/platform/limits.js';
 
 // Published-surface forwarding: @nimbus-sh/core@0.5.0 exports these from
 // this module and real consumers import them here (Proteus merge-back.ts
@@ -148,31 +148,16 @@ export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 
 // ── Facet Constants ─────────────────────────────────────────────────────
 //
-// W2.6a: bundle-size budget is gated on the JSON-ENCODED UTF-8 BYTE
-// length of the final {bundle, manifest} payload, not on raw content
-// byte sum. The dynamic worker module serializes bundle content into
-// JavaScript, so workerd's per-module text-size limit applies to the
-// JSON-escaped form (each `\n` / `\"` / `\u` adds bytes, plus the
-// per-key string-quote overhead).
-// Measured: 8 MiB raw failed to boot; the passing raw bound was measured
-// too, but the number was lost to comment truncation before it ever
-// reached git, so only the failing side is known. Encoded as JSON that's
-// roughly 18-25 MiB of module text. We target 22 MiB encoded as the hard
-// ceiling, leaving ~2-3 MiB of headroom for the rest of the worker module
-// (shims, runner boot code) and any minor drift in the eviction loop's
-// accounting.
+// A launch's module map. Its raw closure is bounded by what the session DO can
+// build and pass on (VFS_BUNDLE_MAX_BYTES, measured: platform/limits.ts
+// ONE_SHOT_MODULE_MAP_MAX_BYTES). Each Worker Loader module is bounded by
+// workerd's per-module text size (BUNDLE_MAX_ENCODED_BYTES, JSON-encoded UTF-8,
+// which manager.ts measures with TextEncoder): a map over it is partitioned
+// into side modules, each below it.
 //
-// worker facets/manager.ts buildPrefetchBundle uses TextEncoder().encode().length
-// to measure exact UTF-8 bytes (not JS string .length, which counts UTF-16
-// code units and undercounts non-ASCII content).
-//
-// The raw file/byte caps bound optional snapshot enrichment only. The
-// statically-proven require closure is uncapped and oversized closures are
-// partitioned into side modules, each below BUNDLE_MAX_ENCODED_BYTES.
-// VFS_BUNDLE_MAX_DEPTH was dropped because the static walker is bounded by
-// the require graph itself; the manifest pass has its own depth limit.
+// The raw file cap bounds optional snapshot enrichment only.
 export const VFS_BUNDLE_MAX_FILES = 4000;
-export const VFS_BUNDLE_MAX_BYTES = 24 * 1024 * 1024;          // 24 MiB raw
+export const VFS_BUNDLE_MAX_BYTES = ONE_SHOT_MODULE_MAP_MAX_BYTES;
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
 
 // Bytes the FacetManager's cross-exec prefetch-bundle LRU may retain.

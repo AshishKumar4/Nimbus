@@ -441,7 +441,7 @@ assert.equal(
   );
 
   // A closure that fits the bound is unchanged: the same ~30 MiB under a bound
-  // past it (the default, 24 MiB, is below it).
+  // past it (the default, VFS_BUNDLE_MAX_BYTES, is below it).
   const ok = await buildPrefetchBundle(
     launchFs(files).fs, `/${entryPath}`, cwd, files[entryPath],
     identityEsbuild, undefined, undefined, undefined, 4 * 10 * MIB,

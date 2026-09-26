@@ -173,7 +173,7 @@ function makeShimFsFacet(supervisor, bundle = {}) {
 };`,
   );
   // Staged content comes with its records, as every launch stages it
-  // (buildVfsMetadata): the process's own home and files.
+  // the process's own home and files.
   const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
   for (const [path, cell] of Object.entries(bundle)) {
     metadata[path] = { type: 'file', size: typeof cell === 'string' ? new TextEncoder().encode(cell).length : cell.length, mode: 0o100644, uid: 1000, gid: 1000 };

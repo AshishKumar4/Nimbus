@@ -74,7 +74,7 @@ const factory = new Function(
     + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
 );
 // Every staged file and listed directory comes with its record, as
-// buildVfsMetadata stages them: the stat ladder answers from these.
+// the namespace lists them: the stat ladder answers from these.
 const metadata = {};
 for (const [path, text] of Object.entries(bundle)) {
   metadata[path] = { type: 'file', size: new TextEncoder().encode(text).length, mode: 0o100644, uid: 1000, gid: 1000 };

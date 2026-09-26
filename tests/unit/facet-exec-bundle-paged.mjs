@@ -251,7 +251,6 @@ async function settle(predicate, label) {
   );
   assert.equal(manager.processes.get(pid).exitCode, 137, 'the kill\'s exit code stands; nothing re-exited the entry');
   assert.deepEqual(exits, [], 'a build ended by a kill reports no second exit');
-  assert.equal(manager.hasPendingLaunchTurns, false, 'nothing is left waiting for a turn');
   // The pump that resumed the last chunk is not stranded: the pacer settled
   // on the way out, so the turn it owed resolves.
   await Promise.race([
@@ -282,7 +281,11 @@ async function settle(predicate, label) {
   assert.equal(exits.length, 1, 'the exit is reported exactly once');
   assert.equal(exits[0].code, 1);
   assert.match(exits[0].reason, /assembling the filesystem bundle for `node \/home\/user\/run\.js` failed: the walk broke/);
-  assert.equal(manager.hasPendingLaunchTurns, false);
+  // Nothing is left waiting for a turn: pumping again settles.
+  await Promise.race([
+    manager.pumpResidentLaunches(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the launch pump is stranded')), 2000)),
+  ]);
 }
 
 console.log('facet-exec-bundle-paged: OK');

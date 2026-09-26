@@ -119,7 +119,11 @@ const settle = async (predicate, tries = 400) => {
 
   assert.ok(pid > PID_GEN_STRIDE, 'a pid of this generation');
   assert.ok(alarmsArmed >= 1, `the launch was paced across turns the fake alarm granted (armed ${alarmsArmed}×)`);
-  assert.equal(composed.manager.hasPendingLaunchTurns, false, 'and the pump drained every one of them');
+  // And the pump drained every turn it was asked for: pumping again settles.
+  await Promise.race([
+    composed.manager.pumpResidentLaunches(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the launch pump is stranded')), 2000)),
+  ]);
   const row = storage.get('resident-launch:' + pid);
   assert.ok(row, 'the launch is journalled');
   assert.equal(row.phase, 'running', 'as a running resident once it booted');

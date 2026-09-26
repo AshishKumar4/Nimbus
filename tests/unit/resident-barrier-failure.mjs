@@ -102,6 +102,19 @@ await runScenarios(import.meta.path, {
     assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
   },
 
+  async 'a repair owed within one epoch asks a delta from the store\'s floor, never a listing'() {
+    const { authority, fault, probe, log } = await boot();
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    // One barrier's ACQUIRE is lost; the authority's log is intact.
+    fault.fsAcquire = (...args) => { fault.fsAcquire = null; return DROPPED(); };
+    const lists = log.calls.fsList ?? 0;
+    const acquires = log.calls.fsAcquire ?? 0;
+    assert.equal(await probe.resume(F), 'v2', 'the change is seen');
+    assert.equal((log.calls.fsList ?? 0) - lists, 0, 'the repair listed nothing: the delta from the floor covers it');
+    assert.ok((log.calls.fsAcquire ?? 0) - acquires <= 3, `and it took a delta or two (${(log.calls.fsAcquire ?? 0) - acquires} ACQUIREs)`);
+    assert.ok(coherenceStats().floorRepairs >= 1, 'counted as a repair from the floor');
+  },
+
   async 'a peer file the dropped barrier missed is the peer\'s, not free: its record, and no write'() {
     // A failed barrier that were read as "nothing changed" would leave the
     // listing saying the peer's new name is free: statSync ENOENT, and a
