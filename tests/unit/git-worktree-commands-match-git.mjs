@@ -976,6 +976,17 @@ try {
     await tag('a zoned ISO committer date', ['tag', '-m', 'm', 'iso'], { env: { ...committer, GIT_COMMITTER_DATE: '2020-01-01 10:00:00 +0530' } });
     sameTags('a zoned ISO committer date');
     await tag('a committer date git cannot read', ['tag', '-m', 'm', 'bad'], { env: { ...committer, GIT_COMMITTER_DATE: 'garbage' } });
+    // Every absolute form date.c's parse_date_basic reads, read as it reads it; and what it refuses.
+    for (const [i, date] of [
+      'Thu, 02 Jan 2020 03:04:05 -0800', 'Thu Jan 2 03:04:05 2020 -0800', '02 Jan 2020 03:04:05 +0000',
+      '2020.01.02 03:04:05 +0000', '01/02/2020 03:04:05 +0000', '2020-01-02 03:04:05', '2020-01-02T03:04:05Z',
+      '20200102T030405 +0100', 'Jan 2 2020 3:04:05 pm PST', '1700000000', '@1700000000 -0330', '2 January 2020 03:04 CEST',
+      '2020-01-02', '1960-01-02 03:04:05 +0000', 'Thu Jan 2 2020',
+    ].entries()) {
+      const env = { ...committer, GIT_COMMITTER_DATE: date };
+      await tag(`committer date ${JSON.stringify(date)}`, ['tag', '-m', 'm', `date${i}`], { env });
+      sameTags(`committer date ${JSON.stringify(date)}`);
+    }
   }
 
   // ── A same-size rewrite in the second the index was written ──

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c48c31b725f02ad14d345966993e460fadf006e7f6c2155c0e6cea8197331718",
+  "fingerprint": "3cab6adc071fb79c5e6b40f9c2acfb131e106facbc8241dd576d56cf4e046f9d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1596,8 +1596,8 @@
     "packages/worker/dist/git-bundle.generated.d.ts.map": "bab520f9f4a27d229b27555deaf62873ceb2333a71676a94df69af96401b348b",
     "packages/worker/dist/git-bundle.generated.js": "4d7fb4f2347ccdb464adf1c01b2fc7d271102241a164f03bebd29984bbed4024",
     "packages/worker/dist/git/commands.d.ts": "2626722e922779d2c3c7930dcaf9fa6f7518c8fbb4a40be5dd80a45e4fd692fd",
-    "packages/worker/dist/git/commands.d.ts.map": "f7f2781dd595219908d682a7f91faa817a8e3842abe994cdf182058fa63f736e",
-    "packages/worker/dist/git/commands.js": "29a6e16bfc5647ee1126cf4928dbec1ace378b04ea1ad2abf56018becc6c494e",
+    "packages/worker/dist/git/commands.d.ts.map": "0b9c6e3e890dcfbdf43f4015750bd7be9e30bd3fc2ae6dd9ea34faeee3c92cc6",
+    "packages/worker/dist/git/commands.js": "b041c9f7c48b2bc04904f1c66d98717da2603b55a0813356efda4ba723166eb0",
     "packages/worker/dist/git/network-facet.d.ts": "d8f8ca7b45fa3dba70b2855b1e99d3647dab0066bc197720cec2b7c1a7cc6388",
     "packages/worker/dist/git/network-facet.d.ts.map": "39328fd41cebb45db4f1cf1f6c299ac26ba5037ca323753a4e0025f5f85a32cd",
     "packages/worker/dist/git/network-facet.js": "713fdad2279f9e23a00f6bc78061a038d66babdb0e0461002f833da0c4f9f7c1",
@@ -2022,7 +2022,7 @@
     "packages/worker/src/facets/wasm-swap-registry.ts": "3c2d8e2102b3091a204d2f21e0b352e78e029fb4a085e44be9c71106d16efff7",
     "packages/worker/src/facets/ws-terminal.ts": "ca779c2443a876a5416ba589914247494ddb701d3f4a741b3cad3cd811eeffc7",
     "packages/worker/src/git-bundle.generated.ts": "0205e3aa5731eda454c0779836a3e6869237267631f1203a0cf4d9640ba27fce",
-    "packages/worker/src/git/commands.ts": "1f7cf210cb77c189e3dd40e0929447181990746a2b7ab257679de5fe678cbe4b",
+    "packages/worker/src/git/commands.ts": "ee44cd7a0d92752590db7178ad91178a96c31d3cdb4bb613d78c4cc38844f566",
     "packages/worker/src/git/network-facet.ts": "e34034c961a62365db3b199e6f20bfc6461d0a516b54d3fe2938865bcc0f3e7c",
     "packages/worker/src/git/unified-diff.ts": "7d322a113cc4895cd699316bcb39a14506d5ed9bef4b72bfd8768b64bd15e905",
     "packages/worker/src/hosted/commands.ts": "e40a3b03acc16e8fbad52212655f6e11f556eaa5219783462a80f28154367c08",

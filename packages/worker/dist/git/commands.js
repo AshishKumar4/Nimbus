@@ -797,31 +797,273 @@ function gitTimezone(minutesEast) {
     const abs = Math.abs(minutesEast);
     return `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
 }
+// git's date.c tables, in its order: a name matches from its third letter on.
+const GIT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const GIT_WEEKDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+/** [name, hours east, daylight]: git adds the daylight hour ("This is bogus, but we like summer"). */
+const GIT_ZONES = [
+    ['IDLW', -12, 0], ['NT', -11, 0], ['CAT', -10, 0], ['HST', -10, 0], ['HDT', -10, 1], ['YST', -9, 0], ['YDT', -9, 1],
+    ['PST', -8, 0], ['PDT', -8, 1], ['MST', -7, 0], ['MDT', -7, 1], ['CST', -6, 0], ['CDT', -6, 1], ['EST', -5, 0],
+    ['EDT', -5, 1], ['AST', -3, 0], ['ADT', -3, 1], ['WAT', -1, 0], ['GMT', 0, 0], ['UTC', 0, 0], ['Z', 0, 0],
+    ['WET', 0, 0], ['BST', 0, 1], ['CET', 1, 0], ['MET', 1, 0], ['MEWT', 1, 0], ['MEST', 1, 1], ['CEST', 1, 1],
+    ['MESZ', 1, 1], ['FWT', 1, 0], ['FST', 1, 1], ['EET', 2, 0], ['EEST', 2, 1], ['WAST', 7, 0], ['WADT', 7, 1],
+    ['CCT', 8, 0], ['JST', 9, 0], ['EAST', 10, 0], ['EADT', 10, 1], ['GST', 10, 0], ['NZT', 12, 0], ['NZST', 12, 0],
+    ['NZDT', 12, 1], ['IDLE', 12, 0],
+];
+const isDigit = (c) => c !== undefined && c >= '0' && c <= '9';
+const isAlpha = (c) => c !== undefined && /[A-Za-z]/.test(c);
+const isAlnum = (c) => isDigit(c) || isAlpha(c);
 /**
- * A GIT_COMMITTER_DATE as git reads it: `<seconds> [±hhmm]`, `@<seconds> [±hhmm]`
- * or ISO 8601 (`YYYY-MM-DD[T ]HH:MM[:SS]` with `Z` or `±hh[:]mm`). Without a
- * zone, the local one. Null for anything else, which git refuses.
+ * A GIT_COMMITTER_DATE as git's date.c parse_date_basic() reads it, ported
+ * routine for routine (match_object_header_date, match_alpha, match_digit,
+ * match_multi_number, set_date, match_tz, tm_to_time_t), so every form git
+ * accepts is accepted and read the same way: `@<secs> ±hhmm` (git's own raw
+ * form), a bare epoch of 9 or more digits, ISO 8601, RFC 2822 (`date -R`),
+ * git's default `Thu Jan 2 03:04:05 2020 -0800`, dotted and slashed dates,
+ * zone names, am/pm. Without a zone, the local one at that time, as mktime()
+ * gives it. Null where git says "invalid date format": no time of day, a
+ * year outside 1970-2099, a date it cannot place.
  */
-function parseGitDate(text) {
-    const local = (seconds) => gitTimezone(-new Date(seconds * 1000).getTimezoneOffset());
-    const raw = /^@?(\d+)(?:\s+([+-]\d{4}))?$/.exec(text.trim());
-    if (raw)
-        return { seconds: Number(raw[1]), zone: raw[2] ?? local(Number(raw[1])) };
-    const iso = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
-    if (!iso)
+function parseGitDate(text, nowSeconds = Math.floor(Date.now() / 1000)) {
+    // match_object_header_date: "@<digits> ±hhmm", exactly.
+    const header = /^@(\d+) ([+-])(\d{4})(?:\n|$)/.exec(text);
+    if (header) {
+        const hhmm = Number(header[3]);
+        const minutes = (header[2] === '-' ? -1 : 1) * (Math.floor(hhmm / 100) * 60 + (hhmm % 100));
+        return { seconds: Number(header[1]), zone: gitTimezone(minutes) };
+    }
+    const tm = { year: -1, mon: -1, mday: -1, hour: -1, min: -1, sec: -1, wday: -1 };
+    let offset = null;
+    let gmt = false;
+    // tm_to_time_t: 1970-2099 only, and every field of the time of day given.
+    const toTime = (t) => {
+        const days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        const year = t.year - 70;
+        let day = t.mday;
+        if (year < 0 || year > 129 || t.mon < 0 || t.mon > 11)
+            return null;
+        if (t.mon < 2 || (year + 2) % 4)
+            day--;
+        if (t.hour < 0 || t.min < 0 || t.sec < 0)
+            return null;
+        return (year * 365 + Math.floor((year + 1) / 4) + days[t.mon] + day) * 86_400 + t.hour * 3600 + t.min * 60 + t.sec;
+    };
+    const noDate = () => tm.year < 0 && tm.mon < 0 && tm.mday < 0 && tm.hour < 0 && tm.min < 0 && tm.sec < 0;
+    const matchString = (at, word) => {
+        let i = 0;
+        for (; at + i < text.length; i++) {
+            const c = text[at + i];
+            if (c === word[i] || c.toUpperCase() === (word[i] ?? '').toUpperCase())
+                continue;
+            if (!isAlnum(c))
+                break;
+            return 0;
+        }
+        return i;
+    };
+    // set_date: month and day in range, the year placed as git places it, and
+    // (for a guessed order) no more than ten days into the future.
+    const setDate = (year, month, day, refuseFuture) => {
+        if (!(month > 0 && month < 13 && day > 0 && day < 32))
+            return false;
+        const r = { ...tm, mon: month - 1, mday: day };
+        if (year === -1) {
+            if (!refuseFuture)
+                return false;
+            r.year = new Date(nowSeconds * 1000).getUTCFullYear() - 1900;
+        }
+        else if (year >= 1970 && year < 2100)
+            r.year = year - 1900;
+        else if (year > 70 && year < 100)
+            r.year = year;
+        else if (year < 38)
+            r.year = year + 100;
+        else
+            return false;
+        if (refuseFuture) {
+            const specified = toTime({ ...r, hour: 0, min: 0, sec: 0 });
+            if (specified !== null && nowSeconds + 10 * 86_400 < specified)
+                return false;
+        }
+        tm.mon = r.mon;
+        tm.mday = r.mday;
+        if (year !== -1 || !refuseFuture)
+            tm.year = r.year;
+        return true;
+    };
+    const readNumber = (at) => {
+        let end = at;
+        while (isDigit(text[end]))
+            end++;
+        return [Number(text.slice(at, end)), end];
+    };
+    const matchMulti = (num, sep, at, end) => {
+        let num3 = -1;
+        let [num2, next] = readNumber(end + 1);
+        if (text[next] === sep && isDigit(text[next + 1]))
+            [num3, next] = readNumber(next + 1);
+        if (sep === ':') {
+            if (num3 < 0)
+                num3 = 0;
+            if (num < 25 && num2 >= 0 && num2 < 60 && num3 >= 0 && num3 <= 60) {
+                tm.hour = num;
+                tm.min = num2;
+                tm.sec = num3;
+                return next - at;
+            }
+            return 0;
+        }
+        if (num > 70 && (setDate(num, num2, num3, false) || setDate(num, num3, num2, false)))
+            return next - at;
+        if (sep !== '.' && setDate(num3, num, num2, true))
+            return next - at;
+        if (setDate(num3, num2, num, true))
+            return next - at;
+        if (sep === '.' && setDate(num3, num, num2, true))
+            return next - at;
+        return 0;
+    };
+    const matchDigit = (at) => {
+        const [num, end] = readNumber(at);
+        // Seconds since 1970: a number of 9 digits or more, before any date.
+        if (num >= 100_000_000 && noDate()) {
+            const d = new Date(num * 1000);
+            Object.assign(tm, { year: d.getUTCFullYear() - 1900, mon: d.getUTCMonth(), mday: d.getUTCDate(), hour: d.getUTCHours(), min: d.getUTCMinutes(), sec: d.getUTCSeconds() });
+            gmt = true;
+            return end - at;
+        }
+        if ((text[end] === ':' || text[end] === '.' || text[end] === '/' || text[end] === '-') && isDigit(text[end + 1])) {
+            const matched = matchMulti(num, text[end], at, end);
+            if (matched)
+                return matched;
+        }
+        const n = end - at;
+        if (n === 8 || n === 6) {
+            const [a, b, c] = [Math.floor(num / 10000), Math.floor((num % 10000) / 100), num % 100];
+            if (n === 8)
+                setDate(a, b, c, false);
+            else if (a < 25 && b < 60 && c <= 60) {
+                tm.hour = a;
+                tm.min = b;
+                tm.sec = c;
+                if (text[end] === '.' && isDigit(text[end + 1]))
+                    return readNumber(end + 1)[1] - at;
+            }
+            return n;
+        }
+        if (n === 4) {
+            if (num <= 1400 && offset === null)
+                offset = Math.floor(num / 100) * 60 + (num % 100);
+            else if (num > 1900 && num < 2100)
+                tm.year = num - 1900;
+            return n;
+        }
+        if (n > 2)
+            return n;
+        if (num > 0 && num < 32 && tm.mday < 0) {
+            tm.mday = num;
+            return n;
+        }
+        if (n === 2 && tm.year < 0) {
+            if (num < 10 && tm.mday >= 0) {
+                tm.year = num + 100;
+                return n;
+            }
+            if (num >= 70) {
+                tm.year = num;
+                return n;
+            }
+        }
+        if (num > 0 && num < 13 && tm.mon < 0)
+            tm.mon = num - 1;
+        return n;
+    };
+    const matchAlpha = (at) => {
+        for (let i = 0; i < 12; i++) {
+            const m = matchString(at, GIT_MONTHS[i]);
+            if (m >= 3) {
+                tm.mon = i;
+                return m;
+            }
+        }
+        for (let i = 0; i < 7; i++) {
+            const m = matchString(at, GIT_WEEKDAYS[i]);
+            if (m >= 3) {
+                tm.wday = i;
+                return m;
+            }
+        }
+        for (const [name, hours, dst] of GIT_ZONES) {
+            const m = matchString(at, name);
+            if (m >= 3 || m === name.length) {
+                if (offset === null)
+                    offset = 60 * (hours + dst);
+                return m;
+            }
+        }
+        if (matchString(at, 'PM') === 2) {
+            tm.hour = (tm.hour % 12) + 12;
+            return 2;
+        }
+        if (matchString(at, 'AM') === 2) {
+            tm.hour = tm.hour % 12;
+            return 2;
+        }
+        // ISO 8601's 'T' before a time.
+        if (text[at] === 'T' && isDigit(text[at + 1]) && tm.hour === -1) {
+            tm.min = 0;
+            tm.sec = 0;
+            return 1;
+        }
+        let skip = 0;
+        while (isAlpha(text[at + skip]))
+            skip++;
+        return skip;
+    };
+    const matchTz = (at) => {
+        let [hour, end] = readNumber(at + 1);
+        const n = end - (at + 1);
+        let min = 0;
+        if (n === 4) {
+            min = hour % 100;
+            hour = Math.floor(hour / 100);
+        }
+        else if (n !== 2)
+            min = 99;
+        else if (text[end] === ':') {
+            [min, end] = readNumber(end + 1);
+            if (end - (at + 1) !== 5)
+                min = 99;
+        }
+        if (min < 60 && hour < 24)
+            offset = (text[at] === '-' ? -1 : 1) * (hour * 60 + min);
+        return end - at;
+    };
+    for (let at = 0; at < text.length && text[at] !== '\n';) {
+        const c = text[at];
+        let matched = 0;
+        if (isAlpha(c))
+            matched = matchAlpha(at);
+        else if (isDigit(c))
+            matched = matchDigit(at);
+        else if ((c === '-' || c === '+') && isDigit(text[at + 1]))
+            matched = matchTz(at);
+        at += matched || 1;
+    }
+    let seconds = toTime(tm);
+    if (seconds === null)
         return null;
-    const [, y, mo, d, h, mi, sec = '0', zone] = iso;
-    let minutesEast = 0;
-    if (zone && zone !== 'Z') {
-        const m = /^([+-])(\d{2}):?(\d{2})$/.exec(zone);
-        minutesEast = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+    let minutesEast;
+    if (offset === null) {
+        // No zone given: the local one at that time, as mktime() reads the same fields.
+        const local = new Date(tm.year + 1900, tm.mon, tm.mday, tm.hour, tm.min, tm.sec).getTime() / 1000;
+        minutesEast = Math.round((seconds - local) / 60);
     }
-    const utc = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec)) / 1000;
-    if (zone === undefined) {
-        const seconds = utc + new Date(utc * 1000).getTimezoneOffset() * 60;
-        return { seconds, zone: local(seconds) };
-    }
-    return { seconds: utc - minutesEast * 60, zone: gitTimezone(minutesEast) };
+    else
+        minutesEast = offset;
+    if (!gmt)
+        seconds -= minutesEast * 60;
+    return { seconds, zone: gitTimezone(minutesEast) };
 }
 /**
  * The committer identity git stamps a tag with: GIT_COMMITTER_NAME and
