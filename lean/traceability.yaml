@@ -625,7 +625,7 @@ requirements:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
   VFS-PF-001:
     statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes.
-    status: proved-and-refined
+    status: proved-in-abstract-model
     theorems:
       - Nimbus.Vfs.ProcessFiles.acked_accounted
       - Nimbus.Vfs.ProcessFiles.a_kill_that_drops_buffers_loses_silently
@@ -644,9 +644,8 @@ requirements:
       - packages/core/src/runtime/filesystem-authority.ts#SqliteFilesystemAuthority.releaseProcess
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
-    refinement:
-      - lean/fixtures/process-files.json :: tests/unit/process-files-refinement.mjs
     remainingEvidence:
+      - No code refines ProcessFiles yet (CUTOVER.md slice A); the fixture lean/fixtures/process-files.json is generated for tests/unit/process-files-refinement.mjs, which the cutover adds
       - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
       - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
   VFS-COMP-003:
