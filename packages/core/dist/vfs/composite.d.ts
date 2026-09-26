@@ -21,6 +21,39 @@
  * would change what the operation means.
  */
 import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
+import type { VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+/**
+ * Where a reader of a namespace's feed stands: the mount table as its
+ * principal saw it, and each change feed's epoch and cursor.
+ */
+export interface FeedPosition {
+    readonly table: string;
+    readonly feeds: Readonly<Record<string, {
+        readonly epoch: string;
+        readonly cursor: number;
+    }>>;
+}
+/** One answer of the feed: every path changed since the position, or a poison (relist). */
+export interface FeedAnswer {
+    readonly position: FeedPosition;
+    readonly poison: boolean;
+    readonly paths: VfsInvalidatedPath[];
+}
+/**
+ * The change feed of a principal's namespace (FormalModelsLane
+ * `Vfs/CompositeFeed`): each backend's feed re-rooted under its mount point
+ * and filtered to the paths the namespace routes to it, so a root row a
+ * mount covers is never staged. A reader takes `position()`, then lists,
+ * then asks `since` at every barrier. Entries carry their backend's `rev`.
+ */
+export interface CompositeFeed {
+    position(): FeedPosition;
+    since(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer;
+    list(after: string | null, limit: number): {
+        entries: VfsListEntry[];
+        next: string | null;
+    };
+}
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
  * a principal finer than its uid: two agents (or a node and its origin) that
@@ -81,6 +114,30 @@ export declare class CompositeVFS implements VFS {
         principal: Principal;
         views: Views;
     });
+    /** This principal's namespace feed. */
+    get feed(): CompositeFeed;
+    /**
+     * The mount table as this principal sees it: which mounts are live, which
+     * have a feed, and what answers at each. A change is not in any backend's
+     * feed, so a reader holding another signature relists.
+     */
+    private feedSignature;
+    /** Live mounts with their backend's feed (none: only the point is staged). */
+    private feedSources;
+    private feedPosition;
+    private static reroot;
+    /** Whether the namespace shows `path` from `mount`: routed there, not covered, reachable. */
+    private feedShows;
+    private feedSince;
+    /**
+     * One page of every name the namespace shows, in path order: each feed's
+     * listing re-rooted and filtered, merged with the directories the
+     * namespace makes (mount points and their ancestors). A mount without a
+     * feed shows only its point. Take `position()` before the first page.
+     */
+    private feedList;
+    /** A directory the namespace makes, as a listing entry: the mounted root's own stat where it answers one. */
+    private madeStat;
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     unmount(point: string): void;
     /** The mounts this view's principal has now, root first, in mount order. */

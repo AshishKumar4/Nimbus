@@ -21,9 +21,53 @@
  * would change what the operation means.
  */
 import type {
-  Awaitable, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure, VfsRevision, VfsStat, VfsUsage,
+  Awaitable, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure, VfsRevision, VfsStat, VfsUsage,
 } from './vfs.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { VfsError, isVfsError } from './vfs-error.js';
+
+/**
+ * Where a reader of a namespace's feed stands: the mount table as its
+ * principal saw it, and each change feed's epoch and cursor.
+ */
+export interface FeedPosition {
+  readonly table: string;
+  readonly feeds: Readonly<Record<string, { readonly epoch: string; readonly cursor: number }>>;
+}
+
+/** One answer of the feed: every path changed since the position, or a poison (relist). */
+export interface FeedAnswer {
+  readonly position: FeedPosition;
+  readonly poison: boolean;
+  readonly paths: VfsInvalidatedPath[];
+}
+
+/**
+ * The change feed of a principal's namespace (FormalModelsLane
+ * `Vfs/CompositeFeed`): each backend's feed re-rooted under its mount point
+ * and filtered to the paths the namespace routes to it, so a root row a
+ * mount covers is never staged. A reader takes `position()`, then lists,
+ * then asks `since` at every barrier. Entries carry their backend's `rev`.
+ */
+export interface CompositeFeed {
+  position(): FeedPosition;
+  since(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer;
+  list(after: string | null, limit: number): { entries: VfsListEntry[]; next: string | null };
+}
+
+/** Identity of a mount's source object, for the table signature. */
+const sourceIds = new WeakMap<object, number>();
+let nextSourceId = 1;
+function sourceId(found: unknown): number {
+  if (found === null || typeof found !== 'object') return 0;
+  let id = sourceIds.get(found);
+  if (id === undefined) sourceIds.set(found, id = nextSourceId++);
+  return id;
+}
+
+const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
+  dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
+};
 
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
@@ -148,6 +192,157 @@ export class CompositeVFS implements VFS {
       }) };
     }
     this.syncView = this.makeSync();
+  }
+
+  // ── the feed ───────────────────────────────────────────────────────────
+
+  /** This principal's namespace feed. */
+  get feed(): CompositeFeed {
+    return {
+      position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
+      since: (position, options) => this.feedSince(position, options),
+      list: (after, limit) => this.feedList(after, limit),
+    };
+  }
+
+  /**
+   * The mount table as this principal sees it: which mounts are live, which
+   * have a feed, and what answers at each. A change is not in any backend's
+   * feed, so a reader holding another signature relists.
+   */
+  private feedSignature(): string {
+    const parts: string[] = [];
+    for (const mount of this.table.mounts.values()) {
+      const found = typeof mount.source === 'function' ? mount.source(this.viewer) : mount.source;
+      const live = mount.point === ROOT_POINT || this.live(mount);
+      const files = live ? this.backend(mount) : null;
+      parts.push(`${mount.point}\u0000${live ? 1 : 0}\u0000${files?.changes ? 1 : 0}\u0000${sourceId(found)}`);
+    }
+    return parts.join('\u0001');
+  }
+
+  /** Live mounts with their backend's feed (none: only the point is staged). */
+  private feedSources(): Array<{ mount: Mount; changes: VfsChanges | undefined }> {
+    const out: Array<{ mount: Mount; changes: VfsChanges | undefined }> = [];
+    for (const mount of this.table.mounts.values()) {
+      if (mount.point !== ROOT_POINT && !this.live(mount)) continue;
+      const files = this.backend(mount);
+      if (files !== null) out.push({ mount, changes: files.changes });
+    }
+    return out;
+  }
+
+  private feedPosition(table: string, sources: Array<{ mount: Mount; changes: VfsChanges | undefined }>): FeedPosition {
+    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    for (const { mount, changes } of sources) {
+      if (changes) feeds[mount.point] = { epoch: changes.epoch, cursor: changes.revision() };
+    }
+    return { table, feeds };
+  }
+
+  private static reroot(point: string, path: string): string {
+    if (point === ROOT_POINT) return path;
+    return path === '/' ? point : point + path;
+  }
+
+  /** Whether the namespace shows `path` from `mount`: routed there, not covered, reachable. */
+  private feedShows(path: string, mount: Mount): boolean {
+    if (this.route(path).mount !== mount || this.absentOn(path) !== null) return false;
+    return !this.isStructural(path) || this.table.mounts.get(path) === mount;
+  }
+
+  private feedSince(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer {
+    const table = this.feedSignature();
+    const sources = this.feedSources();
+    const poison = (): FeedAnswer => ({ position: this.feedPosition(table, sources), poison: true, paths: [] });
+    if (position.table !== table) return poison();
+    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    const paths: VfsInvalidatedPath[] = [];
+    for (const { mount, changes } of sources) {
+      if (!changes) continue;
+      const held = position.feeds[mount.point];
+      if (held === undefined) return poison();
+      const delta = changes.since(held.epoch, held.cursor, options);
+      if (delta.poison) return poison();
+      feeds[mount.point] = { epoch: delta.epoch, cursor: delta.rev };
+      for (const entry of delta.paths) {
+        const at = CompositeVFS.reroot(mount.point, entry.path);
+        if (this.feedShows(at, mount)) {
+          paths.push(at === entry.path ? entry : { ...entry, path: at });
+          continue;
+        }
+        // A covered row changing is nothing to the reader, except at a
+        // directory this namespace makes: a removal reported there (once, at
+        // the subtree's root) also took root rows the namespace does show,
+        // and which ones only a relist can say.
+        if (this.isStructural(at) && this.route(at).mount === mount && (entry.subtree === true || entry.structural === true)) {
+          return poison();
+        }
+      }
+    }
+    return { position: { table, feeds }, poison: false, paths };
+  }
+
+  /**
+   * One page of every name the namespace shows, in path order: each feed's
+   * listing re-rooted and filtered, merged with the directories the
+   * namespace makes (mount points and their ancestors). A mount without a
+   * feed shows only its point. Take `position()` before the first page.
+   */
+  private feedList(after: string | null, limit: number): { entries: VfsListEntry[]; next: string | null } {
+    const want = Math.max(1, limit);
+    const streams: Array<{ entries: VfsListEntry[]; more: boolean }> = [];
+    const made: VfsListEntry[] = [];
+    for (const point of [...this.table.mounts.keys(), ...this.table.synthesized.keys()]) {
+      if (point === ROOT_POINT || !this.isStructural(point) || (after !== null && point <= after)) continue;
+      if (made.some((entry) => entry.path === point)) continue;
+      made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point) });
+    }
+    made.sort((a, b) => (a.path < b.path ? -1 : 1));
+    streams.push({ entries: made, more: false });
+    for (const { mount, changes } of this.feedSources()) {
+      if (!changes) continue;
+      const point = mount.point;
+      let from: string | null;
+      if (point === ROOT_POINT || after === null || after < `${point}/`) from = point === ROOT_POINT ? after : null;
+      else if (after.startsWith(`${point}/`)) from = after.slice(point.length);
+      else continue;
+      const entries: VfsListEntry[] = [];
+      let more = true;
+      while (entries.length < want && more) {
+        const page = changes.list(from, want);
+        for (const entry of page.entries) {
+          const at = CompositeVFS.reroot(point, entry.path);
+          if ((after === null || at > after) && this.feedShows(at, mount) && at !== point) {
+            entries.push(at === entry.path ? entry : { ...entry, path: at });
+          }
+        }
+        more = page.next !== null;
+        from = page.next;
+      }
+      streams.push({ entries, more });
+    }
+    const merged = streams.flatMap((stream) => stream.entries).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const entries = merged.slice(0, want);
+    const more = merged.length > want || streams.some((stream) => stream.more);
+    return { entries, next: more && entries.length > 0 ? entries[entries.length - 1].path : null };
+  }
+
+  /** A directory the namespace makes, as a listing entry: the mounted root's own stat where it answers one. */
+  private madeStat(point: string): RuntimeVfsStat {
+    const mount = this.table.mounts.get(point);
+    if (mount === undefined) return SYNTH_RUNTIME_STAT;
+    try {
+      const stat = this.statAt(point, false, true);
+      if (stat === null || isPromise(stat) || stat.type !== 'directory') return SYNTH_RUNTIME_STAT;
+      return {
+        ...SYNTH_RUNTIME_STAT,
+        mode: stat.mode ?? SYNTH_RUNTIME_STAT.mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0,
+        mtime: stat.mtimeMs ?? 0, atime: stat.atimeMs ?? stat.mtimeMs ?? 0, ctime: stat.ctimeMs ?? stat.mtimeMs ?? 0,
+      };
+    } catch {
+      return SYNTH_RUNTIME_STAT;
+    }
   }
 
   // ── the table ──────────────────────────────────────────────────────────

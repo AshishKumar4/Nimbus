@@ -189,4 +189,52 @@ function workspace() {
   ]);
 }
 
+// ── the namespace's feed ──────────────────────────────────────────────────
+{
+  const namesOf = (feed) => {
+    const out = [];
+    let after = null;
+    for (;;) {
+      const page = feed.list(after, 2);
+      out.push(...page.entries.map((e) => e.path));
+      if (page.next === null) return out;
+      after = page.next;
+    }
+  };
+  const { engine, vfs } = workspace();
+  const kernel = engine.as(CRED_KERNEL);
+  // A root row a mount covers is never staged, and a write to it is not news
+  // (review: the SQLite feed forwarded /pc/shadowed while readdir('/pc') was []).
+  kernel.mkdir('pc', { recursive: true });
+  kernel.writeFile('pc/shadowed', 'sqlite');
+  kernel.mkdir('m/keep', { recursive: true });
+  kernel.writeFile('m/keep/f', 'shown');
+  vfs.mount('/pc', new MemoryVFS());
+  vfs.mount('/m/a', new MemoryVFS());
+  const feed = vfs.feed;
+  const at = feed.position();
+  const staged = namesOf(feed);
+  assert.equal(staged.includes('/pc/shadowed'), false);
+  assert.deepEqual(staged.filter((p) => p.startsWith('/m') || p.startsWith('/pc')), ['/m', '/m/a', '/m/keep', '/m/keep/f', '/pc']);
+  kernel.writeFile('pc/shadowed', 'again');
+  kernel.writeFile('etc/new', 'n');
+  const answer = feed.since(at, { namespace: true });
+  assert.equal(answer.poison, false);
+  assert.deepEqual(answer.paths.map((e) => e.path).sort(), ['/etc', '/etc/new'], 'the covered write is not reported');
+  // rm -r of a mount's ancestor in the root backend is reported once, at its
+  // root, which the namespace covers; it took /m/keep, which the namespace
+  // showed. Only a relist can say what went, so it is a poison.
+  kernel.removeRecursive('m');
+  assert.equal(feed.since(answer.position, { namespace: true }).poison, true);
+  assert.equal(namesOf(feed).includes('/m/keep/f'), false);
+  // A mount appearing or going is in no backend's feed: a poison.
+  const before = feed.position();
+  vfs.mount('/late', new MemoryVFS());
+  assert.equal(feed.since(before, {}).poison, true);
+  // The feed is the principal's: a uid that cannot see a mount does not stage it.
+  vfs.mount('/private', (principal) => (principal.cred?.uid === 0 ? new MemoryVFS() : null));
+  assert.equal(namesOf(vfs.as(USER).feed).includes('/private'), false);
+  assert.equal(namesOf(vfs.as(CRED_KERNEL).feed).includes('/private'), true);
+}
+
 console.log('vfs-backends: ok');
