@@ -1373,6 +1373,15 @@ type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
  * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
  * length) plus 1%, a row per chunk and head, and a page of slack.
  */
+/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only. */
+function moduleMapStorageBytes(bundle: FacetVfsBundle): number {
+  let bytes = 0;
+  for (const cell of Object.values(bundle)) {
+    bytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
+  }
+  return bytes;
+}
+
 function residentCellCost(cell: string | Uint8Array): number {
   const isText = typeof cell === 'string';
   const size = isText ? cell.length : cell.byteLength;
@@ -1391,6 +1400,8 @@ interface FacetVfsState {
   // read returned 3× the original byte count. See
   // for the canonical 256→512 byte demo.
   bundle: FacetVfsBundle;
+  /** What the module map costs the facet's store, taken before its cells are released (N18). */
+  moduleStorageBytes?: number;
   /**
    * The VFS cursor these cells were read at.
    *
@@ -4645,12 +4656,9 @@ export class FacetManager {
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
     const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
-    // And the module map, which the store adopts at boot: the process's code.
-    let moduleBytes = 0;
-    for (const cell of Object.values(vfsState.bundle)) {
-      // A denial is a head row only.
-      moduleBytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
-    }
+    // And the module map, which the store adopts at boot: the process's code,
+    // costed when the map was built (its cells are released once serialized).
+    const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle);
     const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
     return { paths: plan.paths, storageBytes };
   }
@@ -4783,6 +4791,10 @@ export class FacetManager {
     // The only consumer of the raw cells past serialization is a single
     // boolean, so it is answered first; the serialization then consumes them.
     vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
+    // And what the module map costs the facet's store, which adopts it at boot
+    // (N18): taken now, while the cells exist, for every launch this state
+    // serves (a cache hit included).
+    vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle);
     vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
