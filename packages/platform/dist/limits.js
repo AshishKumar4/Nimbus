@@ -45,6 +45,11 @@ export const SQL_MAX_BOUND_PARAMETERS = 100;
  * clone, with reserve.
  */
 export const DO_STORAGE_LIMIT_BYTES = 10_000_000_000;
+// N17: how long a launch that reads synchronously (WASI) waits for the paths
+// it names to hydrate out of a lazy import before it fails with EIO naming
+// the first that is not local. Bounded so a fetch that never resolves cannot
+// hold a launch forever.
+export const HYDRATION_DEADLINE_MS = 30_000;
 /**
  * Maximum SQL statement text per exec. Documented "100 KB"; read as binary
  * KiB because the value is SQLite's compile-time SQLITE_MAX_SQL_LENGTH

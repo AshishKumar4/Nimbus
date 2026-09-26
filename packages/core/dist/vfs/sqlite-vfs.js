@@ -142,6 +142,12 @@ const CONTENT_STAGING = 0;
 /** vfs_chunks.state: bytes in `data`, or only in the cold store (P6). */
 const CHUNK_LOCAL = 0;
 const CHUNK_COLD = 1;
+/**
+ * N17: a chunk a lazy import named without its bytes. Its row holds the hash
+ * and size and no data until hydrateChunks stores them; a read of it is EIO
+ * (pendingChunkError), never bytes.
+ */
+const CHUNK_PENDING = 2;
 /** SQL (over vfs_chunks AS c): no live row, live manifest or staging content names c. */
 const LIVE_CHUNK_UNREFERENCED = `
   AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
@@ -2447,7 +2453,7 @@ export class SqliteVFS {
                 this._sqlReads++;
                 for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page)) {
                     if (Number(row.state) !== CHUNK_LOCAL)
-                        throw coldChunkError(ref.path);
+                        throw unreadableChunkError(Number(row.state), ref.path);
                     const data = this.blobToUint8Array(row.data);
                     found.set(Number(row.id), data);
                     this.cacheSet(Number(row.id), data);
@@ -2468,7 +2474,7 @@ export class SqliteVFS {
                 this._sqlReads++;
                 for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page.map((row) => row.chunkId))) {
                     if (Number(row.state) !== CHUNK_LOCAL)
-                        throw coldChunkError(ref.path);
+                        throw unreadableChunkError(Number(row.state), ref.path);
                     byId.set(Number(row.id), this.blobToUint8Array(row.data));
                 }
                 for (const row of page) {
@@ -2561,7 +2567,7 @@ export class SqliteVFS {
         if (!row)
             throw new Error(`EIO: ${path}: missing chunk ${chunkId}`);
         if (Number(row.state) !== CHUNK_LOCAL)
-            throw coldChunkError(path);
+            throw unreadableChunkError(Number(row.state), path);
         const data = this.blobToUint8Array(row.data);
         if (cached)
             this.cacheSet(chunkId, data);
@@ -5110,7 +5116,7 @@ export class SqliteVFS {
      * given nor stored, nothing is written and `want` lists what to send.
      * Files too large for one transaction stage across several.
      */
-    importPage(dst, page, chunks = []) {
+    importPage(dst, page, chunks = [], options = {}) {
         // N18: the page's rows and the bytes it brings are admitted and reserved
         // before its first transaction, which then draw from the reservation.
         const given = [...chunks];
@@ -5122,13 +5128,13 @@ export class SqliteVFS {
         const reservation = crypto.randomUUID();
         this.ledger.reserve(reservation, bytes + rows * LEDGER_ROW_BYTES);
         try {
-            return this.withReservation(reservation, () => this.importPageNow(dst, page, given));
+            return this.withReservation(reservation, () => this.importPageNow(dst, page, given, options.lazy === true));
         }
         finally {
             this.ledger.release(reservation);
         }
     }
-    importPageNow(dst, page, chunks) {
+    importPageNow(dst, page, chunks, lazy) {
         if (page?.schema !== VFS_EXPORT_SCHEMA) {
             throw vfsError('EINVAL', `export schema ${String(page?.schema)}, this filesystem reads ${VFS_EXPORT_SCHEMA}`);
         }
@@ -5149,7 +5155,7 @@ export class SqliteVFS {
                 // nothing past what is there.
                 const at = this.importCursor(target);
                 if (at !== null && page.rows.every((row) => full(row.path) <= full(at)) && full(page.after) <= full(at)) {
-                    return { imported: 0, want: [], done: page.next === null };
+                    return { imported: 0, want: [], done: page.next === null, pending: [] };
                 }
                 throw vfsError('EINVAL', `no import into ${target} is in progress`);
             }
@@ -5175,8 +5181,17 @@ export class SqliteVFS {
             }
         }
         const want = this.absentChunks([...new Set(rows.flatMap((row) => row.pieces.map(([hash]) => hash)))].filter((hash) => !given.has(hash)));
-        if (want.length > 0)
-            return { imported: 0, want, done: false };
+        // A lazy import (N17) names what it lacks as pending chunks, hydrated
+        // later; any other import asks for them first.
+        if (want.length > 0 && !lazy)
+            return { imported: 0, want, done: false, pending: [] };
+        if (want.length > 0) {
+            const sizes = new Map();
+            for (const row of rows)
+                for (const [hash, size] of row.pieces)
+                    sizes.set(hash, size);
+            this.insertPendingChunks(want.map((hash) => ({ hash, size: sizes.get(hash) })));
+        }
         const jobId = job?.id ?? this.beginImport(target);
         let builder = this.newPlan();
         let imported = 0;
@@ -5248,7 +5263,85 @@ export class SqliteVFS {
                 this.abandonStaging(held);
         }
         this.runContentMaintenanceSafely(1);
-        return { imported, want: [], done };
+        return { imported, want: [], done, pending: want };
+    }
+    /**
+     * Rows for chunks a lazy import names without bytes (N17): hash and size,
+     * no data, state pending. Each is queued for collection too, so one that
+     * no committed row comes to name is not kept.
+     */
+    insertPendingChunks(chunks) {
+        for (let i = 0; i < chunks.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = chunks.slice(i, i + KEYS_PER_SQL_EXEC);
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length * 2 + 1, sqlExecs: batch.length * 2 + 1, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+                const state = [...this.sql.exec('UPDATE vfs_state SET next_chunk = next_chunk + ? WHERE slot = 1 RETURNING next_chunk', batch.length)][0];
+                let id = Number(state.next_chunk) - batch.length;
+                for (const chunk of batch) {
+                    const inserted = [...this.sql.exec(`INSERT OR IGNORE INTO vfs_chunks (id, hash, size, data, state) VALUES (?, ?, ?, x'', ${CHUNK_PENDING}) RETURNING id`, id++, unhex(chunk.hash), chunk.size)];
+                    if (inserted.length > 0)
+                        this.sql.exec('INSERT OR IGNORE INTO vfs_gc_queue (kind, id) VALUES (?, ?)', GC_CHUNK, Number(inserted[0].id));
+                }
+            });
+        }
+    }
+    /**
+     * Store the bytes of pending chunks (N17), each re-hashed first; a chunk
+     * that is not pending (stored already, or collected) is skipped. Returns
+     * the hashes now local.
+     */
+    hydrateChunks(chunks) {
+        const stored = [];
+        let group = [];
+        let groupBytes = 0;
+        const flush = () => {
+            if (group.length === 0)
+                return;
+            const rows = group;
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+                for (const row of rows) {
+                    const done = [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_PENDING} RETURNING 1`, row.data, unhex(row.hash))].length > 0;
+                    if (done)
+                        stored.push(row.hash);
+                }
+            });
+            group = [];
+            groupBytes = 0;
+        };
+        for (const chunk of chunks) {
+            if (hex(chunkHash(chunk.data)) !== chunk.hash)
+                throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
+            if (group.length > 0 && (groupBytes + chunk.data.byteLength > MAX_TX_BLOB_BYTES || group.length >= MAX_TX_SQL_EXECS - 4))
+                flush();
+            group.push(chunk);
+            groupBytes += chunk.data.byteLength;
+        }
+        flush();
+        return stored;
+    }
+    /** Which of `hashes` (hex) are pending chunks (N17). */
+    pendingOf(hashes) {
+        const pending = new Set();
+        for (let i = 0; i < hashes.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = hashes.slice(i, i + KEYS_PER_SQL_EXEC);
+            for (const row of this.sql.exec(`SELECT hash FROM vfs_chunks WHERE state = ${CHUNK_PENDING} AND hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex)))
+                pending.add(hex(this.blobToUint8Array(row.hash)));
+        }
+        return hashes.filter((hash) => pending.has(hash));
+    }
+    /**
+     * The pending chunks (N17) `path`'s bytes name, in the file's order (a
+     * hash once per file), as hex; none for a path with none, or no file.
+     */
+    pendingChunksOf(path) {
+        const inode = this.inodes.get(normalizeVfsPath(path));
+        if (inode === undefined || inode.kind !== 'file')
+            return [];
+        const rows = inode.contentId !== null && inode.contentId !== undefined
+            ? [...this.sql.exec(`SELECT c.hash FROM vfs_content_chunks m JOIN vfs_chunks c ON c.id = m.chunk_id WHERE m.content_id = ? AND c.state = ${CHUNK_PENDING} ORDER BY m.off`, inode.contentId)]
+            : inode.chunkId !== null && inode.chunkId !== undefined
+                ? [...this.sql.exec(`SELECT hash FROM vfs_chunks WHERE id = ? AND state = ${CHUNK_PENDING}`, inode.chunkId)]
+                : [];
+        return [...new Set(rows.map((row) => hex(this.blobToUint8Array(row.hash))))];
     }
     /**
      * Store chunks for an import into `dst` ahead of its pages, a bounded
@@ -6482,6 +6575,7 @@ export class SqliteVFS {
                     named.delete(key);
                 const lookup = new Map(named);
                 const remote = new Set();
+                const pending = new Set();
                 for (const [key, piece] of wanted)
                     lookup.set(key, piece.hash);
                 const keys = [...lookup.keys()];
@@ -6492,10 +6586,13 @@ export class SqliteVFS {
                         chunkIds.set(key, Number(row.id));
                         if (Number(row.state) !== CHUNK_LOCAL)
                             remote.add(key);
+                        if (Number(row.state) === CHUNK_PENDING)
+                            pending.add(key);
                     }
                 }
                 for (const [key, hash] of named) {
-                    if (!chunkIds.has(key) || remote.has(key))
+                    // A pending chunk (a lazy import's, N17) is named as it stands.
+                    if (!chunkIds.has(key) || (remote.has(key) && !pending.has(key)))
                         throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
                 }
                 // A write whose bytes a cold chunk already names brings them back:
@@ -7004,7 +7101,7 @@ export class SqliteVFS {
                  AND NOT EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
                RETURNING id, hash, state`, ...collectable)) {
                         freed.push(Number(row.id));
-                        if (Number(row.state) !== CHUNK_LOCAL)
+                        if (Number(row.state) === CHUNK_COLD)
                             this.sql.exec('INSERT OR IGNORE INTO vfs_cold_trash (hash) VALUES (?)', row.hash);
                     }
                 }
@@ -7036,7 +7133,7 @@ export class SqliteVFS {
              AND NOT EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
            RETURNING id, hash, state`, ...ids)) {
                 freed.push(Number(row.id));
-                if (Number(row.state) !== CHUNK_LOCAL)
+                if (Number(row.state) === CHUNK_COLD)
                     this.sql.exec('INSERT OR IGNORE INTO vfs_cold_trash (hash) VALUES (?)', row.hash);
             }
             this.sql.exec(`DELETE FROM vfs_gc_queue WHERE kind = ${GC_CHUNK} AND id IN (${list})`, ...ids);
@@ -7804,6 +7901,24 @@ function planIdReservation(plan) {
 /** Let the host settle storage writes between slices of a long job. */
 function yieldToStorage() {
     return new Promise((resolve) => setTimeout(resolve, 0));
+}
+/** Why a chunk that is not local cannot be read. */
+function unreadableChunkError(state, path) {
+    return state === CHUNK_PENDING ? pendingChunkError(path) : coldChunkError(path);
+}
+/**
+ * A read of bytes a lazy import has not brought yet (N17): EIO naming the
+ * path, and marked, so an asynchronous caller can wait for them instead.
+ */
+export function pendingChunkError(path) {
+    const shown = path.startsWith('/') ? path : `/${path}`;
+    return Object.assign(new Error(`EIO: ${shown} is still being imported; its bytes arrive in the background`), {
+        code: 'EIO', nimbusPending: true, path: shown,
+    });
+}
+/** Whether `error` is a read of bytes still being imported. */
+export function isPendingChunkError(error) {
+    return typeof error === 'object' && error !== null && error.nimbusPending === true;
 }
 function coldChunkError(what) {
     return vfsError('ENODATA', `${what}: its bytes are in cold storage; await prepareSnapshot() first`);

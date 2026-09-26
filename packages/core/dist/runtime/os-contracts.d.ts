@@ -172,10 +172,27 @@ export interface NimbusFilesystemAuthority {
      * overrides this and appends to `super.mounts(cred)`.
      */
     mounts?(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
+    /**
+     * N17: a launch that reads synchronously (WASI) waits here for the paths
+     * it names (absolute) to be hydrated out of a lazy import, at most the
+     * hydration deadline, then fails with EIO naming the first that is not.
+     */
+    gateLaunch?(named: readonly string[]): Promise<void>;
 }
+/**
+ * N17: a launch that reads synchronously waits for the paths it names (its
+ * program, and each argument resolved against `cwd`; one that names nothing
+ * pending costs nothing) to be hydrated. The error message when they are
+ * not, by the deadline; null when the launch may start.
+ */
+export declare function gateSyncLaunch(gate: {
+    gateLaunch?(named: readonly string[]): Promise<void>;
+}, cwd: string, program: string | null, argv: readonly string[]): Promise<string | null>;
+/** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
+export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -191,6 +208,8 @@ export interface VfsMutationReceipt {
 }
 export interface RuntimeFsBridge {
     readonly synchronous?: RuntimeSynchronousFs;
+    /** N17: see {@link NimbusFilesystemAuthority.gateLaunch}; absent where nothing is ever imported lazily. */
+    gateLaunch?(named: readonly string[]): Promise<void>;
     stat(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): Awaitable<RuntimeVfsStat | null>;

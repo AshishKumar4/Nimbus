@@ -14,6 +14,8 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
+import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
+import { Hydrator } from './hydration.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
@@ -60,11 +62,29 @@ class GuardedProcessBridge {
     scope;
     signal;
     pid;
-    constructor(target, scope, signal, pid) {
+    hydrator;
+    constructor(target, scope, signal, pid, 
+    /** N17: the lazy-import hydration job, when there is one. */
+    hydrator) {
         this.target = target;
         this.scope = scope;
         this.signal = signal;
         this.pid = pid;
+        this.hydrator = hydrator;
+    }
+    gateLaunch(named) {
+        return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
+    }
+    /** A read that met pending bytes moves them to the front of hydration, and still fails (EIO). */
+    reading(read) {
+        try {
+            return read();
+        }
+        catch (error) {
+            if (this.hydrator !== null && isPendingChunkError(error))
+                this.hydrator.missed(error.path);
+            throw error;
+        }
     }
     get synchronous() { return this; }
     guard() {
@@ -78,14 +98,14 @@ class GuardedProcessBridge {
         }
     }
     stat(path, options) { this.guard(); return this.target.stat(path, options); }
-    readFile(path, options) { this.guard(); return this.target.readFile(path, options); }
+    readFile(path, options) { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
     writeFile(path, bytes, options) {
         this.guard();
         return this.target.writeFile(path, bytes, options);
     }
     readRange(path, offset, length, options) {
         this.guard();
-        return this.target.readRange(path, offset, length, options);
+        return this.reading(() => this.target.readRange(path, offset, length, options));
     }
     writeRange(path, offset, bytes, options) {
         this.guard();
@@ -103,7 +123,7 @@ class GuardedProcessBridge {
         return this.target.chown(path, uid, gid, options);
     }
     open(path, flags) { this.guard(); return this.target.open(path, flags); }
-    read(handleId, offset, length) { this.guard(); return this.target.read(handleId, offset, length); }
+    read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
     close(handleId) { return this.target.close(handleId); }
     readdir(path, options) { this.guard(); return this.target.readdir(path, options); }
@@ -183,14 +203,44 @@ export class ProcessFiles {
             this.mountedInos.set(path, ino = this.mountedInos.size + 1);
         return ino;
     };
-    constructor(engine) {
+    /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
+    hydrator;
+    constructor(engine, options = {}) {
         this.engine = engine;
+        this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
         this.namespace = engine.namespace;
         this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
         this.proc = standardProc();
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+    }
+    /**
+     * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
+     * and are queued for hydration, in the order the page names them.
+     */
+    importPage(dst, page, chunks = [], options = {}) {
+        if (options.lazy && this.hydrator === null)
+            throw new VfsError('EINVAL', 'a lazy import needs a hydration fetch (ProcessFiles hydration option)', dst);
+        const result = this.engine.importPage(dst, page, chunks, options);
+        if (result.pending.length > 0) {
+            this.hydrator.enqueue(result.pending);
+            void this.hydrator.run();
+        }
+        return result;
+    }
+    /**
+     * N17: a launch that reads synchronously (WASI) waits for the paths it
+     * names (program, argv paths, a cwd inside an import) to be local, at most
+     * the hydration deadline; EIO naming the first that is not, after it. A
+     * launch naming nothing pending starts at once.
+     */
+    /** Resolves once `path`'s bytes are hydrated (at once, for a path with none pending). */
+    hydrated(path) {
+        return this.hydrator === null ? Promise.resolve() : this.hydrator.whenLocal(path);
+    }
+    gateLaunch(named) {
+        return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
     }
     bind({ pid, cred, signal }) {
         if (!Number.isSafeInteger(pid) || pid <= 0)
@@ -294,7 +344,7 @@ export class ProcessFiles {
     }
     bridgeFor(scope, cred, signal, pid) {
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno);
-        return new GuardedProcessBridge(target, scope, signal, pid);
+        return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
     }
 }
 /** A command's view for a process binding, over any binding authority. */

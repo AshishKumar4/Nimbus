@@ -224,12 +224,55 @@ export interface NimbusFilesystemAuthority {
    * overrides this and appends to `super.mounts(cred)`.
    */
   mounts?(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
+  /**
+   * N17: a launch that reads synchronously (WASI) waits here for the paths
+   * it names (absolute) to be hydrated out of a lazy import, at most the
+   * hydration deadline, then fails with EIO naming the first that is not.
+   */
+  gateLaunch?(named: readonly string[]): Promise<void>;
+}
+
+/**
+ * N17: a launch that reads synchronously waits for the paths it names (its
+ * program, and each argument resolved against `cwd`; one that names nothing
+ * pending costs nothing) to be hydrated. The error message when they are
+ * not, by the deadline; null when the launch may start.
+ */
+export async function gateSyncLaunch(
+  gate: { gateLaunch?(named: readonly string[]): Promise<void> },
+  cwd: string,
+  program: string | null,
+  argv: readonly string[],
+): Promise<string | null> {
+  if (typeof gate.gateLaunch !== 'function') return null;
+  try {
+    await gate.gateLaunch(launchNamedPaths(cwd, program, argv));
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
+export function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[] {
+  const anchor = (path: string) => {
+    const joined = path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`;
+    const out: string[] = [];
+    for (const part of joined.split('/')) {
+      if (part === '' || part === '.') continue;
+      if (part === '..') out.pop(); else out.push(part);
+    }
+    return `/${out.join('/')}`;
+  };
+  const named = program === null ? [] : [anchor(program)];
+  for (const arg of argv) if (arg !== '' && !arg.startsWith('-')) named.push(anchor(arg));
+  return named;
 }
 
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
   // copyTree yields between slices, so it has no synchronous form.
-  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree'>]:
+  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'acquire' | 'copyTree' | 'gateLaunch'>]:
     RuntimeFsBridge[K] extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };
@@ -246,6 +289,8 @@ export interface VfsMutationReceipt { before: number; after: number }
 
 export interface RuntimeFsBridge {
   readonly synchronous?: RuntimeSynchronousFs;
+  /** N17: see {@link NimbusFilesystemAuthority.gateLaunch}; absent where nothing is ever imported lazily. */
+  gateLaunch?(named: readonly string[]): Promise<void>;
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsStat | null>;
   readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<Uint8Array | null>;
   /**

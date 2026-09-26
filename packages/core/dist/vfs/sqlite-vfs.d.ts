@@ -1272,12 +1272,34 @@ export declare class SqliteVFS {
      * given nor stored, nothing is written and `want` lists what to send.
      * Files too large for one transaction stage across several.
      */
-    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>): {
+    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
+        lazy?: boolean;
+    }): {
         imported: number;
         want: string[];
         done: boolean;
+        pending: string[];
     };
     private importPageNow;
+    /**
+     * Rows for chunks a lazy import names without bytes (N17): hash and size,
+     * no data, state pending. Each is queued for collection too, so one that
+     * no committed row comes to name is not kept.
+     */
+    private insertPendingChunks;
+    /**
+     * Store the bytes of pending chunks (N17), each re-hashed first; a chunk
+     * that is not pending (stored already, or collected) is skipped. Returns
+     * the hashes now local.
+     */
+    hydrateChunks(chunks: Iterable<VfsExportChunk>): string[];
+    /** Which of `hashes` (hex) are pending chunks (N17). */
+    pendingOf(hashes: readonly string[]): string[];
+    /**
+     * The pending chunks (N17) `path`'s bytes name, in the file's order (a
+     * hash once per file), as hex; none for a path with none, or no file.
+     */
+    pendingChunksOf(path: string): string[];
     /**
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
@@ -1747,4 +1769,17 @@ export declare class SqliteVFS {
         };
     };
 }
+/**
+ * A read of bytes a lazy import has not brought yet (N17): EIO naming the
+ * path, and marked, so an asynchronous caller can wait for them instead.
+ */
+export declare function pendingChunkError(path: string): Error & {
+    code: string;
+    nimbusPending: true;
+    path: string;
+};
+/** Whether `error` is a read of bytes still being imported. */
+export declare function isPendingChunkError(error: unknown): error is Error & {
+    path: string;
+};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

@@ -1,7 +1,7 @@
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 const BashSliceSchema = z.object({
     state: z.enum(['need-input', 'exited', 'error']),
@@ -257,6 +257,11 @@ export function makeBashRunnerFactory(deps) {
             const filesystem = ctx.vfs.process;
             const argv = [...(ctx.args ?? [])];
             const cwd = ctx.cwd || '/home/user';
+            const notHydrated = await gateSyncLaunch(filesystem, cwd, null, argv);
+            if (notHydrated !== null) {
+                ctx.stderr.write(`${binName}: ${notHydrated}\n`);
+                return 1;
+            }
             // Resolve a relative script path against the session cwd.
             const scriptIdx = findScriptArgIndex(argv);
             if (scriptIdx >= 0) {

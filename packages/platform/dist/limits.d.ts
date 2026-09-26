@@ -38,6 +38,7 @@ export declare const SQL_MAX_BOUND_PARAMETERS = 100;
  * clone, with reserve.
  */
 export declare const DO_STORAGE_LIMIT_BYTES = 10000000000;
+export declare const HYDRATION_DEADLINE_MS = 30000;
 /**
  * Maximum SQL statement text per exec. Documented "100 KB"; read as binary
  * KiB because the value is SQLite's compile-time SQLITE_MAX_SQL_LENGTH

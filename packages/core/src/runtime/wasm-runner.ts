@@ -50,7 +50,7 @@
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
@@ -214,6 +214,8 @@ export function makeWasmRunner(deps: {
     //   direct mode: [exportName, intArg1, intArg2, ...]
     const wasmPath = (opts.filename || '').replace(/^\/+/, '');
     const argv = opts.argv || [];
+    const notHydrated = await gateSyncLaunch(deps.filesystem, opts.cwd || '/home/user', opts.filename || null, argv);
+    if (notHydrated !== null) return { exitCode: 1, stdout: '', stderr: `wasm-runner: ${notHydrated}\n` };
 
     // The program is read as the invoking credential before a process exists
     // for it, so a host lease carries the read rather than a process binding.

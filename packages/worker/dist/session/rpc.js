@@ -33,6 +33,7 @@ import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
@@ -529,9 +530,11 @@ export async function _rpcFsReadBatch(self, requests, pid) {
         const entries = [];
         for (const request of args) {
             try {
-                entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length, {
+                // N17: bytes still being imported are waited for, not failed.
+                const hydrated = (path) => (typeof self.getFilesystemAuthority === 'function' ? self.getFilesystemAuthority().hydrated(path) : Promise.resolve());
+                entries.push({ bytes: await readHydrating(hydrated, async () => fs.readRange(request.path, request.offset, request.length, {
                         expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
-                    }) });
+                    })) });
             }
             catch (error) {
                 entries.push({ error: readBatchEntryError(error) });

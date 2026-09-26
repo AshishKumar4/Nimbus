@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
@@ -188,6 +188,23 @@ export interface SupervisorOpTools {
   readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
   readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
   readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
+  /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
+  readonly hydrated: (path: string) => Promise<void>;
+}
+
+/**
+ * An asynchronous read that meets bytes still being imported (N17) waits for
+ * them and reads again; a synchronous caller would have had EIO.
+ */
+export async function readHydrating<T>(hydrated: (path: string) => Promise<void>, read: () => Promise<T>): Promise<T> {
+  for (;;) {
+    try {
+      return await read();
+    } catch (error) {
+      if (!isPendingChunkError(error)) throw error;
+      await hydrated(error.path);
+    }
+  }
 }
 
 /**
@@ -245,7 +262,7 @@ async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path
   const fs = fsFor(e, t);
   const stat = await fs.stat(path);
   if (!stat) return null;
-  return t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)));
+  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path))));
 }
 
 /** A range read, leased for what the range can return rather than what it asks. */
@@ -254,7 +271,7 @@ async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, options:
   const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
   const stat = await fs.stat(path);
   const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
-  return t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)));
+  return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options))));
 }
 
 /**
@@ -272,7 +289,7 @@ const NATIVE_OPS = {
   fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), OpenOptions.parse(e.args?.[1])),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
-    return t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length)));
+    return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
   },
   fsWrite: (e, t) => fsFor(e, t).write(numberArg(e, 0), nullableNumberArg(e, 1), bytesArg(e, 2)),
   fsClose: (e, t) => fsFor(e, t).close(numberArg(e, 0)),
@@ -387,6 +404,7 @@ export function createSupervisorOpHandler(
     cred: (pid, cred) => credFor(deps, pid, cred),
     output: deps.output,
     readLease: deps.readLease ?? ((_bytes, read) => read()),
+    hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
   };
   const extend = deps.extend ?? {};
   return async (envelope) => {
