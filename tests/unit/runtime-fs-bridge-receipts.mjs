@@ -20,6 +20,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
+vfs.mkdir('home/user', { recursive: true });
 const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 const enc = new TextEncoder();
 const dec = new TextDecoder();

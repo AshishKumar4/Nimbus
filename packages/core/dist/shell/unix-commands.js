@@ -3003,17 +3003,25 @@ function mkTee(vfs) {
         const append = ctx.args.includes('-a');
         const files = ctx.args.filter(a => !a.startsWith('-'));
         (await ctx.stdout.write(input));
+        let status = 0;
+        // A file it cannot write is reported and the rest still get the input (GNU).
         for (const f of files) {
             const fp = resolvePath(ctx.cwd, f);
-            if (append && (await vfs.exists(fp))) {
-                const existing = (await vfs.readFileString(fp));
-                (await vfs.writeFile(fp, existing + input));
+            try {
+                if (append && (await vfs.exists(fp))) {
+                    const existing = (await vfs.readFileString(fp));
+                    (await vfs.writeFile(fp, existing + input));
+                }
+                else {
+                    (await vfs.writeFile(fp, input));
+                }
             }
-            else {
-                (await vfs.writeFile(fp, input));
+            catch (error) {
+                (await ctx.stderr.write(`tee: ${f}: ${fsErrorMessage(error)}\n`));
+                status = 1;
             }
         }
-        return 0;
+        return status;
     };
 }
 /**

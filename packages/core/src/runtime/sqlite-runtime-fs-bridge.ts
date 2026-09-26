@@ -107,7 +107,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   stat(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsStat | null {
     const followSymlinks = options.followSymlinks !== false;
-    const located = this.locate(path, followSymlinks);
+    let located: Located | null;
+    try {
+      located = this.locate(path, followSymlinks);
+    } catch (error) {
+      // A component missing on the way is "not there", whatever form the path takes.
+      if (hasErrorCode(error, 'ENOENT')) return null;
+      throw error;
+    }
     if (located === null) throw fsError('ELOOP', 'stat', path);
     if (located.mount) {
       const stat = located.mount.stat(located.path, { follow: followSymlinks });
@@ -201,12 +208,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const located = this.locateMutation(path, true, 'write');
     if (located.mount) {
       if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
+      if (options.createParents === true) mountParents(located.mount, located.path);
       located.mount.writeFile(located.path, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
       return this.rawVfs.revision();
     }
     const p = located.path;
     this.assertExpectedRevision(p, options.expectedRevision);
-    if (options.createParents !== false) this.ensureParent(p);
+    if (options.createParents === true) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
     // Read back in the same synchronous turn as the mutation, so nothing can
     // interleave: this is exactly the revision this write produced. Asking
@@ -258,13 +266,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located.mount) {
       if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
       if (!located.mount.writeRange) throw fsError('ENOTSUP', 'write', path);
+      if (options.createParents === true) mountParents(located.mount, located.path);
       located.mount.writeRange(located.path, offset, bytes);
       return this.mountReceipt();
     }
     const p = located.path;
     this.assertExpectedRevision(p, options.expectedRevision);
     if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
-    if (options.createParents !== false) this.ensureParent(p);
+    if (options.createParents === true) this.ensureParent(p);
     return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
   }
 
@@ -388,7 +397,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
     if (exists) this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
     if (!exists) {
-      this.ensureParent(p);
       this.vfs.writeFile(p, new Uint8Array(0), { mode: flags.mode });
     } else if (normalizedFlags.truncate) {
       this.vfs.truncate(p, 0);
@@ -549,7 +557,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (this.vfs.exists(p) || this.legacySymlinks.isSymlink(this.legacyKey(p))) {
       throw fsError('EEXIST', 'symlink', path);
     }
-    this.ensureParent(p);
     this.vfs.symlink(target, p);
   }
 
@@ -615,7 +622,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!source.mount && !target.mount) { this.vfs.copyFile(source.path, target.path); return; }
     const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
     if (target.mount) target.mount.writeFile(target.path, bytes);
-    else { this.ensureParent(target.path); this.vfs.writeFile(target.path, bytes); }
+    else this.vfs.writeFile(target.path, bytes);
   }
 
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
@@ -1061,6 +1068,12 @@ interface FsError extends Error {
   code: string;
   syscall: string;
   path: string;
+}
+
+/** mkdir -p of a mounted path's parent. */
+function mountParents(mount: SyncVFS, path: string): void {
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  if (parent !== '') mount.mkdir(parent, { recursive: true });
 }
 
 export function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {

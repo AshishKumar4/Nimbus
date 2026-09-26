@@ -496,7 +496,18 @@ class AwaitingProcessBridge {
     }
     stat(path, options) {
         return this.either([path], () => this.bridge.stat(path, options), async () => {
-            const stat = await this.namespace.stat((await this.path(path, options?.followSymlinks !== false)), { follow: options?.followSymlinks !== false });
+            const follow = options?.followSymlinks !== false;
+            let resolved;
+            try {
+                resolved = await this.path(path, follow);
+            }
+            catch (error) {
+                // As the bridge's stat: a component missing on the way is "not there".
+                if (error?.code === 'ENOENT')
+                    return null;
+                throw error;
+            }
+            const stat = await this.namespace.stat(resolved, { follow });
             return stat === null ? null : runtimeStatOf(stat);
         });
     }
@@ -522,7 +533,10 @@ class AwaitingProcessBridge {
     }
     writeRange(path, offset, bytes, options) {
         return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-            await this.mountOp('writeRange', path)((await this.path(path)), offset, bytes);
+            const p = await this.path(path);
+            if (options?.createParents)
+                await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
+            await this.mountOp('writeRange', path)(p, offset, bytes);
             return this.receipt();
         });
     }

@@ -82,7 +82,7 @@ assert.throws(() => sync.readFile('/shared/c'), (error) => error.code === 'EAGAI
   assert.equal(await code(fs.stat(beneath('abs'))), 'ENOTCAPABLE', 'an absolute link');
   assert.equal(await code(fs.stat(beneath('/f'))), 'ENOTCAPABLE', 'an absolute path');
   assert.equal(await code(fs.stat(beneath('shut/x'))), 'EACCES', 'a directory it may not search');
-  assert.equal(await code(fs.stat(beneath('nope/x'))), 'ENOENT');
+  assert.equal(await fs.stat(beneath('nope/x')), null, 'a missing component is not there');
   assert.equal(await fs.stat(beneath('nope')), null);
   const dir = await fs.open(beneath('sub'), { read: true, directory: true });
   await fs.writeFile({ directory: dir.id, path: 'g', beneath: true }, 'g');

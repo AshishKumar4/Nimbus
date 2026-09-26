@@ -90,6 +90,9 @@ async function answer(proc, kernel, step) {
     if (typeof error?.code !== 'string') throw error;
     return { error: error.code };
   }
+  // stat's contract: a resolution that finds a component missing (the
+  // model's ENOENT) answers null, as a string path does.
+  if (step.expect.error === 'ENOENT') return reached === null ? step.expect : { reached: identity(reached) };
   if ('error' in step.expect) return { reached: identity(reached) };
   const expected = await kernel.stat(step.expect.path, { followSymlinks: false });
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };

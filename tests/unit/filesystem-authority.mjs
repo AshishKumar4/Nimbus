@@ -177,4 +177,18 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   h3.db.close();
 }
 
+// stat answers null for a missing path whatever form it takes, a component
+// missing on the way included; a refusal still throws.
+{
+  const h4 = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(h4.sql, h4.ctx);
+  engine.as(CRED_KERNEL).mkdir('/home/main', { recursive: true });
+  const { fs: host } = new ProcessFiles(engine).openHost(CRED_KERNEL);
+  for (const path of ['/etc/x', { root: '/', path: 'etc/x', beneath: true }, { root: '/home', path: 'y/z', beneath: true }]) {
+    assert.equal(await host.stat(path), null, JSON.stringify(path));
+  }
+  await assert.rejects(async () => host.stat({ root: '/home/main', path: '../../etc', beneath: true }), { code: 'ENOTCAPABLE' });
+  h4.db.close();
+}
+
 console.log('filesystem authority: live descriptors, namespace isolation, scoped host leases, stream cancel and epoch/version races passed');

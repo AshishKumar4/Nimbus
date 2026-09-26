@@ -22,9 +22,12 @@ import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test
 
 const APPEND_MODULE = '77777777-7777-4777-8777-777777777777';
 
+// The directories the cases write into: a write never creates its parent.
+const FIXTURE_DIRS = ['home/user', 'a', 'b', 'wk', 'x', 'y', 'real/dir', 'links', 'loop', 'append', 'targets'];
 function makeBridge() {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  for (const dir of FIXTURE_DIRS) rawVfs.as(CRED_KERNEL).mkdir(dir, { recursive: true });
   return {
     harness,
     rawVfs,
@@ -55,8 +58,10 @@ const CRED_OTHER = Object.freeze({
   assert.ok(receipt.after > receipt.before, 'writeRange answers with the revisions around it');
   assert.equal(dec.decode(await bridge.readFile('/home/user/data.txt')), 'hello WORLD');
 
-  // writeRange creates missing files and parents (like writeFile).
-  await bridge.writeRange('/home/user/new/dir/file.bin', 2, enc.encode('xy'));
+  // A missing parent is ENOENT, as open(O_CREAT); createParents is mkdir -p.
+  await assert.rejects(async () => bridge.writeRange('/home/user/new/dir/file.bin', 2, enc.encode('xy')), { code: 'ENOENT' });
+  await assert.rejects(async () => bridge.writeFile('/home/user/new/dir/file.bin', 'xy'), { code: 'ENOENT' });
+  await bridge.writeRange('/home/user/new/dir/file.bin', 2, enc.encode('xy'), { createParents: true });
   const created = await bridge.readFile('/home/user/new/dir/file.bin');
   assert.deepEqual(Array.from(created), [0, 0, 120, 121]);
   assert.equal((await bridge.stat('/home/user/new/dir')).type, 'directory');
