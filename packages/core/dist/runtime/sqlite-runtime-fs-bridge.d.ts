@@ -121,6 +121,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     releaseExclusiveMutation(owner: string): void;
     private pathArgument;
     private resolveDataPath;
+    /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+    private mountedLink;
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;

@@ -637,12 +637,29 @@ export class SqliteRuntimeFsBridge {
             }
             const candidate = [...resolved, segment].join('/');
             const isFinal = pending.length === 0;
-            // From a mount (or a directory above one) on, the namespace resolves
-            // the rest, links on the mount included; the SQLite rows it covers
-            // (a link among them) are never followed.
+            if (!followSymlinks && isFinal) {
+                resolved.push(segment);
+                continue;
+            }
+            // On a mount, or a directory above one, the namespace answers whether
+            // this component is a link (the SQLite rows it covers, links among
+            // them, are never followed). The walk itself (`..`, the beneath
+            // check) stays here, component by component.
             if (this.namespace?.composes('/' + candidate)) {
-                resolved.push(segment, ...pending.filter((part) => part !== '.'));
-                pending.length = 0;
+                const link = this.mountedLink('/' + candidate);
+                if (link === null) {
+                    resolved.push(segment);
+                    continue;
+                }
+                if (++hops > MAX_LINK_HOPS)
+                    return null;
+                if (link.startsWith('/')) {
+                    const absolute = normalizeVfsPath(link);
+                    if (root !== null && root !== '' && absolute !== root && !absolute.startsWith(root + '/'))
+                        throw fsError('ENOTCAPABLE', 'path', path);
+                    resolved.length = 0;
+                }
+                pending.unshift(...link.split('/').filter(Boolean));
                 continue;
             }
             if (!followSymlinks && isFinal) {
@@ -680,6 +697,22 @@ export class SqliteRuntimeFsBridge {
             resolved.length = 0;
         }
         return resolved.join('/');
+    }
+    /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+    mountedLink(path) {
+        let stat;
+        try {
+            stat = this.mounted.stat(path, { follow: false });
+        }
+        catch (error) {
+            const code = error.code;
+            if (code === 'ENOENT' || code === 'ENOTDIR')
+                return null;
+            throw error;
+        }
+        if (stat === null || stat.type !== 'symlink' || typeof this.mounted.readlink !== 'function')
+            return null;
+        return this.mounted.readlink(path);
     }
     locateMutation(path, followSymlinks, syscall) {
         // A lease on a directory also covers names inside it that resolve
