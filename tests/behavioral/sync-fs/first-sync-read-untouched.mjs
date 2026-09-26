@@ -20,7 +20,7 @@
 //   and at 4 KiB it simply staged it. The probe was measuring the prefetch
 //   bundle, not the store.
 //
-//   The fixture is therefore sized past VFS_BUNDLE_MAX_BYTES (24 MiB), which
+//   The fixture is therefore sized past VFS_BUNDLE_MAX_BYTES (18 MiB), which
 //   is the one thing no heuristic can route around: the bundler truncates
 //   there and says so — "They still exist and async reads still return them;
 //   synchronous reads raise EAGAIN." That is precisely the failure this store

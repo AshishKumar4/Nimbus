@@ -1579,6 +1579,12 @@ async function _readBundleCell(
  * Strings counted as char-length (a slight under-count for non-ASCII
  * but matches the pre-fix behaviour); Uint8Array counted as byteLength.
  */
+/** A cell's raw bytes: UTF-8 for text, as the file is on disk. */
+function _bundleCellRawBytes(cell: FacetVfsBundle[string]): number {
+  if (cell instanceof Uint8Array) return cell.byteLength;
+  return typeof cell === 'string' ? _encodedSourceBytes(cell) : 0;
+}
+
 function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
@@ -3798,18 +3804,39 @@ async function _buildPrefetchBundle(
   await paceAfterPass();
   await paceAfterPass();
 
-  // 4. The snapshot's size guard: the JSON-encoded UTF-8 bytes of the whole
-  //    map, against what the session DO can build and pass on
-  //    (VFS_BUNDLE_MAX_BYTES, measured in module-map bytes:
-  //    platform/limits.ts). The per-module text limit is met by side modules
-  //    and is not a reason to evict. Only OPTIONAL enrichment is evictable;
-  //    the static require closure stays.
+  // 4. The snapshot's size guard, in the unit the session DO's memory was
+  //    measured in and the require walk counts: raw bytes, a cell's UTF-8
+  //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
+  //    set its own). The per-module text limit is met by side modules and is
+  //    not a reason to evict. Only
+  //    OPTIONAL enrichment is evictable; the static require closure stays, and
+  //    a closure past the bound by itself fails the launch by name.
   //
   //    Evicting an enrichment file is a real loss — the sync fs reads it
   //    exists for cannot fall back to the supervisor — so the paths that
   //    went are named rather than silently dropped.
   const size = encodedBundleSize(bundle);
-  if (size.bytes > VFS_BUNDLE_MAX_BYTES) {
+  const rawBytes = new Map<string, number>();
+  let rawTotal = 0;
+  for (const [path, cell] of Object.entries(bundle)) {
+    const bytes = _bundleCellRawBytes(cell);
+    rawBytes.set(path, bytes);
+    rawTotal += bytes;
+  }
+  if (rawTotal > maxBundleBytes) {
+    let requiredBytes = 0;
+    for (const [path, bytes] of rawBytes) {
+      if (requiredPaths.has(compiledCellPath(path) ?? path)) requiredBytes += bytes;
+    }
+    if (requiredBytes > maxBundleBytes) {
+      throw new ClosureBoundExceededError({
+        kind: 'closure-exceeds-bound',
+        entry: scriptPath ?? 'entry code',
+        bytesSeen: requiredBytes,
+        bound: maxBundleBytes,
+        lastPath: [...requiredPaths].at(-1) ?? scriptPath ?? '',
+      });
+    }
     // A compiled cell goes with its source: required when the source is.
     //
     // Order matters as much as the bound. Largest-first alone ranks a cell by
@@ -3833,20 +3860,21 @@ async function _buildPrefetchBundle(
         const rankA = rankOf(a);
         const rankB = rankOf(b);
         if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
-        return _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]);
+        return (rawBytes.get(b) ?? 0) - (rawBytes.get(a) ?? 0);
       });
     const evicted: BundleCellSize[] = [];
     for (const k of evictable) {
-      if (size.bytes <= VFS_BUNDLE_MAX_BYTES) break;
-      evicted.push([k, _bundleCellLength(bundle[k])]);
+      if (rawTotal <= maxBundleBytes) break;
+      evicted.push([k, rawBytes.get(k) ?? 0]);
+      rawTotal -= rawBytes.get(k) ?? 0;
       delete bundle[k];
       size.remove(k);
     }
     if (evicted.length > 0) {
       truncated = true;
       console.warn(
-        `[facet-manager] prefetch snapshot exceeded ${VFS_BUNDLE_MAX_BYTES} encoded `
-          + `bytes; evicted ${evicted.length} optional file(s). They still exist and `
+        `[facet-manager] prefetch snapshot exceeded ${maxBundleBytes} bytes; `
+          + `evicted ${evicted.length} optional file(s). They still exist and `
           + `async reads still return them; synchronous reads raise EAGAIN: `
           + `${describeBundleCells(evicted)}`,
       );

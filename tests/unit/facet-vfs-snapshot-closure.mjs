@@ -181,10 +181,12 @@ assert.equal(
       name: `bulky-${index}`,
       main: 'index.js',
     });
-    // Backslashes so the JSON-encoded size (what the ceiling measures) is
-    // twice the raw size the greedy pass budgets against.
-    optionalFiles[`${packageRoot}/index.js`] = `// ${'\\'.repeat(3 * 1024 * 1024)}`;
+    optionalFiles[`${packageRoot}/index.js`] = `// ${'x'.repeat(3 * 1024 * 1024)}`;
   }
+  // A required closure of its own: the greedy pass budgets only the optional
+  // cells, so the two together are what pass the snapshot's bound (raw bytes).
+  optionalFiles[`${cwd}/app.js`] = 'require("./big.js");\n';
+  optionalFiles[`${cwd}/big.js`] = `// ${'y'.repeat(VFS_BUNDLE_MAX_BYTES / 2)}`;
   optionalFiles[`${cwd}/package.json`] = JSON.stringify({
     name: 'app',
     dependencies: Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`bulky-${index}`, '*'])),
@@ -196,9 +198,9 @@ assert.equal(
   try {
     evictionSnapshot = await buildPrefetchBundle(
       launchFs(optionalFiles).fs,
-      undefined,
+      `/${cwd}/app.js`,
       cwd,
-      '',
+      optionalFiles[`${cwd}/app.js`],
       identityEsbuild,
     );
   } finally {
