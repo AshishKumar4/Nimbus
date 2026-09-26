@@ -86,8 +86,20 @@ import {
   type TransactionHost,
 } from '../runtime/os-contracts.js';
 
-/** Schema version of the v2 content store. */
-const VFS_SCHEMA = 2;
+/**
+ * Schema version of the content store. 3: `/` is inode 1 and the allocator
+ * starts at 2, and directories carry a default ACL (dacl). A schema-2 store
+ * numbered its first entry 1, so it is not read: it is reset, and the reset
+ * is told like a v1 filesystem's (legacyReset).
+ */
+const VFS_SCHEMA = 3;
+/** Every table of the content store, dropped when an older schema is reset. */
+const STORE_TABLES = [
+  'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
+  'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
+  'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
+  'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs',
+] as const;
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
 /** The root's inode number, reserved: the allocator starts at 2. */
@@ -1406,8 +1418,23 @@ export class SqliteVFS {
 
   // ── Schema ────────────────────────────────────────────────────────────
 
+  /**
+   * An older schema's store is not read: its tables go, so the open below
+   * builds the current ones empty, and the loss is recorded to be told.
+   * True when it reset one.
+   */
+  private resetOlderStore(): boolean {
+    const hasState = [...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vfs_state'")].length > 0;
+    if (!hasState) return false;
+    const state = [...this.sql.exec('SELECT schema FROM vfs_state WHERE slot = 1')][0];
+    if (!state || Number(state.schema) >= VFS_SCHEMA) return false;
+    for (const table of STORE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    return true;
+  }
+
   private initSchema(): void {
     this.transactionSync(() => {
+      const olderStoreReset = this.resetOlderStore();
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_receipts_v2 (
         namespace TEXT NOT NULL,
         pid INTEGER NOT NULL,
@@ -1475,7 +1502,7 @@ export class SqliteVFS {
           'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 2, 1, 1, 0, ?)',
           VFS_SCHEMA,
           crypto.randomUUID(),
-          this.presentLegacyTables().length > 0 ? 1 : 0,
+          olderStoreReset || this.presentLegacyTables().length > 0 ? 1 : 0,
         );
       } else if (Number(state.schema) !== VFS_SCHEMA) {
         throw new Error(`[sqlite-vfs] unsupported filesystem schema ${String(state.schema)}`);
@@ -1496,7 +1523,9 @@ export class SqliteVFS {
         chunk_id INTEGER NULL,
         content_id INTEGER NULL,
         dacl INTEGER NULL,
-        CHECK (chunk_id IS NULL OR content_id IS NULL)
+        CHECK (chunk_id IS NULL OR content_id IS NULL),
+        -- ROOT_INODE (1) is \`/\`'s, which has no row: no entry can hold it.
+        CHECK (ino > 1)
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_parent ON vfs_inodes(parent_path, kind)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_gen ON vfs_inodes(gen)');

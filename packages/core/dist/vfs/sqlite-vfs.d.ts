@@ -443,6 +443,12 @@ export declare class SqliteVFS {
      * so opening costs the same at ten files and at a million.
      */
     constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options?: SqliteVfsOptions);
+    /**
+     * An older schema's store is not read: its tables go, so the open below
+     * builds the current ones empty, and the loss is recorded to be told.
+     * True when it reset one.
+     */
+    private resetOlderStore;
     private initSchema;
     /** Tables a pre-v2 Nimbus filesystem left here, recognised by their columns. */
     private presentLegacyTables;
