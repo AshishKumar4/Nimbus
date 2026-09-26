@@ -3565,6 +3565,24 @@ function parseTouchStamp(text: string, now: number): number | null {
   return Date.UTC(year, mo - 1, d, h, mi, sec);
 }
 
+/** An error's errno name, as the filesystem gave it. */
+function touchErrno(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === 'string' ? code : 'EIO';
+}
+
+/** glibc's strerror for the errnos a filesystem call gives; an unlisted one by its name. */
+function strerror(errno: string): string {
+  const text: Record<string, string> = {
+    EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',
+    EACCES: 'Permission denied', EEXIST: 'File exists', ENOTDIR: 'Not a directory', EISDIR: 'Is a directory',
+    EINVAL: 'Invalid argument', ENOSPC: 'No space left on device', EROFS: 'Read-only file system',
+    ELOOP: 'Too many levels of symbolic links', ENAMETOOLONG: 'File name too long', EBUSY: 'Device or resource busy',
+    ENOTSUP: 'Operation not supported', EOPNOTSUPP: 'Operation not supported', EDQUOT: 'Disk quota exceeded',
+  };
+  return text[errno] ?? errno;
+}
+
 /**
  * touch, as GNU touch: each file's atime and mtime to now, to a -d date, a
  * -t stamp or a -r file's; -a only atime, -m only mtime (--time=atime|mtime);
@@ -3664,24 +3682,42 @@ function mkTouch(vfs: UnixVfs): CmdFn {
           await targetVfs.utimes(fp, setAtime ? atime : own.atime, setMtime ? mtime : own.mtime);
           continue;
         }
-        if (!(await targetVfs.exists(fp))) {
-          if (noCreate) continue;
-          // open(O_CREAT) makes the file, never its directory (the VFS's writeFile would).
-          const parent = fp.includes('/') ? fp.slice(0, fp.lastIndexOf('/')) : '';
-          if (parent && !(await targetVfs.isDirectory(parent))) {
-            throw Object.assign(new Error(fp), { code: (await targetVfs.exists(parent)) ? 'ENOTDIR' : 'ENOENT' });
+        // GNU's order (touch.c): open(O_WRONLY|O_CREAT) unless -c, noting its
+        // errno; then set the times. Only a failure to set them is reported,
+        // as the open's errno when it failed ("cannot touch"), else as the
+        // time-setting errno ("setting times of"). -c on a missing file is
+        // silence.
+        let openErrno: string | null = null;
+        const exists = await targetVfs.exists(fp);
+        if (!noCreate) {
+          if (exists) {
+            try { await targetVfs.access(fp, 2); } catch (e) { openErrno = touchErrno(e); }
+          } else {
+            // open(O_CREAT) makes the file, never its directory (the VFS's writeFile would).
+            const parent = fp.includes('/') ? fp.slice(0, fp.lastIndexOf('/')) : '';
+            if (parent && !(await targetVfs.isDirectory(parent))) {
+              openErrno = (await targetVfs.exists(parent)) ? 'ENOTDIR' : 'ENOENT';
+            } else {
+              try { await targetVfs.writeFile(fp, ''); } catch (e) { openErrno = touchErrno(e); }
+            }
           }
-          await targetVfs.writeFile(fp, '');
         }
-        const st = await targetVfs.stat(fp);
-        await targetVfs.utimes(fp, setAtime ? atime : st.atime, setMtime ? mtime : st.mtime);
+        try {
+          if (!exists && (noCreate || openErrno)) throw Object.assign(new Error(fp), { code: 'ENOENT' });
+          const st = await targetVfs.stat(fp);
+          await targetVfs.utimes(fp, setAtime ? atime : st.atime, setMtime ? mtime : st.mtime);
+        } catch (e) {
+          const errno = touchErrno(e);
+          if (openErrno) {
+            await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(openErrno)}\n`);
+            code = 1;
+          } else if (!(noCreate && errno === 'ENOENT')) {
+            await ctx.stderr.write(`touch: setting times of '${f}': ${strerror(errno)}\n`);
+            code = 1;
+          }
+        }
       } catch (e) {
-        const code_ = (e as { code?: string })?.code;
-        const why = code_ === 'EACCES' ? 'Permission denied'
-          : code_ === 'ENOTDIR' ? 'Not a directory'
-          : code_ === 'EISDIR' ? 'Is a directory'
-          : 'No such file or directory';
-        await ctx.stderr.write(`touch: cannot touch '${f}': ${why}\n`);
+        await ctx.stderr.write(`touch: cannot touch '${f}': ${strerror(touchErrno(e))}\n`);
         code = 1;
       }
     }

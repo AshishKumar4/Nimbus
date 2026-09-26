@@ -158,6 +158,27 @@ try {
   await same(['-d', '@1600000000', 'dang'], { files: ['nofile'], setup: link('dang', 'nofile') });
   await same(['-h', '-d', '@1600000000', 'f']);
   await same(['-'], { files: [] });
+  // Files the caller does not own. uid 1000 cannot make root-owned files on disk for GNU to
+  // touch, so these expectations are GNU touch 9.7's own output, measured as uid 1000 on
+  // root-owned /etc/hostname (0644) and /dev/null (0666): the open's errno when the open
+  // failed, else the time-setting errno; -c on a missing path is silence.
+  const pinned = async (label, args, want) => {
+    root.writeFile('tmp/w/rootf', 'r'); root.chown('tmp/w/rootf', 0, 0); root.chmod('tmp/w/rootf', 0o644);
+    root.writeFile('tmp/w/rootw', 'w'); root.chown('tmp/w/rootw', 0, 0); root.chmod('tmp/w/rootw', 0o666);
+    const actual = await box.shell.execute(`cd /tmp/w && touch ${args.map((a) => `'${a}'`).join(' ')}`, {});
+    assert.deepEqual({ exit: actual.exitCode, stderr: actual.stderr }, want, label);
+    checks++;
+  };
+  await pinned('an explicit time on a root file the caller cannot write', ['-d', '@1600000000', 'rootf'],
+    { exit: 1, stderr: "touch: cannot touch 'rootf': Permission denied\n" });
+  await pinned('a root file the caller cannot write', ['rootf'],
+    { exit: 1, stderr: "touch: cannot touch 'rootf': Permission denied\n" });
+  await pinned('an explicit time on a root file the caller may write but not own', ['-d', '@1600000000', 'rootw'],
+    { exit: 1, stderr: "touch: setting times of 'rootw': Operation not permitted\n" });
+  await pinned('-c: no open, so the time-setting error', ['-c', '-d', '@1600000000', 'rootf'],
+    { exit: 1, stderr: "touch: setting times of 'rootf': Operation not permitted\n" });
+  await pinned('-c on a missing path under a missing directory', ['-c', '-d', '@1', 'nope/x'], { exit: 0, stderr: '' });
+
   console.log(`touch-timestamps: ${checks} invocations match GNU touch`);
 } finally {
   box.destroy();
