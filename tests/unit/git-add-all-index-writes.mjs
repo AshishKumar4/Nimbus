@@ -88,6 +88,8 @@ peakFilesInFlight = filesInFlight = 0;
 await git('add', '-A');
 assert.equal(indexWrites, 1, `add -A of ${FILES} new files wrote the index ${indexWrites} times`);
 assert.ok(peakFilesInFlight <= 2, `add -A held ${peakFilesInFlight} files at once`);
+// Taken here: the reads later commands make keep the counter moving.
+const stagedAtOnce = peakFilesInFlight;
 await git('commit', '-qm', 'base');
 assert.equal(await git('status'), 'nothing to commit, working tree clean\n');
 
@@ -128,7 +130,7 @@ try {
   assert.equal(real('ls-files').split('\n').filter(Boolean).length, FILES / 2);
   assert.equal(real('rev-list', '--count', 'HEAD').trim(), '2');
   assert.equal(real('show', 'HEAD:f1.txt'), 'edited\n');
-  console.log(`git-add-all-index-writes: ${FILES} files staged in one index write, ${peakFilesInFlight} at a time; real git fsck and status agree`);
+  console.log(`git-add-all-index-writes: ${FILES} files staged in one index write, ${stagedAtOnce} at a time; real git fsck and status agree`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
