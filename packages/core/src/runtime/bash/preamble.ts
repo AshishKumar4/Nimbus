@@ -54,7 +54,7 @@ const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // main / 256 KiB slots carry 300×/10× margin while keeping a full
 // instance ~17 MiB — several forks fit the ~180-200 MiB facet ceiling.
 const MAIN_SIZE = 8 << 20, SLOT_SIZE = 256 << 10, NSLOT = 32;
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 } satisfies Record<string, BashErrno>;
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, IO: 29, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 } satisfies Record<string, BashErrno>;
 // WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
 // monotonic source; an id outside this set is EINVAL, never a silent realtime
 // reading — a guest that asks for monotonic and receives wall time computes
@@ -72,6 +72,21 @@ function clockNs(id: number | undefined): bigint | null {
   return null;
 }
 class Exit { declare code: number; constructor(c: number) { this.code = c; } }
+/** A process killed by a signal's default action (SIGPIPE: a write to a pipe no one reads). */
+class Signalled { declare signal: number; constructor(signal: number) { this.signal = signal; } }
+const SIGPIPE = 13;
+/** The capacity Linux gives a pipe: a writer that can wait (a bash process, a JSPI child) waits past it. */
+const PIPE_CAPACITY = 65536;
+/**
+ * Without JSPI a plain WASI child runs synchronously: it cannot wait for the
+ * reader of a full pipe, only run it nested (and a nested reader cannot hand
+ * control back). Its pipes therefore buffer, and only past this much do the
+ * readers get to run inside the writer's write, which is what lets
+ * `yes | head` end. A reader so nested that would have to wait for the writer
+ * suspended above it fails with EIO, loudly, never a false end of input.
+ */
+const NONPARK_PIPE_SPILL = 64 * 1024 * 1024;
+const WRITE_UNWOUND = Symbol('write-unwound');
 
 let S: BashSession | null = null;
 let filesystem: RuntimeFsBridge | null = null;
@@ -118,7 +133,112 @@ function newSession(args: BashBootArgs): BashSession {
 }
 function initStdinQueued(s: BashSession): void { s.stdin.queued = s.stdin.chunks.reduce((a, c) => a + c.length, 0); }
 
-function newPipe(s: BashSession): number { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [] }); return id; }
+function newPipe(s: BashSession): number { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [], writeW: [], suspendedWriters: 0, heldWriters: new Set() }); return id; }
+/** The write end's pipe, when `fd` is one. */
+function writePipe(s: BashSession, proc: BashProc, fd: number): BashPipe | null {
+  const e = proc.fds.get(fd);
+  return e && e.kind === 'pipe' && e.end === 'w' ? s.pipes.get(e.pipeId) as BashPipe : null;
+}
+/** A writer must wait: the pipe holds its capacity and someone may still read it. */
+function pipeFull(pp: BashPipe): boolean { return pp.queued >= PIPE_CAPACITY && pp.readers > 0; }
+/** Wake the writers a drained pipe, or one with no reader left, lets through. */
+function wakeWriters(s: BashSession, pp: BashPipe): void {
+  while (pp.writeW.length && !pipeFull(pp)) {
+    const w = pp.writeW.shift();
+    if (!w) break;
+    if ('complete' in w) { w.complete(); continue; }
+    w.proc.writeResumed = true;
+    resumeProc(w.proc);
+  }
+  settleDrained(s, pp);
+}
+
+/** The pipes `proc` writes that hold more than a pipe's capacity unread, with a reader left. */
+function overflowedPipes(s: BashSession, proc: BashProc): BashPipe[] {
+  const out: BashPipe[] = [];
+  for (const e of proc.fds.values()) {
+    if (e.kind !== 'pipe' || e.end !== 'w') continue;
+    const pp = s.pipes.get(e.pipeId) as BashPipe;
+    if (pp.readers > 0 && pp.queued > PIPE_CAPACITY && !out.includes(pp)) out.push(pp);
+  }
+  return out;
+}
+
+/** Whether `proc` would, on Linux, be blocked writing: a pipe it writes holds past its capacity. */
+function blockedWriting(s: BashSession, proc: BashProc): boolean {
+  return overflowedPipes(s, proc).length > 0;
+}
+
+/** The live processes holding `pp`'s read end. */
+function readersOf(s: BashSession, pp: BashPipe): BashProc[] {
+  const out: BashProc[] = [];
+  for (const proc of s.procs.values()) {
+    for (const e of proc.fds.values()) {
+      if (e.kind === 'pipe' && e.end === 'r' && s.pipes.get(e.pipeId) === pp) { out.push(proc); break; }
+    }
+  }
+  return out;
+}
+
+/**
+ * Without JSPI a plain child writes into pipes that buffer past a pipe's
+ * capacity, so its exit can come before Linux would let it: while a pipe it
+ * writes holds more than the capacity, it would still be blocked writing.
+ * - Such a pipe whose readers are gone: the write it was blocked in meets no
+ *   reader, SIGPIPE (bash reports 141, as for `seq 100000 | head -1`).
+ * - Such a pipe with a reader left: the exit, and the closing of its write
+ *   ends, are held (settleDrained, settleReaderGone decide them).
+ */
+function holdOrFinish(s: BashSession, proc: BashProc, code: number, signal: number): void {
+  if (s.parking !== 'jspi' && !signal) {
+    for (const e of proc.fds.values()) {
+      if (e.kind !== 'pipe' || e.end !== 'w') continue;
+      const pp = s.pipes.get(e.pipeId) as BashPipe;
+      if (pp.readers === 0 && pp.queued > PIPE_CAPACITY) { signal = SIGPIPE; break; }
+    }
+  }
+  const pipes = s.parking === 'jspi' || signal ? [] : overflowedPipes(s, proc);
+  if (!pipes.length) { finishProc(s, proc, code, signal); return; }
+  proc.heldExit = { code, signal };
+  for (const pp of pipes) pp.heldWriters.add(proc);
+}
+
+/**
+ * A pipe's readers took bytes: a writer held on it is released, with its own
+ * exit, once the pipe is back within its capacity and no reader of it is
+ * itself blocked writing (its reads then are ones Linux would have made).
+ */
+function settleDrained(s: BashSession, pp: BashPipe): void {
+  if (!pp.heldWriters.size || pp.queued > PIPE_CAPACITY) return;
+  if (readersOf(s, pp).some((reader) => blockedWriting(s, reader))) return;
+  for (const proc of [...pp.heldWriters]) {
+    const held = proc.heldExit;
+    pp.heldWriters.delete(proc);
+    if (held && ![...s.pipes.values()].some((other) => other.heldWriters.has(proc))) releaseHeld(s, proc, held.code, held.signal);
+  }
+}
+
+/**
+ * A pipe's last reader is gone. A writer held on it was, on Linux, still
+ * blocked writing, so it is SIGPIPE if that reader died of a signal (it never
+ * consumed what the writer was blocked on) or if the pipe still holds past
+ * its capacity; otherwise its own exit.
+ */
+function settleReaderGone(s: BashSession, pp: BashPipe, readerSignal: number): void {
+  for (const proc of [...pp.heldWriters]) {
+    const held = proc.heldExit;
+    pp.heldWriters.delete(proc);
+    if (!held) continue;
+    if (readerSignal || pp.queued > PIPE_CAPACITY) releaseHeld(s, proc, 0, SIGPIPE);
+    else if (![...s.pipes.values()].some((other) => other.heldWriters.has(proc))) releaseHeld(s, proc, held.code, held.signal);
+  }
+}
+
+function releaseHeld(s: BashSession, proc: BashProc, code: number, signal: number): void {
+  proc.heldExit = null;
+  for (const pp of s.pipes.values()) pp.heldWriters.delete(proc);
+  if (s.procs.has(proc.pid)) finishProc(s, proc, code, signal);
+}
 // fd 3 is the wasi-libc '/' preopen. It lives in the fd table as a
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
@@ -133,7 +253,7 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   // this process's claim on it, and letting the rejection reach s.error
   // would report the whole slice as failed instead of its exit code.
   if (e.kind === 'authority') queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => {}));
-  if (e.kind === 'pipe') { bumpPipe(s, e, -1); wakePipe(s, s.pipes.get(e.pipeId) as BashPipe); }
+  if (e.kind === 'pipe') { bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(s, pp); }
 }
 function takeUpTo(src: BashByteQueue, max: number): Uint8Array {
   let need = max; const parts = [];
@@ -181,6 +301,7 @@ function wakePipe(s: BashSession, pp: BashPipe): void {
     proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
+  wakeWriters(s, pp);
 }
 function wakeStdin(s: BashSession): void {
   const st = s.stdin;
@@ -263,7 +384,16 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     fd_fdstat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (!e) return E.BADF; U8().fill(0,out,out+24); DV().setUint8(out, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out+8, 0x1fffffffn, true); DV().setBigUint64(out+16, 0x1fffffffn, true); return 0; },
     fd_fdstat_set_flags(fd: number, flags: number) { return !proc.fds.has(fd) ? E.BADF : flags === 0 ? 0 : E.NOSYS; },
     fd_read: (fd: number, p: number, n: number, out: number) => io.read(fd, readIovs(DV(),p,n),out),
-    fd_write(fd: number, p: number, n: number, out: number) { if (!proc.fds.has(fd)) return E.BADF; let written = 0; for (const v of readIovs(DV(),p,n).list) { const count=io.write(fd,U8().subarray(v.ptr,v.ptr+v.len)); if (count === null) return E.BADF; written+=count; } DV().setUint32(out,written,true); return 0; },
+    fd_write(fd: number, p: number, n: number, out: number) {
+      if (!proc.fds.has(fd)) return E.BADF;
+      const write = () => { let written = 0; for (const v of readIovs(DV(),p,n).list) { const count=io.write(fd,U8().subarray(v.ptr,v.ptr+v.len)); if (count === null) return E.BADF; written+=count; } DV().setUint32(out,written,true); return 0; };
+      // A full pipe makes the writer wait before any byte of this call is
+      // written, so a rewound call never writes a byte twice.
+      const gate = io.writeGate?.(fd);
+      if (gate === WRITE_UNWOUND) return 0;
+      if (gate instanceof Promise) return gate.then(write);
+      return write();
+    },
     poll_oneoff: (p: number,q: number,n: number,out: number) => io.poll(p,q,n,out),
     clock_time_get(id: number,_precision: bigint,out: number) { const ns=clockNs(id); if(ns===null)return E.INVAL; DV().setBigUint64(out,ns,true);return 0; },
     clock_res_get(id: number,out: number) { if(clockNs(id)===null)return E.INVAL;DV().setBigUint64(out,id===CLOCK_REALTIME?1000000n:1000n,true);return 0; },
@@ -289,6 +419,9 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     // anywhere. POSIX makes the direction part of the descriptor: EBADF.
     if (e.end === 'r') return null;
     const pp = s.pipes.get(e.pipeId) as BashPipe;
+    // No one can ever read it: SIGPIPE, whose default action ends the writer
+    // (bash reports 141). This is what stops `yes | head`.
+    if (pp.readers === 0) throw new Signalled(SIGPIPE);
     pp.chunks.push(bytes.slice()); pp.queued += bytes.length;
     wakePipe(s, pp);
     return bytes.length;
@@ -309,7 +442,7 @@ function tryReadFd(
   const deliver = (bytes: Uint8Array): { errno: BashErrno } => { dv.setUint32(nreadPtr, scatter(u8, iov, bytes), true); return { errno: 0 }; };
   if (e && e.kind === 'pipe') {
     const pp = s.pipes.get(e.pipeId) as BashPipe;
-    if (pp.queued > 0) return deliver(takeUpTo(pp, iov.total));
+    if (pp.queued > 0) { const read = deliver(takeUpTo(pp, iov.total)); wakeWriters(s, pp); return read; }
     if (pp.writers === 0) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
     return null;
   }
@@ -434,7 +567,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
   const proc = {
     pid, ppid, fds, preopenMoved: new Map(), cwd: s.cwd, inst: null, __s: s,
     ctx: { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0 },
-    MAIN_BUF: 0, SLOT0: 0, pendingRead: null,
+    MAIN_BUF: 0, SLOT0: 0, pendingRead: null, writeResumed: false, heldExit: null,
     slotByEnv: new Map(), freeSlots: [],
   } as unknown as BashProc;
   const DV = () => new DataView(proc.inst.exports.memory.buffer);
@@ -488,6 +621,20 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       return 0;
     },
     write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
+    writeGate: (fd) => {
+      if (proc.writeResumed) {  // the rewind of a write that waited: go ahead
+        proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false;
+        proc.writeResumed = false;
+      }
+      const pp = writePipe(s, proc, fd);
+      if (!pp || !pipeFull(pp)) return undefined;
+      // Full: asyncify-park until a reader drains it or the last one leaves.
+      c.reason = 'blockwrite';
+      c.writeFd = fd;
+      initHdr(proc.MAIN_BUF, MAIN_SIZE);
+      proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+      return WRITE_UNWOUND;
+    },
     poll: (inPtr, outPtr, nsubs, retPtr) => {
       if (proc.pendingRead) {  // poll resume: report the fd readable
         proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false;
@@ -740,6 +887,7 @@ function step(s: BashSession, proc: BashProc): void {
   try { ex._start(); }
   catch (e) {
     if (e instanceof Exit) { finishProc(s, proc, e.code); return; }
+    if (e instanceof Signalled) { finishProc(s, proc, 0, e.signal); return; }
     throw e;
   }
   if (c.reason === null) { finishProc(s, proc, 0); return; }
@@ -779,6 +927,11 @@ function step(s: BashSession, proc: BashProc): void {
       target.list.push({ proc });
       target.wake();
     }
+  } else if (r === 'blockwrite') {
+    trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+    const pp = writePipe(s, proc, c.writeFd);
+    if (pp && pipeFull(pp)) pp.writeW.push({ proc });
+    else { proc.writeResumed = true; resumeProc(proc); }
   } else if (r === 'exec') {
     trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
     // With JSPI a child parks on a pipe it would block on; without it, it runs
@@ -802,9 +955,21 @@ function pumpOne(s: BashSession): boolean {
   return false;
 }
 
-/** Start the next process that reached exec (see BashSession.deferred). */
+/**
+ * Start the next process that reached exec (see BashSession.deferred):
+ * one with input to read first (its stdin not a pipe, or a pipe holding
+ * bytes or with no writer left), so that a pipeline's source runs before its
+ * sinks and a sink only ever runs nested under its writer, never beneath it.
+ */
 function startDeferred(s: BashSession): void {
-  const proc = s.deferred.shift() as BashProc;
+  const hasInput = (proc: BashProc) => {
+    const e = proc.fds.get(0);
+    if (!e || e.kind !== 'pipe' || e.end !== 'r') return true;
+    const pp = s.pipes.get(e.pipeId) as BashPipe;
+    return pp.queued > 0 || pp.writers === 0;
+  };
+  const at = s.deferred.findIndex(hasInput);
+  const [proc] = s.deferred.splice(at < 0 ? 0 : at, 1);
   if (s.procs.has(proc.pid)) queueSessionTask(s, doExec(s, proc));
 }
 
@@ -855,10 +1020,44 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
         const ready = tryReadFd(s, proc, fd, DV(), U8(), iov, out);
         if (ready) return ready.errno;
         if (canPark) return waitInput(fd, iov, out);
-        if (!pumpOne(s)) { DV().setUint32(out, 0, true); return 0; }
+        if (pumpOne(s)) continue;
+        // Its writer is suspended above this reader, mid-write: it cannot
+        // continue until this reader returns, so there is no end of input to
+        // report. Fail loudly rather than end the stream early.
+        const e = proc.fds.get(fd);
+        const pp = e && e.kind === 'pipe' ? s.pipes.get(e.pipeId) as BashPipe : null;
+        if (pp && pp.suspendedWriters > 0) {
+          s.err += `bash-runner: pipeline stage '${proc.ctx.execArgv.join(' ')}' read more than ${NONPARK_PIPE_SPILL} bytes `
+            + 'from a pipe this host cannot stream (no JSPI); it stopped with an I/O error rather than a false end of input\n';
+          return E.IO;
+        }
+        DV().setUint32(out, 0, true);
+        return 0;
       }
     },
-    write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
+    write: (fd, bytes) => {
+      const written = writeThroughFd(s, proc, fd, bytes);
+      const pp = canPark ? null : writePipe(s, proc, fd);
+      if (pp && pp.queued >= NONPARK_PIPE_SPILL && pp.readers > 0) {
+        // The readers run now, nested; this writer is suspended above them.
+        pp.suspendedWriters++;
+        try { while (pp.queued >= NONPARK_PIPE_SPILL && pp.readers > 0 && pumpOne(s)) { /* readers run */ } }
+        finally { pp.suspendedWriters--; }
+        // Its readers left while it was suspended mid-write: the write it would
+        // have gone on to make meets no reader. SIGPIPE, as bash reports 141.
+        if (pp.readers === 0) throw new Signalled(SIGPIPE);
+      }
+      return written;
+    },
+    writeGate: (fd) => {
+      const pp = writePipe(s, proc, fd);
+      if (!pp || !pipeFull(pp)) return undefined;
+      // With JSPI the child parks until a reader drains the pipe. Without it,
+      // it runs the rest of the session, as a blocked read does; with nothing
+      // left to run, the write goes ahead rather than deadlock.
+      if (canPark) return new Promise<void>((complete) => { pp.writeW.push({ complete }); });
+      return undefined;
+    },
     poll: (input, output, count, used) => {
       const subscriptions = readSubs(DV(), input, count);
       const ready = emitReady(s, proc, DV(), output, subscriptions);
@@ -974,9 +1173,14 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   function isEntry(value: WebAssembly.ExportValue | undefined): value is (...args: never[]) => void { return typeof value === 'function'; }
   if (!isEntry(start)) throw new Error('WASI child has no _start export');
   let code = 0;
+  let signal = 0;
   try { if (canPark) await WebAssembly.promising(start)(); else start(); }
-  catch (error) { if (error instanceof Exit) code = error.code; else throw error; }
-  finishProc(s, proc, code);
+  catch (error) {
+    if (error instanceof Exit) code = error.code;
+    else if (error instanceof Signalled) signal = error.signal;
+    else throw error;
+  }
+  holdOrFinish(s, proc, code, signal);
 }
 
 async function doFork(s: BashSession, parent: BashProc): Promise<void> {
@@ -1031,11 +1235,15 @@ function doWait(s: BashSession, proc: BashProc): void {
   }
 }
 
-function finishProc(s: BashSession, proc: BashProc, code: number): void {
-  const st = (code & 0xff) << 8;
+function finishProc(s: BashSession, proc: BashProc, code: number, signal = 0): void {
+  // A wait status: the exit code in the second byte, or a killing signal in
+  // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
+  const st = signal ? signal & 0x7f : (code & 0xff) << 8;
   s.procs.delete(proc.pid);
+  const readPipes = [...proc.fds.values()].filter((e) => e.kind === 'pipe' && e.end === 'r').map((e) => s.pipes.get((e as { pipeId: number }).pipeId) as BashPipe);
   for (const fd of [...proc.fds.keys()]) closeFd(s, proc, fd);
-  if (proc.ppid === 0) s.rootExit = code;
+  for (const pp of new Set(readPipes)) if (pp.readers === 0) settleReaderGone(s, pp, signal);
+  if (proc.ppid === 0) s.rootExit = signal ? 128 + signal : code;
   s.exitStatus.set(proc.pid, { status: st, ppid: proc.ppid });
   for (let i = 0; i < s.waiters.length; i++) {
     const w = s.waiters[i];
