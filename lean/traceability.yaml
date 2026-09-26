@@ -844,6 +844,7 @@ requirements:
       - Nimbus.Vfs.Hydration.job_head
       - Nimbus.Vfs.Hydration.a_failure_trace
       - Nimbus.Vfs.Hydration.a_reader_deadline
+      - Nimbus.Vfs.Hydration.gate_names_the_failed_path
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
       - packages/core/src/runtime/hydration.ts#Hydrator

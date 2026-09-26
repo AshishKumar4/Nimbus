@@ -35,7 +35,8 @@
   - `gate_ok_local` / `bound_reads_never_eio`, `nothing_named_starts`.
   - `named_local_within`: with every queued hash ready and no named chunk failed, the
     named paths are local after as many successful fetches as they had remote chunks.
-  - Traces: `a_shared_chunk`, `a_failure_trace`, `a_reader_deadline`.
+  - Traces: `a_shared_chunk`, `a_failure_trace`, `a_reader_deadline`,
+    `gate_names_the_failed_path`.
 -/
 
 namespace Nimbus.Vfs.Hydration
@@ -750,6 +751,15 @@ theorem a_reader_deadline :
     let s2 := (step (step s1 .tick).2 .tick).2
     (step s0 (.asyncRead 1)).1 = .wait ∧ (s1.readers.map (·.result)) = [none] ∧
       (s2.readers.map (·.result)) = [some (.eio 1 none)] := by
+  decide
+
+/-- A launch names 1 (chunk 5, pending) then 2 (chunk 6); 6 fails for good while 5 is
+    still pending: the gate's EIO names path 2 and chunk 6, the first named path with a
+    failed chunk, not path 1, the first named path that is not local. -/
+theorem gate_names_the_failed_path :
+    let s0 := start { D := 10, RD := 10, maxA := 1 } [(1, [5]), (2, [6])] [5, 6]
+    let s := [.bind [1, 2], .syncRead 2, .job 1].foldl (fun t e => (step t e).2) s0
+    s.queue = [5] ∧ s.failed = [6] ∧ (s.gates.map (·.result)) = [some (.eio 2 (some 6))] := by
   decide
 
 end Nimbus.Vfs.Hydration

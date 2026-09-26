@@ -691,6 +691,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Hydration.a_shared_chunk
 #print axioms Nimbus.Vfs.Hydration.a_failure_trace
 #print axioms Nimbus.Vfs.Hydration.a_reader_deadline
+#print axioms Nimbus.Vfs.Hydration.gate_names_the_failed_path
 
 /-! ## Nimbus/Vfs/Ledger.lean -/
 

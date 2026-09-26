@@ -131,7 +131,8 @@ def genCase : Gen (Option Json) := do
   return some (run { D := D, RD := RD, backoff := backoff, maxBackoff := maxBackoff, maxA := maxA } files remote evs)
 
 /-- `a_shared_chunk`; a fetch that never resolves failing a bind and a reader at 30 s;
-    `a_failure_trace` then its retry; `a_reader_deadline`. -/
+    `a_failure_trace` then its retry; `a_reader_deadline`;
+    `gate_names_the_failed_path` (a pending named path before a failed one). -/
 def directed : List Json :=
   [ run { D := 3, RD := 3 } [(1, [5]), (2, [5]), (3, [6]), (7, [9])] [6, 5]
       [.bind [1], .job 0, .syncRead 2, .syncRead 3, .bind [7], .bind [3], .tick, .tick, .tick, .asyncRead 3, .job 0],
@@ -139,7 +140,8 @@ def directed : List Json :=
       ([.bind [0, 10], .asyncRead 0, .job 0] ++ List.replicate 30 .tick ++ [.syncRead 0]),
     run failCfg [(1, [5]), (2, [5, 6]), (3, [7])] [5, 6, 7]
       (failRun ++ [.syncRead 1, .asyncRead 1, .retry, .job 0, .job 0, .asyncRead 1, .syncRead 2, .bind [1, 2]]),
-    run { D := 5, RD := 2 } [(1, [5]), (2, [6])] [5, 6] [.asyncRead 1, .asyncRead 2, .tick, .job 0, .tick] ]
+    run { D := 5, RD := 2 } [(1, [5]), (2, [6])] [5, 6] [.asyncRead 1, .asyncRead 2, .tick, .job 0, .tick],
+    run { D := 10, RD := 10, maxA := 1 } [(1, [5]), (2, [6])] [5, 6] [.bind [1, 2], .syncRead 2, .job 1, .job 0] ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "n17-hydration"), ("model", .str "Nimbus.Vfs.Hydration.step"),
