@@ -185,6 +185,7 @@ import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
+  VFS_BUNDLE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 
@@ -220,6 +221,17 @@ export const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
  * loses every path in it. Imported rather than restated as fresh literals so
  * the generated source cannot drift from the endpoint it calls.
  */
+/**
+ * What a one-shot's store may hold in its heap: the closure bound a one-shot
+ * is already held to (VFS_BUNDLE_MAX_BYTES, the module map it adopts) plus
+ * 16 MiB for the namespace image and the data plan. A one-shot runs in a
+ * 128 MiB isolate, and today holds the same module map in its heap as a
+ * table; past this budget the store degrades as the durable one does near
+ * the session's limit: a fill is refused (the read is an honest miss), and an
+ * own write is held within its own bound or named ENOSPC.
+ */
+export const ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
+
 export const RESIDENT_FILL_BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
 export const RESIDENT_FILL_BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
 
@@ -334,7 +346,8 @@ function __residentFits(bytes, ask = true) {
 function __residentAskGrant(bytes) {
   const supervisor = __residentSupervisor;
   if (__residentCap === null) return Promise.resolve(true);
-  if (!supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
+  // A store with no ledger row (a one-shot's heap) has a fixed budget: no one to ask.
+  if (__residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
   if (__residentGrantAsk) return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
   const want = Math.max(0, __residentDbBytes() + bytes - __residentCap);
   __residentGrantAsk = (async () => {
@@ -394,7 +407,7 @@ async function __residentRoomForPushed(result) {
 /** What the database measures, after a fill batch: the ledger settles to it, or records overshoot. */
 async function __residentReportSize() {
   const supervisor = __residentSupervisor;
-  if (__residentCap === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
+  if (__residentCap === null || __residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
   try { await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes()); } catch {}
 }
 
@@ -565,9 +578,11 @@ function __residentTablesOnSql(sql) {
     filePaths(from, to) { return [...ranged("SELECT path FROM file", from, to)].map((row) => String(row.path)); },
     fileAny(from, to) { return first(ranged("SELECT path FROM file", from, to, " LIMIT 1")) !== undefined; },
     fileRevsIn(from, to) { return [...ranged("SELECT path, rev FROM file", from, to)]; },
-    fileAllPaths() { return [...sql.exec("SELECT path FROM file")].map((row) => String(row.path)); },
-    fileRows() { return [...sql.exec("SELECT path, rev, ckey FROM file")]; },
-    fileOwnPaths() { return [...sql.exec("SELECT path FROM file WHERE rev = ?", __RK_OWN_WRITE)].map((row) => String(row.path)); },
+    // In key order, as every other scan here is: the primary key's index
+    // serves it, and both backings then answer in one order.
+    fileAllPaths() { return [...sql.exec("SELECT path FROM file ORDER BY path")].map((row) => String(row.path)); },
+    fileRows() { return [...sql.exec("SELECT path, rev, ckey FROM file ORDER BY path")]; },
+    fileOwnPaths() { return [...sql.exec("SELECT path FROM file WHERE rev = ? ORDER BY path", __RK_OWN_WRITE)].map((row) => String(row.path)); },
     fileStats() { return first(sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file")); },
     chunkFirst(path) { return first(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path)); },
     chunkParts(path) { return [...sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path)]; },
@@ -633,6 +648,224 @@ function __residentBind(ctx) {
     );
   }
   return __residentBindTables(__residentTablesOnSql(sql));
+}
+
+/**
+ * The one-shot backing: the same tables, in the process's heap, for the life
+ * of one run. A one-shot is hosted by runOnce, which gives it no SQLite, and
+ * it keeps nothing after it exits. Its answers are the SQLite backing's:
+ * scans come back in key order (a b-tree's), reads hand back copies (a
+ * program that writes into a Buffer it read must not change the store), and
+ * \`bytes()\` counts what it holds in the units __residentCellCost charges (a
+ * row, and the payload's bytes), so the store's one budget rule serves both.
+ */
+function __residentTablesInMemory() {
+  const files = new Map();
+  const chunks = new Map();
+  const meta = new Map();
+  const ns = new Map();
+  const byKey = new Map();
+  let sorted = null;
+  let used = 0;
+  let names = 0;
+  const utf8 = (text) => __residentUtf8Length(text);
+  // SQLite's binary collation orders TEXT by its UTF-8 bytes: code-point
+  // order, which UTF-16 comparison is not past the BMP.
+  const cmp = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      const x = a.codePointAt(i), y = b.codePointAt(i);
+      if (x !== y) return x < y ? -1 : 1;
+      if (x > 0xffff) i++;
+    }
+    return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+  };
+  const payload = (cell) => (cell.txt != null ? utf8(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
+  const unkey = (path, row) => {
+    if (row && row.ckey != null) {
+      const set = byKey.get(row.ckey);
+      if (set) { set.delete(path); if (set.size === 0) byKey.delete(row.ckey); }
+    }
+  };
+  const paths = () => {
+    if (sorted === null) sorted = [...files.keys()].sort(cmp);
+    return sorted;
+  };
+  const lowerBound = (list, from) => {
+    let lo = 0, hi = list.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (cmp(list[mid], from) < 0) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const inRange = (from, to) => {
+    const list = paths();
+    const out = [];
+    for (let i = lowerBound(list, from); i < list.length && (to === null || cmp(list[i], to) < 0); i++) out.push(list[i]);
+    return out;
+  };
+  const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+  const dropChunks = (path) => {
+    const parts = chunks.get(path);
+    if (!parts) return;
+    for (const cell of parts.values()) used -= __RESIDENT_ROW_BYTES + payload(cell);
+    chunks.delete(path);
+  };
+  const dropFile = (path) => {
+    const row = files.get(path);
+    if (row === undefined) return;
+    unkey(path, row);
+    files.delete(path);
+    sorted = null;
+    used -= __RESIDENT_ROW_BYTES;
+  };
+  const addChunk = (path, part, cell, replace) => {
+    let parts = chunks.get(path);
+    if (!parts) { parts = new Map(); chunks.set(path, parts); }
+    const had = parts.get(part);
+    if (had !== undefined) {
+      if (!replace) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
+      used -= __RESIDENT_ROW_BYTES + payload(had);
+    }
+    parts.set(part, cell);
+    used += __RESIDENT_ROW_BYTES + payload(cell);
+  };
+  const nsRow = (parent, name) => { const dir = ns.get(parent); return dir ? dir.get(name) : undefined; };
+  const nsDrop = (parent, name) => {
+    const dir = ns.get(parent);
+    if (!dir || !dir.delete(name)) return;
+    names--;
+    used -= __RESIDENT_ROW_BYTES;
+    if (dir.size === 0) ns.delete(parent);
+  };
+  const nsDropParent = (parent) => {
+    const dir = ns.get(parent);
+    if (!dir) return;
+    names -= dir.size;
+    used -= dir.size * __RESIDENT_ROW_BYTES;
+    ns.delete(parent);
+  };
+  const byName = cmp;
+  const dropWhere = (keepFile, keepChunkPath) => {
+    for (const path of [...chunks.keys()]) if (!keepChunkPath(path)) dropChunks(path);
+    for (const [path, row] of [...files]) if (!keepFile(row)) dropFile(path);
+  };
+  return {
+    bytes() { return used; },
+    databaseSize() { return used; },
+    metaGet(k) { return meta.get(k); },
+    metaSet(k, v) { meta.set(k, String(v)); },
+    fileHead(path) { const row = files.get(path); return row === undefined ? undefined : { kind: row.kind, size: row.size, chunks: row.chunks }; },
+    fileRev(path) { const row = files.get(path); return row === undefined ? undefined : row.rev; },
+    fileRevKey(path) { const row = files.get(path); return row === undefined ? undefined : { rev: row.rev, ckey: row.ckey }; },
+    fileOwnSize(path) { const row = files.get(path); return row !== undefined && row.rev === __RK_OWN_WRITE ? row.size : undefined; },
+    filePut(path, kind, size, chunkCount, rev, ckey) {
+      if (!(rev >= -1)) throw new Error("CHECK constraint failed: rev >= -1");
+      const had = files.get(path);
+      if (had === undefined) { sorted = null; used += __RESIDENT_ROW_BYTES; } else unkey(path, had);
+      const row = { kind: Number(kind), size: Number(size), chunks: Number(chunkCount), rev: Number(rev), ckey: ckey == null ? null : String(ckey) };
+      files.set(path, row);
+      if (row.ckey !== null) { let set = byKey.get(row.ckey); if (!set) { set = new Set(); byKey.set(row.ckey, set); } set.add(path); }
+    },
+    fileSetRev(path, rev) { const row = files.get(path); if (row !== undefined) row.rev = Number(rev); },
+    fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === __RK_OWN_WRITE) row.rev = Number(rev); },
+    fileDelete(path) { dropFile(path); },
+    fileByKey(ckey, notPath) {
+      const set = byKey.get(String(ckey));
+      if (!set) return undefined;
+      for (const path of set) {
+        const row = files.get(path);
+        if (path !== notPath && row && row.rev >= 0) return { path, kind: row.kind, size: row.size, chunks: row.chunks };
+      }
+      return undefined;
+    },
+    filePaths(from, to) { return inRange(from, to); },
+    fileAny(from, to) { const list = paths(); const i = lowerBound(list, from); return i < list.length && (to === null || cmp(list[i], to) < 0); },
+    fileRevsIn(from, to) { return inRange(from, to).map((path) => ({ path, rev: files.get(path).rev })); },
+    fileAllPaths() { return [...paths()]; },
+    fileRows() { return paths().map((path) => { const row = files.get(path); return { path, rev: row.rev, ckey: row.ckey }; }); },
+    fileOwnPaths() { return paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE); },
+    fileStats() { let b = 0; for (const row of files.values()) b += row.size; return { n: files.size, b }; },
+    chunkFirst(path) { const parts = chunks.get(path); const cell = parts && parts.get(0); return cell === undefined ? undefined : copy(cell); },
+    chunkParts(path) {
+      const parts = chunks.get(path);
+      if (!parts) return [];
+      return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+    },
+    chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
+    chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: __residentBytes(bin).slice() }, false); },
+    chunkSetBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: __residentBytes(bin).slice() }, true); },
+    chunkCopy(to, from) {
+      const parts = chunks.get(from);
+      if (!parts) return;
+      // One statement in SQLite: a conflicting part fails the whole copy, and nothing lands.
+      const held = chunks.get(to);
+      if (held) for (const part of parts.keys()) if (held.has(part)) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
+      for (const [part, cell] of [...parts]) addChunk(to, part, copy(cell), false);
+    },
+    chunkDelete(path) { dropChunks(path); },
+    dropOwn() {
+      const own = new Set(paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE));
+      dropWhere((row) => row.rev !== __RK_OWN_WRITE, (path) => !own.has(path));
+    },
+    dropDated() {
+      const own = new Set(paths().filter((path) => files.get(path).rev === __RK_OWN_WRITE));
+      dropWhere((row) => row.rev === __RK_OWN_WRITE, (path) => own.has(path));
+    },
+    dropDatedFiles() {
+      const dated = new Set(paths().filter((path) => files.get(path).rev !== __RK_OWN_WRITE));
+      dropWhere((row) => row.rev === __RK_OWN_WRITE, (path) => !dated.has(path));
+    },
+    clear() {
+      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
+      sorted = null; used = 0; names = 0;
+    },
+    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
+      let dir = ns.get(parent);
+      if (!dir) { dir = new Map(); ns.set(parent, dir); }
+      if (!dir.has(name)) { names++; used += __RESIDENT_ROW_BYTES; }
+      dir.set(name, {
+        kind: Number(kind), size: Number(size), mode: Number(mode), uid: Number(uid), gid: Number(gid),
+        atime: Number(atime), mtime: Number(mtime), ctime: Number(ctime), ino: Number(ino), rev: Number(rev),
+        target: target == null ? null : String(target),
+      });
+    },
+    nsGet(parent, name) { const row = nsRow(parent, name); return row === undefined ? undefined : { ...row }; },
+    nsDelete(parent, name) { nsDrop(parent, name); },
+    nsDeleteChildren(parent) { nsDropParent(parent); },
+    nsDeleteParents(from, to) {
+      for (const parent of [...ns.keys()]) if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0)) nsDropParent(parent);
+    },
+    nsClear() { used -= names * __RESIDENT_ROW_BYTES; names = 0; ns.clear(); },
+    nsKeys() {
+      const out = [];
+      for (const parent of [...ns.keys()].sort(byName)) for (const name of [...ns.get(parent).keys()].sort(byName)) out.push({ parent, name });
+      return out;
+    },
+    nsOfKind(kind) {
+      const out = [];
+      for (const parent of [...ns.keys()].sort(byName)) {
+        const dir = ns.get(parent);
+        for (const name of [...dir.keys()].sort(byName)) if (dir.get(name).kind === Number(kind)) out.push({ parent, name });
+      }
+      return out;
+    },
+    nsChildren(parent) {
+      const dir = ns.get(parent);
+      if (!dir) return [];
+      return [...dir.keys()].sort(byName).map((name) => ({ name, kind: dir.get(name).kind }));
+    },
+    nsCount() { return names; },
+  };
+}
+
+/**
+ * A one-shot's store: the heap backing, capped at \`budget\` bytes and never
+ * growing past it (there is no ledger row to grow).
+ */
+function __residentBindInMemory(budget) {
+  const t = __residentBindTables(__residentTablesInMemory());
+  __residentFacet = null;
+  __residentCap = Number(budget);
+  return t;
 }
 
 /**
