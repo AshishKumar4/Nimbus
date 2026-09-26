@@ -13,7 +13,7 @@
 // fixtures and assert it actually fails when a boundary is crossed.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -31,6 +31,7 @@ import {
 
 function fixture(configs) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-isolation-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(configs)) {
     const path = join(root, name);
     mkdirSync(join(path, '..'), { recursive: true });

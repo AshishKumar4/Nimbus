@@ -81,7 +81,17 @@ try {
         },
       },
     }),
-    /Invalid UUID/,
+    // What the schema decides, not zod's English for it: the message depends on
+    // whether the bundle kept zod's locale side effect ("Invalid UUID" under bun
+    // 1.4.0's bundler, "Invalid input" under 1.4.2's).
+    (error) => {
+      assert.equal(error?.name, 'ZodError');
+      assert.deepEqual(
+        error.issues.map(({ code, format, path }) => ({ code, format, path })),
+        [{ code: 'invalid_format', format: 'uuid', path: ['supervisor', 'writerId'] }],
+      );
+      return true;
+    },
   );
 
   console.log('loaded-entrypoint-supervisor-writer: all assertions passed');

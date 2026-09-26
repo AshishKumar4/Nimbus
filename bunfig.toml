@@ -1,0 +1,7 @@
+# Every install lays node_modules out the same way: bun's isolated linker, the
+# layout the dev worktrees use. With the lockfile's configVersion 0 a fresh
+# install otherwise picks the hoisted layout, and scripts that resolve through
+# node_modules/.bun (the cf-git patch state, the git bundle's module paths)
+# see a different tree in CI than on a developer's machine.
+[install]
+linker = "isolated"

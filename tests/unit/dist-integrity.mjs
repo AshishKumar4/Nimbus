@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -94,6 +94,7 @@ const ROOTS = ['packages/worker'];
 /** A fixture already at the fixpoint, so any later drift is the test's doing. */
 async function fixtureAtFixpoint(payload = 'export const PAYLOAD = 1;\n') {
   const root = mkdtempSync(join(tmpdir(), 'dist-integrity-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
   const pkg = join(root, 'packages', 'worker');
   mkdirSync(join(pkg, 'src'), { recursive: true });
   writeFileSync(join(pkg, 'package.json'), JSON.stringify({
@@ -220,6 +221,7 @@ async function refusal(root, what) {
 // green while examining nothing.
 {
   const root = mkdtempSync(join(tmpdir(), 'dist-integrity-empty-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'packages', 'worker', 'dist'), { recursive: true });
   const { verified, violations } = await checkStagedAssets({ root });
   assert.deepEqual(verified, []);

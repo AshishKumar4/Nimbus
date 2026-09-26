@@ -13,7 +13,7 @@
 // supervisor.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
@@ -25,6 +25,7 @@ const realProcess = globalThis.process;
 const realSetTimeout = globalThis.setTimeout;
 const sleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
 const dir = mkdtempSync(join(tmpdir(), 'facet-exit-'));
+process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const sources = nodeFacetSources(generateShimsCode());
 let seq = 0;
 
