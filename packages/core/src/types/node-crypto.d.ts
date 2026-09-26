@@ -5,5 +5,5 @@ declare module 'node:crypto' {
     update(data: Uint8Array): Hash;
     digest(): Uint8Array;
   }
-  export function createHash(algorithm: 'sha256'): Hash;
+  export function createHash(algorithm: 'md5' | 'sha1' | 'sha224' | 'sha256' | 'sha384' | 'sha512'): Hash;
 }

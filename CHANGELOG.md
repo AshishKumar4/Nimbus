@@ -178,6 +178,12 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- New: `md5sum`, `sha1sum`, `sha224sum`, `sha384sum`, `sha512sum`, `b2sum`,
+  `cksum` (CRC, `-a` any of them, tagged, `--base64`, `--raw`) and `sum`
+  (BSD and System V), with `sha256sum` on the same engine: `--tag`, `-b`,
+  `-z`, GNU's escaping of names with `\` or newlines, and `-c` with
+  `--quiet --status --strict --warn --ignore-missing`, as GNU coreutils 9.7.
+  Input is hashed as it streams.
 - `cat`, `head`, `tac` and `tee` keep bytes and answer as GNU coreutils
   9.7's do: `cat -A -b -e -E -n -s -t -T -v` (M- and ^ notation), `head -n/-c`
   with negative counts and suffixes, `tac -b -r -s`, and a streaming `tee -a`

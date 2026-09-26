@@ -23,6 +23,7 @@ import wcCommand from '../substrate/lifo/commands/text/wc.js';
 import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
+import * as checksum from '../substrate/lifo/commands/system/checksum.js';
 import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
@@ -4618,94 +4619,6 @@ function mkReadlink(vfs) {
         return exit;
     };
 }
-const SHA256SUM_SPEC = {
-    check: { type: 'boolean', short: 'c' },
-    binary: { type: 'boolean', short: 'b' },
-    text: { type: 'boolean', short: 't' },
-    quiet: { type: 'boolean', short: 'q' },
-    status: { type: 'boolean' },
-};
-/**
- * Real SHA-256 over the file's real bytes.
- *
- * The digest used to be taken over `enc.encode(readFileString(path))` — a
- * UTF-8 decode and re-encode, which replaces every byte that is not valid
- * UTF-8 with U+FFFD. For any binary file that hashes something the file does
- * not contain, and it never announced a problem: an installer verifying a
- * downloaded tarball got a mismatch on a perfectly good download, every time.
- */
-function mkSha256sum(vfs) {
-    const digest = async (bytes) => {
-        const ab = await crypto.subtle.digest('SHA-256', bytes);
-        return Array.from(new Uint8Array(ab)).map((b) => b.toString(16).padStart(2, '0')).join('');
-    };
-    return async (ctx) => {
-        const { flags, positional, unknown } = parseArgs(ctx.args, SHA256SUM_SPEC);
-        if (unknown.length > 0) {
-            (await ctx.stderr.write(`sha256sum: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
-            return 1;
-        }
-        if (flags.check)
-            return (await verifySha256Sums(ctx, vfs, positional, digest, flags.status === true));
-        if (positional.length === 0 || (positional.length === 1 && positional[0] === '-')) {
-            (await ctx.stdout.write(`${await digest(enc.encode(stdinText(ctx) ?? ''))}  -\n`));
-            return 0;
-        }
-        let exit = 0;
-        for (const f of positional) {
-            try {
-                (await ctx.stdout.write(`${await digest((await vfs.readFile(resolvePath(ctx.cwd, f))))}  ${f}\n`));
-            }
-            catch {
-                (await ctx.stderr.write(`sha256sum: ${f}: No such file or directory\n`));
-                exit = 1;
-            }
-        }
-        return exit;
-    };
-}
-/** `sha256sum -c LIST` — each line is `HASH  FILENAME`, as this command prints. */
-async function verifySha256Sums(ctx, vfs, lists, digest, quiet) {
-    let exit = 0;
-    for (const list of lists) {
-        let body;
-        try {
-            body = (await vfs.readFileString(resolvePath(ctx.cwd, list)));
-        }
-        catch {
-            (await ctx.stderr.write(`sha256sum: ${list}: No such file or directory\n`));
-            exit = 1;
-            continue;
-        }
-        for (const line of body.split('\n')) {
-            const entry = /^([0-9a-fA-F]{64})\s[\s*](.*)$/.exec(line);
-            if (entry === null)
-                continue;
-            const [, expected, name] = entry;
-            let actual = null;
-            try {
-                actual = await digest((await vfs.readFile(resolvePath(ctx.cwd, name))));
-            }
-            catch { /* reported as FAILED open below */ }
-            if (actual === null) {
-                (await ctx.stderr.write(`sha256sum: ${name}: No such file or directory\n`));
-                if (!quiet)
-                    (await ctx.stdout.write(`${name}: FAILED open or read\n`));
-                exit = 1;
-            }
-            else if (actual.toLowerCase() === expected.toLowerCase()) {
-                if (!quiet)
-                    (await ctx.stdout.write(`${name}: OK\n`));
-            }
-            else {
-                if (!quiet)
-                    (await ctx.stdout.write(`${name}: FAILED\n`));
-                exit = 1;
-            }
-        }
-    }
-    return exit;
-}
 function mkFile(vfs) {
     return async (ctx) => {
         for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
@@ -6237,7 +6150,15 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('true', wrap(mkTrue()));
     registry.register('false', wrap(mkFalse()));
     registry.register('readlink', wrap(withInvocationVfs(sqliteVfs, mkReadlink)));
-    registry.register('sha256sum', wrap(withInvocationVfs(sqliteVfs, mkSha256sum)));
+    registry.register('md5sum', textCommand(sqliteVfs, checksum.md5sum));
+    registry.register('sha1sum', textCommand(sqliteVfs, checksum.sha1sum));
+    registry.register('sha224sum', textCommand(sqliteVfs, checksum.sha224sum));
+    registry.register('sha256sum', textCommand(sqliteVfs, checksum.sha256sum));
+    registry.register('sha384sum', textCommand(sqliteVfs, checksum.sha384sum));
+    registry.register('sha512sum', textCommand(sqliteVfs, checksum.sha512sum));
+    registry.register('b2sum', textCommand(sqliteVfs, checksum.b2sum));
+    registry.register('cksum', textCommand(sqliteVfs, checksum.cksum));
+    registry.register('sum', textCommand(sqliteVfs, checksum.sum));
     registry.register('file', wrap(withInvocationVfs(sqliteVfs, mkFile)));
     // od/hexdump/xxd read operands and sinks through ctx.vfs — the
     // mount-aware seam the host hands every command — so they need no

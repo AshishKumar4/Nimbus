@@ -131,7 +131,15 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.registerLazy('cal', () => import('./system/cal.js'));
   registry.registerLazy('bc', () => import('./system/bc.js'));
   registry.registerLazy('man', () => import('./system/man.js'));
-  registry.registerLazy('sha256sum', () => import('./system/sha256sum.js'));
+  registry.registerLazy('md5sum', () => import('./system/checksum.js').then((m) => ({ default: m.md5sum })));
+  registry.registerLazy('sha1sum', () => import('./system/checksum.js').then((m) => ({ default: m.sha1sum })));
+  registry.registerLazy('sha224sum', () => import('./system/checksum.js').then((m) => ({ default: m.sha224sum })));
+  registry.registerLazy('sha256sum', () => import('./system/checksum.js').then((m) => ({ default: m.sha256sum })));
+  registry.registerLazy('sha384sum', () => import('./system/checksum.js').then((m) => ({ default: m.sha384sum })));
+  registry.registerLazy('sha512sum', () => import('./system/checksum.js').then((m) => ({ default: m.sha512sum })));
+  registry.registerLazy('b2sum', () => import('./system/checksum.js').then((m) => ({ default: m.b2sum })));
+  registry.registerLazy('cksum', () => import('./system/checksum.js').then((m) => ({ default: m.cksum })));
+  registry.registerLazy('sum', () => import('./system/checksum.js').then((m) => ({ default: m.sum })));
   registry.registerLazy('sl', () => import('./system/sl.js'));
   registry.registerLazy('fastfetch', () => import('./system/fastfetch.js'));
   registry.registerLazy('neofetch', () => import('./system/fastfetch.js'));
