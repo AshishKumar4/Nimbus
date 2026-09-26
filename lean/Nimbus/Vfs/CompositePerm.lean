@@ -285,7 +285,7 @@ def bOp (b : Backend) (c : Cred) (op : Op) (r : Path) : Out × Option Backend :=
     | .readdir, some _ => (.err "ENOTDIR", none)
     | .readdir, none => (.err "ENOENT", none)
     | .readFile, some ⟨.file n, m⟩ => if bGrants b c m 4 then (.bytes n, none) else (.err "EACCES", none)
-    | .readFile, some ⟨.dir, _⟩ => (.err "EISDIR", none)
+    | .readFile, some ⟨.dir, m⟩ => if bGrants b c m 4 then (.err "EISDIR", none) else (.err "EACCES", none)
     | .readFile, some _ => (.err "EINVAL", none)
     | .readFile, none => (.err "ENOENT", none)
     | .writeFile n, some ⟨.file _, m⟩ =>
@@ -296,13 +296,13 @@ def bOp (b : Backend) (c : Cred) (op : Op) (r : Path) : Out × Option Backend :=
     | .mkdir, some _ => (.err "EEXIST", none)
     | .mkdir, none => create b c r .dir true
     | .unlink, none => (.err "ENOENT", none)
-    | .unlink, some ⟨.dir, _⟩ => (.err "EISDIR", none)
     | .unlink, some e =>
       if r = [] then (.err "EISDIR", none) else
       match look b r.dropLast with
       | some ⟨.dir, pm⟩ =>
         if !bGrants b c pm 2 then (.err "EACCES", none)
         else if stickyDenies b c pm e.m then (.err "EPERM", none)
+        else if e.k = .dir then (.err "EISDIR", none)
         else (.ok, some (delEnt b r))
       | _ => (.err "ENOENT", none)
 where stickyDenies (b : Backend) (c : Cred) (pm m : Meta) : Bool :=
@@ -314,6 +314,12 @@ def moveTree (b : Backend) (ra rb : Path) : Backend :=
   let keep (x : Path) : Bool := !rb.isPrefixOf x
   { b with ents := (b.ents.filter (keep ·.1)).map (fun x => (mv x.1, x.2)),
            dacls := (b.dacls.filter (keep ·.1)).map (fun x => (mv x.1, x.2)) }
+
+/-- A directory moving to another parent rewrites its `..`: it needs write
+    permission on itself (`vfs_rename`'s `inode_permission(source, MAY_WRITE)`),
+    after both parents' checks and the sticky bit. -/
+def movesDotDot (b : Backend) (c : Cred) (src : BEnt) (ra rb : Path) : Bool :=
+  src.k == .dir && ra.dropLast != rb.dropLast && !bGrants b c src.m 2
 
 /-- rename(2) within one backend: POSIX's replacement rules, write permission on
     both directories, the sticky bit on either; the moved entries keep their owner,
@@ -333,11 +339,13 @@ def bRename (b : Backend) (c : Cred) (ra rb : Path) : Out × Option Backend :=
           if !bGrants b c pa 2 || !bGrants b c pb 2 then (.err "EACCES", none)
           else if bOp.stickyDenies b c pa src.m then (.err "EPERM", none)
           else match look b rb with
-            | none => (.ok, some (moveTree b ra rb))
+            | none =>
+              if movesDotDot b c src ra rb then (.err "EACCES", none) else (.ok, some (moveTree b ra rb))
             | some dst =>
               if bOp.stickyDenies b c pb dst.m then (.err "EPERM", none)
               else if src.k = .dir then
                 if dst.k ≠ .dir then (.err "ENOTDIR", none)
+                else if movesDotDot b c src ra rb then (.err "EACCES", none)
                 else if !(children b rb).isEmpty then (.err "ENOTEMPTY", none)
                 else (.ok, some (moveTree b ra rb))
               else if dst.k = .dir then (.err "EISDIR", none)
@@ -435,10 +443,10 @@ def structOp (S : St) (c : Cred) (op : Op) (p : Path) : Out :=
         | some ⟨.dir, _⟩ => children b (rel S.mounts p)
         | _ => []
       .names (sortNames (own ++ mountNames S.mounts p))
-  | .readFile => .err "EISDIR"
+  | .readFile => if grants c (descMeta S p) 4 then .err "EISDIR" else .err "EACCES"
   | .writeFile _ => .err "EBUSY"
   | .mkdir => .err "EBUSY"
-  | .unlink => .err "EISDIR"
+  | .unlink => if p ≠ [] ∧ !grants c (descMeta S p.dropLast) 2 then .err "EACCES" else .err "EISDIR"
 
 def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
   let k := (ownerOf S.mounts p).bk
@@ -446,10 +454,18 @@ def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
   | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
   | (o, none) => (o, S)
 
+/-- A path directly under a structural directory its holder does not hold as a
+    directory: only mount names live there, so it is absent (Composite's rule). -/
+def underShadow (S : St) (p : Path) : Bool :=
+  p != [] && structural S.mounts p.dropLast && !(look (holder S p.dropLast) (rel S.mounts p.dropLast)).any (·.k == .dir)
+
 def cOp (S : St) (c : Cred) (op : Op) (raw : List String) : Out × St :=
   match resolve S c op.follow raw with
   | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, S)
-  | .ok p => if structural S.mounts p then (structOp S c op p, S) else backendStep S c op p
+  | .ok p =>
+    if structural S.mounts p then (structOp S c op p, S)
+    else if underShadow S p then (if op = .stat then .null else .err "ENOENT", S)
+    else backendStep S c op p
 
 /-- rename(2) through the composite: neither side followed; a structural path is
     EBUSY; across backends EXDEV; else the holder's own rename. -/
@@ -543,21 +559,28 @@ theorem resolve_named (S : St) (c : Cred) (f : Bool) (raw : List String) (p : Pa
 theorem never_widens (S : St) (c : Cred) (op : Op) (raw : List String) :
     (∃ e, resolve S c op.follow raw = .error e ∧ (cOp S c op raw).2 = S) ∨
       (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = true ∧ cOp S c op raw = (structOp S c op p, S)) ∨
-      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ cOp S c op raw = backendStep S c op p) := by
+      (∃ p, resolve S c op.follow raw = .ok p ∧ underShadow S p = true ∧ (cOp S c op raw).2 = S ∧
+        ((cOp S c op raw).1 = .null ∨ (cOp S c op raw).1 = .err "ENOENT")) ∨
+      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ underShadow S p = false ∧
+        cOp S c op raw = backendStep S c op p) := by
   unfold cOp
   cases h : resolve S c op.follow raw with
   | error e => exact Or.inl ⟨e, rfl, rfl⟩
   | ok p =>
     cases hs : structural S.mounts p
-    · exact Or.inr (Or.inr ⟨p, rfl, hs, by simp [hs]⟩)
+    · cases hu : underShadow S p
+      · exact Or.inr (Or.inr (Or.inr ⟨p, rfl, hs, hu, by simp [hs, hu]⟩))
+      · refine Or.inr (Or.inr (Or.inl ⟨p, rfl, hu, by simp [hs, hu], ?_⟩))
+        simp only [hs, hu, Bool.false_eq_true, if_false, if_true]
+        split <;> simp
     · exact Or.inr (Or.inl ⟨p, rfl, hs, by simp [hs]⟩)
 
 /-- A backend's refusal stands: where it refuses, the composite answers an error. -/
 theorem backend_refusal_stands (S : St) (c : Cred) (op : Op) (raw : List String) (p : Path)
-    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false)
+    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false) (hu : underShadow S p = false)
     {e : String} (hb : (bOp (holder S p) c op (rel S.mounts p)).1 = .err e) : (cOp S c op raw).1 = .err e := by
   unfold cOp
-  simp only [hr, hs, Bool.false_eq_true, if_false, backendStep]
+  simp only [hr, hs, hu, Bool.false_eq_true, if_false, backendStep]
   unfold holder at hb
   revert hb
   cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
@@ -673,6 +696,25 @@ theorem a_setgid_directory_passes_its_group_on :
     let S2 := (cOp S1 c .mkdir ["g", "d"]).2
     (cOp S2 c .stat ["g", "f"]).1 = .stat "file" (some ⟨0o644, 1, 10⟩) ∧
       (cOp S2 c .stat ["g", "d"]).1 = .stat "directory" (some ⟨0o2755, 1, 10⟩) := by
+  decide
+
+/-- `/p` and `/q` are 0777; `/p/d` is uid 1's 0555 directory. uid 1 cannot move it
+    to `/q` (its `..` would change) but can rename it within `/p`; uid 0 can move it.
+    `/` is 0755 root:root: uid 1 cannot create, rename or remove directly in it. -/
+def dotdotTrace : St :=
+  { mounts := [], bks := fun _ => sqlite [(["p"], ⟨.dir, ⟨0o777, 0, 0⟩⟩), (["q"], ⟨.dir, ⟨0o777, 0, 0⟩⟩),
+      (["p", "d"], ⟨.dir, ⟨0o555, 1, 1⟩⟩), (["t"], ⟨.file 2, ⟨0o666, 1, 1⟩⟩)] }
+
+theorem moving_a_directory_needs_write_on_it :
+    (cRename dotdotTrace u1 ["p", "d"] ["q", "d"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["p", "d"] ["p", "e"]).1 = .ok ∧
+    (cRename dotdotTrace kernel ["p", "d"] ["q", "d"]).1 = .ok ∧
+    (cOp dotdotTrace u1 (.writeFile 1) ["n"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace u1 .mkdir ["n"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace u1 .unlink ["t"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["t"] ["u"]).1 = .err "EACCES" ∧
+    (cRename dotdotTrace u1 ["t"] ["p", "t"]).1 = .err "EACCES" ∧
+    (cOp dotdotTrace kernel .mkdir ["n"]).1 = .ok := by
   decide
 
 /-- `/a` has default ACL u::rwx g::r-x o::--- and is setgid, group 10; uid 1 makes

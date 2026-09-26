@@ -466,6 +466,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
 #print axioms Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
 #print axioms Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
+#print axioms Nimbus.Vfs.CompositePerm.moving_a_directory_needs_write_on_it
 #print axioms Nimbus.Vfs.CompositePerm.a_default_acl_masks_and_is_inherited
 
 /-! ## Nimbus/Vfs/FastCdc.lean -/

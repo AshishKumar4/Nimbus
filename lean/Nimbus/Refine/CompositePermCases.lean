@@ -20,7 +20,9 @@
   there gets 0666 (file) or 0777 (directory) ANDed with it class by class, no umask,
   and a new directory inherits the default ACL. `rename` (`path` to `to`, neither
   followed) keeps the moved entries' owner, group, mode and default ACLs; EBUSY at a
-  structural path, EXDEV across backends. `final`: each backend's entries after the
+  structural path, EXDEV across backends; a directory moved to another parent also
+  needs w on itself (EACCES; uid 0 passes). `/` of a sqlite backend is 0755 0:0, so
+  a non-root create, rename or removal directly in it is EACCES. `final`: each backend's entries after the
   steps, default ACLs included.
 -/
 
@@ -232,6 +234,26 @@ def aclCase : Json := Id.run do
   return .obj [("mounts", .arr []), ("backends", .obj [("b0", backendJson (S0.bks 0))]),
     ("steps", .arr out.toList), ("final", .obj [("b0", entsJson (S.bks 0))])]
 
+/-- `moving_a_directory_needs_write_on_it`, and the root rule. -/
+def dotdotCase : Json := Id.run do
+  let S0 := dotdotTrace
+  let mut out : Array Json := #[]
+  let ren (c : Cred) (a b : Path) : Json :=
+    .obj [("as", .ofNat c.uid), ("op", .str "rename"), ("path", .str (key a)), ("to", .str (key b)),
+      ("expect", outJson (cRename S0 c a b).1)]
+  for (c, a, b) in [(u1, ["p", "d"], ["q", "d"]), (u1, ["t"], ["u"]), (u1, ["t"], ["p", "t"])] do
+    out := out.push (ren c a b)
+  for (c, op, p) in [(u1, Op.writeFile 1, ["n"]), (u1, .mkdir, ["n"]), (u1, .unlink, ["t"])] do
+    out := out.push (opJson c op p (cOp S0 c op p).1)
+  -- then the successful moves, carrying state
+  let (o1, S1) := cRename S0 u1 ["p", "d"] ["p", "e"]
+  out := out.push (.obj [("as", .ofNat 1), ("op", .str "rename"), ("path", .str "/p/d"), ("to", .str "/p/e"), ("expect", outJson o1)])
+  let (o2, S2) := cRename S1 kernel ["p", "e"] ["q", "e"]
+  out := out.push (.obj [("as", .ofNat 0), ("op", .str "rename"), ("path", .str "/p/e"), ("to", .str "/q/e"), ("expect", outJson o2)])
+  out := out.push (opJson u1 .stat ["q", "e"] (cOp S2 u1 .stat ["q", "e"]).1)
+  return .obj [("mounts", .arr []), ("backends", .obj [("b0", backendJson (S0.bks 0))]),
+    ("steps", .arr out.toList), ("final", .obj [("b0", entsJson (S2.bks 0))])]
+
 /-- The perm.mjs trace (`the_perm_trace`), links (`links_resolve_in_the_callers_namespace`)
     and setgid (`a_setgid_directory_passes_its_group_on`). -/
 def directed : List Json :=
@@ -247,7 +269,7 @@ def directed : List Json :=
       [(⟨1, 1, [1, 10]⟩, .writeFile 3, ["g", "f"]), (⟨1, 1, [1, 10]⟩, .mkdir, ["g", "d"]),
        (⟨1, 1, [1, 10]⟩, .stat, ["g", "f"]), (⟨1, 1, [1, 10]⟩, .stat, ["g", "d"]),
        (⟨1, 1, [1, 10]⟩, .writeFile 4, ["g", "d", "e"]), (⟨1, 1, [1, 10]⟩, .stat, ["g", "d", "e"])],
-    aclCase ]
+    aclCase, dotdotCase ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-perm"), ("model", .str "Nimbus.Vfs.CompositePerm.cOp"),
