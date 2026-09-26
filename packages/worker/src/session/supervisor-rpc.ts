@@ -692,7 +692,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * via __pendingIO first).
    */
   async reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[]): Promise<void> {
-    return this._call(this._op('reportExit', [code, tail || '', residencyMisses ?? [], profileUnread ?? []], { pid: this._reportingPid() }));
+    return this._call(this._op('reportExit', [code, tail || '', residencyMisses ?? [], profileUnread ?? null], { pid: this._reportingPid() }));
   }
 
   // ── Prefetch ──────────────────────────────────────────────────────────

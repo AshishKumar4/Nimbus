@@ -179,10 +179,15 @@ kernel credential, because Nimbus follows POSIX here:
   an entry is shared only once two different sessions observed it, what a
   shared profile adds to one launch is bounded in bytes (an eighth of the
   module map's budget), and entries are pruned: a launch that held an entry
-  and never had to fault it in raises it, a program saying it never read one
-  lowers it, one that names no regular file is dropped. A learned module
-  joins the launch's module map with its imports (nuxt's `on-change` failed
-  with "not in this launch's module map" before).
+  and never had to fault it in raises it, once per session, so a score counts
+  the distinct sessions that vouched for it; a program saying it never read
+  one lowers it; a launch that reported nothing changes nothing; one that
+  names no regular file is dropped. A learned module joins the launch's module
+  map with its imports (nuxt's `on-change` failed with "not in this launch's
+  module map" before), in the room the require closure leaves under the
+  snapshot bound, after the session's own misses: neither can make a launch
+  fail. Only the closure itself past the bound fails one, naming the file
+  that crossed it.
 - A mount with no synchronous face (an embedder's Drive, `/pc`, `/sandbox`)
   works for every caller that can wait: shell commands (`ls /`, `cat`, `find
   /`, redirects), node's `fs.promises`, the supervisor RPC, and bash under

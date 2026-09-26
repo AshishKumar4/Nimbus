@@ -5074,7 +5074,7 @@ export class FacetManager {
     pid: number,
     exitCode: number,
     residencyMisses?: string[],
-    evidence?: { served: ReadonlySet<string>; profileUnread: readonly string[] },
+    evidence?: { served: ReadonlySet<string>; profileUnread: readonly string[] | null },
   ): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
     this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
@@ -5096,7 +5096,8 @@ export class FacetManager {
           if (found.length > 0) await profile.observe(found, await sessionTag(this.ctx.id.toString()), identity);
         }
         if (offer !== undefined) {
-          await profile.settle(offer.staged, new Set(evidence?.profileUnread ?? []), served, new Set(offer.unresolved));
+          const unread = evidence?.profileUnread ? new Set(evidence.profileUnread) : null;
+          await profile.settle(offer.staged, unread, served, new Set(offer.unresolved), await sessionTag(this.ctx.id.toString()));
         }
       })().catch(() => undefined));
     }

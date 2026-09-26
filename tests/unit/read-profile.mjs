@@ -138,18 +138,38 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   // x: staged and never faulted in (the supervisor's evidence it was held) -> up.
   // y: the program says it never read it -> down, and at zero it is gone.
   // gone.js: the plan found no regular file -> removed.
-  await profile.settle(offered, new Set([`${APP}/y.js`]), new Set(), new Set([`${APP}/gone.js`]));
+  await profile.settle(offered, new Set([`${APP}/y.js`]), new Set(), new Set([`${APP}/gone.js`]), tagA);
   assert.equal(score('x.js'), 2);
   assert.equal(score('y.js'), undefined);
   assert.equal(score('gone.js'), undefined);
   // A lying program cannot raise: claiming nothing is unread while the
   // supervisor served x (it was faulted in, so not held) leaves x as it was.
   offered = await profile.lookup([APP], integrityOf, 1 << 20);
-  await profile.settle(offered, new Set(), new Set([`${APP}/x.js`]), new Set());
+  await profile.settle(offered, new Set(), new Set([`${APP}/x.js`]), new Set(), tagB);
   assert.equal(score('x.js'), 2);
   // Nor can it settle an entry it was never offered.
-  await profile.settle([{ path: `${APP}/x.js`, size: 10, object: 'v2/t/sha512/evil.tgz', rel: 'x.js' }], new Set([`${APP}/x.js`]), new Set(), new Set());
+  await profile.settle([{ path: `${APP}/x.js`, size: 10, object: 'v2/t/sha512/evil.tgz', rel: 'x.js' }], new Set([`${APP}/x.js`]), new Set(), new Set(), tagB);
   assert.equal(score('x.js'), 2);
+  // A session vouches once: its later launches that held x, and reported
+  // nothing unread, add nothing (Main's P2 on 76d0a14a: ten attacker launches
+  // took one entry to 8). A second session's launch is a second voucher.
+  for (let i = 0; i < 10; i++) {
+    await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagA);
+  }
+  assert.equal(score('x.js'), 2, 'one session raises an entry at most once');
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagB);
+  assert.equal(score('x.js'), 3, 'a second vouching session raises it once more');
+  // A launch with no unread list at all (it died before reporting) is no
+  // information: it neither raises nor lowers.
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), null, new Set(), new Set(), await sessionTag('session-c'));
+  assert.equal(score('x.js'), 3, 'no report raises nothing');
+  // A stored score past its vouchers is not one this module wrote.
+  const raw = JSON.parse(pruned.objects.values().next().value);
+  raw.entries['x.js'].score = 8;
+  pruned.objects.set(pruned.objects.keys().next().value, JSON.stringify(raw));
+  assert.equal((await profile.lookup([APP], integrityOf, 1 << 20)).length, 1);
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set([`${APP}/x.js`]), new Set(), new Set(), tagA);
+  assert.equal(score('x.js'), 2, 'a forged score is read as observation plus its distinct vouchers');
 }
 
 // ── A full profile keeps its shared entries ──

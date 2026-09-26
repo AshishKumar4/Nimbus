@@ -23,9 +23,11 @@
  *     the launch's own plan budget, not in paths.
  *   - Entries earn their place, and only the supervisor can raise one: a
  *     launch that staged an entry and was never asked to fault it in raises
- *     its score; the program saying it never read the entry lowers it (a
- *     program's word can only lower); a plan that found no regular file
- *     there removes it; at zero it is gone.
+ *     its score, once per session, so a score counts the distinct sessions
+ *     that vouched for it; the program saying it never read the entry lowers
+ *     it (a program's word can only lower); a launch that reported nothing
+ *     is no information either way; a plan that found no regular file there
+ *     removes it; at zero it is gone.
  *   - It stores package-relative paths only, validated on the way in and on
  *     the way out, never content. At launch an entry becomes a path inside a
  *     package directory of the session's OWN filesystem, planned only where
@@ -144,7 +146,12 @@ export class ServedReads {
   }
 }
 
-interface Entry { size: number; seen: string[]; score: number }
+/**
+ * `seen`: the sessions that observed the entry. `vouched`: the sessions whose
+ * launch staged it and was never served a read of it, each counted once, so a
+ * score never exceeds the number of distinct sessions that vouched for it.
+ */
+interface Entry { size: number; seen: string[]; vouched: string[]; score: number }
 type Entries = Map<string, Entry>;
 
 /** One profile entry `lookup` offered a launch. */
@@ -200,7 +207,7 @@ export class ReadProfile {
         let entry = entries.get(rel);
         if (!entry) {
           if (!ReadProfile.makeRoom(entries)) continue;
-          entry = { size, seen: [], score: 0 };
+          entry = { size, seen: [], vouched: [], score: 0 };
           entries.set(rel, entry);
         }
         entry.size = size;
@@ -266,20 +273,30 @@ export class ReadProfile {
 
   /**
    * What one launch did with the entries `lookup` gave it. `unread` is what
-   * the process reported it never read (its word can only lower a score);
-   * `served` is what the supervisor served it async reads for during the
-   * launch (a staged file the process used is never faulted in, so an entry
-   * staged and not in `served` is the supervisor's evidence it was held);
-   * `unresolved` is what the plan found no regular file for.
-   *   unresolved            -> removed
-   *   reported unread       -> score - 1
-   *   staged, never served  -> score + 1 (at most MAX_SCORE)
-   *   otherwise             -> unchanged
+   * the process reported it never read (its word can only lower a score), or
+   * null when it reported no list at all (a launch that died before its
+   * report), which says nothing about any entry; `served` is what the
+   * supervisor served it async reads for during the launch (a staged file the
+   * process used is never faulted in, so an entry staged and not in `served`
+   * is the supervisor's evidence it was held); `unresolved` is what the plan
+   * found no regular file for; `tag` is the launching session's.
+   *   unresolved                            -> removed
+   *   no report                             -> unchanged
+   *   reported unread                       -> score - 1
+   *   staged, never served, tag not vouched -> score + 1 (at most MAX_SCORE)
+   *   otherwise                             -> unchanged
    * A score of zero removes the entry.
    */
-  async settle(staged: Iterable<StagedProfileEntry>, unread: ReadonlySet<string>, served: ReadonlySet<string>, unresolved: ReadonlySet<string>): Promise<void> {
+  async settle(
+    staged: Iterable<StagedProfileEntry>,
+    unread: ReadonlySet<string> | null,
+    served: ReadonlySet<string>,
+    unresolved: ReadonlySet<string>,
+    tag: string,
+  ): Promise<void> {
     const key = (p: string) => p.replace(/^\/+/, '');
-    const unreadKeys = new Set([...unread].map(key));
+    const unreadKeys = unread === null ? null : new Set([...unread].map(key));
+    const canVouch = TAG.test(tag);
     const unresolvedKeys = new Set([...unresolved].map(key));
     const byKey = new Map<string, { rel: string; path: string }[]>();
     for (const entry of staged) {
@@ -296,9 +313,12 @@ export class ReadProfile {
         const entry = entries.get(rel);
         if (!entry) continue;
         if (unresolvedKeys.has(path)) { entries.delete(rel); dirty = true; continue; }
+        if (unreadKeys === null) continue;
         if (unreadKeys.has(path)) entry.score -= 1;
-        else if (!served.has(path)) entry.score = Math.min(MAX_SCORE, entry.score + 1);
-        else continue;
+        else if (!served.has(path) && canVouch && !entry.vouched.includes(tag)) {
+          entry.vouched = [...entry.vouched, tag].slice(-MAX_SCORE);
+          entry.score = Math.min(MAX_SCORE, entry.score + 1);
+        } else continue;
         dirty = true;
         if (entry.score <= 0) entries.delete(rel);
       }
@@ -322,11 +342,15 @@ export class ReadProfile {
       for (const [rel, raw] of Object.entries(parsed.entries as Record<string, unknown>)) {
         if (entries.size >= READ_PROFILE_MAX_ENTRIES) break;
         if (!validProfilePath(rel) || typeof raw !== 'object' || raw === null) continue;
-        const { size, seen, score } = raw as Partial<Entry>;
+        const { size, seen, vouched, score } = raw as Partial<Entry>;
         if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) continue;
         if (typeof score !== 'number' || !Number.isInteger(score) || score < 1) continue;
-        const tags = Array.isArray(seen) ? [...new Set(seen.filter((t): t is string => typeof t === 'string' && TAG.test(t)))].slice(-MAX_SEEN) : [];
-        entries.set(rel, { size: Math.floor(size), seen: tags, score: Math.min(score, MAX_SCORE) });
+        const tagsOf = (list: unknown, max: number): string[] =>
+          Array.isArray(list) ? [...new Set(list.filter((t): t is string => typeof t === 'string' && TAG.test(t)))].slice(-max) : [];
+        const vouchers = tagsOf(vouched, MAX_SCORE);
+        // A score is observation (1) plus distinct vouching sessions; a stored
+        // score past that is not one this module wrote.
+        entries.set(rel, { size: Math.floor(size), seen: tagsOf(seen, MAX_SEEN), vouched: vouchers, score: Math.min(score, 1 + vouchers.length, MAX_SCORE) });
       }
     } catch {
       // A malformed object is an empty profile.
