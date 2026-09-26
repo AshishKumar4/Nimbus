@@ -22,7 +22,8 @@ def fixtures : List (String × String) :=
    -- process-files.json (ProcessFilesCases.fixture): emitted again when the cutover adds its bridge (VFS-PF-001)
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture),
-   ("n18-ledger.json", LedgerCases.fixture)]
+   ("n18-ledger.json", LedgerCases.fixture),
+   ("n17-hydration.json", HydrationCases.fixture)]
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"

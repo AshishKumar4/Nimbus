@@ -775,3 +775,34 @@ requirements:
     remainingEvidence:
       - A refused write evicts no image; CUTOVER.md's wording drops images first and then refuses when none is left, which reaches the same decision but loses the images
       - Sizes are the ledger's numbers (declared or estimated bytes); that a facet's databaseSize never exceeds its admitted bytes is assumed, a report below them is a settle
+  N17-001:
+    statement: N17 hydration in an import window - no reader, sync or async, is ever handed the bytes of a path whose chunks are still state 1; a hydrated path stays hydrated; a sync read of a state-1 path answers EIO naming it and moves it to the front of the job; a WASI launch's gate waits only on the paths it names, moves their state-1 ones to the front, opens when they are all local (at once when none is state 1), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind, so it never waits longer; with only job events after bind, the named state-1 paths are local after at most as many hydrations as the launch named.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.Hydration.sync_never_state1
+      - Nimbus.Vfs.Hydration.async_never_state1
+      - Nimbus.Vfs.Hydration.resume_local
+      - Nimbus.Vfs.Hydration.raw_frame
+      - Nimbus.Vfs.Hydration.isLocal_mono
+      - Nimbus.Vfs.Hydration.hyd_mono
+      - Nimbus.Vfs.Hydration.settleG_open
+      - Nimbus.Vfs.Hydration.settleG_ok
+      - Nimbus.Vfs.Hydration.settleG_named
+      - Nimbus.Vfs.Hydration.raw_gates
+      - Nimbus.Vfs.Hydration.step_gateInv
+      - Nimbus.Vfs.Hydration.gateInv
+      - Nimbus.Vfs.Hydration.gate_ok_local
+      - Nimbus.Vfs.Hydration.bound_reads_never_eio
+      - Nimbus.Vfs.Hydration.gate_bounded
+      - Nimbus.Vfs.Hydration.nothing_named_starts
+      - Nimbus.Vfs.Hydration.named_first
+      - Nimbus.Vfs.Hydration.jobs_hydrate
+      - Nimbus.Vfs.Hydration.named_hydrate_within
+      - Nimbus.Vfs.Hydration.a_window
+    tsRefs:
+      - packages/core/src/runtime/process-files.ts#ProcessFiles
+    refinement:
+      - lean/fixtures/n17-hydration.json :: tests/unit/n17-hydration-refinement.mjs
+    remainingEvidence:
+      - Hydration is per path (one job event hydrates a path's chunks); chunk sharing between paths and hash-level NeedsHydration batches are not modeled
+      - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound

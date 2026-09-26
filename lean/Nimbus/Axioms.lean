@@ -482,6 +482,29 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.FastCdc.cuts_tile
 #print axioms Nimbus.Vfs.FastCdc.cutContent_tiles
 
+/-! ## Nimbus/Vfs/Hydration.lean -/
+
+#print axioms Nimbus.Vfs.Hydration.sync_never_state1
+#print axioms Nimbus.Vfs.Hydration.async_never_state1
+#print axioms Nimbus.Vfs.Hydration.resume_local
+#print axioms Nimbus.Vfs.Hydration.raw_frame
+#print axioms Nimbus.Vfs.Hydration.isLocal_mono
+#print axioms Nimbus.Vfs.Hydration.hyd_mono
+#print axioms Nimbus.Vfs.Hydration.settleG_open
+#print axioms Nimbus.Vfs.Hydration.settleG_ok
+#print axioms Nimbus.Vfs.Hydration.settleG_named
+#print axioms Nimbus.Vfs.Hydration.raw_gates
+#print axioms Nimbus.Vfs.Hydration.step_gateInv
+#print axioms Nimbus.Vfs.Hydration.gateInv
+#print axioms Nimbus.Vfs.Hydration.gate_ok_local
+#print axioms Nimbus.Vfs.Hydration.bound_reads_never_eio
+#print axioms Nimbus.Vfs.Hydration.gate_bounded
+#print axioms Nimbus.Vfs.Hydration.nothing_named_starts
+#print axioms Nimbus.Vfs.Hydration.named_first
+#print axioms Nimbus.Vfs.Hydration.jobs_hydrate
+#print axioms Nimbus.Vfs.Hydration.named_hydrate_within
+#print axioms Nimbus.Vfs.Hydration.a_window
+
 /-! ## Nimbus/Vfs/Ledger.lean -/
 
 #print axioms Nimbus.Vfs.Ledger.sumB_nil
