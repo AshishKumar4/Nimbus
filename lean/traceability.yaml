@@ -962,7 +962,9 @@ requirements:
       - Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
       - Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
     tsRefs:
-      - packages/core/src/runtime/bash/preamble.ts
+      - packages/core/src/runtime/bash/preamble.ts#writeThroughFd
+      - packages/core/src/runtime/bash/preamble.ts#wakeWriters
+      - packages/core/src/runtime/bash/preamble.ts#newPipe
     remainingEvidence:
       - Parked until GitParityLane writes tests/unit/pipes-refinement.mjs; Nimbus.Refine.PipesCases generates lean/fixtures/pipes.json, and RefinementFixtures emits it with the refinement entry
       - Traces are scaled down (capacity 4, small budgets); the rules do not depend on the sizes. A JSPI-host fixture case sets B large, as B never binds a JSPI writer
