@@ -1164,35 +1164,14 @@ function cleanupMessage(text, stripComments = true) {
     return out.length ? `${out.join('\n')}\n` : '';
 }
 /**
- * Commit the index with exactly `message`. cf-git renders a commit's message
- * through normalizeNewlines (CRs dropped, leading newlines dropped, one
- * trailing newline), which is what whitespace and strip cleanups leave
- * anyway. A message it would change (a verbatim one, one with a CR, an
- * allowed empty one) is written as its bytes instead, over the tree and
- * parents cf-git's own commit made; that stand-in object is removed and the
- * branch (or a detached HEAD) moved to the real one.
+ * Commit the index with exactly `message`, git's cleanup already applied:
+ * one object, written byte for byte (the tracked cf-git patch's rawMessage;
+ * cf-git's own rendering would normalize the newlines of a verbatim message
+ * and refuse an empty one), and the branch, or a detached HEAD, moved by
+ * cf-git.
  */
-async function writeCommit(git, fs, dir, gitdir, message, idents) {
-    const normalized = message.replace(/\r/g, '').replace(/^\n+/, '').replace(/\n+$/, '') + '\n';
-    if (message !== '' && normalized === message)
-        return git.commit({ fs, dir, message, ...idents });
-    const standIn = await git.commit({ fs, dir, message: 'stand-in', ...idents, noUpdateBranch: true });
-    const { object } = await git.readObject({ fs, dir, oid: standIn, cache: {}, format: 'content' });
-    const headers = dec.decode(object);
-    const tree = /^tree ([0-9a-f]{40})$/m.exec(headers)[1];
-    const parents = [...headers.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((m) => m[1]);
-    const body = `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}`
-        + `author ${identLine(idents.author)}\ncommitter ${identLine(idents.committer)}\n\n${message}`;
-    const oid = await git.writeObject({ fs, dir, type: 'commit', object: new TextEncoder().encode(body), format: 'content' });
-    if (oid !== standIn) {
-        try {
-            await fs.promises.unlink(`${gitdir}/objects/${standIn.slice(0, 2)}/${standIn.slice(2)}`);
-        }
-        catch { /* already gone */ }
-    }
-    const branch = await git.currentBranch({ fs, gitdir, fullname: true });
-    await git.writeRef({ fs, dir, ref: branch ?? 'HEAD', value: oid, force: true });
-    return oid;
+async function writeCommit(git, fs, dir, message, idents) {
+    return git.commit({ fs, dir, message, ...idents, rawMessage: true });
 }
 /** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
 function tagPattern(pattern) {
@@ -2121,8 +2100,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     await ctx.stderr.write(idents.error);
                     return 128;
                 }
-                const gitdir = discoverRepo(credentialedVfs, dir)?.gitdir ?? `${dir}/.git`;
-                const sha = await writeCommit(git, fs, dir, gitdir, message, idents);
+                const sha = await writeCommit(git, fs, dir, message, idents);
                 if (!quiet)
                     ctx.stdout.write(`[${sha.slice(0, 7)}] ${message.split('\n')[0]}\n`);
                 return 0;

@@ -1064,12 +1064,12 @@ try {
     await commitMessage('an empty verbatim message', ['--cleanup=verbatim', '-m', '']);
     await commitMessage('only a comment, stripped', ['--cleanup=strip', '-m', '#only']);
     await commitMessage('a cleanup mode git does not know', ['--cleanup=bogus', '-m', 'x']);
-    // The stand-in commit a byte-exact message is written over leaves nothing behind.
+    // A byte-exact message is one object: no stray commit or tree is left behind.
     {
       const fsck = realGit(copyOf(repo), ['fsck', '--no-progress', '--dangling', '--unreachable']);
       assert.equal(fsck.code, 0, fsck.stderr);
       // Blobs staged for the refused commits above are unreachable in both gits; a commit or tree is not.
-      assert.deepEqual(fsck.stdout.toString().split('\n').filter((l) => / (commit|tree) /.test(l)), [], 'no stand-in commit or tree left');
+      assert.deepEqual(fsck.stdout.toString().split('\n').filter((l) => / (commit|tree) /.test(l)), [], 'no stray commit or tree');
     }
     sh(repo.disk, ['config', 'commit.cleanup', 'strip']);
     { const r = await nimbusGit(repo.virtual, ['config', 'commit.cleanup', 'strip']); assert.equal(r.code, 0, r.stderr); }
@@ -1081,6 +1081,43 @@ try {
     sh(repo.disk, ['add', 'f']);
     assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
     await agreeOn('an author date git cannot read', repo, ['commit', '-q', '-m', 'msg'], { env: { ...identity, GIT_AUTHOR_DATE: 'garbage' } });
+  }
+  // On a detached HEAD, git moves HEAD itself: commit (plain and verbatim), merge and tag.
+  // Nimbus used to leave HEAD where it was and write a ref file named after the old commit.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      git('add', 'f');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'side');
+      put('h', 'h\n');
+      git('add', 'h');
+      git('commit', '-q', '-m', 'h');
+      git('checkout', '-q', '--detach', 'main');
+    });
+    const identity = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => /^GIT_(AUTHOR|COMMITTER)_/.test(k)));
+    const detached = async (label, args, content) => {
+      if (content !== undefined) {
+        rewriteBoth(repo, 'f', content);
+        sh(repo.disk, ['add', 'f']);
+        const added = await nimbusGit(repo.virtual, ['add', 'f']);
+        assert.equal(added.code, 0, added.stderr);
+      }
+      const expected = realGit(repo.disk, args, identity);
+      const actual = await nimbusGit(repo.virtual, args, identity);
+      assert.equal(actual.code, expected.code, `${label}: exit (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      const copy = copyOf(repo);
+      for (const probe of [['rev-parse', 'HEAD'], ['symbolic-ref', '-q', 'HEAD'], ['cat-file', '-p', 'HEAD'], ['show-ref']]) {
+        assert.equal(realGit(copy, probe).stdout.toString(), realGit(repo.disk, probe).stdout.toString(), `${label}: git ${probe.join(' ')}`);
+      }
+      const stray = readdirSync(join(copy, '.git')).filter((n) => /^[0-9a-f]{40}$/.test(n));
+      assert.deepEqual(stray, [], `${label}: no .git file named after a commit`);
+      checks++;
+    };
+    await detached('commit on a detached HEAD', ['commit', '-q', '-m', 'on detached'], '2\n');
+    await detached('a verbatim commit on a detached HEAD', ['commit', '-q', '--cleanup=verbatim', '-m', ' verbatim '], '3\n');
+    await detached('a tag on a detached HEAD', ['tag', '-m', 'm', 'det-tag']);
+    await detached('a merge into a detached HEAD', ['merge', '-q', '--no-edit', 'side']);
   }
   // A merge that makes a commit stamps both lines the same way.
   {
