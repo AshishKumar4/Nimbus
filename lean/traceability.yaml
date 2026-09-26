@@ -641,7 +641,7 @@ requirements:
       - Nimbus.Vfs.ProcessFiles.mem_map_keep
       - Nimbus.Vfs.ProcessFiles.step_accounted
     tsRefs:
-      - packages/core/src/runtime/filesystem-authority.ts#SqliteFilesystemAuthority.releaseProcess
+      - packages/core/src/runtime/process-files.ts#ProcessFiles.releaseProcess
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
     remainingEvidence:
