@@ -749,7 +749,7 @@ requirements:
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
   N18-001:
     statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete.
-    status: proved-in-abstract-model
+    status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Ledger.sumB_nil
       - Nimbus.Vfs.Ledger.sumB_cons
@@ -774,8 +774,9 @@ requirements:
       - Nimbus.Vfs.Ledger.an_over_report_refuses
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
+    refinement:
+      - lean/fixtures/n18-ledger.json :: tests/unit/n18-ledger-refinement.mjs
     remainingEvidence:
-      - Parked until NodeNoMirrorBuild writes tests/unit/n18-ledger-refinement.mjs: Nimbus.Refine generates lean/fixtures/n18-ledger.json, and RefinementFixtures emits it again with the refinement entry
       - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
       - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
   N17-001:
