@@ -23,6 +23,7 @@ def fixtures : List (String × String) :=
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture),
    ("quiesce.json", QuiesceCases.fixture)]
+   -- beneath.json (BeneathCases.fixture): emitted with its bridge (VFS-COMP-006)
    -- n18-ledger.json (LedgerCases.fixture) and n17-hydration.json (HydrationCases.fixture):
    -- emitted again when their bridges exist (N18-001, N17-001)
 

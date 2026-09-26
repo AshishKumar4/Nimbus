@@ -423,6 +423,19 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Composite.backendOp_agree
 #print axioms Nimbus.Vfs.Composite.noninterference
 
+/-! ## Nimbus/Vfs/CompositeBeneath.lean -/
+
+#print axioms Nimbus.Vfs.CompositeBeneath.prefix_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
+#print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_named
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_agrees
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_agrees
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_across_mounts
+
 /-! ## Nimbus/Vfs/CompositeCache.lean -/
 
 #print axioms Nimbus.Vfs.CompositeCache.sync_read_fresh

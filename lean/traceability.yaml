@@ -851,3 +851,22 @@ requirements:
       - lean/fixtures/quiesce.json :: tests/unit/quiesce-refinement.mjs
     remainingEvidence:
       - Who awaits whom (a lease holder's streams, a job's children) is the environment's; WF is a hypothesis the callers must keep (the engine's restoreAsync and copyTree start no spanning work)
+  VFS-COMP-006:
+    statement: Resolution beneath a root (WASI preopens, openat2 RESOLVE_BENEATH) through the composite - composite-perm's walk from the root (search per component from the root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at the root, an absolute link or an absolute path, checked per component and per hop; whatever it resolves to lies at or under the root across mounts and the directories above them, every directory from the root down grants the caller search, and it is exactly what the unrestricted walk from the root resolves to.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Vfs.CompositeBeneath.prefix_dropLast
+      - Nimbus.Vfs.CompositeBeneath.walkB_contained
+      - Nimbus.Vfs.CompositeBeneath.beneath_contained
+      - Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
+      - Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+      - Nimbus.Vfs.CompositeBeneath.walkB_named
+      - Nimbus.Vfs.CompositeBeneath.beneath_named
+      - Nimbus.Vfs.CompositeBeneath.walkB_agrees
+      - Nimbus.Vfs.CompositeBeneath.beneath_agrees
+      - Nimbus.Vfs.CompositeBeneath.beneath_across_mounts
+    tsRefs:
+      - packages/core/src/vfs/composite.ts#CompositeVFS
+    remainingEvidence:
+      - Parked until NodeNoMirrorBuild writes tests/unit/beneath-refinement.mjs; Nimbus.Refine.BeneathCases generates lean/fixtures/beneath.json, and RefinementFixtures emits it with the refinement entry
+      - Directories above the root are not searched (the preopen holds the root); per-principal sources and mount-point refusals are not modeled here
