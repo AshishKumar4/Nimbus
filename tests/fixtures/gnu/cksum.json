@@ -11,7 +11,15 @@
   "tagged": "U0hBMjU2IChhKSA9IDU4OTFiNWI1MjJkNWRmMDg2ZDBmZjBiMTEwZmJkOWQyMWJiNGZjNzE2M2FmMzRkMDgyODZhMmU4NDZmNmJlMDMKU0hBMjU2IChlKSA9IGUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUKTUQ1IChhKSA9IDlkZDRlNDYxMjY4YzgwMzRmNWM4NTY0ZTE1NWM2N2E2Cg==",
   "b2list": "QkxBS0UyYi0yNTYgKGEpID0gOTNiZWNjNmU5ODgyMjExYzNlYzM3MDhjOTViY2Q2OWJhYWI3YmI1OWM3ZjRiYzg0Y2U2MzdiODhhNTM0Yjc4MwpCTEFLRTJiIChlKSA9IDc4NmEwMmY3NDIwMTU5MDNjNmM2ZmQ4NTI1NTJkMjcyOTEyZjQ3NDBlMTU4NDc2MThhODZlMjE3ZjcxZjU0MTlkMjVlMTAzMWFmZWU1ODUzMTM4OTY0NDQ5MzRlYjA0YjkwM2E2ODViMTQ0OGI3NTVkNTZmNzAxYWZlOWJlMmNlCg==",
   "esc": "XDQwMWIzMGUzYjhiNWQ2Mjk2MzVhNWM2MTNjZGI3OTE5ICBiYWNrXFxzbGFzaAo=",
-  "good": "YjE5NDZhYzkyNDkyZDIzNDdjNjIzNWI0ZDI2MTExODQgIGEK"
+  "good": "YjE5NDZhYzkyNDkyZDIzNDdjNjIzNWI0ZDI2MTExODQgIGEK",
+  "x y": "aGVsbG8K",
+  "it's": "aGVsbG8K",
+  "U1": "YjE5NDZhYzkyNDkyZDIzNDdjNjIzNWI0ZDI2MTExODQgIGEK",
+  "U1s": "YjE5NDZhYzkyNDkyZDIzNDdjNjIzNWI0ZDI2MTExODQgYQo=",
+  "T256": "U0hBMjU2IChhKSA9IDU4OTFiNWI1MjJkNWRmMDg2ZDBmZjBiMTEwZmJkOWQyMWJiNGZjNzE2M2FmMzRkMDgyODZhMmU4NDZmNmJlMDMK",
+  "Tmix": "U0hBMjU2IChhKSA9IDU4OTFiNWI1MjJkNWRmMDg2ZDBmZjBiMTEwZmJkOWQyMWJiNGZjNzE2M2FmMzRkMDgyODZhMmU4NDZmNmJlMDMKTUQ1IChhKSA9IGIxOTQ2YWM5MjQ5MmQyMzQ3YzYyMzViNGQyNjExMTg0ClNIQTUxMiAoZSkgPSBjZjgzZTEzNTdlZWZiOGJkZjE1NDI4NTBkNjZkODAwN2Q2MjBlNDA1MGI1NzE1ZGM4M2Y0YTkyMWQzNmNlOWNlNDdkMGQxM2M1ZDg1ZjJiMGZmODMxOGQyODc3ZWVjMmY2M2I5MzFiZDQ3NDE3YTgxYTUzODMyN2FmOTI3ZGEzZQpCTEFLRTJiLTEyOCAoYSkgPSBlYTQxYjRkZTZjMDNmMTNhOTU3NThiMjhkZDc1NjkzZQpiMTk0NmFjOTI0OTJkMjM0N2M2MjM1YjRkMjYxMTE4NCAgYQo=",
+  "B64": "TUQ1IChhKSA9IHNaUnF5U1NTMGpSOFlqVzAwbUVSaEE9PQo=",
+  "B2u": "OTNiZWNjNmU5ODgyMjExYzNlYzM3MDhjOTViY2Q2OWJhYWI3YmI1OWM3ZjRiYzg0Y2U2MzdiODhhNTM0Yjc4MyAgYQo="
  },
  "cases": [
   {
@@ -123,6 +131,91 @@
    "args": "--untagged a",
    "stdout": "3015617425 6 a\n",
    "exit": 0
+  },
+  {
+   "args": "%T -a sha256 a > S; %T -c S 2>&1",
+   "stdout": "a: OK\n",
+   "exit": 0
+  },
+  {
+   "args": "-c Tmix 2>&1",
+   "stdout": "a: OK\na: OK\ne: OK\na: OK\ncksum: WARNING: 1 line is improperly formatted\n",
+   "exit": 0
+  },
+  {
+   "args": "-a md5 -c Tmix 2>&1",
+   "stdout": "a: OK\na: OK\ncksum: WARNING: 3 lines are improperly formatted\n",
+   "exit": 0
+  },
+  {
+   "args": "-a md5 -c U1 2>&1",
+   "stdout": "a: OK\n",
+   "exit": 0
+  },
+  {
+   "args": "-c U1 2>&1",
+   "stdout": "cksum: U1: no properly formatted checksum lines found\n",
+   "exit": 1
+  },
+  {
+   "args": "-c B64 2>&1",
+   "stdout": "a: OK\n",
+   "exit": 0
+  },
+  {
+   "args": "-a md5 -c B64 2>&1",
+   "stdout": "a: OK\n",
+   "exit": 0
+  },
+  {
+   "args": "-a crc -c T256 2>&1",
+   "stdout": "cksum: --check is not supported with --algorithm={bsd,sysv,crc,crc32b}\n",
+   "exit": 1
+  },
+  {
+   "args": "-a bsd -c T256 2>&1",
+   "stdout": "cksum: --check is not supported with --algorithm={bsd,sysv,crc,crc32b}\n",
+   "exit": 1
+  },
+  {
+   "args": "-a sysv -c T256 2>&1",
+   "stdout": "cksum: --check is not supported with --algorithm={bsd,sysv,crc,crc32b}\n",
+   "exit": 1
+  },
+  {
+   "args": "-a crc32b -c T256 2>&1",
+   "stdout": "cksum: --check is not supported with --algorithm={bsd,sysv,crc,crc32b}\n",
+   "exit": 1
+  },
+  {
+   "args": "--tag -c T256 2>&1",
+   "stdout": "cksum: the --binary and --text options are meaningless when verifying checksums\nTry 'cksum --help' for more information.\n",
+   "exit": 1
+  },
+  {
+   "args": "--untagged -c T256 2>&1",
+   "stdout": "a: OK\n",
+   "exit": 0
+  },
+  {
+   "args": "-z -c T256 2>&1",
+   "stdout": "cksum: the --zero option is not supported when verifying checksums\nTry 'cksum --help' for more information.\n",
+   "exit": 1
+  },
+  {
+   "args": "--status a 2>&1",
+   "stdout": "cksum: the --status option is meaningful only when verifying checksums\nTry 'cksum --help' for more information.\n",
+   "exit": 1
+  },
+  {
+   "args": "'x y' nope 2>&1",
+   "stdout": "3015617425 6 x y\ncksum: nope: No such file or directory\n",
+   "exit": 1
+  },
+  {
+   "args": "-a blake2b -l 128 -c Tmix 2>&1",
+   "stdout": "a: OK\na: FAILED\ncksum: WARNING: 3 lines are improperly formatted\ncksum: WARNING: 1 computed checksum did NOT match\n",
+   "exit": 1
   }
  ]
 }

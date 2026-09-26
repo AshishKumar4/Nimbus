@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "af1b2bf295adecc2aa44c910c8629347b7e09d461a30000034d8d0fe71132b22",
+  "fingerprint": "0d32ae0588e69951442ab40ba587389e35ddc8dd4d6909ba0dca7cd2c5f05643",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -504,9 +504,9 @@
     "packages/core/dist/substrate/lifo/commands/system/cal.d.ts": "36869480482741fde7c23273f78d925ba449a02d18dfef63a6b88d824507d328",
     "packages/core/dist/substrate/lifo/commands/system/cal.d.ts.map": "1e2c51176d5dbf60ce16e9b0aedc3fecedeb40cd93aa1c23586c5f788c92b7ea",
     "packages/core/dist/substrate/lifo/commands/system/cal.js": "1fec4fc49a21452b021e4276d6333789c56a40ed87978608c3aca2f88c20a789",
-    "packages/core/dist/substrate/lifo/commands/system/checksum.d.ts": "4823975313317e4ac179b562b5de6e4097361d4654df042ca3aaec57b603d8aa",
-    "packages/core/dist/substrate/lifo/commands/system/checksum.d.ts.map": "160fdd5db35fa18716796f816f7e9b9e1e85773c293308192d2922eb83caacc6",
-    "packages/core/dist/substrate/lifo/commands/system/checksum.js": "3e09dcbbbe8ece2afe6cb81bcada3fc8a30cb8ce4a6a29bd4fbeb92ad0972737",
+    "packages/core/dist/substrate/lifo/commands/system/checksum.d.ts": "b5f5e891c7ad142bc2f1fa4451c3519638bf81434aa6522e80a62f291309f6bd",
+    "packages/core/dist/substrate/lifo/commands/system/checksum.d.ts.map": "d49e43837119311774da81e111eea22bd53a9844a8f59033d1e1f626aeb3cd37",
+    "packages/core/dist/substrate/lifo/commands/system/checksum.js": "69db40e0d89cfda4945558e73b59a6a088fcd50290a1f483755ae515f01c30e6",
     "packages/core/dist/substrate/lifo/commands/system/date.d.ts": "bae6aa86d58a3c08ca52821e4290d0189a7be0aba4a8b2644f512d1e06c9feef",
     "packages/core/dist/substrate/lifo/commands/system/date.d.ts.map": "043a7f40c7449c697392ba5e9dd35694c1a13676be68f8ede70c5683e8693b5a",
     "packages/core/dist/substrate/lifo/commands/system/date.js": "251c863d38a2fc22a698a0f058f9388a8b6951dee2ddaa4a01175f00c678f08a",
@@ -1048,7 +1048,7 @@
     "packages/core/src/substrate/lifo/commands/signal.ts": "507feafe8f9a00fb787c4b8c1ad97555c34d0e930984a69098e4abb1962e744b",
     "packages/core/src/substrate/lifo/commands/system/bc.ts": "24bc8265ff7bded14399611fe510d6efa69c4e64263efd85e57f4f2aaae4ddbd",
     "packages/core/src/substrate/lifo/commands/system/cal.ts": "e5cbf0ba31bb7ff061566ab2ac7d4a6eaba758de3618fe6965b9af9e3d534630",
-    "packages/core/src/substrate/lifo/commands/system/checksum.ts": "523a3b3e891e0a67a29a825a0a1b9c2a5d1980572e2454279477fce939fe9336",
+    "packages/core/src/substrate/lifo/commands/system/checksum.ts": "8dc7c7dc699806e3afa4ba62dd85ac95ca84e15c14c05e7474e691eb0f93f03d",
     "packages/core/src/substrate/lifo/commands/system/date.ts": "9972a5e9e650dfc00db97d54488e9e1bdb5096b0d77d4f5badb1eea6c3c1ed65",
     "packages/core/src/substrate/lifo/commands/system/env.ts": "8401d52d215dcd434781ff4bc3e5c7940192a2f0fe2882f2d1a893ecf79db4ec",
     "packages/core/src/substrate/lifo/commands/system/fastfetch.ts": "42f9c96dcb3e3dfed3eafa6ca29dc34f3109b2dd2891628f40978c64d014c489",

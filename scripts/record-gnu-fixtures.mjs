@@ -12,11 +12,18 @@
 //
 //   bun scripts/record-gnu-fixtures.mjs            every fixture
 //   bun scripts/record-gnu-fixtures.mjs sort tr    the named tools
+//   bun scripts/record-gnu-fixtures.mjs --update   also where the reference's version changed
+//
+// The reference runs under the tool's own name (a link in a private bin
+// directory first on PATH), so its messages name it as ours do; a case can
+// then fold stderr in with 2>&1. A fixture records the reference's version:
+// a host with another version refuses to re-record it unless --update, and
+// the locale must really be UTF-8 (`locale charmap`), or nothing is recorded.
 //
 // The reference is GNU coreutils/grep/sed (util-linux for rev); the host
 // may install coreutils as gnu<tool> beside another implementation.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,9 +46,24 @@ function reference(tool) {
   throw new Error(`no reference ${tool} on this host (wanted ${want})`);
 }
 
-function record(file) {
+const ENV = (dir, bin) => ({ PATH: `${bin}:${process.env.PATH}`, HOME: dir, LANG: 'en_US.UTF-8', TZ: 'UTC' });
+
+function assertUtf8Locale() {
+  const charmap = spawnSync('locale', ['charmap'], { encoding: 'utf8', env: { PATH: process.env.PATH, LANG: 'en_US.UTF-8' } });
+  if ((charmap.stdout ?? '').trim() !== 'UTF-8') {
+    throw new Error(`LANG=en_US.UTF-8 gives charmap ${JSON.stringify((charmap.stdout ?? '').trim())}: generate the en_US.UTF-8 locale first`);
+  }
+}
+
+function record(file, update) {
   const fixture = JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'));
   const ref = reference(fixture.tool);
+  const was = (fixture.recorded ?? '').split(',')[0];
+  if (was !== '' && was !== ref.version && !update) {
+    throw new Error(`${file} was recorded with ${JSON.stringify(was)}; this host has ${JSON.stringify(ref.version)} (re-record with --update)`);
+  }
+  const bin = mkdtempSync(join(tmpdir(), 'gnu-bin-'));
+  symlinkSync(ref.path, join(bin, fixture.tool));
   for (const c of fixture.cases) {
     const dir = mkdtempSync(join(tmpdir(), `gnu-${fixture.tool}-`));
     try {
@@ -49,10 +71,9 @@ function record(file) {
         if (name.includes('/')) mkdirSync(join(dir, name.slice(0, name.lastIndexOf('/'))), { recursive: true });
         writeFileSync(join(dir, name), Buffer.from(base64, 'base64'));
       }
-      const line = c.args.includes('%T') ? c.args.replaceAll('%T', ref.path) : `${ref.path} ${c.args}`;
+      const line = c.args.includes('%T') ? c.args.replaceAll('%T', fixture.tool) : `${fixture.tool} ${c.args}`;
       const run = spawnSync('sh', ['-c', line], {
-        cwd: dir, encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'],
-        env: { PATH: process.env.PATH, HOME: dir, LANG: 'en_US.UTF-8', TZ: 'UTC' },
+        cwd: dir, encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'], env: ENV(dir, bin),
       });
       c.stdout = run.stdout.toString('latin1');
       c.exit = run.status;
@@ -65,14 +86,17 @@ function record(file) {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+  rmSync(bin, { recursive: true, force: true });
   fixture.recorded = `${ref.version}, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)`;
   writeFileSync(join(FIXTURES, file), JSON.stringify(fixture, null, 1) + '\n');
   return { tool: fixture.tool, cases: fixture.cases.length, version: ref.version };
 }
 
-const wanted = new Set(process.argv.slice(2));
+const update = process.argv.includes('--update');
+const wanted = new Set(process.argv.slice(2).filter((a) => a !== '--update'));
+assertUtf8Locale();
 for (const file of readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort()) {
   if (wanted.size > 0 && !wanted.has(file.replace(/\.json$/, ''))) continue;
-  const r = record(file);
+  const r = record(file, update);
   console.log(`${r.tool}: ${r.cases} cases (${r.version})`);
 }

@@ -192,8 +192,11 @@ kernel credential, because Nimbus follows POSIX here:
   `cksum` (CRC, `-a` any of them, tagged, `--base64`, `--raw`) and `sum`
   (BSD and System V), with `sha256sum` on the same engine: `--tag`, `-b`,
   `-z`, GNU's escaping of names with `\` or newlines, and `-c` with
-  `--quiet --status --strict --warn --ignore-missing`, as GNU coreutils 9.7.
-  Input is hashed as it streams.
+  `--quiet --status --strict --warn --ignore-missing` (one last-wins mode),
+  as GNU coreutils 9.7. `cksum -c` takes each tagged line's own algorithm.
+  GNU's usage errors for option combinations come before any work, and file
+  names in messages are quoted as GNU quotes them. Input is hashed as it
+  streams; BLAKE2b runs in 32-bit arithmetic (about 43 MB/s here).
 - `cat`, `head`, `tac` and `tee` keep bytes and answer as GNU coreutils
   9.7's do: `cat -A -b -e -E -n -s -t -T -v` (M- and ^ notation), `head -n/-c`
   with negative counts and suffixes, `tac -b -r -s`, and a streaming `tee -a`

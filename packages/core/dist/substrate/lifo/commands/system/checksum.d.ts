@@ -1,4 +1,6 @@
 import type { Command } from '../types.js';
+/** A name as GNU quotes it in a message (quotef): bare when safe, else shell-quoted. */
+export declare function quoteName(name: string): string;
 export declare const md5sum: Command;
 export declare const sha1sum: Command;
 export declare const sha224sum: Command;

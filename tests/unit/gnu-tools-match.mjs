@@ -38,7 +38,9 @@ for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sor
       }
     }
     const line = args.includes('%T') ? args.replaceAll('%T', fixture.tool) : `${fixture.tool} ${args}`;
-    const r = await ws.exec(`cd /home/user && ${line} > /tmp/.gnu-out`);
+    // Grouped, so a case's own 2>&1 folds stderr into what is compared.
+    const r = await ws.exec(`cd /home/user && { ${line}
+} > /tmp/.gnu-out`);
     const got = Buffer.from(await ws.fs.readFile('/tmp/.gnu-out')).toString('latin1');
     if (got !== stdout || (r.exitCode === 0) !== (exit === 0) || (exit === 1) !== (r.exitCode === 1)) {
       failures.push(`${fixture.tool} ${args}\n    reference (${exit}): ${JSON.stringify(stdout).slice(0, 200)}\n    ours (${r.exitCode}): ${JSON.stringify(got).slice(0, 200)} ${JSON.stringify(r.stderr).slice(0, 120)}`);
