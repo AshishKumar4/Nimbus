@@ -157,6 +157,14 @@ option, with its replacement:
 - `@nimbus-sh/core/substrate/lifo` no longer exports `isBinaryMime` or
   `getFileCategory`, the file-name guess the text commands used to skip files.
 
+### Session agent
+
+- SECURITY: the OAuth callback is routed only for a `state` this deployment
+  signed (HMAC-SHA256 under the agent cookie secret), and only before its
+  signed expiry, 10 minutes after the flow started. An unsigned, altered or
+  expired state gets 400 without naming a Durable Object. Before, any client
+  could wake or create a session DO under any tenant segment.
+
 ### Not carried from Kinu's N26 patch
 
 These stay Kinu's policy, applied by Kinu after its own move or chmod with its
@@ -218,6 +226,16 @@ kernel credential, because Nimbus follows POSIX here:
   served as a command (`printf`) ends its element, as `echo` does. A
   background job's `[N] PID` notice appears only in the interactive shell,
   in bash's form.
+- A subshell, each pipeline element, `$( )` and a background job run in a
+  child shell, as bash forks one: variables, arrays, cwd, `set` options,
+  traps, aliases and functions changed there stay there, `exit` ends only
+  the child, and the child runs its own EXIT trap (inherited traps reset,
+  ignored ones stay ignored). Before, `(cd /)` moved the parent,
+  `x=$(x=2)` changed `x`, and a finished background subshell put back the
+  variables it had saved, so `(exit 4) & p=$!; sleep 1; wait $p` lost `$p`
+  and returned 0. Every command of an `&&`/`||` list but the last runs with
+  `set -e` ignored, and a status carried past a skipped command does not
+  trigger it (`set -e; false && true; echo reached` reaches `echo`).
 - New: `md5sum`, `sha1sum`, `sha224sum`, `sha384sum`, `sha512sum`, `b2sum`,
   `cksum` (CRC, `-a` any of them, tagged, `--base64`, `--raw`) and `sum`
   (BSD and System V), with `sha256sum` on the same engine: `--tag`, `-b`,
@@ -229,7 +247,9 @@ kernel credential, because Nimbus follows POSIX here:
   streams; BLAKE2b runs in 32-bit arithmetic (about 43 MB/s here).
 - `cat`, `head`, `tac` and `tee` keep bytes and answer as GNU coreutils
   9.7's do: `cat -A -b -e -E -n -s -t -T -v` (M- and ^ notation), `head -n/-c`
-  with negative counts and suffixes, `tac -b -r -s`, and a streaming `tee -a`
+  with negative counts and every GNU suffix (`b`, `K`/`KB`/`KiB` through
+  `Q`, blanks and `+` before the digits, an overlarge count taken as all),
+  `tac -b -r -s`, and a streaming `tee -a`
   that reports a file it cannot open and still writes the rest. `cat
   /dev/zero | head -c N` works (cat used to refuse endless devices), and a
   writer whose reader closed the pipe ends silently with status 141, as
