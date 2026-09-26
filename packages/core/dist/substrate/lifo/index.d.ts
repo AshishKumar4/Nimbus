@@ -1,4 +1,4 @@
-export type { RunOptions, CommandResult, SandboxCommands, SandboxFs, } from './sandbox/index.js';
+export type { RunOptions, CommandResult, SandboxCommands, } from './sandbox/index.js';
 export { Kernel } from './kernel/index.js';
 export type { VirtualRequest, VirtualResponse, VirtualRequestHandler } from './kernel/index.js';
 export { NetworkStack } from './kernel/network/index.js';

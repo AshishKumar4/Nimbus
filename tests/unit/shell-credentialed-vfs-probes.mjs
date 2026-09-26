@@ -26,6 +26,7 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { memoryFiles } from './lib/test-box.mjs';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
+import { readText } from '../../packages/core/src/vfs/vfs.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-cred-vfs-probes-'));
 
@@ -41,13 +42,13 @@ try {
   // ── touch is idempotent, which is the whole point of touch ────────────────
   const created = await ws.exec('touch /home/user/note.txt');
   assert.equal(created.exitCode, 0, `creating touch failed: ${created.stderr}`);
-  assert.equal(await ws.fs.readFile('/home/user/note.txt'), '');
+  assert.equal(await readText(ws.fs, '/home/user/note.txt'), '');
 
   const again = await ws.exec('touch /home/user/note.txt');
   assert.equal(again.stderr, '', 'touching an existing file reports no error');
   assert.equal(again.exitCode, 0, 'touching an existing file succeeds');
   assert.equal(
-    await ws.fs.readFile('/home/user/note.txt'),
+    await readText(ws.fs, '/home/user/note.txt'),
     '',
     'touch leaves the contents alone',
   );
@@ -55,7 +56,7 @@ try {
   const withContent = await ws.exec('printf hello > /home/user/kept.txt && touch /home/user/kept.txt');
   assert.equal(withContent.exitCode, 0, `touch over content failed: ${withContent.stderr}`);
   assert.equal(
-    await ws.fs.readFile('/home/user/kept.txt'),
+    await readText(ws.fs, '/home/user/kept.txt'),
     'hello',
     'touch preserves the bytes of a non-empty file',
   );

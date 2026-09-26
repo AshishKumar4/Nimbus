@@ -2,7 +2,7 @@ import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { SandboxFs } from '@nimbus-sh/core/substrate/lifo/sandbox/types.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/compose.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -31,9 +31,10 @@ export interface HostedRuntimeOptions {
     basePath?: string;
     origin?: string;
 }
-export interface RuntimeFiles extends SandboxFs {
+/** The namespace as one credential sees it (a `VFS`, absolute paths), and the same for another. */
+export type RuntimeFiles = ProcessView & {
     as(cred: VfsCred): RuntimeFiles;
-}
+};
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
     supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
     onScheduled: (task: HostedRuntimeTask) => Promise<void>;

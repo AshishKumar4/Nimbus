@@ -23,11 +23,12 @@ import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/sandbox/types.js';
+import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { ProcessView } from '../runtime/process-files.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -169,11 +170,13 @@ export declare class NimbusWorkspace {
     readonly filesystem: ProcessFiles;
     private readonly runtimeLease;
     /**
-     * Credentialed and mount-aware. Acts as the session user, never as the
-     * kernel: a pid-less caller must not gain more authority than the shell it
-     * writes files for (see CRED_SESSION_USER in os-contracts.ts).
+     * The namespace as the session user sees it: a `VFS` (absolute paths), the
+     * shell process's own view, so every write passes the same lease check a
+     * command's does. Never the kernel's authority (see CRED_SESSION_USER in
+     * os-contracts.ts). Helpers such as readText, writeText and exists are
+     * vfs.ts free functions over it.
      */
-    readonly fs: SandboxFs;
+    readonly fs: ProcessView;
     /** The raw durable filesystem, for hosts that need uid-aware operations. */
     readonly vfs: SqliteVFS;
     readonly kernel: Kernel;

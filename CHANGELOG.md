@@ -70,14 +70,41 @@ option, with its replacement:
   still throws.
 - The mount listing (`mounts(cred)`, `df`, `mount`, `/proc/mounts`) is in
   mount order (`/`, `/proc`, `/dev`, then the embedder's), as on Linux.
-- `ws.fs` (`SandboxFs`) no longer has `exportSnapshot()`/`importSnapshot()`
-  (a tar.gz of the whole tree). The content store is the embedder's, with
-  kernel authority, on `ws.vfs` (the workspace's `SqliteVFS`):
+- `ws.fs` is a `VFS`: the session user's view of the namespace (a
+  `ProcessView`, the shell process's own), with the same lease checks a
+  command gets. The hosted runtime's `files` and `files(cred)` are the same
+  kind of view for a credential, with `.as(cred)`. `SandboxFs`,
+  `SandboxFsImpl` and the `SandboxFs` type export are gone. Paths are
+  absolute (a relative path is no longer resolved against the shell's
+  cwd). Method by method:
+  - `readFile(p)` (text) is `readText(ws.fs, p)`, and `readFile(p, null)` is
+    `ws.fs.readFile(p)` (bytes).
+  - `writeFile(p, text)` is `writeText(ws.fs, p, text)`; bytes go to
+    `ws.fs.writeFile(p, bytes)`.
+  - `writeFiles(list)` is one `writeFile`/`writeText` per entry.
+  - `stat(p)` answers `null` for a missing path (use `statOrThrow` for the
+    old throw), and its times are `mtimeMs`, `atimeMs` and `ctimeMs`.
+  - `rm(p)` is `unlink(p)` or `rmdir(p)`, and `rm(p, { recursive: true })`
+    is `removeRecursive(p)`.
+  - `cp(a, b)` is `copy(a, b, { recursive })`.
+  - `exists`, `readdir`, `mkdir` and `rename` are unchanged.
+  - `storeStats()` leaves the user's handles: the kernel's
+    `ws.vfs.storeStats()` has it, and a user sees its storage through `df`
+    (`usage()` on the namespace root).
+  `readText`, `writeText`, `statOrThrow` and `exists` are in
+  `@nimbus-sh/core/vfs/vfs.js`. The SDK's `box.files` is unchanged.
+- `ws.fs` no longer has `exportSnapshot()`/`importSnapshot()` (a tar.gz of
+  the whole tree). The content store is the embedder's, with kernel
+  authority, on `ws.vfs` (the workspace's `SqliteVFS`):
   `snapshot(name, { quiesce })`, `snapshots()`, `dropSnapshot(name)`,
   `diff(from, to, { after, limit })`, `at(name, cred?)`, `restore`/
   `restoreAsync(name, { subtree })`, `exportPage`/`exportChunks`/
-  `importPage`/`pageDigest`. `ws.fs` and the per-credential handles carry
-  only `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts.
+  `importPage`/`pageDigest`, and `storeStats()`. Snapshots hold the
+  SQLite-rooted tree, not mounts.
+- `df` reports the session's storage ledger for `/`: Used is everything
+  the 10 GB limit counts (this database, every process facet's, namespace
+  images and reservations), and Available leaves out the kernel's reserve,
+  as ext4's df leaves out root's reserved blocks.
 - `snapshot(name, { quiesce: true })` waits for spanning work (writeStream,
   restoreAsync, sliced copyTree) and for exclusive leases, and holds
   spanning work that starts meanwhile until the snapshot is taken. It
@@ -119,8 +146,8 @@ option, with its replacement:
   copy resumed after a reset reserves again, or ends and removes what it
   had copied. A running node process's store asks for room before it grows;
   what it can't hold it reads from the session. The last 1% of the limit
-  (at least 16 MiB) is kept for the kernel. `ws.fs.storeStats().ledger`
-  reports used, the limit and each part.
+  (at least 16 MiB) is kept for the kernel. `ws.vfs.storeStats().ledger`
+  reports used, the limit and each part; `df` shows the totals.
 - Lazy imports (Kinu N17). `ProcessFiles(vfs, { hydration: { fetch } })` and
   `importPage(dst, page, chunks, { lazy: true })` commit an import's rows at
   once and fetch the bytes it did not carry in the background, through your

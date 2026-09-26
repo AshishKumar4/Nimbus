@@ -40,6 +40,7 @@ const EMBEDDER = `import { DatabaseSync } from 'node:sqlite';
 import { NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
 import bash from '@nimbus-sh/runtime-bash';
 import cpython from '@nimbus-sh/runtime-cpython';
+import { writeText } from '@nimbus-sh/core/vfs/vfs.js';
 
 // The SqlDatabase port: one method, and a real transaction behind it.
 const db = new DatabaseSync(':memory:');
@@ -101,7 +102,7 @@ console.log('python: ' + await must(py(version)));
 console.log('python: ' + await must(py(stdlib)));
 
 // One filesystem, three writers: the host API, python, and bash.
-await workspace.fs.writeFile('/home/user/note.txt', 'written by fs');
+await writeText(workspace.fs, '/home/user/note.txt', 'written by fs');
 console.log('python: ' + await must(py(io)));
 console.log('shared: ' + await must('bash -c "cat from-python.txt"'));
 

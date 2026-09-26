@@ -13,6 +13,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-workspace-'));
 const dbPath = join(dir, 'workspace.sqlite');
@@ -27,8 +28,8 @@ try {
   });
 
   // ── .fs works, and is credentialed as the session user ──────────────────
-  await ws.fs.writeFile('/home/user/hello.txt', 'from fs\n');
-  assert.equal(await ws.fs.readFile('/home/user/hello.txt'), 'from fs\n');
+  await writeText(ws.fs, '/home/user/hello.txt', 'from fs\n');
+  assert.equal(await readText(ws.fs, '/home/user/hello.txt'), 'from fs\n');
   assert.equal(await ws.fs.exists('/home/user/hello.txt'), true);
 
   const stat = await ws.fs.stat('/home/user/hello.txt');
@@ -48,7 +49,7 @@ try {
   // ...and the reverse direction: the shell writes, .fs reads.
   const wrote = await ws.exec('echo from-shell > /home/user/shell.txt');
   assert.equal(wrote.exitCode, 0, `redirect failed: ${wrote.stderr}`);
-  assert.equal(await ws.fs.readFile('/home/user/shell.txt'), 'from-shell\n');
+  assert.equal(await readText(ws.fs, '/home/user/shell.txt'), 'from-shell\n');
 
   // Real coreutils, not stubs: a pipeline through three of them.
   const pipeline = await ws.exec("printf 'b\\na\\nb\\n' | sort | uniq -c | wc -l");
@@ -81,7 +82,7 @@ try {
     generation: 2,
   });
 
-  assert.equal(await ws.fs.readFile('/home/user/hello.txt'), 'from fs\n');
+  assert.equal(await readText(ws.fs, '/home/user/hello.txt'), 'from fs\n');
   const reread = await ws.exec('cat /home/user/shell.txt');
   assert.equal(reread.exitCode, 0, `cat after reopen failed: ${reread.stderr}`);
   assert.equal(reread.stdout, 'from-shell\n');
@@ -89,13 +90,13 @@ try {
   // The account files are root-owned 0644, so a host calling `.fs` — which has
   // no process behind it — must NOT be able to rewrite who uid 1000 is.
   await assert.rejects(
-    () => ws.fs.writeFile('/etc/passwd', 'root:x:0:0:root:/root:/bin/sh\n'),
+    () => writeText(ws.fs, '/etc/passwd', 'root:x:0:0:root:/root:/bin/sh\n'),
     /permission|denied|EACCES/i,
     '.fs rewrote root-owned /etc/passwd',
   );
 
   // Reopening must not clobber the user's own files.
-  await ws.fs.writeFile('/home/user/keep.txt', 'survives\n');
+  await writeText(ws.fs, '/home/user/keep.txt', 'survives\n');
   db.close();
 
   db = new Database(dbPath);
@@ -105,7 +106,7 @@ try {
     transactions: harness.ctx,
     generation: 3,
   });
-  assert.equal(await ws.fs.readFile('/home/user/keep.txt'), 'survives\n');
+  assert.equal(await readText(ws.fs, '/home/user/keep.txt'), 'survives\n');
 
   // ── A create() that throws strands nothing ──────────────────────────────
   // The kernel host lease the RuntimeManager reads through is opened before
@@ -151,7 +152,7 @@ try {
   assert.ok(Array.isArray(installed), 'runtimes.list() answers after a failed create');
   assert.deepEqual(installed.filter((runtime) => runtime.name === 'broken'), [],
     'the rejected install left no runtime behind');
-  assert.equal(await ws.fs.readFile('/home/user/keep.txt'), 'survives\n');
+  assert.equal(await readText(ws.fs, '/home/user/keep.txt'), 'survives\n');
 
   // ── destroy() removes the workspace, not the host's database ────────────
   // The host owns this Durable Object; the workspace is a tenant in it. A

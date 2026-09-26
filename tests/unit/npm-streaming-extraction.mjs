@@ -7,6 +7,7 @@ import { createNpmCommand } from '../../packages/core/src/substrate/lifo/command
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { readText } from '../../packages/core/src/vfs/vfs.ts';
 
 function archive(entries, prefix = 'package') {
   return gzipSync(createTar(entries.map(([name, data]) => ({
@@ -136,7 +137,7 @@ try {
   const installed = await ws.exec('npm install example');
   assert.equal(installed.exitCode, 0, installed.stderr);
   assert.match(installed.stdout, /added 1 package/);
-  assert.equal(await ws.fs.readFile('/home/user/node_modules/example/package.json'), manifest);
+  assert.equal(await readText(ws.fs, '/home/user/node_modules/example/package.json'), manifest);
 
   const calls = [];
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {

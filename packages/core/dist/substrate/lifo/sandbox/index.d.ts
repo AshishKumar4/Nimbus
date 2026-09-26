@@ -1,2 +1,2 @@
-export type { RunOptions, CommandResult, SandboxCommands, SandboxFs, } from './types.js';
+export type { RunOptions, CommandResult, SandboxCommands, } from './types.js';
 //# sourceMappingURL=index.d.ts.map

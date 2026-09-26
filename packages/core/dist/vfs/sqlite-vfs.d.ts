@@ -1623,6 +1623,12 @@ export declare class SqliteVFS {
      * database (content plus metadata, indexes and free pages) where the host
      * reports its size, else less the stored bytes.
      */
+    /**
+     * What df reports for the session's storage (N18): the limit, what the
+     * ledger counts as used (this database, every facet's, the images and
+     * reservations), and what a user may still write, the kernel's reserve
+     * left out, as ext4's df leaves out root's reserved blocks.
+     */
     storageUsage(): {
         size: number;
         used: number;

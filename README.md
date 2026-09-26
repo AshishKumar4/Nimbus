@@ -183,9 +183,10 @@ process (`bun:sqlite`, `node:sqlite`).
 
 ```ts
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { writeText } from '@nimbus-sh/core/vfs/vfs.js';
 
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
-await ws.fs.writeFile('/home/user/hello.txt', 'hi\n');
+await writeText(ws.fs, '/home/user/hello.txt', 'hi\n');
 await ws.exec('cat /home/user/hello.txt | wc -c');   // exitCode 0, stdout "3\n"
 ```
 

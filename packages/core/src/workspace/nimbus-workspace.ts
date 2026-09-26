@@ -30,9 +30,8 @@ import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
-import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/sandbox/types.js';
+import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
@@ -194,11 +193,13 @@ export interface NimbusWorkspaceOptions {
  */
 export class NimbusWorkspace {
   /**
-   * Credentialed and mount-aware. Acts as the session user, never as the
-   * kernel: a pid-less caller must not gain more authority than the shell it
-   * writes files for (see CRED_SESSION_USER in os-contracts.ts).
+   * The namespace as the session user sees it: a `VFS` (absolute paths), the
+   * shell process's own view, so every write passes the same lease check a
+   * command's does. Never the kernel's authority (see CRED_SESSION_USER in
+   * os-contracts.ts). Helpers such as readText, writeText and exists are
+   * vfs.ts free functions over it.
    */
-  readonly fs: SandboxFs;
+  readonly fs: ProcessView;
   /** The raw durable filesystem, for hosts that need uid-aware operations. */
   readonly vfs: SqliteVFS;
   readonly kernel: Kernel;
@@ -248,7 +249,7 @@ export class NimbusWorkspace {
     this.commands = new SandboxCommandsImpl(shell, registry);
     // The shell's own process view: a host calling `.fs` acts as the
     // session user, never as the kernel.
-    this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd(), vfs);
+    this.fs = shell.getVfs();
   }
 
   static async create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace> {
