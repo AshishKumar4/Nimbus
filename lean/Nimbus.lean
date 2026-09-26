@@ -20,6 +20,7 @@ import Nimbus.Vfs.CompositeBeneath
 import Nimbus.Runtime.Pipes
 import Nimbus.Runtime.PipesProofs
 import Nimbus.Runtime.PipesTraces
+import Nimbus.Runtime.PipesHeld
 import Nimbus.Vfs.Ledger
 import Nimbus.Vfs.Hydration
 import Nimbus.Vfs.ProcessFiles

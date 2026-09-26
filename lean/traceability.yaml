@@ -748,7 +748,7 @@ requirements:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
   N18-001:
-    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete.
+    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete; reservations count in used and are never evicted, a reservation is admitted like a write, a draw within its reservation is always admitted and changes no total, and a reservation shrinks only by its own draws, its release, releaseAll or a restart, whatever else runs.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Ledger.sumB_nil
@@ -772,6 +772,10 @@ requirements:
       - Nimbus.Vfs.Ledger.admitted_within
       - Nimbus.Vfs.Ledger.refuses_when_over
       - Nimbus.Vfs.Ledger.an_over_report_refuses
+      - Nimbus.Vfs.Ledger.sumB_setR
+      - Nimbus.Vfs.Ledger.draw_within
+      - Nimbus.Vfs.Ledger.reservation_kept
+      - Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
     tsRefs:
       - packages/core/src/runtime/storage-ledger.ts#StorageLedger
     refinement:
@@ -874,7 +878,7 @@ requirements:
     remainingEvidence:
       - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
   RT-PIPE-001:
-    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly.
+    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), settles only once every such pipe has no read end, to 141 exactly when one of them had more than the capacity unread then, and always settles once no process is alive.
     status: proved-in-abstract-model
     theorems:
       - Nimbus.Runtime.Pipes.upd_same
@@ -962,6 +966,17 @@ requirements:
       - Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
       - Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
       - Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+      - Nimbus.Runtime.Pipes.hstep_core
+      - Nimbus.Runtime.Pipes.hrun_core
+      - Nimbus.Runtime.Pipes.settles_only_readerless
+      - Nimbus.Runtime.Pipes.settle_value
+      - Nimbus.Runtime.Pipes.rs_zero_of_dead
+      - Nimbus.Runtime.Pipes.all_settle
+      - Nimbus.Runtime.Pipes.seq_head
+      - Nimbus.Runtime.Pipes.seq_head_without_the_rule
+      - Nimbus.Runtime.Pipes.seq_small_head
+      - Nimbus.Runtime.Pipes.seq_uniq_wc_held
+      - Nimbus.Runtime.Pipes.yes_head_held
     tsRefs:
       - packages/core/src/runtime/bash/preamble.ts#writeThroughFd
       - packages/core/src/runtime/bash/preamble.ts#newPipe
@@ -970,3 +985,4 @@ requirements:
       - Traces are scaled down (capacity 4, small budgets); the rules do not depend on the sizes. A JSPI-host fixture case sets B large, as B never binds a JSPI writer
       - SIGPIPE ignored is modeled and proved, but untestable on this runtime (bash.wasm cannot report its disposition); those fixture cases carry "untestable"
       - A fork is synchronous here; a fork as a pending task on a local host is covered by the rule that a reader with nothing to run stops the command
+      - The held status equals Linux's for a pipe with one writer; with several writers another writer's later bytes count against a held one. A wait on a held pid is not modeled (the runtime waits until it settles)
