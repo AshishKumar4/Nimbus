@@ -14,7 +14,11 @@
   decision but loses the images first).
 
   Proved, for every reachable state and every operation:
-  - `used_le_limit`: used never exceeds the limit.
+  - `used_le_limit`: used never exceeds the limit plus the overshoot facets
+    reported beyond their admitted bytes (`report`: the row becomes the larger);
+    `admitted_within`: an admitted operation that succeeds leaves used within the
+    limit, so overshoot is never admitted more; `refuses_when_over`: while the
+    session and facets are over the limit every admitted operation is refused.
   - `refused_unchanged`: a refused write (session write, facet fill, image write)
     leaves the whole state unchanged, destination included, and evicts nothing;
     `refuses_iff`: it is refused exactly when it would not fit with every evictable
@@ -22,7 +26,7 @@
   - `evicts_oldest_minimal`: what is evicted is a prefix of the evictable images
     (oldest first), and no shorter prefix would have made the write fit.
   - `only_eviction_frees`: every operation other than a delete (a session delete,
-    `facets.delete`, a size settlement, the epoch drop of unused images) frees at
+    `facets.delete`, a size settlement or report, the epoch drop of unused images) frees at
     most the bytes of the images it evicted, and evicts only on admission.
   - `facet_row_stays`: a facet row leaves the ledger only by `facets.delete`
     (`abort` and a restart keep it).
@@ -45,6 +49,8 @@ structure St where
   sess : Nat
   facets : List Row
   images : List Row
+  /-- Ghost: the bytes facets have reported beyond what they were admitted. -/
+  over : Nat := 0
 
 def used (s : St) : Nat := s.sess + sumB s.facets + sumB s.images
 
@@ -162,6 +168,9 @@ inductive Op where
   | delFacet (n : Nat)
   /-- A facet reports a `databaseSize` at or below its recorded bytes. -/
   | settle (n b : Nat)
+  /-- A facet reports a `databaseSize` (boot, after a fill, exit): the row becomes
+      max(reported, recorded), and anything above the recorded bytes is overshoot. -/
+  | report (n b : Nat)
   /-- Epoch change: keep only the images of principals in `keep`. -/
   | dropImages (keep : List Nat)
   /-- `facets.abort(n)`: the database persists. -/
@@ -198,12 +207,14 @@ def step (s : St) : Op → Out × St × List Row
   | .settle n b =>
     if s.facets.any (·.1 == n) then (.ok, { s with facets := others s.facets n ++ [(n, min b (cur s.facets n))] }, [])
     else (.ok, s, [])
+  | .report n b =>
+    (.ok, { s with facets := others s.facets n ++ [(n, max b (cur s.facets n))], over := s.over + (b - cur s.facets n) }, [])
   | .dropImages keep => (.ok, { s with images := s.images.filter (fun x => keep.contains x.1) }, [])
   | .abort _ => (.ok, s, [])
   | .restart => (.ok, s, [])
 
 def Op.frees : Op → Bool
-  | .delSess _ | .delFacet _ | .settle _ _ | .dropImages _ => true
+  | .delSess _ | .delFacet _ | .settle _ _ | .report _ _ | .dropImages _ => true
   | _ => false
 
 def Op.admits : Op → Bool
@@ -215,7 +226,7 @@ def Op.need : Op → Nat
   | _ => 0
 
 inductive Reach : St → Prop
-  | init (L sess : Nat) (h : sess ≤ L) : Reach ⟨L, sess, [], []⟩
+  | init (L sess : Nat) (h : sess ≤ L) : Reach ⟨L, sess, [], [], 0⟩
   | step {s : St} (op : Op) : Reach s → Reach (step s op).2.1
 
 /-! ## What is proved -/
@@ -223,7 +234,34 @@ inductive Reach : St → Prop
 theorem step_limit (s : St) (op : Op) : (step s op).2.1.limit = s.limit := by
   cases op <;> simp only [step] <;> (try split) <;> rfl
 
-theorem step_used (s : St) (h : used s ≤ s.limit) (op : Op) : used (step s op).2.1 ≤ s.limit := by
+theorem step_over (s : St) (op : Op) : s.over ≤ (step s op).2.1.over := by
+  cases op <;> simp only [step] <;> (repeat' split) <;> simp
+
+/-- An admitted operation that succeeds leaves used within the limit: overshoot is
+    never admitted more. -/
+theorem admitted_within (s : St) (op : Op) (ha : op.admits = true) (hok : (step s op).1 = .ok) :
+    used (step s op).2.1 ≤ s.limit := by
+  cases op <;> simp [Op.admits] at ha
+  case write b =>
+    simp only [step] at hok ⊢; split at hok
+    · rename_i ev sv hf; have := (fitDrop_some hf).2
+      simp only [used, fixedS] at this ⊢; omega
+    · cases hok
+  case fill n b =>
+    simp only [step] at hok ⊢; split at hok
+    · rename_i ev sv hf; have := (fitDrop_some hf).2
+      have e := sumB_split s.facets n
+      simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this e ⊢; omega
+    · cases hok
+  case image k b =>
+    simp only [step] at hok ⊢; split at hok
+    · rename_i ev sv hf; have := (fitDrop_some hf).2
+      simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this ⊢; omega
+    · cases hok
+
+theorem step_used (s : St) (h : used s ≤ s.limit + s.over) (op : Op) :
+    used (step s op).2.1 ≤ s.limit + (step s op).2.1.over := by
+  have ho := step_over s op
   cases op with
   | write b =>
     simp only [step]; split
@@ -259,17 +297,34 @@ theorem step_used (s : St) (h : used s ≤ s.limit) (op : Op) : used (step s op)
     · simp only [used, sumB_append, sumB_cons, sumB_nil] at h e ⊢
       have := Nat.min_le_right b (cur s.facets n); omega
     · exact h
+  | report n b =>
+    have e := sumB_split s.facets n
+    simp only [step, used, sumB_append, sumB_cons, sumB_nil] at h e ⊢
+    have : max b (cur s.facets n) = cur s.facets n + (b - cur s.facets n) := by omega
+    omega
   | dropImages keep =>
     have := sumB_filter_le s.images (fun x => keep.contains x.1)
     simp only [step, used] at h ⊢; omega
   | abort _ => exact h
   | restart => exact h
 
-/-- Used never exceeds the limit. -/
-theorem used_le_limit {s : St} (h : Reach s) : used s ≤ s.limit := by
+/-- Used never exceeds the limit plus what facets reported beyond their admitted
+    bytes; with no over-report, never the limit. -/
+theorem used_le_limit {s : St} (h : Reach s) : used s ≤ s.limit + s.over := by
   induction h with
   | init L sess h => simpa [used] using h
   | step op _ ih => rw [step_limit]; exact step_used _ ih op
+
+/-- Once the session's own bytes and the facets are over the limit, every admitted
+    operation is refused. -/
+theorem refuses_when_over (s : St) (op : Op) (ha : op.admits = true) (hov : s.limit < fixedS s) :
+    (step s op).1 = .enospc := by
+  cases op <;> simp [Op.admits] at ha
+  all_goals
+    simp only [step]
+    split
+    · rename_i hf; have := (fitDrop_some hf).2; omega
+    · rfl
 
 /-- A refused write changes nothing and evicts nothing. -/
 theorem refused_unchanged (s : St) (op : Op) (h : (step s op).1 = .enospc) :
@@ -355,6 +410,7 @@ theorem facet_row_stays (s : St) (op : Op) (n : Nat) (hd : ∀ m, op ≠ .delFac
       exact List.mem_map.mpr ⟨x, List.mem_filter.mpr ⟨hx, by simpa using fun e => h e.symm⟩, rfl⟩
   | settle m b => simp only [step]; split; exact keep m _; exact hn
   | touch k => simp only [step]; split <;> exact hn
+  | report m b => exact keep m _
   | _ => exact hn
 
 /-! ## Traces -/
@@ -364,13 +420,24 @@ theorem facet_row_stays (s : St) (op : Op) (n : Nat) (hd : ∀ m, op ≠ .delFac
     refused and nothing changes; after `abort` the dead facet still counts, and
     `facets.delete` frees it. -/
 theorem a_ledger_trace :
-    let s0 : St := ⟨100, 40, [(1, 20)], [(1, 15), (2, 15)]⟩
+    let s0 : St := ⟨100, 40, [(1, 20)], [(1, 15), (2, 15)], 0⟩
     let r1 := step s0 (.write 20)
     let r2 := step r1.2.1 (.write 60)
     let r3 := step r2.2.1 (.abort 1)
     let r4 := step r3.2.1 (.delFacet 1)
     r1.1 = .ok ∧ r1.2.2 = [(1, 15)] ∧ r1.2.1.images = [(2, 15)] ∧ used r1.2.1 = 95 ∧
       r2.1 = .enospc ∧ used r2.2.1 = 95 ∧ used r3.2.1 = 95 ∧ used r4.2.1 = 75 := by
+  decide
+
+/-- Facet 1 was admitted 20 bytes and reports 90: the ledger takes 90 (110 used,
+    overshoot 70), and refuses even a 1-byte write until something is deleted. -/
+theorem an_over_report_refuses :
+    let s0 : St := ⟨100, 10, [(1, 20)], [], 0⟩
+    let r1 := step s0 (.report 1 90)
+    let r2 := step r1.2.1 (.write 1)
+    let r3 := step r2.2.1 (.delFacet 1)
+    let r4 := step r3.2.1 (.write 1)
+    used r1.2.1 = 100 ∧ r1.2.1.over = 70 ∧ r2.1 = .enospc ∧ r4.1 = .ok := by
   decide
 
 end Nimbus.Vfs.Ledger

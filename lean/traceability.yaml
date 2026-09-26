@@ -748,8 +748,8 @@ requirements:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
   N18-001:
-    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, no operation lets used exceed the limit; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete.
-    status: proved-and-refined
+    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete.
+    status: proved-in-abstract-model
     theorems:
       - Nimbus.Vfs.Ledger.sumB_nil
       - Nimbus.Vfs.Ledger.sumB_cons
@@ -768,16 +768,19 @@ requirements:
       - Nimbus.Vfs.Ledger.only_eviction_frees
       - Nimbus.Vfs.Ledger.facet_row_stays
       - Nimbus.Vfs.Ledger.a_ledger_trace
+      - Nimbus.Vfs.Ledger.step_over
+      - Nimbus.Vfs.Ledger.admitted_within
+      - Nimbus.Vfs.Ledger.refuses_when_over
+      - Nimbus.Vfs.Ledger.an_over_report_refuses
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
-    refinement:
-      - lean/fixtures/n18-ledger.json :: tests/unit/n18-ledger-refinement.mjs
     remainingEvidence:
-      - A refused write evicts no image; CUTOVER.md's wording drops images first and then refuses when none is left, which reaches the same decision but loses the images
-      - Sizes are the ledger's numbers (declared or estimated bytes); that a facet's databaseSize never exceeds its admitted bytes is assumed, a report below them is a settle
+      - Parked until NodeNoMirrorBuild writes tests/unit/n18-ledger-refinement.mjs: Nimbus.Refine generates lean/fixtures/n18-ledger.json, and RefinementFixtures emits it again with the refinement entry
+      - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
+      - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
   N17-001:
-    statement: N17 hydration in an import window - no reader, sync or async, is ever handed the bytes of a path whose chunks are still state 1; a hydrated path stays hydrated; a sync read of a state-1 path answers EIO naming it and moves it to the front of the job; a WASI launch's gate waits only on the paths it names, moves their state-1 ones to the front, opens when they are all local (at once when none is state 1), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind, so it never waits longer; with only job events after bind, the named state-1 paths are local after at most as many hydrations as the launch named.
-    status: proved-and-refined
+    statement: N17 hydration in an import window, at chunk granularity (a path is local when every chunk hash it names is; chunks are shared by content address, so one hydration can make several paths local) - no reader, sync or async, is ever handed the bytes of a path with a state-1 chunk; hydrated chunks stay hydrated; every remote unhydrated chunk is in the job's queue; a sync read of a non-local path answers EIO naming it and moves its remote chunks to the front; a WASI launch's gate moves its named paths' remote chunks to the front, opens when every named path is local (at once when none has a remote chunk), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind; with only job events after bind, every named path is local within as many hydrations as the named paths had remote chunks.
+    status: proved-in-abstract-model
     theorems:
       - Nimbus.Vfs.Hydration.sync_never_state1
       - Nimbus.Vfs.Hydration.async_never_state1
@@ -795,14 +798,18 @@ requirements:
       - Nimbus.Vfs.Hydration.bound_reads_never_eio
       - Nimbus.Vfs.Hydration.gate_bounded
       - Nimbus.Vfs.Hydration.nothing_named_starts
-      - Nimbus.Vfs.Hydration.named_first
       - Nimbus.Vfs.Hydration.jobs_hydrate
-      - Nimbus.Vfs.Hydration.named_hydrate_within
-      - Nimbus.Vfs.Hydration.a_window
+      - Nimbus.Vfs.Hydration.hLocal_mono
+      - Nimbus.Vfs.Hydration.prio_mem
+      - Nimbus.Vfs.Hydration.step_covers
+      - Nimbus.Vfs.Hydration.queue_covers
+      - Nimbus.Vfs.Hydration.jobs_mono
+      - Nimbus.Vfs.Hydration.jobs_frame
+      - Nimbus.Vfs.Hydration.named_local_within
+      - Nimbus.Vfs.Hydration.a_shared_chunk
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
-    refinement:
-      - lean/fixtures/n17-hydration.json :: tests/unit/n17-hydration-refinement.mjs
     remainingEvidence:
-      - Hydration is per path (one job event hydrates a path's chunks); chunk sharing between paths and hash-level NeedsHydration batches are not modeled
+      - Parked until NodeNoMirrorBuild writes tests/unit/n17-hydration-refinement.mjs: Nimbus.Refine generates lean/fixtures/n17-hydration.json, and RefinementFixtures emits it again with the refinement entry
+      - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
       - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound

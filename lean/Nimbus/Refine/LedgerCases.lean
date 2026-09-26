@@ -12,10 +12,12 @@
     nothing when it has none).
   - `{"op":"delSess","bytes"}`, `{"op":"delFacet","facet"}` (`facets.delete`),
     `{"op":"settle","facet","bytes"}` (a reported databaseSize: the row becomes
-    min(bytes, recorded); nothing for an unknown facet), `{"op":"dropImages","keep":[principals]}` (epoch change),
+    min(bytes, recorded); nothing for an unknown facet), `{"op":"report","facet","bytes"}`
+    (a reported databaseSize checked against the record: the row becomes max(bytes,
+    recorded), created if absent; the excess is `overshoot`), `{"op":"dropImages","keep":[principals]}` (epoch change),
     `{"op":"abort","facet"}`, `{"op":"restart"}` (the ledger is re-read).
   `expect`: `"ok"` or `"ENOSPC"`; `evicted`: the principals whose images were dropped,
-  oldest first; `ledger`: `{used, session, facets:{name: bytes}, images:[[principal,
+  oldest first; `ledger`: `{used, overshoot (cumulative reported-over-admitted bytes), session, facets:{name: bytes}, images:[[principal,
   bytes], ...] oldest first}`. A refused operation changes nothing.
 -/
 
@@ -30,7 +32,7 @@ open Nimbus.Refine
 def fname (n : Nat) : String := s!"f{n}"
 
 def ledgerJson (s : St) : Json :=
-  .obj [("used", .ofNat (used s)), ("session", .ofNat s.sess),
+  .obj [("used", .ofNat (used s)), ("overshoot", .ofNat s.over), ("session", .ofNat s.sess),
     ("facets", .obj (s.facets.map fun x => (fname x.1, .ofNat x.2))),
     ("images", .arr (s.images.map fun x => .arr [.ofNat x.1, .ofNat x.2]))]
 
@@ -42,6 +44,7 @@ def opJson : Op → Json
   | .delSess b => .obj [("op", .str "delSess"), ("bytes", .ofNat b)]
   | .delFacet n => .obj [("op", .str "delFacet"), ("facet", .str (fname n))]
   | .settle n b => .obj [("op", .str "settle"), ("facet", .str (fname n)), ("bytes", .ofNat b)]
+  | .report n b => .obj [("op", .str "report"), ("facet", .str (fname n)), ("bytes", .ofNat b)]
   | .dropImages keep => .obj [("op", .str "dropImages"), ("keep", .arr (keep.map .ofNat))]
   | .abort n => .obj [("op", .str "abort"), ("facet", .str (fname n))]
   | .restart => .obj [("op", .str "restart")]
@@ -70,7 +73,8 @@ def genOp : Gen Op := do
   else if k < 14 then return .touch (← below 4)
   else if k < 15 then return .delSess (← below 20)
   else if k < 16 then return .delFacet (← below 3)
-  else if k < 17 then return .settle (← below 3) (← below 30)
+  else if k < 17 then
+    if (← below 2) == 0 then return .settle (← below 3) (← below 30) else return .report (← below 3) (← below 60)
   else if k < 18 then return .dropImages ((List.range 4).filter fun i => i % 2 == 0)
   else if k < 19 then return .abort (← below 3)
   else return .restart
@@ -80,14 +84,16 @@ def genCase : Gen (Option Json) := do
   let n := (← below 16) + 8
   let mut ops : List Op := []
   for _ in [0:n] do ops := ops ++ [← genOp]
-  return some (run ⟨100, sess, [], []⟩ ops)
+  return some (run ⟨100, sess, [], [], 0⟩ ops)
 
 /-- `a_ledger_trace`, reached from an empty ledger. -/
 def directed : List Json :=
-  [ run ⟨100, 40, [], []⟩ [.fill 1 20, .image 1 15, .image 2 15, .write 20, .write 60, .abort 1, .restart,
+  [ run ⟨100, 40, [], [], 0⟩ [.fill 1 20, .image 1 15, .image 2 15, .write 20, .write 60, .abort 1, .restart,
       .delFacet 1, .write 60],
     -- a refused image write keeps every image, its own included
-    run ⟨100, 50, [], []⟩ [.image 1 20, .image 2 20, .image 2 80, .touch 1, .write 25, .dropImages [2]] ]
+    -- an over-report: the ledger takes it, refuses until a delete (an_over_report_refuses)
+    run ⟨100, 10, [], [], 0⟩ [.fill 1 20, .report 1 90, .write 1, .image 1 1, .delFacet 1, .write 1],
+    run ⟨100, 50, [], [], 0⟩ [.image 1 20, .image 2 20, .image 2 80, .touch 1, .write 25, .dropImages [2]] ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "n18-ledger"), ("model", .str "Nimbus.Vfs.Ledger.step"),

@@ -488,8 +488,12 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Hydration.async_never_state1
 #print axioms Nimbus.Vfs.Hydration.resume_local
 #print axioms Nimbus.Vfs.Hydration.raw_frame
+#print axioms Nimbus.Vfs.Hydration.hLocal_mono
 #print axioms Nimbus.Vfs.Hydration.isLocal_mono
 #print axioms Nimbus.Vfs.Hydration.hyd_mono
+#print axioms Nimbus.Vfs.Hydration.prio_mem
+#print axioms Nimbus.Vfs.Hydration.step_covers
+#print axioms Nimbus.Vfs.Hydration.queue_covers
 #print axioms Nimbus.Vfs.Hydration.settleG_open
 #print axioms Nimbus.Vfs.Hydration.settleG_ok
 #print axioms Nimbus.Vfs.Hydration.settleG_named
@@ -500,10 +504,11 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Hydration.bound_reads_never_eio
 #print axioms Nimbus.Vfs.Hydration.gate_bounded
 #print axioms Nimbus.Vfs.Hydration.nothing_named_starts
-#print axioms Nimbus.Vfs.Hydration.named_first
+#print axioms Nimbus.Vfs.Hydration.jobs_mono
+#print axioms Nimbus.Vfs.Hydration.jobs_frame
 #print axioms Nimbus.Vfs.Hydration.jobs_hydrate
-#print axioms Nimbus.Vfs.Hydration.named_hydrate_within
-#print axioms Nimbus.Vfs.Hydration.a_window
+#print axioms Nimbus.Vfs.Hydration.named_local_within
+#print axioms Nimbus.Vfs.Hydration.a_shared_chunk
 
 /-! ## Nimbus/Vfs/Ledger.lean -/
 
@@ -516,14 +521,18 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.fitDrop_none
 #print axioms Nimbus.Vfs.Ledger.fitDrop_min
 #print axioms Nimbus.Vfs.Ledger.step_limit
+#print axioms Nimbus.Vfs.Ledger.step_over
+#print axioms Nimbus.Vfs.Ledger.admitted_within
 #print axioms Nimbus.Vfs.Ledger.step_used
 #print axioms Nimbus.Vfs.Ledger.used_le_limit
+#print axioms Nimbus.Vfs.Ledger.refuses_when_over
 #print axioms Nimbus.Vfs.Ledger.refused_unchanged
 #print axioms Nimbus.Vfs.Ledger.refuses_iff
 #print axioms Nimbus.Vfs.Ledger.evicts_oldest_minimal
 #print axioms Nimbus.Vfs.Ledger.only_eviction_frees
 #print axioms Nimbus.Vfs.Ledger.facet_row_stays
 #print axioms Nimbus.Vfs.Ledger.a_ledger_trace
+#print axioms Nimbus.Vfs.Ledger.an_over_report_refuses
 
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/
 
