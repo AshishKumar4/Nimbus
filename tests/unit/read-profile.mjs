@@ -1,24 +1,53 @@
 #!/usr/bin/env bun
-// read-profile: a synchronous read one session missed is held by the next
-// session's launch of the same installed package (same tarball integrity),
-// and a hostile profile can at worst make a session stage more of its own
-// files, never different bytes and never anything outside the package.
+// read-profile: a synchronous read one session missed can be held by later
+// sessions' launches of the same installed package (same tarball
+// integrity), and nothing a program says can poison what other tenants
+// stage: evidence is what the supervisor served, an entry is shared only
+// after two principals (verified tenant + subject, never session ids, which
+// are free) observed it, anonymous sessions only read, a principal's writes
+// are capped, a launch's share is bounded in bytes, a program's word can
+// only lower an entry, and a hostile object can at worst make a session
+// stage more of its own files.
 
 import assert from 'node:assert/strict';
 import {
+  profilePrincipal,
   ReadProfile,
-  READ_PROFILE_MAX_PATHS,
+  READ_PROFILE_MAX_ENTRIES,
+  READ_PROFILE_WRITES_PER_WINDOW,
+  ServedReads,
+  principalTag,
   validProfilePath,
+  verifiedEvidence,
 } from '../../packages/worker/src/facets/read-profile.ts';
 import { planFacetData } from '../../packages/worker/src/facets/data-plan.ts';
 
-/** An R2 bucket in memory, with list pagination. */
+/**
+ * An R2 bucket in memory: list pagination, etags, and R2's conditional put
+ * (null when `onlyIf` fails). Every call yields first, so concurrent callers
+ * interleave as they would against R2.
+ */
 function bucket() {
   const objects = new Map();
+  const versions = new Map();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
     objects,
-    async get(key) { return objects.has(key) ? { text: async () => objects.get(key) } : null; },
-    async put(key, value) { objects.set(key, value); },
+    async get(key) {
+      await tick();
+      if (!objects.has(key)) return null;
+      const text = objects.get(key);
+      return { text: async () => text, etag: `v${versions.get(key) ?? 0}` };
+    },
+    async put(key, value, options) {
+      await tick();
+      const onlyIf = options?.onlyIf;
+      if (onlyIf?.etagMatches !== undefined && (!objects.has(key) || onlyIf.etagMatches !== `v${versions.get(key) ?? 0}`)) return null;
+      if (onlyIf?.etagDoesNotMatch === '*' && objects.has(key)) return null;
+      objects.set(key, value);
+      versions.set(key, (versions.get(key) ?? 0) + 1);
+      return {};
+    },
     async list({ prefix, cursor }) {
       const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
       const start = cursor ? Number(cursor) : 0;
@@ -29,87 +58,307 @@ function bucket() {
 }
 
 const ASTRO = 'sha512-QXN0cm8gNi4xLjI=';
-const ASTRO_OTHER_BUILD = 'sha512-YW5vdGhlciB0YXJiYWxs';
 const integrities = {
   'home/user/app/node_modules/astro': ASTRO,
   'home/user/other/node_modules/astro': ASTRO,
-  'home/user/fork/node_modules/astro': ASTRO_OTHER_BUILD,
+  'home/user/fork/node_modules/astro': 'sha512-YW5vdGhlciB0YXJiYWxs',
   'home/user/app/node_modules/@scope/pkg': 'sha512-c2NvcGU=',
 };
 const integrityOf = (root) => integrities[root] ?? null;
+const APP = 'home/user/app/node_modules/astro';
+const OTHER = 'home/user/other/node_modules/astro';
+const ENTRY = 'dist/runtime/client/dev-toolbar/entrypoint.js';
 
-const store = bucket();
-const sessionA = new ReadProfile(store);
-const added = await sessionA.record([
-  '/home/user/app/node_modules/astro/dist/runtime/client/dev-toolbar/entrypoint.js',
-  'home/user/app/node_modules/@scope/pkg/data/table.bin',
-  'home/user/app/src/secret.txt', // a session's own file: not shared
-  'home/user/app/node_modules/astro/node_modules/x/y.js', // another package's file
-  'home/user/nolock/node_modules/pkg/a.json', // no integrity: not shared
-], integrityOf);
-assert.equal(added, 2);
-assert.equal(store.objects.size, 2, 'one object per installed package');
-assert.ok([...store.objects.keys()].every((k) => k.includes('sha512')), 'keyed by integrity');
-assert.ok(![...store.objects.values()].some((v) => v.includes('secret') || v.includes('home/user')), 'package-relative paths only');
-
-// Another session, another project, the same tarball: held at its own root.
-const sessionB = new ReadProfile(store);
-assert.deepEqual(
-  await sessionB.lookup(['home/user/other/node_modules/astro'], integrityOf),
-  ['home/user/other/node_modules/astro/dist/runtime/client/dev-toolbar/entrypoint.js'],
-);
-// The same name and version from a different tarball learned nothing.
-assert.deepEqual(await sessionB.lookup(['home/user/fork/node_modules/astro'], integrityOf), []);
-
-// Hostile entries are dropped on the way out, whatever is stored.
-const hostileKey = [...store.objects.keys()].find((k) => k.includes(encodeURIComponent(ASTRO)));
-store.objects.set(hostileKey, JSON.stringify({
-  paths: ['../../../../etc/passwd', '/etc/passwd', 'a/../../b', './x', 'a//b', 'node_modules/evil/x.js', 'x\0y',
-    'z'.repeat(600), 42, 'ok.txt', ...Array.from({ length: READ_PROFILE_MAX_PATHS + 50 }, (_, i) => `many/${i}.txt`)],
-}));
-const looked = await new ReadProfile(store).lookup(['home/user/app/node_modules/astro'], integrityOf);
-assert.ok(looked.includes('home/user/app/node_modules/astro/ok.txt'));
-assert.ok(looked.every((p) => p.startsWith('home/user/app/node_modules/astro/') && !p.includes('..') && !p.includes('/node_modules/evil')));
-assert.ok(looked.length <= READ_PROFILE_MAX_PATHS, `bounded (${looked.length})`);
-for (const bad of ['../x', '/x', 'a/./b', '', 'a\\b']) assert.equal(validProfilePath(bad), false, bad);
-
-// Recording never grows a profile past its bound.
-await new ReadProfile(store).record(
-  Array.from({ length: READ_PROFILE_MAX_PATHS + 100 }, (_, i) => `home/user/app/node_modules/@scope/pkg/more/${i}.js`),
-  integrityOf,
-);
-const scoped = [...store.objects].find(([k]) => k.includes(encodeURIComponent('sha512-c2NvcGU=')))[1];
-assert.equal(JSON.parse(scoped).paths.length, READ_PROFILE_MAX_PATHS);
-
-// A learned path widens only what the session's own listing has: one naming
-// no file there plans nothing, and bytes still come from the session.
+// The files as each session's process credential stats them.
 const files = new Map([
-  ['home', 'directory'], ['home/user', 'directory'], ['home/user/app', 'directory'],
-  ['home/user/app/node_modules', 'directory'], ['home/user/app/node_modules/astro', 'directory'],
-  ['home/user/app/node_modules/astro/ok.txt', 'file'],
+  [`${APP}/${ENTRY}`, 1200],
+  [`${APP}/big.bin`, 900_000],
+  [`${APP}/small.json`, 40],
+  ['home/user/app/node_modules/@scope/pkg/data/table.bin', 300],
+  ['home/user/app/src/secret.txt', 10],
 ]);
-const source = {
-  list: async () => ({ entries: [...files].map(([path, kind]) => ({ path, kind, size: 3 })), next: null }),
-  readText: async () => null,
-  stat: async () => null,
+const stat = async (path) => {
+  const key = path.replace(/^\/+/, '');
+  if (files.has(key)) return { type: 'file', size: files.get(key) };
+  if (key === `${APP}/dist`) return { type: 'directory', size: 0 };
+  return null;
 };
-const plan = await planFacetData(source, {
-  cwd: '/srv', home: '/nobody', closure: [], refs: [], learned: looked,
-});
-assert.deepEqual(plan.paths, ['home/user/app/node_modules/astro/ok.txt']);
 
-// A package no lockfile pins is identified by its package.json's content key.
+// ── Evidence: only what the supervisor served, and only regular files in a package ──
+{
+  const served = new ServedReads();
+  served.note(7, `/${APP}/${ENTRY}`);
+  served.note(7, `/${APP}/small.json`);
+  served.note(7, '/home/user/app/src/secret.txt');
+  served.note(7, `/${APP}/dist`);
+  served.note(8, `/${APP}/big.bin`); // another process's reads
+  const reported = [
+    `/${APP}/${ENTRY}`,               // served: evidence
+    `/${APP}/small.json`,             // served: evidence
+    `/${APP}/big.bin`,                // a lie: never served to pid 7
+    '/home/user/app/src/secret.txt',  // served, but not in a package
+    `/${APP}/dist`,                   // served, but a directory
+    `/${APP}/../../../etc/passwd`,    // junk
+    `/${APP}/nope.js`,                // junk: not served, not there
+    42, null,                         // junk
+  ];
+  const evidence = await verifiedEvidence(reported, served.take(7), stat);
+  assert.deepEqual(evidence.map((e) => e.path).sort(), [`${APP}/${ENTRY}`, `${APP}/small.json`]);
+  assert.equal(evidence.find((e) => e.path.endsWith('small.json')).size, 40, 'the size is the stat\'s');
+  assert.deepEqual([...served.take(7)], [], 'take forgets the process');
+  assert.deepEqual([...served.take(8)], [`${APP}/big.bin`]);
+}
+
+const tagA = await principalTag('acme:alice');
+const tagB = await principalTag('globex:bob');
+assert.match(tagA, /^[0-9a-f]{16}$/);
+assert.notEqual(tagA, tagB);
+
+// ── One session alone shares nothing; a second session's observation shares it ──
+const store = bucket();
+const evidence = [{ path: `${APP}/${ENTRY}`, size: 1200 }, { path: `${APP}/small.json`, size: 40 }];
+assert.equal(await new ReadProfile(store).observe(evidence, tagA, integrityOf), 2);
+assert.equal(store.objects.size, 1, 'one object per installed package');
+const stored = [...store.objects.values()][0];
+assert.ok(!stored.includes('home/user') && !stored.includes('acme:alice'), 'package-relative paths and principal tags only');
+assert.deepEqual(await new ReadProfile(store).lookup([OTHER], integrityOf, 1 << 20), [], 'observed by one session: not shared');
+// The same session again does not count twice.
+await new ReadProfile(store).observe(evidence, tagA, integrityOf);
+assert.deepEqual(await new ReadProfile(store).lookup([OTHER], integrityOf, 1 << 20), []);
+await new ReadProfile(store).observe([{ path: `${OTHER}/${ENTRY}`, size: 1200 }], tagB, integrityOf);
+const shared = await new ReadProfile(store).lookup([OTHER], integrityOf, 1 << 20);
+assert.deepEqual(shared.map((e) => e.path), [`${OTHER}/${ENTRY}`], 'shared once a second session saw it, at the looking session\'s root');
+// A different tarball of the same name learned nothing.
+assert.deepEqual(await new ReadProfile(store).lookup(['home/user/fork/node_modules/astro'], integrityOf, 1 << 20), []);
+// Junk tags are refused.
+assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integrityOf), 0);
+
+// ── The byte cap: best first, within the budget ──
+{
+  const capped = bucket();
+  const many = [
+    { path: `${APP}/a.js`, size: 600 }, { path: `${APP}/b.js`, size: 300 },
+    { path: `${APP}/c.js`, size: 200 }, { path: `${APP}/d.js`, size: 5000 },
+  ];
+  await new ReadProfile(capped).observe(many, tagA, integrityOf);
+  await new ReadProfile(capped).observe(many, tagB, integrityOf);
+  const within = await new ReadProfile(capped).lookup([APP], integrityOf, 1000);
+  assert.deepEqual(within.map((e) => e.path.slice(APP.length + 1)), ['c.js', 'b.js'], 'smallest first at equal score');
+  assert.ok(within.reduce((n, e) => n + e.size, 0) <= 1000);
+  assert.deepEqual(await new ReadProfile(capped).lookup([APP], integrityOf, 0), [], 'no budget, nothing');
+}
+
+// ── Pruning: only the supervisor raises; a program's word only lowers ──
+{
+  const pruned = bucket();
+  const obs = [{ path: `${APP}/x.js`, size: 10 }, { path: `${APP}/y.js`, size: 10 }, { path: `${APP}/gone.js`, size: 10 }];
+  await new ReadProfile(pruned).observe(obs, tagA, integrityOf);
+  await new ReadProfile(pruned).observe(obs, tagB, integrityOf);
+  const score = (rel) => JSON.parse(pruned.objects.values().next().value).entries[rel]?.score;
+  const profile = new ReadProfile(pruned);
+  let offered = await profile.lookup([APP], integrityOf, 1 << 20);
+  assert.equal(offered.length, 3);
+  // x: staged and never faulted in (the supervisor's evidence it was held) -> up.
+  // y: the program says it never read it -> down, and at zero it is gone.
+  // gone.js: the plan found no regular file -> removed.
+  await profile.settle(offered, new Set([`${APP}/y.js`]), new Set(), new Set([`${APP}/gone.js`]), tagA);
+  assert.equal(score('x.js'), 2);
+  assert.equal(score('y.js'), undefined);
+  assert.equal(score('gone.js'), undefined);
+  // A lying program cannot raise: claiming nothing is unread while the
+  // supervisor served x (it was faulted in, so not held) leaves x as it was.
+  offered = await profile.lookup([APP], integrityOf, 1 << 20);
+  await profile.settle(offered, new Set(), new Set([`${APP}/x.js`]), new Set(), tagB);
+  assert.equal(score('x.js'), 2);
+  // Nor can it settle an entry it was never offered.
+  await profile.settle([{ path: `${APP}/x.js`, size: 10, object: 'v2/t/sha512/evil.tgz', rel: 'x.js' }], new Set([`${APP}/x.js`]), new Set(), new Set(), tagB);
+  assert.equal(score('x.js'), 2);
+  // A session vouches once: its later launches that held x, and reported
+  // nothing unread, add nothing (Main's P2 on 76d0a14a: ten attacker launches
+  // took one entry to 8). A second session's launch is a second voucher.
+  for (let i = 0; i < 10; i++) {
+    await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagA);
+  }
+  assert.equal(score('x.js'), 2, 'one session raises an entry at most once');
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagB);
+  assert.equal(score('x.js'), 3, 'a second vouching session raises it once more');
+  // A launch with no unread list at all (it died before reporting) is no
+  // information: it neither raises nor lowers.
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), null, new Set(), new Set(), await principalTag('session-c'));
+  assert.equal(score('x.js'), 3, 'no report raises nothing');
+  // A stored score past its vouchers is not one this module wrote.
+  const raw = JSON.parse(pruned.objects.values().next().value);
+  raw.entries['x.js'].score = 8;
+  pruned.objects.set(pruned.objects.keys().next().value, JSON.stringify(raw));
+  assert.equal((await profile.lookup([APP], integrityOf, 1 << 20)).length, 1);
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), new Set([`${APP}/x.js`]), new Set(), new Set(), tagA);
+  assert.equal(score('x.js'), 2, 'a forged score is read as observation plus its distinct vouchers');
+}
+
+// ── A full profile keeps its shared entries ──
+{
+  const full = bucket();
+  const sharedObs = [{ path: `${APP}/keep.js`, size: 1 }];
+  await new ReadProfile(full).observe(sharedObs, tagA, integrityOf);
+  await new ReadProfile(full).observe(sharedObs, tagB, integrityOf);
+  const flood = Array.from({ length: READ_PROFILE_MAX_ENTRIES + 50 }, (_, i) => ({ path: `${APP}/flood/${i}.js`, size: 1 }));
+  await new ReadProfile(full).observe(flood, await principalTag('flooder'), integrityOf);
+  const entries = JSON.parse(full.objects.values().next().value).entries;
+  assert.ok(Object.keys(entries).length <= READ_PROFILE_MAX_ENTRIES, 'bounded');
+  assert.ok(entries['keep.js'], 'one session\'s flood never evicts a shared entry');
+  assert.deepEqual((await new ReadProfile(full).lookup([APP], integrityOf, 1 << 20)).map((e) => e.rel), ['keep.js']);
+}
+
+// ── Hostile objects are dropped on the way out ──
+{
+  const hostile = bucket();
+  await new ReadProfile(hostile).observe([{ path: `${APP}/ok.txt`, size: 3 }], tagA, integrityOf);
+  const key = [...hostile.objects.keys()][0];
+  const entry = { size: 3, seen: [tagA, tagB], score: 1 };
+  hostile.objects.set(key, JSON.stringify({ entries: {
+    '../../../../etc/passwd': entry, '/etc/passwd': entry, 'a/../../b': entry, './x': entry, 'a//b': entry,
+    'node_modules/evil/x.js': entry, 'x\0y': entry, ['z'.repeat(600)]: entry,
+    'neg.txt': { ...entry, size: -1 }, 'zero.txt': { ...entry, score: 0 }, 'tags.txt': { ...entry, seen: [tagA, tagA, 'bad'] },
+    'ok.txt': entry,
+  } }));
+  const looked = await new ReadProfile(hostile).lookup([APP], integrityOf, 1 << 20);
+  assert.deepEqual(looked.map((e) => e.rel), ['ok.txt'], JSON.stringify(looked.map((e) => e.rel)));
+  hostile.objects.set(key, 'not json');
+  assert.deepEqual(await new ReadProfile(hostile).lookup([APP], integrityOf, 1 << 20), []);
+  for (const bad of ['../x', '/x', 'a/./b', '', 'a\\b']) assert.equal(validProfilePath(bad), false, bad);
+}
+
+// ── A learned path widens only what the session's own listing has ──
+{
+  const listing = new Map([
+    ['home', 'directory'], ['home/user', 'directory'], ['home/user/app', 'directory'],
+    ['home/user/app/node_modules', 'directory'], [APP, 'directory'], [`${APP}/ok.txt`, 'file'],
+  ]);
+  const source = {
+    list: async () => ({ entries: [...listing].map(([path, kind]) => ({ path, kind, size: 3 })), next: null }),
+    readText: async () => null,
+    stat: async () => null,
+  };
+  const plan = await planFacetData(source, {
+    cwd: '/srv', home: '/nobody', closure: [], refs: [], learned: [`${APP}/ok.txt`, `${APP}/missing.txt`],
+  });
+  assert.deepEqual(plan.paths, [`${APP}/ok.txt`]);
+}
+
+// ── A package no lockfile pins is identified by its package.json's content key ──
 {
   const linked = bucket();
   const key = 'pkgjson:' + 'ab'.repeat(32);
   const byKey = (root) => (root.endsWith('/linked') ? key : null);
-  assert.equal(await new ReadProfile(linked).record(['home/user/app/node_modules/linked/tpl/x.hbs'], byKey), 1);
+  const obs = [{ path: 'home/user/app/node_modules/linked/tpl/x.hbs', size: 5 }];
+  await new ReadProfile(linked).observe(obs, tagA, byKey);
+  await new ReadProfile(linked).observe(obs, tagB, byKey);
   assert.deepEqual(
-    await new ReadProfile(linked).lookup(['home/user/other/node_modules/linked'], byKey),
+    (await new ReadProfile(linked).lookup(['home/user/other/node_modules/linked'], byKey, 1 << 20)).map((e) => e.path),
     ['home/user/other/node_modules/linked/tpl/x.hbs'],
   );
-  // Anything else as an identity is refused.
-  assert.equal(await new ReadProfile(linked).record(['home/user/app/node_modules/z/a.js'], () => 'name@1.0.0'), 0);
+  assert.equal(await new ReadProfile(linked).observe(obs, tagA, () => 'name@1.0.0'), 0, 'anything else as an identity is refused');
+}
+
+
+// ── Principals: who a session writes as, and what anonymous sessions may do ──
+{
+  assert.equal(profilePrincipal('acme:alice'), 'acme:alice', 'a verified tenant and subject');
+  assert.equal(profilePrincipal('acme:_'), 'acme:_', 'a tenant-wide token');
+  assert.equal(profilePrincipal('anon:anon'), null, 'anonymous sessions are one principal that never writes');
+  assert.equal(profilePrincipal('legacy:public:_'), null, 'legacy-public sessions are anonymous');
+  assert.equal(profilePrincipal('nbf:tag:coord'), null, "a fanout peer's DO name is no principal");
+  assert.equal(profilePrincipal('acme'), null, 'not the router\'s shape');
+  assert.equal(profilePrincipal('acme:a b'), null, 'a component the token would refuse');
+  assert.equal(profilePrincipal(undefined), null, 'no Durable Object name: nothing to write as');
+
+  // rp-attack2: one principal with any number of sessions. Every session of
+  // one tenant+subject is the same principal, so its observations never share
+  // and its launches vouch once.
+  const target = `${APP}/dist/huge-asset.js`;
+  const attacked = bucket();
+  const attacker = await principalTag('mallory:m');
+  for (let session = 0; session < 20; session++) {
+    await new ReadProfile(attacked).observe([{ path: target, size: 2 << 20 }], attacker, integrityOf);
+  }
+  assert.deepEqual(await new ReadProfile(attacked).lookup([APP], integrityOf, 4 << 20), [], 'one principal never shares, whatever its session count');
+
+  // Anonymous sessions read, and never write: not an observation, not a vouch.
+  const anon = bucket();
+  assert.equal(await new ReadProfile(anon).observe([{ path: target, size: 10 }], null, integrityOf), 0);
+  assert.equal(anon.objects.size, 0, 'an anonymous observation writes nothing');
+  await new ReadProfile(anon).observe([{ path: target, size: 10 }], tagA, integrityOf);
+  await new ReadProfile(anon).observe([{ path: target, size: 10 }], tagB, integrityOf);
+  const before = [...anon.objects.values()][0];
+  const offer = await new ReadProfile(anon).lookup([APP], integrityOf, 1 << 20);
+  assert.equal(offer.length, 1, 'anonymous sessions read what two principals shared');
+  await new ReadProfile(anon).settle(offer, new Set(), new Set(), new Set(), null);
+  await new ReadProfile(anon).settle(offer, new Set([target]), new Set(), new Set(), null);
+  assert.equal([...anon.objects.values()][0], before, 'an anonymous launch neither raises nor lowers');
+
+  // Two principals share, as above; each vouches once.
+  const score = () => JSON.parse([...anon.objects.values()][0]).entries['dist/huge-asset.js'].score;
+  for (let i = 0; i < 5; i++) await new ReadProfile(anon).settle(await new ReadProfile(anon).lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagA);
+  assert.equal(score(), 2);
+
+  // A principal's writes to one profile are capped per window.
+  let now = 1_000_000;
+  const capped = bucket();
+  const writer = await principalTag('acme:writer');
+  const profile = new ReadProfile(capped, () => now);
+  let writes = 0;
+  const put = capped.put;
+  capped.put = async (k, v) => { writes++; return put(k, v); };
+  for (let i = 0; i < READ_PROFILE_WRITES_PER_WINDOW + 5; i++) {
+    await profile.observe([{ path: `${APP}/f${i}.js`, size: 1 }], writer, integrityOf);
+  }
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW, 'writes past the cap are dropped');
+  await profile.observe([{ path: `${APP}/other.js`, size: 1 }], tagA, integrityOf);
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW + 1, 'the cap is per principal');
+  now += 60 * 60_000;
+  await profile.observe([{ path: `${APP}/late.js`, size: 1 }], writer, integrityOf);
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW + 2, 'a new window admits writes again');
+}
+
+// ── Concurrent writers: every change lands, and the cap counts each one ──
+{
+  const shared = bucket();
+  const writers = await Promise.all(['acme:a', 'acme:b', 'globex:c'].map((p) => principalTag(p)));
+  const flood = await principalTag('initech:flood');
+  const jobs = [];
+  for (const [w, writer] of writers.entries()) {
+    for (let i = 0; i < 5; i++) {
+      jobs.push(new ReadProfile(shared).observe([{ path: `${APP}/w${w}-${i}.js`, size: 1 }], writer, integrityOf));
+    }
+  }
+  // A writer loses a try only to another's success, so each batch stays
+  // within the tries one write gets (16): 15 writers, then 11.
+  const landed = await Promise.all(jobs);
+  // One principal past its cap, all at once.
+  const flooded = [];
+  for (let i = 0; i < READ_PROFILE_WRITES_PER_WINDOW + 3; i++) {
+    flooded.push(new ReadProfile(shared).observe([{ path: `${APP}/flood-${i}.js`, size: 1 }], flood, integrityOf));
+  }
+  landed.push(...await Promise.all(flooded));
+  const body = JSON.parse([...shared.objects.values()][0]);
+  assert.equal(Object.keys(body.entries).filter((rel) => rel.startsWith('w')).length, 15, 'every concurrent observation landed');
+  assert.equal(Object.keys(body.entries).filter((rel) => rel.startsWith('flood')).length, READ_PROFILE_WRITES_PER_WINDOW, 'the cap admits exactly its count');
+  for (const writer of writers) assert.equal(body.writes[writer][1], 5, 'each write was counted');
+  assert.equal(body.writes[flood][1], READ_PROFILE_WRITES_PER_WINDOW);
+  assert.equal(landed.reduce((a, b) => a + b, 0), 15 + READ_PROFILE_WRITES_PER_WINDOW);
+
+  // A lowering racing another principal's vouch: both land.
+  await new ReadProfile(shared).observe([{ path: `${APP}/w0-0.js`, size: 1 }], writers[1], integrityOf);
+  const offer = (await new ReadProfile(shared).lookup([APP], integrityOf, 1 << 20)).filter((e) => e.rel === 'w0-0.js');
+  assert.equal(offer.length, 1);
+  const vouchers = await Promise.all(['umbrella:u', 'hooli:h'].map((p) => principalTag(p)));
+  await Promise.all([
+    new ReadProfile(shared).settle(offer, new Set(), new Set(), new Set(), vouchers[0]),
+    new ReadProfile(shared).settle(offer, new Set(), new Set(), new Set(), vouchers[1]),
+  ]);
+  const entry = JSON.parse([...shared.objects.values()][0]).entries['w0-0.js'];
+  assert.deepEqual(entry.vouched.sort(), [...vouchers].sort(), 'two concurrent vouches both landed');
+  assert.equal(entry.score, 3);
 }
 
 console.log('read-profile: ok');

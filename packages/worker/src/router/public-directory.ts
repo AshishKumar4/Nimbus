@@ -101,7 +101,7 @@ import { LEGACY_PUBLIC_DO_SEGMENT } from '../_shared/session-router.js';
  * needed. A host without a DO id (a unit-test stub) may carry the fields on
  * itself.
  */
-function sessionIdentity(host: {
+export function sessionIdentity(host: {
   ctx?: { id?: { name?: unknown } };
   tenantSegment?: string;
   sessionId?: string;

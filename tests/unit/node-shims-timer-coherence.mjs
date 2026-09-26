@@ -16,7 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -37,15 +37,24 @@ const supervisor = {
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsAcquire: (epoch, cursor, options) => { acquireCalls++; return bridge.acquire(epoch, cursor, options); },
 };
-const factory = new Function('__vfsBundle','__vfsMetadata','__vfsDirs','__vfsManifest','__supervisor','cred','cwd','argv','env','filename','dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };');
+const factory = new Function(
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };'
+);
 listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-const out = factory({ 'home/user/t/r.txt': 'V1' },
-  { 'home/user/t': { type:'directory', size:0, mode:0o755, uid:1000, gid:1000 },
-    'home/user/t/r.txt': { type:'file', size:2, mode:0o644, uid:1000, gid:1000 } },
-  {}, { 'home/user': ['t'], 'home/user/t': ['r.txt'] }, supervisor,
-  { uid:1000, gid:1000, groups:[1000], umask:0o022 }, dir, [], {}, `${dir}/s.mjs`, dir);
+const out = (declareNamespace({ metadata: { 'home/user/t': { type:'directory', size:0, mode:0o755, uid:1000, gid:1000 },
+    'home/user/t/r.txt': { type:'file', size:2, mode:0o644, uid:1000, gid:1000 } }, manifest: { 'home/user': ['t'], 'home/user/t': ['r.txt'] } }), factory(
+  { 'home/user/t/r.txt': 'V1' },
+  {},
+  supervisor,
+  { uid:1000, gid:1000, groups:[1000], umask:0o022 },
+  dir,
+  [],
+  {},
+  `${dir}/s.mjs`,
+  dir
+));
 const { fs } = out;
 
 // Warm the resident cell into the cursor's known state via one async touch.

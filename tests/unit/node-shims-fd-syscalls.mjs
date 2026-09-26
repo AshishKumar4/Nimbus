@@ -15,7 +15,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -67,18 +67,23 @@ const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 // The process starts at the authority's cursor, as a launch does.
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
     '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins, drain: __nimbusDrainVfsMutations };'
 );
 listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-const sandbox = factory(
-  bundle, metadata, dirs, null, supervisor,
+const sandbox = (declareNamespace({ metadata: metadata, manifest: null }), factory(
+  bundle,
+  dirs,
+  supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-);
+  '/home/user',
+  [],
+  {},
+  '/home/user/main.mjs',
+  '/home/user',
+));
 writes = sandbox.writes;
 const fs = sandbox.fs;
 

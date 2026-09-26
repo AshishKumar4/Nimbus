@@ -49,11 +49,10 @@ const supervisor = {
 listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 const { fs, setTimeout: shimTimeout } = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
     + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
-)({}, {}, {}, {}, supervisor, CRED, '/home/user/app', [], {}, '/home/user/app/main.js', '/home/user/app');
+)({}, {}, supervisor, CRED, '/home/user/app', [], {}, '/home/user/app/main.js', '/home/user/app');
 const stats = globalThis.__nimbusVfsCoherence;
 const afterTimer = () => new Promise((resolve) => shimTimeout(resolve, 0));
 

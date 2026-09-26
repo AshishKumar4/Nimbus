@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 
 class FakeVfs {
   get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
@@ -89,7 +90,7 @@ const missingRequiredLeaves = [];
 }
 
 {
-  const maxRawBytes = 24 * 1024 * 1024;
+  const maxRawBytes = VFS_BUNDLE_MAX_BYTES;
   const bulkRoot = `${root}/bulk-bytes`;
   const bulkRequires = [];
   const files = {
@@ -97,7 +98,9 @@ const missingRequiredLeaves = [];
     [`${bulkRoot}/package.json`]: JSON.stringify({ name: 'bulk-bytes', main: 'index.js' }),
   };
   const oneMiB = ' '.repeat(1024 * 1024);
-  for (let index = 0; index < 22; index++) {
+  // Whole MiB parts up to two short of the bound; the tail fills the rest.
+  const parts = Math.floor(maxRawBytes / (1024 * 1024)) - 2;
+  for (let index = 0; index < parts; index++) {
     const name = `part-${String(index).padStart(2, '0')}`;
     bulkRequires.push(`require('./${name}');`);
     files[`${bulkRoot}/${name}.js`] = oneMiB;
@@ -109,7 +112,7 @@ const missingRequiredLeaves = [];
   const bytesBeforeTail =
     files[`${bulkRoot}/package.json`].length
     + files[`${bulkRoot}/index.js`].length
-    + oneMiB.length * 22;
+    + oneMiB.length * parts;
   const crossSpawnBytesBeforeLeaf =
     files[`${root}/cross-spawn/package.json`].length
     + files[`${root}/cross-spawn/index.js`].length

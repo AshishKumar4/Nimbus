@@ -25,7 +25,7 @@ import {
   buildPrefetchBundle,
   isTypescriptDeclarationFile,
 } from '../../packages/worker/src/facets/manager.ts';
-import { BUNDLE_MAX_ENCODED_BYTES } from '../../packages/core/src/constants.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 
 
@@ -37,7 +37,7 @@ const filler = (bytes, tag) => `// ${tag}\n${'x'.repeat(Math.max(0, bytes - tag.
 // Sized just under the ceiling so the optional cells below are what pushes
 // the snapshot over, by a margin SMALLER than the declaration file — the one
 // arrangement where the two orderings disagree about the module.
-const REQUIRED_BYTES = BUNDLE_MAX_ENCODED_BYTES - 1_200_000;
+const REQUIRED_BYTES = VFS_BUNDLE_MAX_BYTES - 1_200_000;
 const DECL_BYTES = 600 * 1024;
 const SIBLING_BYTES = 900 * 1024;
 

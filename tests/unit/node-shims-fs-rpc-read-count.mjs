@@ -57,16 +57,20 @@ const supervisor = {
 };
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod };',
 );
 const { fs } = factory(
-  {}, {}, {}, {},
+  {},
+  {},
   supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir, [], {}, `${dir}/script.mjs`, dir,
+  dir,
+  [],
+  {},
+  `${dir}/script.mjs`,
+  dir,
 );
 const fsp = fs.promises;
 

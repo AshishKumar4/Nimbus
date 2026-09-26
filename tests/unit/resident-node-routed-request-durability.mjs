@@ -27,6 +27,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 const PORT = 4471;
 
@@ -74,19 +75,10 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => makeSupervisor(props) });
  * the process — the real program, not a stand-in for it.
  */
 const world = createFacetWorld(async (config, info) => {
-  const source = config.modules['worker.js'].replace(
-    'import { DurableObject } from "cloudflare:workers";',
-    'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }',
-  );
-  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  try {
-    const generated = await import(url);
-    const supervisor = config.env.SUPERVISOR;
-    supervisorProps.push(supervisor.props);
-    return new generated.NimbusProcess(createProcessFacetCtx(info.facetName), { SUPERVISOR: supervisor });
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  const generated = await importModuleSet(config.modules, 'worker.js');
+  const supervisor = config.env.SUPERVISOR;
+  supervisorProps.push(supervisor.props);
+  return new generated.NimbusProcess(createProcessFacetCtx(info.facetName), { SUPERVISOR: supervisor });
 });
 
 const env = {

@@ -10,39 +10,42 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
-  '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __fsMod;',
 );
 
 const APP = 'home/user/app';
-const fs = factory(
-  {
-    [`${APP}/root-owned.json`]: '{"root":true}',
-    [`${APP}/undescribed.json`]: '{"who":"unknown"}',
-    [`${APP}/mine-already.txt`]: 'mine',
-  },
-  {
+const fs = (declareNamespace({ metadata: {
     [APP]: { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
     [`${APP}/root-owned.json`]: { type: 'file', size: 13, mode: 0o100644, uid: 0, gid: 0 },
     [`${APP}/etc-like`]: { type: 'directory', size: 0, mode: 0o40755, uid: 0, gid: 0 },
     [`${APP}/mine-already.txt`]: { type: 'file', size: 4, mode: 0o100600, uid: 1000, gid: 1000 },
     tmp: { type: 'directory', size: 0, mode: 0o41777, uid: 0, gid: 0 },
     'tmp/theirs.txt': { type: 'file', size: 4, mode: 0o100644, uid: 1001, gid: 1001 },
-  },
-  {},
-  {
+  }, manifest: {
     [APP]: ['root-owned.json', 'undescribed.json', 'etc-like', 'undescribed-dir', 'capped.bin', 'mine-already.txt'],
     tmp: ['theirs.txt', 'listed-only.txt'],
     [`${APP}/etc-like`]: [],
     [`${APP}/undescribed-dir`]: [],
+  } }), factory(
+  {
+    [`${APP}/root-owned.json`]: '{"root":true}',
+    [`${APP}/undescribed.json`]: '{"who":"unknown"}',
+    [`${APP}/mine-already.txt`]: 'mine',
   },
-  null, CRED, `/${APP}`, [], {}, `/${APP}/main.js`, `/${APP}`,
-);
+  {},
+  null,
+  CRED,
+  `/${APP}`,
+  [],
+  {},
+  `/${APP}/main.js`,
+  `/${APP}`,
+));
 
 const t = (f) => { try { return f(); } catch (e) { return `ERR:${e.code}`; } };
 const own = (p) => t(() => { const s = fs.statSync(p); return { uid: s.uid, gid: s.gid, mode: (s.mode & 0o7777).toString(8) }; });
@@ -108,8 +111,7 @@ assert.equal(t(() => fs.unlinkSync(`/${APP}/etc-like/anything`)), 'ERR:EACCES');
     lstat: async () => null, stat: async () => null, readdir: async () => [], mkdir: async () => {},
   };
   const run = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
-    '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, drain: __nimbusDrainVfsMutations };',
   );
@@ -119,7 +121,7 @@ assert.equal(t(() => fs.unlinkSync(`/${APP}/etc-like/anything`)), 'ERR:EACCES');
     'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
     'usr/lib/node_modules': { type: 'directory', size: 0, mode: 0o40755, uid: 0, gid: 0 },
   };
-  const probe = run({}, home, {}, { 'home/user': [] }, refusing, CRED, '/home/user', [], {}, '/home/user/main.js', '/home/user');
+  const probe = (declareNamespace({ metadata: home, manifest: { 'home/user': [] } }), run({}, {}, refusing, CRED, '/home/user', [], {}, '/home/user/main.js', '/home/user'));
   const caught = await probe.fs.promises.writeFile('/usr/lib/node_modules/.probe', 'x').then(() => null, (e) => e.code);
   assert.equal(caught, 'EACCES', 'the caller gets the verdict');
   assert.equal(await probe.drain().then(() => 'clean', (e) => `throws ${e.code}`), 'clean', 'a caught verdict does not fail the exit');

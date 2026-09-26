@@ -63,14 +63,19 @@ function installShims(env) {
     },
   };
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return null;',
   );
   factory(
-    {}, {}, {}, {}, supervisor,
+    {},
+    {},
+    supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], env, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    env,
+    '/home/user/main.mjs',
+    '/home/user',
   );
   return { routed, origin };
 }

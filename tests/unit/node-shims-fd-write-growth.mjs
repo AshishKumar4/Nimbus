@@ -21,8 +21,7 @@ import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 // embedding does. The parked cell comes back out of the factory rather than
 // being passed in, because the ledger owns that table.
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
-  '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, Buffer: __BufferMod, writes: __vfsWrites };',
 );
@@ -34,9 +33,15 @@ const TOTAL = CHUNK * WRITES;
 function measureWriteLoop() {
   const dirs = { 'home/user': true };
   const { fs, Buffer, writes } = factory(
-    {}, {}, dirs, {}, null,
+    {},
+    dirs,
+    null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
   );
 
   const fd = fs.openSync('/home/user/out.bin', 'w');
@@ -77,9 +82,15 @@ assert.ok(
 // the shape of the bug, independent of any constant.
 const half = (() => {
   const { fs, Buffer, writes } = factory(
-    {}, {}, { 'home/user': true }, {}, null,
+    {},
+    { 'home/user': true },
+    null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
   );
   const fd = fs.openSync('/home/user/out.bin', 'w');
   const chunk = Buffer.alloc(CHUNK, 0x41);
@@ -109,9 +120,15 @@ assert.ok(
 // doubled 32 MiB buffer silently lost its write on a deployed worker.
 {
   const { fs, Buffer, writes } = factory(
-    {}, {}, { 'home/user': true }, {}, null,
+    {},
+    { 'home/user': true },
+    null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
   );
   const fd = fs.openSync('/home/user/big.bin', 'w');
   const chunk = Buffer.alloc(1024 * 1024, 0x42);

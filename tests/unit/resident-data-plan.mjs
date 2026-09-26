@@ -36,6 +36,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 const PROJECT = '/home/user/proj';
 /** A project file past the bundle's byte cap and the single-value ceiling: chunked. */
@@ -137,20 +138,11 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => makeSupervisor(props) });
 
 let facetSeq = 0;
 const world = createFacetWorld(async (config, info) => {
-  const source = config.modules['worker.js'].replace(
-    'import { DurableObject } from "cloudflare:workers";',
-    'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }',
+  const generated = await importModuleSet(config.modules, 'worker.js');
+  return new generated.NimbusProcess(
+    createProcessFacetCtx(`${info.facetName}-${++facetSeq}`),
+    { SUPERVISOR: config.env.SUPERVISOR },
   );
-  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-  try {
-    const generated = await import(url);
-    return new generated.NimbusProcess(
-      createProcessFacetCtx(`${info.facetName}-${++facetSeq}`),
-      { SUPERVISOR: config.env.SUPERVISOR },
-    );
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 });
 
 /** A shared read profile (R2, in memory): what one session misses, the next holds. */
@@ -163,8 +155,11 @@ const profileBucket = {
   },
 };
 /** A session's npm lockfile: the integrity tablepkg was installed from. */
-function sessionCtx(name) {
+// A session writes to profiles as the principal the router put in its Durable
+// Object name (`<tenant>:<subject>:<sid>`), never as the session.
+function sessionCtx(name, principal) {
   const ctx = createFacetCtx(world, name);
+  ctx.id = { toString: () => name, name: `${principal}:${name}` };
   const npm = createSqliteVfsTestHarness();
   ctx.storage.sql = npm.sql;
   new NpmCache(npm.sql).writeLockfile('/home/user/proj', new Map([['tablepkg', {
@@ -175,7 +170,7 @@ function sessionCtx(name) {
 }
 
 const env = {
-  NIMBUS_READ_PROFILES: profileBucket,
+  NPM_TARBALL_CACHE: profileBucket,
   LOADER: world.loader,
   ASSETS: {
     async fetch(request) {
@@ -189,8 +184,8 @@ const env = {
 };
 
 let sessionCtxNow;
-function session(name) {
-  sessionCtxNow = sessionCtx(name);
+function session(name, principal = 'acme:alice') {
+  sessionCtxNow = sessionCtx(name, principal);
   const m = new FacetManager(sessionCtxNow, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
   m.setVfs(sessionVfs, processFiles(sessionVfs));
   delete globalThis.__portRegistry;
@@ -275,19 +270,50 @@ assert.ok(fsListCalls > 0, 'the store asked the authority what exists');
 assert.ok(fsReadBatchCalls > 0, 'the store was filled over the supervisor');
 
 // ── Arm 3: a miss is learned for the package, across sessions ───────────────
-// The run above missed late.js. Its exit report files the miss under the
-// package's installed integrity; a different session launching the same
-// tarball holds the file from boot.
+// The run above missed late.js. What its exit files is only what this session
+// served the process after the miss (the supervisor's own evidence), under
+// the package's installed integrity, and it is shared once a second session
+// has observed it too; then a third session launching the same tarball holds
+// the file from boot.
 assert.equal(filled.late, 'ERR:EAGAIN', `a runtime-computed package read is a first miss: ${JSON.stringify(filled)}`);
-manager.noteProcessReportedExit(filled.pid, 1, [LATE]);
+const served = new Set([LATE]);
+const entriesOf = () => JSON.parse([...profiles.values()][0]).entries;
+// A program's word alone files nothing.
+manager.noteProcessReportedExit(filled.pid, 1, [LATE], { served: new Set(), profileUnread: [] });
 await Promise.all(sessionCtxNow.waited);
-assert.equal(profiles.size, 1, 'the miss was filed under the package');
+assert.equal(profiles.size, 0, 'a miss the supervisor never served is not evidence');
+manager.noteProcessReportedExit(filled.pid, 1, [LATE], { served, profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(profiles.size, 1, 'the served miss was filed under the package');
 assert.ok(![...profiles.values()][0].includes('home/user'), 'package-relative');
-// A second session over the same files: its pids start again at 1.
-for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
-manager = session('another-session');
+assert.equal(entriesOf()['private/late.js'].seen.length, 1);
+const nextSession = (name, principal) => {
+  // Another session over the same files: its pids start again at 1.
+  for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
+  manager = session(name, principal);
+};
+// Another session of the same principal is no second observer: session ids
+// are free to mint. Nor is an anonymous one, which never writes.
+for (const [name, principal] of [['alice-again', 'acme:alice'], ['anonymous', 'anon:anon'], ['legacy', 'legacy:public:_']]) {
+  nextSession(name, principal);
+  const again = await run(false);
+  manager.noteProcessReportedExit(again.pid, 1, [LATE], { served, profileUnread: [] });
+  await Promise.all(sessionCtxNow.waited);
+  assert.equal(entriesOf()['private/late.js'].seen.length, 1, `${name}: not a second observer`);
+}
+nextSession('second-session', 'globex:bob');
+const second = await run(false);
+assert.equal(second.late, 'ERR:EAGAIN', `one session's observation is not shared: ${JSON.stringify(second)}`);
+manager.noteProcessReportedExit(second.pid, 1, [LATE], { served, profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(entriesOf()['private/late.js'].seen.length, 2, 'a second session observed it');
+nextSession('third-session', 'initech:carol');
 const learned = await run(false);
-assert.equal(learned.late, 'late-bytes', `another session holds the learned file: ${JSON.stringify(learned)}`);
+assert.equal(learned.late, 'late-bytes', `a third session holds the learned file: ${JSON.stringify(learned)}`);
+// It read it, and the supervisor never had to fault it in: the entry is confirmed.
+manager.noteProcessReportedExit(learned.pid, 0, [], { served: new Set(), profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(entriesOf()['private/late.js'].score, 2, 'held and never faulted in raises its score');
 
 say('resident-data-plan: ok\n');
 say(`  control: ${JSON.stringify(control)}\n`);

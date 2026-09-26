@@ -20,7 +20,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -57,8 +57,7 @@ const supervisor = {
 globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
   + '\n;return { fs: __fsMod, drain: () => __nimbusDrainVfsWrites(__supervisor) };',
 );
@@ -71,12 +70,17 @@ function ownTree(path = 'home') {
 }
 ownTree();
 listAuthority(rawVfs);
-const { fs, drain } = factory(
+const { fs, drain } = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
   {},
-  { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
-  {}, { home: ['user'], 'home/user': [] }, supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, home, [], {}, `${home}/s.mjs`, home,
-);
+  {},
+  supervisor,
+  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  home,
+  [],
+  {},
+  `${home}/s.mjs`,
+  home,
+));
 
 const indexOf = (op, path) => calls.findIndex((c) => c.op === op && c.path === path);
 const rejectsWith = async (promise, code) => {

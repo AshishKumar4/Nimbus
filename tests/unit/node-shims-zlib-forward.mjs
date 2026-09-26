@@ -19,14 +19,21 @@ const realZlib = await import('node:zlib');
 
 function shimScope(extraParams) {
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
-    'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', ...extraParams.map((p) => p.name),
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    ...extraParams.map((p) => p.name),
     '"use strict";' + generateShimsCode() + '\n;return { zlib: builtins.zlib, Buffer: __BufferMod, stream: __streamMod };',
   );
   return factory(
-    {}, {}, {}, {}, {}, null,
+    {},
+    {},
+    {},
+    null,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+    '/home/user',
+    [],
+    {},
+    '/home/user/main.mjs',
+    '/home/user',
     ...extraParams.map((p) => p.value),
   );
 }

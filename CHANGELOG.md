@@ -170,6 +170,32 @@ kernel credential, because Nimbus follows POSIX here:
 
 ### filesystem
 
+- The shared read profile (what node processes read synchronously and did
+  not have, per installed package) lives in the npm tarball cache bucket
+  (`NPM_TARBALL_CACHE`, under `read-profiles/v3/`); the
+  `NIMBUS_READ_PROFILES` binding is gone. Nothing a program reports is
+  trusted: a miss is learned only when this supervisor served the process an
+  async read of that path afterwards and it is a regular file in the package.
+  Observers and vouchers are principals, the verified tenant and subject in
+  the session's Durable Object name, never session ids, which anyone can
+  mint; anonymous sessions (legacy-public, or the `anon` tenant) read
+  profiles and never write them (nor does any DO name the router does not
+  mint from a verified token, such as a fanout peer's); a principal writes
+  one package's profile at most 8 times an hour. Each write is a
+  compare-and-swap on the object's etag, retried from a fresh read, so
+  concurrent writers no longer drop each other's observations or votes. An entry is shared only once two different
+  principals observed it, what a
+  shared profile adds to one launch is bounded in bytes (an eighth of the
+  module map's budget), and entries are pruned: a launch that held an entry
+  and never had to fault it in raises it, once per principal, so a score
+  counts the distinct principals that vouched for it; a program saying it never read
+  one lowers it; a launch that reported nothing changes nothing; one that
+  names no regular file is dropped. A learned module joins the launch's module
+  map with its imports (nuxt's `on-change` failed with "not in this launch's
+  module map" before), in the room the require closure leaves under the
+  snapshot bound, after the session's own misses: neither can make a launch
+  fail. Only the closure itself past the bound fails one, naming the file
+  that crossed it.
 - A mount with no synchronous face (an embedder's Drive, `/pc`, `/sandbox`)
   works for every caller that can wait: shell commands (`ls /`, `cat`, `find
   /`, redirects), node's `fs.promises`, the supervisor RPC, and bash under

@@ -13,7 +13,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -70,21 +70,24 @@ const supervisor = {
 
 const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return { fs: __fsMod };'
 );
-const sandbox = factory(
-  { 'home/user/log.txt': 'stale-snapshot\n' },
-  // Staged content comes with its record, as every launch stages it.
+const sandbox = (declareNamespace({ metadata: // Staged content comes with its record, as every launch stages it.
   {
     'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
     'home/user/log.txt': { type: 'file', size: 15, mode: 0o100644, uid: 1000, gid: 1000 },
-  },
-  {}, null, supervisor,
+  }, manifest: null }), factory(
+  { 'home/user/log.txt': 'stale-snapshot\n' },
+  {},
+  supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-);
+  '/home/user',
+  [],
+  {},
+  '/home/user/main.mjs',
+  '/home/user',
+));
 const fsp = sandbox.fs.promises;
 const enc = new TextEncoder();
 

@@ -29,7 +29,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -74,32 +74,30 @@ const statOf = (path, size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gi
 // condition under test: the existence views know all three, the content view
 // knows one.
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-  'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod };',
 );
-const { fs } = factory(
-  { 'home/user/example-app/resident.json': RESIDENT_BODY },
-  {
+const { fs } = (declareNamespace({ metadata: {
     'home/user/example-app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
     'home/user/example-app/resident.json': statOf(resident, RESIDENT_BODY.length),
     'home/user/example-app/lib.data.d.ts': statOf(staged, STAGED_BODY.length),
     'home/user/example-app/second.data': statOf(alsoStaged, SECOND_BODY.length),
     'home/user/example-app/third.data': statOf(asyncOnly, THIRD_BODY.length),
-  },
-  {},
-  {
+  }, manifest: {
     'home/user': ['app'],
     'home/user/example-app': ['resident.json', 'lib.data.d.ts', 'second.data', 'third.data'],
-  },
+  } }), factory(
+  { 'home/user/example-app/resident.json': RESIDENT_BODY },
+  {},
   supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   dir,
-  [], {},
+  [],
+  {},
   `${dir}/entry.js`,
   dir,
-);
+));
 
 /** The ledger the runner reads at exit to decide whether the run was honest. */
 const missed = () => [...(globalThis.__nimbusVfsResidencyMisses || [])];

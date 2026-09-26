@@ -826,6 +826,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
+    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1530,6 +1531,8 @@ const __fsMod = (() => {
       // The namespace's failure state (a relist failed): synchronous calls
       // refused with its cause (_nsRequire), and barriers that repaired it.
       namespaceRefusals: 0, namespaceRepairs: 0,
+      // Repairs a delta from the store's durable floor answered, with no listing.
+      floorRepairs: 0,
     });
 
   /**
@@ -1758,11 +1761,50 @@ const __fsMod = (() => {
   let _storeRepairOwed = false;
 
   /**
+   * The repair's first try: the delta from the store's durable floor
+   * (__residentCursor), asked as every barrier asks it. True when it applied
+   * (the repair is done); false when a listing is needed after all.
+   */
+  async function _repairFromFloor(supervisor, result) {
+    if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
+    if (result !== null && result.poison === true) return false;
+    const floor = __residentCursor();
+    if (floor === null || (result !== null && result.epoch !== floor.epoch)) return false;
+    let delta;
+    try {
+      delta = await __nimbusUseRpcResult(supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true }), (r) => r);
+    } catch { return false; }
+    if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
+    if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
+    await __residentRoomForPushed(delta);
+    const applied = __residentAdmit(delta);
+    for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+    if (!_nsActive()) return false;
+    _cursor.epoch = applied.cursor.epoch;
+    _cursor.rev = applied.cursor.rev;
+    _stats.invalidations += applied.dropped.length;
+    // What it should hold and lost (dropped by this delta, or by the barrier
+    // that could not vouch for its rows), refetched by the namespace's stats.
+    const refilled = await __residentRefillFromNamespace(supervisor, applied.dropped);
+    _stats.fills += refilled.filled;
+    _stats.filledBytes += refilled.bytes;
+    _stats.floorRepairs++;
+    _storeRepairOwed = false;
+    return true;
+  }
+
+  /**
    * \`result\` is the ACQUIRE answer that asked for the repair: a poison, a
    * delta arriving while a repair is owed, or null for a barrier that got no
    * answer at all.
    */
   async function _runResidentRepair(supervisor, result) {
+    // Within one epoch, with the change log intact and the namespace
+    // answering, the store's rows are dated through its own durable cursor, so
+    // the delta from there names everything that moved since. Only an epoch
+    // change, a poison (the log truncated past the cursor), or a namespace
+    // that stopped answering needs the listing.
+    if (await _repairFromFloor(supervisor, result)) return;
     const ownAtStart = __residentOwnPaths();
     let repaired;
     try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
@@ -8465,9 +8507,6 @@ function __resolveFile(base) {
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
 // Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
 //           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-// the prior hand-rolled __resolvePkgEntry only honoured top-level
-// require|default|import and dropped subpath maps, wildcards, nested
-// conditions, the imports field, and null-target enforcement.
 ${EXPORTS_RESOLVER_JS}
 
 // ── TypeScript specifier fallbacks ────────────────────────────────────────
@@ -8549,10 +8588,6 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   return __resolveFile(pkgDir + "/" + rel);
 }
 
-/** Back-compat name used elsewhere in this file. */
-function __resolvePkgEntry(pkgDir) {
-  return __resolvePkgSubpath(pkgDir, null, ".");
-}
 
 /**
  * Resolve a bare specifier (e.g. "react", "@scope/pkg", "pkg/sub/path")
@@ -8739,6 +8774,7 @@ function __makeLoadingExports(mod) {
  * Returns the module.exports value.
  */
 function __loadModule(resolvedPath) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   if (__moduleCache.has(resolvedPath)) return __moduleCache.get(resolvedPath);
 
   const mod = { exports: {} };

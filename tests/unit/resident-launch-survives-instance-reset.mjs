@@ -90,7 +90,7 @@ function createSession(label) {
  * its mid-launch deaths — in the paced image write.
  */
 function parkedPastLease(gen) {
-  return gen.manager.hasPendingLaunchTurns && readSupervisorAllocationBudget().current === 0;
+  return gen.waitingForTurn() && readSupervisorAllocationBudget().current === 0;
 }
 
 /** One instance of the session Durable Object. `crashable` marks the one a
@@ -120,12 +120,16 @@ function createInstance(session, generation, { pumpWhile, crashable = false }) {
     },
   };
   const ctx = createFacetCtx(world, session.label, session.storage, { crashable });
+  let waiting = false;
   const manager = new FacetManager(
     ctx,
     env, processes, new PortRegistry(), processHostFor,
     {
+      // A launch that asks for a turn this instance will not pump is parked,
+      // waiting for one: what the platform's alarm would grant.
       requestLaunchTurn: () => {
-        if (!pumpWhile()) return;
+        if (!pumpWhile()) { waiting = true; return; }
+        waiting = false;
         setTimeout(() => {
           if (!pumpWhile()) return;
           void manager.pumpResidentLaunches();
@@ -136,7 +140,7 @@ function createInstance(session, generation, { pumpWhile, crashable = false }) {
     },
   );
   manager.setVfs(session.vfs, processFiles(session.vfs));
-  return { ctx, manager, processes, world, notices, spawns };
+  return { ctx, manager, processes, world, notices, spawns, waitingForTurn: () => waiting };
 }
 
 const settle = async (predicate, tries = 400) => {

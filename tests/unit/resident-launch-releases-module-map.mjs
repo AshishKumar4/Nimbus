@@ -52,6 +52,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { moduleMapText } from './lib/module-map-bundle.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
@@ -179,7 +180,7 @@ const [config] = [...world.configs.values()];
 assert.equal(config.mainModule, 'worker.js', 'the facet boots the generated entry');
 const entrySource = config.modules['worker.js'];
 assert.equal(typeof entrySource, 'string', 'the entry resolved to source');
-assert.ok(entrySource.includes('module.exports = 1;'), 'the resolved entry is the program');
+assert.ok(moduleMapText(config.modules).includes('module.exports = 1;'), 'the resolved map carries the program');
 
 const images = fs.readdir(FACET_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name));
 assert.ok(images.length > 0, 'the launch wrote its map to the image store');

@@ -47,6 +47,7 @@ import {
 } from '../../packages/core/src/constants.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { writeModuleSet } from './lib/module-map-bundle.mjs';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //
@@ -195,8 +196,7 @@ let runnerN = 0;
 const env = {
   LOADER: {
     load(config) {
-      const file = join(runnerDir, `runner-${runnerN++}.mjs`);
-      writeFileSync(file, config.modules['runner.js']);
+      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
       const supervisor = config.env?.SUPERVISOR;
       return {

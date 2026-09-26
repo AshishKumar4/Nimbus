@@ -142,6 +142,25 @@ export const WS_ATTACHMENT_LIMIT_BYTES = 16_384;
 // metadata and matches the proven on-demand facet transfer envelope.
 export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 
+// ── A one-shot's module map [#13] ───────────────────────────────────────
+//
+// The largest one-shot module map (its closure's raw bytes) the session DO
+// builds and hands to the Worker Loader. What limits it is the DO, not the
+// loader (whose documented limits are concurrency only): the map is built,
+// serialized and passed on from the DO's 128 MB isolate.
+//
+// Measured on a throwaway (2026-09-26; session DO max memoryUsageBytes from
+// GraphQL durableObjectsPeriodicGroups, one launch per minute; a package of
+// 256 KiB distinct modules required whole, verify/release/do-headroom.md),
+// with the map serialized one side module at a time:
+//   4 MiB 64 MB, 8 MiB 81 MB, 12 MiB 97 MB, 16 MiB 110 MB, 20 MiB 126 MB,
+//   24 MiB 145 MB, 28 MiB 164 MB, over an idle 40-55 MB.
+// That is about 4.5 MB of DO per MiB of map. 18 MiB, about 118 MB, is the
+// largest size that leaves about 10 MB of the 128 MB for the rest of the
+// session's work. (Before the single-copy build it was 6-7 MB per MiB: 24 MiB
+// reset the DO.)
+export const ONE_SHOT_MODULE_MAP_MAX_BYTES = 18 * 1024 * 1024;
+
 // ── Supervisor heap budget [C'.1] ───────────────────────────────────────
 //
 // Three distinct memory regimes, not one shared pool:

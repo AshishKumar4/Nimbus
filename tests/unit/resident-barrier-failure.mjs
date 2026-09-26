@@ -32,7 +32,7 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -100,6 +100,19 @@ await runScenarios(import.meta.path, {
       'a dropped ACQUIRE is not an empty delta: the rows are reconciled against the listing',
     );
     assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
+  },
+
+  async 'a repair owed within one epoch asks a delta from the store\'s floor, never a listing'() {
+    const { authority, fault, probe, log } = await boot();
+    authority.kfs.writeFile('home/user/app/f.txt', 'v2');
+    // One barrier's ACQUIRE is lost; the authority's log is intact.
+    fault.fsAcquire = (...args) => { fault.fsAcquire = null; return DROPPED(); };
+    const lists = log.calls.fsList ?? 0;
+    const acquires = log.calls.fsAcquire ?? 0;
+    assert.equal(await probe.resume(F), 'v2', 'the change is seen');
+    assert.equal((log.calls.fsList ?? 0) - lists, 0, 'the repair listed nothing: the delta from the floor covers it');
+    assert.ok((log.calls.fsAcquire ?? 0) - acquires <= 3, `and it took a delta or two (${(log.calls.fsAcquire ?? 0) - acquires} ACQUIREs)`);
+    assert.ok(coherenceStats().floorRepairs >= 1, 'counted as a repair from the floor');
   },
 
   async 'a peer file the dropped barrier missed is the peer\'s, not free: its record, and no write'() {
@@ -309,15 +322,17 @@ await runScenarios(import.meta.path, {
       fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
     };
     globalThis.__nimbusVfsCursor = authority.cursor();
+    declareNamespace({
+      metadata: { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
+      manifest: { 'home/user': ['app'], 'home/user/app': ['f.txt'] },
+    });
     const shims = new Function(
-      '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
-      'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+      '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
       '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
       + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
     )(
       { 'home/user/app/f.txt': 'V1' },
-      { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
-      {}, { 'home/user': ['app'], 'home/user/app': ['f.txt'] }, supervisor,
+      {}, supervisor,
       { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, `/home/user/app/s.js`, '/home/user/app',
     );
     assert.equal(shims.fs.readFileSync(F, 'utf8'), 'V1');

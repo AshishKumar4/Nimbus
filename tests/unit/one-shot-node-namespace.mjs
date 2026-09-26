@@ -25,6 +25,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
+import { writeModuleSet } from './lib/module-map-bundle.mjs';
 
 const authority = createAuthority();
 const { host, rawVfs, kfs } = authority;
@@ -53,8 +54,7 @@ let runnerN = 0;
 const env = {
   LOADER: {
     load(config) {
-      const file = join(runnerDir, `runner-${runnerN++}.mjs`);
-      writeFileSync(file, config.modules['runner.js']);
+      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
       const supervisor = config.env?.SUPERVISOR;
       return {

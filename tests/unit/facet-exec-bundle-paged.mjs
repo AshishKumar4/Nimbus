@@ -39,6 +39,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src/facets/exec-telemetry.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { moduleMapBundle, moduleMapText } from './lib/module-map-bundle.mjs';
 
 process.env.NIMBUS_DIAG_EXEC = '1';
 
@@ -133,14 +134,9 @@ function seedProgram(vfs, marker) {
 
 const ENTRY = { filename: '/home/user/run.js', cwd: '/home/user' };
 
-/** The snapshot declaration a generated facet body carries: its module bundle. */
-function snapshotDeclarations(source) {
-  const pick = (name) => {
-    const match = source.match(new RegExp(`^(?:const|let) ${name} = (.*);$`, 'm'));
-    assert.ok(match, `the generated body declares ${name}`);
-    return match[1];
-  };
-  return { bundle: pick('__MODULE_VFS_BUNDLE') };
+/** The snapshot a generated facet boots on: the cells of its module bundle (side modules included). */
+function snapshotDeclarations(modules) {
+  return { bundle: moduleMapBundle(modules) };
 }
 
 async function settle(predicate, label) {
@@ -164,9 +160,8 @@ async function settle(predicate, label) {
     `the build crossed several turns rather than running straight through (grants=${turns.count})`,
   );
   assert.equal(oneShotMaps.length, 1, 'exactly one module map was loaded for the exec');
-  const runner = oneShotMaps[0].modules['runner.js'];
   assert.ok(
-    runner.includes('marker-exec'),
+    moduleMapText(oneShotMaps[0].modules).includes('marker-exec'),
     'a build spread across turns still carries the program it was asked to run',
   );
   const [rec] = readExecTelemetry();
@@ -196,7 +191,7 @@ async function settle(predicate, label) {
   seedProgram(exec.vfs, 'marker-same');
   const result = await exec.manager.exec("require('dep');", { ...ENTRY, captureOutput: true });
   assert.equal(result.exitCode, 0);
-  const fromExec = snapshotDeclarations(exec.oneShotMaps[0].modules['runner.js']);
+  const fromExec = snapshotDeclarations(exec.oneShotMaps[0].modules);
 
   const residentTurns = { count: 0 };
   const resident = makeManager('exec-vs-resident/resident', residentTurns);
@@ -204,9 +199,9 @@ async function settle(predicate, label) {
   await resident.manager.spawnNode("require('dep');", { ...ENTRY, command: 'dep-tui', attachedTty: true });
   await settle(() => resident.world.configs.size === 1, 'the resident launch built its module map');
   const [config] = [...resident.world.configs.values()];
-  const fromResident = snapshotDeclarations(config.modules['worker.js']);
+  const fromResident = snapshotDeclarations(config.modules);
 
-  assert.ok(fromExec.bundle.includes('marker-same'), 'the exec snapshot carries the program');
+  assert.ok(JSON.stringify(fromExec.bundle).includes('marker-same'), 'the exec snapshot carries the program');
   assert.deepEqual(fromResident, fromExec, 'exec and resident boot on the same snapshot');
   assert.ok(execTurns.count > 1 && residentTurns.count > 1, 'both builds paged');
 
@@ -224,7 +219,7 @@ async function settle(predicate, label) {
     execTurns.count - grantsBefore < residentTurns.count,
     `a served launch takes fewer turns (${execTurns.count - grantsBefore}) than a cold one (${residentTurns.count})`,
   );
-  const served = snapshotDeclarations([...exec.world.configs.values()][0].modules['worker.js']);
+  const served = snapshotDeclarations([...exec.world.configs.values()][0].modules);
   assert.deepEqual(served, fromExec, 'the served snapshot is the one the exec built');
 }
 
@@ -256,7 +251,6 @@ async function settle(predicate, label) {
   );
   assert.equal(manager.processes.get(pid).exitCode, 137, 'the kill\'s exit code stands; nothing re-exited the entry');
   assert.deepEqual(exits, [], 'a build ended by a kill reports no second exit');
-  assert.equal(manager.hasPendingLaunchTurns, false, 'nothing is left waiting for a turn');
   // The pump that resumed the last chunk is not stranded: the pacer settled
   // on the way out, so the turn it owed resolves.
   await Promise.race([
@@ -287,7 +281,11 @@ async function settle(predicate, label) {
   assert.equal(exits.length, 1, 'the exit is reported exactly once');
   assert.equal(exits[0].code, 1);
   assert.match(exits[0].reason, /assembling the filesystem bundle for `node \/home\/user\/run\.js` failed: the walk broke/);
-  assert.equal(manager.hasPendingLaunchTurns, false);
+  // Nothing is left waiting for a turn: pumping again settles.
+  await Promise.race([
+    manager.pumpResidentLaunches(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the launch pump is stranded')), 2000)),
+  ]);
 }
 
 console.log('facet-exec-bundle-paged: OK');
