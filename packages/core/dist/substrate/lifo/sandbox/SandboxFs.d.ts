@@ -50,6 +50,7 @@ export declare class SandboxFsImpl implements ISandboxFs {
         snapshots: number;
         jobs: number;
         databaseBytes: number;
+        ledger: import("../../../runtime/storage-ledger.js").StorageLedgerView;
     }>;
 }
 //# sourceMappingURL=SandboxFs.d.ts.map

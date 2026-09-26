@@ -3548,8 +3548,17 @@ export class SqliteVFS {
                     reported.bytesOmitted = true;
                 }
                 else if (this.accessInode(inode, 0o4, cred)) {
-                    reported.bytes = this.readContent(inode, 0, inode.size, false);
-                    pushBudget -= reported.bytes.byteLength;
+                    try {
+                        reported.bytes = this.readContent(inode, 0, inode.size, false);
+                        pushBudget -= reported.bytes.byteLength;
+                    }
+                    catch (error) {
+                        // Bytes a lazy import has not brought yet (N17): the holder reads
+                        // them on demand, as for a file over the budget.
+                        if (!isPendingChunkError(error))
+                            throw error;
+                        reported.bytesOmitted = true;
+                    }
                 }
             }
             paths.push(reported);
@@ -4930,6 +4939,7 @@ export class SqliteVFS {
             snapshots: one('SELECT COUNT(*) AS n FROM vfs_snapshots'),
             jobs: one('SELECT COUNT(*) AS n FROM vfs_jobs'),
             databaseBytes: one('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()'),
+            ledger: this.ledger.view(),
         };
     }
     // ── Export and import between databases (N15, N16) ────────────────────
@@ -5285,12 +5295,14 @@ export class SqliteVFS {
         }
     }
     /**
-     * Store the bytes of pending chunks (N17), each re-hashed first; a chunk
-     * that is not pending (stored already, or collected) is skipped. Returns
-     * the hashes now local.
+     * Store the bytes of pending chunks (N17), each re-hashed first. A chunk
+     * whose bytes do not hash to its name is not stored and is reported in
+     * `invalid`; the rest of the batch is stored. A chunk that is not pending
+     * (stored already, or collected) is skipped.
      */
     hydrateChunks(chunks) {
         const stored = [];
+        const invalid = [];
         let group = [];
         let groupBytes = 0;
         const flush = () => {
@@ -5308,15 +5320,17 @@ export class SqliteVFS {
             groupBytes = 0;
         };
         for (const chunk of chunks) {
-            if (hex(chunkHash(chunk.data)) !== chunk.hash)
-                throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
+            if (hex(chunkHash(chunk.data)) !== chunk.hash) {
+                invalid.push(chunk.hash);
+                continue;
+            }
             if (group.length > 0 && (groupBytes + chunk.data.byteLength > MAX_TX_BLOB_BYTES || group.length >= MAX_TX_SQL_EXECS - 4))
                 flush();
             group.push(chunk);
             groupBytes += chunk.data.byteLength;
         }
         flush();
-        return stored;
+        return { stored, invalid };
     }
     /** Which of `hashes` (hex) are pending chunks (N17). */
     pendingOf(hashes) {

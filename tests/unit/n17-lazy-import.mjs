@@ -149,4 +149,24 @@ const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
   assert.throws(() => new ProcessFiles(engine).importPage('r', source.exportPage({ at: 's', root: 'p' }), [], { lazy: true }), /EINVAL/);
 }
 
+// An ACQUIRE whose push roots cover a file still being imported reports it
+// with its stat and bytesOmitted, as one over the push budget: the holder
+// reads it on demand. The barrier does not fail.
+{
+  const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  engine.as(CRED_KERNEL).mkdir('home/user', { recursive: true });
+  engine.as(CRED_KERNEL).chown('home/user', 1000, 1000);
+  const cursor = engine.as(USER).acquire(null, 0, { namespace: true });
+  const files = new ProcessFiles(engine, { hydration: { fetch: () => new Promise(() => {}), schedule: 'manual' } });
+  files.importPage('home/user/p', source.exportPage({ at: 's', root: 'p' }), [], { lazy: true });
+  const answer = engine.as(USER).acquire(cursor.epoch, cursor.rev, { namespace: true, push: { roots: ['/home/user'] } });
+  const a = answer.paths.find((entry) => entry.path === 'home/user/p/a.txt');
+  assert.ok(a, 'the file is reported');
+  assert.equal(a.bytes, undefined);
+  assert.equal(a.bytesOmitted, true);
+  assert.equal(a.stat.size, 5);
+}
+
 console.log('n17-lazy-import: ok');

@@ -103,7 +103,12 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     try {
       return read();
     } catch (error) {
-      if (this.hydrator !== null && isPendingChunkError(error)) this.hydrator.missed(error.path);
+      if (this.hydrator !== null && isPendingChunkError(error)) {
+        // Failed for good: say so, with the cause. Otherwise it goes first.
+        const failure = this.hydrator.failureOf(error.path);
+        if (failure !== null) throw failure;
+        this.hydrator.missed(error.path);
+      }
       throw error;
     }
   }

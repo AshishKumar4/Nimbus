@@ -63,7 +63,7 @@ import {
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
-import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
+import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
   CDC_MIN,
   ContentCutter,
@@ -4505,8 +4505,15 @@ export class SqliteVFS {
         if (inode.size > pushBudget) {
           reported.bytesOmitted = true;
         } else if (this.accessInode(inode, 0o4, cred)) {
-          reported.bytes = this.readContent(inode, 0, inode.size, false);
-          pushBudget -= reported.bytes.byteLength;
+          try {
+            reported.bytes = this.readContent(inode, 0, inode.size, false);
+            pushBudget -= reported.bytes.byteLength;
+          } catch (error) {
+            // Bytes a lazy import has not brought yet (N17): the holder reads
+            // them on demand, as for a file over the budget.
+            if (!isPendingChunkError(error)) throw error;
+            reported.bytesOmitted = true;
+          }
         }
       }
       paths.push(reported);
@@ -5908,6 +5915,8 @@ export class SqliteVFS {
     snapshots: number;
     jobs: number;
     databaseBytes: number;
+    /** The session's storage ledger (N18): used, the limit, and its parts. */
+    ledger: StorageLedgerView;
   } {
     const one = (query: string): number => Number([...this.sql.exec(query)][0]!.n);
     return {
@@ -5919,6 +5928,7 @@ export class SqliteVFS {
       snapshots: one('SELECT COUNT(*) AS n FROM vfs_snapshots'),
       jobs: one('SELECT COUNT(*) AS n FROM vfs_jobs'),
       databaseBytes: one('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()'),
+      ledger: this.ledger.view(),
     };
   }
 
@@ -6268,12 +6278,14 @@ export class SqliteVFS {
   }
 
   /**
-   * Store the bytes of pending chunks (N17), each re-hashed first; a chunk
-   * that is not pending (stored already, or collected) is skipped. Returns
-   * the hashes now local.
+   * Store the bytes of pending chunks (N17), each re-hashed first. A chunk
+   * whose bytes do not hash to its name is not stored and is reported in
+   * `invalid`; the rest of the batch is stored. A chunk that is not pending
+   * (stored already, or collected) is skipped.
    */
-  hydrateChunks(chunks: Iterable<VfsExportChunk>): string[] {
+  hydrateChunks(chunks: Iterable<VfsExportChunk>): { stored: string[]; invalid: string[] } {
     const stored: string[] = [];
+    const invalid: string[] = [];
     let group: VfsExportChunk[] = [];
     let groupBytes = 0;
     const flush = (): void => {
@@ -6296,13 +6308,13 @@ export class SqliteVFS {
       groupBytes = 0;
     };
     for (const chunk of chunks) {
-      if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
+      if (hex(chunkHash(chunk.data)) !== chunk.hash) { invalid.push(chunk.hash); continue; }
       if (group.length > 0 && (groupBytes + chunk.data.byteLength > MAX_TX_BLOB_BYTES || group.length >= MAX_TX_SQL_EXECS - 4)) flush();
       group.push(chunk);
       groupBytes += chunk.data.byteLength;
     }
     flush();
-    return stored;
+    return { stored, invalid };
   }
 
   /** Which of `hashes` (hex) are pending chunks (N17). */

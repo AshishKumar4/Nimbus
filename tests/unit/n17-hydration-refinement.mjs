@@ -56,6 +56,9 @@ async function runCase(testCase, index) {
       batch: 1,
       schedule: 'manual',
       deadlineMs: testCase.deadlineTicks * 1000,
+      // The model's asynchronous readers wait without a deadline (the gate's
+      // is modeled); FormalModelsLane is adding the reader deadline.
+      readDeadlineMs: Infinity,
       now: () => now,
       setTimer: (fire, ms) => { timers.push({ at: now + ms, fire }); },
     },

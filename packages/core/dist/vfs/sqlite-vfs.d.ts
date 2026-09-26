@@ -28,7 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { StorageLedger } from '../runtime/storage-ledger.js';
+import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
@@ -1215,6 +1215,8 @@ export declare class SqliteVFS {
         snapshots: number;
         jobs: number;
         databaseBytes: number;
+        /** The session's storage ledger (N18): used, the limit, and its parts. */
+        ledger: StorageLedgerView;
     };
     /**
      * One page of snapshot `at`'s tree under `root`, after the relative path
@@ -1288,11 +1290,15 @@ export declare class SqliteVFS {
      */
     private insertPendingChunks;
     /**
-     * Store the bytes of pending chunks (N17), each re-hashed first; a chunk
-     * that is not pending (stored already, or collected) is skipped. Returns
-     * the hashes now local.
+     * Store the bytes of pending chunks (N17), each re-hashed first. A chunk
+     * whose bytes do not hash to its name is not stored and is reported in
+     * `invalid`; the rest of the batch is stored. A chunk that is not pending
+     * (stored already, or collected) is skipped.
      */
-    hydrateChunks(chunks: Iterable<VfsExportChunk>): string[];
+    hydrateChunks(chunks: Iterable<VfsExportChunk>): {
+        stored: string[];
+        invalid: string[];
+    };
     /** Which of `hashes` (hex) are pending chunks (N17). */
     pendingOf(hashes: readonly string[]): string[];
     /**
