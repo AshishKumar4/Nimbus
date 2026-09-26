@@ -265,6 +265,42 @@ def execX (S : St) (P : Principal) : X → XOut × St
       else if synth S.mounts P p then (.dir (some synthMode), S)
       else (.other (exec S P (.stat raw)).1, S)
 
+/-- The mode the composite describes a structural directory with: `/` and a live
+    mount point have their backend root's (synthesized when it reports none); a
+    directory above a mount point is 0755 root:root, held or not (in-memory backends
+    here hold directories as 0755 root:root). -/
+def structMode (S : St) (P : Principal) (q : Path) : Nat :=
+  if q = [] then (caps 0).rootMode.getD synthMode
+  else if isMountPoint S P q then (caps (route S.mounts q).backend).rootMode.getD synthMode
+  else synthMode
+
+/-- `exec`, with CompositePerm's may_delete order at a structural path: unlink
+    there needs write on its parent (EACCES; uid 0, principal 0, passes) before
+    EISDIR. Every owner here is root, so another principal is judged by the other
+    bits. -/
+def execC (S : St) (P : Principal) (op : Op) : Out × St :=
+  match op with
+  | .unlink raw =>
+    match reach S P false raw with
+    | .ok p =>
+      if p ≠ [] ∧ synth S.mounts P p = true ∧ P ≠ 0 ∧ structMode caps S P p.dropLast / 2 % 2 = 0 then
+        (.err "EACCES", S)
+      else exec S P op
+    | .error _ => exec S P op
+  | _ => exec S P op
+
+/-- `execC` differs from `exec` only by refusing: it never grants what `exec` refuses. -/
+theorem execC_refines (S : St) (P : Principal) (op : Op) :
+    execC caps S P op = exec S P op ∨ execC caps S P op = (.err "EACCES", S) := by
+  unfold execC
+  split
+  · split
+    · split
+      · exact Or.inr rfl
+      · exact Or.inl rfl
+    · exact Or.inl rfl
+  · exact Or.inl rfl
+
 /-! ## What is proved -/
 
 def Frame (S S' : St) (b : Backend) : Prop := S'.mounts = S.mounts ∧ ∀ c, c ≠ b → S'.trees c = S.trees c
