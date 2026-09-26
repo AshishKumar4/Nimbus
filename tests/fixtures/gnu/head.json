@@ -155,6 +155,146 @@
    "args": "--bytes=3 long",
    "stdout": "lin",
    "exit": 0
+  },
+  {
+   "args": "-n ' 2' long 2>&1",
+   "stdout": "line 0\nline 1\n",
+   "exit": 0
+  },
+  {
+   "args": "-n +2 long 2>&1",
+   "stdout": "line 0\nline 1\n",
+   "exit": 0
+  },
+  {
+   "args": "-n ' -2' long 2>&1",
+   "stdout": "head: invalid number of lines: â -2â\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 2x long 2>&1",
+   "stdout": "head: invalid number of lines: â2xâ\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 1K long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1k long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1KB long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1KiB long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1M long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1m long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1G long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1g long 2>&1",
+   "stdout": "head: invalid number of lines: â1gâ\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 1T long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1Q long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1b long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1e long 2>&1",
+   "stdout": "head: invalid number of lines: â1eâ\n",
+   "exit": 1
+  },
+  {
+   "args": "-n '' long 2>&1",
+   "stdout": "head: invalid number of lines: ââ\n",
+   "exit": 1
+  },
+  {
+   "args": "-n '2 ' long 2>&1",
+   "stdout": "head: invalid number of lines: â2 â\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 99999999999999999999999 long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1iB long 2>&1",
+   "stdout": "head: invalid number of lines: â1iBâ\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 0x10 long 2>&1",
+   "stdout": "head: invalid number of lines: â0x10â\n",
+   "exit": 1
+  },
+  {
+   "args": "-n 010 long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n",
+   "exit": 0
+  },
+  {
+   "args": "-c 1kB long 2>&1",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c -1MiB long 2>&1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-c ' +3' long 2>&1",
+   "stdout": "lin",
+   "exit": 0
+  },
+  {
+   "args": "-q -n 1 nope long 2>&1",
+   "stdout": "head: cannot open 'nope' for reading: No such file or directory\nline 0\n",
+   "exit": 1
+  },
+  {
+   "args": "-z 2>&1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "--bogus long 2>&1",
+   "stdout": "head: unrecognized option '--bogus'\nTry 'head --help' for more information.\n",
+   "exit": 1
   }
  ]
 }

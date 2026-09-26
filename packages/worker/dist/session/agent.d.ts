@@ -18,6 +18,8 @@ export interface OAuthStatePayload {
     nonce: string;
     sessionId: string;
     tenantSegment: string;
+    /** Expiry (ms since the epoch), signed with the rest. */
+    exp: number;
 }
 export declare function handleAgentRequest(self: Host, request: Request, url: URL): Promise<Response>;
 /**
@@ -25,9 +27,10 @@ export declare function handleAgentRequest(self: Host, request: Request, url: UR
  * router routes a callback by the session and tenant segment in `state`, so an
  * unsigned one would let any client wake or create a Durable Object under any
  * tenant segment; the signature (HMAC-SHA256 under the agent cookie secret)
- * makes the router refuse it before routing. Null for anything else.
+ * makes the router refuse it before routing. An expired one (its signed `exp`
+ * at or before `now`) is refused the same way. Null for anything else.
  */
-export declare function parseAgentOAuthStateParam(state: string | null, env: Record<string, unknown>): Promise<OAuthStatePayload | null>;
+export declare function parseAgentOAuthStateParam(state: string | null, env: Record<string, unknown>, now?: number): Promise<OAuthStatePayload | null>;
 /** The `state` an OAuth flow carries: `<payload>.<signature>`, both base64url. */
 export declare function signAgentOAuthState(payload: OAuthStatePayload, env: Record<string, unknown>): Promise<string>;
 export {};

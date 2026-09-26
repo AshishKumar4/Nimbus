@@ -9,16 +9,31 @@ type Mode = { unit: 'lines' | 'bytes'; count: number; allBut: boolean };
 
 class HeadUsage extends Error {}
 
-const SUFFIX: Record<string, number> = {
-  '': 1, b: 512, kB: 1000, K: 1024, k: 1024, KiB: 1024, MB: 1e6, M: 1048576, MiB: 1048576,
-  GB: 1e9, G: 1073741824, GiB: 1073741824, TB: 1e12, T: 1099511627776, TiB: 1099511627776,
-};
+/** GNU's multipliers: b is 512; each of K M G T P E Z Y R Q is 1024^n, or 1000^n followed by B, 1024^n by iB. */
+const POWERS = 'KMGTPEZYRQ';
+function multiplier(suffix: string): number | null {
+  if (suffix === '') return 1;
+  if (suffix === 'b') return 512;
+  const m = /^([KkMmGTPEZYRQ])(B|iB)?$/.exec(suffix);
+  if (m === null) return null;
+  const n = POWERS.indexOf(m[1].toUpperCase()) + 1;
+  // GNU takes lower-case k and m, but not g, t, ...
+  if (m[1] !== m[1].toUpperCase() && m[1] !== 'k' && m[1] !== 'm') return null;
+  return (m[2] === 'B' ? 1000 : 1024) ** n;
+}
 
+/**
+ * A count as GNU head reads one: a leading `-` (on the value as given) means
+ * all but the last N; then blanks and a `+` may lead the digits; a count past
+ * what fits is the largest (it reads everything anyway).
+ */
 function parseCount(value: string, unit: 'lines' | 'bytes'): Mode {
-  const m = /^(-?)(\d+)([A-Za-z]*)$/.exec(value);
-  const factor = m ? SUFFIX[m[3]] : undefined;
-  if (!m || factor === undefined) throw new HeadUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-  return { unit, count: Number(m[2]) * factor, allBut: m[1] === '-' };
+  const allBut = value.startsWith('-');
+  const m = /^[ \t]*\+?(\d+)([A-Za-z]*)$/.exec(allBut ? value.slice(1) : value);
+  const factor = m ? multiplier(m[2]) : null;
+  if (m === null || factor === null) throw new HeadUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
+  const count = Number(m[1]) * factor;
+  return { unit, count: Number.isFinite(count) ? count : Number.MAX_SAFE_INTEGER, allBut };
 }
 
 const command: Command = async (ctx) => {
@@ -74,7 +89,8 @@ const command: Command = async (ctx) => {
       }
     }
   } catch (error) {
-    if (error instanceof HeadUsage) return usage(error.message);
+    // A bad count is one line, without the Try line an option error gets (GNU).
+    if (error instanceof HeadUsage) { await ctx.stderr.write(`head: ${error.message}\n`); return 1; }
     throw error;
   }
   if (files.length === 0) files.push('-');

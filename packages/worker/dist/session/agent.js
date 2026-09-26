@@ -73,9 +73,10 @@ export async function handleAgentRequest(self, request, url) {
  * router routes a callback by the session and tenant segment in `state`, so an
  * unsigned one would let any client wake or create a Durable Object under any
  * tenant segment; the signature (HMAC-SHA256 under the agent cookie secret)
- * makes the router refuse it before routing. Null for anything else.
+ * makes the router refuse it before routing. An expired one (its signed `exp`
+ * at or before `now`) is refused the same way. Null for anything else.
  */
-export async function parseAgentOAuthStateParam(state, env) {
+export async function parseAgentOAuthStateParam(state, env, now = Date.now()) {
     if (!state)
         return null;
     let secret;
@@ -87,6 +88,8 @@ export async function parseAgentOAuthStateParam(state, env) {
     }
     const payload = await decodeState(state, secret);
     if (!payload || payload.v !== 1)
+        return null;
+    if (!Number.isSafeInteger(payload.exp) || payload.exp <= now)
         return null;
     if (!isSessionId(payload.sessionId))
         return null;
@@ -153,7 +156,8 @@ async function oauthStart(self, request, url) {
     const codeVerifier = randomBase64Url(48);
     const codeChallenge = await pkceChallenge(codeVerifier);
     const redirectUri = config.redirectUri;
-    const payload = { v: 1, nonce, sessionId, tenantSegment };
+    const now = Date.now();
+    const payload = { v: 1, nonce, sessionId, tenantSegment, exp: now + OAUTH_STATE_TTL_MS };
     let state;
     try {
         state = await signAgentOAuthState(payload, self.env);
@@ -164,14 +168,7 @@ async function oauthStart(self, request, url) {
             code: 'E_AGENT_COOKIE_SECRET',
         }, 409);
     }
-    const now = Date.now();
-    const stored = {
-        ...payload,
-        codeVerifier,
-        redirectUri,
-        createdAt: now,
-        expiresAt: now + OAUTH_STATE_TTL_MS,
-    };
+    const stored = { ...payload, codeVerifier, redirectUri, createdAt: now };
     const authUrl = new URL(NIMBUS_CF_OAUTH_AUTH_URL);
     authUrl.searchParams.set('client_id', config.oauthClientId);
     authUrl.searchParams.set('response_type', 'code');
@@ -192,7 +189,7 @@ async function oauthStart(self, request, url) {
             code: 'E_AGENT_COOKIE_SECRET',
         }, 409);
     }
-    return json({ ok: true, authUrl: authUrl.toString(), expiresAt: stored.expiresAt }, 200, headers);
+    return json({ ok: true, authUrl: authUrl.toString(), expiresAt: stored.exp }, 200, headers);
 }
 async function oauthCallback(self, request, url) {
     const code = url.searchParams.get('code');
@@ -203,7 +200,7 @@ async function oauthCallback(self, request, url) {
     if (!code || !payload)
         return oauthResultHtml(false, 'OAuth callback is missing code or state.', payload?.sessionId);
     const stored = await loadStateCookie(self, request);
-    if (!stored || stored.expiresAt < Date.now()) {
+    if (!stored || !Number.isSafeInteger(stored.exp) || stored.exp <= Date.now()) {
         return oauthResultHtml(false, 'OAuth session expired. Connect again.', payload.sessionId);
     }
     if (stored.sessionId !== payload.sessionId ||
