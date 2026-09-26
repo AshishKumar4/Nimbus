@@ -16,6 +16,8 @@
  * Two buckets, two key shapes:
  *   tarball:    `${R2_CACHE_PREFIX}/t/<sri-algo>/<sri-digest-hex>.tgz`
  *   packument:  `${R2_CACHE_PREFIX}/pc/<name>.json  (corgi/abbreviated format)`
+ *   The tarball bucket also holds read profiles under `read-profiles/v1/`
+ *   (facets/read-profile.ts): package-relative paths per tarball integrity.
  *
  * Why two buckets:
  *   Tarballs are content-addressed and never expire. Packuments must

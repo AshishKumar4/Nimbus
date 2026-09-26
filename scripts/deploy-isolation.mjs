@@ -186,7 +186,11 @@ const SHARED_BY_DESIGN = new Map([
   ['r2_buckets:nimbus-npm-cache',
     'npm tarballs keyed by their resolved integrity digest and re-hashed on ' +
     'every read, so a writer can only ever address its own bytes; immutable ' +
-    '(packages/worker/src/npm/r2-cache.ts)'],
+    '(packages/worker/src/npm/r2-cache.ts). Also read profiles under ' +
+    'read-profiles/v1/, keyed by the same integrity: package-relative paths ' +
+    'only, validated when written and when read, so an entry can only widen ' +
+    "which of a session's own files are staged, through its own credential " +
+    '(packages/worker/src/facets/read-profile.ts)'],
   ['r2_buckets:nimbus-npm-packument-cache',
     'packument JSON on a 60-minute TTL, filled only by the registry fetch ' +
     'that produced it (packages/worker/src/npm/r2-cache.ts)'],

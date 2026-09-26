@@ -39,7 +39,12 @@ export interface ReadProfileBucket {
   }>;
 }
 
-const PREFIX = 'read-profile/v1/';
+/**
+ * Profiles live in the npm tarball cache bucket (NPM_TARBALL_CACHE), per
+ * package version like the tarballs, under their own prefix: tarball keys are
+ * `v2/t/...` (npm/r2-cache.ts), so the keyspaces never meet.
+ */
+const PREFIX = 'read-profiles/v1/';
 /** How long a listing of which packages have profiles is reused. */
 const INDEX_TTL_MS = 60_000;
 /** Paths one package's profile holds. */
