@@ -22,6 +22,14 @@ export interface StorageLedgerOptions {
     /** The session DO's database bytes, images included; defaults to the database's own size. */
     sessionBytes?: () => number;
     limit?: number;
+    /**
+     * Bytes below the limit only privileged (uid 0) admissions may use, as ext4
+     * reserves blocks for root: the kernel's own bookkeeping (session state,
+     * receipts, leases), much of it written outside admission, still has room
+     * when a user has filled the store. Defaults to 1% of the limit, at least
+     * 16 MiB.
+     */
+    kernelReserve?: number;
 }
 /** The bytes a database occupies on the host: workerd's databaseSize, else SQLite's pages. */
 export declare function databaseBytesOf(sql: SqlDatabase): number;
@@ -31,6 +39,10 @@ export interface StorageLedgerView {
     used: number;
     /** Bytes facets reported beyond what they were admitted, cumulative. */
     overshoot: number;
+    /** Admitted to running operations and not yet written. */
+    reserved: number;
+    /** The same, per operation (none held at zero). */
+    reservations: Record<string, number>;
     session: number;
     facets: Record<string, number>;
     /** Oldest first. */
@@ -41,14 +53,36 @@ export declare const LEDGER_ROW_BYTES = 256;
 export declare class StorageLedger {
     private readonly sql;
     readonly limit: number;
+    readonly kernelReserve: number;
     private readonly sessionBytes;
     constructor(sql: SqlDatabase, options?: StorageLedgerOptions);
     /** A session-DO write of `bytes`: admitted (evicting what it must) or ENOSPC. */
-    admit(bytes: number): void;
+    admit(bytes: number, privileged?: boolean): void;
+    /** What an admission may fill up to. */
+    private limitFor;
     /** A fill of `bytes` into facet `name`: admitted, and recorded before the fill is acknowledged. */
     fill(name: string, bytes: number): void;
     /** A namespace-image write of `bytes` for `principal`; that image becomes the most recent. */
     writeImage(principal: string, bytes: number): void;
+    /**
+     * An operation that writes over several turns (a sliced copy, a paged
+     * import) reserves what it is admitted for: every other writer counts it as
+     * used until the operation draws it (as its writes land) or releases it.
+     * So the operation's own writes, within the reservation, are never refused.
+     */
+    reserve(id: string, bytes: number, privileged?: boolean): void;
+    /**
+     * A write of `bytes` by the operation that reserved `id`: taken from its
+     * reservation first; only what exceeds it is admitted like any write.
+     * Returns what it took, for `refund` if the write does not land.
+     */
+    draw(id: string, bytes: number, privileged?: boolean): number;
+    /** A drawn write rolled back: its bytes go back to the reservation. */
+    refund(id: string, bytes: number): void;
+    /** The operation ended (done or failed): what it did not use is free again. */
+    release(id: string): void;
+    /** Reservations no running operation holds (after a restart): all of them are released. */
+    releaseAll(): void;
     /** A launch used `principal`'s image: it becomes the most recent. */
     touchImage(principal: string): void;
     /** At an epoch change: keep only the images of `keep`. */
@@ -75,6 +109,7 @@ export declare class StorageLedger {
      */
     private fit;
     private evict;
+    private reservation;
     private images;
     private image;
     private hasImage;

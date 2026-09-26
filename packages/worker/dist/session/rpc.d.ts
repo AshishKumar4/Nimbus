@@ -147,6 +147,16 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  * way would silently arrive as undefined.
  */
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
+/**
+ * N18: a process's facet store asks for room to grow, reporting what its
+ * database measures. The ledger's row for the facet first takes the
+ * measurement where it is over the record (overshoot), then admits `bytes`
+ * more under the facet's name; refused, nothing is granted and the store
+ * keeps what it has (reading the rest through the session).
+ */
+export declare function _rpcFsStorageGrant(self: RpcHost, facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
+    granted: number;
+}>;
 /** What a process passes to fsAcquire: the cursor its resident set is at. */
 export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;
 /** An ACQUIRE a delivery carries: fsAcquire's arguments and its answer to them. */

@@ -43,9 +43,8 @@ import {
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
-import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   headerPairs,
   isolateToken,
@@ -541,39 +540,48 @@ export async function _rpcFsAcquire(
   pid?: number,
 ): Promise<VfsAcquireResult> {
   const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-  const answer: VfsAcquireResult = await self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
-  return admitPushedBytes(self.ctx, pid, answer);
+  return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
 }
 
+const FsStorageGrantArgsSchema = z.object({
+  facet: z.string().min(1),
+  bytes: z.number().int().min(0),
+  databaseSize: z.number().min(0),
+});
+
 /**
- * Pushed bytes land in the process's facet database, so the session's
- * storage ledger (N18) admits them under that facet first. Refused, the
- * answer carries none (each marked `bytesOmitted`): the facet then drops what
- * it held for those paths and reads them on demand, as for any file too
- * large to push.
+ * N18: a process's facet store asks for room to grow, reporting what its
+ * database measures. The ledger's row for the facet first takes the
+ * measurement where it is over the record (overshoot), then admits `bytes`
+ * more under the facet's name; refused, nothing is granted and the store
+ * keeps what it has (reading the rest through the session).
  */
-function admitPushedBytes(ctx: DurableObjectState | undefined, pid: number | undefined, answer: VfsAcquireResult): VfsAcquireResult {
-  let total = 0;
-  for (const entry of answer.paths) total += entry.bytes?.byteLength ?? 0;
-  if (total === 0 || ctx === undefined || pid === undefined) return answer;
-  const facet = residentFacetOf(ctx, pid);
-  const sql = (ctx as { storage?: { sql?: SqlDatabase } }).storage?.sql;
-  if (facet === undefined || !sql) return answer;
+export async function _rpcFsStorageGrant(
+  self: RpcHost,
+  facet: string,
+  bytes: number,
+  databaseSize: number,
+  pid?: number,
+): Promise<{ granted: number }> {
+  const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
+  const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
+  if (owner !== undefined && owner !== args.facet) {
+    throw new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`);
+  }
+  const ledger: StorageLedger | undefined = self.sqliteFs?.ledger;
+  if (ledger === undefined) return { granted: 0 };
+  const recorded = ledger.view().facets[args.facet] ?? 0;
+  if (args.databaseSize > recorded) ledger.report(args.facet, args.databaseSize);
+  if (args.bytes === 0) return { granted: 0 };
   try {
-    new StorageLedger(sql).fill(facet, total);
-    return answer;
+    ledger.fill(args.facet, args.bytes);
+    return { granted: args.bytes };
   } catch (error) {
-    if (!isVfsError(error, 'ENOSPC')) throw error;
-    return {
-      ...answer,
-      paths: answer.paths.map((entry) => {
-        if (entry.bytes === undefined) return entry;
-        const { bytes: _dropped, ...rest } = entry;
-        return { ...rest, bytesOmitted: true as const };
-      }),
-    };
+    if (isVfsError(error, 'ENOSPC')) return { granted: 0 };
+    throw error;
   }
 }
+
 
 /** What a process passes to fsAcquire: the cursor its resident set is at. */
 export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;

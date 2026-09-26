@@ -125,6 +125,7 @@ const INPUTS = {
   fsAcquire: [epoch, cursor, { namespace: true }],
   fsRevision: [path],
   fsList: [after, limit],
+  fsStorageGrant: ['proc-slot-0', 4096, 8192],
   wsOpen: [url, protocols],
   wsPoll: [id, waitMs],
   wsSend: [id, text, bytes],

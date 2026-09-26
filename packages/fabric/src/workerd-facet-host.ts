@@ -512,7 +512,11 @@ function spawnResident(
 
   let started: Promise<unknown>;
   try {
-    started = facet.startProcess(params.startArgs);
+    // The allowance the ledger admitted, for the facet's store to keep under.
+    const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
+      ? { ...(params.startArgs as Record<string, unknown>), storage: { facet: name, grant: params.storageBytes } }
+      : params.startArgs;
+    started = facet.startProcess(startArgs);
   } catch (error) {
     void release();
     throw withFacetBudgetNamed(facetNameCount(ctx), error);
@@ -522,10 +526,14 @@ function spawnResident(
   // failure of a fresh incarnation must compare against the persisted count,
   // not the zero its adoption read has not yet replaced.
   started = started.then((payload) => {
-    // What the facet's database measures once it is up (N18): the ledger's
-    // row settles to it, or records the overshoot.
-    const size = (payload as { databaseSize?: unknown } | null)?.databaseSize;
-    if (ledger !== null && typeof size === 'number' && Number.isFinite(size)) ledger.reportSize(name, size);
+    // Once the facet is up (N18) its row is the cap its store keeps under
+    // (what it measures plus what it may still grow into), or what it
+    // measures if that is more (overshoot).
+    const { databaseSize: size, storageCap: cap } = (payload ?? {}) as { databaseSize?: unknown; storageCap?: unknown };
+    const measured = typeof size === 'number' && Number.isFinite(size) ? size : null;
+    const capped = typeof cap === 'number' && Number.isFinite(cap) ? cap : null;
+    const row = capped !== null ? Math.max(capped, measured ?? 0) : measured;
+    if (ledger !== null && row !== null) ledger.reportSize(name, row);
     return payload;
   }, async (error) => {
     throw withFacetBudgetNamed(await facetNameCountDurable(ctx), error);

@@ -26,6 +26,14 @@ export interface StorageLedgerOptions {
   /** The session DO's database bytes, images included; defaults to the database's own size. */
   sessionBytes?: () => number;
   limit?: number;
+  /**
+   * Bytes below the limit only privileged (uid 0) admissions may use, as ext4
+   * reserves blocks for root: the kernel's own bookkeeping (session state,
+   * receipts, leases), much of it written outside admission, still has room
+   * when a user has filled the store. Defaults to 1% of the limit, at least
+   * 16 MiB.
+   */
+  kernelReserve?: number;
 }
 
 /** The bytes a database occupies on the host: workerd's databaseSize, else SQLite's pages. */
@@ -49,6 +57,10 @@ export interface StorageLedgerView {
   used: number;
   /** Bytes facets reported beyond what they were admitted, cumulative. */
   overshoot: number;
+  /** Admitted to running operations and not yet written. */
+  reserved: number;
+  /** The same, per operation (none held at zero). */
+  reservations: Record<string, number>;
   session: number;
   facets: Record<string, number>;
   /** Oldest first. */
@@ -62,23 +74,31 @@ export const LEDGER_ROW_BYTES = 256;
 
 export class StorageLedger {
   readonly limit: number;
+  readonly kernelReserve: number;
 
   private readonly sessionBytes: () => number;
 
   constructor(private readonly sql: SqlDatabase, options: StorageLedgerOptions = {}) {
     this.limit = options.limit ?? DO_STORAGE_LIMIT_BYTES;
+    this.kernelReserve = Math.min(this.limit, options.kernelReserve ?? Math.max(Math.ceil(this.limit / 100), 16 * 1024 * 1024));
     this.sessionBytes = options.sessionBytes ?? (() => databaseBytesOf(sql));
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_facet_storage (name TEXT PRIMARY KEY, bytes INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_image_storage (principal TEXT PRIMARY KEY, bytes INTEGER NOT NULL, seq INTEGER NOT NULL)');
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_storage_ledger (slot INTEGER PRIMARY KEY CHECK(slot = 1), overshoot INTEGER NOT NULL)');
+    sql.exec('CREATE TABLE IF NOT EXISTS nimbus_storage_reservation (id TEXT PRIMARY KEY, bytes INTEGER NOT NULL)');
   }
 
   /** A session-DO write of `bytes`: admitted (evicting what it must) or ENOSPC. */
-  admit(bytes: number): void {
+  admit(bytes: number, privileged = false): void {
     const { fixed, images } = this.totals();
     // The common case, one query: everything fits with every image kept.
-    if (fixed + images + bytes <= this.limit) return;
-    this.fit(bytes, fixed, this.images(), null);
+    if (fixed + images + bytes <= this.limitFor(privileged)) return;
+    this.fit(bytes, fixed, this.images(), null, privileged);
+  }
+
+  /** What an admission may fill up to. */
+  private limitFor(privileged: boolean): number {
+    return privileged ? this.limit : this.limit - this.kernelReserve;
   }
 
   /** A fill of `bytes` into facet `name`: admitted, and recorded before the fill is acknowledged. */
@@ -91,8 +111,57 @@ export class StorageLedger {
   writeImage(principal: string, bytes: number): void {
     const current = this.image(principal);
     const others = this.images().filter(([key]) => key !== principal);
-    this.fit(bytes, this.totals().fixed + current, others, principal);
+    this.fit(bytes, this.totals().fixed + current, others, principal, false);
     this.setImage(principal, current + bytes);
+  }
+
+  /**
+   * An operation that writes over several turns (a sliced copy, a paged
+   * import) reserves what it is admitted for: every other writer counts it as
+   * used until the operation draws it (as its writes land) or releases it.
+   * So the operation's own writes, within the reservation, are never refused.
+   */
+  reserve(id: string, bytes: number, privileged = false): void {
+    this.admit(bytes, privileged);
+    this.sql.exec(
+      'INSERT INTO nimbus_storage_reservation (id, bytes) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET bytes = bytes + excluded.bytes',
+      id, bytes,
+    );
+  }
+
+  /**
+   * A write of `bytes` by the operation that reserved `id`: taken from its
+   * reservation first; only what exceeds it is admitted like any write.
+   * Returns what it took, for `refund` if the write does not land.
+   */
+  draw(id: string, bytes: number, privileged = false): number {
+    const held = this.reservation(id);
+    const take = Math.min(bytes, held);
+    if (bytes > take) this.admit(bytes - take, privileged);
+    if (take > 0) this.sql.exec('UPDATE nimbus_storage_reservation SET bytes = bytes - ? WHERE id = ?', take, id);
+    return take;
+  }
+
+  /** A drawn write rolled back: its bytes go back to the reservation. */
+  refund(id: string, bytes: number): void {
+    if (bytes > 0) {
+      this.sql.exec(
+        'INSERT INTO nimbus_storage_reservation (id, bytes) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET bytes = bytes + excluded.bytes',
+        id, bytes,
+      );
+    }
+  }
+
+  /** The operation ended (done or failed): what it did not use is free again. */
+  release(id: string): void {
+    this.sql.exec('DELETE FROM nimbus_storage_reservation WHERE id = ?', id);
+  }
+
+  /** Reservations no running operation holds (after a restart): all of them are released. */
+  releaseAll(): void {
+    if ([...this.sql.exec('SELECT 1 FROM nimbus_storage_reservation LIMIT 1')].length > 0) {
+      this.sql.exec('DELETE FROM nimbus_storage_reservation');
+    }
   }
 
   /** A launch used `principal`'s image: it becomes the most recent. */
@@ -143,10 +212,13 @@ export class StorageLedger {
     const facets: Record<string, number> = {};
     for (const row of this.sql.exec('SELECT name, bytes FROM nimbus_facet_storage ORDER BY name')) facets[String(row.name)] = Number(row.bytes);
     const images = this.images();
-    const { session } = this.totals();
+    const { session, reserved } = this.totals();
     return {
       limit: this.limit,
-      used: session + sumOf(Object.values(facets)) + sumOf(images.map(([, bytes]) => bytes)),
+      used: session + sumOf(Object.values(facets)) + sumOf(images.map(([, bytes]) => bytes)) + reserved,
+      reserved,
+      reservations: Object.fromEntries([...this.sql.exec('SELECT id, bytes FROM nimbus_storage_reservation WHERE bytes > 0 ORDER BY id')]
+        .map((row) => [String(row.id), Number(row.bytes)])),
       overshoot: Number([...this.sql.exec('SELECT overshoot FROM nimbus_storage_ledger WHERE slot = 1')][0]?.overshoot ?? 0),
       session,
       facets,
@@ -155,32 +227,34 @@ export class StorageLedger {
   }
 
   /** `fixed`: the session's own bytes and the facets', what no eviction frees; `images`: the rest. */
-  private totals(): { fixed: number; images: number; session: number } {
+  private totals(): { fixed: number; images: number; session: number; reserved: number } {
     const row = [...this.sql.exec(
-      'SELECT (SELECT COALESCE(SUM(bytes), 0) FROM nimbus_facet_storage) AS facets, (SELECT COALESCE(SUM(bytes), 0) FROM nimbus_image_storage) AS images',
+      'SELECT (SELECT COALESCE(SUM(bytes), 0) FROM nimbus_facet_storage) AS facets, (SELECT COALESCE(SUM(bytes), 0) FROM nimbus_image_storage) AS images, '
+        + '(SELECT COALESCE(SUM(bytes), 0) FROM nimbus_storage_reservation) AS reserved',
     )][0]!;
     const images = Number(row.images);
     // The images live in the session's database, so its size includes them.
     const session = Math.max(0, this.sessionBytes() - images);
-    return { fixed: session + Number(row.facets), images, session };
+    return { fixed: session + Number(row.facets) + Number(row.reserved), images, session, reserved: Number(row.reserved) };
   }
 
   /**
    * Drop the oldest of `evictable` until `fixed + evictable left + need` fits
    * the limit; ENOSPC, dropping nothing, when it cannot fit at all.
    */
-  private fit(need: number, fixed: number, evictable: [string, number][], writing: string | null): void {
-    if (fixed + need > this.limit) {
+  private fit(need: number, fixed: number, evictable: [string, number][], writing: string | null, privileged: boolean): void {
+    const limit = this.limitFor(privileged);
+    if (fixed + need > limit) {
       const used = fixed + sumOf(evictable.map(([, bytes]) => bytes));
       throw new VfsError('ENOSPC', `${need} bytes would exceed the ${this.limit >= GiB ? `${this.limit / GiB} GB` : `${this.limit}-byte`} storage of this session (used ${used}, needs ${need})${writing === null ? '' : ` for the namespace image of ${writing}`}`);
     }
     let kept = sumOf(evictable.map(([, bytes]) => bytes));
     if (!imageEvictors.has(this.sql)) {
-      if (fixed + kept + need <= this.limit) return;
+      if (fixed + kept + need <= limit) return;
       throw new VfsError('ENOSPC', `${need} bytes would exceed the storage of this session (used ${fixed + kept}, needs ${need}; no namespace image can be evicted here)`);
     }
     for (const [principal, bytes] of evictable) {
-      if (fixed + kept + need <= this.limit) break;
+      if (fixed + kept + need <= limit) break;
       this.evict(principal);
       kept -= bytes;
     }
@@ -189,6 +263,11 @@ export class StorageLedger {
   private evict(principal: string): void {
     imageEvictors.get(this.sql)?.(principal);
     this.sql.exec('DELETE FROM nimbus_image_storage WHERE principal = ?', principal);
+  }
+
+  private reservation(id: string): number {
+    const row = [...this.sql.exec('SELECT bytes FROM nimbus_storage_reservation WHERE id = ?', id)][0];
+    return row === undefined ? 0 : Number(row.bytes);
   }
 
   private images(): [string, number][] {

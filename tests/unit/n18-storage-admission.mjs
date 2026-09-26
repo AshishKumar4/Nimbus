@@ -15,7 +15,7 @@ const probe = new SqliteVFS(harness.sql, harness.ctx);
 probe.as(CRED_KERNEL).mkdir('w');
 // Room for about 1 MiB more than the store holds now.
 const limit = probe.databaseBytes() + 1_048_576;
-const vfs = new SqliteVFS(harness.sql, harness.ctx, undefined, { storageLimit: limit });
+const vfs = new SqliteVFS(harness.sql, harness.ctx, undefined, { storageLimit: limit, storageKernelReserve: 0 });
 const root = vfs.as(CRED_KERNEL);
 const code = (fn) => { try { fn(); return 'ok'; } catch (error) { return error.code; } };
 const bytes = (n, fill) => new Uint8Array(n).fill(fill);
@@ -44,7 +44,7 @@ assert.equal(code(() => root.unlink('w/a')), 'ok');
 assert.equal(code(() => root.writeFile('w/d', bytes(10, 5))), 'ENOSPC');
 
 // A restart re-reads the ledger: the facet still counts.
-const restarted = new SqliteVFS(harness.sql, harness.ctx, undefined, { storageLimit: limit });
+const restarted = new SqliteVFS(harness.sql, harness.ctx, undefined, { storageLimit: limit, storageKernelReserve: 0 });
 assert.equal(restarted.ledger.view().facets['facet-1'], 2 * 1_048_576);
 assert.equal(code(() => restarted.as(CRED_KERNEL).writeFile('w/d', bytes(10, 5))), 'ENOSPC');
 

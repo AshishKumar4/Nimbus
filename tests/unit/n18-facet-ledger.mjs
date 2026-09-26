@@ -5,13 +5,11 @@
 // the facet measures once it is up (databaseSize) settles its row, or records
 // the overshoot. Releasing an ephemeral process deletes its database and its
 // row together; a durable application's abort keeps both, and only
-// deleteFacetStorage drops them. Bytes an ACQUIRE pushes into a running
-// process's facet are admitted under that facet too.
+// deleteFacetStorage drops them.
 
 import assert from 'node:assert/strict';
 import { processes, deleteFacetStorage, residentFacetOf } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
-import { _rpcFsAcquire } from '../../packages/worker/src/session/rpc.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const LIMIT = 10_000_000_000;
@@ -99,27 +97,26 @@ const ledgerOf = (ctx) => new StorageLedger(ctx.storage.sql).view();
   assert.equal(ledgerOf(ctx).facets['app-slot-1'], undefined);
 }
 
-// Pushed bytes: admitted under the running process's facet; refused, the
-// answer carries none, each marked bytesOmitted (the facet then drops what it
-// held and reads on demand).
+// The facet is told its allowance, and once up its row is the cap its store
+// keeps under (or what it measures, if more).
 {
-  const ctx = makeCtx(1_000);
-  const facet = spawn(ctx, 5, { storageBytes: 1_000 });
+  const ctx = makeCtx(1_500_000);
+  let args = null;
+  ctx.facets.get = (name) => {
+    ctx.stored.add(name);
+    return {
+      async startProcess(startArgs) { args = startArgs; return { ok: true, databaseSize: 1_500_000, storageCap: 4_000_000 }; },
+      async handleHttpRequest() { return new Response('ok'); },
+    };
+  };
+  const facet = processes(ctx, env).spawn(
+    () => ({}),
+    { doId: 'session', pid: 6, writerId: 'w6' },
+    { pid: 6, writerId: 'w6', startArgs: { vfsCursor: null }, boot: { kind: 'code', code: {} }, storageBytes: 3_000_000 },
+  );
   await facet.started;
-  const answer = (n) => ({
-    epoch: 'e', rev: 9, poison: false, namespace: true,
-    paths: [{ path: 'a', rev: 9, bytes: new Uint8Array(n) }, { path: 'dir', rev: 9 }],
-  });
-  const self = (n) => ({ ctx, supervisorBridge: () => ({ acquire: async () => answer(n) }) });
-  const ok = await _rpcFsAcquire(self(4_000), 'e', 1, { namespace: true, push: { roots: ['/'] } }, 5);
-  assert.equal(ok.paths[0].bytes.byteLength, 4_000);
-  assert.equal(ledgerOf(ctx).facets[facet.name], 5_000);
-  ctx.session.databaseSize = LIMIT - 10_000;
-  const refused = await _rpcFsAcquire(self(20_000), 'e', 1, { namespace: true, push: { roots: ['/'] } }, 5);
-  assert.equal(refused.paths[0].bytes, undefined);
-  assert.equal(refused.paths[0].bytesOmitted, true);
-  assert.equal(refused.paths[1].bytesOmitted, undefined);
-  assert.equal(ledgerOf(ctx).facets[facet.name], 5_000, 'nothing recorded for a refused push');
+  assert.deepEqual(args.storage, { facet: facet.name, grant: 3_000_000 });
+  assert.equal(ledgerOf(ctx).facets[facet.name], 4_000_000);
   await facet.release();
 }
 

@@ -77,7 +77,10 @@ async function __nimbusVfsRpc(issue) {
  * has been lost. Node hands these to the caller and lets it decide — which is
  * why \`fs.truncate(missing).catch(() => {})\` is ordinary, correct code.
  *
- * Everything else — EIO, a dropped RPC, a quota, an authority that died, an
+ * ENOSPC is one of them: the session's storage ledger (N18) refuses a write
+ * before any of it is made.
+ *
+ * Everything else — EIO, a dropped RPC, an authority that died, an
  * error carrying no errno at all — is not an answer. It means the outcome of
  * a write is UNKNOWN, and that is a durability event no matter what the
  * program caught. Unrecognised is treated as durability-class on purpose: the
@@ -85,7 +88,7 @@ async function __nimbusVfsRpc(issue) {
  */
 const __NIMBUS_SYSCALL_VERDICT_CODES = new Set([
   "ENOENT", "EEXIST", "EISDIR", "ENOTDIR", "ENOTEMPTY",
-  "EBADF", "EINVAL", "EPERM", "EACCES", "ELOOP", "ENAMETOOLONG",
+  "EBADF", "EINVAL", "EPERM", "EACCES", "ELOOP", "ENAMETOOLONG", "ENOSPC",
 ]);
 
 function __nimbusIsDurabilityFailure(error) {

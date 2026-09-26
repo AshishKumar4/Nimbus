@@ -122,6 +122,7 @@ import {
   FS_LIST_PAGE_LIMIT,
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -1037,6 +1038,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
     // vfs/facet-resident-store.ts.
     __residentBind(workerCtx);
+    __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
@@ -1310,10 +1312,13 @@ export class NimbusProcess extends DurableObject {
     if (startArgs) __nimbusStartArgs = startArgs;
     await __nimbusEnsureStarted(this.env, this.ctx, __nimbusStartArgs);
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
-    // What this facet's database holds now, for the session's storage ledger (N18).
+    // What this facet's database holds now, and the cap its store keeps
+    // under, for the session's storage ledger (N18).
     let databaseSize;
     try { databaseSize = this.ctx.storage.sql.databaseSize; } catch {}
-    return { ok: true, databaseSize };
+    let storageCap = null;
+    try { storageCap = __residentStorageCap(); } catch {}
+    return { ok: true, databaseSize, storageCap };
   }
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
@@ -4752,8 +4757,13 @@ export class FacetManager {
       spend: (units) => pacer.spend(units),
     });
     trace(`planned ${plan.paths.length}`);
-    // What the facet's store will hold: the planned bytes and a namespace row per name (N18).
-    return { paths: plan.paths, storageBytes: plan.bytes + names * LEDGER_ROW_BYTES };
+    // What the facet's store will hold (N18), in the cost its store charges
+    // itself (facet-resident-store's __residentCellBytes): the planned bytes on
+    // overflow pages (1% over), a head and chunk rows per file, a namespace
+    // row per name, and slack for the last write's page.
+    const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
+    const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + 65_536;
+    return { paths: plan.paths, storageBytes };
   }
 
   /**

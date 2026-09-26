@@ -515,6 +515,10 @@ export class SqliteVFS {
     sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     ledger;
+    /** The reservation the running synchronous operation draws from (N18). */
+    activeReservation = null;
+    /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
+    privileged = false;
     ctx;
     events;
     // ── INode cache (bounded; SQLite holds the tree) ──────────────────────
@@ -760,7 +764,12 @@ export class SqliteVFS {
             throw vfsError('EINVAL', `tombstone retention must be a row count, not ${this.tombstoneRetain}`);
         }
         sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
-        this.ledger = new StorageLedger(sql, options.storageLimit === undefined ? {} : { limit: options.storageLimit });
+        this.ledger = new StorageLedger(sql, {
+            ...(options.storageLimit === undefined ? {} : { limit: options.storageLimit }),
+            ...(options.storageKernelReserve === undefined ? {} : { kernelReserve: options.storageKernelReserve }),
+        });
+        // No operation outlives the engine that ran it: what they reserved is free.
+        this.ledger.releaseAll();
         if (namespace === undefined) {
             let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
             if (!row) {
@@ -1472,6 +1481,31 @@ export class SqliteVFS {
         return key === TMP_ROOT || key.startsWith(`${TMP_ROOT}/`) ? null : key;
     }
     // ── Filesystem operations ─────────────────────────────────────────────
+    /**
+     * uid 0's view: its writes may use the storage the ledger keeps back from
+     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+     * Covers each call's synchronous part; the kernel's bookkeeping is that.
+     */
+    privilegedView(view) {
+        const out = {};
+        for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(view))) {
+            const value = descriptor.value;
+            if (typeof value === 'function') {
+                descriptor.value = (...args) => {
+                    const prior = this.privileged;
+                    this.privileged = true;
+                    try {
+                        return value(...args);
+                    }
+                    finally {
+                        this.privileged = prior;
+                    }
+                };
+            }
+            Object.defineProperty(out, key, descriptor);
+        }
+        return out;
+    }
     as(cred) {
         const engine = this;
         const bound = Object.freeze({
@@ -1480,7 +1514,7 @@ export class SqliteVFS {
             groups: Object.freeze([...cred.groups]),
             umask: cred.umask & 0o777,
         });
-        return {
+        const view = {
             cred: bound,
             exists: (path) => this.exists(path, bound),
             isDirectory: (path) => this.isDirectory(path, bound),
@@ -1516,7 +1550,7 @@ export class SqliteVFS {
             removeRecursive: (path) => this.removeRecursive(path, bound),
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
             copyFile: (src, dest) => this.copyFile(src, dest, bound),
-            copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
+            copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
             copyTreeAsync: (src, dest, options) => {
                 const owner = options?.mutationOwner;
                 const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
@@ -1533,6 +1567,7 @@ export class SqliteVFS {
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
+        return bound.uid === 0 ? this.privilegedView(view) : view;
     }
     accessInode(inode, want, cred) {
         return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred);
@@ -3994,8 +4029,9 @@ export class SqliteVFS {
                 }
             }
         }
-        // N18: the whole copy is admitted before its first row (each slice is
-        // admitted again as it runs, against what others wrote meanwhile).
+        // N18: the whole copy is admitted before its first row, and reserved when
+        // it starts; its slices draw from the reservation, so no writer between
+        // them can leave it without room.
         let rows = 1;
         if (root.isDir) {
             if (atGen === undefined) {
@@ -4009,8 +4045,11 @@ export class SqliteVFS {
                     rows++;
             }
         }
+        // Each page's transaction also writes the generation and the job's cursor.
+        rows += 2 * (Math.ceil(rows / COPY_PAGE_ROWS) + 1);
         this.ledger.admit(rows * LEDGER_ROW_BYTES);
         const job = {
+            rows,
             src: source.path,
             dst: target.path,
             uid: cred.uid,
@@ -4023,15 +4062,37 @@ export class SqliteVFS {
         return job;
     }
     async copyTreeInSlices(job, owner) {
-        let slice = this.withMutationOwner(owner, () => this.runCopyTree(job, null, JOB_SLICE_PAGES));
-        let copied = slice.copied;
-        while (!slice.done) {
-            await yieldToStorage();
-            const id = slice.id;
-            slice = this.withMutationOwner(owner, () => this.runCopyTree(job, id, JOB_SLICE_PAGES));
-            copied += slice.copied;
+        const reservation = this.reserveCopy(job);
+        const run = (id) => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)));
+        try {
+            let slice = run(null);
+            let copied = slice.copied;
+            while (!slice.done) {
+                await yieldToStorage();
+                slice = run(slice.id);
+                copied += slice.copied;
+            }
+            return copied;
         }
-        return copied;
+        finally {
+            this.ledger.release(reservation);
+        }
+    }
+    /** A whole copy in one turn: its reservation is drawn and then released. */
+    copyTreeNow(job) {
+        const reservation = this.reserveCopy(job);
+        try {
+            return this.withReservation(reservation, () => this.runCopyTree(job, null)).copied;
+        }
+        finally {
+            this.ledger.release(reservation);
+        }
+    }
+    /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
+    reserveCopy(job) {
+        const id = crypto.randomUUID();
+        this.ledger.reserve(id, (job.rows ?? 0) * LEDGER_ROW_BYTES);
+        return id;
     }
     /** Every entry strictly under `root` as of generation `g`, a page at a time. */
     *subtreeAt(root, g) {
@@ -4995,6 +5056,24 @@ export class SqliteVFS {
      * Files too large for one transaction stage across several.
      */
     importPage(dst, page, chunks = []) {
+        // N18: the page's rows and the bytes it brings are admitted and reserved
+        // before its first transaction, which then draw from the reservation.
+        const given = [...chunks];
+        let bytes = 0;
+        for (const chunk of given)
+            bytes += chunk.data.byteLength;
+        const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
+        const rows = (Array.isArray(page?.rows) ? page.rows.length : 0) + pieces + 2;
+        const reservation = crypto.randomUUID();
+        this.ledger.reserve(reservation, bytes + rows * LEDGER_ROW_BYTES);
+        try {
+            return this.withReservation(reservation, () => this.importPageNow(dst, page, given));
+        }
+        finally {
+            this.ledger.release(reservation);
+        }
+    }
+    importPageNow(dst, page, chunks) {
         if (page?.schema !== VFS_EXPORT_SCHEMA) {
             throw vfsError('EINVAL', `export schema ${String(page?.schema)}, this filesystem reads ${VFS_EXPORT_SCHEMA}`);
         }
@@ -6631,12 +6710,34 @@ export class SqliteVFS {
      */
     admitTransaction(plan, execution) {
         if (execution.source === 'content-gc')
-            return;
+            return null;
         const grows = plan.inodes.length > 0 || plan.staged.length > 0 || plan.stagingCreated.length > 0
             || plan.metrics.blobBytes > 0 || plan.deletes.length === 0;
         if (!grows)
-            return;
-        this.ledger.admit(plan.metrics.blobBytes + plan.metrics.logicalRows * LEDGER_ROW_BYTES);
+            return null;
+        const need = plan.metrics.blobBytes + plan.metrics.logicalRows * LEDGER_ROW_BYTES;
+        const id = this.activeReservation;
+        if (id === null) {
+            this.ledger.admit(need, this.privileged);
+            return null;
+        }
+        return { id, take: this.ledger.draw(id, need, this.privileged) };
+    }
+    /**
+     * Run `fn` (synchronous, so nothing interleaves) as the operation that
+     * holds reservation `id`: its transactions draw from it.
+     */
+    withReservation(id, fn) {
+        if (id === undefined)
+            return fn();
+        const prior = this.activeReservation;
+        this.activeReservation = id;
+        try {
+            return fn();
+        }
+        finally {
+            this.activeReservation = prior;
+        }
     }
     /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
     databaseBytes() {
@@ -6646,11 +6747,16 @@ export class SqliteVFS {
         if (this._activeTransaction !== null) {
             throw new Error('[sqlite-vfs] nested transaction plan execution is not supported');
         }
-        this.admitTransaction(plan, execution);
+        const drawn = this.admitTransaction(plan, execution);
         const startedAt = performance.now();
         this._activeTransaction = { startedAt, plan, execution };
         try {
             this.transactionSync(callback);
+        }
+        catch (error) {
+            if (drawn !== null)
+                this.ledger.refund(drawn.id, drawn.take);
+            throw error;
         }
         finally {
             const durationMs = performance.now() - startedAt;

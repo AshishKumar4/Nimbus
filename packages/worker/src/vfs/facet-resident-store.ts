@@ -295,6 +295,107 @@ const __RESIDENT_MAX_LIST_PAGES = 4096;
  * to be valid UTF-8 does not change shape between a write and a read.
  */
 const __RESIDENT_SCHEMA = "2";
+
+// N18: the session's storage ledger admits this facet's database growth
+// before it happens. The supervisor grants an allowance (the ledger records
+// it under this facet's name); the store never grows its database past
+// \`__residentCap\`, and asks for more, asynchronously, when it would. What
+// does not fit is not held: a fill degrades to reads through the session,
+// and an own write goes to the session only. Null: no ledger (no cap).
+let __residentCap = null;
+let __residentFacet = null;
+let __residentSupervisor = null;
+let __residentGrantAsk = null;
+const __RESIDENT_ROW_BYTES = 256;
+
+function __residentDbBytes() {
+  const sql = __residentSql;
+  const size = sql && sql.databaseSize;
+  if (typeof size === "number" && size > 0) return size;
+  for (const row of sql.exec("SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()")) return Number(row.n);
+  return 0;
+}
+
+/**
+ * Whether the store may grow by \`bytes\` now; when not, and \`ask\`, more room
+ * is asked for. A copy of an own write never asks: the session's copy is the
+ * one that must have the room, and the cache must not take it first.
+ */
+function __residentFits(bytes, ask = true) {
+  if (__residentCap === null) return true;
+  if (__residentDbBytes() + bytes <= __residentCap) return true;
+  if (ask) void __residentAskGrant(bytes);
+  return false;
+}
+
+/**
+ * Ask the ledger for \`bytes\` more, reporting what the database measures.
+ * Exactly what is needed: room granted and unused is room the session's own
+ * writes cannot have. Resolves to whether \`bytes\` now fit.
+ */
+function __residentAskGrant(bytes) {
+  const supervisor = __residentSupervisor;
+  if (__residentCap === null) return Promise.resolve(true);
+  if (!supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
+  if (__residentGrantAsk) return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
+  const want = Math.max(0, __residentDbBytes() + bytes - __residentCap);
+  __residentGrantAsk = (async () => {
+    try {
+      const answer = await supervisor.fsStorageGrant(__residentFacet, want, __residentDbBytes());
+      const granted = Number(answer && answer.granted) || 0;
+      __residentCap += granted;
+      if (answer && typeof answer.cap === "number") __residentCap = Math.max(__residentCap, answer.cap);
+    } catch {}
+  })().finally(() => { __residentGrantAsk = null; });
+  return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
+}
+
+/** Room for \`bytes\` before an asynchronous fill writes them: true when they fit. */
+async function __residentEnsureRoom(bytes) {
+  if (__residentCap === null || __residentDbBytes() + bytes <= __residentCap) return true;
+  return __residentAskGrant(bytes);
+}
+
+/**
+ * What holding a cell of \`size\` costs the database: its bytes on overflow
+ * pages (1% over, for page headers and the b-tree pages above them), a row
+ * per chunk and head, and a page of slack.
+ */
+function __residentCellBytes(size, isText) {
+  const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
+  const chunks = Math.max(1, Math.ceil(size / limit));
+  return Math.ceil((isText ? size * 3 : size) * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
+}
+
+/** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
+async function __residentRoomForPushed(result) {
+  if (__residentCap === null || !result || !Array.isArray(result.paths)) return;
+  let bytes = 0;
+  for (const entry of result.paths) {
+    if (entry && entry.bytes != null) bytes += __residentCellBytes(__residentBytes(entry.bytes).byteLength, false);
+  }
+  if (bytes > 0) await __residentEnsureRoom(bytes);
+}
+
+/** What the database measures, after a fill batch: the ledger settles to it, or records overshoot. */
+async function __residentReportSize() {
+  const supervisor = __residentSupervisor;
+  if (__residentCap === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
+  try { await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes()); } catch {}
+}
+
+/** The allowance this launch was admitted for (the fabric's startArgs.storage). */
+function __residentSetStorage(storage, supervisor) {
+  __residentSupervisor = supervisor || null;
+  if (!storage || typeof storage.facet !== "string" || typeof storage.grant !== "number") return;
+  __residentFacet = storage.facet;
+  __residentCap = __residentDbBytes() + storage.grant;
+}
+
+/** The cap this store enforces, for startProcess to report. */
+function __residentStorageCap() {
+  return __residentCap;
+}
 const __RK_TEXT = 0;
 const __RK_BINARY = 1;
 const __RK_DENIED = 2;
@@ -529,8 +630,8 @@ function __residentAdmit(result) {
       // Pushed content: the file's bytes at the answer's revision, so dating
       // them at the path's own revision cannot be newer than they are.
       if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
-        __residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev), entry.contentKey);
-        pushed++;
+        if (__residentPut(sql, path, __residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
+        else if (held) dropped.push(path);
         continue;
       }
       if (!held) continue;
@@ -642,7 +743,7 @@ function __residentPut(sql, path, cell, rev, ckey) {
       "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, 0, 0, ?)",
       path, __RK_DENIED, stamp
     );
-    return;
+    return true;
   }
   const isText = typeof cell === "string";
   const kind = isText ? __RK_TEXT : __RK_BINARY;
@@ -652,6 +753,11 @@ function __residentPut(sql, path, cell, rev, ckey) {
   // multi-byte string would otherwise cross it while measuring short.
   const limit = isText ? Math.floor(__RESIDENT_CHUNK_BYTES / 3) : __RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
+  // Not admitted: nothing is held for the path (its old bytes are gone above).
+  if (!__residentFits(__residentCellBytes(size, isText), stamp !== __RK_OWN_WRITE)) {
+    sql.exec("DELETE FROM file WHERE path = ?", path);
+    return false;
+  }
   for (let part = 0; part < chunks; part++) {
     const slice = body.slice(part * limit, (part + 1) * limit);
     if (isText) sql.exec("INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)", path, part, slice);
@@ -661,11 +767,14 @@ function __residentPut(sql, path, cell, rev, ckey) {
     "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)",
     path, kind, size, chunks, stamp, stamp === __RK_OWN_WRITE || ckey == null ? null : String(ckey)
   );
+  return true;
 }
 
 /** One chunk row, written as it arrives. The streaming filler's primitive. */
 function __residentPutChunk(sql, path, part, bytes) {
+  if (!__residentFits(Math.ceil(bytes.byteLength * 1.01) + __RESIDENT_ROW_BYTES + 4096)) return false;
   sql.exec("INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bytes);
+  return true;
 }
 
 /**
@@ -696,6 +805,7 @@ function __residentCopyByKey(sql, path, ckey, rev) {
     "SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", String(ckey), path,
   )) source = row;
   if (source === null) return false;
+  if (!__residentFits(Number(source.size) + (Number(source.chunks) + 1) * __RESIDENT_ROW_BYTES)) return false;
   sql.exec("DELETE FROM chunk WHERE path = ?", path);
   sql.exec(
     "INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?",
@@ -729,7 +839,7 @@ function __residentPopulate(path, cell, rev) {
       "An undated row cannot be invalidated, so it would be served stale forever."
     );
   }
-  __residentPut(__residentSql, path, cell, rev);
+  return __residentPut(__residentSql, path, cell, rev);
 }
 
 /**
@@ -807,8 +917,7 @@ function __residentFill(path, cell, rev) {
     const held = Number(row.rev);
     if (held === __RK_OWN_WRITE || held > rev) return false;
   }
-  __residentPut(sql, path, cell, rev);
-  return true;
+  return __residentPut(sql, path, cell, rev);
 }
 
 /** Every held path. Backs the Object.keys / for-in scans in the shims. */
@@ -1283,6 +1392,7 @@ async function __residentCatchUp(supervisor, cursor) {
     // program's first barrier brings forward like any other.
     return cursor;
   }
+  await __residentRoomForPushed(result);
   const applied = __residentAdmit(result);
   for (const dir of applied.relist) await __nsRelist(supervisor, dir);
   // A dropped row was held, so it is wanted again at its new revision.
@@ -1529,6 +1639,12 @@ async function __residentFetchFiles(supervisor, files) {
       batch.push(ranges[at]);
       at++;
     }
+    // N18: room for the batch first; what the ledger will not admit is read
+    // through the session instead of held.
+    if (!(await __residentEnsureRoom(bytes + batch.length * __RESIDENT_ROW_BYTES))) {
+      for (const r of batch) failedPaths.add(r.path);
+      continue;
+    }
     let results;
     try {
       results = await supervisor.fsReadBatch(
@@ -1556,7 +1672,7 @@ async function __residentFetchFiles(supervisor, files) {
       const chunk = __residentBytes(entry.bytes);
       if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
       fetchedBytes += chunk.byteLength;
-      __residentPutChunk(__residentSql, range.path, range.part, chunk);
+      if (!__residentPutChunk(__residentSql, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
@@ -1579,6 +1695,7 @@ async function __residentFetchFiles(supervisor, files) {
     if (__residentCopyByKey(sql, file.path, file.ckey, file.rev)) copied++;
     else failed++;
   }
+  if (ranges.length > 0) await __residentReportSize();
   return {
     requested, filled: filled + copied, failed,
     bytes: fetchedBytes, ranges: ranges.length, copied,

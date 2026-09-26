@@ -313,6 +313,8 @@ export interface SqliteVfsOptions {
     readonly tombstoneRows?: number;
     /** The session's storage limit (N18); defaults to DO_STORAGE_LIMIT_BYTES. */
     readonly storageLimit?: number;
+    /** Bytes below it only uid 0 may fill (N18); defaults to 1% of the limit, at least 16 MiB. */
+    readonly storageKernelReserve?: number;
     /**
      * Where chunks only snapshots reference may be moved (P6): an R2 bucket
      * or anything with its get/put/delete. Without it nothing is tiered.
@@ -332,6 +334,10 @@ export declare class SqliteVFS {
     private sql;
     /** N18: the session's storage ledger, over this database (the session DO's). */
     readonly ledger: StorageLedger;
+    /** The reservation the running synchronous operation draws from (N18). */
+    private activeReservation;
+    /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
+    private privileged;
     private ctx;
     readonly events: VfsEventEmitter;
     private readonly inodes;
@@ -613,6 +619,12 @@ export declare class SqliteVFS {
      * session user need.
      */
     private logicalPath;
+    /**
+     * uid 0's view: its writes may use the storage the ledger keeps back from
+     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+     * Covers each call's synchronous part; the kernel's bookkeeping is that.
+     */
+    private privilegedView;
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
@@ -1045,6 +1057,10 @@ export declare class SqliteVFS {
      */
     private planCopyTree;
     private copyTreeInSlices;
+    /** A whole copy in one turn: its reservation is drawn and then released. */
+    private copyTreeNow;
+    /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
+    private reserveCopy;
     /** Every entry strictly under `root` as of generation `g`, a page at a time. */
     private subtreeAt;
     /**
@@ -1249,6 +1265,7 @@ export declare class SqliteVFS {
         want: string[];
         done: boolean;
     };
+    private importPageNow;
     /**
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
@@ -1430,6 +1447,11 @@ export declare class SqliteVFS {
      * never refused.
      */
     private admitTransaction;
+    /**
+     * Run `fn` (synchronous, so nothing interleaves) as the operation that
+     * holds reservation `id`: its transactions draw from it.
+     */
+    private withReservation;
     /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
     databaseBytes(): number;
     private executeMeasuredTransaction;

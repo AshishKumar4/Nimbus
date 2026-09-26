@@ -808,6 +808,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult> {
     return _rpc._rpcFsAcquire(this as any, epoch, cursor, options, pid);
   }
+  async _rpcFsStorageGrant(facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{ granted: number }> {
+    return _rpc._rpcFsStorageGrant(this as any, facet, bytes, databaseSize, pid);
+  }
   async _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage> {
     return _rpc._rpcFsList(this as any, after, limit, pid);
   }

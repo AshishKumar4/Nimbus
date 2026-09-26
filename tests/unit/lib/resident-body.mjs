@@ -195,6 +195,7 @@ export async function launchResident({
   cursor,
   authority,
   dataPlan,
+  startArgs = {},
 }) {
   const vfsState = {
     bundle,
@@ -220,8 +221,8 @@ export async function launchResident({
   // The plan a resident launch is handed: data-plan.ts over the authority,
   // as the manager computes it, unless the test names one.
   const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
-  await proc.startProcess(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {});
-  return { proc, sql };
+  const started = await proc.startProcess(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}), ...startArgs } : startArgs);
+  return { proc, sql, started };
 }
 
 /** data-plan.ts over `authority` as the process's credential sees it. */

@@ -24,7 +24,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   let evicted = [];
   const imageBytes = () => Number([...sql.exec('SELECT COALESCE(SUM(bytes), 0) AS n FROM nimbus_image_storage')][0].n);
   registerImageEvictor(sql, (principal) => evicted.push(Number(principal)));
-  const open = () => new StorageLedger(sql, { limit: testCase.limit, sessionBytes: () => own + imageBytes() });
+  const open = () => new StorageLedger(sql, { limit: testCase.limit, kernelReserve: 0, sessionBytes: () => own + imageBytes() });
   let ledger = open();
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
@@ -43,7 +43,15 @@ for (const [index, testCase] of fixture.cases.entries()) {
         case 'report': ledger.report(step.facet, step.bytes); break;
         case 'dropImages': ledger.dropImages(step.keep.map(String)); break;
         case 'abort': break;
-        case 'restart': ledger = open(); break;
+        case 'reserve': ledger.reserve(step.id, step.bytes); break;
+        // The operation's write lands: the session grows by it.
+        case 'draw': ledger.draw(step.id, step.bytes); own += step.bytes; break;
+        // It rolled back: the session never grew by it.
+        case 'refund': { const back = Math.min(step.bytes, own); ledger.refund(step.id, back); own -= back; break; }
+        case 'release': ledger.release(step.id); break;
+        case 'releaseAll': ledger.releaseAll(); break;
+        // A new engine: no operation outlives it, so nothing stays reserved.
+        case 'restart': ledger = open(); ledger.releaseAll(); break;
         default: throw new Error(`unknown op ${step.op}`);
       }
     } catch (error) {
@@ -61,23 +69,25 @@ for (const [index, testCase] of fixture.cases.entries()) {
         session: view.session,
         facets: view.facets,
         images: view.images.map(([principal, bytes]) => [Number(principal), bytes]),
+        reserved: view.reserved,
+        reservations: view.reservations,
       },
     };
     if (step.op === 'dropImages') {
       const dropped = before.filter((principal) => !step.keep.includes(principal));
       if (JSON.stringify(evicted) !== JSON.stringify(dropped)) failures.push(`case ${index} step ${at}: dropImages deleted ${JSON.stringify(evicted)}, not ${JSON.stringify(dropped)}`);
     }
-    const want = { expect: step.expect, evicted: step.evicted, ledger: { ...step.ledger, facets: Object.fromEntries(Object.entries(step.ledger.facets).sort()) } };
+    const want = { expect: step.expect, evicted: step.evicted, ledger: { ...step.ledger, facets: Object.fromEntries(Object.entries(step.ledger.facets).sort()), reservations: Object.fromEntries(Object.entries(step.ledger.reservations).sort()) } };
     try {
       assert.deepEqual(got, want);
     } catch {
-      failures.push(`case ${index} step ${at} ${JSON.stringify({ op: step.op, facet: step.facet, principal: step.principal, bytes: step.bytes, keep: step.keep })}: got ${JSON.stringify(got)}, model ${JSON.stringify(want)}`);
+      failures.push(`case ${index} step ${at} ${JSON.stringify({ op: step.op, id: step.id, facet: step.facet, principal: step.principal, bytes: step.bytes, keep: step.keep })}: got ${JSON.stringify(got)}, model ${JSON.stringify(want)}`);
     }
   }
 }
 
 if (failures.length > 0) {
-  for (const failure of failures.slice(0, 10)) console.log(`FAIL ${failure}`);
+  for (const failure of failures.slice(0, Number(process.env.SHOW ?? 10))) console.log(`FAIL ${failure}`);
   console.log(`n18-ledger-refinement: ${failures.length} of ${steps} steps disagree with the model`);
   process.exit(1);
 }
