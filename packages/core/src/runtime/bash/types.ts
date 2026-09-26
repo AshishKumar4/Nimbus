@@ -276,6 +276,16 @@ export interface BashSession {
   pipes: Map<number, BashPipe>;
   runnable: BashProc[];
   /**
+   * Without JSPI, processes that reached exec and wait to be started. A plain
+   * WASI child runs synchronously and cannot wait on a promise, so it may not
+   * start while a fork or exec it could depend on is still a pending task:
+   * its first blocked read of an empty pipe would take the stage behind it for
+   * end of input. The scheduler starts one only when nothing is runnable and
+   * nothing is pending, and a blocked child may start one nested, as it steps
+   * a runnable one.
+   */
+  deferred: BashProc[];
+  /**
    * Reaped-but-unclaimed exit statuses, pid → status and parent.
    *
    * The parent is part of the record because `wait` with no argument must reap

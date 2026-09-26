@@ -108,7 +108,7 @@ function newSession(args: BashBootArgs): BashSession {
     argv: args.argv, environ: args.environ,
     stdinTty: !!args.stdinTty,
     stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
-    procs: new Map(), pipes: new Map(), runnable: [], exitStatus: new Map(), waiters: [],
+    procs: new Map(), pipes: new Map(), runnable: [], deferred: [], exitStatus: new Map(), waiters: [],
     pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
     out: '', err: '',
     missingWasi: new Set(),
@@ -781,7 +781,10 @@ function step(s: BashSession, proc: BashProc): void {
     }
   } else if (r === 'exec') {
     trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
-    queueSessionTask(s, doExec(s, proc));
+    // With JSPI a child parks on a pipe it would block on; without it, it runs
+    // synchronously, so it waits here until what it could depend on has run.
+    if (s.parking === 'jspi') queueSessionTask(s, doExec(s, proc));
+    else s.deferred.push(proc);
   } else if (r === 'filesystem') {
     const pending = proc.pendingFs;
     if (!pending) throw new Error('Missing suspended filesystem operation');
@@ -792,9 +795,17 @@ function step(s: BashSession, proc: BashProc): void {
 }
 
 function pumpOne(s: BashSession): boolean {
-  if (!s.runnable.length) return false;
-  step(s, s.runnable.shift() as BashProc);
-  return true;
+  if (s.runnable.length) { step(s, s.runnable.shift() as BashProc); return true; }
+  // A deferred child may be the writer a blocked reader is waiting for: it runs
+  // nested, to completion or to its own blocked read, as a runnable step does.
+  if (s.deferred.length) { startDeferred(s); return true; }
+  return false;
+}
+
+/** Start the next process that reached exec (see BashSession.deferred). */
+function startDeferred(s: BashSession): void {
+  const proc = s.deferred.shift() as BashProc;
+  if (s.procs.has(proc.pid)) queueSessionTask(s, doExec(s, proc));
 }
 
 // exec re-homes the forked child onto a staged plain-WASI coreutil
@@ -1050,10 +1061,13 @@ function queueSessionTask(s: BashSession, task: Promise<void>): void {
 
 async function pump(s: BashSession): Promise<BashSlice> {
   try {
-    while (s.runnable.length || s.pending.size) {
+    while (s.runnable.length || s.pending.size || s.deferred.length) {
       if (!s.runnable.length) {
         if (s.stdin.waiters.length && !s.stdin.closed && s.stdin.queued === 0) break;
-        await Promise.race(s.pending);
+        // A deferred child starts only once every pending fork and exec has
+        // settled, so the stages it reads from exist and have run what they can.
+        if (s.pending.size) { await Promise.race(s.pending); continue; }
+        startDeferred(s);
         continue;
       }
       if (++s.steps > 5_000_000) throw new Error('bash-runner: runaway scheduler (>5M steps)');

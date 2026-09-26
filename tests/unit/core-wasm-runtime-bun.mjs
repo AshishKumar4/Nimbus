@@ -168,6 +168,25 @@ const ws = await open({ facets: localFacetHost() });
   assert.equal(forked.exitCode, 0, `bash failed: ${forked.stderr}`);
   assert.equal(forked.stdout, 'n=1\nn=2\nn=3\nrc=1\n');
   console.log('  ok  loops, pipelines and exit status behave');
+
+  // N24: a pipeline of three or more stages delivers its last stage's output, to
+  // bash's own stdout and to a command substitution alike; every stage a BusyBox
+  // child exec'd without JSPI, so each blocked reader has to wait for the stage
+  // behind it rather than read its end of input early.
+  for (const [command, want] of [
+    ["echo a | cat | cat", 'a\n'],
+    ["seq 3 | cat | cat", '1\n2\n3\n'],
+    ["printf 'c\\nb\\na\\n' | sort | uniq | cat", 'a\nb\nc\n'],
+    ["x=$(echo a | cat | cat); echo \"[$x]\"", '[a]\n'],
+    ["seq 5 | cat | cat | cat | wc -l", '5\n'],
+    ["echo a | (cat | cat)", 'a\n'],
+    ["echo a | cat | cat; echo \"${PIPESTATUS[*]}\"", 'a\n0 0 0\n'],
+  ]) {
+    const r = await ws.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`);
+    assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
+    assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
+  }
+  console.log('  ok  a pipeline of three or more stages delivers its last stage');
 }
 
 // ── bash and the durable filesystem are the same filesystem ─────────────────
