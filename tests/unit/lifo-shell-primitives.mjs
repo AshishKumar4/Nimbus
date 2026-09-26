@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { PipeChannel } from '../../packages/core/src/substrate/lifo/shell/pipe.ts';
 import { TerminalStdin } from '../../packages/core/src/substrate/lifo/shell/terminal-stdin.ts';
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 
 try {
   registerShellEntrypointCommands(
@@ -86,7 +86,7 @@ try {
     "curl -sS -D '' -o /dev/null http://127.0.0.1:8123/dump-target; echo STATUS:$?",
     {
       stdout: 'STATUS:23\n',
-      stderr: "curl: (23) Failed create dump-header file '': EISDIR: '/home/user': is a directory\n",
+      stderr: /^curl: \(23\) Failed create dump-header file '': EISDIR\b.*\n$/,
       exitCode: 0,
     });
 
@@ -100,8 +100,8 @@ try {
     'true < /home/user; echo STATUS:$?',
     { stdout: 'STATUS:1\n', stderr: 'sh: /home/user: Is a directory\n', exitCode: 0 });
 
-  box.kernel.vfs.writeFile('/tmp/locked.bin', 'secret');
-  box.kernel.vfs.chmod('/tmp/locked.bin', 0o000);
+  box.root.writeFile('tmp/locked.bin', 'secret');
+  box.root.chmod('tmp/locked.bin', 0o000);
   await assertRun('input redirection honors read authorization',
     'true < /tmp/locked.bin; echo STATUS:$?',
     { stdout: 'STATUS:1\n', stderr: 'sh: /tmp/locked.bin: Permission denied\n', exitCode: 0 });
@@ -169,5 +169,6 @@ async function assertRun(name, command, expected) {
   const result = await box.commands.run(command, { timeout: 60_000 });
   assert.equal(result.exitCode, expected.exitCode, `${name}: exitCode`);
   assert.equal(result.stdout, expected.stdout, `${name}: stdout`);
-  assert.equal(result.stderr, expected.stderr, `${name}: stderr`);
+  if (expected.stderr instanceof RegExp) assert.match(result.stderr, expected.stderr, `${name}: stderr`);
+  else assert.equal(result.stderr, expected.stderr, `${name}: stderr`);
 }

@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -19,11 +19,10 @@ root.mkdir('home/user', { mode: 0o755 });
 root.chown('home/user', USER.uid, USER.gid);
 root.writeFile('home/user/root-owned', 'original', { mode: 0o644 });
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox({ harness, vfs: rawVfs });
 let invocations = 0;
 
 try {
-  box.kernel.vfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
   box.commands.registry.register('mustnotrun', async () => {
     invocations++;
     return 0;
@@ -108,7 +107,7 @@ try {
     },
     releaseProcess: (pid) => authority.releaseProcess(pid),
   };
-  const asyncBox = await Sandbox.create({ persist: false });
+  const asyncBox = await testBox({ harness, vfs: rawVfs });
   const shell = new Shell(
     new HeadlessTerminal(), remote, asyncBox.commands.registry,
     { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.shell.getProcessRegistry(),

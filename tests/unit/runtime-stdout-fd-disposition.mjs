@@ -13,7 +13,7 @@
 // correct exit code.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
 function makeTerminal() {
   let buf = '';
@@ -29,7 +29,7 @@ function makeTerminal() {
   };
 }
 
-const box = await Sandbox.create({ persist: false, terminal: makeTerminal() });
+const box = await testBox({ terminal: makeTerminal() });
 
 try {
   // Stands in for the runtime handler: records what it was told about its own
@@ -57,11 +57,11 @@ try {
   );
 
   assert.deepEqual(
-    await lastSeen('fdprobe > /tmp-fd-probe.txt'),
+    await lastSeen('fdprobe > /tmp/fd-probe.txt'),
     { stdout: false, stderr: true },
     'a redirect takes fd 1 off the terminal',
   );
-  const readBack = await box.shell.execute('cat /tmp-fd-probe.txt');
+  const readBack = await box.shell.execute('cat /tmp/fd-probe.txt');
   assert.equal(
     readBack.stdout,
     'probe-output\n',
@@ -75,7 +75,7 @@ try {
   );
 
   assert.deepEqual(
-    await lastSeen('fdprobe 2> /tmp-fd-probe-err.txt'),
+    await lastSeen('fdprobe 2> /tmp/fd-probe-err.txt'),
     { stdout: true, stderr: false },
     'a stderr redirect is reported independently of stdout',
   );

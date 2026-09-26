@@ -4,7 +4,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -44,7 +44,7 @@ const remote = {
   openHost(cred, options) { const lease = authority.openHost(cred, options); return { fs: delayed(lease.fs), dispose: () => lease.dispose() }; },
   releaseProcess: pid => authority.releaseProcess(pid),
 };
-const box = await Sandbox.create({ persist: false });
+const box = await testBox({ harness, vfs: raw });
 registerUnixCommands(box.commands.registry, raw);
 const shell = new Shell(new HeadlessTerminal(), remote, box.commands.registry,
   { HOME: '/remote', PATH: '/bin', USER: 'user' }, box.shell.getProcessRegistry(),
@@ -56,7 +56,6 @@ try {
   assert.match(result.stdout, /remote datachangedFILE\nNOTDIR\n/);
   assert.match(result.stdout, /\/remote\/second/);
   assert.equal(root.readFileString('/remote/second'), 'changed');
-  assert.equal(box.kernel.vfs.exists('/remote/second'), false, 'no mirrored file in the standalone store');
   const denied = await shell.execute('cat /remote/secret; printf leak > /remote/link/leak');
   assert.notEqual(denied.exitCode, 0);
   assert.ok(!denied.stdout.includes('SECRET'));

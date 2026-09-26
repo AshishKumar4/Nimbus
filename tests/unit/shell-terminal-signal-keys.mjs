@@ -7,10 +7,10 @@
 // ctx.signal, so an abort that never arrives shows up as a full-length sleep.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
 async function interrupt(key) {
-  const box = await Sandbox.create({ persist: false });
+  const box = await testBox();
   const shell = box.shell;
   const started = Date.now();
   const line = shell.executeLine('sleep 10');
@@ -31,7 +31,7 @@ assert.ok(await interrupt('\x1c') < 2000, 'Ctrl+\\ ends the foreground command e
 
 // SIGQUIT is not SIGINT: the shell reports 131 (128+3), not 130.
 {
-  const box = await Sandbox.create({ persist: false });
+  const box = await testBox();
   const shell = box.shell;
   shell.executeLine('sleep 10');
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -44,7 +44,7 @@ assert.ok(await interrupt('\x1c') < 2000, 'Ctrl+\\ ends the foreground command e
 // With no foreground job, Ctrl+\ is absorbed — unlike Ctrl+C it must not
 // discard what the user has typed.
 {
-  const box = await Sandbox.create({ persist: false });
+  const box = await testBox();
   const shell = box.shell;
   shell.handleInput('echo kept');
   shell.handleInput('\x1c');

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 import { createHttp } from '../../packages/core/src/substrate/lifo/node-compat/http.ts';
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 const originalFetch = globalThis.fetch;
 const routed = [];
 const fetched = [];

@@ -13,9 +13,9 @@
 
 import assert from 'node:assert/strict';
 
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 
 async function stdoutOf(line) {
   const result = await box.shell.execute(line, {});
