@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { decideRead, decideWrite, heldExitIsSigpipe, holdsExit, readerStops } from '../../packages/core/src/runtime/bash/pipe-rules.ts';
+import { decideRead, decideWrite, heldExitSettles, holdsExit, readerStops } from '../../packages/core/src/runtime/bash/pipe-rules.ts';
 
 const FIXTURE = 'lean/fixtures/pipes.json';
 const repo = resolve(import.meta.dirname, '../..');
@@ -51,22 +51,26 @@ function replay(c) {
   const held = new Map();
   let settled = [];
 
+  // After a read from `pipe` or a close of one of its read ends (pipe-rules heldExitSettles).
+  const settle = (pipe) => {
+    const settles = heldExitSettles(pipes[pipe], c.C);
+    if (settles === null) return;
+    for (const [pid, h] of [...held]) {
+      if (!h.pipes.delete(pipe)) continue;
+      if (settles === 'sigpipe') h.sigpipe = true;
+      if (h.pipes.size > 0) continue;
+      held.delete(pid);
+      procs.get(pid).status = h.sigpipe ? SIGPIPE_STATUS : h.status;
+      settled.push({ pid, status: procs.get(pid).status });
+    }
+  };
   const drop = (proc, { pipe, end }) => {
     const pp = pipes[pipe];
     if (end === 'r') {
       pp.readers--;
+      settle(pipe);
       // The last read end's close: what is in flight will never be read.
-      if (pp.readers === 0) {
-        for (const [pid, h] of [...held]) {
-          if (!h.pipes.delete(pipe)) continue;
-          if (heldExitIsSigpipe(pp.queued, c.C)) h.sigpipe = true;
-          if (h.pipes.size > 0) continue;
-          held.delete(pid);
-          procs.get(pid).status = h.sigpipe ? SIGPIPE_STATUS : h.status;
-          settled.push({ pid, status: procs.get(pid).status });
-        }
-        pp.discarded += pp.queued; pp.queued = 0;
-      }
+      if (pp.readers === 0) { pp.discarded += pp.queued; pp.queued = 0; }
     } else pp.writers--;
     proc.ends = proc.ends.filter((e) => !(e.pipe === pipe && e.end === end));
   };
@@ -104,6 +108,7 @@ function replay(c) {
         const k = Math.min(n, pipes[pipe].queued);
         pipes[pipe].queued -= k;
         pipes[pipe].read += k;
+        settle(pipe);
         return { read: k };
       }
       if (decision === 'eof') return 'eof';

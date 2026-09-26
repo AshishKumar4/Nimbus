@@ -89,12 +89,20 @@ export function holdsExit(pipe: PipeCounts, host: PipeHost, capacity: number): b
 }
 
 /**
- * A held status settles when its pipe's last read end closes, never while a
- * reader is alive: with more than capacity still unread the writer would have
- * been killed by SIGPIPE; otherwise it would have finished writing and exited.
+ * When a hold on a pipe settles, checked after each read from it and each
+ * close of one of its read ends:
+ * - `status`: the pipe is down to its capacity, so on Linux the writer would
+ *   have finished writing: it exits with its own status. This happens even
+ *   if a reader is still alive (a background job that inherited the read end
+ *   must not keep the pipeline waiting).
+ * - `sigpipe`: the last read end closed with more than capacity unread: the
+ *   writer would have been killed writing (141).
+ * - null: still blocked.
+ * A reader that is alive never turns a hold into SIGPIPE.
  */
-export function heldExitIsSigpipe(unreadAtLastClose: number, capacity: number): boolean {
-  return unreadAtLastClose > capacity;
+export function heldExitSettles(pipe: PipeCounts, capacity: number): 'status' | 'sigpipe' | null {
+  if (pipe.queued <= capacity) return 'status';
+  return pipe.readers === 0 ? 'sigpipe' : null;
 }
 
 /**

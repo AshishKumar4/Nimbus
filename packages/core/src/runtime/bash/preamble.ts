@@ -45,7 +45,7 @@ import type {
 import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
-import { PIPE_CAPACITY, decideRead, decideWrite, heldExitIsSigpipe, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
+import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } from '../os-contracts.js';
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 
@@ -179,14 +179,17 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   if (e.kind === 'authority') queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => {}));
   if (e.kind === 'pipe') {
     bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp);
-    if (e.end === 'r' && pp.readers === 0 && s.heldExits.size > 0) settleHeldExits(s, e.pipeId, pp.queued);
+    if (e.end === 'r') settleHeldExits(s, pp);
   }
 }
-/** The last read end of `pipeId` closed with `unread` bytes in it: settle the exits held on it. */
-function settleHeldExits(s: BashSession, pipeId: number, unread: number): void {
+/** After a read from `pp` or a close of one of its read ends: settle the exits held on it (pipe-rules heldExitSettles). */
+function settleHeldExits(s: BashSession, pp: BashPipe): void {
+  if (s.heldExits.size === 0) return;
+  const settles = heldExitSettles(pp, PIPE_CAPACITY);
+  if (settles === null) return;
   for (const [pid, held] of [...s.heldExits]) {
-    if (!held.pipes.delete(pipeId)) continue;
-    if (heldExitIsSigpipe(unread, PIPE_CAPACITY)) held.sigpipe = true;
+    if (!held.pipes.delete(pp)) continue;
+    if (settles === 'sigpipe') held.sigpipe = true;
     if (held.pipes.size > 0) continue;
     s.heldExits.delete(pid);
     publishExit(s, pid, held.ppid, held.sigpipe ? SIGPIPE : held.status);
@@ -238,6 +241,7 @@ function wakePipe(s: BashSession, pp: BashPipe): void {
     proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
+  settleHeldExits(s, pp);
   wakeWriters(pp);
 }
 function wakeStdin(s: BashSession): void {
@@ -392,7 +396,7 @@ function tryReadFd(
   const deliver = (bytes: Uint8Array): { errno: BashErrno } => { dv.setUint32(nreadPtr, scatter(u8, iov, bytes), true); return { errno: 0 }; };
   if (e && e.kind === 'pipe') {
     const pp = s.pipes.get(e.pipeId) as BashPipe;
-    if (pp.queued > 0) { const read = deliver(takeUpTo(pp, iov.total)); wakeWriters(pp); return read; }
+    if (pp.queued > 0) { const read = deliver(takeUpTo(pp, iov.total)); wakeWriters(pp); settleHeldExits(s, pp); return read; }
     if (pp.writers === 0) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
     return null;
   }
@@ -1177,10 +1181,11 @@ function finishProc(s: BashSession, proc: BashProc, code: number, signal = 0): v
   s.procs.delete(proc.pid);
   // Pipes this exit is held on (pipe-rules holdsExit), taken before its own
   // write ends close. The root process is never held: its exit ends the run.
-  const held = new Set<number>();
+  const held = new Set<BashPipe>();
   if (proc.ppid !== 0 && !signal) {
     for (const e of proc.fds.values()) {
-      if (e.kind === 'pipe' && e.end === 'w' && holdsExit(s.pipes.get(e.pipeId) as BashPipe, pipeHost(s), PIPE_CAPACITY)) held.add(e.pipeId);
+      const pp = e.kind === 'pipe' && e.end === 'w' ? s.pipes.get(e.pipeId) as BashPipe : null;
+      if (pp && holdsExit(pp, pipeHost(s), PIPE_CAPACITY)) held.add(pp);
     }
   }
   if (held.size > 0) s.heldExits.set(proc.pid, { status: st, ppid: proc.ppid, pipes: held, sigpipe: false });

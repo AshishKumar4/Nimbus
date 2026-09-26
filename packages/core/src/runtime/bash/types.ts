@@ -265,7 +265,7 @@ export interface BashExitStatus {
 export interface BashHeldExit {
   status: number;
   ppid: number;
-  pipes: Set<number>;
+  pipes: Set<BashPipe>;
   sigpipe: boolean;
 }
 
