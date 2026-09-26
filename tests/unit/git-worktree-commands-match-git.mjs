@@ -663,9 +663,9 @@ try {
    * `sub` runs both from a subdirectory; `stdout` compares what they print; `firstLine` compares
    * only stderr's first line (a usage text below it is this git's own).
    */
-  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false, mask = null } = {}) => {
-    const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, args);
-    const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, args);
+  const agreeOn = async (label, repo, args, { commits = false, sub = '', stdout = false, firstLine = false, mask = null, env = {} } = {}) => {
+    const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, args, env);
+    const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, args, env);
     assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
     const head = (text) => (firstLine ? text.split('\n')[0] : text);
     assert.equal(head(actual.stderr), head(expected.stderr), `${label}: stderr`);
@@ -925,10 +925,13 @@ try {
       put('a', 'a2\n');
       git('commit', '-q', '-a', '-m', 'second');
     });
-    const tag = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, ...options });
-    // A tag object's tagger line carries a clock; the rest (object, type, tag, message) must match.
-    const tags = (cwd) => realGit(cwd, ['for-each-ref', '--format=%(refname) %(objecttype) %(object) %(type) %(tag) %(*objectname) [%(contents)]', 'refs/tags'])
-      .stdout.toString().replace(/^(\S+ tag) [0-9a-f]{40} /gm, '$1 ');
+    // Both gits stamp tags with the committer git's environment names (GIT_ENV's
+    // committer, and its date), so tag objects are byte-identical, ids included.
+    const committer = { GIT_COMMITTER_NAME: GIT_ENV.GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL: GIT_ENV.GIT_COMMITTER_EMAIL, GIT_COMMITTER_DATE: GIT_ENV.GIT_COMMITTER_DATE };
+    const tag = (label, args, options = {}) => agreeOn(label, repo, args, { stdout: true, env: committer, ...options });
+    const tags = (cwd) => realGit(cwd, ['for-each-ref',
+      '--format=%(refname) %(objecttype) %(objectname) %(type) %(tag) %(*objectname) %(taggername) %(taggeremail) %(taggerdate:raw) [%(contents)]',
+      'refs/tags']).stdout.toString();
     const sameTags = (label) => assert.equal(tags(copyOf(repo)), tags(repo.disk), `${label}: refs/tags`);
     for (const [label, args] of [
       ['a lightweight tag', ['tag', 'light']],
@@ -943,8 +946,7 @@ try {
     }
     await tag('a tag that exists', ['tag', 'v1']);
     await tag('-a with no message', ['tag', '-a', 'v5']);
-    const tagObjectId = /\(was [0-9a-f]{7}\)/g;
-    await tag('-f replaces it', ['tag', '-f', '-a', '-m', 're', 'v2'], { mask: tagObjectId });
+    await tag('-f replaces it', ['tag', '-f', '-a', '-m', 're', 'v2']);
     sameTags('-f');
     await tag('-f to the same commit, lightweight', ['tag', '-f', 'light']);
     await tag('list', ['tag']);
@@ -952,11 +954,28 @@ try {
     await tag('--list with two patterns', ['tag', '--list', 'l*', 'o?d']);
     await tag('-n', ['tag', '-n']);
     await tag('-n2', ['tag', '-n2']);
-    await tag('-d', ['tag', '-d', 'v1', 'light'], { mask: /\(was [0-9a-f]{7}\)(?=\n.*light)/ });
+    await tag('-d', ['tag', '-d', 'v1', 'light']);
     sameTags('-d');
     await tag('-d of a tag that does not exist', ['tag', '-d', 'nope']);
     await tag('a commit that does not exist', ['tag', 'x', 'nosuchref']);
     await tag('an unknown switch', ['tag', '-Q'], { firstLine: true });
+    // git's strip cleanup: comment lines go; an empty message is an empty body; -n lists it empty.
+    for (const [label, args] of [
+      ['a message with a comment line', ['tag', '-m', '# a comment\nreal line', 'c1']],
+      ['a message that is only a comment', ['tag', '-m', '#only a comment', 'c2']],
+      ['an empty message', ['tag', '-m', '', 'c3']],
+    ]) {
+      await tag(label, args);
+      sameTags(label);
+    }
+    await tag('-n9 over empty and cleaned messages', ['tag', '-n9']);
+    // The tagger is the committer, never the author; a date git cannot read is its error.
+    const people = { ...committer, GIT_AUTHOR_NAME: 'Author', GIT_AUTHOR_EMAIL: 'author@x', GIT_COMMITTER_NAME: 'Committer', GIT_COMMITTER_EMAIL: 'committer@x' };
+    await tag('the tagger is the committer', ['tag', '-m', 'm', 'who'], { env: people });
+    sameTags('the tagger is the committer');
+    await tag('a zoned ISO committer date', ['tag', '-m', 'm', 'iso'], { env: { ...committer, GIT_COMMITTER_DATE: '2020-01-01 10:00:00 +0530' } });
+    sameTags('a zoned ISO committer date');
+    await tag('a committer date git cannot read', ['tag', '-m', 'm', 'bad'], { env: { ...committer, GIT_COMMITTER_DATE: 'garbage' } });
   }
 
   // ── A same-size rewrite in the second the index was written ──

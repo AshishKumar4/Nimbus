@@ -791,8 +791,76 @@ const TAG_USAGE = 'usage: git tag [-a] [-f] [-m <msg> | -F <file>] <tagname> [<c
     + '   or: git tag -d <tagname>...\n'
     + '   or: git tag [-n[<num>]] [-l] [<pattern>...]\n';
 /** git's `whitespace` cleanup of a message given with -m or -F: no trailing blanks, no runs or edges of empty lines. */
+/** A `±hhmm` timezone for an offset in minutes east of UTC. */
+function gitTimezone(minutesEast) {
+    const sign = minutesEast < 0 ? '-' : '+';
+    const abs = Math.abs(minutesEast);
+    return `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
+}
+/**
+ * A GIT_COMMITTER_DATE as git reads it: `<seconds> [±hhmm]`, `@<seconds> [±hhmm]`
+ * or ISO 8601 (`YYYY-MM-DD[T ]HH:MM[:SS]` with `Z` or `±hh[:]mm`). Without a
+ * zone, the local one. Null for anything else, which git refuses.
+ */
+function parseGitDate(text) {
+    const local = (seconds) => gitTimezone(-new Date(seconds * 1000).getTimezoneOffset());
+    const raw = /^@?(\d+)(?:\s+([+-]\d{4}))?$/.exec(text.trim());
+    if (raw)
+        return { seconds: Number(raw[1]), zone: raw[2] ?? local(Number(raw[1])) };
+    const iso = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
+    if (!iso)
+        return null;
+    const [, y, mo, d, h, mi, sec = '0', zone] = iso;
+    let minutesEast = 0;
+    if (zone && zone !== 'Z') {
+        const m = /^([+-])(\d{2}):?(\d{2})$/.exec(zone);
+        minutesEast = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+    }
+    const utc = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec)) / 1000;
+    if (zone === undefined) {
+        const seconds = utc + new Date(utc * 1000).getTimezoneOffset() * 60;
+        return { seconds, zone: local(seconds) };
+    }
+    return { seconds: utc - minutesEast * 60, zone: gitTimezone(minutesEast) };
+}
+/**
+ * The committer identity git stamps a tag with: GIT_COMMITTER_NAME and
+ * GIT_COMMITTER_EMAIL, else user.name and user.email from the config (never
+ * the author's), and GIT_COMMITTER_DATE or now. A date git cannot read is
+ * its error.
+ */
+async function committerIdent(ctx, git, fs, dir) {
+    const config = async (key) => {
+        try {
+            const value = await git.getConfig({ fs, dir, path: key });
+            return typeof value === 'string' ? value : undefined;
+        }
+        catch {
+            return undefined;
+        }
+    };
+    const name = ctx.env.GIT_COMMITTER_NAME || await config('user.name') || ctx.env.USER || 'user';
+    const email = ctx.env.GIT_COMMITTER_EMAIL || await config('user.email') || 'user@nimbus.dev';
+    let when;
+    if (ctx.env.GIT_COMMITTER_DATE) {
+        const parsed = parseGitDate(ctx.env.GIT_COMMITTER_DATE);
+        if (!parsed)
+            return { error: `fatal: invalid date format: ${ctx.env.GIT_COMMITTER_DATE}\n` };
+        when = parsed;
+    }
+    else {
+        const seconds = Math.floor(Date.now() / 1000);
+        when = { seconds, zone: gitTimezone(-new Date().getTimezoneOffset()) };
+    }
+    return `${name} <${email}> ${when.seconds} ${when.zone}`;
+}
+/**
+ * git's `strip` cleanup, the default for a tag message: lines starting with
+ * the comment character go, then trailing whitespace, runs of blank lines
+ * and blank lines at either end. A non-empty result ends with a newline.
+ */
 function cleanupMessage(text) {
-    const lines = text.split('\n').map((line) => line.replace(/\s+$/, ''));
+    const lines = text.split('\n').filter((line) => !line.startsWith('#')).map((line) => line.replace(/\s+$/, ''));
     const out = [];
     for (const line of lines) {
         if (line === '' && (out.length === 0 || out[out.length - 1] === ''))
@@ -947,9 +1015,14 @@ async function tagCommand(ctx, git, fs, vfs, args) {
             let text = '';
             try {
                 const oid = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
-                const { type, object } = await git.readObject({ fs, dir, oid, cache, format: 'parsed' });
-                if (type === 'tag' || type === 'commit')
-                    text = object.message;
+                // The raw object, split at its first blank line as git splits it: cf-git's
+                // parsed form normalizes newlines first and misreads an empty message.
+                const { type, object } = await git.readObject({ fs, dir, oid, cache, format: 'content' });
+                if (type === 'tag' || type === 'commit') {
+                    const raw = dec.decode(object);
+                    const blank = raw.indexOf('\n\n');
+                    text = blank < 0 ? '' : raw.slice(blank + 2).split('\n-----BEGIN PGP SIGNATURE-----')[0];
+                }
             }
             catch { /* a broken ref lists bare */ }
             // The first <num> lines as they are, blank ones too, continuation lines indented.
@@ -994,12 +1067,19 @@ async function tagCommand(ctx, git, fs, vfs, args) {
     }
     let value;
     if (messages.length > 0) {
-        await git.annotatedTag({
-            fs, dir, ref: name, object, force: true, tagger: getAuthor(ctx),
-            // cf-git's tag object ends its message with the newline git's cleanup leaves.
-            message: cleanupMessage(messages.join('\n\n')).replace(/\n$/, ''),
-        });
-        value = await git.resolveRef({ fs, gitdir, ref: `refs/tags/${name}` });
+        const tagger = await committerIdent(ctx, git, fs, dir);
+        if (typeof tagger !== 'string') {
+            await ctx.stderr.write(tagger.error);
+            return 128;
+        }
+        // The object as git writes it, byte for byte: the headers, a blank line,
+        // then the cleaned message (nothing at all when it is empty). cf-git's
+        // annotatedTag appends a newline after the message, which an empty one
+        // must not have, and its parser then misreads the listing.
+        const { type } = await git.readObject({ fs, dir, oid: object, cache: {}, format: 'parsed' });
+        const body = `object ${object}\ntype ${type}\ntag ${name}\ntagger ${tagger}\n\n${cleanupMessage(messages.join('\n\n'))}`;
+        value = await git.writeObject({ fs, dir, type: 'tag', object: new TextEncoder().encode(body), format: 'content' });
+        await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value, force: true });
     }
     else {
         await git.tag({ fs, dir, ref: name, object, force: true });
