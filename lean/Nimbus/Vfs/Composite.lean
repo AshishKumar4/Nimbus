@@ -24,7 +24,8 @@
   - Root symlinks are followed at a prefix only when that prefix routes to the root
     backend and is not a live mount point or an ancestor of one
     (DECIDED: the synthesized directory wins over a root link of the same name).
-    A link inside a mounted backend is never followed by the composite.
+    Mounted backends hold no links in this model; Main's later ruling (every link
+    resolves in the caller's namespace, search checked per hop) is `CompositePerm`.
     Forty substitutions at most (Linux MAXSYMLINKS), then ELOOP. `writeFile`
     through a final link to a missing path creates it at the target (O_CREAT). The last component is followed for
     `stat`, `readdir`, `readFile` and `writeFile`, never for `mkdir`, `unlink`,

@@ -446,20 +446,23 @@ import Nimbus.Refine
 
 /-! ## Nimbus/Vfs/CompositePerm.lean -/
 
+#print axioms Nimbus.Vfs.CompositePerm.setgid_inherits
+#print axioms Nimbus.Vfs.CompositePerm.root_dir
+#print axioms Nimbus.Vfs.CompositePerm.named_snoc
+#print axioms Nimbus.Vfs.CompositePerm.named_dropLast
+#print axioms Nimbus.Vfs.CompositePerm.walk_named
+#print axioms Nimbus.Vfs.CompositePerm.resolve_named
 #print axioms Nimbus.Vfs.CompositePerm.never_widens
 #print axioms Nimbus.Vfs.CompositePerm.backend_refusal_stands
-#print axioms Nimbus.Vfs.CompositePerm.structural_mono
-#print axioms Nimbus.Vfs.CompositePerm.cPre_search
-#print axioms Nimbus.Vfs.CompositePerm.search_checked
+#print axioms Nimbus.Vfs.CompositePerm.resolved_frame
+#print axioms Nimbus.Vfs.CompositePerm.step_frame
 #print axioms Nimbus.Vfs.CompositePerm.held_described
 #print axioms Nimbus.Vfs.CompositePerm.privileged_passes
 #print axioms Nimbus.Vfs.CompositePerm.synth_meta_open
-#print axioms Nimbus.Vfs.CompositePerm.cPre_congr
-#print axioms Nimbus.Vfs.CompositePerm.confined
-#print axioms Nimbus.Vfs.CompositePerm.step_frame
 #print axioms Nimbus.Vfs.CompositePerm.the_perm_trace
 #print axioms Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
-#print axioms Nimbus.Vfs.CompositePerm.a_link_in_a_mount_stays_in_it
+#print axioms Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
+#print axioms Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
 
 /-! ## Nimbus/Vfs/FastCdc.lean -/
 

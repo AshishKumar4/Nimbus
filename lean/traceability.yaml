@@ -715,27 +715,30 @@ requirements:
       - One principal's table; per-principal source switches are table changes for that principal
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
   VFS-COMP-005:
-    statement: Through CompositeVFS a principal is granted nothing its backend's own check refuses; the walk checks search on every directory it leaves, component by component (EACCES before a later component's error), including the root, every structural directory (described by the backend that holds it - the root's /h - or a synthesized 0755 root:root where it holds nothing or reports no modes) and mount points (the mounted backend's /); readdir of a structural directory needs read; uid 0 passes; links inside a mounted backend resolve inside it, and a mutation changes only that backend.
+    statement: CompositeVFS resolves paths as Linux does, in the caller's namespace - every symlink, whichever backend holds it (absolute from the caller's root, relative from the link's directory, .. at a mount root to the mount point's parent), search checked with the caller's credential on every directory left, before the next lookup (EACCES before a later component's error), 40 hops then ELOOP; whatever a path resolves to, every directory on it grants the caller search (it reaches only what it could name directly); structural directories are described by the backend that holds them (synthesized 0755 root:root where it holds nothing or reports no modes) and readdir of one needs read; uid 0 passes; the answer at a resolved backend path is that backend's own (never widened), depends only on that backend, and a mutation changes only it; in a setgid directory a new entry takes the directory's group and a new directory is setgid (N26).
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositePerm.never_widens
       - Nimbus.Vfs.CompositePerm.backend_refusal_stands
-      - Nimbus.Vfs.CompositePerm.structural_mono
-      - Nimbus.Vfs.CompositePerm.cPre_search
-      - Nimbus.Vfs.CompositePerm.search_checked
       - Nimbus.Vfs.CompositePerm.held_described
       - Nimbus.Vfs.CompositePerm.privileged_passes
       - Nimbus.Vfs.CompositePerm.synth_meta_open
-      - Nimbus.Vfs.CompositePerm.cPre_congr
-      - Nimbus.Vfs.CompositePerm.confined
       - Nimbus.Vfs.CompositePerm.step_frame
       - Nimbus.Vfs.CompositePerm.the_perm_trace
       - Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
-      - Nimbus.Vfs.CompositePerm.a_link_in_a_mount_stays_in_it
+      - Nimbus.Vfs.CompositePerm.setgid_inherits
+      - Nimbus.Vfs.CompositePerm.root_dir
+      - Nimbus.Vfs.CompositePerm.named_snoc
+      - Nimbus.Vfs.CompositePerm.named_dropLast
+      - Nimbus.Vfs.CompositePerm.walk_named
+      - Nimbus.Vfs.CompositePerm.resolve_named
+      - Nimbus.Vfs.CompositePerm.resolved_frame
+      - Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
+      - Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS
     refinement:
       - lean/fixtures/composite-perm.json :: tests/unit/composite-perm-refinement.mjs
     remainingEvidence:
-      - Root-backend links followed by the composite, '..' in composite paths and per-principal sources are modeled in Nimbus.Vfs.Composite, not together with permissions here
-      - No ACLs, no setgid inheritance, no exec permission on files; a created file is 0644 owned by the writer's uid and primary gid
+      - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
+      - No ACLs, no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
