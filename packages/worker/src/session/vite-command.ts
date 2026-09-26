@@ -67,7 +67,7 @@ export function createViteCommand(self: ViteHost) {
           let cfgCode = kernelFs.readFileString(cfgPath);
           // Transform TS to JS
           if (cfgName.endsWith('.ts')) {
-            if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+            if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
             const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
             cfgCode = t.code;
           }
@@ -107,7 +107,7 @@ export function createViteCommand(self: ViteHost) {
         );
       }
 
-      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
       const htmlPath = cwd + '/index.html';
       let entryPoint = cwd + '/src/main.tsx';
       let origHtml = '';
@@ -315,7 +315,7 @@ export function createViteCommand(self: ViteHost) {
         return 1;
       }
       // Start vite on the dist directory
-      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
       if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
@@ -527,7 +527,7 @@ export function createViteCommand(self: ViteHost) {
     }
 
 
-    if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+    if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
     const previewBasePath = self.viteBasePath;
     const viteDefine = viteConfig.define;
 

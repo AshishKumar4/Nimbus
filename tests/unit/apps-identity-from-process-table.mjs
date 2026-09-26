@@ -155,6 +155,8 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     sessionOrigin: 'https://probe.test',
     sqliteFs: sessionFs,
     esbuildService: null,
+    // The namespace as host code reads it: this fake session's one filesystem.
+    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
     cirrusReal: null,
     viteDevServer: null,
     _viteShimPid: null,

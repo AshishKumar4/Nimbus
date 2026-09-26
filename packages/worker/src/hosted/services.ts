@@ -40,7 +40,7 @@ export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
 }
 
 export type RuntimeServiceHost = Pick<SessionInternal,
-  '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'
+  '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'shell' | 'sqliteFs' | 'terminal'
 > & { webSocketRelay: WebSocketRelay | null };
 
 export interface RuntimeServiceContext {
@@ -522,7 +522,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     self.ensureSqliteFs();
     if (!self.esbuildService) {
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.sqliteFs.as(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval

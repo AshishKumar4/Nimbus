@@ -193,6 +193,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
   readonly proc: ProcVFS;
   private readonly processes = new Map<number, SqliteDescriptorScope>();
+  private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
   private readonly mountedInos = new Map<string, number>();
@@ -232,6 +233,25 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    */
   view(binding: NimbusFilesystemBinding): ProcessView {
     return new ProcessView(this.bind(binding));
+  }
+
+  /**
+   * The namespace as `cred`, synchronously, for host code that reads user
+   * paths in one turn (git, the build services, vite's file shim, agent
+   * tools). Mounted paths route to their mount (a mount without a
+   * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
+   * exactly as a process's syscalls do. One per credential for the session.
+   */
+  namespaceFs(cred: Readonly<VfsCred>): NamespaceFs {
+    const identity = immutableCredential(cred);
+    const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
+    let fs = this.namespaces.get(key);
+    if (!fs) {
+      const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity);
+      fs = new NamespaceFs(bridge.synchronous!, identity);
+      this.namespaces.set(key, fs);
+    }
+    return fs;
   }
 
   /** Host work over a credentialed lease released when the work settles. */
@@ -536,4 +556,99 @@ function vfsStatOf(stat: RuntimeVfsStat): ProcessStat {
     mtimeMs: stat.mtime, atimeMs: stat.atime, ctimeMs: stat.ctime,
     ino: stat.ino, nlink: stat.nlink, dev: stat.dev, revision: stat.revision,
   };
+}
+
+/**
+ * The namespace, synchronously, in the engine's call shape (the subset host
+ * code uses): `stat` throws ENOENT when absent, paths may omit the leading
+ * slash, and every failure carries its POSIX code.
+ */
+export class NamespaceFs {
+  constructor(private readonly fs: RuntimeSynchronousFs, readonly cred: VfsCred) {}
+
+  private probe(path: string, follow: boolean): RuntimeVfsStat | null {
+    try {
+      return this.fs.stat(path, { followSymlinks: follow });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOTDIR') return null;
+      throw error;
+    }
+  }
+  exists(path: string): boolean { return this.probe(path, true) !== null; }
+  isDirectory(path: string): boolean { return this.probe(path, true)?.type === 'directory'; }
+  isFile(path: string): boolean { return this.probe(path, true)?.type === 'file'; }
+  isSymlink(path: string): boolean { return this.probe(path, false)?.type === 'symlink'; }
+  stat(path: string): RuntimeVfsStat {
+    const stat = this.fs.stat(path, { followSymlinks: true });
+    if (stat === null) throw new VfsError('ENOENT', path);
+    return stat;
+  }
+  lstat(path: string): RuntimeVfsStat {
+    const stat = this.fs.stat(path, { followSymlinks: false });
+    if (stat === null) throw new VfsError('ENOENT', path);
+    return stat;
+  }
+  access(path: string, mode: number): void { this.fs.access(path, mode); }
+  readFile(path: string): Uint8Array {
+    const bytes = this.fs.readFile(path);
+    if (bytes === null) throw new VfsError('ENOENT', path);
+    return bytes;
+  }
+  readFileString(path: string): string { return new TextDecoder().decode(this.readFile(path)); }
+  readRange(path: string, offset: number, length: number): Uint8Array {
+    const bytes = this.fs.readRange(path, offset, length);
+    if (bytes === null) throw new VfsError('ENOENT', path);
+    return bytes;
+  }
+  /** `mode` applies only if this creates the file, at creation. */
+  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): void {
+    if (options?.mode === undefined) { this.fs.writeFile(path, content); return; }
+    const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+    const handle = this.fs.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+    try {
+      for (let offset = 0; offset < bytes.length;) {
+        const written = this.fs.write(handle.id, offset, bytes.subarray(offset));
+        if (written <= 0) throw new VfsError('EIO', 'short write', path);
+        offset += written;
+      }
+    } finally {
+      this.fs.close(handle.id);
+    }
+  }
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void { this.fs.mkdir(path, options); }
+  readdir(path: string): RuntimeVfsDirEntry[] { return this.fs.readdir(path); }
+  unlink(path: string): void { this.fs.unlink(path); }
+  rmdir(path: string): void { this.fs.rmdir(path); }
+  removeRecursive(path: string): void { this.fs.remove(path, { recursive: true }); }
+  rename(from: string, to: string): void { this.fs.rename(from, to); }
+  symlink(target: string, path: string): void { this.fs.symlink(target, path); }
+  readlink(path: string): string {
+    const target = this.fs.readlink(path);
+    if (target === null) throw new VfsError('EINVAL', 'not a symbolic link', path);
+    return target;
+  }
+  /** Where a path's links lead (links followed), or null for a cycle. */
+  resolveSymlink(path: string): string | null {
+    try {
+      return this.fs.realpath(path).replace(/^\/+/, '');
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ELOOP') return null;
+      throw error;
+    }
+  }
+  chmod(path: string, mode: number): void { this.fs.chmod(path, mode); }
+  chown(path: string, uid: number | null, gid: number | null): void {
+    if (uid === null || gid === null) {
+      const stat = this.stat(path);
+      uid ??= stat.uid;
+      gid ??= stat.gid;
+    }
+    this.fs.chown(path, uid, gid);
+  }
+  utimes(path: string, atimeMs: number, mtimeMs: number): void { this.fs.utimes(path, atimeMs, mtimeMs); }
+  copyFile(from: string, to: string): void { this.fs.copyFile(from, to); }
+  acquireExclusiveMutation(path: string, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
+    return this.fs.acquireExclusiveMutation(path, options);
+  }
+  releaseExclusiveMutation(owner: string): void { this.fs.releaseExclusiveMutation(owner); }
 }

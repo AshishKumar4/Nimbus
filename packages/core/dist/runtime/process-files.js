@@ -173,6 +173,7 @@ export class ProcessFiles {
     /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
     proc;
     processes = new Map();
+    namespaces = new Map();
     retired = new Set();
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     mountedInos = new Map();
@@ -215,6 +216,24 @@ export class ProcessFiles {
      */
     view(binding) {
         return new ProcessView(this.bind(binding));
+    }
+    /**
+     * The namespace as `cred`, synchronously, for host code that reads user
+     * paths in one turn (git, the build services, vite's file shim, agent
+     * tools). Mounted paths route to their mount (a mount without a
+     * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
+     * exactly as a process's syscalls do. One per credential for the session.
+     */
+    namespaceFs(cred) {
+        const identity = immutableCredential(cred);
+        const key = `${identity.uid}:${identity.gid}:${identity.groups.join(',')}:${identity.umask}`;
+        let fs = this.namespaces.get(key);
+        if (!fs) {
+            const bridge = this.bridgeFor(createSqliteDescriptorScope(), identity);
+            fs = new NamespaceFs(bridge.synchronous, identity);
+            this.namespaces.set(key, fs);
+        }
+        return fs;
     }
     /** Host work over a credentialed lease released when the work settles. */
     async withHost(cred, use) {
@@ -515,4 +534,116 @@ function vfsStatOf(stat) {
         mtimeMs: stat.mtime, atimeMs: stat.atime, ctimeMs: stat.ctime,
         ino: stat.ino, nlink: stat.nlink, dev: stat.dev, revision: stat.revision,
     };
+}
+/**
+ * The namespace, synchronously, in the engine's call shape (the subset host
+ * code uses): `stat` throws ENOENT when absent, paths may omit the leading
+ * slash, and every failure carries its POSIX code.
+ */
+export class NamespaceFs {
+    fs;
+    cred;
+    constructor(fs, cred) {
+        this.fs = fs;
+        this.cred = cred;
+    }
+    probe(path, follow) {
+        try {
+            return this.fs.stat(path, { followSymlinks: follow });
+        }
+        catch (error) {
+            if (error.code === 'ENOTDIR')
+                return null;
+            throw error;
+        }
+    }
+    exists(path) { return this.probe(path, true) !== null; }
+    isDirectory(path) { return this.probe(path, true)?.type === 'directory'; }
+    isFile(path) { return this.probe(path, true)?.type === 'file'; }
+    isSymlink(path) { return this.probe(path, false)?.type === 'symlink'; }
+    stat(path) {
+        const stat = this.fs.stat(path, { followSymlinks: true });
+        if (stat === null)
+            throw new VfsError('ENOENT', path);
+        return stat;
+    }
+    lstat(path) {
+        const stat = this.fs.stat(path, { followSymlinks: false });
+        if (stat === null)
+            throw new VfsError('ENOENT', path);
+        return stat;
+    }
+    access(path, mode) { this.fs.access(path, mode); }
+    readFile(path) {
+        const bytes = this.fs.readFile(path);
+        if (bytes === null)
+            throw new VfsError('ENOENT', path);
+        return bytes;
+    }
+    readFileString(path) { return new TextDecoder().decode(this.readFile(path)); }
+    readRange(path, offset, length) {
+        const bytes = this.fs.readRange(path, offset, length);
+        if (bytes === null)
+            throw new VfsError('ENOENT', path);
+        return bytes;
+    }
+    /** `mode` applies only if this creates the file, at creation. */
+    writeFile(path, content, options) {
+        if (options?.mode === undefined) {
+            this.fs.writeFile(path, content);
+            return;
+        }
+        const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+        const handle = this.fs.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+        try {
+            for (let offset = 0; offset < bytes.length;) {
+                const written = this.fs.write(handle.id, offset, bytes.subarray(offset));
+                if (written <= 0)
+                    throw new VfsError('EIO', 'short write', path);
+                offset += written;
+            }
+        }
+        finally {
+            this.fs.close(handle.id);
+        }
+    }
+    mkdir(path, options) { this.fs.mkdir(path, options); }
+    readdir(path) { return this.fs.readdir(path); }
+    unlink(path) { this.fs.unlink(path); }
+    rmdir(path) { this.fs.rmdir(path); }
+    removeRecursive(path) { this.fs.remove(path, { recursive: true }); }
+    rename(from, to) { this.fs.rename(from, to); }
+    symlink(target, path) { this.fs.symlink(target, path); }
+    readlink(path) {
+        const target = this.fs.readlink(path);
+        if (target === null)
+            throw new VfsError('EINVAL', 'not a symbolic link', path);
+        return target;
+    }
+    /** Where a path's links lead (links followed), or null for a cycle. */
+    resolveSymlink(path) {
+        try {
+            return this.fs.realpath(path).replace(/^\/+/, '');
+        }
+        catch (error) {
+            if (error.code === 'ELOOP')
+                return null;
+            throw error;
+        }
+    }
+    chmod(path, mode) { this.fs.chmod(path, mode); }
+    chown(path, uid, gid) {
+        if (uid === null || gid === null) {
+            const stat = this.stat(path);
+            uid ??= stat.uid;
+            gid ??= stat.gid;
+        }
+        this.fs.chown(path, uid, gid);
+    }
+    utimes(path, atimeMs, mtimeMs) { this.fs.utimes(path, atimeMs, mtimeMs); }
+    copyFile(from, to) { this.fs.copyFile(from, to); }
+    acquireExclusiveMutation(path, options) {
+        return this.fs.acquireExclusiveMutation(path, options);
+    }
+    releaseExclusiveMutation(owner) { this.fs.releaseExclusiveMutation(owner); }
 }

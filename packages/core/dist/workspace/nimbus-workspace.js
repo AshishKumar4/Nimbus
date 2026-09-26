@@ -157,7 +157,7 @@ export class NimbusWorkspace {
         // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
         // to run it, and re-checks the caller's own execute permission at
         // invocation time — the `authorize` wrapper in exec-dispatch.ts.
-        installPathExecResolver(registry, vfs.as(CRED_KERNEL), () => shell.getCwd());
+        installPathExecResolver(registry, filesystem.namespaceFs(CRED_KERNEL), () => shell.getCwd());
         // node/curl/wget are bound to THIS workspace's kernel: their localhost
         // traffic resolves through its port registry and loopback router, not the
         // process-wide defaults the lazily-loaded commands would share.
@@ -469,7 +469,7 @@ async function registerWasmRuntimes(deps) {
         getEsbuild: () => {
             if (!esbuild) {
                 esbuild = import('../runtime/esbuild-service.js')
-                    .then((module) => new module.EsbuildService(deps.vfs.as(CRED_KERNEL)));
+                    .then((module) => new module.EsbuildService(deps.filesystem.namespaceFs(CRED_KERNEL)));
             }
             return esbuild;
         },

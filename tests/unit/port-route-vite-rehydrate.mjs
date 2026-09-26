@@ -77,6 +77,8 @@ function makeWokenSession(storage = {}) {
     env: {},
     sqliteFs: null,
     esbuildService: null,
+    // The namespace as host code reads it: this fake session's one filesystem.
+    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
     viteDevServer: null,
     cirrusReal: null,
     _viteShimPid: null,

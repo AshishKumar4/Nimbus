@@ -18,7 +18,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
-import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type VfsCred } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
 /** The session's namespace and the processes bound to it. */
 export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly engine: SqliteVFS;
@@ -28,6 +28,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
     readonly proc: ProcVFS;
     private readonly processes;
+    private readonly namespaces;
     private readonly retired;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     private readonly mountedInos;
@@ -43,6 +44,14 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * owner's lease) and every path is routed as the process's own syscalls are.
      */
     view(binding: NimbusFilesystemBinding): ProcessView;
+    /**
+     * The namespace as `cred`, synchronously, for host code that reads user
+     * paths in one turn (git, the build services, vite's file shim, agent
+     * tools). Mounted paths route to their mount (a mount without a
+     * synchronous face answers ENOTSUP) and SQLite paths go to the engine,
+     * exactly as a process's syscalls do. One per credential for the session.
+     */
+    namespaceFs(cred: Readonly<VfsCred>): NamespaceFs;
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
     releaseProcess(pid: number): Promise<void>;
@@ -158,5 +167,54 @@ export interface ProcessStat extends VfsStat {
     ino: number;
     nlink: number;
     dev: number;
+}
+/**
+ * The namespace, synchronously, in the engine's call shape (the subset host
+ * code uses): `stat` throws ENOENT when absent, paths may omit the leading
+ * slash, and every failure carries its POSIX code.
+ */
+export declare class NamespaceFs {
+    private readonly fs;
+    readonly cred: VfsCred;
+    constructor(fs: RuntimeSynchronousFs, cred: VfsCred);
+    private probe;
+    exists(path: string): boolean;
+    isDirectory(path: string): boolean;
+    isFile(path: string): boolean;
+    isSymlink(path: string): boolean;
+    stat(path: string): RuntimeVfsStat;
+    lstat(path: string): RuntimeVfsStat;
+    access(path: string, mode: number): void;
+    readFile(path: string): Uint8Array;
+    readFileString(path: string): string;
+    readRange(path: string, offset: number, length: number): Uint8Array;
+    /** `mode` applies only if this creates the file, at creation. */
+    writeFile(path: string, content: string | Uint8Array, options?: {
+        mode?: number;
+    }): void;
+    mkdir(path: string, options?: {
+        recursive?: boolean;
+        mode?: number;
+    }): void;
+    readdir(path: string): RuntimeVfsDirEntry[];
+    unlink(path: string): void;
+    rmdir(path: string): void;
+    removeRecursive(path: string): void;
+    rename(from: string, to: string): void;
+    symlink(target: string, path: string): void;
+    readlink(path: string): string;
+    /** Where a path's links lead (links followed), or null for a cycle. */
+    resolveSymlink(path: string): string | null;
+    chmod(path: string, mode: number): void;
+    chown(path: string, uid: number | null, gid: number | null): void;
+    utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    copyFile(from: string, to: string): void;
+    acquireExclusiveMutation(path: string, options?: {
+        includeMissingAncestors?: boolean;
+    }): {
+        root: string;
+        owner: string;
+    };
+    releaseExclusiveMutation(owner: string): void;
 }
 //# sourceMappingURL=process-files.d.ts.map

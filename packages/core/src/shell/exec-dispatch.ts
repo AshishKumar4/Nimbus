@@ -24,7 +24,7 @@
 
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { NamespaceFs } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 
 export interface ShebangLine {
@@ -95,7 +95,7 @@ export function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatch
 
 export function installPathExecResolver(
   registry: CommandRegistry,
-  kernelFs: CredentialedVfs,
+  kernelFs: NamespaceFs,
   getCwd: () => string,
 ): void {
   const originalResolve = registry.resolve.bind(registry);

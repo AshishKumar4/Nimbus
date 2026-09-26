@@ -29,6 +29,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 export async function registerHostedCommands(self, workspace) {
     const sqliteFs = workspace.vfs;
     const kernelFs = sqliteFs.as(CRED_KERNEL);
+    const namespaceFs = workspace.filesystem.namespaceFs(CRED_KERNEL);
     const kernel = workspace.kernel;
     const shell = workspace.shell;
     const registry = workspace.registry;
@@ -283,7 +284,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
                 }
                 return self.esbuildService;
             },
@@ -431,7 +432,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
                 }
                 return self.esbuildService;
             },
@@ -475,7 +476,7 @@ export async function registerHostedCommands(self, workspace) {
                     getEsbuild: () => {
                         if (!self.esbuildService) {
                             self.ensureSqliteFs();
-                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
                         }
                         return self.esbuildService;
                     },
@@ -557,7 +558,7 @@ export async function registerHostedCommands(self, workspace) {
         // Lazy-init esbuild
         if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
         }
         // Parse --root flag; default to the shell cwd so `npm run dev` from
         // a project directory picks up that project's wrangler.jsonc.

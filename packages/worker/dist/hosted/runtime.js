@@ -56,6 +56,8 @@ class RuntimeOwner {
     scheduling = new Set();
     fileLeases = new Map();
     services;
+    /** The workspace's namespace and process bindings. */
+    getFilesystemAuthority() { return this.options.workspace.filesystem; }
     constructor(options) {
         this.options = options;
         hostNamespaceBinding(options.env, 'HostedRuntime');

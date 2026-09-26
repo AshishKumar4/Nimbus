@@ -383,6 +383,23 @@ export class CompositeVFS implements VFS {
     return this.route(normalizePath(path)).mount.point;
   }
 
+  /**
+   * Whether the namespace answers `path` itself rather than the root
+   * backend alone: a path on another mount, or a directory above a mount
+   * point (whose listing includes the mount's name).
+   */
+  composes(path: string): boolean {
+    const at = normalizePath(path);
+    return this.route(at).mount.point !== ROOT_POINT || (at !== ROOT_POINT && this.isStructural(at));
+  }
+
+  /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
+  realpath(path: string): string {
+    const resolved = this.resolve(path, true, true) as string;
+    if (this.statAt(resolved, false, true) === null) throw new VfsError('ENOENT', path);
+    return resolved;
+  }
+
   /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
   as(cred: VfsCred, actor?: string): CompositeVFS {
     const principal: Principal = actor === undefined ? { cred } : { cred, actor };

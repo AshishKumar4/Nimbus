@@ -28,6 +28,9 @@
 
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 
+/** What counting a package's files asks: the engine's view and the namespace both answer it. */
+type PackageTree = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readdir'>;
+
 /** A package with more than this many files is treated as a barrel. */
 export const BARREL_PKG_FILE_THRESHOLD = 1500;
 
@@ -39,7 +42,7 @@ export const BARREL_PKG_FILE_THRESHOLD = 1500;
  * VFS readdir is sync + in-memory inode lookup. For lucide-react
  * (4069 files), measured at <2 ms in dev.
  */
-export function countPackageFiles(vfs: CredentialedVfs, pkgDir: string, cap = 5000): number {
+export function countPackageFiles(vfs: PackageTree, pkgDir: string, cap = 5000): number {
   if (!vfs.exists(pkgDir) || !vfs.isDirectory(pkgDir)) return 0;
   let count = 0;
   const stack = [pkgDir];

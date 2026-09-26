@@ -10,7 +10,7 @@
  */
 
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { NamespaceFs } from './process-files.js';
 import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
@@ -1421,7 +1421,7 @@ function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptio
 
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
-  private vfs: CredentialedVfs | null;
+  private vfs: NamespaceFs | null;
   private readonly transformHost: EsbuildTransformHost | null;
   private readonly buildHost: EsbuildBuildHost | null;
   private initialized = false;
@@ -1430,7 +1430,7 @@ export class EsbuildService {
   private _esbuild: typeof esbuild | null = null;
 
   /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-  constructor(vfs?: CredentialedVfs, options: EsbuildServiceOptions = {}) {
+  constructor(vfs?: NamespaceFs, options: EsbuildServiceOptions = {}) {
     this.vfs = vfs ?? null;
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
@@ -1741,7 +1741,7 @@ export class EsbuildService {
       metafile: outcome.metafile,
     };
   }
-  private requireVfs(): CredentialedVfs {
+  private requireVfs(): NamespaceFs {
     if (!this.vfs) throw new Error('EsbuildService build requires a VFS');
     return this.vfs;
   }

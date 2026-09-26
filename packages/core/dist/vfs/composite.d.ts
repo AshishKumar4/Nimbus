@@ -144,6 +144,14 @@ export declare class CompositeVFS implements VFS {
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */
     mountOf(path: string): string;
+    /**
+     * Whether the namespace answers `path` itself rather than the root
+     * backend alone: a path on another mount, or a directory above a mount
+     * point (whose listing includes the mount's name).
+     */
+    composes(path: string): boolean;
+    /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
+    realpath(path: string): string;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;
     /** Who this view acts as. */

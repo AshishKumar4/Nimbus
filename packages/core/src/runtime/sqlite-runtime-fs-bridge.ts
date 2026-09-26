@@ -83,7 +83,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const resolved = this.resolveDataPath(path, followSymlinks);
     if (resolved === null) return null;
     const mounted = this.mounted;
-    if (!mounted || this.namespace!.mountOf('/' + resolved) === '/') return { path: resolved };
+    if (!mounted || !this.namespace!.composes('/' + resolved)) return { path: resolved };
     return { mount: mounted, path: '/' + resolved };
   }
 
@@ -408,7 +408,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // What the namespace mounts directly in `/` (proc, dev, an embedder's) is listed with it.
     if (p === '' && this.mounted) {
       for (const entry of this.mounted.readdir('/')) {
-        if (this.namespace!.mountOf('/' + entry.name) !== '/') entries.set(entry.name, { name: entry.name, type: entry.type });
+        if (this.namespace!.composes('/' + entry.name)) entries.set(entry.name, { name: entry.name, type: entry.type });
       }
     }
     for (const entry of this.vfs.readdir(p)) {
@@ -547,6 +547,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   realpath(path: RuntimeFsPath): string {
     const resolved = this.resolveDataPath(path, true);
     if (resolved === null) throw fsError('ELOOP', 'realpath', path);
+    if (this.namespace?.composes('/' + resolved)) return this.namespace.realpath('/' + resolved);
     this.vfs.stat(resolved);
     return '/' + resolved;
   }
@@ -629,6 +630,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const candidate = [...resolved, segment].join('/');
       const isFinal = pending.length === 0;
+      // From a mount (or a directory above one) on, the namespace resolves
+      // the rest, links on the mount included; the SQLite rows it covers
+      // (a link among them) are never followed.
+      if (this.namespace?.composes('/' + candidate)) {
+        resolved.push(segment, ...pending.filter((part) => part !== '.'));
+        pending.length = 0;
+        continue;
+      }
       if (!followSymlinks && isFinal) {
         resolved.push(segment);
         continue;

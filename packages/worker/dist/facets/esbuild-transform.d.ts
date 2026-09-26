@@ -1,7 +1,7 @@
 import { EsbuildService, type EsbuildBuildHost, type EsbuildTransformHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 export declare const ESBUILD_FACET_WORKER_ID: string;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
@@ -36,5 +36,5 @@ export declare function runEsbuildCli(ctx: DurableObjectState, env: unknown, pid
  * The esbuild a Durable Object's supervisor shares: its transforms and its
  * builds run in its esbuild facet, and build() reads `vfs` from here.
  */
-export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: CredentialedVfs): EsbuildService;
+export declare function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService;
 //# sourceMappingURL=esbuild-transform.d.ts.map

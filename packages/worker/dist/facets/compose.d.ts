@@ -34,12 +34,12 @@
  *     for its recipes (see `WorkerRecipe.resident`).
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { FacetManager, type FacetManagerHooks } from './manager.js';
 import { type PortVisibility } from '../session/port-capability.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 export type { FacetManagerHooks, LongRunningWorkerSpawnOptions, ResidentSpawnOptions, ResolvedWorkerLaunch, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker, WorkerFacet, WorkerRecipe, } from './manager.js';
 export { FacetManager, DEFAULT_WORKER_MAIN_MODULE } from './manager.js';
 /**
@@ -66,7 +66,7 @@ export interface FacetManagerDeps {
     portRegistry: PortRegistry;
     vfs: SqliteVFS;
     /** The session's one authority — the manager never constructs a second. */
-    filesystem: NimbusFilesystemAuthority;
+    filesystem: ProcessFiles;
     /**
      * A host's esbuild, shared with the manager. Absent: one whose transforms
      * run in the loader-backed transform facet, never in this isolate.

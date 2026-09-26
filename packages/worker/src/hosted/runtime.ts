@@ -32,6 +32,7 @@ import { registerHostedCommands } from './commands.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 
 const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor']);
 export type HostedRuntimeTask = z.infer<typeof HostedTask>;
@@ -96,6 +97,9 @@ class RuntimeOwner {
   private readonly scheduling = new Set<Promise<void>>();
   private readonly fileLeases = new Map<string, NimbusHostFilesystemLease>();
   private readonly services: ReturnType<typeof services.bindRuntimeServices>;
+
+  /** The workspace's namespace and process bindings. */
+  getFilesystemAuthority(): ProcessFiles { return this.options.workspace.filesystem; }
 
   constructor(readonly options: HostedRuntimeOptions) {
     hostNamespaceBinding(options.env, 'HostedRuntime');

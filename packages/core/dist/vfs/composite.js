@@ -272,6 +272,22 @@ export class CompositeVFS {
     mountOf(path) {
         return this.route(normalizePath(path)).mount.point;
     }
+    /**
+     * Whether the namespace answers `path` itself rather than the root
+     * backend alone: a path on another mount, or a directory above a mount
+     * point (whose listing includes the mount's name).
+     */
+    composes(path) {
+        const at = normalizePath(path);
+        return this.route(at).mount.point !== ROOT_POINT || (at !== ROOT_POINT && this.isStructural(at));
+    }
+    /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
+    realpath(path) {
+        const resolved = this.resolve(path, true, true);
+        if (this.statAt(resolved, false, true) === null)
+            throw new VfsError('ENOENT', path);
+        return resolved;
+    }
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred, actor) {
         const principal = actor === undefined ? { cred } : { cred, actor };
