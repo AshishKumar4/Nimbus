@@ -44,13 +44,13 @@ import { deriveResidentOwner } from './resident-identity.js';
 import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
-import { unbindPublicPortCapability } from '../router/public-directory.js';
+import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
 import {
-  ReadProfile, sessionTag, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
+  principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
 
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
@@ -5088,16 +5088,20 @@ export class FacetManager {
       const identity = this._packageIdentity(exiting.cred);
       const view = this.vfs?.as(exiting.cred) ?? null;
       const served = evidence?.served ?? new Set<string>();
+      // Observers and vouchers are principals the router verified, read off
+      // this session's Durable Object name; an anonymous session only reads.
+      const principal = profilePrincipal(sessionIdentity({ ctx: this.ctx })?.tenantSegment);
       this.ctx.waitUntil((async () => {
-        if (view !== null && residencyMisses && residencyMisses.length > 0) {
+        const tag = principal === null ? null : await principalTag(principal);
+        if (tag !== null && view !== null && residencyMisses && residencyMisses.length > 0) {
           const found = await verifiedEvidence(residencyMisses, served, async (path) => {
             try { const st = view.lstat(path.replace(/^\/+/, '')); return { type: st.type, size: st.size }; } catch { return null; }
           });
-          if (found.length > 0) await profile.observe(found, await sessionTag(this.ctx.id.toString()), identity);
+          if (found.length > 0) await profile.observe(found, tag, identity);
         }
-        if (offer !== undefined) {
+        if (tag !== null && offer !== undefined) {
           const unread = evidence?.profileUnread ? new Set(evidence.profileUnread) : null;
-          await profile.settle(offer.staged, unread, served, new Set(offer.unresolved), await sessionTag(this.ctx.id.toString()));
+          await profile.settle(offer.staged, unread, served, new Set(offer.unresolved), tag);
         }
       })().catch(() => undefined));
     }

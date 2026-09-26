@@ -155,8 +155,11 @@ const profileBucket = {
   },
 };
 /** A session's npm lockfile: the integrity tablepkg was installed from. */
-function sessionCtx(name) {
+// A session writes to profiles as the principal the router put in its Durable
+// Object name (`<tenant>:<subject>:<sid>`), never as the session.
+function sessionCtx(name, principal) {
   const ctx = createFacetCtx(world, name);
+  ctx.id = { toString: () => name, name: `${principal}:${name}` };
   const npm = createSqliteVfsTestHarness();
   ctx.storage.sql = npm.sql;
   new NpmCache(npm.sql).writeLockfile('/home/user/proj', new Map([['tablepkg', {
@@ -181,8 +184,8 @@ const env = {
 };
 
 let sessionCtxNow;
-function session(name) {
-  sessionCtxNow = sessionCtx(name);
+function session(name, principal = 'acme:alice') {
+  sessionCtxNow = sessionCtx(name, principal);
   const m = new FacetManager(sessionCtxNow, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
   m.setVfs(sessionVfs, processFiles(sessionVfs));
   delete globalThis.__portRegistry;
@@ -284,18 +287,27 @@ await Promise.all(sessionCtxNow.waited);
 assert.equal(profiles.size, 1, 'the served miss was filed under the package');
 assert.ok(![...profiles.values()][0].includes('home/user'), 'package-relative');
 assert.equal(entriesOf()['private/late.js'].seen.length, 1);
-const nextSession = (name) => {
+const nextSession = (name, principal) => {
   // Another session over the same files: its pids start again at 1.
   for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
-  manager = session(name);
+  manager = session(name, principal);
 };
-nextSession('second-session');
+// Another session of the same principal is no second observer: session ids
+// are free to mint. Nor is an anonymous one, which never writes.
+for (const [name, principal] of [['alice-again', 'acme:alice'], ['anonymous', 'anon:anon'], ['legacy', 'legacy:public:_']]) {
+  nextSession(name, principal);
+  const again = await run(false);
+  manager.noteProcessReportedExit(again.pid, 1, [LATE], { served, profileUnread: [] });
+  await Promise.all(sessionCtxNow.waited);
+  assert.equal(entriesOf()['private/late.js'].seen.length, 1, `${name}: not a second observer`);
+}
+nextSession('second-session', 'globex:bob');
 const second = await run(false);
 assert.equal(second.late, 'ERR:EAGAIN', `one session's observation is not shared: ${JSON.stringify(second)}`);
 manager.noteProcessReportedExit(second.pid, 1, [LATE], { served, profileUnread: [] });
 await Promise.all(sessionCtxNow.waited);
 assert.equal(entriesOf()['private/late.js'].seen.length, 2, 'a second session observed it');
-nextSession('third-session');
+nextSession('third-session', 'initech:carol');
 const learned = await run(false);
 assert.equal(learned.late, 'late-bytes', `a third session holds the learned file: ${JSON.stringify(learned)}`);
 // It read it, and the supervisor never had to fault it in: the entry is confirmed.

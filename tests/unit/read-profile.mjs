@@ -3,16 +3,20 @@
 // sessions' launches of the same installed package (same tarball
 // integrity), and nothing a program says can poison what other tenants
 // stage: evidence is what the supervisor served, an entry is shared only
-// after two sessions observed it, a launch's share is bounded in bytes, a
-// program's word can only lower an entry, and a hostile object can at worst
-// make a session stage more of its own files.
+// after two principals (verified tenant + subject, never session ids, which
+// are free) observed it, anonymous sessions only read, a principal's writes
+// are capped, a launch's share is bounded in bytes, a program's word can
+// only lower an entry, and a hostile object can at worst make a session
+// stage more of its own files.
 
 import assert from 'node:assert/strict';
 import {
+  profilePrincipal,
   ReadProfile,
   READ_PROFILE_MAX_ENTRIES,
+  READ_PROFILE_WRITES_PER_WINDOW,
   ServedReads,
-  sessionTag,
+  principalTag,
   validProfilePath,
   verifiedEvidence,
 } from '../../packages/worker/src/facets/read-profile.ts';
@@ -86,8 +90,8 @@ const stat = async (path) => {
   assert.deepEqual([...served.take(8)], [`${APP}/big.bin`]);
 }
 
-const tagA = await sessionTag('session-a');
-const tagB = await sessionTag('session-b');
+const tagA = await principalTag('acme:alice');
+const tagB = await principalTag('globex:bob');
 assert.match(tagA, /^[0-9a-f]{16}$/);
 assert.notEqual(tagA, tagB);
 
@@ -97,7 +101,7 @@ const evidence = [{ path: `${APP}/${ENTRY}`, size: 1200 }, { path: `${APP}/small
 assert.equal(await new ReadProfile(store).observe(evidence, tagA, integrityOf), 2);
 assert.equal(store.objects.size, 1, 'one object per installed package');
 const stored = [...store.objects.values()][0];
-assert.ok(!stored.includes('home/user') && !stored.includes('session-a'), 'package-relative paths and session tags only');
+assert.ok(!stored.includes('home/user') && !stored.includes('acme:alice'), 'package-relative paths and principal tags only');
 assert.deepEqual(await new ReadProfile(store).lookup([OTHER], integrityOf, 1 << 20), [], 'observed by one session: not shared');
 // The same session again does not count twice.
 await new ReadProfile(store).observe(evidence, tagA, integrityOf);
@@ -161,7 +165,7 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   assert.equal(score('x.js'), 3, 'a second vouching session raises it once more');
   // A launch with no unread list at all (it died before reporting) is no
   // information: it neither raises nor lowers.
-  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), null, new Set(), new Set(), await sessionTag('session-c'));
+  await profile.settle(await profile.lookup([APP], integrityOf, 1 << 20), null, new Set(), new Set(), await principalTag('session-c'));
   assert.equal(score('x.js'), 3, 'no report raises nothing');
   // A stored score past its vouchers is not one this module wrote.
   const raw = JSON.parse(pruned.objects.values().next().value);
@@ -179,7 +183,7 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   await new ReadProfile(full).observe(sharedObs, tagA, integrityOf);
   await new ReadProfile(full).observe(sharedObs, tagB, integrityOf);
   const flood = Array.from({ length: READ_PROFILE_MAX_ENTRIES + 50 }, (_, i) => ({ path: `${APP}/flood/${i}.js`, size: 1 }));
-  await new ReadProfile(full).observe(flood, await sessionTag('flooder'), integrityOf);
+  await new ReadProfile(full).observe(flood, await principalTag('flooder'), integrityOf);
   const entries = JSON.parse(full.objects.values().next().value).entries;
   assert.ok(Object.keys(entries).length <= READ_PROFILE_MAX_ENTRIES, 'bounded');
   assert.ok(entries['keep.js'], 'one session\'s flood never evicts a shared entry');
@@ -235,6 +239,63 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
     ['home/user/other/node_modules/linked/tpl/x.hbs'],
   );
   assert.equal(await new ReadProfile(linked).observe(obs, tagA, () => 'name@1.0.0'), 0, 'anything else as an identity is refused');
+}
+
+
+// ── Principals: who a session writes as, and what anonymous sessions may do ──
+{
+  assert.equal(profilePrincipal('acme:alice'), 'acme:alice', 'a verified tenant and subject');
+  assert.equal(profilePrincipal('acme:_'), 'acme:_', 'a tenant-wide token');
+  assert.equal(profilePrincipal('anon:anon'), null, 'anonymous sessions are one principal that never writes');
+  assert.equal(profilePrincipal('legacy:public:_'), null, 'legacy-public sessions are anonymous');
+  assert.equal(profilePrincipal(undefined), null, 'no Durable Object name: nothing to write as');
+
+  // rp-attack2: one principal with any number of sessions. Every session of
+  // one tenant+subject is the same principal, so its observations never share
+  // and its launches vouch once.
+  const target = `${APP}/dist/huge-asset.js`;
+  const attacked = bucket();
+  const attacker = await principalTag('mallory:m');
+  for (let session = 0; session < 20; session++) {
+    await new ReadProfile(attacked).observe([{ path: target, size: 2 << 20 }], attacker, integrityOf);
+  }
+  assert.deepEqual(await new ReadProfile(attacked).lookup([APP], integrityOf, 4 << 20), [], 'one principal never shares, whatever its session count');
+
+  // Anonymous sessions read, and never write: not an observation, not a vouch.
+  const anon = bucket();
+  assert.equal(await new ReadProfile(anon).observe([{ path: target, size: 10 }], null, integrityOf), 0);
+  assert.equal(anon.objects.size, 0, 'an anonymous observation writes nothing');
+  await new ReadProfile(anon).observe([{ path: target, size: 10 }], tagA, integrityOf);
+  await new ReadProfile(anon).observe([{ path: target, size: 10 }], tagB, integrityOf);
+  const before = [...anon.objects.values()][0];
+  const offer = await new ReadProfile(anon).lookup([APP], integrityOf, 1 << 20);
+  assert.equal(offer.length, 1, 'anonymous sessions read what two principals shared');
+  await new ReadProfile(anon).settle(offer, new Set(), new Set(), new Set(), null);
+  await new ReadProfile(anon).settle(offer, new Set([target]), new Set(), new Set(), null);
+  assert.equal([...anon.objects.values()][0], before, 'an anonymous launch neither raises nor lowers');
+
+  // Two principals share, as above; each vouches once.
+  const score = () => JSON.parse([...anon.objects.values()][0]).entries['dist/huge-asset.js'].score;
+  for (let i = 0; i < 5; i++) await new ReadProfile(anon).settle(await new ReadProfile(anon).lookup([APP], integrityOf, 1 << 20), new Set(), new Set(), new Set(), tagA);
+  assert.equal(score(), 2);
+
+  // A principal's writes to one profile are capped per window.
+  let now = 1_000_000;
+  const capped = bucket();
+  const writer = await principalTag('acme:writer');
+  const profile = new ReadProfile(capped, () => now);
+  let writes = 0;
+  const put = capped.put;
+  capped.put = async (k, v) => { writes++; return put(k, v); };
+  for (let i = 0; i < READ_PROFILE_WRITES_PER_WINDOW + 5; i++) {
+    await profile.observe([{ path: `${APP}/f${i}.js`, size: 1 }], writer, integrityOf);
+  }
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW, 'writes past the cap are dropped');
+  await profile.observe([{ path: `${APP}/other.js`, size: 1 }], tagA, integrityOf);
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW + 1, 'the cap is per principal');
+  now += 60 * 60_000;
+  await profile.observe([{ path: `${APP}/late.js`, size: 1 }], writer, integrityOf);
+  assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW + 2, 'a new window admits writes again');
 }
 
 console.log('read-profile: ok');

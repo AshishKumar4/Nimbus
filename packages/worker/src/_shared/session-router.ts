@@ -86,6 +86,14 @@ export const CALLER_SCOPES_HEADER = 'x-nimbus-caller-scopes';
 export const LEGACY_PUBLIC_DO_SEGMENT = 'legacy:public:_';
 
 /**
+ * The tenant of every anonymous session a deployment hands out (the hosted
+ * demo's `anon:anon:<sid>`). Anyone can mint such sessions, so they are one
+ * principal, and one that may read what verified tenants share but never
+ * write to it (read-profile.ts).
+ */
+export const ANONYMOUS_TENANT = 'anon';
+
+/**
  * Match `/s/<id>(/<rest>)?` with `<id>` being ANY lowercase-letters-digits-
  * dashes token. Shape validation happens in a second step so we can return
  * a specific 400 for malformed IDs (vs falling through to the Worker's 404).
