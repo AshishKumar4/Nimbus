@@ -28,6 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+import { StorageLedger } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
@@ -310,6 +311,8 @@ export interface SqliteVfsOptions {
      * poisons (the reader reconciles against list()).
      */
     readonly tombstoneRows?: number;
+    /** The session's storage limit (N18); defaults to DO_STORAGE_LIMIT_BYTES. */
+    readonly storageLimit?: number;
     /**
      * Where chunks only snapshots reference may be moved (P6): an R2 bucket
      * or anything with its get/put/delete. Without it nothing is tiered.
@@ -327,6 +330,8 @@ export interface VfsColdStore {
 export declare class SqliteVFS {
     private readonly openNodes;
     private sql;
+    /** N18: the session's storage ledger, over this database (the session DO's). */
+    readonly ledger: StorageLedger;
     private ctx;
     readonly events: VfsEventEmitter;
     private readonly inodes;
@@ -1418,6 +1423,15 @@ export declare class SqliteVFS {
      */
     private insertManifestRows;
     private insertRows;
+    /**
+     * N18: a transaction that can grow the database is admitted by the
+     * session's ledger before it runs (ENOSPC, nothing written, when it would
+     * cross the storage limit). Collection and pure removals only free, and are
+     * never refused.
+     */
+    private admitTransaction;
+    /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
+    databaseBytes(): number;
     private executeMeasuredTransaction;
     /**
      * Bounded, idempotent content maintenance: at most `maxTransactions`

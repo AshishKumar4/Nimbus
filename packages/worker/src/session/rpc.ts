@@ -42,6 +42,10 @@ import {
   type ResidentFacet,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   headerPairs,
   isolateToken,
@@ -537,7 +541,38 @@ export async function _rpcFsAcquire(
   pid?: number,
 ): Promise<VfsAcquireResult> {
   const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-  return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+  const answer: VfsAcquireResult = await self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+  return admitPushedBytes(self.ctx, pid, answer);
+}
+
+/**
+ * Pushed bytes land in the process's facet database, so the session's
+ * storage ledger (N18) admits them under that facet first. Refused, the
+ * answer carries none (each marked `bytesOmitted`): the facet then drops what
+ * it held for those paths and reads them on demand, as for any file too
+ * large to push.
+ */
+function admitPushedBytes(ctx: DurableObjectState | undefined, pid: number | undefined, answer: VfsAcquireResult): VfsAcquireResult {
+  let total = 0;
+  for (const entry of answer.paths) total += entry.bytes?.byteLength ?? 0;
+  if (total === 0 || ctx === undefined || pid === undefined) return answer;
+  const facet = residentFacetOf(ctx, pid);
+  const sql = (ctx as { storage?: { sql?: SqlDatabase } }).storage?.sql;
+  if (facet === undefined || !sql) return answer;
+  try {
+    new StorageLedger(sql).fill(facet, total);
+    return answer;
+  } catch (error) {
+    if (!isVfsError(error, 'ENOSPC')) throw error;
+    return {
+      ...answer,
+      paths: answer.paths.map((entry) => {
+        if (entry.bytes === undefined) return entry;
+        const { bytes: _dropped, ...rest } = entry;
+        return { ...rest, bytesOmitted: true as const };
+      }),
+    };
+  }
 }
 
 /** What a process passes to fsAcquire: the cursor its resident set is at. */

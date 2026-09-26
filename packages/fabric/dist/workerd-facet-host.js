@@ -13,6 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, recordLoaderId, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
@@ -178,14 +179,34 @@ function releaseSlot(ctx, pid) {
     book.free.sort((a, b) => a - b);
 }
 /**
- * Drop one facet's SQLite by name — the ONLY call site that may delete facet
- * storage. `spawnResident` releases ephemeral processes with abort+delete
- * (storage is slot-reuse hygiene) and durable ones with abort alone (the
- * storage IS the durable application's state); explicit removal arrives here
- * through the coordinator's durable-slot book, owner-checked.
+ * Drop one facet's SQLite by name, and its row in the session's storage
+ * ledger (N18) in the same step: the only way a facet database is deleted.
+ * `spawnResident` releases ephemeral processes with abort+delete (storage is
+ * slot-reuse hygiene) and durable ones with abort alone (the storage IS the
+ * durable application's state); explicit removal arrives here through the
+ * coordinator's durable-slot book, owner-checked.
  */
+/** The session's storage ledger (N18), over this actor's SQL; null where it has none. */
+function sessionLedger(ctx) {
+    const sql = ctx.storage?.sql;
+    return sql ? new StorageLedger(sql) : null;
+}
+const facetNames = new WeakMap();
+function facetOfPid(ctx) {
+    let names = facetNames.get(ctx);
+    if (!names)
+        facetNames.set(ctx, names = new Map());
+    return names;
+}
+/** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
+export function residentFacetOf(ctx, pid) {
+    return facetNames.get(ctx)?.get(pid);
+}
 export function deleteFacetStorage(ctx, name) {
     facetContainer(ctx).delete(name);
+    const sql = ctx.storage?.sql;
+    if (sql)
+        forgetFacetStorage(sql, name);
 }
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -247,7 +268,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     const name = explicit ? explicit.name : residentFacetName(slot);
     if (grant?.minted) {
         try {
-            facets.delete(name);
+            deleteFacetStorage(ctx, name);
         }
         catch { /* nothing stored under this name */ }
     }
@@ -271,8 +292,13 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         return { class: residentProcessClass(ctx, env, disk, supervisor, params) };
     };
     const book = slotBook(ctx);
+    const ledger = sessionLedger(ctx);
     let facet;
     try {
+        // N18: the fill is admitted, and recorded under the facet's name, before
+        // the facet exists; a refusal leaves no facet.
+        if (ledger !== null && params.storageBytes !== undefined)
+            ledger.fill(name, params.storageBytes);
         // get() with a new class on a facet an earlier incarnation left running resets this object.
         if (explicit && !book.live.has(name)) {
             facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
@@ -286,12 +312,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     }
     if (explicit)
         book.live.add(name);
+    facetOfPid(ctx).set(params.pid, name);
     let disposed = false;
     const release = async () => {
         if (disposed)
             return;
         disposed = true;
         released = true;
+        facetOfPid(ctx).delete(params.pid);
         try {
             facets.abort(name, new Error('Nimbus: resident process released'));
         }
@@ -305,7 +333,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // deleteFacetStorage call ever drops it.
         if (!explicit?.durable) {
             try {
-                facets.delete(name);
+                deleteFacetStorage(ctx, name);
             }
             catch { /* already gone */ }
         }
@@ -326,7 +354,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // this one, and it is annotated AFTER awaiting the ledger — the first
     // failure of a fresh incarnation must compare against the persisted count,
     // not the zero its adoption read has not yet replaced.
-    started = started.catch(async (error) => {
+    started = started.then((payload) => {
+        // What the facet's database measures once it is up (N18): the ledger's
+        // row settles to it, or records the overshoot.
+        const size = payload?.databaseSize;
+        if (ledger !== null && typeof size === 'number' && Number.isFinite(size))
+            ledger.reportSize(name, size);
+        return payload;
+    }, async (error) => {
         throw withFacetBudgetNamed(await facetNameCountDurable(ctx), error);
     });
     // A caller reads whichever of `started` and the lifecycle it needs, so keep

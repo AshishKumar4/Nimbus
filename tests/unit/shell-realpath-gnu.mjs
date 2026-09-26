@@ -23,6 +23,9 @@ const CASES = [
   ['-e nope', '', 'realpath: nope: No such file or directory\n', 1],
   ['-m dang/x/y', '/home/user/w/nowhere/x/y\n', '', 0],
   ['-m nope/../x', '/home/user/w/x\n', '', 0],
+  ['-m la', '/home/user/w/la\n', '', 0],
+  ['-m la/x/y', '/home/user/w/la/x/y\n', '', 0],
+  ['la', '', 'realpath: la: Too many levels of symbolic links\n', 1],
   ['-s dirlink/f', '/home/user/w/dirlink/f\n', '', 0],
   ['-L dirlink/../real', '/home/user/w/real\n', '', 0],
   ['-P dirlink/..', '/home/user/w\n', '', 0],
@@ -39,7 +42,7 @@ const CASES = [
 
 const box = await testBox();
 const setup = await box.commands.run(
-  'mkdir -p /home/user/w/real/sub && cd /home/user/w && echo x > real/f && ln -s real dirlink && ln -s dirlink chain && ln -s ../w/real/sub rel && ln -s nowhere dang',
+  'mkdir -p /home/user/w/real/sub && cd /home/user/w && echo x > real/f && ln -s real dirlink && ln -s dirlink chain && ln -s ../w/real/sub rel && ln -s nowhere dang && ln -s lb la && ln -s la lb',
 );
 assert.equal(setup.exitCode, 0, setup.stderr);
 
@@ -55,6 +58,8 @@ if (gnu.status === 0) {
     symlinkSync('dirlink', join(w, 'chain'));
     symlinkSync('../w/real/sub', join(w, 'rel'));
     symlinkSync('nowhere', join(w, 'dang'));
+    symlinkSync('lb', join(w, 'la'));
+    symlinkSync('la', join(w, 'lb'));
     for (const [line, out, err, code] of CASES) {
       const args = line === '' ? [] : line.split(' ').map((arg) => arg.replace('=/home', `=${host}/home`).replace(/^\/home$/, `${host}/home`));
       const result = spawnSync('gnurealpath', args, { cwd: w, encoding: 'utf8' });

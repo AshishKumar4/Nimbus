@@ -42,6 +42,8 @@
  * and the facet-id ledger here counts only the names this pool minted.
  */
 
+import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   FACET_ID_LIFETIME_BUDGET,
   facetNameCount,
@@ -63,6 +65,8 @@ export interface FacetPoolContext {
   storage: {
     get(key: string): Promise<unknown> | unknown;
     put(key: string, value: unknown): Promise<void>;
+    /** The session's SQL, where the storage ledger (N18) records facet databases. */
+    sql?: SqlDatabase;
   };
 }
 
@@ -134,6 +138,7 @@ export class FacetPool {
       if (keepStorage) return;
       try {
         facets.delete(name);
+        if (this.ctx.storage.sql) forgetFacetStorage(this.ctx.storage.sql, name);
       } catch (e) {
         throw new Error(
           `fabric: facet '${name}' was evicted but its storage was not reclaimed — `

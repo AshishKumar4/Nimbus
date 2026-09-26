@@ -1187,6 +1187,12 @@ const CRED_OTHER = Object.freeze({
     'pre-native registry entries remain readable during compatibility migration',
   );
   assert.equal((await bridge.stat('/legacy/link.txt', { followSymlinks: false })).mode, 0o120777);
+  // A registry target's `..` comes after the link before it, as in the kernel:
+  // /links/dir is /real/dir, so /links/dir/../side.txt is /real/side.txt.
+  await bridge.writeFile('/real/side.txt', 'physical');
+  await bridge.writeFile('/links/side.txt', 'lexical');
+  getSymlinkRegistry(rawVfs).set('/legacy/up.txt', '/links/dir/../side.txt');
+  assert.equal(dec.decode(await bridge.readFile('/legacy/up.txt')), 'physical');
 
   getSymlinkRegistry(rawVfs).set('/legacy/shadowed.txt', '/real/dir/file.txt');
   vfs.mkdir('legacy', { recursive: true });

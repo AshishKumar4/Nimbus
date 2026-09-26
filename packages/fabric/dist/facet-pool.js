@@ -41,6 +41,7 @@
  * whichever acts second aborts or retires facets the other still tracks,
  * and the facet-id ledger here counts only the names this pool minted.
  */
+import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { FACET_ID_LIFETIME_BUDGET, facetNameCount, recordFacetNameMinted, withFacetBudgetNamed, } from './budgets.js';
 /** Names this ctx's pool has already charged to the lifetime ledger. */
 const chargedNames = new WeakMap();
@@ -93,6 +94,8 @@ export class FacetPool {
                 return;
             try {
                 facets.delete(name);
+                if (this.ctx.storage.sql)
+                    forgetFacetStorage(this.ctx.storage.sql, name);
             }
             catch (e) {
                 throw new Error(`fabric: facet '${name}' was evicted but its storage was not reclaimed — `

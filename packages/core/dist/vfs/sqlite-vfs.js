@@ -38,6 +38,7 @@ import { decodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 /**
@@ -512,6 +513,8 @@ class InodeTable {
 export class SqliteVFS {
     openNodes = new Set();
     sql;
+    /** N18: the session's storage ledger, over this database (the session DO's). */
+    ledger;
     ctx;
     events;
     // ── INode cache (bounded; SQLite holds the tree) ──────────────────────
@@ -757,6 +760,7 @@ export class SqliteVFS {
             throw vfsError('EINVAL', `tombstone retention must be a row count, not ${this.tombstoneRetain}`);
         }
         sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
+        this.ledger = new StorageLedger(sql, options.storageLimit === undefined ? {} : { limit: options.storageLimit });
         if (namespace === undefined) {
             let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
             if (!row) {
@@ -3990,6 +3994,22 @@ export class SqliteVFS {
                 }
             }
         }
+        // N18: the whole copy is admitted before its first row (each slice is
+        // admitted again as it runs, against what others wrote meanwhile).
+        let rows = 1;
+        if (root.isDir) {
+            if (atGen === undefined) {
+                const range = subtreeRange(source.path);
+                rows += Number([...(range.upper === null
+                        ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', range.lower)
+                        : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper))][0].n);
+            }
+            else {
+                for (const _ of this.subtreeAt(source.path, atGen))
+                    rows++;
+            }
+        }
+        this.ledger.admit(rows * LEDGER_ROW_BYTES);
         const job = {
             src: source.path,
             dst: target.path,
@@ -6603,10 +6623,30 @@ export class SqliteVFS {
             this.sql.exec(`${verb} INTO ${target} VALUES ${Array.from({ length: batch.length / columns }, () => row).join(',')}`, ...batch);
         }
     }
+    /**
+     * N18: a transaction that can grow the database is admitted by the
+     * session's ledger before it runs (ENOSPC, nothing written, when it would
+     * cross the storage limit). Collection and pure removals only free, and are
+     * never refused.
+     */
+    admitTransaction(plan, execution) {
+        if (execution.source === 'content-gc')
+            return;
+        const grows = plan.inodes.length > 0 || plan.staged.length > 0 || plan.stagingCreated.length > 0
+            || plan.metrics.blobBytes > 0 || plan.deletes.length === 0;
+        if (!grows)
+            return;
+        this.ledger.admit(plan.metrics.blobBytes + plan.metrics.logicalRows * LEDGER_ROW_BYTES);
+    }
+    /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
+    databaseBytes() {
+        return databaseBytesOf(this.sql);
+    }
     executeMeasuredTransaction(plan, execution, callback) {
         if (this._activeTransaction !== null) {
             throw new Error('[sqlite-vfs] nested transaction plan execution is not supported');
         }
+        this.admitTransaction(plan, execution);
         const startedAt = performance.now();
         this._activeTransaction = { startedAt, plan, execution };
         try {

@@ -121,6 +121,7 @@ import {
   ESM_TRANSFORM_CACHE_MAX_BYTES,
   FS_LIST_PAGE_LIMIT,
 } from '@nimbus-sh/core/constants.js';
+import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -1309,7 +1310,10 @@ export class NimbusProcess extends DurableObject {
     if (startArgs) __nimbusStartArgs = startArgs;
     await __nimbusEnsureStarted(this.env, this.ctx, __nimbusStartArgs);
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
-    return { ok: true };
+    // What this facet's database holds now, for the session's storage ledger (N18).
+    let databaseSize;
+    try { databaseSize = this.ctx.storage.sql.databaseSize; } catch {}
+    return { ok: true, databaseSize };
   }
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
@@ -4711,8 +4715,8 @@ export class FacetManager {
     cwd: string,
     home: string | undefined,
     pacer: TurnBudget,
-  ): Promise<string[]> {
-    if (!this.vfs || !this.filesystem) return [];
+  ): Promise<{ paths: string[]; storageBytes: number }> {
+    if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0 };
     const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
     const started = Date.now();
     const trace = (what: string) => {
@@ -4725,9 +4729,11 @@ export class FacetManager {
     const learned = await this._learnedReads(vfsState, entry.cred);
     trace(`${learned.length} learned; listing`);
     let pages = 0;
+    let names = 0;
     const plan = await planFacetData({
       list: async (after) => {
         const page = await vfs.authority.list(after, FS_LIST_PAGE_LIMIT);
+        names += page.entries.length;
         trace(`page ${++pages}: ${page.entries.length} entries`);
         return { entries: page.entries, next: page.next };
       },
@@ -4746,7 +4752,8 @@ export class FacetManager {
       spend: (units) => pacer.spend(units),
     });
     trace(`planned ${plan.paths.length}`);
-    return plan.paths;
+    // What the facet's store will hold: the planned bytes and a namespace row per name (N18).
+    return { paths: plan.paths, storageBytes: plan.bytes + names * LEDGER_ROW_BYTES };
   }
 
   /**
@@ -5800,6 +5807,7 @@ export class FacetManager {
       boot: ResidentBootSpec;
       startArgs?: unknown;
       facet?: { name: string; durable: boolean };
+      storageBytes?: number;
     },
   ): Promise<ResidentProcessHandle> {
     const handle = await this.processFabric.startResidentProcess({
@@ -6268,7 +6276,7 @@ export class FacetManager {
       pacer,
     );
     const planStart = Date.now();
-    const dataPlan = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
+    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
     if (this.debugEnabled) {
       this.processes.appendOutput(entry.pid, 'stderr',
         `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
@@ -6358,6 +6366,7 @@ export class FacetManager {
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
         startArgs: { vfsCursor, dataPlan, ...(this.debugEnabled ? { diag: true } : {}) },
+        storageBytes,
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the
         // reservation's durability reaches this process's storage too.

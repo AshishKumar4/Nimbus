@@ -670,27 +670,23 @@ export class SqliteRuntimeFsBridge {
                 resolved.push(segment);
                 continue;
             }
-            let target;
-            if (this.vfs.isSymlink(candidate)) {
-                target = this.vfs.resolveSymlink(candidate);
-                if (target === null)
+            if (!this.vfs.isSymlink(candidate)) {
+                const legacyTarget = this.vfs.exists(candidate) ? null : this.legacySymlinks.readlink(this.legacyKey(candidate));
+                if (legacyTarget === null) {
+                    resolved.push(segment);
+                    continue;
+                }
+                // Its components are walked as they are, `..` after any link before it.
+                if (++hops > MAX_LINK_HOPS)
                     return null;
-            }
-            else if (!this.vfs.exists(candidate)) {
-                const legacyTarget = this.legacySymlinks.readlink(this.legacyKey(candidate));
-                target = legacyTarget === null
-                    ? null
-                    : legacyTarget.startsWith('/')
-                        ? normalizeVfsPath(legacyTarget)
-                        : normalizeVfsPath(`${parentVfsPath(candidate)}/${legacyTarget}`);
-            }
-            else {
-                target = null;
-            }
-            if (target === null) {
-                resolved.push(segment);
+                if (legacyTarget.startsWith('/'))
+                    resolved.length = 0;
+                pending.unshift(...legacyTarget.split('/').filter(Boolean));
                 continue;
             }
+            const target = this.vfs.resolveSymlink(candidate);
+            if (target === null)
+                return null;
             // Hops are counted, as Linux does (40): a link met again on a longer
             // path is one more hop, not a cycle.
             if (++hops > MAX_LINK_HOPS)

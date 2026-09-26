@@ -4457,7 +4457,13 @@ async function canonicalizePath(
       continue;
     }
     if (stat.type === 'symlink' && !options.noSymlinks) {
-      if (++hops > 40) throw new VfsError('ELOOP', candidate);
+      if (++hops > 40) {
+        // Under -m a component that loops counts as missing (GNU).
+        if (options.mode !== 'm') throw new VfsError('ELOOP', candidate);
+        missing = true;
+        resolved.push(part);
+        continue;
+      }
       const target = await vfs.readlink(candidate);
       if (target.startsWith('/')) resolved.length = 0;
       pending = [...target.split('/').filter(Boolean), ...pending];

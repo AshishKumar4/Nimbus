@@ -32,6 +32,9 @@ import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -383,7 +386,43 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
  */
 export async function _rpcFsAcquire(self, epoch, cursor, options, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
-    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+    const answer = await self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+    return admitPushedBytes(self.ctx, pid, answer);
+}
+/**
+ * Pushed bytes land in the process's facet database, so the session's
+ * storage ledger (N18) admits them under that facet first. Refused, the
+ * answer carries none (each marked `bytesOmitted`): the facet then drops what
+ * it held for those paths and reads them on demand, as for any file too
+ * large to push.
+ */
+function admitPushedBytes(ctx, pid, answer) {
+    let total = 0;
+    for (const entry of answer.paths)
+        total += entry.bytes?.byteLength ?? 0;
+    if (total === 0 || ctx === undefined || pid === undefined)
+        return answer;
+    const facet = residentFacetOf(ctx, pid);
+    const sql = ctx.storage?.sql;
+    if (facet === undefined || !sql)
+        return answer;
+    try {
+        new StorageLedger(sql).fill(facet, total);
+        return answer;
+    }
+    catch (error) {
+        if (!isVfsError(error, 'ENOSPC'))
+            throw error;
+        return {
+            ...answer,
+            paths: answer.paths.map((entry) => {
+                if (entry.bytes === undefined)
+                    return entry;
+                const { bytes: _dropped, ...rest } = entry;
+                return { ...rest, bytesOmitted: true };
+            }),
+        };
+    }
 }
 /**
  * The ACQUIRE a delivery carries, so the process it is delivered to applies
