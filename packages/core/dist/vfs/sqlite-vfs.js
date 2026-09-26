@@ -4543,8 +4543,13 @@ export class SqliteVFS {
         const subtree = options.subtree === undefined ? '' : normalizeVfsPath(options.subtree);
         if (subtree !== '')
             this.assertMutationsAllowed([subtree]);
-        else if (this.exclusiveMutationLeases.size > 0)
-            throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+        else {
+            // A full restore changes everything: only the caller's own global lease may be live.
+            const owner = this.activeMutationOwner;
+            const others = [...this.exclusiveMutationLeases].filter(([id, root]) => id !== owner || root !== '');
+            if (others.length > 0)
+                throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+        }
         this.assertSnapshotLocal(g, subtree, name);
         // A restore a reset or a cold chunk stopped continues rather than starting over.
         for (const row of [...this.sql.exec("SELECT id, args, start_gen FROM vfs_jobs WHERE kind = 'restore'")]) {

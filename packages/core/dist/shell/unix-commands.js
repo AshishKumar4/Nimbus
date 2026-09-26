@@ -21,6 +21,7 @@ import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
+import { isVfsError, VFS_STRERROR } from '../vfs/vfs-error.js';
 import { isCharacterDevice, fileTypeChar, statOrThrow } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
@@ -3249,6 +3250,10 @@ function mkLs(vfs) {
         const flagOne = flags.has('1');
         const flagNumeric = flags.has('n');
         const flagDirectory = flags.has('d');
+        // GNU: -L follows every link, -H every command-line link; with neither,
+        // a command-line link to a directory is followed unless -l, -d or -F.
+        const followOperands = flags.has('L') || flags.has('H');
+        const followDirOperands = !followOperands && !flagLong && !flagDirectory && !flags.has('F');
         const positionals = args.filter(a => !a.startsWith('-'));
         const targets = positionals.length > 0 ? positionals : [ctx.cwd];
         const kvfs = ctx.vfs;
@@ -3319,10 +3324,10 @@ function mkLs(vfs) {
         const dirArgs = [];
         for (const arg of targets) {
             const fp = resolvePath(ctx.cwd, arg);
-            // Symlink check: a symlink-arg is displayed as the link itself
-            // (without -L which we don't implement).
+            // A link operand is shown as the link itself unless followed (above).
             const target = (await readSymlinkTarget(vfs, fp));
-            if (target !== null) {
+            const followed = target !== null && (followOperands || (followDirOperands && (await kvfs.isDirectory(fp))));
+            if (target !== null && !followed) {
                 fileEntries.push({
                     name: arg,
                     type: 'symlink',
@@ -4008,18 +4013,37 @@ function mkDirname() {
         return 0;
     };
 }
-function mkRealpath(vfs) {
+/**
+ * realpath (GNU's default, -E): every link in every component resolved;
+ * all but the last component must exist.
+ */
+function mkRealpath(_vfs) {
     return async (ctx) => {
-        for (const p of ctx.args) {
-            const fp = resolvePath(ctx.cwd, p);
-            if ((await vfs.exists(fp)))
-                (await ctx.stdout.write('/' + fp + '\n'));
-            else {
-                (await ctx.stderr.write(`realpath: ${p}: No such file\n`));
-                return 1;
+        let exit = 0;
+        for (const p of ctx.args.filter((arg) => !arg.startsWith('-'))) {
+            const fp = '/' + resolvePath(ctx.cwd, p);
+            try {
+                let resolved;
+                try {
+                    resolved = await ctx.vfs.realpath(fp);
+                }
+                catch (error) {
+                    if (!isVfsError(error, 'ENOENT'))
+                        throw error;
+                    // The last component may be absent; its directory may not.
+                    const cut = fp.lastIndexOf('/');
+                    const dir = await ctx.vfs.realpath(fp.slice(0, cut) || '/');
+                    resolved = `${dir === '/' ? '' : dir}/${fp.slice(cut + 1)}`;
+                }
+                (await ctx.stdout.write(resolved + '\n'));
+            }
+            catch (error) {
+                const code = isVfsError(error) ? error.code : undefined;
+                (await ctx.stderr.write(`realpath: ${p}: ${code ? VFS_STRERROR[code] : errorText(error)}\n`));
+                exit = 1;
             }
         }
-        return 0;
+        return exit;
     };
 }
 /**
