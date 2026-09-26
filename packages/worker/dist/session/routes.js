@@ -35,7 +35,7 @@ import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-pr
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
-import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
+import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
@@ -750,15 +750,14 @@ export async function handleFetch(self, request) {
     // hasPersistedState=false).
     if (url.pathname === '/api/_diag/session') {
         const snap = loadShellState(self.ctx);
-        const mounts = loadKernelMounts(self.ctx);
+        const mounts = self.getFilesystemAuthority().mounts(CRED_KERNEL).map((mount) => mount.mountPoint);
         const sbStats = getScrollbackStats(self.ctx);
         return Response.json({
             cwd: snap.cwd,
             env: snap.env,
             hydratedAt: snap.hydratedAt,
             hasPersistedState: snap.hasPersistedState,
-            // [B'.2] persisted kernel mount list — empty before first
-            // initSession, populated after.
+            // The namespace's mount points, as /proc/mounts lists them.
             mounts,
             // [B'.3] scrollback stats — rows, total bytes, byte cap.
             scrollbackRows: sbStats.rows,
@@ -901,7 +900,7 @@ export async function handleFetch(self, request) {
             return Response.json({ reset: true });
         }
         // ── B'.1 session-state reset ─────────────────────────────────────
-        // Drops every nimbus_session_kv / nimbus_kernel_mounts /
+        // Drops every nimbus_session_kv /
         // nimbus_terminal_scrollback row so the next /ws upgrade
         // takes the cold-start path (Phase O fires; banner reprints).
         // Used by probes to start each scenario from a known-empty state.

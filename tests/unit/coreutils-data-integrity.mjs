@@ -12,8 +12,8 @@
  *   - `head -c` did not exist, and /dev/zero was invisible to it.
  *   - /dev/* claimed to be empty regular files rather than character devices.
  *
- * The harness is the live session shape: SqliteVFS mounted into the kernel VFS
- * plus registerUnixCommands, i.e. exactly the commands a prod terminal runs.
+ * The harness is the live session shape: a workspace over SQLite with /dev
+ * and /proc mounted, i.e. exactly the commands a prod terminal runs.
  */
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';

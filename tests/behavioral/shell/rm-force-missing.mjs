@@ -2,8 +2,8 @@
 // shell/rm-force-missing — regression probe for shell compatibility.
 //
 // Pre-fix: `rm -rf /tmp/nonexistent` returned exit 1 (lifo-sh's rm
-// caught only `e instanceof VFSError`, but SqliteVFSProvider.stat
-// throws raw `Error("ENOENT: ...")`, so the error propagated to
+// recognised only its own error class, but the SQLite filesystem threw a
+// plain `Error("ENOENT: ...")`, so the error propagated to
 // executeCommand which set exit=1). Every `rm -rf X && next` thus
 // short-circuited and silently dropped subsequent commands in the
 // chain — the most common cleanup idiom in shell scripts.

@@ -246,7 +246,7 @@ export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';
 export const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin';
-export const DEFAULT_MOUNT_POINTS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];
+export const SEEDED_TOP_LEVEL_DIRS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];
 // ── npm packages the facet runtime provides itself ──────────────────────
 //
 // A package listed here is registered in node-shims' `builtins` table, so a

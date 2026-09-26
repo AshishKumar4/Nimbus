@@ -71,8 +71,6 @@ export interface NimbusWorkspaceOptions {
      * hosts that persist must supply a counter that never repeats.
      */
     readonly generation?: number;
-    /** Top-level directories backed by `sql`. Defaults to DEFAULT_MOUNT_POINTS. */
-    readonly mounts?: readonly string[];
     /** Overlaid on the Nimbus default environment. */
     readonly env?: Record<string, string>;
     readonly cwd?: string;
@@ -247,5 +245,5 @@ export declare class NimbusWorkspace {
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
  */
-export declare function seedBaseFilesystem(vfs: SqliteVFS, mounts: readonly string[]): void;
+export declare function seedBaseFilesystem(vfs: SqliteVFS): void;
 //# sourceMappingURL=nimbus-workspace.d.ts.map

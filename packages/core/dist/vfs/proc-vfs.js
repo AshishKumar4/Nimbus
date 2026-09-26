@@ -82,8 +82,8 @@ export class ProcVFS {
 }
 /**
  * The /proc every workspace has: cpuinfo, meminfo, uptime, version and
- * net/info, as the kernel's ProcProvider generated them. A workspace adds
- * its own (mounts) with `register`.
+ * net/info. ProcessFiles adds `mounts`, and a host adds its own with
+ * `register`.
  */
 export function standardProc() {
     const proc = new ProcVFS();

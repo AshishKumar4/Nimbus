@@ -32,7 +32,7 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
-import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_VERSION } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { routeSessionLoopback } from './ai.js';
 import { seedProject, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -1091,7 +1091,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * checks and changes nothing.
      */
     seedFilesystem() {
-        seedBaseFilesystem(this.sqliteFs, DEFAULT_MOUNT_POINTS);
+        seedBaseFilesystem(this.sqliteFs);
         const fs = this.sqliteFs.as(CRED_SESSION_USER);
         const rootFs = this.sqliteFs.as(CRED_KERNEL);
         {

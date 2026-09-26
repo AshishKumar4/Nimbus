@@ -3,7 +3,7 @@
 //
 // `spawnWorker` for a self-owned durable app persists the launch's code,
 // modules, and env as content-addressed blobs under `.nimbus/images/` —
-// kernel VFS, so a user process cannot rewrite or delete what its own
+// kernel-owned, so a user process cannot rewrite or delete what its own
 // re-drive will boot from — and the journal row names the digests it wrote.
 // A reset re-drives the recipe through the session's fallback resolver, which
 // reads those blobs back and hands the launch its env and modules again.

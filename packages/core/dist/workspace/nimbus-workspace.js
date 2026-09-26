@@ -30,7 +30,7 @@ import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
-import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
+import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_PATH, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
@@ -102,9 +102,8 @@ export class NimbusWorkspace {
         this.runtimes = runtimes;
         this.shellProcessPid = shellProcessPid;
         this.commands = new SandboxCommandsImpl(shell, registry);
-        // NOT the kernel VFS as it stands, which is kernel-credentialed because
-        // the shell re-credentials per command; a host calling `.fs` has no
-        // process behind it and must not inherit that.
+        // The shell's own process view: a host calling `.fs` acts as the
+        // session user, never as the kernel.
         this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd());
     }
     static async create(options) {
@@ -117,8 +116,7 @@ export class NimbusWorkspace {
         if (options.filesystemNamespace !== undefined && options.filesystemNamespace !== vfs.namespace) {
             throw new Error('filesystemNamespace differs from the supplied filesystem namespace');
         }
-        const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
-        seedBaseFilesystem(vfs, mounts);
+        seedBaseFilesystem(vfs);
         // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
         const filesystem = options.filesystem ?? new ProcessFiles(vfs);
         if (filesystem.engine !== vfs)
@@ -537,20 +535,14 @@ const WORKSPACE_TABLES = [
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
  */
-export function seedBaseFilesystem(vfs, mounts) {
+export function seedBaseFilesystem(vfs) {
     const fs = vfs.as(CRED_SESSION_USER);
     const rootFs = vfs.as(CRED_KERNEL);
     // Top-level directories are the kernel's to make (`/` is 0755 root), and
     // handed to the session user, who owns their own tree: seeding them owned
     // by the kernel is what makes a workspace where `.fs` cannot write.
-    for (const mount of mounts) {
-        if (mount === 'etc' || rootFs.exists(mount))
-            continue;
-        rootFs.mkdir(mount, { mode: 0o777 & ~CRED_SESSION_USER.umask });
-        rootFs.chown(mount, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-    }
-    for (const top of ['home', 'tmp', 'var', 'usr']) {
-        if (rootFs.exists(top))
+    for (const top of SEEDED_TOP_LEVEL_DIRS) {
+        if (top === 'etc' || rootFs.exists(top))
             continue;
         rootFs.mkdir(top, { mode: 0o777 & ~CRED_SESSION_USER.umask });
         rootFs.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);

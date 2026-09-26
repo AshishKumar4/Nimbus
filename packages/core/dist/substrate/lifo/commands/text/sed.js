@@ -377,9 +377,8 @@ class SedPass {
     }
 }
 /**
- * Filesystem failures reach a command as an error carrying a code string —
- * `VFSError` from the kernel VFS, a plain error from a host authority — so the
- * code decides what sed reports and survives, never the error's class.
+ * A filesystem failure reaches a command as an error carrying a code string,
+ * so the code decides what sed reports and survives, never the error's class.
  */
 function fsErrorMessage(error) {
     if (!(error instanceof Error))

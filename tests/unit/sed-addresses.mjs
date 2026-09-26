@@ -14,8 +14,8 @@
  *
  * Every expectation below was produced by running the identical script under
  * GNU sed 4.9, and everything runs through the command wiring a session
- * resolves through — SqliteVFS mounted into the kernel VFS plus
- * registerUnixCommands, i.e. exactly the commands a prod terminal runs.
+ * resolves through: a workspace over SQLite, i.e. exactly the commands a
+ * prod terminal runs.
  */
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';

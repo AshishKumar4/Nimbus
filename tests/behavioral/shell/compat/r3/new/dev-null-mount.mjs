@@ -5,7 +5,7 @@
 // `ENOENT: '/dev': no such file or directory`. Every standard
 // Unix discard-output idiom broken.
 //
-// Post-fix: /dev mounted as DevProvider with null/zero/random/etc.
+// Post-fix: /dev is mounted (DevVFS) with null/zero/random/etc.
 // Writes to /dev/null silently succeed (real Unix semantics).
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
