@@ -87,6 +87,7 @@ export const WASI_LISTEN_PATH_PREFIX = '/dev/nimbus/listen/';
  * their own fd table, so one handed to them out of band is unusable.
  */
 export const WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
+const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes: readonly string[] = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 type Fs = RuntimeFsBridge | RuntimeSynchronousFs;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
@@ -330,7 +331,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (!readOnly || residentBytes === 0) return open();
     return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
-      if (st.type !== 'file' || st.size > residentBytes) return open();
+      // Only a regular file has bytes to copy: a device (/dev/zero, its
+      // mode's type bits S_IFCHR) streams. A mode with no type bits is a file's.
+      const format = (st.mode ?? 0) & S_IFMT;
+      if (st.type !== 'file' || st.size > residentBytes || (format !== 0 && format !== S_IFREG)) return open();
       // A hit needs no permission check of its own: the copy was read under
       // this credential, and a chmod or chown since would have moved the
       // revision along with any rewrite.

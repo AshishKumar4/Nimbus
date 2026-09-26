@@ -338,6 +338,8 @@ export declare class SqliteVFS {
     private activeReservation;
     /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
     private privileged;
+    /** Interrupted copies resumed in this incarnation, each holding its reservation. */
+    private readonly resumedCopies;
     private ctx;
     readonly events: VfsEventEmitter;
     private readonly inodes;
@@ -1075,6 +1077,16 @@ export declare class SqliteVFS {
      * size never holds one synchronous turn.
      */
     private resumeJobs;
+    /**
+     * One slice of an interrupted copy (N18). Its first slice after an open
+     * reserves what is left to copy, as a copy does when it starts, so no
+     * writer between the slices can leave it without room. Refused, the job
+     * ends: what it had copied is removed (a pure removal, never refused) and
+     * its row goes, so it is never half-applied.
+     */
+    private resumeCopySlice;
+    /** Rows a copy job has left: the source's rows past its cursor, and each page's two. */
+    private remainingCopyRows;
     /** One slice of job `id`; true once it is done (or gone, or failed). */
     private resumeSlice;
     /** Every snapshot, oldest first. */
