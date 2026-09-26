@@ -20,7 +20,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly scope;
     private readonly namespace?;
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    private readonly mountedIno;
+    /** Bytes one buffered handle may hold before a write is EFBIG. */
+    private readonly bufferedWriteBytes;
     readonly synchronous: RuntimeSynchronousFs;
     private legacySymlinks;
     private readonly vfs;
@@ -28,7 +29,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly mounted;
     constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, namespace?: CompositeVFS | undefined, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    mountedIno?: (path: string) => number);
+    /** Bytes one buffered handle may hold before a write is EFBIG. */
+    bufferedWriteBytes?: number);
     /**
      * The legacy registry's key for one of this caller's names. Its entries are
      * keyed by storage key, so a confined caller's /tmp/x is its own, and an
@@ -52,6 +54,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readFile(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): Uint8Array | null;
+    /**
+     * A mounted file as this process sees it while it holds buffered writes to
+     * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
+     * of this process's descriptions of it applied, in open order. Undefined
+     * when it holds none pending: then the mount's own file is the answer.
+     * Another process's pending writes are never in it.
+     */
+    private processView;
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
@@ -138,6 +148,13 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private sqlitePath;
     private openRoot;
     private openMount;
+    /**
+     * A mount that cannot write in place (no writeRange): the handle buffers
+     * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
+     * buffered), and a flush (fsync, the last close, the process's release)
+     * reads the file, applies them in order and writes it back.
+     */
+    private buffer;
     private ensureParent;
     private assertParentDirectory;
     /**
@@ -163,5 +180,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
+/** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
+export declare const BUFFERED_WRITE_BYTES: number;
 export {};
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

@@ -14,7 +14,8 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
+import { Hydrator, type HydratorOptions } from './hydration.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -31,9 +32,35 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly namespaces;
     private readonly retired;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
-    private readonly mountedInos;
-    private readonly mountedIno;
-    constructor(engine: SqliteVFS);
+    /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
+    readonly hydrator: Hydrator | null;
+    /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
+    private readonly bufferedWriteBytes;
+    constructor(engine: SqliteVFS, options?: {
+        hydration?: HydratorOptions;
+        bufferedWriteBytes?: number;
+    });
+    /**
+     * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
+     * and are queued for hydration, in the order the page names them.
+     */
+    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
+        lazy?: boolean;
+    }): {
+        imported: number;
+        want: string[];
+        done: boolean;
+        pending: string[];
+    };
+    /**
+     * N17: a launch that reads synchronously (WASI) waits for the paths it
+     * names (program, argv paths, a cwd inside an import) to be local, at most
+     * the hydration deadline; EIO naming the first that is not, after it. A
+     * launch naming nothing pending starts at once.
+     */
+    /** Resolves once `path`'s bytes are hydrated (at once, for a path with none pending). */
+    hydrated(path: string): Promise<void>;
+    gateLaunch(named: readonly string[]): Promise<void>;
     bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;
@@ -55,6 +82,14 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
     releaseProcess(pid: number): Promise<void>;
+    /**
+     * The process died without closing its descriptors: nothing is flushed,
+     * and what that loses is reported, the descriptors whose buffered writes
+     * are gone. Later use of its descriptors is EBADF, as after a release.
+     */
+    killProcess(pid: number): {
+        lost: number[];
+    };
     activateAppendWriter(pid: number, writerId: string): Promise<void>;
     revokeAppendWriter(pid: number, writerId: string): Promise<void>;
     revokeAppendWriters(pid: number): Promise<void>;

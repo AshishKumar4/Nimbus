@@ -31,6 +31,7 @@ import {
   NEXT_REFUSAL_MESSAGE,
 } from '../../packages/worker/src/session/helpers.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 // ── 1 + 2. core npmRun over a real workspace ─────────────────────────────
 {
@@ -41,7 +42,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
   ws.registry.register('mybuilder', () => { built++; return 0; });
 
   // No `build` script: the guard answers, exit 1, no debug scaffolding.
-  await ws.fs.writeFile('/home/user/package.json', JSON.stringify({
+  await writeText(ws.fs, '/home/user/package.json', JSON.stringify({
     name: 'hx', version: '1.0.0', scripts: { format: 'prettier .' },
   }));
   const missing = await ws.exec('npm run build');
@@ -51,7 +52,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
   assert.ok(!missing.stdout.includes('[npm:debug]'), `no debug scaffolding on stdout:\n${missing.stdout}`);
 
   // A runnable script dispatches past bin registration — still silent.
-  await ws.fs.writeFile('/home/user/package.json', JSON.stringify({
+  await writeText(ws.fs, '/home/user/package.json', JSON.stringify({
     name: 'hx', version: '1.0.0', scripts: { build: 'mybuilder --flag' },
   }));
   const ran = await ws.exec('npm run build');

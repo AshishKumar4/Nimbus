@@ -624,8 +624,8 @@ requirements:
     remainingEvidence:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
   VFS-PF-001:
-    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes.
-    status: proved-in-abstract-model
+    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes; a process reads and stats its own handles' pending writes merged in by the flush merge (Linux page-cache semantics), and another process sees the flushed file.
+    status: proved-and-refined
     theorems:
       - Nimbus.Vfs.ProcessFiles.acked_accounted
       - Nimbus.Vfs.ProcessFiles.a_kill_that_drops_buffers_loses_silently
@@ -640,12 +640,18 @@ requirements:
       - Nimbus.Vfs.ProcessFiles.mem_map_upd
       - Nimbus.Vfs.ProcessFiles.mem_map_keep
       - Nimbus.Vfs.ProcessFiles.step_accounted
+      - Nimbus.Refine.ProcessFilesCases.flushH_files
+      - Nimbus.Refine.ProcessFilesCases.flushAll_files
+      - Nimbus.Refine.ProcessFilesCases.viewAs_is_flush
+      - Nimbus.Refine.ProcessFilesCases.viewAs_other
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles.releaseProcess
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
+    refinement:
+      - lean/fixtures/process-files.json :: tests/unit/process-files-refinement.mjs
     remainingEvidence:
-      - No code refines ProcessFiles yet (CUTOVER.md slice A); Nimbus.Refine.ProcessFilesCases generates lean/fixtures/process-files.json for tests/unit/process-files-refinement.mjs, and RefinementFixtures emits it again when the cutover adds that test
+      - The bridge checks a write's receipt on its revision after only (the writeFile contract returns that number)
       - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
       - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
   VFS-COMP-003:
@@ -784,21 +790,15 @@ requirements:
       - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
       - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
   N17-001:
-    statement: N17 hydration in an import window, at chunk granularity (a path is local when every chunk hash it names is; chunks are shared by content address, so one hydration can make several paths local) - no reader, sync or async, is ever handed the bytes of a path with a state-1 chunk; hydrated chunks stay hydrated; every remote unhydrated chunk is in the job's queue; a sync read of a non-local path answers EIO naming it and moves its remote chunks to the front; a WASI launch's gate moves its named paths' remote chunks to the front, opens when every named path is local (at once when none has a remote chunk), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind; with only job events after bind, every named path is local within as many hydrations as the named paths had remote chunks.
-    status: proved-in-abstract-model
+    statement: N17 hydration in an import window, at chunk granularity, with fetch failure and reader deadlines - no reader, sync or async, is ever handed the bytes of a path with a chunk that is not local; stored chunks stay stored; every remote chunk neither stored nor failed for good stays queued through any failures, backoffs and retries; a job fetches the first queued hash whose backoff has passed, a failed hash goes to the back with an exponential backoff and after maxAttempts is failed for good and never stored; every read, waiting reader and gate of a path backed by a failed hash has EIO naming the path and chunk; no waiting reader outlives its read deadline and no open gate its launch deadline, whatever the fetches do; a sync read of a non-local path answers EIO and moves its chunks to the front; after a gate opens no sync read of a named path answers EIO; with every queued hash ready and no named chunk failed, the named paths are local after as many successful fetches as they had remote chunks.
+    status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Hydration.sync_never_state1
       - Nimbus.Vfs.Hydration.async_never_state1
-      - Nimbus.Vfs.Hydration.resume_local
       - Nimbus.Vfs.Hydration.raw_frame
       - Nimbus.Vfs.Hydration.isLocal_mono
       - Nimbus.Vfs.Hydration.hyd_mono
-      - Nimbus.Vfs.Hydration.settleG_open
-      - Nimbus.Vfs.Hydration.settleG_ok
-      - Nimbus.Vfs.Hydration.settleG_named
       - Nimbus.Vfs.Hydration.raw_gates
-      - Nimbus.Vfs.Hydration.step_gateInv
-      - Nimbus.Vfs.Hydration.gateInv
       - Nimbus.Vfs.Hydration.gate_ok_local
       - Nimbus.Vfs.Hydration.bound_reads_never_eio
       - Nimbus.Vfs.Hydration.gate_bounded
@@ -812,12 +812,54 @@ requirements:
       - Nimbus.Vfs.Hydration.jobs_frame
       - Nimbus.Vfs.Hydration.named_local_within
       - Nimbus.Vfs.Hydration.a_shared_chunk
+      - Nimbus.Vfs.Hydration.settle_files
+      - Nimbus.Vfs.Hydration.settle_remote
+      - Nimbus.Vfs.Hydration.settle_hyd
+      - Nimbus.Vfs.Hydration.settle_queue
+      - Nimbus.Vfs.Hydration.settle_failed
+      - Nimbus.Vfs.Hydration.settle_now
+      - Nimbus.Vfs.Hydration.settle_cfg
+      - Nimbus.Vfs.Hydration.settle_notBefore
+      - Nimbus.Vfs.Hydration.isLocal_settle
+      - Nimbus.Vfs.Hydration.hLocal_settle
+      - Nimbus.Vfs.Hydration.failedChunk_settle
+      - Nimbus.Vfs.Hydration.gateFailed_settle
+      - Nimbus.Vfs.Hydration.failedChunk_spec
+      - Nimbus.Vfs.Hydration.failedChunk_none
+      - Nimbus.Vfs.Hydration.async_failed_eio
+      - Nimbus.Vfs.Hydration.sync_failed_eio
+      - Nimbus.Vfs.Hydration.pick_mem
+      - Nimbus.Vfs.Hydration.jobStep_frame
+      - Nimbus.Vfs.Hydration.prio_sub
+      - Nimbus.Vfs.Hydration.jobStep_covers
+      - Nimbus.Vfs.Hydration.jobStep_core
+      - Nimbus.Vfs.Hydration.raw_core
+      - Nimbus.Vfs.Hydration.core
+      - Nimbus.Vfs.Hydration.failed_not_stored
+      - Nimbus.Vfs.Hydration.failed_not_local
+      - Nimbus.Vfs.Hydration.settleR_spec
+      - Nimbus.Vfs.Hydration.settleG_spec
+      - Nimbus.Vfs.Hydration.settle_RG
+      - Nimbus.Vfs.Hydration.raw_readers
+      - Nimbus.Vfs.Hydration.step_RG
+      - Nimbus.Vfs.Hydration.rg
+      - Nimbus.Vfs.Hydration.reader_ok_local
+      - Nimbus.Vfs.Hydration.reader_bounded
+      - Nimbus.Vfs.Hydration.failed_readers_eio
+      - Nimbus.Vfs.Hydration.failed_gates_eio
+      - Nimbus.Vfs.Hydration.job_head
+      - Nimbus.Vfs.Hydration.a_failure_trace
+      - Nimbus.Vfs.Hydration.a_reader_deadline
+      - Nimbus.Vfs.Hydration.gate_names_the_failed_path
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles
+      - packages/core/src/runtime/hydration.ts#Hydrator
+    refinement:
+      - lean/fixtures/n17-hydration.json :: tests/unit/n17-hydration-refinement.mjs
     remainingEvidence:
-      - Parked until NodeNoMirrorBuild writes tests/unit/n17-hydration-refinement.mjs: Nimbus.Refine generates lean/fixtures/n17-hydration.json, and RefinementFixtures emits it again with the refinement entry
       - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
       - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound
+      - A job event is atomic here; in the engine a fetch is in flight while reads reprioritize the queue, and the entries it took must be removed by identity (NodeNoMirrorBuild's n17-lazy-import caught removal by position); the split start/complete job is not modeled
   CS-008:
     statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles and is in no snapshot. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
     status: proved-and-refined

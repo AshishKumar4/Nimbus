@@ -54,8 +54,11 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(df.lines[0], 'Filesystem       1K-blocks      Used Available Use% Mounted on');
   assert.deepEqual(df.lines.slice(1).map((line) => columns(line).at(-1)), ['/', '/mnt/scratch', '/pc/laptop']);
   const root = columns(df.lines[1]);
-  const used = ws.stats().usedBytes;
-  const available = DO_STORAGE_LIMIT_BYTES - databaseSize();
+  // The session's storage ledger (N18): Used is everything it counts, and
+  // Available leaves the kernel's reserve out, as ext4 leaves root's out.
+  const ledger = ws.vfs.ledger;
+  const used = ledger.view().used;
+  const available = DO_STORAGE_LIMIT_BYTES - ledger.kernelReserve - used;
   assert.deepEqual(root, [
     'nimbus',
     String(kib(DO_STORAGE_LIMIT_BYTES)),

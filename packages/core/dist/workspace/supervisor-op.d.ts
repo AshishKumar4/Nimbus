@@ -1,4 +1,4 @@
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -100,7 +100,14 @@ export interface SupervisorOpTools {
     readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
     readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
     readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
+    /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
+    readonly hydrated: (path: string) => Promise<void>;
 }
+/**
+ * An asynchronous read that meets bytes still being imported (N17) waits for
+ * them and reads again; a synchronous caller would have had EIO.
+ */
+export declare function readHydrating<T>(hydrated: (path: string) => Promise<void>, read: () => Promise<T>): Promise<T>;
 /**
  * The host-side argument plan per op — how an envelope becomes an _rpc*
  * call. Exactly the ops {@link SUPERVISOR_NATIVE_OPS} does NOT name: a

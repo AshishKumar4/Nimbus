@@ -3,8 +3,6 @@ import type { CommandRegistry } from '../commands/registry.js';
 import type { Kernel } from '../kernel/index.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
-import type { SqliteVFS } from '../../../vfs/sqlite-vfs.js';
 
 // ─── Sandbox Options ───
 
@@ -45,27 +43,6 @@ export interface SandboxCommands {
    * that needed it was already reaching through the private field.
    */
   readonly registry: CommandRegistry;
-}
-
-// ─── SandboxFs ───
-
-export interface SandboxFs {
-  readFile(path: string): Promise<string>;
-  readFile(path: string, encoding: null): Promise<Uint8Array>;
-  writeFile(path: string, content: string | Uint8Array): Promise<void>;
-  readdir(path: string): Promise<Array<{ name: string; type: FileType }>>;
-  stat(path: string): Promise<{ type: FileType; size: number; mtime: number }>;
-  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
-  rm(path: string, options?: { recursive?: boolean }): Promise<void>;
-  exists(path: string): Promise<boolean>;
-  rename(oldPath: string, newPath: string): Promise<void>;
-  cp(src: string, dest: string): Promise<void>;
-  writeFiles(files: Array<{ path: string; content: string | Uint8Array }>): Promise<void>;
-  /**
-   * The content store's diagnostic. Snapshots, diff, restore and the paged
-   * export/import are the embedder's, with kernel authority: `ws.vfs`.
-   */
-  storeStats(): Promise<ReturnType<SqliteVFS['storeStats']>>;
 }
 
 // ─── Internal types for Sandbox internals ───

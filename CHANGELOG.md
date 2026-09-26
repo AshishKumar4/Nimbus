@@ -70,14 +70,41 @@ option, with its replacement:
   still throws.
 - The mount listing (`mounts(cred)`, `df`, `mount`, `/proc/mounts`) is in
   mount order (`/`, `/proc`, `/dev`, then the embedder's), as on Linux.
-- `ws.fs` (`SandboxFs`) no longer has `exportSnapshot()`/`importSnapshot()`
-  (a tar.gz of the whole tree). The content store is the embedder's, with
-  kernel authority, on `ws.vfs` (the workspace's `SqliteVFS`):
+- `ws.fs` is a `VFS`: the session user's view of the namespace (a
+  `ProcessView`, the shell process's own), with the same lease checks a
+  command gets. The hosted runtime's `files` and `files(cred)` are the same
+  kind of view for a credential, with `.as(cred)`. `SandboxFs`,
+  `SandboxFsImpl` and the `SandboxFs` type export are gone. Paths are
+  absolute (a relative path is no longer resolved against the shell's
+  cwd). Method by method:
+  - `readFile(p)` (text) is `readText(ws.fs, p)`, and `readFile(p, null)` is
+    `ws.fs.readFile(p)` (bytes).
+  - `writeFile(p, text)` is `writeText(ws.fs, p, text)`; bytes go to
+    `ws.fs.writeFile(p, bytes)`.
+  - `writeFiles(list)` is one `writeFile`/`writeText` per entry.
+  - `stat(p)` answers `null` for a missing path (use `statOrThrow` for the
+    old throw), and its times are `mtimeMs`, `atimeMs` and `ctimeMs`.
+  - `rm(p)` is `unlink(p)` or `rmdir(p)`, and `rm(p, { recursive: true })`
+    is `removeRecursive(p)`.
+  - `cp(a, b)` is `copy(a, b, { recursive })`.
+  - `exists`, `readdir`, `mkdir` and `rename` are unchanged.
+  - `storeStats()` leaves the user's handles: the kernel's
+    `ws.vfs.storeStats()` has it, and a user sees its storage through `df`
+    (`usage()` on the namespace root).
+  `readText`, `writeText`, `statOrThrow` and `exists` are in
+  `@nimbus-sh/core/vfs/vfs.js`. The SDK's `box.files` is unchanged.
+- `ws.fs` no longer has `exportSnapshot()`/`importSnapshot()` (a tar.gz of
+  the whole tree). The content store is the embedder's, with kernel
+  authority, on `ws.vfs` (the workspace's `SqliteVFS`):
   `snapshot(name, { quiesce })`, `snapshots()`, `dropSnapshot(name)`,
   `diff(from, to, { after, limit })`, `at(name, cred?)`, `restore`/
   `restoreAsync(name, { subtree })`, `exportPage`/`exportChunks`/
-  `importPage`/`pageDigest`. `ws.fs` and the per-credential handles carry
-  only `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts.
+  `importPage`/`pageDigest`, and `storeStats()`. Snapshots hold the
+  SQLite-rooted tree, not mounts.
+- `df` reports the session's storage ledger for `/`: Used is everything
+  the 10 GB limit counts (this database, every process facet's, namespace
+  images and reservations), and Available leaves out the kernel's reserve,
+  as ext4's df leaves out root's reserved blocks.
 - `snapshot(name, { quiesce: true })` waits for spanning work (writeStream,
   restoreAsync, sliced copyTree) and for exclusive leases, and holds
   spanning work that starts meanwhile until the snapshot is taken. It
@@ -107,6 +134,42 @@ option, with its replacement:
 - `rename` follows Linux's order and error codes. A directory may replace an
   empty directory, and moving a directory to another parent needs write
   permission on it.
+- Storage admission (Kinu N18). One 10 GB limit covers the session and every
+  process facet under it. A write past it used to reset the whole object and
+  empty the destination. Now every write is admitted before it is made, and
+  a write that would cross the limit fails with `ENOSPC` and changes
+  nothing. The ledger counts the session's database, each facet's database
+  (live, dead or kept for a durable app, until `facets.delete`), and
+  namespace images, which are evicted oldest first when a write needs their
+  room. A sliced `copyTree` and an `importPage` reserve their room when they
+  start, so a writer between their slices can't leave them half done. A
+  copy resumed after a reset reserves again, or ends and removes what it
+  had copied. A running node process's store asks for room before it grows;
+  what it can't hold it reads from the session. The last 1% of the limit
+  (at least 16 MiB) is kept for the kernel. `ws.vfs.storeStats().ledger`
+  reports used, the limit and each part; `df` shows the totals.
+- Lazy imports (Kinu N17). `ProcessFiles(vfs, { hydration: { fetch } })` and
+  `importPage(dst, page, chunks, { lazy: true })` commit an import's rows at
+  once and fetch the bytes it did not carry in the background, through your
+  `fetch(hashes)`. An asynchronous read of such a file waits for its bytes.
+  A synchronous one fails with `EIO` ("still being imported") and moves the
+  file to the front. A WASI launch (bash, python, ruby, clang, a .wasm) waits
+  up to 30 s for the files it names, then fails with `EIO`; a launch naming
+  none of them starts at once. A fetch that fails, returns wrong bytes or leaves
+  hashes out is retried with backoff. After 8 tries a chunk has failed: its
+  readers get `EIO` naming the file, the chunk and the cause, and
+  `hydrator.retryFailed()` tries again. An asynchronous reader also waits
+  at most 30 s.
+- `head -c N /dev/zero` and `/dev/urandom` work under bash. A device was read
+  whole on open, which fails for an endless one.
+- `realpath` takes GNU's options (`-e`, `-m`, `-L`, `-P`, `-s`, `-q`, `-z`,
+  `--relative-to`, `--relative-base`), and `find -name` matches bracket
+  classes, `\` escapes and a lone `[` as GNU does.
+- `touch` sets times to "now" with write permission alone, as GNU does, and
+  `touch -h` sets a link's own times.
+- SECURITY: a lookup rooted at a WASI preopen (or any `beneath` path) checks
+  search permission on each directory it leaves and refuses every absolute
+  link and every `..` above its root, across mounts too.
 
 ## 2026-09-24
 

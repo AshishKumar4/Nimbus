@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { readText, writeText } from '@nimbus-sh/core/vfs/vfs.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
@@ -260,13 +261,13 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
     }
     if (path === '/file' && request.method === 'PUT') {
       const input = z.object({ path: z.string(), content: z.string() }).parse(await request.json());
-      await runtime.workspace.fs.writeFile(input.path, input.content);
+      await writeText(runtime.workspace.fs, input.path, input.content);
       return Response.json({ written: true });
     }
     if (path === '/file' && request.method === 'GET') {
       const file = new URL(request.url).searchParams.get('path');
       if (!file) return new Response('Missing path', { status: 400 });
-      return Response.json({ content: await runtime.workspace.fs.readFile(file) });
+      return Response.json({ content: await readText(runtime.workspace.fs, file) });
     }
     if (path === '/exists') {
       const file = new URL(request.url).searchParams.get('path');

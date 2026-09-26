@@ -31,7 +31,7 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetBindings, FacetHost } from './facet-host.js';
-import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { CRED_KERNEL, gateSyncLaunch, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
@@ -76,6 +76,8 @@ export function makeClangRunnerFactory(deps: {
       const vfs = ctx.vfs;
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
+      const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
+      if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
       // Fast paths — no wasm boot.
       if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {

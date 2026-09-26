@@ -29,7 +29,21 @@ const kernel = store.as(CRED_KERNEL);
 
 // Nothing a user holds carries the store.
 for (const op of STORE_OPS) assert.equal(op in ws.fs, false, `ws.fs.${op}`);
-assert.equal(typeof (await ws.fs.storeStats()).chunks, 'number', 'the diagnostic stays');
+// The store's diagnostic and the ledger's breakdown are the kernel's (ws.vfs):
+// a user handle has no storeStats at all, and learns its room from df.
+assert.equal('storeStats' in ws.fs, false, 'ws.fs.storeStats');
+store.ledger.fill('proc-slot-7', 4096);
+assert.equal(store.storeStats().ledger.facets['proc-slot-7'], 4096, 'the kernel sees each facet');
+{
+  // df's Used and Available are the ledger's (the facet's 4 KiB included),
+  // the kernel's reserve left out of Available, as ext4 leaves out root's.
+  const view = store.ledger.view();
+  const [, size, used, available] = (await ws.exec('df -k /home/user')).stdout.split('\n')[1].trim().split(/\s+/).map(Number);
+  // df rounds each column up to whole KiB.
+  assert.equal(size, Math.ceil(view.limit / 1024));
+  assert.equal(used, Math.ceil(view.used / 1024));
+  assert.equal(available, Math.ceil((view.limit - store.ledger.kernelReserve - view.used) / 1024));
+}
 
 // A root-only file stays root's: a user never reaches the store to export it.
 kernel.mkdir('root', { mode: 0o700 });

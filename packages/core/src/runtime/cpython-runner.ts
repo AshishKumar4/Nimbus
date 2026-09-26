@@ -49,7 +49,7 @@ import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
 import type { FacetHost } from './facet-host.js';
-import { requireVfsCred } from './os-contracts.js';
+import { gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import {
   buildPipInvocation,
   type PipInvocation,
@@ -243,6 +243,8 @@ export function makeCPythonRunnerFactory(deps: {
       const vfs = ctx.vfs;
       const argv: string[] = ctx.args || [];
       const cwd: string = ctx.cwd || '/home/user';
+      const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
+      if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
       const pipRuntimeContext: PythonPipRuntimeContext = {
         // No Pyodide lockfile: there is no curated wheel index behind this

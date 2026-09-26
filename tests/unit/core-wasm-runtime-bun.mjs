@@ -25,6 +25,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
 import { BASH_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 const WASM_DIR = new URL('../../packages/worker/wasm/', import.meta.url).pathname;
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
@@ -235,11 +236,11 @@ const ws = await open({ facets: localFacetHost() });
 // The point of running it here rather than in a harness: what bash writes is a
 // row in the host's SQLite, readable through the embedder-facing `.fs`.
 {
-  await ws.fs.writeFile('/home/user/from-fs.txt', 'seeded\n');
+  await writeText(ws.fs, '/home/user/from-fs.txt', 'seeded\n');
   const roundTrip = await ws.exec('bash -c \'cat from-fs.txt; echo written > from-bash.txt\'');
   assert.equal(roundTrip.exitCode, 0, `bash failed: ${roundTrip.stderr}`);
   assert.equal(roundTrip.stdout, 'seeded\n');
-  assert.equal(await ws.fs.readFile('/home/user/from-bash.txt'), 'written\n');
+  assert.equal(await readText(ws.fs, '/home/user/from-bash.txt'), 'written\n');
   console.log('  ok  bash reads and writes the workspace filesystem');
 }
 
@@ -304,13 +305,13 @@ const ws = await open({ facets: localFacetHost() });
 // the write proves the local supervisor carried them BACK, which is the half a
 // sealed facet would silently lose.
 {
-  await ws.fs.writeFile('/home/user/note.txt', 'written by fs\n');
+  await writeText(ws.fs, '/home/user/note.txt', 'written by fs\n');
   const io = await ws.exec(
     'python -c \'print(open("/home/user/note.txt").read().strip()); '
     + 'open("/home/user/from-python.txt", "w").write("written by python\\n")\'');
   assert.equal(io.exitCode, 0, `python failed: ${io.stderr}`);
   assert.equal(io.stdout, 'written by fs\n');
-  assert.equal(await ws.fs.readFile('/home/user/from-python.txt'), 'written by python\n');
+  assert.equal(await readText(ws.fs, '/home/user/from-python.txt'), 'written by python\n');
   console.log('  ok  python reads a file .fs wrote and writes one .fs reads back');
 
   // And the shell sees it too — one filesystem, not a per-runtime copy.
@@ -325,7 +326,7 @@ const ws = await open({ facets: localFacetHost() });
 // keep it on. A workspace owns none, so `python script.py` is refused by name
 // rather than quietly run as a one-shot that dies with the invocation.
 {
-  await ws.fs.writeFile('/home/user/server.py', 'print("never reached")\n');
+  await writeText(ws.fs, '/home/user/server.py', 'print("never reached")\n');
   const resident = await ws.exec('python server.py');
   assert.equal(resident.exitCode, 1);
   assert.match(resident.stderr, /no process substrate/);

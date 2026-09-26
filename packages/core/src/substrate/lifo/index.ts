@@ -3,7 +3,6 @@ export type {
 	RunOptions,
 	CommandResult,
 	SandboxCommands,
-	SandboxFs,
 } from './sandbox/index.js';
 
 // Kernel

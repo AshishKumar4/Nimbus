@@ -15,7 +15,9 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 
-import type { SqliteVFS, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { Hydrator, type HydratorOptions } from './hydration.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
 import { CompositeVFS } from '../vfs/composite.js';
@@ -88,7 +90,28 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly scope: SqliteDescriptorScope,
     private readonly signal: AbortSignal | undefined,
     private readonly pid: number | undefined,
+    /** N17: the lazy-import hydration job, when there is one. */
+    private readonly hydrator: Hydrator | null,
   ) {}
+
+  gateLaunch(named: readonly string[]): Promise<void> {
+    return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
+  }
+
+  /** A read that met pending bytes moves them to the front of hydration, and still fails (EIO). */
+  private reading<T>(read: () => T): T {
+    try {
+      return read();
+    } catch (error) {
+      if (this.hydrator !== null && isPendingChunkError(error)) {
+        // Failed for good: say so, with the cause. Otherwise it goes first.
+        const failure = this.hydrator.failureOf(error.path);
+        if (failure !== null) throw failure;
+        this.hydrator.missed(error.path);
+      }
+      throw error;
+    }
+  }
 
   get synchronous(): RuntimeSynchronousFs { return this; }
 
@@ -104,12 +127,12 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Uint8Array | null { this.guard(); return this.target.readFile(path, options); }
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
-    this.guard(); return this.target.readRange(path, offset, length, options);
+    this.guard(); return this.reading(() => this.target.readRange(path, offset, length, options));
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): VfsMutationReceipt {
     this.guard(); return this.target.writeRange(path, offset, bytes, options);
@@ -124,7 +147,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle { this.guard(); return this.target.open(path, flags); }
-  read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.target.read(handleId, offset, length); }
+  read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
@@ -196,20 +219,50 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
-  private readonly mountedInos = new Map<string, number>();
-  private readonly mountedIno = (path: string): number => {
-    let ino = this.mountedInos.get(path);
-    if (ino === undefined) this.mountedInos.set(path, ino = this.mountedInos.size + 1);
-    return ino;
-  };
+  /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
+  readonly hydrator: Hydrator | null;
 
-  constructor(readonly engine: SqliteVFS) {
+  /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
+  private readonly bufferedWriteBytes: number | undefined;
+
+  constructor(readonly engine: SqliteVFS, options: { hydration?: HydratorOptions; bufferedWriteBytes?: number } = {}) {
+    this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
+    this.bufferedWriteBytes = options.bufferedWriteBytes;
     this.namespace = engine.namespace;
     this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
     this.proc = standardProc();
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
     this.vfs.mount('/dev', new DevVFS());
+  }
+
+  /**
+   * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
+   * and are queued for hydration, in the order the page names them.
+   */
+  importPage(dst: string, page: VfsExportPage, chunks: Iterable<VfsExportChunk> = [], options: { lazy?: boolean } = {}) {
+    if (options.lazy && this.hydrator === null) throw new VfsError('EINVAL', 'a lazy import needs a hydration fetch (ProcessFiles hydration option)', dst);
+    const result = this.engine.importPage(dst, page, chunks, options);
+    if (result.pending.length > 0) {
+      this.hydrator!.enqueue(result.pending);
+      void this.hydrator!.run();
+    }
+    return result;
+  }
+
+  /**
+   * N17: a launch that reads synchronously (WASI) waits for the paths it
+   * names (program, argv paths, a cwd inside an import) to be local, at most
+   * the hydration deadline; EIO naming the first that is not, after it. A
+   * launch naming nothing pending starts at once.
+   */
+  /** Resolves once `path`'s bytes are hydrated (at once, for a path with none pending). */
+  hydrated(path: string): Promise<void> {
+    return this.hydrator === null ? Promise.resolve() : this.hydrator.whenLocal(path);
+  }
+
+  gateLaunch(named: readonly string[]): Promise<void> {
+    return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
   }
 
   bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge {
@@ -272,6 +325,31 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.engine.revokeAppendWriters(pid);
   }
 
+  /**
+   * The process died without closing its descriptors: nothing is flushed,
+   * and what that loses is reported, the descriptors whose buffered writes
+   * are gone. Later use of its descriptors is EBADF, as after a release.
+   */
+  killProcess(pid: number): { lost: number[] } {
+    this.retired.add(pid);
+    const scope = this.processes.get(pid);
+    this.processes.delete(pid);
+    this.engine.revokeAppendWriters(pid);
+    if (!scope || scope.closed) return { lost: [] };
+    const lost: number[] = [];
+    for (const [id, opened] of scope.handles) {
+      if ((opened.node.pendingBytes?.() ?? 0) > 0) lost.push(id);
+      // Dropped unflushed; a description another process still holds stays open.
+      opened.refs--;
+    }
+    scope.handles.clear();
+    scope.closed = true;
+    scope.abort.abort();
+    for (const unsubscribe of scope.subscriptions) unsubscribe();
+    scope.subscriptions.clear();
+    return { lost };
+  }
+
   async activateAppendWriter(pid: number, writerId: string): Promise<void> {
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
     this.engine.activateAppendWriter(pid, writerId);
@@ -311,8 +389,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno);
-    return new GuardedProcessBridge(target, scope, signal, pid);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.bufferedWriteBytes);
+    return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
   }
 }
 

@@ -28,6 +28,7 @@ npm install @nimbus-sh/core
 ```ts
 import { Database } from 'bun:sqlite';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { writeText } from '@nimbus-sh/core/vfs/vfs.js';
 
 const db = new Database('workspace.sqlite');
 const sql = {
@@ -41,7 +42,7 @@ const transactions = { storage: { transactionSync: (cb) => db.transaction(cb)() 
 
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 
-await ws.fs.writeFile('/home/user/hello.txt', 'hi\n');
+await writeText(ws.fs, '/home/user/hello.txt', 'hi\n');
 const out = await ws.exec('cat /home/user/hello.txt | wc -c');   // { stdout: '3\n', exitCode: 0 }
 ```
 
@@ -161,42 +162,40 @@ failures; discard that VFS instance and reopen it after storage recovers.
 
 ## Mounts in df, mount and /proc/mounts
 
-`df`, `mount` and `/proc/mounts` read one listing, the filesystem authority's
-`mounts(cred)`. The default lists the SQLite store as `/` (size: the 10 GB
-Durable Object storage limit; used: file bytes stored; available: the limit
-less the database's size where the host reports `sql.databaseSize`), plus
-every other kernel mount (`/proc`, `/dev`, and any you add with
-`ws.kernel.vfs.mount`). A kernel provider with `describeMount()` supplies its
-own source, type, options and usage. An authority wrapper that serves more
-paths adds them by overriding `mounts` and calling `super`:
+The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,
+with SQLite at `/`, `/proc` and `/dev`. Mount your own filesystems on it.
+`df`, `mount` and `/proc/mounts` list every mount in mount order. SQLite at
+`/` reports its real usage: size is the 10 GB Durable Object storage limit,
+used is the file bytes stored, available is the limit less the database's
+size where the host reports `sql.databaseSize`. A mounted VFS describes
+itself with `describe()` and `usage()`. Without them it is listed as source
+`none`, type `vfs`, with no usage.
 
 ```ts
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
-import type { NimbusMountEntry, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { NimbusWorkspace } from '@nimbus-sh/core';
+import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 
-class HostMounts extends SqliteFilesystemAuthority {
-  override mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
-    return [
-      ...super.mounts(cred),
-      {
-        mountPoint: '/shared',
-        source: 'r2:team-bucket',
-        type: 'r2',
-        options: ['rw'],
-        usage: async () => null, // or { size, used, available } in bytes
-      },
-    ];
-  }
-}
+const ws = await NimbusWorkspace.create({ sql, transactions, generation });
 
-const ws = await NimbusWorkspace.create({
-  sql, transactions, generation,
-  filesystem: (base) => new HostMounts((base as SqliteFilesystemAuthority).vfs),
+// Any VFS can be mounted. This one also says what it is, for df and mount.
+const shared = Object.assign(new MemoryVFS(), {
+  describe: () => ({ source: 'r2:team-bucket', type: 'r2', options: ['rw'] }),
+  usage: async () => null, // or { size, used, available } in bytes
 });
+ws.filesystem.vfs.mount('/shared', shared);
+
+await ws.exec('mount'); // ... r2:team-bucket on /shared type r2 (rw)
 ```
 
-`df` hides entries whose `usage()` answers `null` unless given `-a` or a path
-on them. `/proc/mounts` never shows usage.
+`df` hides a mount whose `usage()` returns `null` unless given `-a` or a path
+on it. `/proc/mounts` never shows usage.
+
+A mounted VFS without `writeRange` cannot write part of a file in place. A
+process's open file on it buffers its writes (at most 8 MiB per descriptor;
+a write past that fails with `EFBIG`) and writes the whole file back on
+`fsync`, on the last `close` and when the process exits. The process that
+wrote reads and stats its own writes at once. Another process sees the
+mount's content, and so the writes only after that write-back.
 
 ## What the worker package adds
 

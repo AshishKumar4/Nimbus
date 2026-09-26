@@ -105,9 +105,9 @@ const env = {
 const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
 const processes = new bundle.SessionProcessSupervisor();
 processes.setPidBase(bundle.PID_GEN_STRIDE);
-const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 1 });
-// What an earlier boot's `npm install -g fakebin` left on disk.
+// An earlier boot: the workspace seeded, and `npm install -g fakebin` left its package on disk.
 {
+  const earlier = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes: new bundle.SessionProcessSupervisor(), generation: 1 });
   const kernel = vfs.as(bundle.CRED_KERNEL);
   kernel.mkdir('usr/lib/node_modules/fakebin', { recursive: true, mode: 0o755 });
   kernel.writeFile('usr/lib/node_modules/fakebin/package.json', JSON.stringify({ name: 'fakebin', version: '1.0.0', bin: { fakebin: 'cli.js' } }));
@@ -116,7 +116,11 @@ const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transa
   kernel.writeFile('usr/lib/node_modules/@scope/tool/package.json', JSON.stringify({ name: '@scope/tool', version: '1.0.0', bin: 'bin/tool.js' }));
   kernel.mkdir('usr/lib/node_modules/@scope/tool/bin', { mode: 0o755 });
   kernel.writeFile('usr/lib/node_modules/@scope/tool/bin/tool.js', '');
+  await earlier.close();
 }
+const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 2 });
+// The workspace restores them itself, once, as it is created (CUTOVER §2.9).
+assert.equal(workspace.registry.has('fakebin'), true, 'the global bin is a command once the workspace exists');
 await bundle.composeHostedRuntime({
   workspace,
   ctx,

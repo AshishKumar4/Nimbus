@@ -1,5 +1,4 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { SandboxFsImpl } from '@nimbus-sh/core/substrate/lifo/sandbox/SandboxFs.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -276,8 +275,7 @@ class RuntimeOwner {
             lease = workspace.filesystem.openHost(identity);
             this.fileLeases.set(key, lease);
         }
-        const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd(), workspace.vfs);
-        return Object.assign(view, { as: (next) => this.files(next) });
+        return Object.assign(new ProcessView(lease.fs), { as: (next) => this.files(next) });
     }
     close() {
         this.closing ??= Promise.resolve().then(async () => {

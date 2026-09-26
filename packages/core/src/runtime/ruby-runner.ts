@@ -50,7 +50,7 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import type { FacetHost } from './facet-host.js';
-import { CRED_KERNEL, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -121,6 +121,8 @@ export function makeRubyRunnerFactory(deps: {
       const vfs = ctx.vfs;
       const argv = ctx.args ?? [];
       const cwd = ctx.cwd || '/home/user';
+      const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
+      if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
       const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
       if (packageCommand.handled) {

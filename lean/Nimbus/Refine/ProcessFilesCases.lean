@@ -12,7 +12,13 @@
   applies the handle's pending writes in order (an `append` one at the end as it
   is then), and writes it back. A write-through `append` takes the end in the same
   call. `read` expects the file's bytes after each step, so two handles on one
-  path are checked at flush granularity (`ProcessFiles` (2)).
+  path are checked at flush granularity (`ProcessFiles` (2)). After it, Linux
+  page-cache semantics (Main's ruling on 98f85d11 P2): `readFd` (the handle's
+  process's view of its path), `readAs pid path` and `statAs pid path` (`size`), by
+  every process with a live handle and by an observer (pid 3). A process sees its own
+  handles' pending writes on the path merged in, handle by handle in open order, by the
+  merge a flush does (`viewAs_is_flush`); another process sees the flushed file
+  (`viewAs_other`). `null`: no such file.
 
   `leases`: a root link `/x → /dst`; owners take and drop leases; mutations
   (`writeFile`, `unlink`, `mkdir`) as an owner or as none. EBUSY when the literal or
@@ -63,6 +69,74 @@ def fname (p : Nat) : String := s!"/f{p}"
 def flushH (d : D) (h : H) : D :=
   { d with files := upd d.files h.path (some (applyPending ((d.files h.path).getD []) h.pending)),
            hs := d.hs.map fun g => if g.fd = h.fd then { g with pending := [] } else g }
+
+/-- What `pid` reads at `p` (Linux page-cache semantics, Main's ruling on 98f85d11 P2):
+    the flushed file with its own handles' pending writes merged in, handle by handle
+    in open order, by the merge a flush does; another process's pending writes are not
+    seen. `none`: no file. -/
+def viewAs (d : D) (pid p : Nat) : Option (List Nat) :=
+  (d.files p).map fun f => ((d.hs.filter fun h => h.pid == pid && h.path == p).foldl (fun f h => applyPending f h.pending) f)
+
+/-- Flushing handles one after another (`releaseProcess` flushes a process's handles in
+    open order). -/
+def flushAll (d : D) (hs : List H) : D := hs.foldl flushH d
+
+theorem flushH_files (d : D) (h : H) (p : Nat) :
+    (flushH d h).files p = if p = h.path then some (applyPending ((d.files h.path).getD []) h.pending) else d.files p := by
+  simp only [flushH, upd]
+
+theorem flushAll_files (p : Nat) : ∀ (hs : List H) (d : D), (∀ h ∈ hs, h.path = p) → d.files p ≠ none →
+    (flushAll d hs).files p = (d.files p).map fun f => hs.foldl (fun f h => applyPending f h.pending) f := by
+  intro hs
+  induction hs with
+  | nil => intro d _ _; simp only [flushAll, List.foldl_nil]; cases d.files p <;> rfl
+  | cons h hs ih =>
+    intro d hp hn
+    simp only [flushAll, List.foldl_cons] at ih ⊢
+    have hh : h.path = p := hp h (List.mem_cons_self _ _)
+    have e1 : (flushH d h).files p = some (applyPending ((d.files p).getD []) h.pending) := by
+      rw [flushH_files, if_pos hh.symm, hh]
+    rw [ih _ (fun g hg => hp g (List.mem_cons_of_mem _ hg)) (by rw [e1]; simp), e1]
+    cases hd : d.files p with
+    | none => exact absurd hd hn
+    | some f => simp
+
+/-- The pending holder reads exactly what the file holds once its handles on the path
+    are flushed (as `releaseProcess` would), and no other process's pending write shows. -/
+theorem viewAs_is_flush (d : D) (pid p : Nat) (hn : d.files p ≠ none) :
+    viewAs d pid p = (flushAll d (d.hs.filter fun h => h.pid == pid && h.path == p)).files p := by
+  rw [flushAll_files p _ d (fun h hh => by
+    have := (List.mem_filter.mp hh).2
+    simp only [Bool.and_eq_true, beq_iff_eq] at this
+    exact this.2) hn]
+  rfl
+
+/-- A process with no handle on the path reads the flushed file. -/
+theorem viewAs_other (d : D) (pid p : Nat) (h : ∀ g ∈ d.hs, g.path = p → g.pid ≠ pid) :
+    viewAs d pid p = d.files p := by
+  unfold viewAs
+  have : (d.hs.filter fun g => g.pid == pid && g.path == p) = [] :=
+    List.filter_eq_nil_iff.mpr fun g hg => by
+      have := h g hg
+      by_cases e : g.path = p
+      · simp [this e]
+      · simp [e]
+  rw [this]
+  cases d.files p <;> rfl
+
+def optBytes : Option (List Nat) → Json
+  | some f => .str (bytesStr f)
+  | none => .null
+
+/-- The checks after a step: each live handle's `readFd`, and `readAs`/`statAs` of both
+    paths by every process with a live handle and by an observer (pid 3). -/
+def views (d : D) : List Json :=
+  let pids := ((d.hs.map (·.pid)).eraseDups ++ [3])
+  (d.hs.map fun h => .obj [("op", .str "readFd"), ("fd", .ofNat h.fd), ("expect", optBytes (viewAs d h.pid h.path))]) ++
+  pids.flatMap fun pid => [0, 1].flatMap fun p =>
+    [.obj [("op", .str "readAs"), ("pid", .ofNat pid), ("path", .str (fname p)), ("expect", optBytes (viewAs d pid p))],
+     .obj [("op", .str "statAs"), ("pid", .ofNat pid), ("path", .str (fname p)),
+       ("expect", match viewAs d pid p with | some f => .obj [("size", .ofNat f.length)] | none => .null)]]
 
 def genDescCase : Gen (Option Json) := do
   let wr := (← below 2) == 0
@@ -126,6 +200,7 @@ def genDescCase : Gen (Option Json) := do
     for p in [0, 1] do
       out := out.push (.obj [("op", .str "read"), ("path", .str (fname p)),
         ("expect", match d.files p with | some f => .str (bytesStr f) | none => .null)])
+    for v in views d do out := out.push v
   return some (.obj [("kind", .str "descriptors"), ("writeRange", .bool wr), ("cap", .ofNat cap), ("steps", .arr out.toList)])
 
 /-! ## Leases -/
@@ -179,7 +254,7 @@ def genLeaseCase : Gen (Option Json) := do
 
 def fixture : String :=
   fixtureText [("fixture", .str "process-files"), ("model", .str "Nimbus.Vfs.ProcessFiles"),
-      ("note", .str "descriptors: bytes are letters; open creates the file (O_CREAT); owner 0 = no lease; leases: a lease root is the resolved path; mutations check literal and resolved paths by overlap")]
+      ("note", .str "descriptors: bytes are letters; open creates the file (O_CREAT); read is a process holding nothing; readFd/readAs/statAs: the process's own pending writes on the path merged in (its handles in open order, the flush merge), other processes' not; pid 3 holds nothing; owner 0 = no lease; leases: a lease root is the resolved path; mutations check literal and resolved paths by overlap")]
     (runGen 0x50465331 (do
       let a ← casesOf 120 genDescCase
       let b ← casesOf 60 genLeaseCase

@@ -43,6 +43,7 @@ import {
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import {
@@ -722,9 +723,11 @@ export async function _rpcFsReadBatch(
       const entries: FsReadBatchEntry[] = [];
       for (const request of args) {
         try {
-          entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length, {
+          // N17: bytes still being imported are waited for, not failed.
+          const hydrated = (path: string) => (typeof self.getFilesystemAuthority === 'function' ? self.getFilesystemAuthority().hydrated(path) : Promise.resolve());
+          entries.push({ bytes: await readHydrating(hydrated, async () => fs.readRange(request.path, request.offset, request.length, {
             expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
-          }) });
+          })) });
         } catch (error) {
           entries.push({ error: readBatchEntryError(error) });
         }

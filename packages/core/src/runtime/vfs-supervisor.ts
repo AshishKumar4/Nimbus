@@ -14,7 +14,7 @@ export const FILESYSTEM_RPC_METHODS = {
   appendOnce: 'fsAppend', acknowledgeAppend: 'fsAppendAck', writeBatch: 'writeBatch',
   writeStream: 'writeBatchStream', acquireExclusiveMutation: 'fsAcquireExclusiveMutation',
   releaseExclusiveMutation: 'fsReleaseExclusiveMutation',
-} as const satisfies Record<Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe'>, string>;
+} as const satisfies Record<Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch'>, string>;
 
 type Method = keyof typeof FILESYSTEM_RPC_METHODS;
 export type FilesystemSupervisor = {

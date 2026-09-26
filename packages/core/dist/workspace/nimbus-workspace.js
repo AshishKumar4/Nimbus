@@ -26,7 +26,6 @@ import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
-import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
@@ -41,6 +40,7 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
+import { rehydrateGlobalPackages } from '../substrate/lifo/commands/system/lifo.js';
 import { registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
@@ -62,9 +62,11 @@ export class NimbusWorkspace {
     filesystem;
     runtimeLease;
     /**
-     * Credentialed and mount-aware. Acts as the session user, never as the
-     * kernel: a pid-less caller must not gain more authority than the shell it
-     * writes files for (see CRED_SESSION_USER in os-contracts.ts).
+     * The namespace as the session user sees it: a `VFS` (absolute paths), the
+     * shell process's own view, so every write passes the same lease check a
+     * command's does. Never the kernel's authority (see CRED_SESSION_USER in
+     * os-contracts.ts). Helpers such as readText, writeText and exists are
+     * vfs.ts free functions over it.
      */
     fs;
     /** The raw durable filesystem, for hosts that need uid-aware operations. */
@@ -104,7 +106,7 @@ export class NimbusWorkspace {
         this.commands = new SandboxCommandsImpl(shell, registry);
         // The shell's own process view: a host calling `.fs` acts as the
         // session user, never as the kernel.
-        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd(), vfs);
+        this.fs = shell.getVfs();
     }
     static async create(options) {
         if (options.fabric)
@@ -248,6 +250,15 @@ export class NimbusWorkspace {
                 }
             }
             await runtimes.rehydrate();
+            // Globally installed npm and lifo packages come back as commands, once,
+            // here: the workspace is composed with them registered (a failure
+            // leaves those commands out, and says so).
+            try {
+                await rehydrateGlobalPackages(new ProcessView(runtimeLease.fs), registry);
+            }
+            catch (error) {
+                console.error('[nimbus] global npm commands were not restored:', error);
+            }
             // The one `nimbus` verb: installs go through the manager, and a host with
             // application verbs supplies them — a bare workspace reports that it has
             // no session to address.

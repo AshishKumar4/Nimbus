@@ -28,7 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { StorageLedger } from '../runtime/storage-ledger.js';
+import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
@@ -58,6 +58,17 @@ export interface VfsOpenDescription {
     chown(uid: number, gid: number): void;
     utimes(atime: number, mtime: number): void;
     close(): void;
+    /**
+     * A description whose backend cannot write in place buffers its writes
+     * (VFS-PF-001): an append goes at the end as it stands at the flush,
+     * `flush` applies what is pending, and `pendingBytes` is what a process
+     * killed now would lose. Absent: every write is in place and durable.
+     */
+    writeAppend?(bytes: Uint8Array): number;
+    flush?(): void;
+    pendingBytes?(): number;
+    /** `file` with this description's pending writes applied, as flush applies them. */
+    applyPending?(file: Uint8Array): Uint8Array;
 }
 export interface VfsStat {
     dev: number;
@@ -1215,6 +1226,8 @@ export declare class SqliteVFS {
         snapshots: number;
         jobs: number;
         databaseBytes: number;
+        /** The session's storage ledger (N18): used, the limit, and its parts. */
+        ledger: StorageLedgerView;
     };
     /**
      * One page of snapshot `at`'s tree under `root`, after the relative path
@@ -1272,12 +1285,38 @@ export declare class SqliteVFS {
      * given nor stored, nothing is written and `want` lists what to send.
      * Files too large for one transaction stage across several.
      */
-    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>): {
+    importPage(dst: string, page: VfsExportPage, chunks?: Iterable<VfsExportChunk>, options?: {
+        lazy?: boolean;
+    }): {
         imported: number;
         want: string[];
         done: boolean;
+        pending: string[];
     };
     private importPageNow;
+    /**
+     * Rows for chunks a lazy import names without bytes (N17): hash and size,
+     * no data, state pending. Each is queued for collection too, so one that
+     * no committed row comes to name is not kept.
+     */
+    private insertPendingChunks;
+    /**
+     * Store the bytes of pending chunks (N17), each re-hashed first. A chunk
+     * whose bytes do not hash to its name is not stored and is reported in
+     * `invalid`; the rest of the batch is stored. A chunk that is not pending
+     * (stored already, or collected) is skipped.
+     */
+    hydrateChunks(chunks: Iterable<VfsExportChunk>): {
+        stored: string[];
+        invalid: string[];
+    };
+    /** Which of `hashes` (hex) are pending chunks (N17). */
+    pendingOf(hashes: readonly string[]): string[];
+    /**
+     * The pending chunks (N17) `path`'s bytes name, in the file's order (a
+     * hash once per file), as hex; none for a path with none, or no file.
+     */
+    pendingChunksOf(path: string): string[];
     /**
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
@@ -1586,6 +1625,12 @@ export declare class SqliteVFS {
      * database (content plus metadata, indexes and free pages) where the host
      * reports its size, else less the stored bytes.
      */
+    /**
+     * What df reports for the session's storage (N18): the limit, what the
+     * ledger counts as used (this database, every facet's, the images and
+     * reservations), and what a user may still write, the kernel's reserve
+     * left out, as ext4's df leaves out root's reserved blocks.
+     */
     storageUsage(): {
         size: number;
         used: number;
@@ -1747,4 +1792,17 @@ export declare class SqliteVFS {
         };
     };
 }
+/**
+ * A read of bytes a lazy import has not brought yet (N17): EIO naming the
+ * path, and marked, so an asynchronous caller can wait for them instead.
+ */
+export declare function pendingChunkError(path: string): Error & {
+    code: string;
+    nimbusPending: true;
+    path: string;
+};
+/** Whether `error` is a read of bytes still being imported. */
+export declare function isPendingChunkError(error: unknown): error is Error & {
+    path: string;
+};
 //# sourceMappingURL=sqlite-vfs.d.ts.map

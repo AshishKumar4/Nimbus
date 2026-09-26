@@ -19,14 +19,14 @@ def fixtures : List (String × String) :=
    ("node-visible-namespace.json", NodeCases.nsFixture),
    ("node-overlay.json", NodeCases.overlayFixture),
    ("composite-vfs.json", CompositeCases.fixture),
-   -- process-files.json (ProcessFilesCases.fixture): emitted again when the cutover adds its bridge (VFS-PF-001)
+   ("process-files.json", ProcessFilesCases.fixture),
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture),
+   ("n17-hydration.json", HydrationCases.fixture),
    ("quiesce.json", QuiesceCases.fixture),
    ("beneath.json", BeneathCases.fixture),
    ("n18-ledger.json", LedgerCases.fixture)]
    -- pipes.json (PipesCases.fixture): emitted with its bridge (RT-PIPE-001)
-   -- n17-hydration.json (HydrationCases.fixture): emitted again when its bridge exists (N17-001)
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"

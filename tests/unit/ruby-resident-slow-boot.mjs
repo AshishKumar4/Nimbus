@@ -56,6 +56,13 @@ const boot = async (stage, env = {}) => {
   elapse(60_000);
   await settle();
   assert.equal(state.boot, null, 'a program still loading has not booted yet, however long it has taken');
+  // The program writes while it loads, before it binds: at a fixed point of
+  // the boot, not after however many macrotasks the import took.
+  if (stage === 'stream') {
+    globalThis.__testWrite('stdout', 'loading\n');
+    globalThis.__testWrite('stderr', '__NIMBUS_RESUMED_true_1_0_nil\n');
+    globalThis.__testWrite('stderr', 'Ignoring debug\n');
+  }
   if (stage === 'bind' || stage === 'stream') globalThis.__testBind(8126);
   else globalThis.__testExit();
   await booting;
@@ -85,12 +92,7 @@ try {
     stderr: async (bytes) => { sent.push(['stderr', new TextDecoder().decode(bytes)]); },
     registerPort: async () => {},
   };
-  const streaming = boot('stream', { SUPERVISOR });
-  await settle();
-  globalThis.__testWrite('stdout', 'loading\n');
-  globalThis.__testWrite('stderr', '__NIMBUS_RESUMED_true_1_0_nil\n');
-  globalThis.__testWrite('stderr', 'Ignoring debug\n');
-  const streamed = await streaming;
+  const streamed = await boot('stream', { SUPERVISOR });
   assert.deepEqual(sent, [['stdout', 'loading\n'], ['stderr', 'Ignoring debug\n']], 'written output left the process before the boot answered');
   assert.equal(streamed.stdout, '', 'and the boot answer does not repeat it');
   assert.equal(streamed.stderr, '');

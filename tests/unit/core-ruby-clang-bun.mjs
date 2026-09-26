@@ -33,6 +33,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 const PACKAGES = process.env.NIMBUS_RUNTIME_PACKAGES;
 const dirs = PACKAGES
@@ -89,12 +90,12 @@ const ws = await NimbusWorkspace.create({
 // The read proves the seed carried the bytes; the write proves the local
 // supervisor carried them BACK, which is the half a sealed facet would lose.
 {
-  await ws.fs.writeFile('/home/user/note.txt', 'written by fs\n');
+  await writeText(ws.fs, '/home/user/note.txt', 'written by fs\n');
   const io = await ws.exec(
     'ruby -e \'puts File.read("note.txt").strip; File.write("from-ruby.txt", "written by ruby\\n")\'');
   assert.equal(io.exitCode, 0, `ruby failed: ${io.stderr}`);
   assert.equal(io.stdout, 'written by fs\n');
-  assert.equal(await ws.fs.readFile('/home/user/from-ruby.txt'), 'written by ruby\n');
+  assert.equal(await readText(ws.fs, '/home/user/from-ruby.txt'), 'written by ruby\n');
   console.log('  ok  ruby reads a file .fs wrote and writes one .fs reads back');
 }
 
@@ -105,7 +106,7 @@ const ws = await NimbusWorkspace.create({
 {
   const polling = ws.exec('ruby -e \'n = 0; until File.exist?("/home/user/ready"); n += 1; sleep 0.1; end; puts "ready after #{n > 0}"\'');
   await new Promise((resolve) => setTimeout(resolve, 1000));
-  await ws.fs.writeFile('/home/user/ready', 'x');
+  await writeText(ws.fs, '/home/user/ready', 'x');
   const woke = await Promise.race([polling, new Promise((resolve) => setTimeout(() => resolve(null), 15_000))]);
   assert.ok(woke, 'the polling program never saw the file a peer created while it slept');
   assert.equal(woke.exitCode, 0, `ruby failed: ${woke.stderr}`);
@@ -118,7 +119,7 @@ const ws = await NimbusWorkspace.create({
 // the process. A workspace owns none, so it is refused by name rather than run
 // as a one-shot that dies with the invocation. Same contract as `python x.py`.
 {
-  await ws.fs.writeFile('/home/user/server.rb', 'puts "never reached"\n');
+  await writeText(ws.fs, '/home/user/server.rb', 'puts "never reached"\n');
   const resident = await ws.exec('ruby server.rb');
   assert.equal(resident.exitCode, 1);
   assert.match(resident.stderr, /no process substrate/);
@@ -129,9 +130,9 @@ const ws = await NimbusWorkspace.create({
 // Two facet calls — clang -cc1 to an object, wasm-ld to a wasm — over a
 // filesystem built by value from the sysroot tar and the user's own sources.
 {
-  await ws.fs.writeFile('/home/user/greet.h', 'int total(int n);\n');
-  await ws.fs.writeFile('/home/user/greet.c', 'int total(int n) { int s = 0; for (int i = 1; i <= n; i++) s += i; return s; }\n');
-  await ws.fs.writeFile('/home/user/hello.c', `#include <stdio.h>
+  await writeText(ws.fs, '/home/user/greet.h', 'int total(int n);\n');
+  await writeText(ws.fs, '/home/user/greet.c', 'int total(int n) { int s = 0; for (int i = 1; i <= n; i++) s += i; return s; }\n');
+  await writeText(ws.fs, '/home/user/hello.c', `#include <stdio.h>
 #include "greet.h"
 int main(void) {
   printf("hello from clang, total=%d\\n", total(6));
@@ -154,13 +155,13 @@ int main(void) {
   // -c stops at the object file, which lands in the session filesystem.
   const objectOnly = await ws.exec('clang -c greet.c');
   assert.equal(objectOnly.exitCode, 0, `clang -c failed: ${objectOnly.stderr}`);
-  const object = await ws.fs.readFile('/home/user/greet.o', null);
+  const object = await readText(ws.fs, '/home/user/greet.o');
   assert.deepEqual(Array.from(object.slice(0, 4)), [0x00, 0x61, 0x73, 0x6d],
     'an object file is a wasm object');
   console.log('  ok  -c leaves an object file in the workspace filesystem');
 
   // A compile error is the compiler's, reported as the compiler reported it.
-  await ws.fs.writeFile('/home/user/broken.c', 'int main(void) { return undefined_symbol; }\n');
+  await writeText(ws.fs, '/home/user/broken.c', 'int main(void) { return undefined_symbol; }\n');
   const broken = await ws.exec('clang broken.c -o broken.wasm');
   assert.notEqual(broken.exitCode, 0, 'a program that does not compile must not exit 0');
   assert.match(broken.stderr, /undefined_symbol/);

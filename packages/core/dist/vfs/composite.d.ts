@@ -83,6 +83,14 @@ interface Mount {
     point: string;
     source: VfsSource;
     options: MountOptions;
+    /**
+     * st_dev of what is mounted here: an anonymous device number (0x10000 + n,
+     * as Linux gives a mount with no device of its own), clear of the small
+     * ids a SQLite engine reports. Null for the root, whose backend's own is kept.
+     */
+    dev: number | null;
+    /** Inode numbers for a backend that has none, by path, stable while mounted. */
+    inos: Map<string, number>;
 }
 interface Table {
     mounts: Map<string, Mount>;
@@ -97,6 +105,8 @@ interface Views {
 export declare function normalizePath(path: string): string;
 export declare class CompositeVFS implements VFS {
     private readonly table;
+    /** The last st_dev a mount was given. */
+    private nextDev;
     private readonly viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     private readonly viewed;
@@ -160,6 +170,8 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): SyncVFS;
     private resynthesize;
+    /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
+    writesInPlace(path: string): boolean;
     private route;
     private backend;
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
@@ -218,7 +230,21 @@ export declare class CompositeVFS implements VFS {
     private shadowed;
     /** ENOENT when `path` is shadowed. */
     private reachable;
+    /**
+     * The names the namespace itself puts in `dir` (mount points and the
+     * directories above them), as directory entries, whatever `dir`'s own
+     * backend holds.
+     */
+    mountedNames(dir: string): VfsDirent[];
+    /**
+     * An entry's identity in the namespace: st_dev is its mount's (the root
+     * keeps its backend's), and a backend that numbers no inodes gets numbers
+     * here, per path, stable while it stays mounted.
+     */
+    private identify;
     private statAt;
+    /** The stat of a resolved namespace path, before its identity is stamped. */
+    private statResolved;
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */
     private softStat;
     private absentOrThrow;

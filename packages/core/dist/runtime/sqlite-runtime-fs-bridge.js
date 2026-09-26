@@ -8,7 +8,7 @@ export class SqliteRuntimeFsBridge {
     rawVfs;
     scope;
     namespace;
-    mountedIno;
+    bufferedWriteBytes;
     synchronous = this;
     legacySymlinks;
     vfs;
@@ -16,11 +16,12 @@ export class SqliteRuntimeFsBridge {
     mounted;
     constructor(vfs, rawVfs, scope = createSqliteDescriptorScope(), namespace, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
-    mountedIno = () => 0) {
+    /** Bytes one buffered handle may hold before a write is EFBIG. */
+    bufferedWriteBytes = BUFFERED_WRITE_BYTES) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
-        this.mountedIno = mountedIno;
+        this.bufferedWriteBytes = bufferedWriteBytes;
         this.vfs = vfs;
         this.legacySymlinks = getSymlinkRegistry(rawVfs);
         this.mounted = namespace?.sync;
@@ -58,7 +59,7 @@ export class SqliteRuntimeFsBridge {
         const stat = mount.stat(path);
         if (stat === null)
             throw fsError('ENOENT', 'stat', path);
-        return runtimeStatOf(stat, this.mountedIno(path));
+        return runtimeStatOf(stat);
     }
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
     rootStat() {
@@ -76,7 +77,10 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ELOOP', 'stat', path);
         if (located.mount) {
             const stat = located.mount.stat(located.path, { follow: followSymlinks });
-            return stat === null ? null : runtimeStatOf(stat, this.mountedIno(located.path));
+            const viewed = stat !== null && stat.type === 'file' ? this.processView(located.mount, located.path) : undefined;
+            if (viewed)
+                return { ...runtimeStatOf(stat), size: viewed.byteLength };
+            return stat === null ? null : runtimeStatOf(stat);
         }
         const p = located.path;
         if (p === '')
@@ -132,13 +136,35 @@ export class SqliteRuntimeFsBridge {
         if (located === null)
             return null;
         try {
-            return located.mount ? located.mount.readFile(located.path) : this.vfs.readFile(located.path);
+            if (!located.mount)
+                return this.vfs.readFile(located.path);
+            return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
         }
         catch (error) {
             if (hasErrorCode(error, 'ENOENT'))
                 return null;
             throw error;
         }
+    }
+    /**
+     * A mounted file as this process sees it while it holds buffered writes to
+     * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
+     * of this process's descriptions of it applied, in open order. Undefined
+     * when it holds none pending: then the mount's own file is the answer.
+     * Another process's pending writes are never in it.
+     */
+    processView(mount, name) {
+        let file;
+        const seen = new Set();
+        for (const opened of this.scope.handles.values()) {
+            const node = opened.node;
+            if (seen.has(node) || node.applyPending === undefined || node.path() !== name || (node.pendingBytes?.() ?? 0) === 0)
+                continue;
+            seen.add(node);
+            file ??= mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name);
+            file = node.applyPending(file);
+        }
+        return file;
     }
     writeFile(path, bytes, options = {}) {
         const located = this.locateMutation(path, true, 'write');
@@ -169,6 +195,9 @@ export class SqliteRuntimeFsBridge {
             if (options.expectedEpoch !== undefined)
                 throw fsError('ESTALE', 'read', path);
             const mount = located.mount;
+            const viewed = this.processView(mount, located.path);
+            if (viewed)
+                return viewed.slice(offset, offset + length);
             if (mount.readRange)
                 return mount.readRange(located.path, offset, length);
             return mount.readFile(located.path).slice(offset, offset + length);
@@ -351,6 +380,11 @@ export class SqliteRuntimeFsBridge {
         if (!handle.flags.write)
             throw fsError('EBADF', 'write', handle.path);
         const node = this.description(handleId).node;
+        if (handle.flags.append && node.writeAppend) {
+            node.writeAppend(bytes);
+            handle.position += bytes.byteLength;
+            return bytes.byteLength;
+        }
         const start = handle.flags.append
             ? node.stat().size
             : offset == null ? handle.position : Math.max(0, offset);
@@ -376,12 +410,10 @@ export class SqliteRuntimeFsBridge {
             return located.mount.readdir(located.path).map((entry) => ({ name: entry.name, type: entry.type }));
         const p = located.path;
         const entries = new Map();
-        // What the namespace mounts directly in `/` (proc, dev, an embedder's) is listed with it.
-        if (p === '' && this.mounted) {
-            for (const entry of this.mounted.readdir('/')) {
-                if (this.namespace.composes('/' + entry.name))
-                    entries.set(entry.name, { name: entry.name, type: entry.type });
-            }
+        // What the namespace itself puts in `/` (proc, dev, an embedder's mounts) is listed with it.
+        if (p === '' && this.namespace) {
+            for (const entry of this.namespace.mountedNames('/'))
+                entries.set(entry.name, { name: entry.name, type: entry.type });
         }
         for (const entry of this.vfs.readdir(p)) {
             const type = entry.type === 'directory'
@@ -508,9 +540,10 @@ export class SqliteRuntimeFsBridge {
         this.vfs.symlink(target, p);
     }
     fsync(handleId) {
+        // SqliteVFS writes are synchronously durable before their calls return; a
+        // buffered mount handle flushes.
         if (handleId !== undefined)
-            this.description(handleId);
-        // SqliteVFS writes are synchronously durable before their calls return.
+            this.description(handleId).node.flush?.();
     }
     /**
      * Every per-path revision here is the caller's: `p` is its own name for a
@@ -824,12 +857,72 @@ export class SqliteRuntimeFsBridge {
             chown: (uid, gid) => mountOp(mount.chown, 'fchown', path)(name, uid, gid),
             utimes: (atime, mtime) => mountOp(mount.utimes, 'futimes', path)(name, atime, mtime), close: () => { },
         };
+        if (stat.type === 'file' && !this.namespace.writesInPlace(name))
+            this.buffer(node, mount, name, path);
         const handle = {
             id: this.scope.nextId++, path: name, flags: Object.freeze(flags),
             position: flags.append ? stat.size : 0, closed: false,
         };
         this.scope.handles.set(handle.id, { handle, node, refs: 1 });
         return { ...handle };
+    }
+    /**
+     * A mount that cannot write in place (no writeRange): the handle buffers
+     * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
+     * buffered), and a flush (fsync, the last close, the process's release)
+     * reads the file, applies them in order and writes it back.
+     */
+    buffer(node, mount, name, path) {
+        const pending = [];
+        let held = 0;
+        const take = (offset, bytes) => {
+            if (held + bytes.byteLength > this.bufferedWriteBytes)
+                throw fsError('EFBIG', 'write', path);
+            pending.push({ offset, bytes: bytes.slice() });
+            held += bytes.byteLength;
+            return bytes.byteLength;
+        };
+        // `file` with the pending writes applied in order (an append at the end
+        // as it then is): what a flush writes, and what this process reads.
+        const applyPending = (base) => {
+            // A copy: a backend may hand out its own buffer, which must not change before the flush.
+            let file = base.slice();
+            for (const write of pending) {
+                const at = write.offset ?? file.byteLength;
+                if (at + write.bytes.byteLength > file.byteLength) {
+                    const grown = new Uint8Array(at + write.bytes.byteLength);
+                    grown.set(file);
+                    file = grown;
+                }
+                file.set(write.bytes, at);
+            }
+            return file;
+        };
+        const flush = () => {
+            if (pending.length === 0)
+                return;
+            const file = applyPending(mount.stat(name) === null ? new Uint8Array(0) : mount.readFile(name));
+            pending.length = 0;
+            held = 0;
+            mount.writeFile(name, file);
+        };
+        // A read or fstat on the descriptor is this process's view of the file.
+        const mountedRead = node.read;
+        const mountedStat = node.stat;
+        node.read = (offset, length) => {
+            const viewed = this.processView(mount, name);
+            return viewed ? viewed.slice(offset, offset + length) : mountedRead(offset, length);
+        };
+        node.stat = () => {
+            const viewed = this.processView(mount, name);
+            return viewed ? { ...mountedStat(), size: viewed.byteLength } : mountedStat();
+        };
+        node.applyPending = applyPending;
+        node.write = take;
+        node.writeAppend = (bytes) => take(null, bytes);
+        node.flush = flush;
+        node.pendingBytes = () => held;
+        node.close = flush;
     }
     ensureParent(path) {
         const parent = parentVfsPath(path);
@@ -906,6 +999,8 @@ export class SqliteRuntimeFsBridge {
 }
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
+/** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
+export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp(fn, syscall, path) {
     if (typeof fn !== 'function')
@@ -927,11 +1022,12 @@ function removeTree(mount, path) {
     }
 }
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
-function runtimeStatOf(stat, fallbackIno) {
+/** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
+function runtimeStatOf(stat) {
     const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
     const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
     return {
-        dev: 0, ino: stat.ino ?? fallbackIno, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
+        dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
         ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
         mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: 0,
     };

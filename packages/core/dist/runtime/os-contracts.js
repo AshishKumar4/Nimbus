@@ -48,6 +48,44 @@ export function requireVfsCred(value, source) {
         umask,
     };
 }
+/**
+ * N17: a launch that reads synchronously waits for the paths it names (its
+ * program, and each argument resolved against `cwd`; one that names nothing
+ * pending costs nothing) to be hydrated. The error message when they are
+ * not, by the deadline; null when the launch may start.
+ */
+export async function gateSyncLaunch(gate, cwd, program, argv) {
+    if (typeof gate.gateLaunch !== 'function')
+        return null;
+    try {
+        await gate.gateLaunch(launchNamedPaths(cwd, program, argv));
+        return null;
+    }
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+}
+/** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
+export function launchNamedPaths(cwd, program, argv) {
+    const anchor = (path) => {
+        const joined = path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`;
+        const out = [];
+        for (const part of joined.split('/')) {
+            if (part === '' || part === '.')
+                continue;
+            if (part === '..')
+                out.pop();
+            else
+                out.push(part);
+        }
+        return `/${out.join('/')}`;
+    };
+    const named = program === null ? [] : [anchor(program)];
+    for (const arg of argv)
+        if (arg !== '' && !arg.startsWith('-'))
+            named.push(anchor(arg));
+    return named;
+}
 export const NIMBUS_OS_NAME = 'nimbus';
 export const NIMBUS_ABI_TARGET = 'wasm32-wasi-nimbus';
 export const NIMBUS_ABI_ID = NIMBUS_ABI_TARGET;

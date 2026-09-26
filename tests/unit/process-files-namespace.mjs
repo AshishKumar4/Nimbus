@@ -46,6 +46,28 @@ assert.equal(listed.exitCode, 0, listed.stderr);
 assert.match(listed.stdout, /^hello\.txt\s+written\.txt\nby the process/);
 assert.match(listed.stdout, /memory \/mnt\/data/);
 
+// Identity is the namespace's: every mount has its own st_dev (the root keeps
+// the SQLite engine's), and a backend that numbers no inodes gets numbers from the namespace,
+// distinct per path and stable across calls and processes.
+{
+  const inoless = Object.assign(new MemoryVFS({ uid: 1000, gid: 1000 }), {});
+  inoless.writeFile('/a', new Uint8Array([1]));
+  inoless.writeFile('/b', new Uint8Array([2]));
+  const bare = { ...inoless, stat: (path, options) => { const st = inoless.stat(path, options); if (st === null) return null; const { ino, dev, ...rest } = st; return rest; } };
+  Object.setPrototypeOf(bare, inoless);
+  bare.sync = bare;
+  ws.filesystem.vfs.mount('/mnt/bare', bare);
+  const one = files.bind({ pid: 4243, cred: USER });
+  const two = files.bind({ pid: 4244, cred: USER });
+  const devs = ['/home/user', '/mnt/data/hello.txt', '/mnt/bare/a'].map((path) => one.stat(path).dev);
+  assert.equal(devs[0], ws.vfs.deviceId, 'the root is the engine\'s device');
+  assert.equal(new Set(devs).size, 3, 'each mount its own st_dev');
+  const [a, b] = [one.stat('/mnt/bare/a').ino, one.stat('/mnt/bare/b').ino];
+  assert.ok(a > 0 && b > 0 && a !== b, 'distinct, never 0');
+  assert.equal(two.stat('/mnt/bare/a').ino, a, 'stable across processes');
+  ws.filesystem.vfs.unmount('/mnt/bare');
+}
+
 // A released process is gone for good.
 await files.releaseProcess(4242);
 assert.throws(() => files.bind({ pid: 4242, cred: USER }), { code: 'ESTALE' });
