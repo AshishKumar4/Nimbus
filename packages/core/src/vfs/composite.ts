@@ -571,7 +571,10 @@ export class CompositeVFS implements VFS {
     // and `..` pops the prefix resolved so far, so it applies after a link.
     // A mount point and a directory above one are directories. A component
     // under a mount this principal lacks is not read: the op answers ENXIO.
-    // Inside a mounted backend the backend follows its own links.
+    // Links resolve in this namespace whichever backend holds them (Linux):
+    // an absolute target from this view's root, a relative one from the
+    // link's directory, so `..` at a mount root reaches the mount point's
+    // parent. Every hop is walked again with this view's credential.
     const walk = (components: readonly string[], hops: number): Awaitable<string> => {
       const resolved: string[] = [];
       const lastIndex = components.length - 1;
@@ -583,14 +586,23 @@ export class CompositeVFS implements VFS {
           resolved.push(component);
           const prefix = `/${resolved.join('/')}`;
           const final = i === lastIndex;
-          if (this.isStructural(prefix)) continue;
+          const at = i;
+          if (this.isStructural(prefix)) {
+            // Lookup through a mount point, or a directory above one, needs
+            // search permission on what is there, as on Linux: the mounted
+            // root, or the directory a backend holds at that path.
+            if (final) continue;
+            const mount = this.table.mounts.get(prefix);
+            return then(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
+              if (held !== null && !this.permits(held, 1)) throw new VfsError('EACCES', 'permission denied', input);
+              return step(at + 1);
+            });
+          }
           if (this.absentOn(prefix) !== null) continue;
           const route = this.route(prefix);
-          const inRoot = route.mount.point === ROOT_POINT;
-          if (final && (!inRoot || !follow)) continue;
+          if (final && !follow) continue;
           const ops = this.ops(route, sync) as SyncVFS;
-          const canLink = inRoot && typeof ops.readlink === 'function';
-          const at = i;
+          const canLink = typeof ops.readlink === 'function';
           const look = (): Awaitable<VfsStat | null> => {
             try {
               const out = ops.stat(route.rel, { follow: !canLink });
@@ -614,6 +626,7 @@ export class CompositeVFS implements VFS {
                 throw new VfsError('ENOENT', 'no such file or directory', input);
               }
               if (stat.type !== 'directory') throw new VfsError('ENOTDIR', 'not a directory', input);
+              if (!this.permits(stat, 1)) throw new VfsError('EACCES', 'permission denied', input);
             }
             return step(at + 1);
           });
@@ -623,6 +636,45 @@ export class CompositeVFS implements VFS {
       return step(0);
     };
     return walk(String(input).split('/'), 0);
+  }
+
+  /**
+   * The directory a backend holds at a path above a mount point, or null
+   * when it holds none there (then the namespace makes one: EPOCH_STAT).
+   */
+  private heldDirectory(path: string, sync: boolean): Awaitable<VfsStat | null> {
+    const route = this.route(path);
+    const held = (stat: VfsStat | null): VfsStat | null => (stat !== null && stat.type === 'directory' ? stat : null);
+    // A file above it (ENOTDIR) or no stat at all (ENOTSUP): the backend holds no directory there.
+    const unsupported = (error: unknown): null => { if (isVfsError(error, 'ENOTSUP') || isVfsError(error, 'ENOTDIR')) return null; throw error; };
+    try {
+      const out = this.softStat(this.ops(route, sync), route.rel, false);
+      return isPromise(out) ? out.then(held, unsupported) : held(out);
+    } catch (error) {
+      return unsupported(error);
+    }
+  }
+
+  /** A mounted backend's root, or null when it cannot stat it. */
+  private mountRoot(mount: Mount, point: string, sync: boolean): Awaitable<VfsStat | null> {
+    const ops = this.ops({ mount, path: point, rel: '/' }, sync) as SyncVFS;
+    try {
+      const out = ops.stat('/', { follow: true });
+      return isPromise(out) ? out.catch(() => null) : out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
+  private permits(stat: VfsStat, want: number): boolean {
+    const cred = this.viewer.cred;
+    if (cred === null || cred.uid === 0 || stat.mode === undefined) return true;
+    const mode = stat.mode;
+    const bits = cred.uid === stat.uid
+      ? (mode >> 6) & 7
+      : cred.gid === stat.gid || (cred.groups ?? []).includes(stat.gid ?? -1) ? (mode >> 3) & 7 : mode & 7;
+    return (bits & want) === want;
   }
 
   /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
@@ -675,10 +727,16 @@ export class CompositeVFS implements VFS {
       // and times are the backend's (chmod of /tmp reaches it, so stat must
       // too). Only a backend that cannot stat its own root (a container that
       // derives stat from a parent listing) gets a synthesized directory, as
-      // does a directory that exists only above a mount point.
+      // does a directory above a mount point that no backend holds; one a
+      // backend holds is that backend's (its mode governs lookup through it).
       if (path !== ROOT_POINT && this.isStructural(path)) {
         const mount = this.table.mounts.get(path);
-        if (mount === undefined) return EPOCH_STAT;
+        if (mount === undefined) {
+          return then(this.heldDirectory(path, sync), (held) => {
+            if (held === null) return EPOCH_STAT;
+            return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode } : held;
+          });
+        }
         const ops = this.ops({ mount, path, rel: '/' }, sync);
         const own = (): Awaitable<VfsStat | null> => {
           try {

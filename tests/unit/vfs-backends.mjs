@@ -189,6 +189,57 @@ function workspace() {
   ]);
 }
 
+// ── permissions above a mount point ───────────────────────────────────────
+{
+  // FormalModelsLane perm.mjs: a mount under a private directory. Linux
+  // lookup needs search permission on every directory it passes, including
+  // those above and at a mount point, and a directory the root holds reports
+  // the root's stat, not a synthesized 0755.
+  const harness = createSqliteVfsTestHarness();
+  const root = sqliteFiles(new SqliteVFS(harness.sql, harness.ctx), CRED_KERNEL);
+  const inner = createSqliteVfsTestHarness();
+  const pc = sqliteFiles(new SqliteVFS(inner.sql, inner.ctx), CRED_KERNEL);
+  root.mkdir('/h/pc', { recursive: true });
+  root.writeFile('/h/own', enc.encode('x'));
+  root.chown('/h', 1, 1);
+  root.chmod('/h', 0o700);
+  pc.writeFile('/f', enc.encode('secret'));
+  pc.chmod('/f', 0o644);
+  pc.mkdir('/sub');
+  pc.writeFile('/sub/g', enc.encode('g'));
+  pc.chmod('/sub', 0o700);
+  const vfs = new CompositeVFS(root);
+  vfs.mount('/h/pc', pc);
+  const stranger = vfs.as({ uid: 2, gid: 2, groups: [2], umask: 0o022 });
+  const owner = vfs.as({ uid: 1, gid: 1, groups: [1], umask: 0o022 });
+  assert.equal(((await stranger.stat('/h')).mode & 0o7777).toString(8), '700', "the root's own stat, not a made-up 0755");
+  assert.equal((await stranger.stat('/h')).uid, 1);
+  assert.equal(await code(() => stranger.readdir('/h')), 'EACCES');
+  assert.equal(await code(() => stranger.readFile('/h/own')), 'EACCES');
+  assert.equal(await code(() => stranger.readFile('/h/pc/f')), 'EACCES', 'no search permission on /h');
+  assert.equal(await code(() => stranger.stat('/h/pc/f')), 'EACCES');
+  assert.equal(await code(() => stranger.readdir('/h/pc')), 'EACCES');
+  assert.equal(await code(() => stranger.writeFile('/h/pc/new', enc.encode('x'))), 'EACCES');
+  assert.equal(await code(() => stranger.sync.readFile('/h/pc/f')), 'EACCES', 'and synchronously');
+  // An earlier component's ENOENT/ENOTDIR still comes first.
+  assert.equal(await code(() => stranger.readFile('/nope/h/pc/f')), 'ENOENT');
+  // The owner, and the kernel, pass.
+  assert.equal(await readText(owner, '/h/pc/f'), 'secret');
+  assert.equal(await readText(vfs.as(CRED_KERNEL), '/h/pc/f'), 'secret');
+  // Inside the mount its backend's permissions hold as before.
+  assert.equal(await code(() => owner.readFile('/h/pc/sub/g')), 'EACCES');
+  // A directory above a mount that the root does not hold is the namespace's own.
+  vfs.mount('/made/up', new MemoryVFS());
+  assert.equal(((await stranger.stat('/made')).mode & 0o7777).toString(8), '755');
+  assert.deepEqual((await stranger.readdir('/made')).map((e) => e.name), ['up']);
+  // A mount point's own root governs lookup through it.
+  const locked = new MemoryVFS();
+  locked.writeFile('/in', enc.encode('i'));
+  locked.chmod('/', 0o700);
+  vfs.mount('/locked', locked);
+  assert.equal(await code(() => stranger.readFile('/locked/in')), 'EACCES');
+}
+
 // ── the namespace's feed ──────────────────────────────────────────────────
 {
   const namesOf = (feed) => {

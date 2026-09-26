@@ -185,6 +185,15 @@ export declare class CompositeVFS implements VFS {
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     private resolve;
+    /**
+     * The directory a backend holds at a path above a mount point, or null
+     * when it holds none there (then the namespace makes one: EPOCH_STAT).
+     */
+    private heldDirectory;
+    /** A mounted backend's root, or null when it cannot stat it. */
+    private mountRoot;
+    /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
+    private permits;
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     private walkMiss;
     /**

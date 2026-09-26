@@ -401,6 +401,58 @@ const cases = {
     assert.equal(await code(vfs.readdir('/loop/..')), 'ELOOP');
   },
 
+  async 'links resolve in the namespace, from any mount (Linux): /proc/self/cwd and /dev/stdin'() {
+    const root = new MemoryVFS();
+    root.mkdir('/home/user/app', { recursive: true });
+    root.writeFile('/home/user/app/x.txt', bytes('in the cwd'));
+    const proc = new MemoryVFS();
+    proc.mkdir('/7/fd', { recursive: true });
+    proc.symlink('/home/user/app', '/7/cwd');
+    proc.symlink('7', '/self');
+    proc.writeFile('/7/fd/0', bytes('stdin bytes'));
+    const dev = new MemoryVFS();
+    dev.symlink('/proc/self/fd/0', '/stdin');
+    dev.symlink('../proc/self/fd/0', '/stdin-rel');
+    dev.symlink('/dev/loop2', '/loop1');
+    dev.symlink('/dev/loop1', '/loop2');
+    const vfs = new CompositeVFS(root);
+    vfs.mount('/proc', proc);
+    vfs.mount('/dev', dev);
+    // An absolute target starts at the namespace's root, not the mount's.
+    assert.equal(await readText(vfs, '/proc/self/cwd/x.txt'), 'in the cwd');
+    assert.deepEqual(await names(vfs, '/proc/self/cwd'), ['x.txt']);
+    assert.equal(await readText(vfs, '/dev/stdin'), 'stdin bytes');
+    // A relative one from the link's directory: `..` at /dev's root is /.
+    assert.equal(await readText(vfs, '/dev/stdin-rel'), 'stdin bytes');
+    assert.equal(dec.decode(vfs.sync.readFile('/dev/stdin')), 'stdin bytes', 'and synchronously');
+    // stat follows; lstat names the link.
+    assert.equal((await vfs.stat('/dev/stdin')).type, 'file');
+    assert.equal((await vfs.stat('/dev/stdin', { follow: false })).type, 'symlink');
+    // A write through the link lands where it points.
+    await vfs.writeFile('/proc/self/cwd/y.txt', bytes('written'));
+    assert.equal(dec.decode(root.readFile('/home/user/app/y.txt')), 'written');
+    // A cycle is ELOOP.
+    let error;
+    try { await vfs.readFile('/dev/loop1'); } catch (e) { error = e; }
+    assert.ok(isVfsError(error, 'ELOOP'), String(error));
+  },
+
+  async 'every hop is walked with the caller\'s credential'() {
+    const root = new MemoryVFS();
+    root.mkdir('/private', { recursive: true });
+    root.writeFile('/private/secret', bytes('s'));
+    root.chmod('/private', 0o700);
+    const dev = new MemoryVFS();
+    dev.symlink('/private/secret', '/leak');
+    const vfs = new CompositeVFS(root);
+    vfs.mount('/dev', dev);
+    const stranger = vfs.as({ uid: 2, gid: 2, groups: [2], umask: 0o022 });
+    let error;
+    try { await stranger.readFile('/dev/leak'); } catch (e) { error = e; }
+    assert.ok(isVfsError(error, 'EACCES'), `a link does not skip the search check: ${error}`);
+    assert.equal(await readText(vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }), '/dev/leak'), 's', 'the owner passes');
+  },
+
   async 'views no one holds are not retained'() {
     const vfs = new CompositeVFS(new MemoryVFS());
     const probe = new WeakRef(vfs.as({ uid: 1, gid: 1, groups: [1], umask: 0o022 }, 'agent-0'));
