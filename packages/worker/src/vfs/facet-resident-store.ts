@@ -468,7 +468,8 @@ function __residentAdmit(result) {
   // stops answering until a listing restores it.
   // An answer naming no path changes no name, with or without stats.
   const namespaced = __nsOk && !!result && !result.poison
-    && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0));
+    && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
+    && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || __nsDescribes(entry.stat)));
   if (!namespaced) __nsMarkReady(sql, false);
   if (!result || result.poison) {
     // A delta admission has no absolute listing to vouch for a row, so a
@@ -946,6 +947,22 @@ function __nsMarkReady(sql, ready) {
   __nsOk = !!ready;
 }
 
+/**
+ * Whether a stat from the authority describes its name: a type, and the
+ * mode, owner and group every permission check reads. One without them is
+ * no record. Stored, its missing fields would become zeros, a root-owned
+ * mode-0 file the authority never reported. The namespace then stops
+ * answering (as for a delta without stats) until a listing that does
+ * describe every name restores it.
+ */
+function __nsDescribes(stat) {
+  if (!stat || typeof stat.type !== "string") return false;
+  for (const field of ["mode", "uid", "gid"]) {
+    if (stat[field] === null || stat[field] === undefined || !Number.isInteger(Number(stat[field]))) return false;
+  }
+  return true;
+}
+
 function __nsPut(sql, k, stat, rev, target) {
   const [parent, name] = __nsSplit(k);
   const kind = __nsKindCode(stat.type);
@@ -1323,7 +1340,7 @@ async function __nsRelist(supervisor, dir) {
     if (listed.next === null || listed.next === undefined) done = true;
     else after = listed.next;
   }
-  if (!done) { __nsMarkReady(sql, false); return; }
+  if (!done || !seen.every((entry) => __nsDescribes(entry.stat))) { __nsMarkReady(sql, false); return; }
   // Exactly what the listing has under the directory: a name it no longer
   // shows (hidden now, or gone) leaves, one it shows is written.
   __nsDeleteTree(sql, dir, false);
@@ -1744,9 +1761,12 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // after a truncated listing they do not: a path in an unwalked page could
   // have moved since the held cursor and would never be reported again.
   if (judgeable) {
-    __nsReplace(sql, listing.names);
+    // A listing that cannot describe every name restores the rows it vouches
+    // for and the cursor, but not the namespace (see __nsDescribes).
+    const describable = listing.names.every((entry) => __nsDescribes(entry.stat));
+    if (describable) __nsReplace(sql, listing.names);
     __residentWriteCursor(sql, listing.cursor);
-    __nsMarkReady(sql, true);
+    __nsMarkReady(sql, describable);
     __residentUndated = false;
     __residentSealed = false;
     __residentSealReason = "";

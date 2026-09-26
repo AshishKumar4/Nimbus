@@ -3662,28 +3662,7 @@ const __fsMod = (() => {
       _residencySatisfied(absPath);
       return _statLadder(absPath) !== undefined;
     }
-    if (_metadata(absPath) !== undefined) { _residencySatisfied(absPath); return true; }
-    if (__vfsBundle && k in __vfsBundle) { _residencySatisfied(absPath); return true; }
-    if (__vfsWrites && k in __vfsWrites) { _residencySatisfied(absPath); return true; }
-    if (__vfsDirs && k in __vfsDirs) { _residencySatisfied(absPath); return true; }
-    // W2.5b root-cause fix: consult the manifest BEFORE falling back to
-    // the O(N) bundle-prefix scan. The manifest is uncapped and always
-    // reflects the real directory shape, even when the file content for
-    // a directory's contents was excluded by the 4 MiB / 500-file content
-    if (__vfsManifest) {
-      if (k in __vfsManifest) { _residencySatisfied(absPath); return true; }
-      // Path may be a file listed by its parent's manifest entry.
-      const slash = k.lastIndexOf("/");
-      const parent = slash >= 0 ? k.slice(0, slash) : "";
-      const name = slash >= 0 ? k.slice(slash + 1) : k;
-      const sib = __vfsManifest[parent];
-      if (sib && sib.indexOf(name) !== -1) { _residencySatisfied(absPath); return true; }
-    }
-    // Last-resort: bundle dir entries
-    if (__vfsBundle && (k in __vfsBundle || __residentAnyUnder(k + "/"))) {
-      _residencySatisfied(absPath);
-      return true;
-    }
+    if (_metadata(absPath) !== undefined || _nameHeld(k)) { _residencySatisfied(absPath); return true; }
     // Nothing found — which is only an answer if the enclosing directory was
     // enumerated. Node's existsSync never throws, so the false below is
     // provisional: the miss is recorded, the listing that settles it is pulled
@@ -3695,6 +3674,28 @@ const __fsMod = (() => {
     }
     _residencySatisfied(absPath);
     return false;
+  }
+
+  /**
+   * Whether the view holds evidence that a name exists without a record of
+   * it: bytes under it (the module map, this process's writes), a directory
+   * entry, a launch listing that names it, or bytes beneath it. Evidence of
+   * existence says nothing about who owns it or who may write it.
+   */
+  function _nameHeld(k) {
+    if (__vfsBundle && k in __vfsBundle) return true;
+    if (__vfsWrites && k in __vfsWrites) return true;
+    if (__vfsDirs && k in __vfsDirs) return true;
+    // The manifest before the O(N) bundle-prefix scan: it is uncapped and
+    // always reflects the real directory shape, even when the content of a
+    // directory's files was excluded by the content cap.
+    if (__vfsManifest) {
+      if (k in __vfsManifest) return true;
+      const slash = k.lastIndexOf("/");
+      const sib = __vfsManifest[slash >= 0 ? k.slice(0, slash) : ""];
+      if (sib && sib.indexOf(slash >= 0 ? k.slice(slash + 1) : k) !== -1) return true;
+    }
+    return !!(__vfsBundle && __residentAnyUnder(k + "/"));
   }
 
   // ── statSync ──
@@ -3715,6 +3716,12 @@ const __fsMod = (() => {
     // back with news the caller did not want. A PROVISIONAL not-there is not an
     // answer, so the unmapped branch deliberately leaves the record standing.
     if (stat !== undefined) { _residencySatisfied(absPath); return stat; }
+    // The view knows the name is there but holds no record of it (a listing
+    // named it, bytes arrived for it, the authority's answer did not describe
+    // it). ENOENT would be a lie: a program told "not there" creates it. The
+    // record is one async stat away; throwIfNoEntry does not suppress this,
+    // because the path is not missing.
+    if (!_nsActive() && _nameHeld(_strip(absPath))) throw _refuseUnmapped(absPath, p, "stat", "fs.promises.stat");
     // Nothing in the view describes the path, and there are two very different
     // reasons for that. Only one of them means the file is not there.
     if (_absenceIsKnown(absPath)) _residencySatisfied(absPath);
