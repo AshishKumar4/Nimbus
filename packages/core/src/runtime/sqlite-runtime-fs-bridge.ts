@@ -943,10 +943,10 @@ const MAX_LINK_HOPS = 40;
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located = { mount: SyncVFS; path: string } | { mount?: undefined; path: string };
 
-/** A mounted backend's optional operation, or ENOTSUP when it has none. */
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 
+/** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, syscall: string, path: RuntimeFsPath): F {
   if (typeof fn !== 'function') throw fsError('ENOTSUP', syscall, path);
   return fn;

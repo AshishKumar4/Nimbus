@@ -957,9 +957,9 @@ export class SqliteRuntimeFsBridge {
 }
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
-/** A mounted backend's optional operation, or ENOTSUP when it has none. */
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
+/** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp(fn, syscall, path) {
     if (typeof fn !== 'function')
         throw fsError('ENOTSUP', syscall, path);

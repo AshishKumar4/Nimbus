@@ -174,7 +174,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
-/** A mounted backend's optional operation, or ENOTSUP when it has none. */
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
 export {};
