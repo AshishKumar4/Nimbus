@@ -444,6 +444,23 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeOps.copy_stays_in_target
 #print axioms Nimbus.Vfs.CompositeOps.mount_point_mode
 
+/-! ## Nimbus/Vfs/CompositePerm.lean -/
+
+#print axioms Nimbus.Vfs.CompositePerm.never_widens
+#print axioms Nimbus.Vfs.CompositePerm.backend_refusal_stands
+#print axioms Nimbus.Vfs.CompositePerm.structural_mono
+#print axioms Nimbus.Vfs.CompositePerm.cPre_search
+#print axioms Nimbus.Vfs.CompositePerm.search_checked
+#print axioms Nimbus.Vfs.CompositePerm.held_described
+#print axioms Nimbus.Vfs.CompositePerm.privileged_passes
+#print axioms Nimbus.Vfs.CompositePerm.synth_meta_open
+#print axioms Nimbus.Vfs.CompositePerm.cPre_congr
+#print axioms Nimbus.Vfs.CompositePerm.confined
+#print axioms Nimbus.Vfs.CompositePerm.step_frame
+#print axioms Nimbus.Vfs.CompositePerm.the_perm_trace
+#print axioms Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
+#print axioms Nimbus.Vfs.CompositePerm.a_link_in_a_mount_stays_in_it
+
 /-! ## Nimbus/Vfs/FastCdc.lean -/
 
 #print axioms Nimbus.Vfs.FastCdc.scanFrom_bounds

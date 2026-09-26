@@ -202,7 +202,7 @@ def genCase : Gen (Option Json) := do
           if !t.isEmpty then pins := pins ++ [← pick (t.map (·.1))]
       let mode ← below 3
       capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
-        if mode == 0 then none else some (if mode == 1 then 448 else 493), pins⟩)]
+        if mode == 0 then none else some (if mode == 1 then 511 else 493), pins⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
@@ -250,7 +250,7 @@ def directedX : Json := Id.run do
      (1, [(["f"], .file 5), (["d"], .dir), (["d", "x"], .file 6), (["d", "y"], .file 7), (["e"], .dir), (["e", "z"], .file 8)]),
      (2, [(["g"], .file 9)])]
   let capList : List (Backend × Caps) :=
-    [(0, fullCaps 0), (1, ⟨false, false, false, some 448, [["d", "x"]]⟩), (2, ⟨true, true, true, none, []⟩)]
+    [(0, fullCaps 0), (1, ⟨false, false, false, some 511, [["d", "x"]]⟩), (2, ⟨true, true, true, none, []⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let steps : List (Principal × (Op ⊕ X)) :=
     [(0, .inr (.statMode "/")), (0, .inr (.statMode "/m1")), (0, .inr (.statMode "/m2")),
