@@ -41,7 +41,7 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
+async function boot({ inBundle = false, inPlan = true, tmp = false, overrides = {} } = {}) {
   const authority = createAuthority();
   const root = authority.rawVfs.as(CRED_KERNEL);
   if (tmp) {
@@ -57,7 +57,7 @@ async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
   root.mkdir(ROOT_DIR, { mode: 0o755 });
   root.chmod(ROOT_DIR, 0o755);
   root.writeFile(`${ROOT_DIR}/conf`, 'c');
-  const { supervisor, log } = facetSupervisor(authority);
+  const { supervisor, log } = facetSupervisor(authority, overrides);
   // The spawn-time tables a launch ships without a metadata row: what the
   // shims used to fill in with the reader's own ownership.
   const bundle = inBundle ? { [ROOT_FILE]: '{"root":true}' } : {};
@@ -220,6 +220,45 @@ await runScenarios(import.meta.path, {
     await probe.resume(() => null);
     await sleep(50);
     assert.deepEqual(await probe.resume(() => probe.own(`/${APP}/private.txt`)), kept, 'after it');
+  },
+
+  async 'a peer name the authority will not describe is asked for once, and the own write is not refused'() {
+    // lstat answers without owner, group or mode for the peer's new name: the
+    // view keeps no record of it, does not re-ask at every barrier, and does
+    // not list it as a name without a record (which would refuse the
+    // process's own write to it as a miss).
+    let lstats = 0;
+    const { authority, probe } = await boot({
+      overrides: {
+        lstat: async (path) => {
+          if (String(path).endsWith('/peer.txt')) { lstats++; return { type: 'file', size: 1 }; }
+          return authority.host.supervisorOp({ op: 'lstat', args: [path] });
+        },
+      },
+    });
+    authority.kfs.writeFile(`${APP}/peer.txt`, 'p');
+    await probe.resume(() => null);
+    await probe.resume(() => null);
+    assert.ok(lstats <= 1, `asked ${lstats} times over two barriers`);
+    assert.equal(probe.t(() => probe.fs.writeFileSync(`/${APP}/peer.txt`, 'mine')), undefined, 'its own write is not refused as a miss');
+  },
+
+  async 'a peer name whose lstat fails is not asked again at every barrier'() {
+    let lstats = 0;
+    const { authority, probe } = await boot({
+      overrides: {
+        lstat: async (path) => {
+          if (String(path).endsWith('/peer.txt')) { lstats++; throw new Error('Network connection lost.'); }
+          return authority.host.supervisorOp({ op: 'lstat', args: [path] });
+        },
+      },
+    });
+    authority.kfs.writeFile(`${APP}/peer.txt`, 'p');
+    await probe.resume(() => null);
+    await probe.resume(() => null);
+    await probe.resume(() => null);
+    assert.ok(lstats <= 1, `asked ${lstats} times over three barriers`);
+    assert.equal(probe.t(() => probe.fs.writeFileSync(`/${APP}/peer.txt`, 'mine')), undefined);
   },
 
   async "the process's own new file and directory show its real ownership and umask"() {
