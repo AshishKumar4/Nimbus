@@ -748,7 +748,7 @@ requirements:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
   N18-001:
-    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete.
+    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete; reservations count in used and are never evicted, a reservation is admitted like a write, a draw within its reservation is always admitted and changes no total, and a reservation shrinks only by its own draws, its release, releaseAll or a restart, whatever else runs.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Ledger.sumB_nil
@@ -772,6 +772,10 @@ requirements:
       - Nimbus.Vfs.Ledger.admitted_within
       - Nimbus.Vfs.Ledger.refuses_when_over
       - Nimbus.Vfs.Ledger.an_over_report_refuses
+      - Nimbus.Vfs.Ledger.sumB_setR
+      - Nimbus.Vfs.Ledger.draw_within
+      - Nimbus.Vfs.Ledger.reservation_kept
+      - Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
     tsRefs:
       - packages/core/src/runtime/storage-ledger.ts#StorageLedger
     refinement:

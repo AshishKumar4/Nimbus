@@ -666,6 +666,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.sumB_cons
 #print axioms Nimbus.Vfs.Ledger.sumB_append
 #print axioms Nimbus.Vfs.Ledger.sumB_split
+#print axioms Nimbus.Vfs.Ledger.sumB_setR
 #print axioms Nimbus.Vfs.Ledger.sumB_filter_le
 #print axioms Nimbus.Vfs.Ledger.fitDrop_some
 #print axioms Nimbus.Vfs.Ledger.fitDrop_none
@@ -683,6 +684,9 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.facet_row_stays
 #print axioms Nimbus.Vfs.Ledger.a_ledger_trace
 #print axioms Nimbus.Vfs.Ledger.an_over_report_refuses
+#print axioms Nimbus.Vfs.Ledger.draw_within
+#print axioms Nimbus.Vfs.Ledger.reservation_kept
+#print axioms Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
 
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/
 
