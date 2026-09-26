@@ -23,6 +23,7 @@ import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
@@ -341,20 +342,16 @@ export class ProcessView implements VFS {
     return stat === null ? null : vfsStatOf(stat);
   }
   /** Whether anything is at `path` (links followed): access(F_OK). */
-  async exists(path: string): Promise<boolean> {
-    return (await this.stat(path)) !== null;
-  }
-  async isFile(path: string): Promise<boolean> { return (await this.stat(path))?.type === 'file'; }
-  async isDirectory(path: string): Promise<boolean> { return (await this.stat(path))?.type === 'directory'; }
+  async exists(path: string): Promise<boolean> { return await exists(this, path); }
+  async isFile(path: string): Promise<boolean> { return await isFile(this, path); }
+  async isDirectory(path: string): Promise<boolean> { return await isDirectory(this, path); }
   /** Whether `path` itself is a symbolic link. */
-  async isSymlink(path: string): Promise<boolean> { return (await this.stat(path, { follow: false }))?.type === 'symlink'; }
+  async isSymlink(path: string): Promise<boolean> { return await isSymlink(this, path); }
   /** The file's bytes as UTF-8 text. */
-  async readFileString(path: string): Promise<string> {
-    return new TextDecoder().decode(await this.readFile(path));
-  }
+  async readFileString(path: string): Promise<string> { return await readText(this, path); }
   async readFile(path: string): Promise<Uint8Array> {
     const bytes = await this.call(path, () => this.process.readFile(path));
-    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    if (bytes === null) throw new VfsError('ENOENT', path);
     return bytes;
   }
   /**
@@ -395,13 +392,13 @@ export class ProcessView implements VFS {
   async rename(from: string, to: string): Promise<void> { await this.call(from, () => this.process.rename(from, to)); }
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
     const bytes = await this.call(path, () => this.process.readRange(path, offset, length));
-    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    if (bytes === null) throw new VfsError('ENOENT', path);
     return bytes;
   }
   /** A ranged read that neither consults nor fills the session's content cache. */
   async readRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array> {
     const bytes = await this.call(path, () => this.process.readRange(path, offset, length, { cached: false }));
-    if (bytes === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    if (bytes === null) throw new VfsError('ENOENT', path);
     return bytes;
   }
   async writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void> {
@@ -436,7 +433,7 @@ export class ProcessView implements VFS {
     await this.call(path, async () => {
       if (uid === null || gid === null) {
         const stat = await this.process.stat(path);
-        if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+        if (stat === null) throw new VfsError('ENOENT', path);
         uid ??= stat.uid;
         gid ??= stat.gid;
       }
@@ -470,7 +467,7 @@ export class ProcessView implements VFS {
   /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once. */
   async readArrayBufferUncached(path: string): Promise<ArrayBuffer> {
     const stat = await this.stat(path);
-    if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+    if (stat === null) throw new VfsError('ENOENT', path);
     const buffer = new ArrayBuffer(stat.size);
     const result = new Uint8Array(buffer);
     for (let offset = 0; offset < result.length;) {

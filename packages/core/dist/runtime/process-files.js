@@ -19,6 +19,7 @@ import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { createSqliteDescriptorScope, SqliteRuntimeFsBridge, } from './sqlite-runtime-fs-bridge.js';
@@ -318,21 +319,17 @@ export class ProcessView {
         return stat === null ? null : vfsStatOf(stat);
     }
     /** Whether anything is at `path` (links followed): access(F_OK). */
-    async exists(path) {
-        return (await this.stat(path)) !== null;
-    }
-    async isFile(path) { return (await this.stat(path))?.type === 'file'; }
-    async isDirectory(path) { return (await this.stat(path))?.type === 'directory'; }
+    async exists(path) { return await exists(this, path); }
+    async isFile(path) { return await isFile(this, path); }
+    async isDirectory(path) { return await isDirectory(this, path); }
     /** Whether `path` itself is a symbolic link. */
-    async isSymlink(path) { return (await this.stat(path, { follow: false }))?.type === 'symlink'; }
+    async isSymlink(path) { return await isSymlink(this, path); }
     /** The file's bytes as UTF-8 text. */
-    async readFileString(path) {
-        return new TextDecoder().decode(await this.readFile(path));
-    }
+    async readFileString(path) { return await readText(this, path); }
     async readFile(path) {
         const bytes = await this.call(path, () => this.process.readFile(path));
         if (bytes === null)
-            throw new VfsError('ENOENT', 'no such file or directory', path);
+            throw new VfsError('ENOENT', path);
         return bytes;
     }
     /**
@@ -376,14 +373,14 @@ export class ProcessView {
     async readRange(path, offset, length) {
         const bytes = await this.call(path, () => this.process.readRange(path, offset, length));
         if (bytes === null)
-            throw new VfsError('ENOENT', 'no such file or directory', path);
+            throw new VfsError('ENOENT', path);
         return bytes;
     }
     /** A ranged read that neither consults nor fills the session's content cache. */
     async readRangeUncached(path, offset, length) {
         const bytes = await this.call(path, () => this.process.readRange(path, offset, length, { cached: false }));
         if (bytes === null)
-            throw new VfsError('ENOENT', 'no such file or directory', path);
+            throw new VfsError('ENOENT', path);
         return bytes;
     }
     async writeRange(path, offset, bytes) {
@@ -422,7 +419,7 @@ export class ProcessView {
             if (uid === null || gid === null) {
                 const stat = await this.process.stat(path);
                 if (stat === null)
-                    throw new VfsError('ENOENT', 'no such file or directory', path);
+                    throw new VfsError('ENOENT', path);
                 uid ??= stat.uid;
                 gid ??= stat.gid;
             }
@@ -458,7 +455,7 @@ export class ProcessView {
     async readArrayBufferUncached(path) {
         const stat = await this.stat(path);
         if (stat === null)
-            throw new VfsError('ENOENT', 'no such file or directory', path);
+            throw new VfsError('ENOENT', path);
         const buffer = new ArrayBuffer(stat.size);
         const result = new Uint8Array(buffer);
         for (let offset = 0; offset < result.length;) {

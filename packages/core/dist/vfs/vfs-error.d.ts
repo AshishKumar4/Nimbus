@@ -20,4 +20,6 @@ export declare function isVfsError(error: unknown, code?: VfsErrorCode): error i
  * returned as it is.
  */
 export declare function toVfsError(error: unknown, path: string): unknown;
+/** strerror(3) for a code: the text GNU coreutils print. */
+export declare const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>>;
 //# sourceMappingURL=vfs-error.d.ts.map

@@ -1,6 +1,6 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 const spec = {
     parents: { type: 'boolean', short: 'p' },
 };
@@ -18,7 +18,7 @@ const command = async (ctx) => {
         }
         catch (e) {
             if (isVfsError(e)) {
-                await ctx.stderr.write(`mkdir: ${arg}: ${e.message}\n`);
+                await ctx.stderr.write(`mkdir: cannot create directory '${arg}': ${VFS_STRERROR[e.code]}\n`);
                 exitCode = 1;
             }
             else {

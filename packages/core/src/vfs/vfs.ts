@@ -193,12 +193,12 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** Whether anything is at `path`. */
-export async function exists(vfs: VFS, path: string): Promise<boolean> {
+export async function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
   return (await vfs.stat(path)) !== null;
 }
 
 /** The file as UTF-8 text. */
-export async function readText(vfs: VFS, path: string): Promise<string> {
+export async function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string> {
   return decoder.decode(await vfs.readFile(path));
 }
 
@@ -237,7 +237,7 @@ export async function statOrThrow<S extends VfsStat>(
   options?: { follow?: boolean },
 ): Promise<S> {
   const stat = await vfs.stat(path, options);
-  if (stat === null) throw new VfsError('ENOENT', 'no such file or directory', path);
+  if (stat === null) throw new VfsError('ENOENT', path);
   return stat;
 }
 

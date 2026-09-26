@@ -52,7 +52,7 @@ export function fileTypeChar(mode, type) {
 export async function statOrThrow(vfs, path, options) {
     const stat = await vfs.stat(path, options);
     if (stat === null)
-        throw new VfsError('ENOENT', 'no such file or directory', path);
+        throw new VfsError('ENOENT', path);
     return stat;
 }
 /** The entry at `path` itself, a link not followed (lstat); ENOENT when nothing is there. */

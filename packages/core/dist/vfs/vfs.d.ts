@@ -200,9 +200,9 @@ export interface SyncVFS {
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Uint8Array;
 }
 /** Whether anything is at `path`. */
-export declare function exists(vfs: VFS, path: string): Promise<boolean>;
+export declare function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
 /** The file as UTF-8 text. */
-export declare function readText(vfs: VFS, path: string): Promise<string>;
+export declare function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string>;
 /** Write `text` as UTF-8. */
 export declare function writeText(vfs: VFS, path: string, text: string, options?: {
     mode?: number;
