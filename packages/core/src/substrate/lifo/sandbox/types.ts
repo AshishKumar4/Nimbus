@@ -3,8 +3,7 @@ import type { CommandRegistry } from '../commands/registry.js';
 import type { Kernel } from '../kernel/index.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
-import type { FileType, MountProvider } from '../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 
 // ─── Sandbox Options ───
 

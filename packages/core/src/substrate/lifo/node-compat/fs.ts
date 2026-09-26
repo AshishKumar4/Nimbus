@@ -1,6 +1,6 @@
 import type { NodeFilesystem as VFS } from './filesystem.js';
 
-import type { Stat as VfsStat } from '../kernel/vfs/types.js';
+import type { RuntimeVfsStat as VfsStat } from '../../../runtime/os-contracts.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';

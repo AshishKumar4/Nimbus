@@ -124,7 +124,6 @@ export class NimbusWorkspace {
         if (filesystem.engine !== vfs)
             throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
         const kernel = new Kernel();
-        kernel.initFilesystem();
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.

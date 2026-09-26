@@ -2,7 +2,7 @@ import type { Command } from '../commands/types.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { Kernel } from '../kernel/index.js';
 import type { Shell } from '../shell/Shell.js';
-import type { FileType } from '../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 export interface RunOptions {
     /** Working directory for this command */
     cwd?: string;

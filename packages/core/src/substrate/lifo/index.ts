@@ -29,35 +29,8 @@ export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
 // Bridge
 export { Bridge } from './kernel/network/Bridge.js';
 
-// VFS
-export { VFS, VFSError, ErrorCode } from './kernel/vfs/index.js';
-export { getMimeType, getFileCategory, isBinaryMime } from './kernel/vfs/index.js';
-export { NativeFsProvider } from './kernel/vfs/index.js';
-export type {
-	INode,
-	Stat,
-	Dirent,
-	FileType,
-	ErrorCodeType,
-	VirtualProvider,
-	MountProvider,
-	NativeFsModule,
-	VFSWatchEvent,
-	VFSWatchListener,
-	VFSEventType,
-} from './kernel/vfs/index.js';
-
-// Blob storage & content store
-export { MemoryBlobStore, hashBytes } from './kernel/storage/index.js';
-export { ContentStore, CHUNK_THRESHOLD, CHUNK_SIZE } from './kernel/storage/index.js';
-export type { BlobStore } from './kernel/storage/index.js';
-
-// Persistence
-export { PersistenceManager } from './kernel/persistence/index.js';
-export { MemoryPersistenceBackend } from './kernel/persistence/index.js';
-export type { PersistenceBackend } from './kernel/persistence/index.js';
-export { serialize, deserialize } from './kernel/persistence/index.js';
-export type { SerializedNode } from './kernel/persistence/index.js';
+// Filesystem: the namespace is core/src/vfs (CompositeVFS), bound by ProcessFiles.
+export { getMimeType, getFileCategory, isBinaryMime } from './utils/mime.js';
 
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
@@ -88,10 +61,6 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
-
-// Service manager
-export type { UnitFile } from './kernel/unit-parser.js';
-export { parseUnitFile } from './kernel/unit-parser.js';
 
 // Shell
 export { Shell } from './shell/Shell.js';

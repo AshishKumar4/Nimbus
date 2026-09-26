@@ -4,7 +4,6 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 
 const h = createSqliteVfsTestHarness();
@@ -142,13 +141,11 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   h2.db.close();
 }
 
-// A kernel mount is reached only through a confined path: neither `..` nor an
+// A mount (/dev) is reached only through a confined path: neither `..` nor an
 // absolute path inside a capability can step out of its root sideways.
 {
   const h3 = createSqliteVfsTestHarness();
   const raw3 = new SqliteVFS(h3.sql, h3.ctx);
-  const kernel = new Kernel();
-  kernel.initFilesystem();
   const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   const root = raw3.as(CRED_KERNEL);
   root.mkdir('home/user/app', { recursive: true, mode: 0o755 });

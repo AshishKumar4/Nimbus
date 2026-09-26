@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import type { FileType } from '../../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../../vfs/vfs.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { BOLD, BLUE, RESET } from '../../utils/colors.js';

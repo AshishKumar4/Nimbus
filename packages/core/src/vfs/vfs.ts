@@ -16,7 +16,7 @@
 
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 
-import { VfsError } from './vfs-error.js';
+import { isVfsError, VfsError } from './vfs-error.js';
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -192,9 +192,23 @@ export interface SyncVFS {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * What a probe sees at `path`: null when nothing is there, including a path
+ * that runs through a file (ENOTDIR is a structural miss, as `test -e`
+ * answers it); a denial or any other failure still throws.
+ */
+async function probe(vfs: Pick<VFS, 'stat'>, path: string, follow: boolean): Promise<VfsStat | null> {
+  try {
+    return await vfs.stat(path, { follow });
+  } catch (error) {
+    if (isVfsError(error, 'ENOTDIR')) return null;
+    throw error;
+  }
+}
+
 /** Whether anything is at `path`. */
 export async function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
-  return (await vfs.stat(path)) !== null;
+  return (await probe(vfs, path, true)) !== null;
 }
 
 /** The file as UTF-8 text. */
@@ -251,17 +265,17 @@ export async function lstatOrThrow<S extends VfsStat>(
 
 /** Whether `path` is a directory (links followed). */
 export async function isDirectory(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
-  return (await vfs.stat(path))?.type === 'directory';
+  return (await probe(vfs, path, true))?.type === 'directory';
 }
 
 /** Whether `path` is a regular file (links followed). */
 export async function isFile(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
-  return (await vfs.stat(path))?.type === 'file';
+  return (await probe(vfs, path, true))?.type === 'file';
 }
 
 /** Whether `path` itself is a symbolic link. */
 export async function isSymlink(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
-  return (await vfs.stat(path, { follow: false }))?.type === 'symlink';
+  return (await probe(vfs, path, false))?.type === 'symlink';
 }
 
 /** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */

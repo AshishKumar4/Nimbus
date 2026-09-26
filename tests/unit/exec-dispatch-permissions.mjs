@@ -6,8 +6,8 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -25,9 +25,7 @@ root.writeFile('home/user/public.sh', '#!/bin/sh\necho public\n', { mode: 0o755 
 root.mkdir('home/user/hidden', { mode: 0o700 });
 root.writeFile('home/user/hidden/traversal.sh', '#!/bin/sh\necho traversal\n', { mode: 0o755 });
 
-const vfs = new VFS();
-vfs.mount('/etc', new SqliteVFSProvider(sqlite, 'etc'));
-vfs.mount('/home', new SqliteVFSProvider(sqlite, 'home'));
+const files = new ProcessFiles(sqlite);
 
 const registry = new CommandRegistry();
 const dispatched = [];
@@ -50,7 +48,7 @@ async function run(path, cred, args = []) {
     args,
     env: {},
     cwd: '/home/user',
-    vfs: vfs.as(cred),
+    vfs: files.view({ pid: 7, cred }),
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,

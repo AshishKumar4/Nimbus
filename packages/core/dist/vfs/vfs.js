@@ -13,12 +13,27 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
-import { VfsError } from './vfs-error.js';
+import { isVfsError, VfsError } from './vfs-error.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+/**
+ * What a probe sees at `path`: null when nothing is there, including a path
+ * that runs through a file (ENOTDIR is a structural miss, as `test -e`
+ * answers it); a denial or any other failure still throws.
+ */
+async function probe(vfs, path, follow) {
+    try {
+        return await vfs.stat(path, { follow });
+    }
+    catch (error) {
+        if (isVfsError(error, 'ENOTDIR'))
+            return null;
+        throw error;
+    }
+}
 /** Whether anything is at `path`. */
 export async function exists(vfs, path) {
-    return (await vfs.stat(path)) !== null;
+    return (await probe(vfs, path, true)) !== null;
 }
 /** The file as UTF-8 text. */
 export async function readText(vfs, path) {
@@ -61,13 +76,13 @@ export async function lstatOrThrow(vfs, path) {
 }
 /** Whether `path` is a directory (links followed). */
 export async function isDirectory(vfs, path) {
-    return (await vfs.stat(path))?.type === 'directory';
+    return (await probe(vfs, path, true))?.type === 'directory';
 }
 /** Whether `path` is a regular file (links followed). */
 export async function isFile(vfs, path) {
-    return (await vfs.stat(path))?.type === 'file';
+    return (await probe(vfs, path, true))?.type === 'file';
 }
 /** Whether `path` itself is a symbolic link. */
 export async function isSymlink(vfs, path) {
-    return (await vfs.stat(path, { follow: false }))?.type === 'symlink';
+    return (await probe(vfs, path, false))?.type === 'symlink';
 }

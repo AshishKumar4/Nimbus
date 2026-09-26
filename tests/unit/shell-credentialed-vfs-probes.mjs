@@ -2,9 +2,9 @@
 // The VFS view a credentialed command actually receives.
 //
 // `registerUnixCommands` binds the durable coreutils to a SqliteVFS, but the
-// interpreter overrides `ctx.vfs` per command with `kernel.vfs.as(cred)` — a
-// lifo VFS, not a SqliteVFS view. The coreutils call `CredentialedVfs` methods
-// on whatever arrives, so the two views have to answer the same questions.
+// interpreter gives each command ProcessFiles' view of the namespace. The
+// coreutils call the same questions of whatever arrives, so both have to
+// answer them alike.
 //
 // They did not. `touch` reads
 //
@@ -23,7 +23,9 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { memoryFiles } from './lib/test-box.mjs';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-cred-vfs-probes-'));
 
@@ -80,34 +82,26 @@ try {
 // must not be launderable into a quiet `false`, or a traverse-x check becomes
 // advisory. This is the same split `SqliteVFS.probeInode` makes.
 {
-  const vfs = new VFS();
-  vfs.mkdir('/home/user', { recursive: true });
-  vfs.writeFile('/home/user/file.txt', 'x');
+  const { root, view: vfs, files } = memoryFiles();
+  root.writeFile('home/user/file.txt', 'x');
 
-  assert.equal(vfs.isFile('/home/user/file.txt'), true);
-  assert.equal(vfs.isDirectory('/home/user/file.txt'), false);
-  assert.equal(vfs.isDirectory('/home/user'), true);
-  assert.equal(vfs.isFile('/home/user'), false);
-  assert.equal(vfs.isFile('/home/user/absent.txt'), false, 'a missing path is not a file');
-  assert.equal(vfs.isDirectory('/home/user/absent.txt'), false, 'a missing path is not a directory');
+  assert.equal(await vfs.isFile('/home/user/file.txt'), true);
+  assert.equal(await vfs.isDirectory('/home/user/file.txt'), false);
+  assert.equal(await vfs.isDirectory('/home/user'), true);
+  assert.equal(await vfs.isFile('/home/user'), false);
+  assert.equal(await vfs.isFile('/home/user/absent.txt'), false, 'a missing path is not a file');
+  assert.equal(await vfs.isDirectory('/home/user/absent.txt'), false, 'a missing path is not a directory');
   assert.equal(
-    vfs.isDirectory('/home/user/file.txt/under'),
+    await vfs.isDirectory('/home/user/file.txt/under'),
     false,
     'descending through a file is a structural miss, not a throw',
   );
 
-  const denied = new VFS();
-  denied.mkdir('/mnt', { recursive: true });
-  denied.mount('/mnt/locked', {
-    exists: () => true,
-    stat: () => {
-      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    },
-    readFile: () => new Uint8Array(),
-    readdir: () => [],
-  });
-  assert.throws(
-    () => denied.isDirectory('/mnt/locked/thing'),
+  const locked = new MemoryVFS();
+  locked.stat = () => { throw new VfsError('EACCES', 'permission denied'); };
+  files.vfs.mount('/mnt/locked', locked);
+  await assert.rejects(
+    () => vfs.isDirectory('/mnt/locked/thing'),
     /EACCES/,
     'a denial propagates instead of degrading to false',
   );

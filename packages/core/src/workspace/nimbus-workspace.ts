@@ -34,7 +34,7 @@ import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
-import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
 import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH,
@@ -268,7 +268,6 @@ export class NimbusWorkspace {
     const filesystem = options.filesystem ?? new ProcessFiles(vfs);
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     const kernel = new Kernel();
-    kernel.initFilesystem();
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.

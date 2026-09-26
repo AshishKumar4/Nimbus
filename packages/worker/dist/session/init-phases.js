@@ -15,8 +15,7 @@
  *                (cwd, env, mounts, scrollback). Pure SQL reads;
  *                sets up locals consumed by later phases.
  *   - build:     Phase B — constructing Kernel + Shell + registry +
- *                installing 60+ commands + wiring SqliteVFSProvider
- *                mounts. Most CPU-intensive phase.
+ *                installing 60+ commands. Most CPU-intensive phase.
  *   - wire:      Phase W — attaching the WebSocketTerminal to the
  *                Shell, replaying persisted scrollback into the WS.
  *                This is the phase B'.5 will be able to re-run on

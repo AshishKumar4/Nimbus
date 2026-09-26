@@ -52,7 +52,7 @@ try {
       cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
       env: {},
       cwd: '/home/user',
-      vfs: ws.kernel.vfs,
+      vfs: ws.filesystem.view({ pid: 1, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }),
       stdout: { write: (s) => { out += s; } },
       stderr: { write: () => {} },
       signal: new AbortController().signal,

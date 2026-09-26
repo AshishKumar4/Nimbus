@@ -1,16 +1,12 @@
-import type { NimbusFilesystemAuthority, NimbusFilesystemBinding, RuntimeFsBridge, RuntimeVfsStat, VfsCred } from '../runtime/os-contracts.js';
-import { VFS } from '../substrate/lifo/kernel/vfs/index.js';
-import type { Stat } from '../substrate/lifo/kernel/vfs/types.js';
-export type ShellFilesystem = NimbusFilesystemAuthority | VFS;
-export type ExecutionStat = Stat & Partial<Pick<RuntimeVfsStat, 'dev' | 'ino' | 'nlink' | 'atime' | 'uid' | 'gid'>>;
-export declare function bindExecutionFs(filesystem: ShellFilesystem, binding: NimbusFilesystemBinding): ExecutionFs;
-/** Host-side work over a credentialed lease that is released when the work settles. */
-export declare function withHostFilesystem<T>(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, use: (fs: ExecutionFs) => Promise<T>): Promise<T>;
-/** Normalizes command I/O without copying files or owning a mount table. */
+import type { RuntimeFsBridge, RuntimeVfsStat } from '../runtime/os-contracts.js';
+export type ExecutionStat = RuntimeVfsStat;
+/**
+ * The facet manager's view of a process's bridge (slice N of the cutover
+ * moves it to the bridge itself; commands use ProcessFiles' view).
+ */
 export declare class ExecutionFs {
-    readonly bridge: RuntimeFsBridge | VFS;
-    constructor(bridge: RuntimeFsBridge | VFS);
-    get local(): VFS | null;
+    readonly bridge: RuntimeFsBridge;
+    constructor(bridge: RuntimeFsBridge);
     revision(path?: string): Promise<number>;
     /** Whole-file read that never pins the content in the session LRU. */
     readFileUncached(path: string): Promise<Uint8Array>;
@@ -36,18 +32,18 @@ export declare class ExecutionFs {
     readdir(path: string): Promise<import("../runtime/os-contracts.js").RuntimeVfsDirEntry[]>;
     readdirStat(path: string): Promise<{
         name: string;
-        type: import("../substrate/lifo/index.js").FileType;
+        dev: number;
+        ino: number;
+        nlink: number;
+        type: import("../runtime/os-contracts.js").RuntimeFileType;
         size: number;
         ctime: number;
+        atime: number;
         mtime: number;
         mode: number;
-        uid?: number;
-        gid?: number;
-        mime?: string;
-        dev?: number | undefined;
-        ino?: number | undefined;
-        nlink?: number | undefined;
-        atime?: number | undefined;
+        uid: number;
+        gid: number;
+        revision: number;
     }[]>;
     mkdir(path: string, options?: {
         recursive?: boolean;
@@ -57,7 +53,7 @@ export declare class ExecutionFs {
     rmdir(path: string): Promise<void>;
     rename(from: string, to: string): Promise<void>;
     copyFile(from: string, to: string): Promise<void>;
-    /** Copy a tree by reference; EXDEV when the bridge cannot (a kernel VFS, a mount). */
+    /** Copy a tree by reference; EXDEV when the bridge cannot (a mount). */
     copyTree(from: string, to: string, options?: {
         preserve?: boolean;
     }): Promise<number>;

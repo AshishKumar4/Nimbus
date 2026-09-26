@@ -3126,21 +3126,8 @@ function mkDiff(vfs) {
     };
 }
 /**
- * shell compatibility (2026-05-11): POSIX rm with proper -f semantics.
- *
- * The original rm implementation called `statOrThrow(r.vfs, ...)` and caught `isVfsError(e)`.
- * Our SqliteVFSProvider's stat method delegates to SqliteVFS.stat which
- * throws raw `Error("ENOENT: ...")` — NOT VFSError. That rm path
- * therefore falls through to `else throw e`, the error propagates up,
- * and executeCommand returns exit 1.
- *
- * Real-world impact: every `rm -rf <nonexistent> && ...` short-circuits.
- * The most common cleanup idiom in shell scripts.
- *
- * Fix: register rm in the registry's `commands` map. Treat -f silently when target is
- * missing (return 0). Handle both files (unlink) and directories
- * (rmdir recursive when -r). Translate raw errors so the unix-command
- * contract is honoured.
+ * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
+ * directory tree, and a failure is reported with the POSIX text.
  */
 /** The single-character backslash escapes `echo -e` and `printf` both expand. */
 const BACKSLASH_ESCAPES = {

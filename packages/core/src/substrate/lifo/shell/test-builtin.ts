@@ -6,7 +6,7 @@ import type { WordPart } from './types.js';
 import { expandWord, type ExpandContext } from './expander.js';
 import { globMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
-import { S_IFCHR, S_IFMT } from '../kernel/vfs/types.js';
+import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 
 /**

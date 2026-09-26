@@ -1658,38 +1658,4 @@ export declare class SqliteVFS {
         };
     };
 }
-export declare class SqliteVFSProvider {
-    private raw;
-    private vfs;
-    private prefix;
-    constructor(vfs: SqliteVFS, prefix: string, cred?: VfsCred);
-    as(cred: VfsCred): SqliteVFSProvider;
-    private resolve;
-    readFile(sub: string): Uint8Array;
-    readFileString(sub: string): string;
-    lstat(sub: string): VfsStat;
-    readlink(sub: string): string;
-    symlink(target: string, sub: string): void;
-    utimes(sub: string, atimeMs: number, mtimeMs: number): void;
-    readRange(sub: string, offset: number, length: number): Uint8Array;
-    writeFile(sub: string, content: string | Uint8Array): void;
-    writeRange(sub: string, offset: number, bytes: Uint8Array): void;
-    truncate(sub: string, size: number): void;
-    exists(sub: string): boolean;
-    access(sub: string, mode: number): void;
-    stat(sub: string): VfsStat;
-    readdir(sub: string): {
-        name: string;
-        type: VfsInodeKind;
-    }[];
-    unlink(sub: string): void;
-    mkdir(sub: string, opts?: {
-        recursive?: boolean;
-    }): void;
-    rmdir(sub: string): void;
-    rename(o: string, n: string): void;
-    copyFile(s: string, d: string): void;
-    chmod(sub: string, mode: number): void;
-    chown(sub: string, uid: number | null, gid: number | null): void;
-}
 //# sourceMappingURL=sqlite-vfs.d.ts.map

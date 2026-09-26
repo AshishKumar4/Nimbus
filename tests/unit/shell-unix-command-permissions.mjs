@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
@@ -15,10 +14,8 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = rawVfs.as(CRED_KERNEL);
-// The kernel owns the virtual mounts (/dev, /proc); the authority resolves a
-// caller's path against them before falling through to session storage.
-const kernel = new Kernel();
-kernel.initFilesystem();
+// The namespace has /dev and /proc mounted; a caller's path resolves there
+// before it reaches session storage.
 const authority = new ProcessFiles(rawVfs);
 const filesystemFor = cred => new ProcessView(authority.bind({ pid: cred.uid === 0 ? 72 : 71, cred }));
 

@@ -7,17 +7,8 @@ export { VETHPair } from './kernel/network/tunnel/VETHPair.js';
 export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
 // Bridge
 export { Bridge } from './kernel/network/Bridge.js';
-// VFS
-export { VFS, VFSError, ErrorCode } from './kernel/vfs/index.js';
-export { getMimeType, getFileCategory, isBinaryMime } from './kernel/vfs/index.js';
-export { NativeFsProvider } from './kernel/vfs/index.js';
-// Blob storage & content store
-export { MemoryBlobStore, hashBytes } from './kernel/storage/index.js';
-export { ContentStore, CHUNK_THRESHOLD, CHUNK_SIZE } from './kernel/storage/index.js';
-// Persistence
-export { PersistenceManager } from './kernel/persistence/index.js';
-export { MemoryPersistenceBackend } from './kernel/persistence/index.js';
-export { serialize, deserialize } from './kernel/persistence/index.js';
+// Filesystem: the namespace is core/src/vfs (CompositeVFS), bound by ProcessFiles.
+export { getMimeType, getFileCategory, isBinaryMime } from './utils/mime.js';
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
 // Factory commands
@@ -40,7 +31,6 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
-export { parseUnitFile } from './kernel/unit-parser.js';
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';

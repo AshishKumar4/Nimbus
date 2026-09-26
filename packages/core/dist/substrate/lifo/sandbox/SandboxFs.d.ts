@@ -1,6 +1,6 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
-import type { FileType } from '../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
  * Sync VFS behind async interface future-proofs for async persistence.

@@ -1,6 +1,6 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
-import type { FileType } from '../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 import { resolve, dirname } from '../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
 import type { TarEntry } from '../utils/archive.js';
