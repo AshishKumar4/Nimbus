@@ -9,7 +9,7 @@
  * cache over it can see a change. Errors become VfsError with the engine's
  * code.
  */
-import { ROOT_DIRECTORY_MODE } from './sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE } from './sqlite-vfs.js';
 import { toVfsError, VfsError } from './vfs-error.js';
 function absolute(key) {
     return key.startsWith('/') ? key : `/${key}`;
@@ -24,6 +24,7 @@ function revisionOf(epoch, gen) {
 }
 function statOf(stat, epoch) {
     return {
+        dev: stat.dev,
         type: stat.type,
         size: stat.size,
         mtimeMs: stat.mtime,
@@ -83,7 +84,7 @@ export class SqliteFiles {
     stat(path, options) {
         // The root has no row: it is 0755 root:root by definition.
         if (path.replace(/\/+/g, '') === '') {
-            return { type: 'directory', size: 0, mtimeMs: 0, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0, revision: `${this.view.epoch}:0` };
+            return { dev: this.engine.deviceId, ino: ROOT_INODE, type: 'directory', size: 0, mtimeMs: 0, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0, revision: `${this.view.epoch}:0` };
         }
         try {
             return statOf(options?.follow === false ? this.view.lstat(path) : this.view.stat(path), this.view.epoch);

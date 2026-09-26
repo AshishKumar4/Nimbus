@@ -53,11 +53,11 @@ import {
 import {
   createSqliteDescriptorScope,
   fsError,
-  MAX_LINK_HOPS,
   modeAllows,
   runtimeStatOf,
   SqliteRuntimeFsBridge,
   type SqliteDescriptorScope,
+  walkBeneath,
 } from './sqlite-runtime-fs-bridge.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
@@ -351,6 +351,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       opened.refs--;
     }
     scope.handles.clear();
+    this.awaitedDescriptors.get(scope)?.opened.clear();
     scope.closed = true;
     scope.abort.abort();
     for (const unsubscribe of scope.subscriptions) unsubscribe();
@@ -403,7 +404,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // Every other method is the guarded bridge's own (forwarded by the proxy below).
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
-    return new AwaitingProcessBridge(guarded, this.vfs.as(cred), () => this.engine.revision(), cred, awaited) as unknown as RuntimeFsBridge;
+    return new AwaitingProcessBridge(guarded, this.vfs.as(cred), () => this.engine.revision(), cred, awaited, scope, signal) as unknown as RuntimeFsBridge;
   }
 }
 
@@ -437,6 +438,8 @@ class AwaitingProcessBridge {
     private readonly clock: () => number,
     private readonly cred: VfsCred,
     private readonly descriptors: AwaitedDescriptors,
+    private readonly scope: SqliteDescriptorScope,
+    private readonly signal?: AbortSignal,
   ) {
     return new Proxy(this, {
       get(target, key, receiver) {
@@ -449,16 +452,23 @@ class AwaitingProcessBridge {
 
   get synchronous(): RuntimeSynchronousFs { return this.bridge; }
 
+  /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
+  private live(): void {
+    this.signal?.throwIfAborted();
+    if (this.scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+  }
+
   /**
    * The guarded bridge's answer, as it gives it (synchronously when it can),
    * or on an asynchronous mount's refusal, `awaited`.
    */
   private either<T>(paths: RuntimeFsPath[], sync: () => T | Promise<T>, awaited: () => Promise<T>): T | Promise<T> {
     // Relative to one of this face's own descriptors: the bridge has never seen it.
-    if (paths.some((path) => typeof path !== 'string' && 'directory' in path && this.awaited.has(path.directory))) return awaited();
+    const settled = () => { this.live(); return awaited(); };
+    if (paths.some((path) => typeof path !== 'string' && 'directory' in path && this.awaited.has(path.directory))) return settled();
     const refused = (error: unknown) => {
       if (!isAsyncMountRefusal(error)) throw error;
-      return awaited();
+      return settled();
     };
     let answer: T | Promise<T>;
     try {
@@ -471,10 +481,9 @@ class AwaitingProcessBridge {
 
 
   /**
-   * `path` as an absolute namespace path. A path beneath a root (a WASI
-   * preopen) is walked here as the synchronous bridge walks it: each
-   * directory left must be searchable, `..` at the root and an absolute link
-   * are ENOTCAPABLE, links resolve (the last only when `follow`), 40 hops.
+   * `path` as an absolute namespace path; a path beneath a root (a WASI
+   * preopen) walked by `walkBeneath`, the synchronous bridge's own walk,
+   * its lookups awaited through the namespace.
    */
   private async path(path: RuntimeFsPath, follow = true): Promise<string> {
     if (typeof path === 'string') return path;
@@ -485,39 +494,19 @@ class AwaitingProcessBridge {
       if ((await this.namespace.stat(base))?.type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
       return (base === '/' ? '' : base) + '/' + path.path;
     }
-    if (path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-    const resolved = base.split('/').filter(Boolean);
-    const depth = resolved.length;
-    const pending = path.path.split('/').filter(Boolean);
-    let hops = 0;
-    while (pending.length > 0) {
-      const segment = pending.shift()!;
-      const dir = '/' + resolved.join('/');
-      const searched = await this.namespace.stat(dir, { follow: false });
-      if (searched === null) throw fsError('ENOENT', 'path', path);
-      if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-      if (!modeAllows(searched, 1, this.cred)) throw fsError('EACCES', 'path', path);
-      if (segment === '.') continue;
-      if (segment === '..') {
-        if (resolved.length === depth) throw fsError('ENOTCAPABLE', 'path', path);
-        resolved.pop();
-        continue;
+    const walk = walkBeneath(normalizeVfsPath(base), path, follow, this.cred);
+    for (let step = walk.next(); ; ) {
+      if (step.done) {
+        if (step.value === null) throw fsError('ELOOP', 'path', path);
+        return '/' + step.value;
       }
-      const candidate = (dir === '/' ? '' : dir) + '/' + segment;
-      const isFinal = pending.length === 0;
-      const stat = await this.namespace.stat(candidate, { follow: false });
-      if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
-      if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
-        resolved.push(segment);
-        continue;
-      }
-      if (++hops > MAX_LINK_HOPS) throw fsError('ELOOP', 'path', path);
-      const target = (await this.namespace.readlink(candidate)) ?? '';
-      if (target.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-      pending.unshift(...target.split('/').filter(Boolean));
+      const lookup = step.value;
+      step = walk.next('readlink' in lookup
+        ? (await this.namespace.readlink(lookup.readlink)) ?? ''
+        : await this.namespace.stat(lookup.stat, { follow: false }));
     }
-    return '/' + resolved.join('/');
   }
+
 
   private receipt(): VfsMutationReceipt {
     const r = this.clock();
@@ -612,6 +601,9 @@ class AwaitingProcessBridge {
   rename(from: RuntimeFsPath, to: RuntimeFsPath) {
     return this.either([from, to], () => this.bridge.rename(from, to), async () => this.mountOp('rename', from)((await this.path(from, false)), (await this.path(to, false))));
   }
+  realpath(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
+  }
   readlink(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.mountOp('readlink', path)((await this.path(path, false)))));
   }
@@ -686,7 +678,9 @@ class AwaitingProcessBridge {
   /** The bridge's own descriptor, or this one's `awaited` answer. */
   private on<T>(handleId: number, own: () => T, awaited: (description: AwaitedDescription) => Promise<T>): T | Promise<T> {
     const description = this.awaited.get(handleId);
-    return description === undefined ? own() : awaited(description);
+    if (description === undefined) return own();
+    this.live();
+    return awaited(description);
   }
 
   read(handleId: number, offset: number | null, length: number) {
@@ -705,6 +699,7 @@ class AwaitingProcessBridge {
     return this.on(handleId, () => this.bridge.write(handleId, offset, bytes), async (d) => {
       if (!d.flags.write) throw fsError('EBADF', 'write', d.path);
       const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
+      this.live();
       try {
         await this.mountOp('writeRange', d.path)(d.path, start, bytes);
       } catch (error) {

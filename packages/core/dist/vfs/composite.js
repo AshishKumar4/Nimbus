@@ -310,6 +310,13 @@ export class CompositeVFS {
             throw new VfsError('ENOENT', path);
         return resolved;
     }
+    /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
+    async realpathAsync(path) {
+        const resolved = await this.resolve(path, true, false);
+        if ((await this.statAt(resolved, false, false)) === null)
+            throw new VfsError('ENOENT', path);
+        return resolved;
+    }
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred, actor) {
         const principal = actor === undefined ? { cred } : { cred, actor };

@@ -132,16 +132,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     releaseExclusiveMutation(owner: string): void;
     private pathArgument;
     private resolveDataPath;
-    /**
-     * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
-     * namespace walk does it (VFS-COMP-006): each component needs the directory
-     * it leaves to be a searchable directory; `..` at the root, and any
-     * absolute link, is ENOTCAPABLE; a missing component is ENOENT unless it is
-     * the last. Links resolve in the namespace, 40 hops, then null (ELOOP).
-     */
-    private resolveBeneath;
-    /** ENOENT, ENOTDIR or EACCES unless `dir` (resolved, no links) is a directory the caller may search. */
-    private searchDirectory;
     /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
     private mountedLink;
     private locateMutation;
@@ -183,8 +173,34 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
-/** Links followed before ELOOP (Linux MAXSYMLINKS). */
-export declare const MAX_LINK_HOPS = 40;
+/** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
+export type BeneathLookup = {
+    readonly stat: string;
+} | {
+    readonly readlink: string;
+};
+type BeneathAnswer = {
+    type: string;
+    mode?: number;
+    uid?: number;
+    gid?: number;
+} | string | null;
+/**
+ * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+ * namespace walk does it (VFS-COMP-006): the root must be reachable (every
+ * directory above it searchable); an absolute path, `..` at the root, and any
+ * absolute link are ENOTCAPABLE; each component needs the directory it leaves
+ * to be a searchable directory; a missing component is ENOENT unless it is
+ * the last. Links resolve (the last only when `follow`), 40 hops, then null
+ * (ELOOP). The one walk for every face: it yields its lookups, which the
+ * synchronous bridge answers at once and a face over asynchronous mounts
+ * awaits. `root` is normalized; the answer is the resolved path, normalized.
+ */
+export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
+    uid: number;
+    gid: number;
+    groups: readonly number[];
+}): Generator<BeneathLookup, string | null, BeneathAnswer>;
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */

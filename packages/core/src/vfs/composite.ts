@@ -427,6 +427,13 @@ export class CompositeVFS implements VFS {
     return resolved;
   }
 
+  /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
+  async realpathAsync(path: string): Promise<string> {
+    const resolved = await this.resolve(path, true, false);
+    if ((await this.statAt(resolved, false, false)) === null) throw new VfsError('ENOENT', path);
+    return resolved;
+  }
+
   /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
   as(cred: VfsCred, actor?: string): CompositeVFS {
     const principal: Principal = actor === undefined ? { cred } : { cred, actor };

@@ -91,6 +91,29 @@ assert.throws(() => sync.readFile('/shared/c'), (error) => error.code === 'EAGAI
   await ws.filesystem.releaseProcess(4242);
 }
 
+// A released or killed process's descriptors are gone, whichever face opened
+// them: a later read or write is EBADF and nothing reaches the file.
+{
+  const box = new MemoryVFS();
+  ws.filesystem.vfs.mount('/kill', asyncOnly(box));
+  const kernel = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
+  let pid = 5000;
+  for (const end of ['releaseProcess', 'killProcess']) {
+    for (const path of ['/kill/f', '/tmp/kill-f']) {
+      await box.writeFile('/f', new TextEncoder().encode('orig'));
+      await ws.filesystem.bind({ pid: 4999, cred: kernel }).writeFile('/tmp/kill-f', 'orig');
+      const fs = ws.filesystem.bind({ pid: ++pid, cred: kernel });
+      const fd = await fs.open(path, { read: true, write: true });
+      await ws.filesystem[end](pid);
+      const code = (run) => Promise.resolve().then(run).then(() => 'ok', (error) => error.code);
+      assert.equal(await code(() => fs.write(fd.id, 0, new TextEncoder().encode('LATE'))), 'EBADF', `${end} ${path}: write`);
+      assert.equal(await code(() => fs.read(fd.id, 0, 4)), 'EBADF', `${end} ${path}: read`);
+      const now = path === '/kill/f' ? await box.readFile('/f') : await ws.filesystem.bind({ pid: 4999, cred: kernel }).readFile(path);
+      assert.equal(new TextDecoder().decode(now), 'orig', `${end} ${path}: the file is untouched`);
+    }
+  }
+}
+
 await ws.close();
 
 // bash (wasm, WASI) reads and writes an asynchronous mount wherever it can

@@ -5,7 +5,8 @@
 // are mounted where the case says), binds a process as each principal, and
 // resolves `path` beneath `root` (RESOLVE_BENEATH, a WASI preopen) through the
 // process bridge. The answer (the namespace path, or the errno) must be the
-// model's.
+// model's, through both faces: the synchronous bridge over the mounts as they
+// are, and a process's awaiting face with every mount asynchronous only.
 
 import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -66,21 +67,34 @@ function backend(spec) {
 // model path must be the same entry, by identity, as the kernel's own stat of
 // that path; where it exists and the last link is followed, realpath beneath
 // must also name it.
+// A mount with no synchronous face: every call answers a promise.
+const asyncOnly = (vfs) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'sync') return undefined;
+    const value = target[key];
+    if (typeof value !== 'function') return value;
+    // A view as a principal is built at once, and is as asynchronous.
+    if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
+    return (...args) => Promise.resolve().then(() => value.apply(target, args));
+  },
+  has: (target, key) => key !== 'sync' && key in target,
+});
+
 const identity = (stat) => (stat === null ? null : `${stat.dev}:${stat.ino}:${stat.type}`);
-function answer(proc, kernel, step) {
+async function answer(proc, kernel, step) {
   const beneath = { root: step.root, path: step.path, beneath: true };
   let reached;
   try {
-    reached = proc.stat(beneath, { followSymlinks: step.follow });
+    reached = await proc.stat(beneath, { followSymlinks: step.follow });
   } catch (error) {
     if (typeof error?.code !== 'string') throw error;
     return { error: error.code };
   }
   if ('error' in step.expect) return { reached: identity(reached) };
-  const expected = kernel.stat(step.expect.path, { followSymlinks: false });
+  const expected = await kernel.stat(step.expect.path, { followSymlinks: false });
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };
   if (reached !== null && step.follow && reached.type !== 'symlink') {
-    const path = proc.realpath(beneath);
+    const path = await proc.realpath(beneath);
     if (path !== step.expect.path) return { realpath: path };
   }
   return step.expect;
@@ -88,22 +102,23 @@ function answer(proc, kernel, step) {
 
 const failures = [];
 let steps = 0;
-for (const [index, testCase] of fixture.cases.entries()) {
+for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of fixture.cases.entries()) {
   const backends = Object.fromEntries(Object.entries(testCase.backends).map(([name, spec]) => [name, backend(spec)]));
   const files = new ProcessFiles(backends.b0);
   // A mounted SQLite backend is its files as the kernel, as in composite-perm.
   const source = (name) => (backends[name] instanceof SqliteVFS ? sqliteFiles(backends[name], CRED_KERNEL) : backends[name]);
   files.vfs.unmount('/proc');
   files.vfs.unmount('/dev');
-  for (const mount of testCase.mounts) files.vfs.mount(mount.point, source(mount.backend));
-  const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
+  for (const mount of testCase.mounts) files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend)));
+  const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
+  const kernel = bind({ pid: 1, cred: CRED_KERNEL });
   let pid = 2;
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
-    const proc = files.bind({ pid: pid++, cred: creds.get(step.as) });
-    const got = answer(proc, kernel, step);
+    const proc = bind({ pid: pid++, cred: creds.get(step.as) });
+    const got = await answer(proc, kernel, step);
     if (JSON.stringify(got) !== JSON.stringify(step.expect)) {
-      failures.push(`case ${index} step ${at}: uid ${step.as} beneath ${step.root} ${JSON.stringify(step.path)} follow=${step.follow}: got ${JSON.stringify(got)}, model ${JSON.stringify(step.expect)}`);
+      failures.push(`${face} case ${index} step ${at}: uid ${step.as} beneath ${step.root} ${JSON.stringify(step.path)} follow=${step.follow}: got ${JSON.stringify(got)}, model ${JSON.stringify(step.expect)}`);
     }
   }
 }
@@ -113,4 +128,4 @@ if (failures.length > 0) {
   console.log(`beneath-refinement: ${failures.length} of ${steps} steps disagree with the model`);
   process.exit(1);
 }
-console.log(`beneath-refinement: ${steps} steps in ${fixture.cases.length} cases agree with the model`);
+console.log(`beneath-refinement: ${steps} steps in ${fixture.cases.length} cases agree with the model, through both faces`);
