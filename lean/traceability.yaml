@@ -773,7 +773,7 @@ requirements:
       - Nimbus.Vfs.Ledger.refuses_when_over
       - Nimbus.Vfs.Ledger.an_over_report_refuses
     tsRefs:
-      - packages/core/src/runtime/process-files.ts#ProcessFiles
+      - packages/core/src/runtime/storage-ledger.ts#StorageLedger
     refinement:
       - lean/fixtures/n18-ledger.json :: tests/unit/n18-ledger-refinement.mjs
     remainingEvidence:
