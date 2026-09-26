@@ -482,6 +482,26 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.FastCdc.cuts_tile
 #print axioms Nimbus.Vfs.FastCdc.cutContent_tiles
 
+/-! ## Nimbus/Vfs/Ledger.lean -/
+
+#print axioms Nimbus.Vfs.Ledger.sumB_nil
+#print axioms Nimbus.Vfs.Ledger.sumB_cons
+#print axioms Nimbus.Vfs.Ledger.sumB_append
+#print axioms Nimbus.Vfs.Ledger.sumB_split
+#print axioms Nimbus.Vfs.Ledger.sumB_filter_le
+#print axioms Nimbus.Vfs.Ledger.fitDrop_some
+#print axioms Nimbus.Vfs.Ledger.fitDrop_none
+#print axioms Nimbus.Vfs.Ledger.fitDrop_min
+#print axioms Nimbus.Vfs.Ledger.step_limit
+#print axioms Nimbus.Vfs.Ledger.step_used
+#print axioms Nimbus.Vfs.Ledger.used_le_limit
+#print axioms Nimbus.Vfs.Ledger.refused_unchanged
+#print axioms Nimbus.Vfs.Ledger.refuses_iff
+#print axioms Nimbus.Vfs.Ledger.evicts_oldest_minimal
+#print axioms Nimbus.Vfs.Ledger.only_eviction_frees
+#print axioms Nimbus.Vfs.Ledger.facet_row_stays
+#print axioms Nimbus.Vfs.Ledger.a_ledger_trace
+
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/
 
 #print axioms Nimbus.Vfs.ProcessFiles.mem_map_upd
