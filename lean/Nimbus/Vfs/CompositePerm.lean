@@ -1,0 +1,530 @@
+/-
+  Nimbus.Vfs.CompositePerm — permissions and symlinks through `CompositeVFS`
+  (Main's rulings on the P2 widening, node-nomirror 79cdbf90: uid 2 read `/h/pc/f`
+  through a 0700 `/h` held by the root backend, and `stat /h` answered 40755; then
+  Linux link semantics; then Kinu N26, setgid inheritance).
+
+  A backend is a tree whose entries carry a mode, owner and group. A SqliteVFS
+  (`enforces`, `reports`) checks every access itself; its root is always 0755 root:root.
+  A MemoryVFS enforces nothing and reports modes only when told to (`reports`). A
+  credential is a uid, a primary gid and groups; uid 0 passes every check
+  (CAP_DAC_OVERRIDE / CAP_DAC_READ_SEARCH).
+
+  The composite resolves a path as Linux does, in the caller's namespace, component
+  by component (`walk`). Leaving a directory needs search (x) on it, checked before
+  the next name is looked up, so EACCES at a component comes before any error from
+  a later one. Every symlink, whichever backend holds it, is followed in the
+  namespace: an absolute target from the caller's root, a relative one from the
+  link's directory; `..` pops a component, so at a mount's root it reaches the mount
+  point's parent. Each hop continues the same walk with the same checks; after 40
+  hops (MAXSYMLINKS) the answer is ELOOP. The composite describes each path by
+  `entAt`: the root, a live mount point or a directory above one is a directory,
+  with the stat of the backend that holds it (a mount point is its backend's `/`),
+  or a synthesized 0755 root:root where that backend holds nothing there or reports
+  no modes; any other path is its holder's entry.
+
+  The resolved path, which has no links left but possibly the last component of an
+  operation that does not follow, then goes to the composite itself (a structural
+  directory: stat, readdir with read (r) permission, the rest refused) or to the
+  backend that holds it, at its relative path, which applies its own checks. A new
+  entry in a setgid directory of a backend with modes takes the directory's group,
+  and a new directory there is setgid too (N26).
+
+  Proved:
+  - `resolve_named`: whatever a walk resolves to, every directory on the resolved
+    path is a directory that grants the caller search: through links, the caller
+    reaches only what it could name directly.
+  - `never_widens` / `backend_refusal_stands`: the answer at a resolved path the
+    composite does not make is the backend's own, and a backend refusal is never
+    turned into a success. `resolved_frame`: that answer depends only on the backend
+    that holds the path; `step_frame`: a mutation changes only that backend.
+  - `held_described`, `privileged_passes`, `synth_meta_open`, `setgid_inherits`.
+  - Traces: `the_perm_trace` (every verdict of perm.mjs),
+    `the_backend_alone_grants_the_leak`, `links_resolve_in_the_callers_namespace`
+    (absolute, `..` out of a mount, across mounts as `/dev/stdin` to
+    `/proc/self/fd/0`, a hop that fails the caller's search check, a cycle),
+    `a_setgid_directory_passes_its_group_on`.
+
+  Not modeled here: per-principal sources and the refusal order among ENXIO, EBUSY
+  and EXDEV (in `Composite`); ACLs; exec permission on files; umask other than 022.
+-/
+
+namespace Nimbus.Vfs.CompositePerm
+
+abbrev Path := List String
+
+structure Meta where
+  mode : Nat
+  uid : Nat
+  gid : Nat
+  deriving DecidableEq, Repr
+
+structure Cred where
+  uid : Nat
+  gid : Nat
+  groups : List Nat
+  deriving DecidableEq, Repr
+
+inductive K where
+  | dir
+  | file (b : Nat)
+  /-- A symlink: absolute (`/a/b`) or relative, by its components. -/
+  | link (abs : Bool) (t : List String)
+  deriving DecidableEq, Repr
+
+structure BEnt where
+  k : K
+  m : Meta
+  deriving DecidableEq, Repr
+
+structure Backend where
+  /-- The backend checks each access itself (SqliteVFS). -/
+  enforces : Bool
+  /-- The backend reports modes and owners. -/
+  reports : Bool
+  root : Meta
+  ents : List (Path × BEnt)
+
+/-- What a backend holds at `r`; its root is a directory. -/
+def look (b : Backend) (r : Path) : Option BEnt :=
+  if r = [] then some ⟨.dir, b.root⟩ else (b.ents.find? (·.1 == r)).map (·.2)
+
+def classBits (c : Cred) (m : Meta) : Nat :=
+  if c.uid = m.uid then m.mode / 64 % 8
+  else if m.gid = c.gid ∨ m.gid ∈ c.groups then m.mode / 8 % 8
+  else m.mode % 8
+
+/-- `want`: 4 (r), 2 (w) or 1 (x). -/
+def grants (c : Cred) (m : Meta) (want : Nat) : Bool :=
+  c.uid == 0 || classBits c m / want % 2 == 1
+
+def bGrants (b : Backend) (c : Cred) (m : Meta) (want : Nat) : Bool := !b.enforces || grants c m want
+
+def synthMeta : Meta := ⟨0o755, 0, 0⟩
+
+def setgid (m : Meta) : Bool := m.mode / 1024 % 2 == 1
+
+/-- A new entry in directory `pm`: the writer's, but a setgid directory of a backend
+    with modes gives its group, and to a new directory its setgid bit (N26). -/
+def newMeta (b : Backend) (c : Cred) (pm : Meta) (dir : Bool) : Meta :=
+  let sg := b.reports && setgid pm
+  ⟨(if dir then 0o755 else 0o644) + (if sg && dir then 0o2000 else 0), c.uid, if sg then pm.gid else c.gid⟩
+
+theorem setgid_inherits (b : Backend) (c : Cred) (pm : Meta) (dir : Bool) (hr : b.reports = true)
+    (hs : setgid pm = true) : (newMeta b c pm dir).gid = pm.gid ∧ (dir = true → setgid (newMeta b c pm dir) = true) := by
+  refine ⟨by simp [newMeta, hr, hs], fun hd => ?_⟩
+  subst hd
+  have hs' : pm.mode / 1024 % 2 = 1 := by simpa [setgid] using hs
+  simp [newMeta, hr, hs, setgid, hs']
+
+/-! ## A backend's own operations
+
+  The composite hands a backend a path with no link left (but the last component
+  of an operation that does not follow), so its own lookup is a walk from its root
+  that checks search on each directory, as SqliteVFS's `checkAccess` does. -/
+
+def bLookup (b : Backend) (c : Cred) (r : Path) : Except String Unit :=
+  (List.range r.length).foldl (fun acc i => match acc with
+    | .error e => .error e
+    | .ok () => match look b (r.take i) with
+      | some ⟨.dir, m⟩ => if bGrants b c m 1 then .ok () else .error "EACCES"
+      | some _ => .error "ENOTDIR"
+      | none => .error "ENOENT") (.ok ())
+
+inductive Op where
+  | stat
+  | readdir
+  | readFile
+  | writeFile (b : Nat)
+  | mkdir
+  | unlink
+  deriving DecidableEq, Repr
+
+def Op.follow : Op → Bool
+  | .mkdir | .unlink => false
+  | _ => true
+
+inductive Out where
+  | ok
+  | null
+  | stat (k : String) (m : Option Meta)
+  | bytes (b : Nat)
+  | names (l : List String)
+  | err (e : String)
+  deriving DecidableEq, Repr
+
+def kindName : K → String
+  | .dir => "directory"
+  | .file _ => "file"
+  | .link _ _ => "symlink"
+
+def insertName (x : String) : List String → List String
+  | [] => [x]
+  | y :: ys => if x = y then y :: ys else if x < y then x :: y :: ys else y :: insertName x ys
+
+/-- Sorted, without duplicates. -/
+def sortNames (l : List String) : List String := l.foldr insertName []
+
+def children (b : Backend) (r : Path) : List String :=
+  (b.ents.filter fun x => x.1.length = r.length + 1 && r.isPrefixOf x.1).filterMap (·.1.getLast?)
+
+def setEnt (b : Backend) (r : Path) (e : BEnt) : Backend :=
+  { b with ents := (b.ents.filter (·.1 != r)) ++ [(r, e)] }
+
+def delEnt (b : Backend) (r : Path) : Backend := { b with ents := b.ents.filter (·.1 != r) }
+
+/-- Create `r` in its directory, if the backend lets `c` write there. -/
+def create (b : Backend) (c : Cred) (r : Path) (k : K) (dir : Bool) : Out × Option Backend :=
+  match look b r.dropLast with
+  | some ⟨.dir, pm⟩ =>
+    if bGrants b c pm 2 then (.ok, some (setEnt b r ⟨k, newMeta b c pm dir⟩)) else (.err "EACCES", none)
+  | _ => (.err "ENOENT", none)
+
+/-- The backend's own answer for credential `c` at its relative path `r`. -/
+def bOp (b : Backend) (c : Cred) (op : Op) (r : Path) : Out × Option Backend :=
+  match bLookup b c r with
+  | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, none)
+  | .ok () =>
+    match op, look b r with
+    | .stat, none => (.null, none)
+    | .stat, some e => (.stat (kindName e.k) (if b.reports then some e.m else none), none)
+    | .readdir, some ⟨.dir, m⟩ =>
+      if bGrants b c m 4 then (.names (sortNames (children b r)), none) else (.err "EACCES", none)
+    | .readdir, some _ => (.err "ENOTDIR", none)
+    | .readdir, none => (.err "ENOENT", none)
+    | .readFile, some ⟨.file n, m⟩ => if bGrants b c m 4 then (.bytes n, none) else (.err "EACCES", none)
+    | .readFile, some ⟨.dir, _⟩ => (.err "EISDIR", none)
+    | .readFile, some _ => (.err "EINVAL", none)
+    | .readFile, none => (.err "ENOENT", none)
+    | .writeFile n, some ⟨.file _, m⟩ =>
+      if bGrants b c m 2 then (.ok, some (setEnt b r ⟨.file n, m⟩)) else (.err "EACCES", none)
+    | .writeFile _, some ⟨.dir, _⟩ => (.err "EISDIR", none)
+    | .writeFile _, some _ => (.err "EINVAL", none)
+    | .writeFile n, none => create b c r (.file n) false
+    | .mkdir, some _ => (.err "EEXIST", none)
+    | .mkdir, none => create b c r .dir true
+    | .unlink, none => (.err "ENOENT", none)
+    | .unlink, some ⟨.dir, _⟩ => (.err "EISDIR", none)
+    | .unlink, some e =>
+      if r = [] then (.err "EISDIR", none) else
+      match look b r.dropLast with
+      | some ⟨.dir, pm⟩ =>
+        if !bGrants b c pm 2 then (.err "EACCES", none)
+        else if b.enforces && setSticky pm && c.uid != 0 && c.uid != e.m.uid && c.uid != pm.uid then (.err "EPERM", none)
+        else (.ok, some (delEnt b r))
+      | _ => (.err "ENOENT", none)
+where setSticky (m : Meta) : Bool := m.mode / 512 % 2 == 1
+
+/-! ## The composite -/
+
+structure Mnt where
+  point : Path
+  bk : Nat
+  deriving DecidableEq, Repr
+
+/-- Backend 0 is the root's, mounted at `[]` implicitly. -/
+structure St where
+  mounts : List Mnt
+  bks : Nat → Backend
+
+def ownerOf (ms : List Mnt) (p : Path) : Mnt :=
+  ms.foldl (fun best m => if m.point.isPrefixOf p && best.point.length < m.point.length then m else best) ⟨[], 0⟩
+
+def rel (ms : List Mnt) (p : Path) : Path := p.drop (ownerOf ms p).point.length
+
+def holder (S : St) (p : Path) : Backend := S.bks (ownerOf S.mounts p).bk
+
+/-- The root, a live mount point, or a directory above one. -/
+def structural (ms : List Mnt) (p : Path) : Bool := p.isEmpty || ms.any fun m => p.isPrefixOf m.point
+
+def mountNames (ms : List Mnt) (p : Path) : List String :=
+  ms.filterMap fun m => if p.isPrefixOf m.point && p.length < m.point.length then m.point[p.length]? else none
+
+/-- A backend's meta as the composite reports it. -/
+def shown (b : Backend) (m : Meta) : Meta := if b.reports then m else synthMeta
+
+/-- How the composite describes a structural directory: the holder's stat if it
+    holds a directory there, else synthesized. -/
+def descMeta (S : St) (d : Path) : Meta :=
+  match look (holder S d) (rel S.mounts d) with
+  | some ⟨.dir, m⟩ => shown (holder S d) m
+  | _ => synthMeta
+
+/-- Whether the holder has a non-directory at a structural directory: then only
+    mount names live under it. -/
+def shadow (S : St) (d : Path) : Bool :=
+  match look (holder S d) (rel S.mounts d) with
+  | some ⟨.dir, _⟩ => false
+  | some _ => true
+  | none => false
+
+/-- What the namespace holds at a path, as the caller's walk sees it. -/
+def entAt (S : St) (q : Path) : Option (K × Meta) :=
+  if structural S.mounts q then some (.dir, descMeta S q)
+  else if q ≠ [] ∧ structural S.mounts q.dropLast ∧ shadow S q.dropLast then none
+  else (look (holder S q) (rel S.mounts q)).map fun e => (e.k, shown (holder S q) e.m)
+
+def metaAt (S : St) (d : Path) : Meta := match entAt S d with
+  | some (_, m) => m
+  | none => synthMeta
+
+def maxLinks : Nat := 40
+def fuel : Nat := 256
+
+/-- Linux path walk in the caller's namespace. -/
+def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List String → Except String Path
+  | 0, _, _, _ => .error "ELOOP"
+  | _ + 1, _, done, [] => .ok done
+  | n + 1, h, done, x :: rs =>
+    if !grants c (metaAt S done) 1 then .error "EACCES"
+    else if x = "" ∨ x = "." then walk S c follow n h done rs
+    else if x = ".." then walk S c follow n h done.dropLast rs
+    else
+      let q := done ++ [x]
+      match entAt S q with
+      | none => if rs = [] then .ok q else .error "ENOENT"
+      | some (.link a t, _) =>
+        if rs = [] ∧ follow = false then .ok q
+        else if h = 0 then .error "ELOOP"
+        else walk S c follow n (h - 1) (if a then [] else done) (t ++ rs)
+      | some (.dir, _) => walk S c follow n h q rs
+      | some (.file _, _) => if rs = [] then .ok q else .error "ENOTDIR"
+
+def resolve (S : St) (c : Cred) (follow : Bool) (raw : List String) : Except String Path :=
+  walk S c follow fuel maxLinks [] raw
+
+def structOp (S : St) (c : Cred) (op : Op) (p : Path) : Out :=
+  match op with
+  | .stat => .stat "directory" (some (descMeta S p))
+  | .readdir =>
+    if !grants c (descMeta S p) 4 then .err "EACCES"
+    else
+      let b := holder S p
+      let own := match look b (rel S.mounts p) with
+        | some ⟨.dir, _⟩ => children b (rel S.mounts p)
+        | _ => []
+      .names (sortNames (own ++ mountNames S.mounts p))
+  | .readFile => .err "EISDIR"
+  | .writeFile _ => .err "EBUSY"
+  | .mkdir => .err "EBUSY"
+  | .unlink => .err "EISDIR"
+
+def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
+  let k := (ownerOf S.mounts p).bk
+  match bOp (S.bks k) c op (rel S.mounts p) with
+  | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
+  | (o, none) => (o, S)
+
+def cOp (S : St) (c : Cred) (op : Op) (raw : List String) : Out × St :=
+  match resolve S c op.follow raw with
+  | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, S)
+  | .ok p => if structural S.mounts p then (structOp S c op p, S) else backendStep S c op p
+
+/-! ## Links reach only what the caller could name -/
+
+def IsDir (S : St) (q : Path) : Prop := ∃ m, entAt S q = some (.dir, m)
+
+theorem root_dir (S : St) : IsDir S [] := ⟨descMeta S [], by simp [entAt, structural]⟩
+
+/-- Every directory on `d` (each proper prefix) is a directory granting search. -/
+def Named (S : St) (c : Cred) (d : Path) : Prop :=
+  ∀ i < d.length, IsDir S (d.take i) ∧ grants c (metaAt S (d.take i)) 1 = true
+
+theorem named_snoc {S : St} {c : Cred} {d : Path} (x : String) (hn : Named S c d) (hd : IsDir S d)
+    (hg : grants c (metaAt S d) 1 = true) : Named S c (d ++ [x]) := by
+  intro i hi
+  simp only [List.length_append, List.length_singleton] at hi
+  by_cases e : i = d.length
+  · subst e; rw [List.take_append_of_le_length (Nat.le_refl _), List.take_length]; exact ⟨hd, hg⟩
+  · rw [List.take_append_of_le_length (by omega)]; exact hn i (by omega)
+
+theorem named_dropLast {S : St} {c : Cred} {d : Path} (hn : Named S c d) (hd : IsDir S d) :
+    Named S c d.dropLast ∧ IsDir S d.dropLast := by
+  rw [List.dropLast_eq_take]
+  refine ⟨fun i hi => ?_, ?_⟩
+  · simp only [List.length_take] at hi
+    rw [List.take_take, Nat.min_eq_left (by omega)]
+    exact hn i (by omega)
+  · cases d with
+    | nil => exact hd
+    | cons y ys => exact (hn _ (by simp)).1
+
+theorem walk_named (S : St) (c : Cred) (f : Bool) : ∀ n h done rs p, Named S c done → IsDir S done →
+    walk S c f n h done rs = .ok p → Named S c p := by
+  intro n
+  induction n with
+  | zero => intro _ _ _ _ hn _ h; simp [walk] at h
+  | succ n ih =>
+    intro h done rs p hn hd hw
+    cases rs with
+    | nil => simp only [walk, Except.ok.injEq] at hw; subst hw; exact hn
+    | cons x rs =>
+      simp only [walk] at hw
+      split at hw
+      · cases hw
+      · rename_i hg
+        have hg : grants c (metaAt S done) 1 = true := by simpa using hg
+        split at hw
+        · exact ih _ _ _ _ hn hd hw
+        · split at hw
+          · have := named_dropLast hn hd; exact ih _ _ _ _ this.1 this.2 hw
+          · split at hw
+            · split at hw
+              · cases hw; exact named_snoc x hn hd hg
+              · cases hw
+            · split at hw
+              · cases hw; exact named_snoc x hn hd hg
+              · split at hw
+                · cases hw
+                · split at hw
+                  · exact ih _ _ _ _ (fun i hi => by simp at hi) (root_dir S) hw
+                  · exact ih _ _ _ _ hn hd hw
+            · rename_i m he
+              exact ih _ _ _ _ (named_snoc x hn hd hg) ⟨m, he⟩ hw
+            · split at hw
+              · cases hw; exact named_snoc x hn hd hg
+              · cases hw
+
+/-- Whatever a path resolves to, through any number of links, every directory on
+    the resolved path is a directory that grants the caller search: it reaches only
+    what it could name directly. -/
+theorem resolve_named (S : St) (c : Cred) (f : Bool) (raw : List String) (p : Path)
+    (h : resolve S c f raw = .ok p) : ∀ i < p.length, IsDir S (p.take i) ∧ grants c (metaAt S (p.take i)) 1 = true :=
+  walk_named S c f _ _ _ _ p (fun i hi => by simp at hi) (root_dir S) h
+
+/-! ## Never wider than the backend -/
+
+theorem never_widens (S : St) (c : Cred) (op : Op) (raw : List String) :
+    (∃ e, resolve S c op.follow raw = .error e ∧ (cOp S c op raw).2 = S) ∨
+      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = true ∧ cOp S c op raw = (structOp S c op p, S)) ∨
+      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ cOp S c op raw = backendStep S c op p) := by
+  unfold cOp
+  cases h : resolve S c op.follow raw with
+  | error e => exact Or.inl ⟨e, rfl, rfl⟩
+  | ok p =>
+    cases hs : structural S.mounts p
+    · exact Or.inr (Or.inr ⟨p, rfl, hs, by simp [hs]⟩)
+    · exact Or.inr (Or.inl ⟨p, rfl, hs, by simp [hs]⟩)
+
+/-- A backend's refusal stands: where it refuses, the composite answers an error. -/
+theorem backend_refusal_stands (S : St) (c : Cred) (op : Op) (raw : List String) (p : Path)
+    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false)
+    {e : String} (hb : (bOp (holder S p) c op (rel S.mounts p)).1 = .err e) : (cOp S c op raw).1 = .err e := by
+  unfold cOp
+  simp only [hr, hs, Bool.false_eq_true, if_false, backendStep]
+  unfold holder at hb
+  revert hb
+  cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
+  | mk o t => intro hb; cases t <;> simpa using hb
+
+/-- Once resolved, the answer depends only on the backend that holds the path. -/
+theorem resolved_frame (S S' : St) (c : Cred) (op : Op) (p : Path) (hm : S'.mounts = S.mounts)
+    (hb : S'.bks (ownerOf S.mounts p).bk = S.bks (ownerOf S.mounts p).bk) :
+    (backendStep S c op p).1 = (backendStep S' c op p).1 := by
+  unfold backendStep
+  simp only [hm, hb]
+  cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
+  | mk o t => cases t <;> rfl
+
+/-- A mutation changes only the backend the resolved path is handed to. -/
+theorem step_frame (S : St) (c : Cred) (op : Op) (p : Path) :
+    (backendStep S c op p).2.mounts = S.mounts ∧
+      ∀ j, j ≠ (ownerOf S.mounts p).bk → (backendStep S c op p).2.bks j = S.bks j := by
+  unfold backendStep
+  rcases h : bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with ⟨o, _ | b⟩
+  · simp [h]
+  · refine ⟨by simp [h], fun j hj => by simp [h, hj]⟩
+
+/-- A structural directory the holding backend (with modes) holds as a directory is
+    described by that backend's own mode, owner and group. -/
+theorem held_described (S : St) (d : Path) {m : Meta} (hl : look (holder S d) (rel S.mounts d) = some ⟨.dir, m⟩)
+    (hm : (holder S d).reports = true) : descMeta S d = m := by
+  simp [descMeta, hl, shown, hm]
+
+theorem privileged_passes (g : Nat) (gs : List Nat) (m : Meta) (w : Nat) : grants ⟨0, g, gs⟩ m w = true := by
+  simp [grants]
+
+theorem synth_meta_open (c : Cred) :
+    grants c synthMeta 1 = true ∧ grants c synthMeta 4 = true ∧ (c.uid ≠ 0 → grants c synthMeta 2 = false) := by
+  unfold grants classBits synthMeta
+  by_cases h0 : c.uid = 0
+  · simp [h0]
+  · simp only [h0, if_false]
+    split <;> simp [h0]
+
+/-! ## Traces -/
+
+def kernel : Cred := ⟨0, 0, [0]⟩
+def u1 : Cred := ⟨1, 1, [1]⟩
+def u2 : Cred := ⟨2, 2, [2]⟩
+
+def sqlite (ents : List (Path × BEnt)) : Backend := ⟨true, true, synthMeta, ents⟩
+
+/-- Root holds `/h` (uid 1, 0700) with `/h/own`; `/h/pc` mounts a backend holding
+    `/f` (0644). -/
+def permTrace : St :=
+  { mounts := [⟨["h", "pc"], 1⟩],
+    bks := fun k => if k = 0 then
+        sqlite [(["h"], ⟨.dir, ⟨0o700, 1, 1⟩⟩), (["h", "pc"], ⟨.dir, ⟨0o755, 0, 0⟩⟩),
+          (["h", "own"], ⟨.file 1, ⟨0o644, 0, 0⟩⟩)]
+      else sqlite [(["f"], ⟨.file 7, ⟨0o644, 0, 0⟩⟩)] }
+
+theorem the_perm_trace :
+    (cOp permTrace u2 .stat ["h"]).1 = .stat "directory" (some ⟨0o700, 1, 1⟩) ∧
+    (cOp permTrace u2 .readdir ["h"]).1 = .err "EACCES" ∧
+    (cOp permTrace u2 .readFile ["h", "own"]).1 = .err "EACCES" ∧
+    (cOp permTrace u2 .readFile ["h", "pc", "f"]).1 = .err "EACCES" ∧
+    (cOp permTrace u2 .stat ["h", "missing"]).1 = .err "EACCES" ∧
+    (cOp permTrace u2 .stat ["h", "pc"]).1 = .err "EACCES" ∧
+    (cOp permTrace u1 .readFile ["h", "pc", "f"]).1 = .bytes 7 ∧
+    (cOp permTrace u1 .readdir ["h"]).1 = .names ["own", "pc"] ∧
+    (cOp permTrace kernel .readFile ["h", "pc", "f"]).1 = .bytes 7 ∧
+    (cOp permTrace u2 (.writeFile 9) ["h", "pc"]).1 = .err "EACCES" := by
+  decide
+
+/-- The mounted backend alone grants uid 2 the read: only the composite's search
+    check on `/h` refuses it. -/
+theorem the_backend_alone_grants_the_leak : (bOp (permTrace.bks 1) u2 .readFile ["f"]).1 = .bytes 7 := by
+  decide
+
+/-- Root: `/etc/p`, and `/h` (uid 1, 0700) holding `/h/s`. `/pc` (MemoryVFS, no
+    modes): `l -> /etc/p`, `r -> ../etc/p`, `x -> /h/s`, `a -> b`, `b -> a`.
+    `/proc` holds `self/fd/0`; `/dev` (MemoryVFS) has `stdin -> /proc/self/fd/0`. -/
+def linkTrace : St :=
+  { mounts := [⟨["pc"], 1⟩, ⟨["proc"], 2⟩, ⟨["dev"], 3⟩],
+    bks := fun k =>
+      if k = 0 then sqlite [(["etc"], ⟨.dir, ⟨0o755, 0, 0⟩⟩), (["etc", "p"], ⟨.file 5, ⟨0o644, 0, 0⟩⟩),
+        (["h"], ⟨.dir, ⟨0o700, 1, 1⟩⟩), (["h", "s"], ⟨.file 6, ⟨0o644, 1, 1⟩⟩)]
+      else if k = 1 then ⟨false, false, synthMeta,
+        [(["l"], ⟨.link true ["etc", "p"], synthMeta⟩), (["r"], ⟨.link false ["..", "etc", "p"], synthMeta⟩),
+         (["x"], ⟨.link true ["h", "s"], synthMeta⟩), (["a"], ⟨.link false ["b"], synthMeta⟩),
+         (["b"], ⟨.link false ["a"], synthMeta⟩)]⟩
+      else if k = 2 then sqlite [(["self"], ⟨.dir, ⟨0o555, 0, 0⟩⟩), (["self", "fd"], ⟨.dir, ⟨0o500, 2, 2⟩⟩),
+        (["self", "fd", "0"], ⟨.file 8, ⟨0o600, 2, 2⟩⟩)]
+      else ⟨false, false, synthMeta, [(["stdin"], ⟨.link true ["proc", "self", "fd", "0"], synthMeta⟩)]⟩ }
+
+theorem links_resolve_in_the_callers_namespace :
+    (cOp linkTrace u2 .readFile ["pc", "l"]).1 = .bytes 5 ∧
+    (cOp linkTrace u2 .readFile ["pc", "r"]).1 = .bytes 5 ∧
+    (cOp linkTrace u2 .readFile ["dev", "stdin"]).1 = .bytes 8 ∧
+    (cOp linkTrace u1 .readFile ["dev", "stdin"]).1 = .err "EACCES" ∧
+    (cOp linkTrace u2 .readFile ["pc", "x"]).1 = .err "EACCES" ∧
+    (cOp linkTrace u1 .readFile ["pc", "x"]).1 = .bytes 6 ∧
+    (cOp linkTrace u1 .readFile ["pc", "a"]).1 = .err "ELOOP" ∧
+    (cOp linkTrace u1 .unlink ["pc", "a"]).1 = .ok := by
+  decide
+
+/-- `/g` is setgid, group 10, writable by group 10: uid 1 (in group 10) makes a file
+    and a directory there; both take group 10, and the directory is setgid. -/
+def sgTrace : St :=
+  { mounts := [], bks := fun _ => sqlite [(["g"], ⟨.dir, ⟨0o2775, 0, 10⟩⟩)] }
+
+theorem a_setgid_directory_passes_its_group_on :
+    let c : Cred := ⟨1, 1, [1, 10]⟩
+    let S1 := (cOp sgTrace c (.writeFile 3) ["g", "f"]).2
+    let S2 := (cOp S1 c .mkdir ["g", "d"]).2
+    (cOp S2 c .stat ["g", "f"]).1 = .stat "file" (some ⟨0o644, 1, 10⟩) ∧
+      (cOp S2 c .stat ["g", "d"]).1 = .stat "directory" (some ⟨0o2755, 1, 10⟩) := by
+  decide
+
+end Nimbus.Vfs.CompositePerm

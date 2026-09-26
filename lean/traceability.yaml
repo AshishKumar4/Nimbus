@@ -1,0 +1,744 @@
+# Machine-checked by check-traceability.mjs. The Lean models are maintained by
+# hand; a theorem proves its statement only inside the named abstract model. A
+# proved-and-refined requirement also names the fixture the model generates and
+# the unit test that runs the deployed TypeScript on it (scripts/verify-lean.sh
+# regenerates the fixtures and runs those tests).
+edition: 1.0.0
+formalScope: abstract-model-only
+requirements:
+  VFS-REV-001:
+    statement: A path's reported revision (content-store P5 rule) never falls below its own last mutation nor rises above the clock, a directory never reports below any path under it, so every report of a path made before a mutation of it is below every report made after, and the floor never decreases.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.RevisionFloor.revision_ge_last
+      - Nimbus.Vfs.RevisionFloor.revision_watermark
+      - Nimbus.Vfs.RevisionFloor.revision_increases_across_mutation
+      - Nimbus.Vfs.RevisionFloor.revision_le_clock
+      - Nimbus.Vfs.RevisionFloor.floor_monotone
+      - Nimbus.Vfs.RevisionFloor.reachable_inv
+      - Nimbus.Vfs.RevisionFloor.step_inv
+      - Nimbus.Vfs.RevisionFloor.walk_eq
+      - Nimbus.Vfs.RevisionFloor.walkAll_eq
+      - Nimbus.Refine.RevisionFloorCases.dropOnce_step
+      - Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
+      - Nimbus.Refine.RevisionFloorCases.execBump_reach
+      - Nimbus.Vfs.RevisionFloor.init_inv
+      - Nimbus.Vfs.RevisionFloor.under_refl
+      - Nimbus.Vfs.RevisionFloor.under_trans
+      - Nimbus.Vfs.RevisionFloor.under_ne_nil
+      - Nimbus.Vfs.RevisionFloor.under_cases
+      - Nimbus.Vfs.RevisionFloor.under_dropLast
+      - Nimbus.Vfs.RevisionFloor.under_length
+      - Nimbus.Vfs.RevisionFloor.walked_closed
+      - Nimbus.Vfs.RevisionFloor.bump_inv
+      - Nimbus.Vfs.RevisionFloor.drop_inv
+      - Nimbus.Vfs.RevisionFloor.last_step
+      - Nimbus.Vfs.RevisionFloor.steps_facts
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.revision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.bumpRevision
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.dropOldestPathRevisions
+    refinement:
+      - lean/fixtures/revision-floor.json :: tests/unit/revision-floor-refinement.mjs
+    remainingEvidence:
+      - Paths are component lists; normalizeVfsPath and a confined caller's storageKey are not modeled
+      - The code's cutoff rule is exercised by the fixtures; every theorem holds for any cutoff at or below the clock
+      - One bump is one operation at clock + 1; multi-transaction operations (a row's generation below the operation's revision) and jumping revisions are not modeled, and neither are deletes' tombstones (Nimbus.Coherence.DurableDelta covers those)
+  VFS-REV-002:
+    statement: Reporting an unheld path at 0 rather than at the floor reports a path below its last write.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Vfs.RevisionFloor.a_zero_floor_reports_below_the_last_write
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.pathRevision
+    remainingEvidence:
+      - The witness is a two-step model trace; tests/unit/revision-floor-refinement.mjs goes red when the code's floor is replaced by 0
+  CS-001:
+    statement: In every reachable state of the content store, including after a DO reset at any transaction boundary, every path reads exactly what was last written to it, so no chunk or content a live path reads is ever collected or rewritten.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.live_reads_last_write
+      - Nimbus.ContentStore.reachable_inv
+      - Nimbus.ContentStore.step_inv
+      - Nimbus.ContentStore.init_inv
+      - Nimbus.ContentStore.commit_inv
+      - Nimbus.ContentStore.commit_core
+      - Nimbus.ContentStore.base_ext
+      - Nimbus.ContentStore.resolve_upd_chunk
+      - Nimbus.ContentStore.readRef_upd_chunk
+      - Nimbus.ContentStore.resolve_upd_content
+      - Nimbus.ContentStore.readRef_upd_content
+      - Nimbus.ContentStore.atRef_mem_gen
+      - Nimbus.ContentStore.atRef_of_live_le
+      - Nimbus.ContentStore.find_erase_of_false
+      - Nimbus.ContentStore.mem_replaceWriter
+      - Nimbus.ContentStore.mem_stagingIds
+      - Nimbus.ContentStore.requeue_inv
+      - Nimbus.ContentStore.not_dying_of_resolves
+      - Nimbus.ContentStore.nodup_append_single
+      - Nimbus.ContentStore.nodup_map_of_inj
+      - Nimbus.ContentStore.mem_erase_writers
+      - Nimbus.ContentStore.wsum_erase
+      - Nimbus.ContentStore.wsum_mono
+      - Nimbus.ContentStore.wsum_enq
+      - Nimbus.ContentStore.star_inv
+      - Nimbus.ContentStore.liveView_resolve
+      - Nimbus.ContentStore.resolve_content_live
+      - Nimbus.ContentStore.not_writer_of_resolves
+      - Nimbus.ContentStore.exists_of_resolves
+      - Nimbus.ContentStore.content_lt_of_exists
+      - Nimbus.ContentStore.chunk_lt_of_exists
+      - Nimbus.ContentStore.resolve_ne_none
+      - Nimbus.ContentStore.atRef_mem
+      - Nimbus.ContentStore.commit_live
+      - Nimbus.ContentStore.mem_commit_hist
+      - Nimbus.ContentStore.mem_commit_queue
+      - Nimbus.ContentStore.commit_liveRef
+      - Nimbus.ContentStore.commit_lost
+      - Nimbus.ContentStore.commit_queue_sub
+      - Nimbus.ContentStore.commit_coverage
+      - Nimbus.ContentStore.commit_gens
+      - Nimbus.ContentStore.setView_live
+      - Nimbus.ContentStore.setView_hist
+      - Nimbus.ContentStore.setView_snaps
+      - Nimbus.ContentStore.setView_chunks
+      - Nimbus.ContentStore.setView_contents
+      - Nimbus.ContentStore.setView_queue
+      - Nimbus.ContentStore.setView_writers
+      - Nimbus.ContentStore.setView_fds
+      - Nimbus.ContentStore.setView_job
+      - Nimbus.ContentStore.setView_gen
+      - Nimbus.ContentStore.setView_nextChunk
+      - Nimbus.ContentStore.setView_nextContent
+      - Nimbus.ContentStore.setView_snapView
+      - Nimbus.ContentStore.setView_view
+      - Nimbus.ContentStore.dirty_live
+      - Nimbus.ContentStore.dirty_hist
+      - Nimbus.ContentStore.dirty_snaps
+      - Nimbus.ContentStore.dirty_chunks
+      - Nimbus.ContentStore.dirty_contents
+      - Nimbus.ContentStore.dirty_queue
+      - Nimbus.ContentStore.dirty_writers
+      - Nimbus.ContentStore.dirty_fds
+      - Nimbus.ContentStore.dirty_gen
+      - Nimbus.ContentStore.dirty_nextChunk
+      - Nimbus.ContentStore.dirty_nextContent
+      - Nimbus.ContentStore.dirty_snapView
+      - Nimbus.ContentStore.dirty_view
+      - Nimbus.ContentStore.commit_chunks_eq
+      - Nimbus.ContentStore.commit_contents_eq
+      - Nimbus.ContentStore.commit_snaps_eq
+      - Nimbus.ContentStore.commit_writers
+      - Nimbus.ContentStore.commit_fds
+      - Nimbus.ContentStore.commit_job
+      - Nimbus.ContentStore.commit_gen
+      - Nimbus.ContentStore.commit_nextChunk
+      - Nimbus.ContentStore.commit_nextContent
+      - Nimbus.ContentStore.commit_snapView
+      - Nimbus.ContentStore.commit_view
+      - Nimbus.ContentStore.updContent_live
+      - Nimbus.ContentStore.updContent_hist
+      - Nimbus.ContentStore.updContent_snaps
+      - Nimbus.ContentStore.updContent_chunks
+      - Nimbus.ContentStore.updContent_contents
+      - Nimbus.ContentStore.updContent_queue
+      - Nimbus.ContentStore.updContent_writers
+      - Nimbus.ContentStore.updContent_fds
+      - Nimbus.ContentStore.updContent_job
+      - Nimbus.ContentStore.updContent_gen
+      - Nimbus.ContentStore.updContent_nextChunk
+      - Nimbus.ContentStore.updContent_nextContent
+      - Nimbus.ContentStore.updContent_view
+      - Nimbus.ContentStore.updContent_snapView
+      - Nimbus.ContentStore.liveRef_congr
+      - Nimbus.ContentStore.histRef_congr
+      - Nimbus.ContentStore.fdRef_congr
+      - Nimbus.ContentStore.manRef_congr
+      - Nimbus.ContentStore.strongRef_congr
+      - Nimbus.ContentStore.writerHeld_congr
+      - Nimbus.ContentStore.stored_congr
+      - Nimbus.ContentStore.pinGen_congr
+      - Nimbus.ContentStore.atRef_congr
+      - Nimbus.ContentStore.base_job
+      - Nimbus.ContentStore.dirty_eq_job
+      - Nimbus.ContentStore.upd_same
+      - Nimbus.ContentStore.upd_ne
+      - Nimbus.ContentStore.mem_enq
+      - Nimbus.ContentStore.mem_enq_of_mem
+      - Nimbus.ContentStore.mem_enq_self
+      - Nimbus.ContentStore.mem_foldl_enq
+      - Nimbus.ContentStore.mapM_mono
+      - Nimbus.ContentStore.mapM_congr
+      - Nimbus.ContentStore.mapM_some_mem
+      - Nimbus.ContentStore.mapM_append
+      - Nimbus.ContentStore.mapM_set
+      - Nimbus.ContentStore.mapM_length
+      - Nimbus.ContentStore.ext_refl
+      - Nimbus.ContentStore.ext_trans
+      - Nimbus.ContentStore.resolve_ext
+      - Nimbus.ContentStore.readRef_ext
+      - Nimbus.ContentStore.resolve_congr
+      - Nimbus.ContentStore.readRef_congr
+      - Nimbus.ContentStore.resolve_live_content
+      - Nimbus.ContentStore.resolve_chunk
+      - Nimbus.ContentStore.intern_ext
+      - Nimbus.ContentStore.intern_chunks_self
+      - Nimbus.ContentStore.commit_chunks
+      - Nimbus.ContentStore.commit_contents
+      - Nimbus.ContentStore.commit_snaps
+      - Nimbus.ContentStore.pinGen_ge
+      - Nimbus.ContentStore.le_pinGen
+      - Nimbus.ContentStore.commit_find_ne
+      - Nimbus.ContentStore.commit_live_ne
+      - Nimbus.ContentStore.internOk_fresh
+      - Nimbus.ContentStore.intern_base
+      - Nimbus.ContentStore.intern_exists
+      - Nimbus.ContentStore.intern_refs
+      - Nimbus.ContentStore.intern_view
+      - Nimbus.ContentStore.intern_snapView
+      - Nimbus.ContentStore.intern_gen
+      - Nimbus.ContentStore.intern_fds
+      - Nimbus.ContentStore.strongRef_intern
+      - Nimbus.ContentStore.writerHeld_intern
+      - Nimbus.ContentStore.intern_commit_inv
+      - Nimbus.ContentStore.jobOk_weak
+      - Nimbus.ContentStore.plain_commit_inv
+      - Nimbus.ContentStore.writeSmall_inv
+      - Nimbus.ContentStore.delete_inv
+      - Nimbus.ContentStore.copy_inv
+      - Nimbus.ContentStore.editSmallCow_inv
+      - Nimbus.ContentStore.beginLarge_inv
+      - Nimbus.ContentStore.appendLarge_inv
+      - Nimbus.ContentStore.manRef_upd_same
+      - Nimbus.ContentStore.publishNew_inv
+      - Nimbus.ContentStore.publishDedup_inv
+      - Nimbus.ContentStore.snapshot_inv
+      - Nimbus.ContentStore.dropSnapshot_inv
+      - Nimbus.ContentStore.dropHist_inv
+      - Nimbus.ContentStore.restoreStart_inv
+      - Nimbus.ContentStore.restoreFinish_inv
+      - Nimbus.ContentStore.close_inv
+      - Nimbus.ContentStore.detach_inv
+      - Nimbus.ContentStore.memoDigest_inv
+      - Nimbus.ContentStore.rename_inv
+      - Nimbus.ContentStore.noMan_of
+      - Nimbus.ContentStore.gcChunkDelete_inv
+      - Nimbus.ContentStore.gcChunkSkip_inv
+      - Nimbus.ContentStore.gcContentSkip_inv
+      - Nimbus.ContentStore.dying_unreferenced
+      - Nimbus.ContentStore.views_upd_content
+      - Nimbus.ContentStore.gcContentStart_inv
+      - Nimbus.ContentStore.gcContentPage_inv
+      - Nimbus.ContentStore.gcContentFinish_inv
+      - Nimbus.ContentStore.mem_set_self
+      - Nimbus.ContentStore.mem_set_of_ne
+      - Nimbus.ContentStore.setView_setView
+      - Nimbus.ContentStore.editSmallInPlace_inv
+      - Nimbus.ContentStore.editLargeCow_inv
+      - Nimbus.ContentStore.editLargeInPlace_inv
+      - Nimbus.Refine.ContentStoreCases.chunkFor_ok
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.writeRange
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.copyFile
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.rename
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - A file is its list of chunk hashes, one hash per chunk, collision-free; the real FastCDC cuts are not in this model
+      - Detached-descriptor writes (R8), copyTree jobs and directories are not modeled; copyTree is modeled as pages of copyFile
+      - A real transaction page is several model steps with nothing between them; every property proved for the finer steps holds for the pages
+  CS-002:
+    statement: A snapshot reads exactly the tree it captured, and what it reads never changes while it exists.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.snapshot_reads_its_tree
+      - Nimbus.ContentStore.snapshot_view_fixed
+      - Nimbus.ContentStore.commit_atRef
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.snapshot
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.at
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.dropSnapshot
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - pin_gen is taken to equal MAX(vfs_snapshots.gen) after every transaction, as BUILD-RULES R9 states
+  CS-003:
+    statement: A restore job that runs to its end with no other write in between leaves every path reading exactly what the snapshot reads, across DO resets during the job.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.restore_yields_the_snapshot
+      - Nimbus.ContentStore.restoreStep_inv
+      - Nimbus.ContentStore.restoreSkip_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.restore
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - The model walks paths by a durable cursor; the built job selects pages by predicate (gen between g and start_gen) and resumes by the same predicate, which is not yet modeled
+  CS-004:
+    statement: A detached descriptor keeps reading the bytes it read when its path was unlinked until it closes.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.descriptor_reads_what_it_opened
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.writeRange
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - Only unlinked descriptors pin; an attached descriptor reads through its path
+  CS-005:
+    statement: Once no large write is in flight and no detached descriptor is open, GC alone empties its queue, after which every stored chunk and content is referenced by a live row, a history row or a manifest.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.no_garbage_after_quiescence
+      - Nimbus.ContentStore.gc_drains
+      - Nimbus.ContentStore.gc_progress
+      - Nimbus.ContentStore.reset_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+    refinement:
+      - lean/fixtures/content-store.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - The queue is popped in any order; the code's per-kind keyset order is one such order
+  CS-006:
+    statement: Three rules SPEC.md first wrote serve wrong bytes or leak, each from a reachable state where every other guard holds.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.ContentStore.Bugs.an_in_place_rewrite_blind_to_pins_changes_a_descriptor
+      - Nimbus.ContentStore.Bugs.an_in_place_rewrite_a_snapshot_can_see_changes_the_snapshot
+      - Nimbus.ContentStore.Bugs.dropping_a_pinned_queue_row_leaks
+      - Nimbus.ContentStore.Bugs.pinned_reachable
+      - Nimbus.ContentStore.Bugs.snapped_reachable
+      - Nimbus.ContentStore.Bugs.lone_reachable
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.runContentMaintenance
+    remainingEvidence:
+      - The as-built guards (BUILD-RULES R3, R5 and pin_gen < gen) are the model's; the fixture's directed cases replay each scenario
+  COH-001:
+    statement: In the resident-store coherence protocol every row a facet holds dated carries a value the authority held at some instant at or after the newest barrier answer the facet has admitted, under any interleaving of commits, answers, poisons, repairs, reads and write-backs.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.no_stale_read
+      - Nimbus.Coherence.Store.reachable_inv
+      - Nimbus.Coherence.Store.step_inv
+      - Nimbus.Coherence.Store.admit_inv
+      - Nimbus.Coherence.Store.admitDelta_inv
+      - Nimbus.Coherence.Store.admitMono_inv
+      - Nimbus.Coherence.Store.admitted_below_horizon
+      - Nimbus.Coherence.Store.valAt_fold
+      - Nimbus.Coherence.Store.valAt_spec
+      - Nimbus.Coherence.Store.noMut_valAt
+      - Nimbus.Coherence.Store.noMut_mono
+      - Nimbus.Coherence.Store.noMut_append
+      - Nimbus.Coherence.Store.noMut_join
+      - Nimbus.Coherence.Store.valAt_append_le
+      - Nimbus.Coherence.Store.repOf_ge
+      - Nimbus.Coherence.Store.init_inv
+      - Nimbus.Coherence.Store.fresh_ext
+      - Nimbus.Coherence.Store.commit_inv
+      - Nimbus.Coherence.Store.repOf_fold
+      - Nimbus.Coherence.Store.repOf_mem
+      - Nimbus.Coherence.Store.mem_map_eq
+      - Nimbus.Coherence.Store.covered
+      - Nimbus.Coherence.Store.admit_rows
+      - Nimbus.Coherence.Store.flush_rows
+    tsRefs:
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - Store mode only; the heap-mode barrier (__vfsBundleRevisions) is not modeled
+      - Own partial mutations under a lease (_ownMutation) are not modeled; whole-file write-back is
+      - fsList's per-path revision is taken to be at or above the path's last commit, which VFS-REV-001 proves of the code
+      - No refinement fixture yet drives the shims; the model names the shim functions in its header
+  COH-002:
+    statement: A cursor below the log's floor is always poisoned, and an answer that is not a poison names every commit between its base and its revision, with revisions that jump.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.below_floor_poisons
+      - Nimbus.Coherence.Store.delta_complete
+      - Nimbus.Coherence.Store.deltaFrom_covers
+      - Nimbus.Coherence.Store.deltaFrom_last
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - The floor rule is ContentStoreBuild's P2 rule (newest revision dropped, the clock at open); the model has one supervisor incarnation
+  COH-003:
+    statement: A read installed past a consumed report, a listing that reports an unheld path at 0, a poison rule without a floor on an emptied log, and a push admitted out of order each leave a stale dated row.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Coherence.Store.a_read_installed_past_a_report_is_stale
+      - Nimbus.Coherence.Store.a_listing_below_the_last_commit_keeps_a_stale_row
+      - Nimbus.Coherence.Store.an_empty_log_without_a_floor_serves_a_stale_row
+      - Nimbus.Coherence.Store.a_push_admitted_out_of_order_is_stale
+      - Nimbus.Coherence.Store.fetched_exists
+      - Nimbus.Coherence.Store.valAt_one
+      - Nimbus.Coherence.Store.valAt_two
+      - Nimbus.Coherence.Store.valAt_five
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - NodeNoMirrorBuild reproduced the out-of-order push as tests/unit/resident-pushed-content.mjs
+  COH-004:
+    statement: A facet's own write that committed before a peer's is served past a barrier reporting the peer until its acknowledgement lands, and waiting at the barrier for every in-flight own acknowledgement whose path carries a noted report removes that window.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.own_committed_write_is_served_past_a_peer
+      - Nimbus.Coherence.Store.own_fresh_when_acks_settled
+      - Nimbus.Coherence.Store.a_per_answer_wait_misses_an_earlier_report
+    tsRefs:
+      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    remainingEvidence:
+      - The fix is ResidentCoherenceLane's b6825561 (work/resident-coherence); tests/unit/resident-store-provenance.mjs drives each trace on the real resident body, red before the fix ('a peer write that lands while the own write is in flight', 'a later barrier while an earlier one waits on the acknowledgement', 'a poison while the own write is in flight', 'a newer write parked over one being acknowledged')
+      - The guard counts only the current write's acknowledgement (parked = its write), which is the code's supersession exemption; lease acknowledgements are never skipped and leases are not modeled
+  COH-005:
+    statement: Before eb542b0b a resumption waiting on a refetch never runs while a peer rewrites the path faster than one read round trip; after it the wait ends within two read landings whatever the writer does.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Refetch.old_never_settles
+      - Nimbus.Coherence.Refetch.livelock_before_eb542b0b
+      - Nimbus.Coherence.Refetch.new_settles
+      - Nimbus.Coherence.Refetch.settles_after_eb542b0b
+    tsRefs:
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    remainingEvidence:
+      - Schedules are abstract; tests/unit/resident-store-provenance.mjs measures the same schedule on the real body (3031 ms before, 54-58 ms after)
+  COH-006:
+    statement: NodeNoMirror's pushed bytes keep every dated row fresh when they ride an admission that applies only entries above the cursor and never moves it back.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.Store.admitPush_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - The per-answer byte budget is any subset of the named paths; a file over budget is simply not pushed
+      - The repair's fetch of push-root files changed during a poison window (a coverage property, not staleness) is not modeled
+  NS-001:
+    statement: A delta naming every path changed since the facet's cursor at its current entry, applied in any order with subtree drops, leaves the facet's namespace exactly the authority's, and without complete logging a removed-then-recreated directory leaves ghosts.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.Namespace.apply_exact
+      - Nimbus.Coherence.Namespace.applyEntry_self
+      - Nimbus.Coherence.Namespace.applyEntry_other
+      - Nimbus.Coherence.Namespace.closed_above
+      - Nimbus.Coherence.Namespace.nothing_below
+      - Nimbus.Coherence.Namespace.a_log_naming_only_the_removed_root_leaves_a_ghost
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/node-namespace.json :: tests/unit/node-namespace-refinement.mjs
+    remainingEvidence:
+      - Credential views and traversability relists are not modeled (tests/unit/resident-namespace.mjs covers them)
+      - Complete logging of every changed path is a hypothesis of the theorem; the fixture checks the code logs it
+  CDC-001:
+    statement: FastCDC tiles every buffer with chunks of at most max bytes, every chunk but the last longer than min, a cut depends only on the bytes from its chunk's start to at most max past it, and a cut found on a prefix of a stream is the cut of the whole.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.FastCdc.cutContent_tiles
+      - Nimbus.Vfs.FastCdc.cdcCut_local
+      - Nimbus.Vfs.FastCdc.cdcCut_prefix
+      - Nimbus.Vfs.FastCdc.cdcCut_final
+      - Nimbus.Vfs.FastCdc.scanFrom_bounds
+      - Nimbus.Vfs.FastCdc.scan_bounds
+      - Nimbus.Vfs.FastCdc.scanFrom_local
+      - Nimbus.Vfs.FastCdc.scanFrom_extend
+      - Nimbus.Vfs.FastCdc.cuts_tile
+    tsRefs:
+      - packages/core/src/vfs/content-chunking.ts#cdcCut
+      - packages/core/src/vfs/content-chunking.ts#cutContent
+      - packages/core/src/vfs/content-chunking.ts#ContentCutter
+    refinement:
+      - lean/fixtures/fastcdc.json :: tests/unit/fastcdc-refinement.mjs
+    remainingEvidence:
+      - The gear table and masks are parameters of every theorem; the fixture checks the deployed ones
+      - That an edit's re-cut stops exactly where old and new cuts rejoin follows from cdcCut_local but the edit loop itself is not modeled
+  COH-007:
+    statement: From any cursor at or above the tombstone floor, the durable ACQUIRE answer read from row generations and tombstones names exactly the paths whose last write or delete came after the cursor, at that generation, across restarts and pruning; below the floor a pruned tombstone hides a delete, so it must poison.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.DurableDelta.sql_delta_exact
+      - Nimbus.Coherence.DurableDelta.a_pruned_tombstone_hides_a_delete
+      - Nimbus.Coherence.DurableDelta.init_inv
+      - Nimbus.Coherence.DurableDelta.step_inv
+      - Nimbus.Coherence.DurableDelta.reachable_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - invalidatedFromSql lives on work/content-store (P5); its tsRef is added when that lands here
+      - Directory parents the SQL answer adds, and the 16384-entry cap (else poison), are not modeled; both only add names or poison
+      - Every row write stamps the transaction's generation and every delete tombstones, as ContentStoreBuild states of executeTransactionPlan and copyTree
+  CS-007:
+    statement: With content-store P6 tiering, no live path ever references a cold chunk under any interleaving of writes, dedup links, snapshots, tier passes across their upload await, restore pages and resets; the tier's re-probe and the pre-check on a resumed restore are each necessary.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.Tier.live_never_cold
+      - Nimbus.ContentStore.Tier.tier_without_reprobe_colds_a_live_chunk
+      - Nimbus.ContentStore.Tier.resume_without_precheck_installs_a_cold_chunk
+      - Nimbus.ContentStore.Tier.step_inv
+      - Nimbus.ContentStore.Tier.reachable_inv
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.restore
+    refinement:
+      - lean/fixtures/content-store-tier.json :: tests/unit/content-store-refinement.mjs
+    remainingEvidence:
+      - The fixture applies Tier's rules at the store's granularity (content-store transactions from ContentStoreCases.exec plus a cold set, LIVE_CHUNK_UNREFERENCED as ContentStoreBuild defines it) rather than evaluating Tier.Step itself
+      - P6 lives on work/content-store; its tier entry point is cited here once it lands on an integrated branch
+      - A file is one chunk; staging, open descriptors and hot snapshots are further tier exclusions not modeled (they only make tier rarer)
+      - Restore is taken to be synchronous within an isolate (no tier step mid-run), as ContentStoreBuild states; copyTree{at} and import are modeled as links that need the chunk local
+      - P4 import resumption (importCursor = MAX(path) under dst) is not modeled
+  COH-008:
+    statement: The visibility rule for reported names withholds, from a reader that could list a path before its directory was made untraversable and removed, the removal's only entry for that path, so a store that evicts exact names keeps the reader's row.
+    status: by-construction-witness
+    theorems:
+      - Nimbus.Coherence.Visibility.a_chmod_then_remove_hides_a_listed_path
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    remainingEvidence:
+      - The rule is VfsLazyInodesLane's 7c53d244 (work/vfs-lazy-inodes); property (i), that no name reaches a principal that could not have listed it, is not modeled
+      - A facet that drops a subtree when a directory's own entry reports it absent or untraversable is not affected; the resident store on integrate/0924 evicts exact names
+  COH-009:
+    statement: Under the rule that reports a path the caller cannot see as its nearest visible ancestor with subtree scope, and evicts under structural directory entries, the caller never receives a name it cannot see at answer time, and no row it filled survives a change to that path's content or visibility, chmod-only revocation included.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.VisibleDelta.no_leak
+      - Nimbus.Coherence.VisibleDelta.coherence
+      - Nimbus.Coherence.VisibleDelta.chmod_revokes_rows_below
+      - Nimbus.Coherence.VisibleDelta.nva_spec
+      - Nimbus.Coherence.VisibleDelta.visible_root
+      - Nimbus.Coherence.VisibleDelta.entry_evicts
+      - Nimbus.Coherence.VisibleDelta.report_answers
+      - Nimbus.Coherence.VisibleDelta.no_leak_any
+      - Nimbus.Coherence.VisibleDelta.entry_evicts_any
+      - Nimbus.Coherence.VisibleDelta.coherence_any
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/vfs-visible-delta.json :: tests/unit/vfs-visible-delta-fixture.mjs
+    remainingEvidence:
+      - Built by VfsLazyInodesLane at 11315e98 (work/vfs-lazy-inodes); its extra substitution (an entry under a directory removed or renamed away at or after it reported as that directory, subtree) is covered by no_leak_any and coherence_any
+      - The fixture checks properties (evicted set covers mustEvict, no reported name in forbidden), not the exact entry list
+      - VfsLazyInodesLane's test (5d191b32) passes all 155 cases, is red on the previous rules (8bb2b940, db8791aa) and on a mutant reporting hidden names as themselves
+      - Visibility is traversability of every directory above a name for one caller; symlinks, confined /tmp views and uid/gid are folded into that one bit
+      - Log completeness (every node change logged, structural when kind, existence or traversability changed) is a hypothesis
+  COH-010:
+    statement: NodeNoMirror's content-key savings (a fill copied from a row with the listed key, a row kept and re-dated when an entry's key matches, a repair keeping rows whose key the listing repeats, across incarnations) keep every dated row holding bytes the authority held at some instant at or after the newest admitted answer, given only that equal keys mean equal bytes; without that property a repair keeps stale bytes.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.ContentKey.no_stale_read
+      - Nimbus.Coherence.ContentKey.a_colliding_key_keeps_a_stale_row
+      - Nimbus.Coherence.ContentKey.bytesAt_eq
+      - Nimbus.Coherence.ContentKey.lastRev_fold
+      - Nimbus.Coherence.ContentKey.lastRev_spec
+      - Nimbus.Coherence.ContentKey.le_lastRev
+      - Nimbus.Coherence.ContentKey.acqRow_some
+      - Nimbus.Coherence.ContentKey.noMut_extend
+      - Nimbus.Coherence.ContentKey.noMut_append
+      - Nimbus.Coherence.ContentKey.bytesAt_append
+      - Nimbus.Coherence.ContentKey.step_inv
+      - Nimbus.Coherence.ContentKey.reachable_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Built by NodeNoMirrorBuild at 04cb9dd9 (work/node-nomirror, schema 2); ACQUIRE is served and admitted in one step and a repair lists and reconciles in one step here, the finer interleavings being Nimbus.Coherence.Store's
+      - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
+      - NodeNoMirrorBuild confirms the code compares stored keys only against the authority's key at the answer's revision, stores null keys for own rows, and re-dates at the entry's or listed revision (at most the answer's); the model re-dates at the answer's revision, and any date at or below the horizon gives the same invariant
+  COH-011:
+    statement: NodeNoMirror's content-key rules stay stale-free when ACQUIRE is served and admitted as separate events in any order (an answer at or below the horizon changing nothing), and a repair's listing is served and reconciled apart, interleaving with commits, answers, fills and copies by key.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Coherence.ContentKeyAsync.no_stale_read
+      - Nimbus.Coherence.ContentKeyAsync.lastRev_append
+      - Nimbus.Coherence.ContentKeyAsync.entryOf_spec
+      - Nimbus.Coherence.ContentKeyAsync.entryOf_none
+      - Nimbus.Coherence.ContentKeyAsync.answer_append
+      - Nimbus.Coherence.ContentKeyAsync.step_inv
+      - Nimbus.Coherence.ContentKeyAsync.reachable_inv
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
+      - An answer arriving while a repair runs is dropped (the barrier joins the repair), as the code does
+  NS-002:
+    statement: Under the visibility rule, applying the reported delta with exact relists for subtree and structural entries, in any order, leaves the reader's namespace exactly its visible tree at answer time; the own-effect overlay serves a process's pending effects over it, and every byte the overlay serves is its own pending write, a write of its committed at a revision the authority still held, or a value the authority held at or after the last barrier.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Coherence.Relist.relist_exact
+      - Nimbus.Coherence.Relist.overlay_exact
+      - Nimbus.Coherence.Store.overlay_no_stale
+      - Nimbus.Coherence.Relist.tv_below_none
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+    refinement:
+      - lean/fixtures/node-visible-namespace.json :: tests/unit/node-visible-namespace-refinement.mjs
+      - lean/fixtures/node-overlay.json :: tests/unit/node-overlay-refinement.mjs
+    remainingEvidence:
+      - A relist is read at the answer's instant (one exchange); a relist served later is fresher but not modeled
+      - NodeNoMirrorBuild's bridges pass 155/155 (namespace) and go red with the directory-closed subtree drop reverted. The relist's own deletion is a backstop the fixtures cannot make necessary. For the reader to have held a name that is hidden at answer time under a visible directory, some directory on the path must have changed traversability, and the code drops that subtree directly.
+      - The overlay fixture's flush commits and acknowledges together, so the committed-but-unacknowledged window (COH-004) is covered by the proof, not by that fixture
+  VFS-COMP-001:
+    statement: CompositeVFS walks a raw path physically (a `..` applies after a root link met before it) and routes the result to the longest matching mount; a principal never reaches, lists or is influenced by a mount whose source answers null for it (null stat, ENXIO otherwise, never an empty directory); mount points refuse unlink, rmdir and rename with EBUSY; rename across mounts is EXDEV and never emulated; the composite follows only root-backend links.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.Composite.route_spec
+      - Nimbus.Vfs.Composite.walk_clean
+      - Nimbus.Vfs.Composite.absent_refuses
+      - Nimbus.Vfs.Composite.busy_refuses
+      - Nimbus.Vfs.Composite.exdev_refuses
+      - Nimbus.Vfs.Composite.resolve_root_only
+      - Nimbus.Vfs.Composite.readdir_live_only
+      - Nimbus.Vfs.Composite.noninterference
+      - Nimbus.Vfs.Composite.pfx_iff
+      - Nimbus.Vfs.Composite.route_fold
+      - Nimbus.Vfs.Composite.absent_of_prefix
+      - Nimbus.Vfs.Composite.route_not_hidden
+      - Nimbus.Vfs.Composite.linkAt_agree
+      - Nimbus.Vfs.Composite.walk_agree
+      - Nimbus.Vfs.Composite.walkRaw_agree
+      - Nimbus.Vfs.Composite.treeAt_agree
+      - Nimbus.Vfs.Composite.listing_agree
+      - Nimbus.Vfs.Composite.backendOp_agree
+      - Nimbus.Vfs.Composite.dirErr_agree
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
+    remainingEvidence:
+      - Rules DESIGN.md leaves open, as agreed with the Filesystem lane: absent when any mount on the path is null; a synthesized directory wins over a root link of the same name; EBUSY for writeFile, mkdir, rmdir and rename of a live mount point or ancestor, EISDIR for unlink of any directory; refusal order ENXIO, EBUSY, EXDEV, backend; POSIX rename replacement; 40 link hops
+      - Backends are trees without POSIX modes; removeRecursive, copy, readRange, capabilities and ENOTSUP are not modeled
+      - The tsRef is a placeholder until composite.ts lands; the lane's refinement test is the bridge
+  VFS-COMP-002:
+    statement: The node facet's staged store over a CompositeVFS serves at a resumption only values the backend now serving the path held at or after the barrier, given each backend's own no-stale guarantee, whatever the mount table did; a backend without changes is never staged; keying the store by composite path instead serves the previous backend's bytes after a source switches.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Vfs.CompositeCache.sync_read_fresh
+      - Nimbus.Vfs.CompositeCache.never_cached
+      - Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
+    tsRefs:
+      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+    remainingEvidence:
+      - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
+  VFS-PF-001:
+    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.ProcessFiles.acked_accounted
+      - Nimbus.Vfs.ProcessFiles.a_kill_that_drops_buffers_loses_silently
+      - Nimbus.Vfs.ProcessFiles.atomic_appends_disjoint
+      - Nimbus.Vfs.ProcessFiles.a_two_step_append_overwrites
+      - Nimbus.Vfs.ProcessFiles.a_buffered_flush_overwrites_a_concurrent_flush
+      - Nimbus.Vfs.ProcessFiles.leases_hold
+      - Nimbus.Vfs.ProcessFiles.a_literal_only_check_is_bypassed
+      - Nimbus.Vfs.ProcessFiles.receipt_sound
+      - Nimbus.Vfs.ProcessFiles.receipt_in_step
+      - Nimbus.Vfs.ProcessFiles.a_late_receipt_names_another_write
+      - Nimbus.Vfs.ProcessFiles.mem_map_upd
+      - Nimbus.Vfs.ProcessFiles.mem_map_keep
+      - Nimbus.Vfs.ProcessFiles.step_accounted
+    tsRefs:
+      - packages/core/src/runtime/filesystem-authority.ts#SqliteFilesystemAuthority.releaseProcess
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
+    refinement:
+      - lean/fixtures/process-files.json :: tests/unit/process-files-refinement.mjs
+    remainingEvidence:
+      - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
+      - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
+  VFS-COMP-003:
+    statement: Through the composite, removeRecursive never crosses into another mount and refuses /, a live mount point or an ancestor of one with EBUSY, and its fallback walk's report is exact (every subtree entry reported once, removed ones gone, kept ones present); readRange, writeFileIfRevision and readFileAtRevision answer ENOTSUP on a backend without them and are never emulated; copy across mounts changes only the target's backend; a live mount point stats its backend root's mode, synthesized only when the backend reports none.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositeOps.fallback_report_exact
+      - Nimbus.Vfs.CompositeOps.roots_exact
+      - Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
+      - Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
+      - Nimbus.Vfs.CompositeOps.copy_stays_in_target
+      - Nimbus.Vfs.CompositeOps.mount_point_mode
+      - Nimbus.Vfs.CompositeOps.frame_refl
+      - Nimbus.Vfs.CompositeOps.frame_set
+      - Nimbus.Vfs.CompositeOps.keeps_mono
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
+    remainingEvidence:
+      - Pins (entries a fallback's unlink/rmdir refuse) are the model's only failure source; native removeRecursive ignores them and the fixture pins only backends without it
+      - With a capability present the model asserts support only; revision semantics are Coherence's
+      - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP)
+  VFS-COMP-004:
+    statement: ProcessFs's staged namespace over the composite equals the composite's staged view (structural first - a live mount point and every directory above one is the composite's directory) in every reachable state, and is always a tree; the root feed filtered to paths the composite routes to the root backend and each changes-mount's feed re-rooted and filtered to its own non-structural paths make it exact, including subtree/structural entries (relisted where shown, a poison at a composite directory from the backend it routes to); a mount-table change between the two ends of the window poisons (no feed reports it), an ABA window does not; a mount without changes stages nothing under its point; epoch-qualified CAS revisions identify one write across recoveries that regress gens.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositeFeed.feed_exact
+      - Nimbus.Vfs.CompositeFeed.feed_values
+      - Nimbus.Vfs.CompositeFeed.step_exact
+      - Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+      - Nimbus.Vfs.CompositeFeed.revision_unique
+      - Nimbus.Vfs.CompositeFeed.an_unfiltered_root_feed_stages_a_shadowed_row
+      - Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
+      - Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide
+      - Nimbus.Vfs.CompositeFeed.ownerPt_mem
+      - Nimbus.Vfs.CompositeFeed.view_table_congr
+      - Nimbus.Vfs.CompositeFeed.cas_inv
+      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
+      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
+      - Nimbus.Vfs.CompositeFeed.ownerPt_max
+      - Nimbus.Vfs.CompositeFeed.ownerPt_none
+      - Nimbus.Vfs.CompositeFeed.ownerPt_between
+      - Nimbus.Vfs.CompositeFeed.synthAnc_iff
+      - Nimbus.Vfs.CompositeFeed.dropLast_length_lt
+      - Nimbus.Vfs.CompositeFeed.structural_dropLast
+      - Nimbus.Vfs.CompositeFeed.view_closed
+      - Nimbus.Vfs.CompositeFeed.shown_below
+      - Nimbus.Vfs.CompositeFeed.shown_view
+      - Nimbus.Vfs.CompositeFeed.op_covered
+      - Nimbus.Vfs.CompositeFeed.op_other
+      - Nimbus.Vfs.CompositeFeed.apply_ops_exact
+      - Nimbus.Vfs.CompositeFeed.feedOps_exact
+      - Nimbus.Vfs.CompositeFeed.a_subtree_entry_at_a_composite_directory_must_poison
+      - Nimbus.Vfs.CompositeFeed.an_aba_window_needs_no_poison
+      - Nimbus.Vfs.CompositeFeed.owner_first_routing_is_not_a_tree
+      - Nimbus.Vfs.CompositeFeed.fs_inv
+      - Nimbus.Vfs.CompositeFeed.staged_closed
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+    refinement:
+      - lean/fixtures/composite-feed.json :: tests/unit/composite-feed-refinement.mjs
+    remainingEvidence:
+      - Closedness is discharged (view_closed, fs_inv); what remains assumed is that every backend is a POSIX tree and that its log covers every changed path (at the path, or under a sub entry above it)
+      - An own mutation's delta is assumed to name every staged path it changed (FsStep.own); the lane's own-write overlay is not modeled here
+      - One principal's table; per-principal source switches are table changes for that principal
+      - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
+  VFS-COMP-005:
+    statement: CompositeVFS resolves paths as Linux does, in the caller's namespace - every symlink, whichever backend holds it (absolute from the caller's root, relative from the link's directory, .. at a mount root to the mount point's parent), search checked with the caller's credential on every directory left, before the next lookup (EACCES before a later component's error), 40 hops then ELOOP; whatever a path resolves to, every directory on it grants the caller search (it reaches only what it could name directly); structural directories are described by the backend that holds them (synthesized 0755 root:root where it holds nothing or reports no modes) and readdir of one needs read; uid 0 passes; the answer at a resolved backend path is that backend's own (never widened), depends only on that backend, and a mutation changes only it; in a setgid directory a new entry takes the directory's group and a new directory is setgid (N26).
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositePerm.never_widens
+      - Nimbus.Vfs.CompositePerm.backend_refusal_stands
+      - Nimbus.Vfs.CompositePerm.held_described
+      - Nimbus.Vfs.CompositePerm.privileged_passes
+      - Nimbus.Vfs.CompositePerm.synth_meta_open
+      - Nimbus.Vfs.CompositePerm.step_frame
+      - Nimbus.Vfs.CompositePerm.the_perm_trace
+      - Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
+      - Nimbus.Vfs.CompositePerm.setgid_inherits
+      - Nimbus.Vfs.CompositePerm.root_dir
+      - Nimbus.Vfs.CompositePerm.named_snoc
+      - Nimbus.Vfs.CompositePerm.named_dropLast
+      - Nimbus.Vfs.CompositePerm.walk_named
+      - Nimbus.Vfs.CompositePerm.resolve_named
+      - Nimbus.Vfs.CompositePerm.resolved_frame
+      - Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
+      - Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
+    tsRefs:
+      - packages/core/src/vfs/composite.ts#CompositeVFS
+    refinement:
+      - lean/fixtures/composite-perm.json :: tests/unit/composite-perm-refinement.mjs
+    remainingEvidence:
+      - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
+      - No ACLs, no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
