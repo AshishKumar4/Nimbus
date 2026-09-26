@@ -179,8 +179,11 @@ kernel credential, because Nimbus follows POSIX here:
   Observers and vouchers are principals, the verified tenant and subject in
   the session's Durable Object name, never session ids, which anyone can
   mint; anonymous sessions (legacy-public, or the `anon` tenant) read
-  profiles and never write them; a principal writes one package's profile at
-  most 8 times an hour. An entry is shared only once two different
+  profiles and never write them (nor does any DO name the router does not
+  mint from a verified token, such as a fanout peer's); a principal writes
+  one package's profile at most 8 times an hour. Each write is a
+  compare-and-swap on the object's etag, retried from a fresh read, so
+  concurrent writers no longer drop each other's observations or votes. An entry is shared only once two different
   principals observed it, what a
   shared profile adds to one launch is bounded in bytes (an eighth of the
   module map's budget), and entries are pruned: a launch that held an entry

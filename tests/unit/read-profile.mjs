@@ -22,13 +22,32 @@ import {
 } from '../../packages/worker/src/facets/read-profile.ts';
 import { planFacetData } from '../../packages/worker/src/facets/data-plan.ts';
 
-/** An R2 bucket in memory, with list pagination. */
+/**
+ * An R2 bucket in memory: list pagination, etags, and R2's conditional put
+ * (null when `onlyIf` fails). Every call yields first, so concurrent callers
+ * interleave as they would against R2.
+ */
 function bucket() {
   const objects = new Map();
+  const versions = new Map();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
     objects,
-    async get(key) { return objects.has(key) ? { text: async () => objects.get(key) } : null; },
-    async put(key, value) { objects.set(key, value); },
+    async get(key) {
+      await tick();
+      if (!objects.has(key)) return null;
+      const text = objects.get(key);
+      return { text: async () => text, etag: `v${versions.get(key) ?? 0}` };
+    },
+    async put(key, value, options) {
+      await tick();
+      const onlyIf = options?.onlyIf;
+      if (onlyIf?.etagMatches !== undefined && (!objects.has(key) || onlyIf.etagMatches !== `v${versions.get(key) ?? 0}`)) return null;
+      if (onlyIf?.etagDoesNotMatch === '*' && objects.has(key)) return null;
+      objects.set(key, value);
+      versions.set(key, (versions.get(key) ?? 0) + 1);
+      return {};
+    },
     async list({ prefix, cursor }) {
       const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
       const start = cursor ? Number(cursor) : 0;
@@ -248,6 +267,9 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   assert.equal(profilePrincipal('acme:_'), 'acme:_', 'a tenant-wide token');
   assert.equal(profilePrincipal('anon:anon'), null, 'anonymous sessions are one principal that never writes');
   assert.equal(profilePrincipal('legacy:public:_'), null, 'legacy-public sessions are anonymous');
+  assert.equal(profilePrincipal('nbf:tag:coord'), null, "a fanout peer's DO name is no principal");
+  assert.equal(profilePrincipal('acme'), null, 'not the router\'s shape');
+  assert.equal(profilePrincipal('acme:a b'), null, 'a component the token would refuse');
   assert.equal(profilePrincipal(undefined), null, 'no Durable Object name: nothing to write as');
 
   // rp-attack2: one principal with any number of sessions. Every session of
@@ -296,6 +318,47 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   now += 60 * 60_000;
   await profile.observe([{ path: `${APP}/late.js`, size: 1 }], writer, integrityOf);
   assert.equal(writes, READ_PROFILE_WRITES_PER_WINDOW + 2, 'a new window admits writes again');
+}
+
+// ── Concurrent writers: every change lands, and the cap counts each one ──
+{
+  const shared = bucket();
+  const writers = await Promise.all(['acme:a', 'acme:b', 'globex:c'].map((p) => principalTag(p)));
+  const flood = await principalTag('initech:flood');
+  const jobs = [];
+  for (const [w, writer] of writers.entries()) {
+    for (let i = 0; i < 5; i++) {
+      jobs.push(new ReadProfile(shared).observe([{ path: `${APP}/w${w}-${i}.js`, size: 1 }], writer, integrityOf));
+    }
+  }
+  // A writer loses a try only to another's success, so each batch stays
+  // within the tries one write gets (16): 15 writers, then 11.
+  const landed = await Promise.all(jobs);
+  // One principal past its cap, all at once.
+  const flooded = [];
+  for (let i = 0; i < READ_PROFILE_WRITES_PER_WINDOW + 3; i++) {
+    flooded.push(new ReadProfile(shared).observe([{ path: `${APP}/flood-${i}.js`, size: 1 }], flood, integrityOf));
+  }
+  landed.push(...await Promise.all(flooded));
+  const body = JSON.parse([...shared.objects.values()][0]);
+  assert.equal(Object.keys(body.entries).filter((rel) => rel.startsWith('w')).length, 15, 'every concurrent observation landed');
+  assert.equal(Object.keys(body.entries).filter((rel) => rel.startsWith('flood')).length, READ_PROFILE_WRITES_PER_WINDOW, 'the cap admits exactly its count');
+  for (const writer of writers) assert.equal(body.writes[writer][1], 5, 'each write was counted');
+  assert.equal(body.writes[flood][1], READ_PROFILE_WRITES_PER_WINDOW);
+  assert.equal(landed.reduce((a, b) => a + b, 0), 15 + READ_PROFILE_WRITES_PER_WINDOW);
+
+  // A lowering racing another principal's vouch: both land.
+  await new ReadProfile(shared).observe([{ path: `${APP}/w0-0.js`, size: 1 }], writers[1], integrityOf);
+  const offer = (await new ReadProfile(shared).lookup([APP], integrityOf, 1 << 20)).filter((e) => e.rel === 'w0-0.js');
+  assert.equal(offer.length, 1);
+  const vouchers = await Promise.all(['umbrella:u', 'hooli:h'].map((p) => principalTag(p)));
+  await Promise.all([
+    new ReadProfile(shared).settle(offer, new Set(), new Set(), new Set(), vouchers[0]),
+    new ReadProfile(shared).settle(offer, new Set(), new Set(), new Set(), vouchers[1]),
+  ]);
+  const entry = JSON.parse([...shared.objects.values()][0]).entries['w0-0.js'];
+  assert.deepEqual(entry.vouched.sort(), [...vouchers].sort(), 'two concurrent vouches both landed');
+  assert.equal(entry.score, 3);
 }
 
 console.log('read-profile: ok');

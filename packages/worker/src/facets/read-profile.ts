@@ -45,12 +45,14 @@
  *     within the byte share.
  */
 import { packageRootOf } from './data-plan.js';
-import { ANONYMOUS_TENANT, LEGACY_PUBLIC_DO_SEGMENT } from '../_shared/session-router.js';
+import { ANONYMOUS_TENANT } from '../_shared/session-router.js';
+import { ID_COMPONENT_RE } from '../auth/types.js';
 
 /** The R2 surface this needs. */
 export interface ReadProfileBucket {
-  get(key: string): Promise<{ text(): Promise<string> } | null>;
-  put(key: string, value: string): Promise<unknown>;
+  get(key: string): Promise<{ text(): Promise<string>; etag?: string } | null>;
+  /** Null when the `onlyIf` precondition failed and nothing was stored (R2). */
+  put(key: string, value: string, options?: { onlyIf: { etagMatches: string } | { etagDoesNotMatch: '*' } }): Promise<unknown>;
   delete?(key: string): Promise<unknown>;
   list(options: { prefix: string; cursor?: string }): Promise<{
     objects: { key: string }[];
@@ -80,6 +82,14 @@ export const READ_PROFILE_WRITES_PER_WINDOW = 8;
 const WRITE_WINDOW_MS = 60 * 60_000;
 /** Principals whose write counts one profile keeps (the oldest window goes first). */
 const MAX_WRITERS = 256;
+/**
+ * Tries of one read-modify-write. A write is conditional on the object being
+ * the one read (R2's etag), so a writer that raced another re-reads and
+ * applies its change again rather than overwriting the other's. A try is lost
+ * only to another writer's success, so up to this many concurrent writers of
+ * one profile all land.
+ */
+const WRITE_ATTEMPTS = 16;
 /** A score's ceiling: one unread launch per point before an entry is dropped. */
 const MAX_SCORE = 8;
 /** A tarball integrity (SRI), or the content key of an unpinned package's package.json. */
@@ -101,9 +111,13 @@ export function validProfilePath(rel: unknown): rel is string {
  * read.
  */
 export function profilePrincipal(tenantSegment: string | null | undefined): string | null {
-  if (typeof tenantSegment !== 'string' || tenantSegment.length === 0) return null;
-  if (tenantSegment === LEGACY_PUBLIC_DO_SEGMENT) return null;
-  if (tenantSegment.split(':')[0] === ANONYMOUS_TENANT) return null;
+  // Only the shape the router mints from a verified token, `<tn>:<sub or _>`
+  // (auth/token.ts doInstanceName): legacy-public, a fanout peer's
+  // `nbf:<tag>:<coord>` and every other DO name write nothing.
+  if (typeof tenantSegment !== 'string') return null;
+  const parts = tenantSegment.split(':');
+  if (parts.length !== 2 || !parts.every((part) => ID_COMPONENT_RE.test(part))) return null;
+  if (parts[0] === ANONYMOUS_TENANT) return null;
   return tenantSegment;
 }
 
@@ -232,10 +246,10 @@ export class ReadProfile {
     if (tag === null || !TAG.test(tag)) return 0;
     let changed = 0;
     for (const [key, items] of ReadProfile.byPackage(evidence, integrityOf)) {
-      const profile = await this.read(key);
-      const entries = profile.entries;
-      let dirty = false;
       let observed = 0;
+      const wrote = await this.update(key, tag, ({ entries }) => {
+      let dirty = false;
+      observed = 0;
       for (const { item, rel } of items) {
         const size = Math.max(0, Math.floor(item.size));
         let entry = entries.get(rel);
@@ -252,13 +266,31 @@ export class ReadProfile {
         }
         if (entry.score < 1) { entry.score = 1; dirty = true; }
       }
-      if (dirty && this.admitWrite(profile, tag)) {
-        await this.write(key, profile);
+      return dirty;
+      });
+      if (wrote) {
         this.index?.keys.add(key);
         changed += observed;
       }
     }
     return changed;
+  }
+
+  /**
+   * One read-modify-write of `key` by `tag`: `mutate` changes the profile
+   * read and says whether it did. The write is conditional on the object
+   * still being the one read, and is tried again from a fresh read when
+   * another writer got there first, so concurrent writers each land. False
+   * when nothing changed, the principal is over its cap, or every try lost.
+   */
+  private async update(key: string, tag: string, mutate: (profile: Profile) => boolean): Promise<boolean> {
+    for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+      const { profile, etag } = await this.readVersioned(key);
+      if (!mutate(profile)) return false;
+      if (!this.admitWrite(profile, tag)) return false;
+      if (await this.write(key, profile, etag)) return true;
+    }
+    return false;
   }
 
   /**
@@ -363,8 +395,7 @@ export class ReadProfile {
       list.push({ rel: entry.rel, path: key(entry.path) });
     }
     for (const [objectKey, items] of byKey) {
-      const profile = await this.read(objectKey);
-      const entries = profile.entries;
+      await this.update(objectKey, tag, ({ entries }) => {
       let dirty = false;
       for (const { rel, path } of items) {
         const entry = entries.get(rel);
@@ -379,22 +410,34 @@ export class ReadProfile {
         dirty = true;
         if (entry.score <= 0) entries.delete(rel);
       }
-      if (dirty && this.admitWrite(profile, tag)) await this.write(objectKey, profile);
+      return dirty;
+      });
     }
   }
 
-  private async write(key: string, profile: Profile): Promise<void> {
+  /** Store `profile` if `key` is still the object `etag` names (null: still absent). */
+  private async write(key: string, profile: Profile, etag: string | null): Promise<boolean> {
     const body: Record<string, Entry> = {};
     for (const rel of [...profile.entries.keys()].sort()) body[rel] = profile.entries.get(rel)!;
-    await this.bucket.put(key, JSON.stringify({ entries: body, writes: Object.fromEntries(profile.writes) }));
+    const stored = await this.bucket.put(
+      key,
+      JSON.stringify({ entries: body, writes: Object.fromEntries(profile.writes) }),
+      { onlyIf: etag === null ? { etagDoesNotMatch: '*' } : { etagMatches: etag } },
+    );
+    return stored !== null;
   }
 
   private async read(key: string): Promise<Profile> {
+    return (await this.readVersioned(key)).profile;
+  }
+
+  private async readVersioned(key: string): Promise<{ profile: Profile; etag: string | null }> {
     const entries: Entries = new Map();
     const writes: Writes = new Map();
     const profile = { entries, writes };
     const object = await this.bucket.get(key);
-    if (!object) return profile;
+    if (!object) return { profile, etag: null };
+    const etag = typeof object.etag === 'string' ? object.etag : null;
     try {
       const parsed = JSON.parse(await object.text()) as { entries?: unknown; writes?: unknown };
       if (typeof parsed.writes === 'object' && parsed.writes !== null) {
@@ -406,7 +449,7 @@ export class ReadProfile {
           writes.set(tag, [start, count as number]);
         }
       }
-      if (typeof parsed.entries !== 'object' || parsed.entries === null) return profile;
+      if (typeof parsed.entries !== 'object' || parsed.entries === null) return { profile, etag };
       for (const [rel, raw] of Object.entries(parsed.entries as Record<string, unknown>)) {
         if (entries.size >= READ_PROFILE_MAX_ENTRIES) break;
         if (!validProfilePath(rel) || typeof raw !== 'object' || raw === null) continue;
@@ -423,7 +466,7 @@ export class ReadProfile {
     } catch {
       // A malformed object is an empty profile.
     }
-    return profile;
+    return { profile, etag };
   }
 
   private async listIndex(): Promise<Set<string>> {
