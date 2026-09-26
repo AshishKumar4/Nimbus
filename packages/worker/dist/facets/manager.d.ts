@@ -18,9 +18,8 @@
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
-import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
-import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
@@ -29,6 +28,12 @@ import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabri
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
+/**
+ * The filesystem a launch's module map is built from: the process's bound
+ * supervisor bridge. Its probes and reads go through the resolver's one
+ * adapter over it (requireFsOverBridge), made once per bridge.
+ */
+type LaunchFs = RuntimeFsBridge;
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -64,6 +69,7 @@ export interface FacetExecResult {
         drainPasses: number;
         rpcWrites: number;
         fsRpcReads: number;
+        namespaceRefusals?: number;
     };
 }
 /**
@@ -171,25 +177,16 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
  *               requires and synchronous filesystem reads. Required files
  *               are never removed to satisfy an enrichment budget.
  *
- *   - manifest: path → child names map for directory listings (uncapped,
- *               unchanged from W2.5b). Walks the SqliteVFS regardless of
- *               the content cap so that fs.readdirSync / fs.statSync(dir)
- *               inside the facet see the *true* directory shape rather
- *               than just the subset that fit in the content bundle.
- *
- * Sizing: a manifest entry is one short string per file/dir name. For
- * 1928 files / 319 dirs (fastify install) total manifest JSON is ~50 KiB
- * — three orders of magnitude smaller than the content bundle.
+
+ * The process's view of names and stats is the namespace its store boots on
+ * (vfs/facet-resident-store.ts), never a spawn-time table.
  */
 type FacetVfsDenial = {
     error: 'EACCES';
 };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
-type FacetVfsMetadata = Pick<VfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid'>;
 interface FacetVfsState {
     bundle: FacetVfsBundle;
-    manifest: Record<string, string[]>;
-    metadata: Record<string, FacetVfsMetadata>;
     /**
      * The VFS cursor these cells were read at.
      *
@@ -223,9 +220,6 @@ interface FacetVfsState {
      * not exceed the main module's text-size ceiling.
      */
     bundleSource?: FacetVfsBundleSource;
-    /** Memoized `JSON.stringify(manifest)`, cached for the same reason. */
-    serializedManifest?: string;
-    serializedMetadata?: string;
     /** Move the bundle out of the main module when combined state exceeds its ceiling. */
     bundleSideModulesRequired?: boolean;
     /**
@@ -257,10 +251,9 @@ interface FacetVfsState {
 /**
  * Drop the raw forms of everything that has been serialized, in place.
  *
- * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
- * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
- * a state carrying both from one carrying only the serialized halves, because
- * both facet generators read the serialized halves and nothing else does.
+ * `bundleSource` is a total encoding of `bundle`: no caller can distinguish
+ * a state carrying both from one carrying only the serialized half, because
+ * both facet generators read the serialized half and nothing else does.
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
@@ -274,8 +267,8 @@ export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 /**
  * Drop the serialized forms once a module map has been generated from them.
  *
- * The generated source is a total encoding of all three: every byte of the
- * bundle expression, the manifest and the metadata is inside it. Holding them
+ * The generated source is a total encoding of it: every byte of the bundle
+ * expression is inside it. Holding them
  * afterwards keeps a second copy of the largest thing this DO builds alive for
  * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
  * the isolate was being reset. For the one-shot path that window is the run;
@@ -311,7 +304,7 @@ interface FacetVfsBundleSource {
  * the total is a sum of independent per-cell terms: exact, incremental, and
  * never holding more than one cell's worth of scratch.
  */
-export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<string, string[]>): {
+export declare function encodedBundleSize(bundle: FacetVfsBundle): {
     add(path: string, cell: FacetVfsBundle[string]): void;
     remove(path: string): void;
     readonly bytes: number;
@@ -352,7 +345,7 @@ export declare function assertStagedBundleFitsRpcPayload(serialized: string, bun
  * already reached — but reached only through a SUBPATH — has its main entry
  * skipped; see `mainIsSpeculative`.
  */
-export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }, requiredPaths?: ReadonlySet<string>): Promise<{
@@ -391,7 +384,7 @@ export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, 
  * was hoisted for; it is the same edge kind and the same single level the
  * owner hop already spends.
  */
-export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
+export declare function speculativePackageDirs(vfs: LaunchFs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
 /**
  * X.5-Z3: scan every JS source already in `bundle` for static
  * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
@@ -431,7 +424,7 @@ export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped
  * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
  * `budgetState` counter.
  */
-export declare function addStaticReadFileAssets(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function addStaticReadFileAssets(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): Promise<{
@@ -484,7 +477,7 @@ export declare function addStaticReadFileAssets(vfs: CredentialedVfs, cwd: strin
  * Errors are swallowed: missing assets, unreadable VFS, and
  * non-string readFile inputs are silent skips — matches Z3 posture.
  */
-export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function addStaticReadFileDotfilesAndCompiled(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): Promise<{
@@ -518,7 +511,7 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVf
  * (user scripts, npx-cache files outside node_modules, eval) is
  * a no-op.
  */
-export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: string | undefined, bundle: Record<string, string | Uint8Array>, budgetState: {
+export declare function addBinTargetSiblings(vfs: LaunchFs, scriptPath: string | undefined, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }, bundleProfile: FacetBundleProfile): Promise<{
@@ -537,7 +530,7 @@ export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: s
  * map whether it read the bytes by path or carried them inline. A file that
  * cannot be read is left out; the seam's refusal names the module later.
  */
-export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'readFile'>, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): Promise<WasmImageRecord[]>;
+export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): Promise<WasmImageRecord[]>;
 /**
  * Stage the paths an earlier run of the same entry read synchronously and did
  * not have.
@@ -554,7 +547,7 @@ export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'rea
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
  */
-export declare function addObservedReads(vfs: CredentialedVfs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
+export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
     totalBytes: number;
     fileCount: number;
 }): Promise<{
@@ -627,7 +620,7 @@ export declare const BUNDLE_PRECOMPILE_LOOP: string;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -1215,7 +1208,7 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsManifest' | 'vfsMetadata' | 'vfsCursor' | 'sources' | 'mode'> & {
+    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & {
         command?: string;
         attachedTty?: boolean;
     }): Promise<StagedArtifactExecResult>;

@@ -210,6 +210,16 @@ export declare const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
  * loses every path in it. Imported rather than restated as fresh literals so
  * the generated source cannot drift from the endpoint it calls.
  */
+/**
+ * What a one-shot's store may hold in its heap: the closure bound a one-shot
+ * is already held to (VFS_BUNDLE_MAX_BYTES, the module map it adopts) plus
+ * 16 MiB for the namespace image and the data plan. A one-shot runs in a
+ * 128 MiB isolate, and today holds the same module map in its heap as a
+ * table; past this budget the store degrades as the durable one does near
+ * the session's limit: a fill is refused (the read is an honest miss), and an
+ * own write is held within its own bound or named ENOSPC.
+ */
+export declare const ONE_SHOT_STORE_MEMORY_BYTES: number;
 export declare const RESIDENT_FILL_BATCH_PATHS = 1024;
 export declare const RESIDENT_FILL_BATCH_BYTES: number;
 /**

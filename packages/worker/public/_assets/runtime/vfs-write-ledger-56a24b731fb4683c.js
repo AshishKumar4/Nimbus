@@ -230,6 +230,10 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   const ancestors = __nimbusAwaitAncestorMutations(key);
   const result = previous.then(() => ancestors).then(mutation);
   __nimbusPendingVfsMutations.add(result);
+  // A live handle for the loop from the moment it is queued: the RPC it will
+  // issue counts only once its turn comes, and until then a program awaiting
+  // it would be waiting on nothing the loop could see.
+  if (typeof __nimbusTrackOp === "function") __nimbusTrackOp(result);
   // A failed mutation rejects its own caller but must not poison later writes
   // for the same path or become an unhandled queue-cleanup rejection.
   let tail;

@@ -66,6 +66,8 @@ export function localFacetHost() {
         // A guest on an ordinary stack cannot park on a promise, so every file
         // syscall is answered by the authority's synchronous view.
         parking: 'none',
+        // This isolate is a Bun or Node process, not a Worker isolate.
+        memoryBudgetBytes: 1024 * 1024 * 1024,
         open: (spec) => new LocalFacet(spec),
     };
 }

@@ -51,8 +51,6 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
     cwd: z.ZodString;
     stdin: z.ZodString;
     vfsBundle: z.ZodString;
-    vfsManifest: z.ZodString;
-    vfsMetadata: z.ZodString;
     vfsCursor: z.ZodString;
 }, z.core.$strip>;
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;

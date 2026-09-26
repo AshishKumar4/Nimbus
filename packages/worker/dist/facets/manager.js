@@ -21,7 +21,6 @@ import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { typescriptLoader } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner } from './resident-identity.js';
@@ -29,7 +28,7 @@ import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
-import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
@@ -56,12 +55,21 @@ import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runti
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
+import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, setTransformCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
+const launchAdapters = new WeakMap();
+function filesOf(fs) {
+    let files = launchAdapters.get(fs);
+    if (files === undefined) {
+        files = requireFsOverBridge(fs);
+        launchAdapters.set(fs, files);
+    }
+    return files;
+}
 /** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
 const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 /**
@@ -394,8 +402,6 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
 export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = []) {
     const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
-    const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
-    const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
     return {
         code: `
 ${bundleSource.imports}
@@ -415,10 +421,8 @@ try {
   __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
 }
 
-// VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
+// The module bundle and its pre-compiled modules, at module level (startup time).
 const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __MODULE_VFS_MANIFEST = ${safeManifest};
-const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 // Precompile JS modules AND extensionless CJS entries (bin scripts and
@@ -433,7 +437,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -444,10 +448,30 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __vfsBundle = __MODULE_VFS_BUNDLE;
-    const __vfsManifest = __MODULE_VFS_MANIFEST;
-    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
+    // The same store, namespace and data plan a resident boots on, backed by
+    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
+    // Declared inside the request, beside the shims, so a loader that reuses
+    // this isolate for another run starts it from an empty store.
+${sources.residentStore}
+    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __residentSetStorage(undefined, __supervisor);
+    __nsSetCred(cred);
+    __residentSetPlan(dataPlan);
+    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    // The module bundle stays at module scope: a reused isolate adopts it
+    // again on its next run, and its text cells are shared, not copied.
+    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor);
+    if (__residentBooted.cursor) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+    }
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13).
+    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    if (__namespaceFailure) {
+      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", vfsWrites: {}, residencyMisses: [] });
+    }
+    const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     // Fix 6 orphan counters (same as NodeProcess.run) — count RPC writes
     // that get dropped during isolate teardown so reportExit can report them.
@@ -612,7 +636,10 @@ ${RESIDENCY_MISS_REPORT}
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
       residencyMisses: __nimbusStagingMisses(),
-      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
+      ...(__diag ? { diag: {
+        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
+        namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
+      } } : {}),
     });
   }
 };
@@ -695,8 +722,6 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         cred: opts.cred,
     });
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-    const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
-    const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
     return {
         code: `
 ${bundleSource.imports}
@@ -723,8 +748,6 @@ try {
 // and this object are the same bytes twice, and for pi that is the largest
 // single allocation in the facet before the program starts.
 let __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __MODULE_VFS_MANIFEST = ${safeManifest};
-const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
 // Module evaluation is the ONLY place workerd allows a string to become code —
@@ -803,8 +826,6 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __vfsManifest = __MODULE_VFS_MANIFEST;
-    const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
     // The resident set lives in this facet's own SQLite rather than its heap.
     // A synchronous read cannot block and no JS stack here can be suspended, so
@@ -854,12 +875,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
-    if (__residentBooted.failure) {
-      // A boot that fell short is a smaller resident set, not a dead process:
-      // every path it did not reach reads exactly as it would have without this
-      // store. Surfacing beats a silent capability loss.
-      try { globalThis.__nimbusResidentFillError = __residentBooted.failure; } catch {}
-    }
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
+    // namespace cannot be listed fails here, naming why.
+    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    if (__namespaceFailure) throw new Error(__namespaceFailure);
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
@@ -1102,12 +1122,24 @@ export class NimbusProcess extends DurableObject {
     };
 }
 /**
+ * What the facet store charges itself to hold one cell (facet-resident-store's
+ * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
+ * length) plus 1%, a row per chunk and head, and a page of slack.
+ */
+function residentCellCost(cell) {
+    const isText = typeof cell === 'string';
+    const size = isText ? cell.length : cell.byteLength;
+    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
+    const chunks = Math.max(1, Math.ceil(size / limit));
+    const bytes = isText ? new TextEncoder().encode(cell).byteLength : size;
+    return Math.ceil(bytes * 1.01) + (chunks + 1) * LEDGER_ROW_BYTES + 4096;
+}
+/**
  * Drop the raw forms of everything that has been serialized, in place.
  *
- * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
- * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
- * a state carrying both from one carrying only the serialized halves, because
- * both facet generators read the serialized halves and nothing else does.
+ * `bundleSource` is a total encoding of `bundle`: no caller can distinguish
+ * a state carrying both from one carrying only the serialized half, because
+ * both facet generators read the serialized half and nothing else does.
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
@@ -1120,16 +1152,12 @@ export class NimbusProcess extends DurableObject {
 export function releaseSerializedSources(vfsState) {
     if (vfsState.bundleSource)
         vfsState.bundle = {};
-    if (vfsState.serializedManifest !== undefined)
-        vfsState.manifest = {};
-    if (vfsState.serializedMetadata !== undefined)
-        vfsState.metadata = {};
 }
 /**
  * Drop the serialized forms once a module map has been generated from them.
  *
- * The generated source is a total encoding of all three: every byte of the
- * bundle expression, the manifest and the metadata is inside it. Holding them
+ * The generated source is a total encoding of it: every byte of the bundle
+ * expression is inside it. Holding them
  * afterwards keeps a second copy of the largest thing this DO builds alive for
  * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
  * the isolate was being reset. For the one-shot path that window is the run;
@@ -1146,8 +1174,6 @@ export function releaseSerializedSources(vfsState) {
  */
 export function releaseGeneratedSources(vfsState) {
     vfsState.bundleSource = undefined;
-    vfsState.serializedManifest = undefined;
-    vfsState.serializedMetadata = undefined;
     vfsState.generatedSourcesReleased = true;
 }
 /**
@@ -1181,7 +1207,9 @@ async function facetVfsBundleSourceFor(vfsState, pacer) {
  * pre-fix readFileString contract).
  */
 async function _readBundleCell(vfs, path) {
-    const bytes = await vfs.readFile(path);
+    const bytes = await filesOf(vfs).readBytes(path);
+    if (bytes === null)
+        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT', path });
     try {
         return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     }
@@ -1209,13 +1237,10 @@ function _bundleCellLength(cell) {
  * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
  */
 async function _bundleAdmits(vfs, path, budgetState, perFileCeiling) {
-    let size;
-    try {
-        size = (await vfs.lstat(path)).size;
-    }
-    catch {
+    const stat = await filesOf(vfs).lstat(path).catch(() => null);
+    if (stat === null)
         return false;
-    }
+    const size = stat.size;
     if (perFileCeiling !== undefined && size > perFileCeiling)
         return false;
     return budgetState.totalBytes + size <= VFS_BUNDLE_MAX_BYTES;
@@ -1249,8 +1274,6 @@ function retainedVfsStateBytes(state) {
         for (const moduleSource of Object.values(source.modules))
             bytes += moduleSource.length;
     }
-    bytes += state.serializedManifest?.length ?? 0;
-    bytes += state.serializedMetadata?.length ?? 0;
     return bytes;
 }
 /**
@@ -1330,8 +1353,8 @@ function _jsonEncodedBytes(value) {
     }
     return bytes;
 }
-/** `{"bundle":` + `,"manifest":` + `}` — the frame around the two members. */
-const ENCODED_PAYLOAD_FRAME_BYTES = 23;
+/** `{"bundle":` + `}`: the frame around the one member. */
+const ENCODED_PAYLOAD_FRAME_BYTES = 11;
 /**
  * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
  * accumulated one cell at a time.
@@ -1347,10 +1370,9 @@ const ENCODED_PAYLOAD_FRAME_BYTES = 23;
  * the total is a sum of independent per-cell terms: exact, incremental, and
  * never holding more than one cell's worth of scratch.
  */
-export function encodedBundleSize(bundle, manifest) {
+export function encodedBundleSize(bundle) {
     const cells = new Map();
     let cellSum = 0;
-    const manifestBytes = _jsonEncodedBytes(manifest);
     const self = {
         add(path, cell) {
             if (cells.has(path))
@@ -1368,7 +1390,7 @@ export function encodedBundleSize(bundle, manifest) {
         },
         get bytes() {
             const separators = Math.max(0, cells.size - 1);
-            return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators + manifestBytes;
+            return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators;
         },
     };
     for (const [path, cell] of Object.entries(bundle))
@@ -1677,148 +1699,6 @@ function _fnv1a(s) {
 }
 const MANIFEST_MAX_DEPTH = 12;
 /**
- * Build the manifest pass — uncapped path→child-names map. UNCHANGED
- * from W2.5b; this is the W2.5b root-cause fix and continues to keep
- * fs.readdirSync / fs.statSync honest regardless of which subset of
- * file CONTENT we ship.
- */
-async function buildManifest(vfs, cwd, scriptPath) {
-    const manifest = {};
-    async function walk(dirPath, depth = 0) {
-        if (depth > MANIFEST_MAX_DEPTH)
-            return;
-        const stripped = dirPath.replace(/^\/+/, '');
-        if (stripped in manifest)
-            return;
-        let entries;
-        try {
-            entries = (await vfs.readdir(stripped));
-        }
-        catch {
-            return;
-        }
-        manifest[stripped] = entries.map((e) => e.name);
-        for (const entry of entries) {
-            if (entry.type === 'directory') {
-                const childPath = stripped ? stripped + '/' + entry.name : entry.name;
-                (await walk(childPath, depth + 1));
-            }
-        }
-    }
-    const cwdStripped = cwd.replace(/^\/+/, '');
-    // ── The path from the root down to the working directory ──────────────
-    //
-    // One level each, before the deep walks, so that every directory on that
-    // chain is ENUMERATED rather than merely mentioned. It is what makes a
-    // synchronous "not there" honest for the shape programs probe most: node's
-    // resolver walks upward asking for `<dir>/node_modules` at every level, and
-    // a config lookup asks for a dotfile directory in $HOME. Those paths mostly
-    // do not exist, and answering that requires having listed the directory
-    // they would be in — otherwise the only honest answer is a refusal, and the
-    // resolver pays a round trip per rung to hear it.
-    //
-    // Cheap by construction: one readdir per component, names only, and the
-    // recursion below each stops immediately.
-    {
-        const segments = cwdStripped ? cwdStripped.split('/') : [];
-        for (let i = 0; i < segments.length; i++) {
-            (await walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH));
-        }
-    }
-    (await walk(cwdStripped, 0));
-    const nmDir = cwdStripped + '/node_modules';
-    if ((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir))) {
-        (await walk(nmDir, 0));
-    }
-    // ── Bin-target package + hoisted dependency roots ─────────────────────
-    //
-    // When the entry script lives in a node_modules outside cwd (npx-cache
-    // packages, globally-installed bins, etc.), buildManifest's cwd walk
-    // misses the package's sibling files. The bin's index.js gets
-    // require-walked + greedy-added to the BUNDLE, but the MANIFEST
-    // (which is the source of truth for `fs.readdirSync`) was empty for
-    // those paths — so `readdirSync('/tmp/.npx-cache/.../template-X')`
-    // returned [] and `create-vite` scaffolded zero files.
-    //
-    // Walk the innermost `node_modules/<pkg>/` of `scriptPath` so its
-    // entire package tree is enumerable via readdir. Also walk that
-    // `node_modules` directory itself: global npm bins resolve hoisted
-    // transitive dependencies as siblings of the bin's own package.
-    // Bounded by MANIFEST_MAX_DEPTH; same depth budget as the cwd walk.
-    if (scriptPath) {
-        const sp = scriptPath.replace(/^\/+/, '');
-        const segs = sp.split('/');
-        let nmIdx = -1;
-        for (let i = segs.length - 1; i >= 0; i--) {
-            if (segs[i] === 'node_modules') {
-                nmIdx = i;
-                break;
-            }
-        }
-        if (nmIdx >= 0) {
-            const isScoped = segs[nmIdx + 1]?.startsWith('@');
-            const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
-            if (pkgEnd <= segs.length) {
-                const pkgRoot = segs.slice(0, pkgEnd).join('/');
-                if ((await vfs.exists(pkgRoot)) && (await vfs.isDirectory(pkgRoot))) {
-                    (await walk(pkgRoot, 0));
-                }
-            }
-            const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
-            if ((await vfs.exists(nodeModulesRoot)) && (await vfs.isDirectory(nodeModulesRoot))) {
-                (await walk(nodeModulesRoot, 0));
-            }
-        }
-    }
-    return manifest;
-}
-async function buildVfsMetadata(vfs, manifest, bundle) {
-    const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
-    for (const [directory, children] of Object.entries(manifest)) {
-        paths.add(directory);
-        for (const child of children) {
-            paths.add(directory ? `${directory}/${child}` : child);
-        }
-    }
-    const metadata = {};
-    for (const path of paths) {
-        try {
-            const stat = await vfs.authority.stat(path, { followSymlinks: false });
-            if (!stat)
-                continue;
-            metadata[path] = {
-                type: stat.type,
-                size: stat.size,
-                mode: stat.mode,
-                uid: stat.uid,
-                gid: stat.gid,
-            };
-        }
-        catch {
-            // The credentialed lookup is authoritative; inaccessible ancestors do
-            // not reveal whether a leaf exists.
-        }
-    }
-    return metadata;
-}
-async function addUnreadableDenialCells(vfs, bundle, metadata) {
-    for (const [path, stat] of Object.entries(metadata)) {
-        if (stat.type === 'directory' || path in bundle)
-            continue;
-        try {
-            (await vfs.access(path, 0o4));
-        }
-        catch (error) {
-            if (typeof error === 'object'
-                && error !== null
-                && 'code' in error
-                && error.code === 'EACCES') {
-                bundle[path] = { error: 'EACCES' };
-            }
-        }
-    }
-}
-/**
  * Greedy-oversample every installed package's main entry. The static
  * prefetch via require-resolver covers the require() chain literally
  * present in source; greedy oversampling adds a safety net for dynamic
@@ -1839,7 +1719,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
     let added = 0;
     const cwdStripped = cwd.replace(/^\/+/, '');
     const nmDir = cwdStripped + '/node_modules';
-    if (!((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir))))
+    if (!((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir))))
         return { added };
     const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
     async function addOne(path) {
@@ -1851,7 +1731,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
+            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
                 return false;
             // This is a guess at what a program might require, and the same
             // per-file ceiling the entry-package walk applies bounds it: a
@@ -1945,7 +1825,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             return;
         let meta;
         try {
-            meta = JSON.parse((await vfs.readFileString(pkgDir + '/package.json')));
+            meta = JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json')));
         }
         catch {
             meta = null;
@@ -1977,8 +1857,8 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             let landed = false;
             const tries = /\.[a-z]+$/.test(norm) ? [base] : exts.map((e) => base + e);
             for (const candidate of tries) {
-                if ((await vfs.exists(candidate.replace(/^\/+/, ''))) &&
-                    !(await vfs.isDirectory(candidate.replace(/^\/+/, '')))) {
+                if ((await filesOf(vfs).exists(candidate.replace(/^\/+/, ''))) &&
+                    !(await filesOf(vfs).isDirectory(candidate.replace(/^\/+/, '')))) {
                     if ((await addOne(candidate))) {
                         landed = true;
                         break;
@@ -2025,7 +1905,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                     // typical shared/ dir returns 1-5 files.
                     const sharedDir = entryDir + '/shared';
                     const sharedStripped = sharedDir.replace(/^\/+/, '');
-                    if ((await vfs.exists(sharedStripped)) && (await vfs.isDirectory(sharedStripped))) {
+                    if ((await filesOf(vfs).exists(sharedStripped)) && (await filesOf(vfs).isDirectory(sharedStripped))) {
                         for (const sh of (await vfs.readdir(sharedDir))) {
                             if (sh.type !== 'file')
                                 continue;
@@ -2082,7 +1962,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
 export async function speculativePackageDirs(vfs, cwdStripped, bundle) {
     const runtimeDeps = async (pkgJsonPath) => {
         try {
-            const meta = JSON.parse((await vfs.readFileString(pkgJsonPath)));
+            const meta = JSON.parse((await filesOf(vfs).readFileString(pkgJsonPath)));
             const names = new Set();
             for (const field of ['dependencies', 'optionalDependencies']) {
                 const deps = meta?.[field];
@@ -2111,7 +1991,7 @@ export async function speculativePackageDirs(vfs, cwdStripped, bundle) {
         let dir = fromDir;
         for (;;) {
             const candidate = dir + '/node_modules/' + name;
-            if ((await vfs.exists(candidate + '/package.json')))
+            if ((await filesOf(vfs).exists(candidate + '/package.json')))
                 return candidate;
             const idx = dir.lastIndexOf('/');
             if (idx <= 0)
@@ -2222,7 +2102,7 @@ export async function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
+            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
                 return false;
             if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return false;
@@ -2397,7 +2277,7 @@ export async function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, bud
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
-            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
+            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
                 return false;
             if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return false;
@@ -2586,13 +2466,10 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
                 wasmPaths.push(child);
             if (bundle[child] !== undefined)
                 continue;
-            let size;
-            try {
-                size = (await vfs.lstat(child)).size;
-            }
-            catch {
+            const stat = await filesOf(vfs).lstat(child).catch(() => null);
+            if (stat === null)
                 continue;
-            }
+            const size = stat.size;
             if (size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)
                 continue;
             candidates.push({ path: child, size });
@@ -2658,13 +2535,9 @@ export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
     for (const path of unstagedPaths) {
         if (byPath.has(path))
             continue;
-        let bytes;
-        try {
-            bytes = await vfs.readFile(path);
-        }
-        catch {
+        const bytes = await filesOf(vfs).readBytes(path).catch(() => null);
+        if (bytes === null)
             continue;
-        }
         byPath.set(path, { vfsPath: '/' + stripLeadingSlashes(path), digest: wasmImageDigest(bytes) });
     }
     return [...byPath.values()];
@@ -2697,13 +2570,9 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
             requiredPaths.add(path);
             continue;
         }
-        let stat;
-        try {
-            stat = (await vfs.lstat(path));
-        }
-        catch {
+        const stat = await filesOf(vfs).lstat(path).catch(() => null);
+        if (stat === null)
             continue;
-        }
         if (stat.type === 'directory')
             continue;
         candidates.push({ path, size: stat.size });
@@ -2736,7 +2605,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const closure = await prefetchForRequire(vfs, '', path.slice(0, path.lastIndexOf('/')), '/' + path);
+        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', path.slice(0, path.lastIndexOf('/')), '/' + path);
         if ('kind' in closure)
             continue;
         for (const [dep, content] of Object.entries(closure.bundle)) {
@@ -2977,7 +2846,7 @@ async function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return;
         try {
-            if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped)))
+            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
                 return;
             if (!(await _bundleAdmits(vfs, stripped, budgetState)))
                 return;
@@ -3430,10 +3299,10 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
 async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
-    const admitted = await vfs.authority.acquire(null, 0);
+    const admitted = await vfs.acquire(null, 0);
     const cursor = { epoch: admitted.epoch, rev: admitted.rev };
     // 1. Static reachable-set walk from entry.
-    const prefetch = (await prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes));
+    const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes));
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
         // snapshot. Surface it as the process's own failure rather than a
@@ -3592,7 +3461,6 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    from content cap so fs.readdirSync remains honest even if the
     //    content for a given file was capped out.
     await paceAfterPass();
-    const manifest = (await buildManifest(vfs, cwd, scriptPath));
     await paceAfterPass();
     // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
     //    units) because that is what workerd charges against the per-module
@@ -3602,7 +3470,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    Evicting an enrichment file is a real loss — the sync fs reads it
     //    exists for cannot fall back to the supervisor — so the paths that
     //    went are named rather than silently dropped.
-    const size = encodedBundleSize(bundle, manifest);
+    const size = encodedBundleSize(bundle);
     if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
         // A compiled cell goes with its source: required when the source is.
         //
@@ -3648,21 +3516,12 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         }
     }
     const fileCount = Object.keys(bundle).length;
-    const metadata = (await buildVfsMetadata(vfs, manifest, bundle));
-    (await addUnreadableDenialCells(vfs, bundle, metadata));
-    await paceAfterPass();
-    // Denial cells land after the eviction pass, so account for them before
-    // deciding where the bundle has to live.
-    for (const [path, cell] of Object.entries(bundle))
-        size.add(path, cell);
     const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
     // Suppress lint: `greedy.added` is observed only via diagnostics.
     void greedy;
     const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
     return {
         bundle,
-        manifest,
-        metadata,
         cursor,
         reachableCount: fileCount,
         truncated,
@@ -4095,15 +3954,11 @@ export class FacetManager {
             return modules;
         if (!this.filesystem)
             throw new Error('Process filesystem authority is not initialized');
-        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
+        const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         for (const image of wasmImports) {
-            let bytes;
-            try {
-                bytes = (await vfs.readFile(stripLeadingSlashes(image.vfsPath)));
-            }
-            catch {
+            const bytes = await filesOf(vfs).readBytes(stripLeadingSlashes(image.vfsPath)).catch(() => null);
+            if (bytes === null)
                 continue;
-            }
             modules[image.moduleName] = {
                 wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
             };
@@ -4119,7 +3974,7 @@ export class FacetManager {
     async _planResidentData(entry, vfsState, cwd, home, pacer) {
         if (!this.vfs || !this.filesystem)
             return { paths: [], storageBytes: 0 };
-        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
+        const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const started = Date.now();
         const trace = (what) => {
             if (!this.debugEnabled)
@@ -4135,27 +3990,22 @@ export class FacetManager {
         let names = 0;
         const plan = await planFacetData({
             list: async (after) => {
-                const page = await vfs.authority.list(after, FS_LIST_PAGE_LIMIT);
+                const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
                 names += page.entries.length;
                 trace(`page ${++pages}: ${page.entries.length} entries`);
                 return { entries: page.entries, next: page.next };
             },
             readText: async (path) => {
                 try {
-                    return await vfs.readFileString(path);
+                    return await filesOf(vfs).readFileString(path);
                 }
                 catch {
                     return null;
                 }
             },
             stat: async (path) => {
-                try {
-                    const st = await vfs.stat(path);
-                    return { kind: st.type, size: st.size };
-                }
-                catch {
-                    return null;
-                }
+                const st = await filesOf(vfs).stat(path).catch(() => null);
+                return st && { kind: st.type, size: st.size };
             },
         }, {
             cwd,
@@ -4167,11 +4017,17 @@ export class FacetManager {
         });
         trace(`planned ${plan.paths.length}`);
         // What the facet's store will hold (N18), in the cost its store charges
-        // itself (facet-resident-store's __residentCellBytes): the planned bytes on
+        // itself (facet-resident-store's __residentCellCost): the planned bytes on
         // overflow pages (1% over), a head and chunk rows per file, a namespace
         // row per name, and slack for the last write's page.
         const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
-        const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + 65_536;
+        // And the module map, which the store adopts at boot: the process's code.
+        let moduleBytes = 0;
+        for (const cell of Object.values(vfsState.bundle)) {
+            // A denial is a head row only.
+            moduleBytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
+        }
+        const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
         return { paths: plan.paths, storageBytes };
     }
     /**
@@ -4250,7 +4106,7 @@ export class FacetManager {
             else {
                 let source;
                 try {
-                    source = await vfs.readFileString(path);
+                    source = await filesOf(vfs).readFileString(path);
                 }
                 catch {
                     continue;
@@ -4273,12 +4129,12 @@ export class FacetManager {
     }
     async _buildProcessBundle(entry, spec, pacer) {
         if (!this.vfs) {
-            return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+            return { bundle: {}, reachableCount: 0, truncated: false };
         }
         this.imageStore.ensureDir();
         if (!this.filesystem)
             throw new Error('Process filesystem authority is not initialized');
-        const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
+        const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const { cred } = entry;
         const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
@@ -4311,10 +4167,6 @@ export class FacetManager {
         vfsState.bundleKey = key;
         vfsState.bundlePaths = Object.keys(vfsState.bundle);
         vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer);
-        vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
-        vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
-        // Two more serializations of the same weight as the passes before them.
-        await pacer.spend(vfsState.serializedManifest.length + vfsState.serializedMetadata.length);
         // The only consumer of the raw cells past this point is a single boolean,
         // so answer it now rather than hold ~17 MB (pi) to answer it later.
         vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
@@ -4567,7 +4419,7 @@ export class FacetManager {
         }
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn
-            ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
+            ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
             : undefined;
         const abortController = new AbortController();
         // Ctrl-C / kill on a user program has to end the in-flight run, not just
@@ -4578,7 +4430,11 @@ export class FacetManager {
         const onShellAbort = () => abortController.abort();
         opts.signal?.addEventListener('abort', onShellAbort, { once: true });
         try {
-            const result = await this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink);
+            // A one-shot holds its module map and what it was seen to read (both in
+            // the bundle), and plans nothing beyond them: a data plan is chosen from
+            // a listing of the namespace, and a one-shot takes no listing of its own
+            // (§2.8: the principal's image is where that comes from).
+            const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
             this._flushVfsWrites(result, entry.pid);
             this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
             this.processes.exit(entry.pid, result.exitCode);
@@ -4594,8 +4450,7 @@ export class FacetManager {
                     drainPasses: result.diag?.drainPasses ?? 0,
                     moduleMapBytes: diagSink.moduleMapBytes,
                     bundleBytes: diagSink.bundleBytes,
-                    manifestBytes: diagSink.manifestBytes,
-                    metadataBytes: diagSink.metadataBytes,
+                    namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
                     rpcWrites: result.diag?.rpcWrites ?? 0,
                     fsRpcReads: result.diag?.fsRpcReads ?? 0,
                     cacheHit: vfsState.cacheHit ?? false,
@@ -4666,7 +4521,7 @@ export class FacetManager {
         }
     }
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
-    async _execViaLoader(code, opts, entry, vfsState, signal, diagSink) {
+    async _execViaLoader(code, opts, entry, vfsState, dataPlan, signal, diagSink) {
         // Answered by _buildProcessBundle while the raw cells were still in
         // hand; re-deriving it here is what forced them to be retained.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
@@ -4688,6 +4543,7 @@ export class FacetManager {
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             vfsCursor: vfsState.cursor,
+            dataPlan,
             ...(diagSink ? { diag: true } : {}),
         });
         try {
@@ -4723,8 +4579,6 @@ export class FacetManager {
                         for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
                             diagSink.bundleBytes += _encodedSourceBytes(source);
                         }
-                        diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
-                        diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
                     }
                     if (!vfsState.cacheRetained)
                         releaseGeneratedSources(vfsState);
@@ -4872,10 +4726,10 @@ export class FacetManager {
         // other writes flush live through the SUPERVISOR RPC bridge.
         if (this.vfs)
             this.imageStore.ensureDir();
-        const processVfs = this.filesystem ? new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred })) : null;
+        const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined, DEFAULT_FACET_BUNDLE_PROFILE)
-            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+            : { bundle: {}, reachableCount: 0, truncated: false };
         const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
         assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
         const stageSpec = {
@@ -4886,8 +4740,6 @@ export class FacetManager {
             cwd: opts.cwd,
             stdin: opts.stdin ?? '',
             vfsBundle,
-            vfsManifest: JSON.stringify(vfsState.manifest),
-            vfsMetadata: JSON.stringify(vfsState.metadata),
             vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
         };
         return { pid, command, stageSpec };
@@ -5630,8 +5482,6 @@ export class FacetManager {
             }
             moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
         }
-        const manifestBytes = diagOn ? _encodedSourceBytes(vfsState.serializedManifest ?? '') : 0;
-        const metadataBytes = diagOn ? _encodedSourceBytes(vfsState.serializedMetadata ?? '') : 0;
         const cacheHit = vfsState.cacheHit ?? false;
         const vfsCursor = vfsState.cursor;
         if (vfsState.bundleKey)
@@ -5710,8 +5560,7 @@ export class FacetManager {
                     // when it stayed inline it rides inside worker.js and shows up only
                     // in the total.
                     bundleBytes,
-                    manifestBytes,
-                    metadataBytes,
+                    namespaceRefusals: 0,
                     rpcWrites: 0,
                     fsRpcReads: 0,
                     cacheHit,
