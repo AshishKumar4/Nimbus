@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "57e91fdfc32103e79e4fddd1ae7523106f9edeab262d94606187e4f4f7c9e142",
+  "fingerprint": "21473388a3ca68f02ccc19a785700c23d1e932dda70c979ee82a34e519145770",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -225,9 +225,9 @@
     "packages/core/dist/runtime/port-registry.d.ts": "bab2dab6490aaa5de1c87491ea3523d8db17dfa0ce622d2e949f166e771b7047",
     "packages/core/dist/runtime/port-registry.d.ts.map": "50e853bd2ab7b924461aa2d46980e26d1f9aaa65b342d99cec119648cacdddbe",
     "packages/core/dist/runtime/port-registry.js": "231174d548c3c12b4af29e8742dae959c0624c31fa1af756eabbe33da869f68c",
-    "packages/core/dist/runtime/process-files.d.ts": "d01d2df5ddb1d126efe3bc1632ef771741560551c2c8379768b735514dadf767",
-    "packages/core/dist/runtime/process-files.d.ts.map": "a665afb8d2f9043e7c4f00d86a3348d658074b5683bc34ed2bcbf949b80087a0",
-    "packages/core/dist/runtime/process-files.js": "95fff92a06a2e9ba6715948b8a7c0f8785c48a613036692b410cfd83e5cb43cc",
+    "packages/core/dist/runtime/process-files.d.ts": "4a5858b1b606df1db2b092d463b9f1019b0c0d791e02f88fde58516c515c10fa",
+    "packages/core/dist/runtime/process-files.d.ts.map": "5dbe7b2ef458f546b8ebd02f1e5c2399c4eb16261c1f2fd8c9bce280a6a57cc9",
+    "packages/core/dist/runtime/process-files.js": "f865bcbaad6dd60604142104db97856588d8562d8feb599e0d4fcef2c40bbea9",
     "packages/core/dist/runtime/process-input-routing.d.ts": "907df5f7eb7fc180bb78c1984fdaa6265bdb8411d9dadc8f79c191d7971f2f24",
     "packages/core/dist/runtime/process-input-routing.d.ts.map": "ef2d1104c98e0921b1c5f02a996f27da7b34b44ea5cd9919472f6abc640f9bb6",
     "packages/core/dist/runtime/process-input-routing.js": "4c38bf38518ea0e42c3205ea19ce372756b15f881f6e093c34c4cfc95a9aa9f1",
@@ -1022,7 +1022,7 @@
     "packages/core/src/runtime/opentui-wasm-backend.ts": "75cc3af3aa7fc38386726b864b939aaf6d70454f7b2f0ee46efb612e6fab6c6b",
     "packages/core/src/runtime/os-contracts.ts": "7451c56d63c736e73c4811c384aebf4fce2c645c282885202dad45ce306dc2d8",
     "packages/core/src/runtime/port-registry.ts": "ed2213c27b12031a054129686a9bad9200f2a06f957d0712c1b16da1e7b40b71",
-    "packages/core/src/runtime/process-files.ts": "e90240d2398fcd2788176a0f8bfa883dd2c50a176f8d0e871df61b575e985f18",
+    "packages/core/src/runtime/process-files.ts": "ccfb563c997f54f6aff7770b22cc1b81f80e06c12a589013e03d748f782e50ff",
     "packages/core/src/runtime/process-input-routing.ts": "96ef539c05d1294945fd6988addadeba99b3748abfe13a76280ea0cfabc93830",
     "packages/core/src/runtime/process-input.ts": "19e1fd6d94f10f173bdd5f2ae8747ceb699965d1b34e1f48be4f9bba3b11323a",
     "packages/core/src/runtime/process-io-protocol.ts": "29dceff8de177b9c8186832ba36c67a8ffd616676b32424bbd21f9d5ba1dd62d",

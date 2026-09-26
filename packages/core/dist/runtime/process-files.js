@@ -309,10 +309,33 @@ export class ProcessView {
             throw new VfsError('ENOENT', 'no such file or directory', path);
         return bytes;
     }
+    /**
+     * Text is written as UTF-8, as a process's write(2) of a string would.
+     * `mode` applies only if this creates the file, and at creation
+     * (open(O_CREAT|O_TRUNC, mode), then the bytes): an existing file keeps its
+     * mode, and a new one is never visible at another mode.
+     */
     async writeFile(path, data, options) {
-        await this.call(path, () => this.process.writeFile(path, data));
-        if (options?.mode !== undefined)
-            await this.chmod(path, options.mode);
+        if (options?.mode === undefined) {
+            await this.call(path, () => this.process.writeFile(path, data));
+            return;
+        }
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        await this.call(path, async () => {
+            const handle = await this.process.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+            try {
+                let offset = 0;
+                while (offset < bytes.length) {
+                    const written = await this.process.write(handle.id, offset, bytes.subarray(offset));
+                    if (written <= 0)
+                        throw new VfsError('EIO', 'short write', path);
+                    offset += written;
+                }
+            }
+            finally {
+                await this.process.close(handle.id);
+            }
+        });
     }
     async readdir(path) {
         const entries = await this.call(path, () => this.process.readdir(path));
@@ -367,7 +390,19 @@ export class ProcessView {
         return target;
     }
     async chmod(path, mode) { await this.call(path, () => this.process.chmod(path, mode)); }
-    async chown(path, uid, gid) { await this.call(path, () => this.process.chown(path, uid, gid)); }
+    /** chown(2): a null side keeps what the file has (chown -1). */
+    async chown(path, uid, gid) {
+        await this.call(path, async () => {
+            if (uid === null || gid === null) {
+                const stat = await this.process.stat(path);
+                if (stat === null)
+                    throw new VfsError('ENOENT', 'no such file or directory', path);
+                uid ??= stat.uid;
+                gid ??= stat.gid;
+            }
+            await this.process.chown(path, uid, gid);
+        });
+    }
     async utimes(path, atimeMs, mtimeMs) {
         await this.call(path, () => this.process.utimes(path, atimeMs, mtimeMs));
     }
@@ -380,11 +415,36 @@ export class ProcessView {
             return 1;
         });
     }
+    /** Create the file if absent, and set its times to now (touch). */
+    async touch(path) {
+        await this.call(path, async () => {
+            const handle = await this.process.open(path, { write: true, create: true });
+            await this.process.close(handle.id);
+            const now = Date.now();
+            await this.process.utimes(path, now, now);
+        });
+    }
+    /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
+    async readFileUncached(path) {
+        const stat = await this.stat(path);
+        if (stat === null)
+            throw new VfsError('ENOENT', 'no such file or directory', path);
+        const result = new Uint8Array(stat.size);
+        for (let offset = 0; offset < result.length;) {
+            const bytes = await this.readRangeUncached(path, offset, Math.min(65536, result.length - offset));
+            if (bytes.length === 0)
+                throw new VfsError('ESTALE', 'changed during the read', path);
+            result.set(bytes, offset);
+            offset += bytes.length;
+        }
+        return result;
+    }
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     async access(path, mode) { await this.call(path, () => this.process.access(path, mode)); }
     async realpath(path) { return await this.call(path, () => this.process.realpath(path)); }
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
-    async appendFile(path, data) {
+    async appendFile(path, content) {
+        const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
         await this.call(path, async () => {
             const handle = await this.process.open(path, { write: true, append: true, create: true });
             try {

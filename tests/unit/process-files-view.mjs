@@ -41,6 +41,31 @@ assert.equal(await vfs.realpath('/home/user/d/../d/e'), '/home/user/d/e');
 assert.deepEqual(await vfs.removeRecursive('/home/user/d'), { removed: ['/home/user/d'], kept: [], failures: [] });
 assert.equal(await exists(vfs, '/home/user/d'), false);
 
+// writeFile's mode applies at creation only, and atomically (open(O_CREAT, mode)).
+await vfs.writeFile('/home/user/kept', enc.encode('a'));
+await vfs.chmod('/home/user/kept', 0o644);
+await vfs.writeFile('/home/user/kept', enc.encode('b'), { mode: 0o600 });
+assert.equal(((await vfs.stat('/home/user/kept')).mode & 0o777).toString(8), '644', 'an existing file keeps its mode');
+assert.equal(await readText(vfs, '/home/user/kept'), 'b');
+const seen = [];
+const watching = files.bind({ pid: 12, cred: USER });
+const stop = watching.subscribe('/home/user/fresh', () => seen.push(watching.stat('/home/user/fresh')?.mode & 0o777));
+await vfs.writeFile('/home/user/fresh', 'new text', { mode: 0o600 });
+stop();
+assert.equal(((await vfs.stat('/home/user/fresh')).mode & 0o777).toString(8), '600', 'a new file is created with the mode (minus umask)');
+assert.ok(seen.every((mode) => mode === undefined || mode === 0o600), `never visible at another mode: ${seen.map((m) => m?.toString(8))}`);
+await vfs.writeFile('/home/user/masked', 'x', { mode: 0o666 });
+assert.equal(((await vfs.stat('/home/user/masked')).mode & 0o777).toString(8), '644', 'the umask applies');
+
+// touch, chown -1, text appends, an uncached read.
+await vfs.touch('/home/user/t');
+assert.equal((await vfs.stat('/home/user/t')).size, 0);
+await vfs.appendFile('/home/user/t', 'text');
+assert.equal(new TextDecoder().decode(await vfs.readFileUncached('/home/user/t')), 'text');
+await vfs.chown('/home/user/t', null, 1000);
+assert.equal((await vfs.stat('/home/user/t')).uid, 1000, 'chown with a null uid keeps the owner');
+assert.equal(await code(() => vfs.chown('/home/user/none', null, 1000)), 'ENOENT');
+
 // Another owner's lease: the view goes through the process's bridge, so EBUSY.
 await vfs.mkdir('/home/user/clone');
 await vfs.writeFile('/home/user/clone/f', enc.encode('x'));

@@ -73,7 +73,13 @@ export declare class ProcessView implements VFS {
         follow?: boolean;
     }): Promise<VfsStat | null>;
     readFile(path: string): Promise<Uint8Array>;
-    writeFile(path: string, data: Uint8Array, options?: {
+    /**
+     * Text is written as UTF-8, as a process's write(2) of a string would.
+     * `mode` applies only if this creates the file, and at creation
+     * (open(O_CREAT|O_TRUNC, mode), then the bytes): an existing file keeps its
+     * mode, and a new one is never visible at another mode.
+     */
+    writeFile(path: string, data: Uint8Array | string, options?: {
         mode?: number;
     }): Promise<void>;
     readdir(path: string): Promise<VfsDirent[]>;
@@ -98,17 +104,22 @@ export declare class ProcessView implements VFS {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;
-    chown(path: string, uid: number, gid: number): Promise<void>;
+    /** chown(2): a null side keeps what the file has (chown -1). */
+    chown(path: string, uid: number | null, gid: number | null): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
     copy(from: string, to: string, options?: {
         recursive?: boolean;
         preserve?: boolean;
     }): Promise<number>;
+    /** Create the file if absent, and set its times to now (touch). */
+    touch(path: string): Promise<void>;
+    /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
+    readFileUncached(path: string): Promise<Uint8Array>;
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
-    appendFile(path: string, data: Uint8Array): Promise<void>;
+    appendFile(path: string, content: Uint8Array | string): Promise<void>;
 }
 //# sourceMappingURL=process-files.d.ts.map
