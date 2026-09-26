@@ -104,7 +104,7 @@ export class NimbusWorkspace {
         this.commands = new SandboxCommandsImpl(shell, registry);
         // The shell's own process view: a host calling `.fs` acts as the
         // session user, never as the kernel.
-        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd());
+        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd(), vfs, CRED_SESSION_USER);
     }
     static async create(options) {
         if (options.fabric)

@@ -1,5 +1,6 @@
+import { W_OK, X_OK } from '../../../runtime/process-files.js';
+import { isVfsError, VfsError } from '../../../vfs/vfs-error.js';
 import { resolve, dirname } from '../utils/path.js';
-import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
@@ -8,9 +9,17 @@ import { statOrThrow } from '../../../vfs/vfs.js';
 export class SandboxFsImpl {
     vfs;
     getCwd;
-    constructor(vfs, getCwd) {
+    store;
+    cred;
+    constructor(vfs, getCwd, 
+    /** The SQLite filesystem the namespace is rooted at: what snapshots pin. */
+    store, 
+    /** Who this handle acts as (a snapshot view and restore's check use it). */
+    cred) {
         this.vfs = vfs;
         this.getCwd = getCwd;
+        this.store = store;
+        this.cred = cred;
     }
     resolvePath(path) {
         return resolve(this.getCwd(), path);
@@ -73,65 +82,77 @@ export class SandboxFsImpl {
             await this.writeFile(path, content);
         }
     }
-    /** Directories to skip during export (virtual providers) */
-    static SKIP_DIRS = new Set(['/proc', '/dev']);
-    async exportSnapshot() {
-        const entries = [];
-        const walk = async (absPath) => {
-            if (SandboxFsImpl.SKIP_DIRS.has(absPath))
-                return;
-            const stat = await statOrThrow(this.vfs, absPath);
-            if (stat.type === 'directory') {
-                // Add directory entry (skip root itself)
-                if (absPath !== '/') {
-                    entries.push({
-                        path: absPath,
-                        data: new Uint8Array(0),
-                        type: 'directory',
-                        mode: stat.mode,
-                        mtime: stat.mtimeMs,
-                    });
-                }
-                const children = (await this.vfs.readdir(absPath));
-                for (const child of children) {
-                    const childPath = absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`;
-                    (await walk(childPath));
-                }
-            }
-            else {
-                entries.push({
-                    path: absPath,
-                    data: (await this.vfs.readFile(absPath)),
-                    type: 'file',
-                    mode: stat.mode,
-                    mtime: stat.mtimeMs,
-                });
-            }
+    // ── The content store ──
+    async snapshot(name, options = {}) {
+        return options.quiesce ? await this.store.snapshot(name, { quiesce: true }) : this.store.snapshot(name);
+    }
+    async snapshots() { return this.store.snapshots(); }
+    async dropSnapshot(name) { return this.store.dropSnapshot(name); }
+    async diff(from, to, options) {
+        return this.store.diff(from, to, options);
+    }
+    at(name) {
+        const view = this.store.at(name, this.cred);
+        const key = (path) => this.resolvePath(path).replace(/^\/+/, '');
+        const reader = {
+            async readFile(path, encoding) {
+                return encoding === null ? view.readFile(key(path)) : view.readFileString(key(path));
+            },
+            async readdir(path) { return view.readdir(key(path)); },
+            async stat(path) { const s = view.stat(key(path)); return { type: s.type, size: s.size, mtime: s.mtime }; },
+            async exists(path) { return view.exists(key(path)); },
+            async writeFile(path) { throw new VfsError('EROFS', 'a snapshot is read-only', path); },
         };
-        (await walk('/'));
-        const tar = createTar(entries);
-        return (await compressGzip(tar));
+        return reader;
     }
-    async importSnapshot(data) {
-        const tar = await decompressGzip(data);
-        const entries = parseTar(tar);
-        // Process directories first, then files, to ensure parents exist
-        const dirs = entries.filter((e) => e.type === 'directory');
-        const files = entries.filter((e) => e.type === 'file');
-        for (const entry of dirs) {
-            const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-            if (!(await this.vfs.exists(path))) {
-                (await this.vfs.mkdir(path, { recursive: true }));
+    async restore(name, options = {}) {
+        const subtree = options.subtree === undefined ? undefined : this.resolvePath(options.subtree);
+        await this.assertRestorable(name, subtree);
+        return await this.store.restoreAsync(name, subtree === undefined ? {} : { subtree });
+    }
+    /**
+     * Whether the session user may write every path `restore(name)` would
+     * change: the file itself for a rewrite, its parent for a name that
+     * appears or goes. The first it may not is EACCES, before any change.
+     */
+    async assertRestorable(name, subtree) {
+        const within = subtree === undefined ? null : subtree.replace(/^\/+/, '');
+        for (let after;;) {
+            const page = this.store.diff(name, null, { after });
+            for (const entry of page.entries) {
+                if (within !== null && within !== '' && entry.path !== within && !entry.path.startsWith(`${within}/`))
+                    continue;
+                const path = `/${entry.path}`;
+                const target = entry.change === 'modified' ? path : dirname(path);
+                try {
+                    await this.vfs.access(target, entry.change === 'modified' ? W_OK : W_OK | X_OK);
+                }
+                catch (error) {
+                    if (isVfsError(error, 'ENOENT') && entry.change !== 'modified')
+                        continue;
+                    throw new VfsError('EACCES', 'restore would change a path the session user cannot write', path);
+                }
             }
-        }
-        for (const entry of files) {
-            const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-            // Ensure parent directory exists
-            const parent = dirname(path);
-            if (parent !== '/' && !(await this.vfs.exists(parent))) {
-                (await this.vfs.mkdir(parent, { recursive: true }));
-            }
-            (await this.vfs.writeFile(path, entry.data));
+            if (page.next === null)
+                return;
+            after = page.next;
         }
     }
+    async exportPage(options) {
+        return this.store.exportPage({ ...options, root: options.root === undefined ? undefined : this.resolvePath(options.root) });
+    }
+    async exportChunks(hashes) { return this.store.exportChunks(hashes); }
+    async importPage(dst, page, chunks) {
+        const target = this.resolvePath(dst);
+        // The session user makes `dst` (or writes into it): its parent must be theirs to write.
+        if (await this.vfs.exists(target))
+            await this.vfs.access(target, W_OK | X_OK);
+        else
+            await this.vfs.access(dirname(target), W_OK | X_OK);
+        return this.store.importPage(target, page, chunks);
+    }
+    async pageDigest(options) {
+        return this.store.pageDigest({ ...options, root: options.root === undefined ? undefined : this.resolvePath(options.root) });
+    }
+    async storeStats() { return this.store.storeStats(); }
 }

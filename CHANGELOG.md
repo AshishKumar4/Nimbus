@@ -70,6 +70,15 @@ option, with its replacement:
   still throws.
 - The mount listing (`mounts(cred)`, `df`, `mount`, `/proc/mounts`) is in
   mount order (`/`, `/proc`, `/dev`, then the embedder's), as on Linux.
+- `ws.fs` (`SandboxFs`) no longer has `exportSnapshot()`/`importSnapshot()`
+  (a tar.gz of the whole tree). It has the content store instead:
+  `snapshot(name, { quiesce })`, `snapshots()`, `dropSnapshot(name)`,
+  `diff(from, to, { after, limit })`, `at(name)` (read-only), `restore(name,
+  { subtree })`, `exportPage`/`exportChunks`/`importPage`/`pageDigest` and
+  `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts. `restore`
+  through `ws.fs` changes only what the session user may write, and refuses
+  with EACCES, before any change, otherwise. The kernel restores through
+  `ws.vfs.restore()`.
 - The content store's schema is 3. A database a schema-2 build wrote (staging
   and throwaways only) is reset when it opens, and `legacyReset` tells the
   session once.

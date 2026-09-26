@@ -115,6 +115,8 @@ export interface ShellStateSnapshot {
 export function ensureSessionStateSchema(ctx: any): void {
   const sql = ctx?.storage?.sql;
   if (!sql) return;
+  // The kernel's mount list, retired with the kernel filesystem.
+  sql.exec('DROP TABLE IF EXISTS nimbus_kernel_mounts');
   sql.exec(
     'CREATE TABLE IF NOT EXISTS nimbus_session_kv (' +
     'k TEXT PRIMARY KEY, ' +
