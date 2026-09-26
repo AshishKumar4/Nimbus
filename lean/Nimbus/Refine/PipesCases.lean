@@ -142,7 +142,7 @@ def genCase : Gen (Option Json) := do
 
 def fixture : String :=
   fixtureText [("fixture", .str "pipes"), ("model", .str "Nimbus.Runtime.Pipes (Rules.ok, per-pipe budget)"),
-      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends while its pipe holds at most B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with the named error; the last read end's close discards what is in flight")]
+      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends while its pipe holds at most B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with a named error (match any {aborted}: the runtime has one message for both, with its B figure); the last read end's close discards what is in flight; the scheduler order is lowest runnable pid first, without N24's deferral of children (one valid schedule: replay it in the given order)")]
     (directed ++ runGen 0x50495045 (casesOf 150 genCase))
 
 end Nimbus.Refine.PipesCases
