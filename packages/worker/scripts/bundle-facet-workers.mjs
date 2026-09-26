@@ -406,6 +406,17 @@ async function main() {
     'w7-frame',
   );
 
+  // 3. Node's ESM resolver, which the node shims embed as source (their
+  //    process's import() loader). One compile of it, here, so the shims'
+  //    copy is the same text whatever toolchain later evaluates the shims.
+  const esmResolver = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'esm-resolver.ts'),
+    'esm-resolver',
+  );
+  if (!/^function createEsmResolver\(/m.test(esmResolver)) {
+    throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
+  }
+
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
   const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
@@ -417,6 +428,7 @@ async function main() {
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
+    ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *',
     ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -435,6 +447,9 @@ async function main() {
     `export const TAR_STREAM_PREAMBLE: string = ${tarEncoded};`,
     '',
     `export const W7_FRAME_PREAMBLE: string = ${w7Encoded};`,
+    '',
+    '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
+    `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,
     '',
   ].join('\n');
 

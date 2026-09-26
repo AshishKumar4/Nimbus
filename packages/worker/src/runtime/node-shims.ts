@@ -44,6 +44,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -67,6 +68,7 @@ const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
 // One module-cell compile for every facet (core/_shared/compiled-fn.ts).
 // Interpolated into the emitted shim below as ${COMPILED_FN_JS}.
 const COMPILED_FN_JS = MK_COMPILED_FN_SOURCE;
+
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
 // constants.ts for the rationale (create-astro preflight, etc.).
@@ -8355,34 +8357,6 @@ builtins["node:util/types"] = builtins["util/types"];
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
 
-/**
- * A cell's dynamic import() call.
- *
- * A cell is compiled with new Function, so an import() left in its body
- * is the RUNTIME's: it resolves against the module map and hands back the
- * platform's own builtins, not this process's. Real Vite reaches
- * node:http that way (config.js:14968), got a server whose listen bound no
- * port here, and the facet exited with no handles the moment boot returned.
- *
- * The ESM→CJS rewriter routes those calls here with the cell's own
- * require, so resolution is the one the process already has. The result is
- * shaped as a module namespace, since import() resolves to one and callers
- * destructure named exports off it.
- */
-globalThis.__nimbusCellImport = (req, id) => Promise.resolve().then(() => {
-  const loaded = req(id);
-  if (loaded && (loaded.__esModule || loaded[Symbol.toStringTag] === "Module")) return loaded;
-  // A CJS module's exports ARE the namespace's named exports, with the whole
-  // object as the default export — what an ESM importer of a CJS module sees.
-  if (loaded && (typeof loaded === "object" || typeof loaded === "function")) {
-    const ns = Object.create(null);
-    for (const key of Object.keys(loaded)) ns[key] = loaded[key];
-    if (!("default" in ns)) ns.default = loaded;
-    Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
-    return ns;
-  }
-  return { default: loaded };
-});
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -8941,39 +8915,124 @@ function __resolveFrom(id, fromDir) {
   return __resolveNodeModule(id, fromDir);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ──  import() — Node's ESM loader ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// A cell's dynamic import() reaches here with its module's URL
+// (core/runtime/dynamic-import-rewrite.ts). Resolution is Node's ESM
+// algorithm (core/_shared/esm-resolver.ts, interpolated below): the "import"
+// conditions, no extension probing, a directory refused by name, file: URLs,
+// Node's error codes and messages. What resolves loads through the same
+// module cache require uses, shaped as the namespace Node would give.
+// Node's builtins that exist only with the scheme; the rest of the table is
+// the process's own builtins, undici among them, which the process provides
+// in place of any installed copy (see builtins.undici above).
+const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
+// Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
+// scripts/bundle-facet-workers.mjs): declares createEsmResolver.
+${ESM_RESOLVER_PREAMBLE}
+const __esmResolver = createEsmResolver({
+  kind(path) {
+    const st = __fsMod.statSync(path, { throwIfNoEntry: false });
+    return !st ? null : st.isDirectory() ? "directory" : st.isFile() ? "file" : null;
+  },
+  realpath(path) {
+    try { return __fsMod.realpathSync(path); } catch { return path; }
+  },
+  readText(path) { return __readFileOr(path, null); },
+  isBuiltin(specifier) {
+    const scheme = specifier.startsWith("node:");
+    const name = scheme ? specifier.slice(5) : specifier;
+    if (!scheme && __ESM_SCHEME_ONLY_BUILTINS.has(name)) return false;
+    return Object.prototype.hasOwnProperty.call(builtins, name);
+  },
+  cjsResolve(specifier, parentPath) {
+    try {
+      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\\/+/, "");
+      const found = __resolveFrom(specifier, dir);
+      return found ? "/" + String(found).replace(/^\\/+/, "") : null;
+    } catch { return null; }
+  },
+});
+const __esmNamespaces = new Map();
+/** A module namespace: its names sorted, read through to the exports. */
+function __esmNamespaceOf(names, read) {
+  const ns = Object.create(null);
+  for (const name of [...names].sort()) {
+    Object.defineProperty(ns, name, { enumerable: true, get: () => read(name) });
+  }
+  Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
+  return Object.preventExtensions(ns);
+}
+function __esmLoad(resolution) {
+  const cached = __esmNamespaces.get(resolution.url);
+  if (cached) return cached;
+  let ns;
+  if (resolution.format === "builtin") {
+    const mod = __requireFrom("node:" + resolution.builtin, "");
+    const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
+    names.add("default");
+    ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+  } else if (resolution.format === "data") {
+    const match = /^data:application\\/json(;[^,]*)?,/.exec(resolution.url);
+    if (!match) {
+      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
+    }
+    const body = resolution.url.slice(match[0].length);
+    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
+    ns = __esmNamespaceOf(["default"], () => value);
+  } else {
+    const key = resolution.path.replace(/^\\/+/, "");
+    const exports = __loadModule(key);
+    const esm = resolution.format === "module"
+      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+    if (resolution.format === "json") {
+      ns = __esmNamespaceOf(["default"], () => exports);
+    } else if (esm) {
+      // The ESM→CJS transform's exports: the module's own names, live.
+      const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+      ns = __esmNamespaceOf(names, (name) => exports[name]);
+    } else {
+      // CommonJS: module.exports is the default, its names the named exports.
+      const mod = exports;
+      const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
+      names.delete("default");
+      names.add("default");
+      ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    }
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
+}
+globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
+  return Promise.resolve().then(() => {
+    const text = String(specifier);
+    const attributes = {};
+    // V8's own checks and messages (node 22), which run before resolution.
+    if (options !== undefined) {
+      if (options === null || typeof options !== "object") throw new TypeError("The second argument to import() must be an object");
+      const withAttributes = options.with;
+      if (withAttributes !== undefined) {
+        if (withAttributes === null || typeof withAttributes !== "object") throw new TypeError("The 'assert' option must be an object");
+        for (const key of Object.keys(withAttributes)) {
+          if (typeof withAttributes[key] !== "string") throw new TypeError("Import assertion value must be a string");
+          attributes[key] = withAttributes[key];
+        }
+      }
+    }
+    const resolution = __esmResolver.resolveSync(text, parentUrl);
+    __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
+    return __esmLoad(resolution);
+  });
+};
+
+// Node's import.meta.resolve, synchronous as in Node: the URL a specifier
+// names, even for a file or directory that will not load.
 globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
-  const currentFromParent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
-    ? parentUrl.replace(/^file:\\/\\/\\/+/, "")
-    : "";
-  const current = currentFromParent || (
-    typeof globalThis.__currentModulePath === "string"
-      ? globalThis.__currentModulePath.replace(/^\\/+/, "")
-      : ""
-  );
-  const fromDir = current.includes("/") ? current.substring(0, current.lastIndexOf("/")) : "";
-  const text = String(specifier);
-  if (text.startsWith("file:")) return text;
-  if (text.startsWith("./") || text.startsWith("../") || text.startsWith("/")) {
-    return new URL(text, current ? "file:///" + current : "file:///").href;
-  }
-  const resolved = __resolveFrom(text, fromDir);
-  // Node throws ERR_MODULE_NOT_FOUND rather than answering with the specifier
-  // it could not resolve, and packages are written against that: the standard
-  // shape is a try/catch that reports something the user can act on. Handing
-  // back the bare specifier passes the "unresolved" case off as a URL, so
-  // fileURLToPath downstream yields a path that was never on disk and the
-  // eventual error names a phantom file instead of the missing package.
-  // typescript@7 does exactly this: with the specifier echoed back it reports
-  // "Executable not found: @typescript/typescript-linux-x64/lib/tsc", where
-  // its own catch would have said the platform package is missing.
-  if (!resolved) {
-    const err = new Error(
-      "Cannot find package '" + text + "' imported from " + (current || fromDir || "<unknown>"),
-    );
-    err.code = "ERR_MODULE_NOT_FOUND";
-    throw err;
-  }
-  return "file:///" + resolved.replace(/^\\/+/, "");
+  const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+    ? parentUrl
+    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\\/+/, "");
+  return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 
 /**

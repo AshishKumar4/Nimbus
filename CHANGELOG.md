@@ -303,6 +303,25 @@ kernel credential, because Nimbus follows POSIX here:
   search permission on each directory it leaves and refuses every absolute
   link and every `..` above its root, across mounts too.
 
+### node
+
+- A program's dynamic `import()` loads what Node's loads and fails as Node's
+  fails. It was workerd's own `import()`, resolved against a module registry
+  that holds none of the session's files: `import('/usr/local/lib/
+  node_modules/<pkg>/dist/index.js')` from a CommonJS script (how pi's SDK
+  is loaded) failed with "No such module". Each `import()` now goes to the
+  process's ESM loader, which is Node 22's resolver (`import` conditions in
+  the map's key order, `exports`/`imports`, self-reference, `file:` URLs, no
+  extension or index probing, `ERR_UNSUPPORTED_DIR_IMPORT`,
+  `ERR_MODULE_NOT_FOUND` and the rest with Node's messages and "Did you
+  mean" hints, the JSON import-attribute rule) and returns Node's namespace
+  (a CommonJS module's `module.exports` as `default`). A literal
+  `import('dual')` of a package with `import` and `require` conditions now
+  loads its `import` build, as in Node, where before it was lowered to
+  `require`. `import.meta.resolve` is the same resolver's, synchronous as in
+  Node. The `import()` calls are found by parsing (acorn), in the esbuild
+  facet, and the result is cached by content.
+
 ## 2026-09-24
 
 ### filesystem

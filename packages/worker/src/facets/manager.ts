@@ -57,6 +57,7 @@ import {
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
+import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
@@ -3491,10 +3492,7 @@ async function transformEsmInBundle(
     // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
     // esbuild.transform expect strings.
     if (typeof src !== 'string') continue;
-    if (bundleTypescriptLoader(path) === null) {
-      const esm = looksLikeEsm(path, src);
-      if (!esm) continue;
-    }
+    if (bundleTypescriptLoader(path) === null && !looksLikeEsm(path, src) && !mayHaveDynamicImport(src)) continue;
     candidates.push(path);
   }
   interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
@@ -3558,12 +3556,19 @@ async function transformEsmInBundle(
       transformed++;
       continue;
     }
-    const cellFor = (code: string): EsmCell => ({
+    // Every cell's dynamic import() is the process's: the transform keeps
+    // them, and the facet rewrites each to the process's ESM loader.
+    const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
       path,
       target,
       key,
       absUrl,
-      request: { code, options: { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl) } },
+      request: {
+        code,
+        options: rewriteOnly
+          ? { rewriteOnly: true, dynamicImportParent: absUrl }
+          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl), dynamicImportParent: absUrl },
+      },
     });
     let src: string;
     try {
@@ -3573,8 +3578,9 @@ async function transformEsmInBundle(
       settle(cellFor(original), { error: errorText(e) });
       continue;
     }
-    const cell = cellFor(src);
-    if (loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
+    // CommonJS already: only its dynamic import() calls change.
+    const cell = loader === null && !looksLikeEsm(path, src) ? cellFor(src, true) : cellFor(src);
+    if (cell.request.options?.rewriteOnly !== true && loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
       // The bounded rewrite is computation in this isolate, however large.
       if (pacer) await pacer.spend(src.length);
       let rewritten: EsbuildTransformOutcome | null;
@@ -3583,8 +3589,23 @@ async function transformEsmInBundle(
       } catch (e) {
         rewritten = { error: errorText(e) };
       }
-      if (rewritten) {
+      if (rewritten && 'error' in rewritten) {
         settle(cell, rewritten);
+        continue;
+      }
+      if (rewritten) {
+        // Its declarations are CommonJS now; what import() calls remain go to
+        // the facet like any cell's.
+        if (!mayHaveDynamicImport(rewritten.code)) {
+          settle(cell, rewritten);
+          continue;
+        }
+        const rest = cellFor(rewritten.code, true);
+        if (esbuild.transformsInIsolate) {
+          await transformCells([rest]);
+          continue;
+        }
+        batch.push(rest);
         continue;
       }
     }
@@ -4611,6 +4632,32 @@ export class FacetManager {
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
+   * The entry script as the facet compiles it: each dynamic `import()` routed
+   * to the process's ESM loader, with the entry's own URL as the parent (Node
+   * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
+   * in the esbuild facet like every cell's, and is cached by content. The
+   * module-map walk reads the script as written, before this.
+   */
+  private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string): Promise<string> {
+    if (this.esbuild === null || !mayHaveDynamicImport(code)) return code;
+    const base = cwd.replace(/\/+$/, '') || '/';
+    const path = filename === undefined || filename === '<eval>'
+      ? `${base}/[eval]`
+      : filename === '[stdin]' ? `${base}/[stdin]` : filename;
+    const parentUrl = 'file:///' + path.replace(/^\/+/, '');
+    const key = __cacheKey(code + '\0' + parentUrl + '\0entry');
+    const cached = __esmTransformCacheGet(key);
+    if (cached !== undefined) return cached;
+    const [outcome] = await this.esbuild.transformMany([
+      { code, options: { rewriteOnly: true, dynamicImportParent: parentUrl } },
+    ]);
+    // A script the parse refuses is compiled as written, and the compile says why.
+    if (outcome === undefined || 'error' in outcome) return code;
+    __esmTransformCacheSet(key, outcome.code);
+    return outcome.code;
+  }
+
+  /**
    * The pacer every launch is built under: the session's alarm-driven turn
    * pump, the deployment's chunk bound, and the one check a suspended launch
    * makes when it resumes — that the process it is building for still exists.
@@ -5408,7 +5455,8 @@ export class FacetManager {
             // the map, and compiled by the loader like the sqlite sidecar.
             const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
             const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
-            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, sources, wasmImports);
+            const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user');
+            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports);
             if (diagSink) {
               diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
               for (const source of Object.values(generatedWorker.modules)) {
@@ -6360,7 +6408,7 @@ export class FacetManager {
     // Each image is read by path when the facet loads, never by value here.
     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
     let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
-      code,
+      await this._entryDynamicImports(code, opts.filename, cwd),
       vfsState,
       { ...opts, env: processEnv, cred: entry.cred, wasmImports },
       usesSqlite,

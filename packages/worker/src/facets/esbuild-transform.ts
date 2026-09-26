@@ -28,7 +28,9 @@ import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
  * build id keys. `wasmModule`, `newEsbuild` and `esbuild` are bound by the
- * lines before it, and the runner installs `globalThis.__esbuildCliRun`.
+ * lines before it, and the runner installs `globalThis.__esbuildCliRun` and
+ * the dynamic-import rewrite transforms run after esbuild,
+ * `globalThis.__nimbusRewriteDynamicImports`.
  *
  * Transforms share one esbuild, whose heap only grows. A build or an
  * `esbuild` command gets its own Go instance, dropped when it ends, so what
@@ -48,7 +50,7 @@ const ESBUILD_FACET_BODY = [
   '    const outcomes = [];',
   '    for (const { code, options } of requests) {',
   '      try {',
-  '        outcomes.push(await transformWithEsbuild(esbuild, code, options));',
+  '        outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports));',
   '      } catch (e) {',
   '        outcomes.push({ error: String((e && e.message) || e) });',
   '      }',

@@ -19,20 +19,16 @@
  * Differential: every expectation below is produced by REAL node
  * (`require.resolve` from a CommonJS file, `import.meta.resolve` from an ESM
  * file) on the same fixture tree, and Nimbus's two resolvers — the runtime
- * shim's require/import chain (driven through its public
- * `__nimbusImportMetaResolve`) and the prefetch walk (`prefetchForRequire`)
- * — must each agree with node. Prefetch and runtime disagreeing would ship
- * a bundle missing the file the runtime then resolves.
+ * shim's (its require chain for `require`, its ESM resolver, through the
+ * public `__nimbusImportMetaResolve`, for `import`) and the prefetch walk
+ * (`prefetchForRequire`) — must each agree with node. Prefetch and runtime
+ * disagreeing would ship a bundle missing the file the runtime then resolves.
  *
- * Two deliberate scope notes, both pre-existing and package-wide (not
- * specific to self-reference):
- *   - Nimbus lowers dynamic `import()` onto its require chain, so a map with
- *     BOTH `import` and `require` conditions answers `import()` with the
- *     `require` target. The import-mode oracle here uses an import-only map,
- *     where node and Nimbus agree.
- *   - Node picks conditions by KEY ORDER in the map; the shared resolver
- *     picks by its condition list. Fixtures avoid maps whose answer depends
- *     on that.
+ * A scope note, pre-existing and package-wide (not specific to
+ * self-reference): for `require`, node picks conditions by KEY ORDER in the
+ * map, and the shared CommonJS resolver by its condition list. Fixtures avoid
+ * maps whose answer depends on that. (`import` is Node's own algorithm,
+ * tests/unit/esm-resolver-matches-node.mjs.)
  */
 
 import assert from 'node:assert/strict';
@@ -130,6 +126,8 @@ const CASES = [
   ['home/user/pkg/lib/main.js', '#util', 'require'],
   ['home/user/pkg/lib/main.js', './util.js', 'require'],
   ['home/user/pkg/lib/main.js', 'selfref-pkg-other', 'require'],
+  // The same conditional root, imported: the `import` target, as in node.
+  ['home/user/pkg/lib/main.js', 'selfref-pkg', 'import'],
   // B
   ['home/user/esm-only/lib/main.mjs', 'esm-only-pkg', 'import'],
   // C
@@ -196,7 +194,8 @@ try {
 
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return globalThis.__nimbusImportMetaResolve;',
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode()
+      + '\n;return { meta: globalThis.__nimbusImportMetaResolve, require: (id, dir) => __resolveFrom(id, dir) };',
   );
   const runtimeResolve = factory(
     FILES,
@@ -211,13 +210,14 @@ try {
     '/home/user/pkg/lib',
   );
   /** The runtime's answer: a tree-relative path, or null. */
-  function runtime(file, specifier) {
+  function runtime(file, specifier, mode) {
+    if (mode === 'require') return runtimeResolve.require(specifier, dirname(file)) ?? null;
     try {
-      const url = runtimeResolve(specifier, 'file:///' + file);
+      const url = runtimeResolve.meta(specifier, 'file:///' + file);
       assert.ok(url.startsWith('file:///'), `runtime answered a non-file URL: ${url}`);
       return url.slice('file:///'.length);
     } catch (error) {
-      assert.equal(error.code, 'ERR_MODULE_NOT_FOUND', `runtime failed with something other than not-found: ${error.stack}`);
+      assert.equal(typeof error.code, 'string', `runtime failed without a node error code: ${error.stack}`);
       return null;
     }
   }
@@ -236,7 +236,7 @@ try {
 
   for (const [file, specifier, mode] of CASES) {
     const expected = oracle(file, specifier, mode);
-    assert.equal(runtime(file, specifier), expected, `runtime: ${specifier} from ${file} (node says ${expected})`);
+    assert.equal(runtime(file, specifier, mode), expected, `runtime: ${specifier} from ${file} (node says ${expected})`);
     assert.equal(await prefetch(file, specifier, mode), expected, `prefetch: ${specifier} from ${file} (node says ${expected})`);
     console.log(`  ${specifier.padEnd(28)} from ${file.replace('home/user/', '')}  →  ${expected ?? '(not found)'}`);
   }

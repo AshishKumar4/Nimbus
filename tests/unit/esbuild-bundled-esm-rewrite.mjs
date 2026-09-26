@@ -117,90 +117,19 @@ assert.equal(
   'class and function property keys cannot hide later top-level await',
 );
 
-// ── dynamic import goes through the cell's own require ────────────────────
-//
-// A cell is compiled with `new Function`, so an `import()` left in its body
-// is the RUNTIME's and resolves to the platform's builtins, not the
-// process's shims. Real Vite reaches node:http that way —
-//
-//     vite/dist/node/chunks/config.js:14968
-//     const { createServer } = await import("node:http");
-//
-// -- and got a server whose listen() bound no port in the shims' registry, so
-// the facet exited with no handles the moment boot returned, straight after
-// printing its URL. esbuild's own cjs transform rewrites a literal dynamic
-// import to a require; the bounded path now matches it.
+// ── dynamic import is left as written ─────────────────────────────────────
+// The bounded path converts declarations only. A cell's import() calls are
+// routed to the process's ESM loader by the parse in the esbuild facet
+// (dynamic-import-rewrite.ts, tests/unit/dynamic-import-rewrite.mjs).
 {
   const out = rewriteBundledEsmToCjs(
     'import { a } from "dep";\n'
     + 'async function boot() { const { createServer } = await import("node:http"); return createServer(a); }\n'
-    + 'export { boot };',
+    + 'const api = { import(id) { return id; } };\n'
+    + 'export { boot, api };',
     absoluteUrl,
   );
-  assert.ok(out, 'the fixture is rewritable');
-  assert.match(
-    out.code,
-    /__nimbusCellImport\(require, "node:http"\)/,
-    'a dynamic import is routed through the cell\'s require',
-  );
-  assert.doesNotMatch(out.code, /await import\(/, 'and no runtime import survives');
-}
-
-// A non-literal specifier goes through the same seam — resolution is the
-// process's either way, and Vite computes some of its specifiers.
-{
-  const out = rewriteBundledEsmToCjs(
-    'import { x } from "y";\nasync function load(id) { return import(id); }\nexport { load };',
-    absoluteUrl,
-  );
-  assert.ok(out);
-  assert.match(out.code, /__nimbusCellImport\(require, id\)/);
-}
-
-// `import.meta` is not a call, and a member call named `import` is not one
-// either; neither may be rewritten.
-{
-  const out = rewriteBundledEsmToCjs(
-    'import { x } from "y";\nconst u = import.meta.url;\nexport { u };',
-    absoluteUrl,
-  );
-  assert.ok(out);
-  assert.doesNotMatch(out.code, /__nimbusCellImport/, 'import.meta is untouched');
-}
-
-// A dynamic import inside a STRING is text, not code.
-{
-  const out = rewriteBundledEsmToCjs(
-    'import { x } from "y";\nconst banner = \'await import("node:fs")\';\nexport { banner };',
-    absoluteUrl,
-  );
-  assert.ok(out);
-  assert.doesNotMatch(out.code, /__nimbusCellImport/, 'a quoted import() is left as text');
-  assert.match(out.code, /await import\("node:fs"\)/, 'and survives verbatim in the string');
-}
-
-for (const source of [
-  "const pattern = /[\"']/; async function load() { return (await import /* provider */ (\"./provider.js\")).value; } export { load };",
-  "async function load() { return `${(await import(\"./provider.js\")).value}`; } export { load };",
-]) {
-  const out = rewriteBundledEsmToCjs(source, absoluteUrl);
-  assert.ok(out, 'regex and template expressions remain on the bounded path');
-  const calls = [];
-  const cell = { exports: {}, require: (id) => { calls.push(id); return { value: 'PROVIDER_OK' }; } };
-  const previous = globalThis.__nimbusCellImport;
-  globalThis.__nimbusCellImport = (require, id) => Promise.resolve(require(id));
-  try {
-    new Function('exports', 'require', 'module', out.code)(cell.exports, cell.require, cell);
-    assert.equal(await cell.exports.load(), 'PROVIDER_OK');
-    assert.deepEqual(calls, ['./provider.js'], 'the provider import uses the cell resolver');
-  } finally { globalThis.__nimbusCellImport = previous; }
-}
-
-{
-  const method = rewriteBundledEsmToCjs('const api = { import(id) { return id; } }; export { api };', absoluteUrl);
-  assert.equal(method, null, 'an import-named method is left to the compiler, not rewritten as a call');
-  const member = rewriteBundledEsmToCjs('const call = (api) => api?.import("x"); export { call };', absoluteUrl);
-  assert.ok(member);
-  assert.doesNotMatch(member.code, /__nimbusCellImport/, 'optional member calls are not import expressions');
+  assert.ok(out, 'the fixture is rewritable, an import-named method included');
+  assert.match(out.code, /await import\("node:http"\)/, 'the dynamic import survives for the facet to route');
 }
 console.log('esbuild-bundled-esm-rewrite: ok');
