@@ -151,7 +151,7 @@ def capsJson (c : Caps) : Json :=
   .obj [("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
     ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))]
 
-def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 493 else none, []⟩
+def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 511 else none, []⟩
 
 def genX (S : St) : Gen X := do
   let p ← genPath S
@@ -202,7 +202,7 @@ def genCase : Gen (Option Json) := do
           if !t.isEmpty then pins := pins ++ [← pick (t.map (·.1))]
       let mode ← below 3
       capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
-        if mode == 0 then none else some (if mode == 1 then 511 else 493), pins⟩)]
+        if mode == 0 then none else some 511, pins⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
