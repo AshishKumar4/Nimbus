@@ -40,7 +40,7 @@
     "NOTICE.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
+    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
     "typecheck": "tsc --noEmit"
   },

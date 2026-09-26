@@ -1,1 +1,0 @@
-{"version":3,"file":"loader.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/pkg/loader.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,IAAI,GAAG,EAAE,MAAM,mCAAmC,CAAC;AAC5E,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,yBAAyB,CAAC;AAO/D,wBAAsB,qBAAqB,CAAC,GAAG,EAAE,GAAG,EAAE,QAAQ,EAAE,eAAe,GAAG,OAAO,CAAC,IAAI,CAAC,CAyB9F"}

@@ -8,6 +8,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### Breaking changes for embedders
 
+The published `@nimbus-sh/core` no longer carries the compiled output of the
+modules removed below (`runtime/filesystem-authority.js`, the lifo kernel
+VFS, `SandboxFs`, `ServiceManager`, kernel persistence and storage, and
+`runtime/vfs-manifest.js`). Before, their stale `dist` files still shipped,
+so an import of a removed name type-checked and loaded the old code. Each
+package's build now clears its `dist` first, and `dist-integrity` refuses
+any output whose source is gone.
+
 The workspace has one filesystem: a `CompositeVFS` rooted at SQLite, with
 `/proc` and `/dev` mounted, bound to processes by `ProcessFiles`. The lifo
 kernel no longer has a filesystem. Each removed or changed public import or
