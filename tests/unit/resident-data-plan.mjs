@@ -167,7 +167,7 @@ function sessionCtx(name) {
 }
 
 const env = {
-  NIMBUS_READ_PROFILES: profileBucket,
+  NPM_TARBALL_CACHE: profileBucket,
   LOADER: world.loader,
   ASSETS: {
     async fetch(request) {
@@ -267,19 +267,41 @@ assert.ok(fsListCalls > 0, 'the store asked the authority what exists');
 assert.ok(fsReadBatchCalls > 0, 'the store was filled over the supervisor');
 
 // ── Arm 3: a miss is learned for the package, across sessions ───────────────
-// The run above missed late.js. Its exit report files the miss under the
-// package's installed integrity; a different session launching the same
-// tarball holds the file from boot.
+// The run above missed late.js. What its exit files is only what this session
+// served the process after the miss (the supervisor's own evidence), under
+// the package's installed integrity, and it is shared once a second session
+// has observed it too; then a third session launching the same tarball holds
+// the file from boot.
 assert.equal(filled.late, 'ERR:EAGAIN', `a runtime-computed package read is a first miss: ${JSON.stringify(filled)}`);
-manager.noteProcessReportedExit(filled.pid, 1, [LATE]);
+const served = new Set([LATE]);
+const entriesOf = () => JSON.parse([...profiles.values()][0]).entries;
+// A program's word alone files nothing.
+manager.noteProcessReportedExit(filled.pid, 1, [LATE], { served: new Set(), profileUnread: [] });
 await Promise.all(sessionCtxNow.waited);
-assert.equal(profiles.size, 1, 'the miss was filed under the package');
+assert.equal(profiles.size, 0, 'a miss the supervisor never served is not evidence');
+manager.noteProcessReportedExit(filled.pid, 1, [LATE], { served, profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(profiles.size, 1, 'the served miss was filed under the package');
 assert.ok(![...profiles.values()][0].includes('home/user'), 'package-relative');
-// A second session over the same files: its pids start again at 1.
-for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
-manager = session('another-session');
+assert.equal(entriesOf()['private/late.js'].seen.length, 1);
+const nextSession = (name) => {
+  // Another session over the same files: its pids start again at 1.
+  for (let pid = 1; pid <= spawnSeq; pid++) sessionVfs.revokeAppendWriters(pid);
+  manager = session(name);
+};
+nextSession('second-session');
+const second = await run(false);
+assert.equal(second.late, 'ERR:EAGAIN', `one session's observation is not shared: ${JSON.stringify(second)}`);
+manager.noteProcessReportedExit(second.pid, 1, [LATE], { served, profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(entriesOf()['private/late.js'].seen.length, 2, 'a second session observed it');
+nextSession('third-session');
 const learned = await run(false);
-assert.equal(learned.late, 'late-bytes', `another session holds the learned file: ${JSON.stringify(learned)}`);
+assert.equal(learned.late, 'late-bytes', `a third session holds the learned file: ${JSON.stringify(learned)}`);
+// It read it, and the supervisor never had to fault it in: the entry is confirmed.
+manager.noteProcessReportedExit(learned.pid, 0, [], { served: new Set(), profileUnread: [] });
+await Promise.all(sessionCtxNow.waited);
+assert.equal(entriesOf()['private/late.js'].score, 2, 'held and never faulted in raises its score');
 
 say('resident-data-plan: ok\n');
 say(`  control: ${JSON.stringify(control)}\n`);

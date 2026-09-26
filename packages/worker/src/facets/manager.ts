@@ -49,7 +49,12 @@ import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError, typ
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageRootOf, planFacetData } from './data-plan.js';
-import { ReadProfile, type ReadProfileBucket } from './read-profile.js';
+import {
+  ReadProfile, sessionTag, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
+} from './read-profile.js';
+
+/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
+const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -1066,6 +1071,9 @@ ${VFS_CURSOR_SEED_SOURCE}
     __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // The shared read profile's files this launch staged; each is struck off
+    // when read, and what is left at exit is reported unread (read-profile.ts).
+    globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
@@ -1236,7 +1244,7 @@ ${RESIDENCY_MISS_REPORT}
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses());
+      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])]);
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -1392,6 +1400,8 @@ function residentCellCost(cell: string | Uint8Array): number {
 }
 
 interface FacetVfsState {
+  /** The shared read profile's entries this launch was offered: staged ones, and those no regular file answered. */
+  profileOffer?: { staged: StagedProfileEntry[]; unresolved: string[] };
   // hardening-r5: bundle cells may be Uint8Array for binary content
   // (images, wasm modules, sqlite blobs, etc.). Pre-fix every cell was
   // forced through vfs.readFileString() which UTF-8-decoded binary
@@ -3601,6 +3611,7 @@ export async function buildPrefetchBundle(
   observedReads?: ReadonlySet<string>,
   pacer?: TurnBudget,
   maxBundleBytes?: number,
+  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
 ): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3613,7 +3624,7 @@ export async function buildPrefetchBundle(
   try {
     return await _buildPrefetchBundle(
       vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
-      maxBundleBytes,
+      maxBundleBytes, learnedFor,
     );
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
@@ -3631,6 +3642,7 @@ async function _buildPrefetchBundle(
   observedReads?: ReadonlySet<string>,
   pacer?: TurnBudget,
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
+  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -3674,7 +3686,15 @@ async function _buildPrefetchBundle(
   //     admitted first, ahead of every guess, and they join the required set
   //     rather than the evictable one, because a file evicted here misses
   //     again on the next run and the loop never closes.
-  const observedAdd = (await addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState));
+  // Other sessions' misses in the packages this closure can load
+  // (read-profile.ts) are evidence of the same kind: a learned module joins
+  // the module map with its imports, as this session's own misses do.
+  let observed = observedReads;
+  if (learnedFor) {
+    const learned = await learnedFor(Object.keys(bundle)).catch(() => []);
+    if (learned.length > 0) observed = new Set([...(observedReads ?? []), ...learned]);
+  }
+  const observedAdd = (await addObservedReads(vfs, observed, bundle, requiredPaths, budgetState));
   void observedAdd;
   await paceAfterPass();
 
@@ -4228,6 +4248,8 @@ export class FacetManager {
   // The bundle a resident pid booted from, so the misses it reports at exit
   // stage into the next launch of the same entry, as a one-shot's do.
   private readonly residentBundleKeys = new Map<number, string>();
+  /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
+  private readonly residentProfileOffers = new Map<number, { staged: StagedProfileEntry[]; unresolved: string[] }>();
   /**
    * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
    * sets it: the host's own, or one whose transforms run in the session's
@@ -4273,8 +4295,9 @@ export class FacetManager {
   private residencyProfiles = new Map<string, Set<string>>();
   /**
    * Misses shared across sessions per installed package (read-profile.ts),
-   * when the deployment binds NIMBUS_READ_PROFILES. Absent, a miss is learned
-   * for this session only (residencyProfiles).
+   * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
+   * tarballs. Unbound, a miss is learned for this session only
+   * (residencyProfiles).
    */
   private readProfile: ReadProfile | null = null;
   /** Per module path: its static references at a revision (see _closureStaticRefs). */
@@ -4350,7 +4373,7 @@ export class FacetManager {
       : undefined;
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
     const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-      ? Reflect.get(env, 'NIMBUS_READ_PROFILES')
+      ? Reflect.get(env, 'NPM_TARBALL_CACHE')
       : undefined;
     this.readProfile = profiles && typeof profiles === 'object' ? new ReadProfile(profiles as ReadProfileBucket) : null;
     this.launchJournal = new FencedWork<ResidentLaunchRecord>(ctx.storage, {
@@ -4385,6 +4408,7 @@ export class FacetManager {
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
       this.residentBundleKeys.delete(pid);
+      this.residentProfileOffers.delete(pid);
       this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
     });
     this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
@@ -4692,27 +4716,47 @@ export class FacetManager {
   }
 
   /**
-   * Paths earlier launches missed: this session's for the same build, and,
-   * with a shared profile, every session's for the packages this closure
-   * loads. A learned path is planned only where the process's own listing
-   * shows a regular file (data-plan.ts), and read through its own credential.
+   * Paths earlier launches of the same build missed in this session. Other
+   * sessions' misses (the shared read profile) join the module map instead,
+   * in _buildProcessBundle, where a learned module brings its imports.
    */
-  private async _learnedReads(vfsState: FacetVfsState, cred: ProcessEntry['cred']): Promise<string[]> {
-    const own = vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
-    if (!this.readProfile) return own;
-    const roots = new Set<string>();
-    for (const path of vfsState.bundlePaths ?? []) {
-      const root = packageRootOf(path.replace(/^\/+/, ''));
-      if (root !== null) roots.add(root);
-    }
-    if (roots.size === 0) return own;
-    try {
-      return [...own, ...await this.readProfile.lookup(roots, this._packageIdentity(cred))];
-    } catch {
-      // The shared profile is an accelerator: unreachable, the launch plans without it.
-      return own;
-    }
+  private async _learnedReads(vfsState: FacetVfsState, _cred: ProcessEntry['cred']): Promise<string[]> {
+    return vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
   }
+
+  /**
+   * The installed packages a closure can load: every package the lockfiles
+   * pin whose node_modules directory is on the resolution path of the cwd or
+   * of a closure file. A first miss is, by definition, in a package the
+   * closure did not already load, so its package's root is found this way.
+   */
+  private _profileRoots(closure: readonly string[], cwd: string): string[] {
+    const sql = (this.ctx.storage as { sql?: SqlStorage }).sql;
+    if (!sql) return [];
+    const integrities = new NpmCache(sql).installedIntegrities();
+    if (integrities.size === 0) return [];
+    const dirs = new Set<string>();
+    const ancestors = (dir: string) => {
+      for (let d = dir; ;) {
+        const nm = d === '' ? 'node_modules' : `${d}/node_modules`;
+        if (dirs.has(nm)) return;
+        dirs.add(nm);
+        if (d === '') return;
+        d = d.slice(0, Math.max(0, d.lastIndexOf('/')));
+      }
+    };
+    ancestors(cwd.replace(/^\/+|\/+$/g, ''));
+    for (const path of closure) {
+      const k = path.replace(/^\/+/, '');
+      ancestors(k.slice(0, Math.max(0, k.lastIndexOf('/'))));
+    }
+    return [...integrities.keys()].filter((root) => {
+      const i = root.lastIndexOf('/node_modules/');
+      const parent = i === -1 ? (root.startsWith('node_modules/') ? 'node_modules' : null) : root.slice(0, i + '/node_modules'.length);
+      return parent !== null && dirs.has(parent);
+    });
+  }
+
 
   /**
    * A package directory's identity for the shared read profile: the tarball
@@ -4810,10 +4854,29 @@ export class FacetManager {
       return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
     }
 
+    const readProfile = this.readProfile;
+    const offered: StagedProfileEntry[] = [];
+    const learnedFor = readProfile === null ? undefined : async (closure: readonly string[]) => {
+      const roots = this._profileRoots(closure, spec.cwd);
+      if (roots.length === 0) return [];
+      offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+      return offered.map((entry) => entry.path);
+    };
     const vfsState = await buildPrefetchBundle(
       vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
-      this.residencyProfiles.get(key), pacer,
+      this.residencyProfiles.get(key), pacer, undefined, learnedFor,
     );
+    if (offered.length > 0) {
+      const staged: StagedProfileEntry[] = [];
+      const unresolved: string[] = [];
+      for (const entry of offered) {
+        if (vfsState.bundle[entry.path] !== undefined) { staged.push(entry); continue; }
+        // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
+        const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
+        if (stat === null || stat.type !== 'file') unresolved.push(entry.path);
+      }
+      vfsState.profileOffer = { staged, unresolved };
+    }
     vfsState.bundleKey = key;
     vfsState.bundlePaths = Object.keys(vfsState.bundle);
     // The only consumer of the raw cells past serialization is a single
@@ -4976,14 +5039,35 @@ export class FacetManager {
     return this.processRpcResources.has(pid);
   }
 
-  noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[]): void {
+  noteProcessReportedExit(
+    pid: number,
+    exitCode: number,
+    residencyMisses?: string[],
+    evidence?: { served: ReadonlySet<string>; profileUnread: readonly string[] },
+  ): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
     this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
     const exiting = this.processes.get(pid);
-    if (this.readProfile && exiting && residencyMisses && residencyMisses.length > 0) {
+    const offer = this.residentProfileOffers.get(pid);
+    this.residentProfileOffers.delete(pid);
+    if (this.readProfile && exiting) {
+      // The shared profile learns only what this supervisor served the process
+      // after a miss, as the process's own credential sees it (read-profile.ts).
       const profile = this.readProfile;
       const identity = this._packageIdentity(exiting.cred);
-      this.ctx.waitUntil(profile.record(residencyMisses, identity).catch(() => 0));
+      const view = this.vfs?.as(exiting.cred) ?? null;
+      const served = evidence?.served ?? new Set<string>();
+      this.ctx.waitUntil((async () => {
+        if (view !== null && residencyMisses && residencyMisses.length > 0) {
+          const found = await verifiedEvidence(residencyMisses, served, async (path) => {
+            try { const st = view.lstat(path.replace(/^\/+/, '')); return { type: st.type, size: st.size }; } catch { return null; }
+          });
+          if (found.length > 0) await profile.observe(found, await sessionTag(this.ctx.id.toString()), identity);
+        }
+        if (offer !== undefined) {
+          await profile.settle(offer.staged, new Set(evidence?.profileUnread ?? []), served, new Set(offer.unresolved));
+        }
+      })().catch(() => undefined));
     }
     this.portRegistry.unregisterByPid(pid);
     this.processes.exit(pid, exitCode);
@@ -6263,6 +6347,8 @@ export class FacetManager {
 
     const vfsCursor = vfsState.cursor;
     if (vfsState.bundleKey) this.residentBundleKeys.set(entry.pid, vfsState.bundleKey);
+    const profileOffer = vfsState.profileOffer;
+    if (profileOffer !== undefined) this.residentProfileOffers.set(entry.pid, profileOffer);
     // The map is generated; the state's only remaining job is its cursor.
     // Released here, before the boot — releasing afterwards keeps the copy
     // alive for exactly the window that was resetting the isolate. A state
@@ -6295,7 +6381,11 @@ export class FacetManager {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
-        startArgs: { vfsCursor, dataPlan, ...(this.debugEnabled ? { diag: true } : {}) },
+        startArgs: {
+          vfsCursor, dataPlan,
+          ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
+          ...(this.debugEnabled ? { diag: true } : {}),
+        },
         storageBytes,
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the

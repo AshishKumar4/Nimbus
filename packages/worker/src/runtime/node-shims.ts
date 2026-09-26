@@ -826,6 +826,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
+    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -8773,6 +8774,7 @@ function __makeLoadingExports(mod) {
  * Returns the module.exports value.
  */
 function __loadModule(resolvedPath) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   if (__moduleCache.has(resolvedPath)) return __moduleCache.get(resolvedPath);
 
   const mod = { exports: {} };

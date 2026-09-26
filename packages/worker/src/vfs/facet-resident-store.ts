@@ -1113,6 +1113,7 @@ function __residentHead(path) {
  * is not held.
  */
 function __residentGet(path) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(path).replace(/^\\/+/, ""));
   const head = __residentHead(path);
   if (head === undefined) {
     const held = __residentHeld.get(path);

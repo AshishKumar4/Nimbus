@@ -152,6 +152,10 @@ import * as _programmatic from './programmatic.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
+import { ServedReads } from '../facets/read-profile.js';
+
+/** The ops whose non-null answer is a file's content served to a process. */
+const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
 
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
@@ -783,8 +787,17 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   // Supervisor RPC (file/log/HMR/batch)
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
-    return this.supervisorOps().dispatch(envelope);
+    const answer = this.supervisorOps().dispatch(envelope);
+    if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number') return answer;
+    // What this session served a process is the read profile's only evidence (read-profile.ts).
+    return answer.then((value) => {
+      if (value !== null && value !== undefined) this.servedReads.note(envelope.pid as number, envelope.args?.[0]);
+      return value;
+    });
   }
+
+  /** Async reads served per process, for the shared read profile. */
+  readonly servedReads = new ServedReads();
 
   async _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid, cred); }
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
@@ -859,7 +872,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
   async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
   async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
-  async _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[]): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail, residencyMisses); }
+  async _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[], profileUnread?: string[]): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail, residencyMisses, profileUnread); }
 
   // W3 emitters / external-exit / log janitor
   _emitExitDump(pid: number, code: number): void { return _rpc._emitExitDump(this as any, pid, code); }

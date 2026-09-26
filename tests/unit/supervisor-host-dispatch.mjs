@@ -164,7 +164,7 @@ const INPUTS = {
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
-  reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js']],
+  reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js'], ['home/user/app/node_modules/pkg/learned.js']],
   prefetch: [cwd, entryCode],
   registerPort: [port],
   unregisterPort: [port],
