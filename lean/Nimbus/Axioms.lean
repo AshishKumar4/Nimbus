@@ -289,6 +289,37 @@ import Nimbus.Refine
 #print axioms Nimbus.ContentStore.commit_live_ne
 #print axioms Nimbus.ContentStore.commit_atRef
 
+/-! ## Nimbus/ContentStore/Quiesce.lean -/
+
+#print axioms Nimbus.ContentStore.Quiesce.pin1_snaps
+#print axioms Nimbus.ContentStore.Quiesce.settleN_done
+#print axioms Nimbus.ContentStore.Quiesce.settled
+#print axioms Nimbus.ContentStore.Quiesce.settleN_cases
+#print axioms Nimbus.ContentStore.Quiesce.pin1_inv
+#print axioms Nimbus.ContentStore.Quiesce.settleN_inv
+#print axioms Nimbus.ContentStore.Quiesce.raw_inv
+#print axioms Nimbus.ContentStore.Quiesce.inv
+#print axioms Nimbus.ContentStore.Quiesce.reach_settled
+#print axioms Nimbus.ContentStore.Quiesce.pin_clean
+#print axioms Nimbus.ContentStore.Quiesce.gated_on_newest
+#print axioms Nimbus.ContentStore.Quiesce.pin_starts_its_waiters
+#print axioms Nimbus.ContentStore.Quiesce.gated_on_pending
+#print axioms Nimbus.ContentStore.Quiesce.acquire_never_waits
+#print axioms Nimbus.ContentStore.Quiesce.settle_cases
+#print axioms Nimbus.ContentStore.Quiesce.settle_id
+#print axioms Nimbus.ContentStore.Quiesce.countP_map_lt
+#print axioms Nimbus.ContentStore.Quiesce.progress
+#print axioms Nimbus.ContentStore.Quiesce.wf_settle
+#print axioms Nimbus.ContentStore.Quiesce.wf_resp
+#print axioms Nimbus.ContentStore.Quiesce.drain
+#print axioms Nimbus.ContentStore.Quiesce.deadlock_free
+#print axioms Nimbus.ContentStore.Quiesce.stuck
+#print axioms Nimbus.ContentStore.Quiesce.clone_pins
+#print axioms Nimbus.ContentStore.Quiesce.clone_deadlocks_without_bypass
+#print axioms Nimbus.ContentStore.Quiesce.lease_awaiting_copy_deadlocks
+#print axioms Nimbus.ContentStore.Quiesce.job_awaiting_stream_deadlocks
+#print axioms Nimbus.ContentStore.Quiesce.lease_after_gate
+
 /-! ## Nimbus/ContentStore/Safety.lean -/
 
 #print axioms Nimbus.ContentStore.init_inv
@@ -370,6 +401,111 @@ import Nimbus.Refine
 #print axioms Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
 #print axioms Nimbus.Refine.RevisionFloorCases.execBump_reach
 
+/-! ## Nimbus/Runtime/PipesHeld.lean -/
+
+#print axioms Nimbus.Runtime.Pipes.hstep_core
+#print axioms Nimbus.Runtime.Pipes.hrun_core
+#print axioms Nimbus.Runtime.Pipes.settles_only_readerless
+#print axioms Nimbus.Runtime.Pipes.settle_value
+#print axioms Nimbus.Runtime.Pipes.rs_zero_of_dead
+#print axioms Nimbus.Runtime.Pipes.all_settle
+#print axioms Nimbus.Runtime.Pipes.seq_head
+#print axioms Nimbus.Runtime.Pipes.seq_head_without_the_rule
+#print axioms Nimbus.Runtime.Pipes.seq_small_head
+#print axioms Nimbus.Runtime.Pipes.seq_uniq_wc_held
+#print axioms Nimbus.Runtime.Pipes.yes_head_held
+
+/-! ## Nimbus/Runtime/PipesProofs.lean -/
+
+#print axioms Nimbus.Runtime.Pipes.upd_same
+#print axioms Nimbus.Runtime.Pipes.upd_ne
+#print axioms Nimbus.Runtime.Pipes.sum_snoc
+#print axioms Nimbus.Runtime.Pipes.sumTo_succ
+#print axioms Nimbus.Runtime.Pipes.sumTo_congr
+#print axioms Nimbus.Runtime.Pipes.sumTo_le
+#print axioms Nimbus.Runtime.Pipes.sumTo_upd
+#print axioms Nimbus.Runtime.Pipes.sumTo_eq_zero
+#print axioms Nimbus.Runtime.Pipes.rs_stack
+#print axioms Nimbus.Runtime.Pipes.ws_stack
+#print axioms Nimbus.Runtime.Pipes.rs_pipes
+#print axioms Nimbus.Runtime.Pipes.ws_pipes
+#print axioms Nimbus.Runtime.Pipes.settle_procs
+#print axioms Nimbus.Runtime.Pipes.settle_n
+#print axioms Nimbus.Runtime.Pipes.settle_m
+#print axioms Nimbus.Runtime.Pipes.settle_B
+#print axioms Nimbus.Runtime.Pipes.settle_err
+#print axioms Nimbus.Runtime.Pipes.setProc_pipes
+#print axioms Nimbus.Runtime.Pipes.setProc_n
+#print axioms Nimbus.Runtime.Pipes.setProc_m
+#print axioms Nimbus.Runtime.Pipes.setProc_B
+#print axioms Nimbus.Runtime.Pipes.setProc_err
+#print axioms Nimbus.Runtime.Pipes.rs_settle
+#print axioms Nimbus.Runtime.Pipes.enter_procs
+#print axioms Nimbus.Runtime.Pipes.enter_pipes
+#print axioms Nimbus.Runtime.Pipes.enter_m
+#print axioms Nimbus.Runtime.Pipes.rs_enter
+#print axioms Nimbus.Runtime.Pipes.ws_enter
+#print axioms Nimbus.Runtime.Pipes.core_refuse
+#print axioms Nimbus.Runtime.Pipes.sigpipe_only_readerless
+#print axioms Nimbus.Runtime.Pipes.ignored_is_epipe
+#print axioms Nimbus.Runtime.Pipes.default_is_sigpipe
+#print axioms Nimbus.Runtime.Pipes.eof_only_writerless
+#print axioms Nimbus.Runtime.Pipes.sched_some
+#print axioms Nimbus.Runtime.Pipes.sched_none
+#print axioms Nimbus.Runtime.Pipes.fork_keeps_parked
+#print axioms Nimbus.Runtime.Pipes.fork_child_fresh
+#print axioms Nimbus.Runtime.Pipes.books_settle
+#print axioms Nimbus.Runtime.Pipes.books_upd
+#print axioms Nimbus.Runtime.Pipes.books_procs
+#print axioms Nimbus.Runtime.Pipes.books_finish
+#print axioms Nimbus.Runtime.Pipes.books_abort
+#print axioms Nimbus.Runtime.Pipes.books_core
+#print axioms Nimbus.Runtime.Pipes.books_step
+#print axioms Nimbus.Runtime.Pipes.core_B
+#print axioms Nimbus.Runtime.Pipes.step_B
+#print axioms Nimbus.Runtime.Pipes.books
+#print axioms Nimbus.Runtime.Pipes.accounting
+#print axioms Nimbus.Runtime.Pipes.budget
+#print axioms Nimbus.Runtime.Pipes.drop_only_readerless
+#print axioms Nimbus.Runtime.Pipes.abort_named
+#print axioms Nimbus.Runtime.Pipes.meas_setProc
+#print axioms Nimbus.Runtime.Pipes.meas_pipes
+#print axioms Nimbus.Runtime.Pipes.meas_stack
+#print axioms Nimbus.Runtime.Pipes.meas_settle
+#print axioms Nimbus.Runtime.Pipes.meas_enter
+#print axioms Nimbus.Runtime.Pipes.meas_finish
+#print axioms Nimbus.Runtime.Pipes.meas_abort
+#print axioms Nimbus.Runtime.Pipes.wt_run_pos
+#print axioms Nimbus.Runtime.Pipes.meas_congr
+#print axioms Nimbus.Runtime.Pipes.lt_of_set
+#print axioms Nimbus.Runtime.Pipes.lt_of_set2
+#print axioms Nimbus.Runtime.Pipes.lt_of_abort
+#print axioms Nimbus.Runtime.Pipes.wt_next
+#print axioms Nimbus.Runtime.Pipes.wt_pos
+#print axioms Nimbus.Runtime.Pipes.wt_park
+#print axioms Nimbus.Runtime.Pipes.core_run
+#print axioms Nimbus.Runtime.Pipes.wt_wait
+#print axioms Nimbus.Runtime.Pipes.wt_fin
+#print axioms Nimbus.Runtime.Pipes.enabled_wait
+#print axioms Nimbus.Runtime.Pipes.core_wait
+#print axioms Nimbus.Runtime.Pipes.no_spin
+#print axioms Nimbus.Runtime.Pipes.stuck_is_linux
+
+/-! ## Nimbus/Runtime/PipesTraces.lean -/
+
+#print axioms Nimbus.Runtime.PipesTraces.seq_uniq_wc_whole
+#print axioms Nimbus.Runtime.PipesTraces.seq_uniq_wc_held_kill_loses
+#print axioms Nimbus.Runtime.PipesTraces.fork_loop_whole
+#print axioms Nimbus.Runtime.PipesTraces.parked_fork_keeps_the_write
+#print axioms Nimbus.Runtime.PipesTraces.parked_fork_drops_the_write
+#print axioms Nimbus.Runtime.PipesTraces.yes_head
+#print axioms Nimbus.Runtime.PipesTraces.over_budget_fails_named
+#print axioms Nimbus.Runtime.PipesTraces.over_budget_silent_truncates
+#print axioms Nimbus.Runtime.PipesTraces.bash_middle_whole
+#print axioms Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
+#print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
+#print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+
 /-! ## Nimbus/Vfs/Composite.lean -/
 
 #print axioms Nimbus.Vfs.Composite.pfx_iff
@@ -391,6 +527,20 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Composite.listing_agree
 #print axioms Nimbus.Vfs.Composite.backendOp_agree
 #print axioms Nimbus.Vfs.Composite.noninterference
+
+/-! ## Nimbus/Vfs/CompositeBeneath.lean -/
+
+#print axioms Nimbus.Vfs.CompositeBeneath.prefix_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_contained
+#print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
+#print axioms Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_named
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_named
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_root_searched
+#print axioms Nimbus.Vfs.CompositeBeneath.walkB_agrees
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_agrees
+#print axioms Nimbus.Vfs.CompositeBeneath.beneath_across_mounts
 
 /-! ## Nimbus/Vfs/CompositeCache.lean -/
 
@@ -481,6 +631,62 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.FastCdc.cdcCut_prefix
 #print axioms Nimbus.Vfs.FastCdc.cuts_tile
 #print axioms Nimbus.Vfs.FastCdc.cutContent_tiles
+
+/-! ## Nimbus/Vfs/Hydration.lean -/
+
+#print axioms Nimbus.Vfs.Hydration.sync_never_state1
+#print axioms Nimbus.Vfs.Hydration.async_never_state1
+#print axioms Nimbus.Vfs.Hydration.resume_local
+#print axioms Nimbus.Vfs.Hydration.raw_frame
+#print axioms Nimbus.Vfs.Hydration.hLocal_mono
+#print axioms Nimbus.Vfs.Hydration.isLocal_mono
+#print axioms Nimbus.Vfs.Hydration.hyd_mono
+#print axioms Nimbus.Vfs.Hydration.prio_mem
+#print axioms Nimbus.Vfs.Hydration.step_covers
+#print axioms Nimbus.Vfs.Hydration.queue_covers
+#print axioms Nimbus.Vfs.Hydration.settleG_open
+#print axioms Nimbus.Vfs.Hydration.settleG_ok
+#print axioms Nimbus.Vfs.Hydration.settleG_named
+#print axioms Nimbus.Vfs.Hydration.raw_gates
+#print axioms Nimbus.Vfs.Hydration.step_gateInv
+#print axioms Nimbus.Vfs.Hydration.gateInv
+#print axioms Nimbus.Vfs.Hydration.gate_ok_local
+#print axioms Nimbus.Vfs.Hydration.bound_reads_never_eio
+#print axioms Nimbus.Vfs.Hydration.gate_bounded
+#print axioms Nimbus.Vfs.Hydration.nothing_named_starts
+#print axioms Nimbus.Vfs.Hydration.jobs_mono
+#print axioms Nimbus.Vfs.Hydration.jobs_frame
+#print axioms Nimbus.Vfs.Hydration.jobs_hydrate
+#print axioms Nimbus.Vfs.Hydration.named_local_within
+#print axioms Nimbus.Vfs.Hydration.a_shared_chunk
+
+/-! ## Nimbus/Vfs/Ledger.lean -/
+
+#print axioms Nimbus.Vfs.Ledger.sumB_nil
+#print axioms Nimbus.Vfs.Ledger.sumB_cons
+#print axioms Nimbus.Vfs.Ledger.sumB_append
+#print axioms Nimbus.Vfs.Ledger.sumB_split
+#print axioms Nimbus.Vfs.Ledger.sumB_setR
+#print axioms Nimbus.Vfs.Ledger.sumB_filter_le
+#print axioms Nimbus.Vfs.Ledger.fitDrop_some
+#print axioms Nimbus.Vfs.Ledger.fitDrop_none
+#print axioms Nimbus.Vfs.Ledger.fitDrop_min
+#print axioms Nimbus.Vfs.Ledger.step_limit
+#print axioms Nimbus.Vfs.Ledger.step_over
+#print axioms Nimbus.Vfs.Ledger.admitted_within
+#print axioms Nimbus.Vfs.Ledger.step_used
+#print axioms Nimbus.Vfs.Ledger.used_le_limit
+#print axioms Nimbus.Vfs.Ledger.refuses_when_over
+#print axioms Nimbus.Vfs.Ledger.refused_unchanged
+#print axioms Nimbus.Vfs.Ledger.refuses_iff
+#print axioms Nimbus.Vfs.Ledger.evicts_oldest_minimal
+#print axioms Nimbus.Vfs.Ledger.only_eviction_frees
+#print axioms Nimbus.Vfs.Ledger.facet_row_stays
+#print axioms Nimbus.Vfs.Ledger.a_ledger_trace
+#print axioms Nimbus.Vfs.Ledger.an_over_report_refuses
+#print axioms Nimbus.Vfs.Ledger.draw_within
+#print axioms Nimbus.Vfs.Ledger.reservation_kept
+#print axioms Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
 
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/
 

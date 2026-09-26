@@ -86,7 +86,7 @@ function stageRuntime(name, work) {
   return { name, version, entry, puts };
 }
 
-async function putObjects(puts, persist) {
+async function putObjects(puts, persist, work) {
   // One at a time: each is a wrangler process with its own workerd over the
   // same local store, and two at once crash it.
   const queue = [...puts];
@@ -96,7 +96,8 @@ async function putObjects(puts, persist) {
       await new Promise((done, fail) => {
         const args = ['r2', 'object', 'put', `${BUCKET}/${key}`, '--file', file, '--local', '--persist-to', persist];
         if (contentType) args.push('--content-type', contentType);
-        const child = spawn(WRANGLER, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'] });
+        // wrangler writes its own files (an update check) under TMPDIR: the harness's, which stop() removes.
+        const child = spawn(WRANGLER, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
         let err = '';
         child.stderr.on('data', (d) => { err += d; });
         child.on('close', (code) => (code === 0 ? done() : fail(new Error(`r2 put ${key}: ${err.slice(-600)}`))));
@@ -129,7 +130,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     for (const { name, version, entry } of staged) catalog.runtimes[name] = { default: version, versions: { [version]: entry } };
     const catalogPath = join(work, 'catalog.json');
     await Bun.write(catalogPath, JSON.stringify(catalog, null, 2));
-    await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist);
+    await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist, work);
 
     const port = await freePort();
     const secret = randomBytes(24).toString('hex');

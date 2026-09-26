@@ -51,13 +51,14 @@ import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-re
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
-import { withHostFilesystem } from '../shell/execution-fs.js';
+import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
 import type { WasiAbi } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 import { errorText } from '../_shared/error-text.js';
+import { exists } from '../vfs/vfs.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -218,7 +219,7 @@ export function makeWasmRunner(deps: {
     // for it, so a host lease carries the read rather than a process binding.
     let bytes: Uint8Array;
     try {
-      const program = await withHostFilesystem(deps.filesystem, cred, async (fs) =>
+      const program = await withHostView(deps.filesystem, cred, async (fs) =>
         (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
       if (program === null) {
         return {

@@ -1,7 +1,8 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 
 // ─── Gzip (browser CompressionStream/DecompressionStream) ───
 
@@ -331,7 +332,7 @@ export function parseZip(data: Uint8Array): ZipEntry[] {
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export async function collectFiles(vfs: ExecutionFs, basePath: string, paths: string[]): Promise<TarEntry[]> {
+export async function collectFiles(vfs: ProcessView, basePath: string, paths: string[]): Promise<TarEntry[]> {
   const entries: TarEntry[] = [];
   const relBase = basePath === '/' ? '/' : basePath + '/';
 
@@ -339,7 +340,7 @@ export async function collectFiles(vfs: ExecutionFs, basePath: string, paths: st
     absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
 
   async function walk(absPath: string): Promise<void> {
-    const stat = (await vfs.stat(absPath));
+    const stat = (await statOrThrow(vfs, absPath));
 
     if (stat.type === 'directory') {
       entries.push({
@@ -347,7 +348,7 @@ export async function collectFiles(vfs: ExecutionFs, basePath: string, paths: st
         data: new Uint8Array(0),
         type: 'directory',
         mode: stat.mode,
-        mtime: stat.mtime,
+        mtime: stat.mtimeMs,
       });
 
       const children = (await vfs.readdir(absPath));
@@ -360,7 +361,7 @@ export async function collectFiles(vfs: ExecutionFs, basePath: string, paths: st
         data: (await vfs.readFile(absPath)),
         type: 'file',
         mode: stat.mode,
-        mtime: stat.mtime,
+        mtime: stat.mtimeMs,
       });
     }
   }

@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+
 
 const command: Command = async (ctx) => {
   let exitCode = 0;
@@ -22,7 +23,7 @@ const command: Command = async (ctx) => {
     try {
       await processContent(await ctx.vfs.readFileString(path));
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`tac: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {

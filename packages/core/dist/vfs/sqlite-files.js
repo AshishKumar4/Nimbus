@@ -10,19 +10,9 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE } from './sqlite-vfs.js';
-import { VfsError, VFS_ERRNO } from './vfs-error.js';
+import { toVfsError, VfsError } from './vfs-error.js';
 function absolute(key) {
     return key.startsWith('/') ? key : `/${key}`;
-}
-function toVfsError(error, path) {
-    if (error instanceof VfsError)
-        return error;
-    const code = error?.code;
-    if (typeof code === 'string' && code in VFS_ERRNO) {
-        const message = error instanceof Error ? error.message.replace(new RegExp(`^${code}: `), '') : String(error);
-        return new VfsError(code, message, path, { cause: error });
-    }
-    return error;
 }
 /**
  * A revision is the row's generation qualified by the database's epoch: a

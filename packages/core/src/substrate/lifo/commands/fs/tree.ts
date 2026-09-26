@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const command: Command = async (ctx) => {
   let maxDepth = Infinity;
@@ -53,9 +54,9 @@ const command: Command = async (ctx) => {
   }
 
   try {
-    (await ctx.vfs.stat(absPath));
+    (await statOrThrow(ctx.vfs, absPath));
   } catch (e) {
-    if (e instanceof VFSError) {
+    if (isVfsError(e)) {
       await ctx.stderr.write(`tree: '${targetPath}': ${e.message}\n`);
       return 1;
     }

@@ -27,7 +27,6 @@
  *     — generic key/value bag for primitives. Today stores 'cwd'
  *       and 'env' (the env is JSON-serialised). One row per key.
  *
- *   nimbus_kernel_mounts (mount_point TEXT PRIMARY KEY)
  *     — explicit mount-point list (B'.2). Empty until B'.2 lands.
  *
  *   nimbus_terminal_scrollback (seq INTEGER PRIMARY KEY, ts INTEGER, data TEXT)
@@ -116,14 +115,12 @@ export interface ShellStateSnapshot {
 export function ensureSessionStateSchema(ctx: any): void {
   const sql = ctx?.storage?.sql;
   if (!sql) return;
+  // The kernel's mount list, retired with the kernel filesystem.
+  sql.exec('DROP TABLE IF EXISTS nimbus_kernel_mounts');
   sql.exec(
     'CREATE TABLE IF NOT EXISTS nimbus_session_kv (' +
     'k TEXT PRIMARY KEY, ' +
     'v TEXT NOT NULL)',
-  );
-  sql.exec(
-    'CREATE TABLE IF NOT EXISTS nimbus_kernel_mounts (' +
-    'mount_point TEXT PRIMARY KEY)',
   );
   sql.exec(
     'CREATE TABLE IF NOT EXISTS nimbus_terminal_scrollback (' +
@@ -274,7 +271,6 @@ export function clearSessionState(ctx: any): void {
   if (!sql) return;
   ensureSessionStateSchema(ctx);
   sql.exec('DELETE FROM nimbus_session_kv');
-  sql.exec('DELETE FROM nimbus_kernel_mounts');
   sql.exec('DELETE FROM nimbus_terminal_scrollback');
 }
 
@@ -289,59 +285,6 @@ export function countSessionStateKeys(ctx: any): number {
     return Number((row as any).n) || 0;
   }
   return 0;
-}
-
-// ── Kernel mount tree [B'.2] ───────────────────────────────────────────
-//
-// The kernel mount list lives in nimbus_kernel_mounts. Today the list
-// is exactly DEFAULT_MOUNT_POINTS (a static constant in src/constants.ts),
-// so persistence is functionally redundant — every initSession would
-// rebuild the same list from the constant. The architectural reason to
-// route mount-list reads through SQL anyway is to give a future
-// custom-mount feature a stable storage surface: when `mount /r2-cache`
-// is added later, it just inserts a row, and the rehydrate path picks
-// it up without any further refactor.
-
-/**
- * Load the persisted mount-point list. Returns a plain string[] of
- * mount point names (without leading slash — same shape as
- * DEFAULT_MOUNT_POINTS). Empty array when no rows exist.
- */
-export function loadKernelMounts(ctx: any): string[] {
-  const sql = ctx?.storage?.sql;
-  if (!sql) return [];
-  ensureSessionStateSchema(ctx);
-  const out: string[] = [];
-  for (const row of sql.exec(
-    'SELECT mount_point FROM nimbus_kernel_mounts ORDER BY mount_point ASC',
-  ) as Iterable<{ mount_point: string }>) {
-    out.push(String(row.mount_point));
-  }
-  return out;
-}
-
-/**
- * Persist a mount-point list. Idempotent — replaces the entire
- * nimbus_kernel_mounts contents in a single transaction. Caller
- * provides the full desired set; we don't merge with existing rows.
- *
- * `mounts` should be plain names without leading slash
- * ('bin', 'etc', ...) — same shape DEFAULT_MOUNT_POINTS uses.
- */
-export function persistKernelMounts(ctx: any, mounts: string[]): void {
-  const sql = ctx?.storage?.sql;
-  if (!sql) return;
-  ensureSessionStateSchema(ctx);
-  // Replace-all semantics: clear, then insert. The whole table is
-  // bounded by O(10) rows so a full rewrite per persist is cheap.
-  sql.exec('DELETE FROM nimbus_kernel_mounts');
-  for (const mp of mounts) {
-    if (typeof mp !== 'string' || mp.length === 0) continue;
-    sql.exec(
-      'INSERT OR REPLACE INTO nimbus_kernel_mounts (mount_point) VALUES (?)',
-      mp,
-    );
-  }
 }
 
 // ── Terminal scrollback [B'.3] ─────────────────────────────────────────

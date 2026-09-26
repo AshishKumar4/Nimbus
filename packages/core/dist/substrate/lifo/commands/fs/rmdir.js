@@ -1,6 +1,6 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve, dirname } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 const spec = {
     parents: { type: 'boolean', short: 'p' },
 };
@@ -30,8 +30,8 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
-                await ctx.stderr.write(`rmdir: ${arg}: ${e.message}\n`);
+            if (isVfsError(e)) {
+                await ctx.stderr.write(`rmdir: failed to remove '${arg}': ${VFS_STRERROR[e.code]}\n`);
                 exitCode = 1;
             }
             else {

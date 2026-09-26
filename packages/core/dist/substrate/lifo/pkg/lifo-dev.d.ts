@@ -4,7 +4,7 @@
  * Stores a registry at /etc/lifo/dev-links.json that maps command names
  * to local VFS paths.  `lifo link` adds entries, `lifo unlink` removes them.
  */
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 export interface DevLink {
     /** Absolute VFS path to the package root. */

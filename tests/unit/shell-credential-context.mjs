@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 
 try {
   const observed = [];

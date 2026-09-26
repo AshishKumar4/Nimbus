@@ -1,5 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 function toBase64(data) {
     let binary = '';
     for (let i = 0; i < data.length; i++) {
@@ -61,7 +61,7 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`base64: ${files[0]}: ${e.message}\n`);
                 return 1;
             }

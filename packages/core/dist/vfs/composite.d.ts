@@ -144,6 +144,16 @@ export declare class CompositeVFS implements VFS {
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */
     mountOf(path: string): string;
+    /**
+     * Whether the namespace answers `path` itself rather than the root
+     * backend alone: a path on another mount, a directory above a mount point
+     * (whose listing includes the mount's name), or a path under such a
+     * directory that the root holds none of (absent there, whatever the root
+     * holds through a link or file higher up).
+     */
+    composes(path: string): boolean;
+    /** The path with every link resolved, as this principal sees the namespace (ENOENT when absent). */
+    realpath(path: string): string;
     /** The same table as `cred` (and `actor`): sources are resolved for that principal. */
     as(cred: VfsCred, actor?: string): CompositeVFS;
     /** Who this view acts as. */
@@ -188,6 +198,8 @@ export declare class CompositeVFS implements VFS {
     /**
      * The directory a backend holds at a path above a mount point, or null
      * when it holds none there (then the namespace makes one: EPOCH_STAT).
+     * Held means literally: under a directory the backend holds, never through
+     * a link or file it holds higher up (the namespace's directory wins there).
      */
     private heldDirectory;
     /** A mounted backend's root, or null when it cannot stat it. */
@@ -197,13 +209,12 @@ export declare class CompositeVFS implements VFS {
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     private walkMiss;
     /**
-     * Whether the backend holds a directory that exists only above a mount
-     * point (not a mount point) as something else, a link or a file. Then that
-     * directory holds only its mount names (rule 2 applied to ancestors: a
-     * mount covers everything under its path).
+     * Whether `path` lies under a directory above a mount point (not a mount
+     * point, and not `path` itself as a mount name there) that its backend does
+     * not hold as a directory: that directory holds only its mount names (rule 2
+     * applied to ancestors: a mount covers everything under its path), whatever
+     * the backend has there through a link or file.
      */
-    private coversNonDirectory;
-    /** Whether `path` lies under such a covered directory (and is not itself a mount name there). */
     private shadowed;
     /** ENOENT when `path` is shadowed. */
     private reachable;
@@ -281,11 +292,5 @@ export declare class CompositeVFS implements VFS {
     describe(): VfsMountDescription;
     private makeSync;
 }
-/**
- * Move a file between filesystems: the copy is confirmed before the source
- * goes, and a failure puts both sides back. Directories are refused before
- * any I/O. For callers that must move across mounts (mv does its own).
- */
-export declare function moveAcross(vfs: VFS, from: string, to: string): Promise<void>;
 export {};
 //# sourceMappingURL=composite.d.ts.map

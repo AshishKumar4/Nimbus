@@ -16,6 +16,8 @@
 
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 
+import { isVfsError, VfsError } from './vfs-error.js';
+
 export type Awaitable<T> = T | Promise<T>;
 
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
@@ -40,6 +42,8 @@ export interface VfsStat {
   ctimeMs?: number;
   ino?: number;
   nlink?: number;
+  /** The filesystem the entry lives on (st_dev): distinct per mount. */
+  dev?: number;
 }
 
 /** A directory entry; `stat` when the backend has it for free (it saves a call per child). */
@@ -188,13 +192,27 @@ export interface SyncVFS {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * What a probe sees at `path`: null when nothing is there, including a path
+ * that runs through a file (ENOTDIR is a structural miss, as `test -e`
+ * answers it); a denial or any other failure still throws.
+ */
+async function probe(vfs: Pick<VFS, 'stat'>, path: string, follow: boolean): Promise<VfsStat | null> {
+  try {
+    return await vfs.stat(path, { follow });
+  } catch (error) {
+    if (isVfsError(error, 'ENOTDIR')) return null;
+    throw error;
+  }
+}
+
 /** Whether anything is at `path`. */
-export async function exists(vfs: VFS, path: string): Promise<boolean> {
-  return (await vfs.stat(path)) !== null;
+export async function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
+  return (await probe(vfs, path, true)) !== null;
 }
 
 /** The file as UTF-8 text. */
-export async function readText(vfs: VFS, path: string): Promise<string> {
+export async function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string> {
   return decoder.decode(await vfs.readFile(path));
 }
 
@@ -203,10 +221,67 @@ export async function writeText(vfs: VFS, path: string, text: string, options?: 
   await vfs.writeFile(path, encoder.encode(text), options);
 }
 
+/** File type bits of a mode (st_mode & S_IFMT). */
+export const S_IFMT = 0o170000;
+export const S_IFREG = 0o100000;
+export const S_IFDIR = 0o040000;
+export const S_IFCHR = 0o020000;
+export const S_IFLNK = 0o120000;
+
+/** True for a character device such as `/dev/zero`, which streams rather than stores. */
+export function isCharacterDevice(mode: number | undefined): boolean {
+  return mode !== undefined && (mode & S_IFMT) === S_IFCHR;
+}
+
+/** The `ls -l` type character for a mode, falling back to the entry's type. */
+export function fileTypeChar(mode: number | undefined, type: VfsFileType): string {
+  switch ((mode ?? 0) & S_IFMT) {
+    case S_IFCHR: return 'c';
+    case S_IFLNK: return 'l';
+    case S_IFDIR: return 'd';
+    case S_IFREG: return '-';
+    default: return type === 'directory' ? 'd' : type === 'symlink' ? 'l' : '-';
+  }
+}
+
+/** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
+export async function statOrThrow<S extends VfsStat>(
+  vfs: { stat(path: string, options?: { follow?: boolean }): Awaitable<S | null> },
+  path: string,
+  options?: { follow?: boolean },
+): Promise<S> {
+  const stat = await vfs.stat(path, options);
+  if (stat === null) throw new VfsError('ENOENT', path);
+  return stat;
+}
+
+/** The entry at `path` itself, a link not followed (lstat); ENOENT when nothing is there. */
+export async function lstatOrThrow<S extends VfsStat>(
+  vfs: { stat(path: string, options?: { follow?: boolean }): Awaitable<S | null> },
+  path: string,
+): Promise<S> {
+  return await statOrThrow(vfs, path, { follow: false });
+}
+
+/** Whether `path` is a directory (links followed). */
+export async function isDirectory(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
+  return (await probe(vfs, path, true))?.type === 'directory';
+}
+
+/** Whether `path` is a regular file (links followed). */
+export async function isFile(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
+  return (await probe(vfs, path, true))?.type === 'file';
+}
+
+/** Whether `path` itself is a symbolic link. */
+export async function isSymlink(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean> {
+  return (await probe(vfs, path, false))?.type === 'symlink';
+}
+
 /** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */
 export interface VfsRemoval {
   removed: string[];
   kept: string[];
   failures: VfsRemovalFailure[];
 }
-export interface VfsRemovalFailure { path: string; error: import('./vfs-error.js').VfsError }
+export interface VfsRemovalFailure { path: string; error: VfsError }

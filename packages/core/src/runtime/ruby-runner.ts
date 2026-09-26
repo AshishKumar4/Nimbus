@@ -45,7 +45,7 @@
  */
 
 import type { RuntimeManifest } from './runtime-manifest.js';
-import { withHostFilesystem, type ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import { withHostView, type ProcessView as CredentialedVfs } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -64,6 +64,7 @@ import {
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
+import { exists } from '../vfs/vfs.js';
 
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -238,7 +239,7 @@ export function makeRubyRunnerFactory(deps: {
         });
       } else {
         result = await dispatchRubyFacet(
-          deps.facets, ctx.vfs.authority, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
+          deps.facets, ctx.vfs.process, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), ctx.pid);
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -250,7 +251,7 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    if (deps.registry) await withHostFilesystem(deps.filesystem, CRED_KERNEL, registerGemBins);
+    if (deps.registry) await withHostView(deps.filesystem, CRED_KERNEL, registerGemBins);
     return rubyBinHandler;
   };
 }

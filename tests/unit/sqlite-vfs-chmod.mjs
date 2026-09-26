@@ -12,7 +12,7 @@
 //   - chmod bumps the per-path revision and emits an fs change event.
 
 import assert from 'node:assert/strict';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { Database } from 'bun:sqlite';
@@ -108,16 +108,6 @@ function makeVfs(db = new Database(':memory:')) {
   vfs.chmod('home/user/x', 0o711);
   assert.ok(rawVfs.revision('home/user/x') > before, 'revision bumped');
   assert.deepEqual(events, ['change'], 'change event emitted');
-}
-
-// ── provider delegation (kernel VFS mount surface) ───────────────────────
-{
-  const { rawVfs, vfs } = makeVfs();
-  vfs.mkdir('home/user', { recursive: true });
-  vfs.writeFile('home/user/p', 'x');
-  const provider = new SqliteVFSProvider(rawVfs, 'home');
-  provider.chmod('/user/p', 0o755);
-  assert.equal(vfs.stat('home/user/p').mode, 0o100755);
 }
 
 console.log('sqlite-vfs-chmod: all assertions passed');

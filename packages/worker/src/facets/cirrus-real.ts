@@ -68,6 +68,7 @@ import {
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import {
   buildFsSnapshot,
   generateFsShimModuleCode,
@@ -951,7 +952,7 @@ export class CirrusReal {
     // explicit delete (otherwise the cookie row + storage slot leak
     // until the supervisor itself is evicted).
     if (this._facetName && ctx) {
-      try { (ctx as any).facets.delete(this._facetName); } catch {}
+      try { deleteFacetStorage(ctx, this._facetName); } catch {}
     }
     this.facetStub = null;
     this._facetName = null;

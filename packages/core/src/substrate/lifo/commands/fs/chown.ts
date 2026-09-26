@@ -2,6 +2,7 @@ import { parseChownOwnership } from '../../../../shell/unix-accounts.js';
 import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   recursive: { type: 'boolean' as const, short: 'R' },
@@ -24,7 +25,7 @@ const command: Command = async (ctx) => {
   }
 
   const apply = async (path: string): Promise<void> => {
-    if (flags.recursive && (await vfs.stat(path)).type === 'directory') {
+    if (flags.recursive && (await statOrThrow(vfs, path)).type === 'directory') {
       for (const child of (await vfs.readdir(path))) (await apply(resolve(path, child.name)));
     }
     (await vfs.chown(path, requested.uid, requested.gid));

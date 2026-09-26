@@ -1,6 +1,7 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
-import type { FileType } from '../kernel/vfs/types.js';
+import type { SqliteVFS } from '../../../vfs/sqlite-vfs.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
  * Sync VFS behind async interface future-proofs for async persistence.
@@ -8,7 +9,11 @@ import type { FileType } from '../kernel/vfs/types.js';
 export declare class SandboxFsImpl implements ISandboxFs {
     private vfs;
     private getCwd;
-    constructor(vfs: ExecutionFs, getCwd: () => string);
+    /** The SQLite filesystem the namespace is rooted at, for storeStats. */
+    private store;
+    constructor(vfs: ProcessView, getCwd: () => string, 
+    /** The SQLite filesystem the namespace is rooted at, for storeStats. */
+    store: SqliteVFS);
     private resolvePath;
     readFile(path: string): Promise<string>;
     readFile(path: string, encoding: null): Promise<Uint8Array>;
@@ -35,9 +40,16 @@ export declare class SandboxFsImpl implements ISandboxFs {
         path: string;
         content: string | Uint8Array;
     }>): Promise<void>;
-    /** Directories to skip during export (virtual providers) */
-    private static SKIP_DIRS;
-    exportSnapshot(): Promise<Uint8Array>;
-    importSnapshot(data: Uint8Array): Promise<void>;
+    /** How the session's content store is doing (its diagnostic; nothing in it is per-user). */
+    storeStats(): Promise<{
+        chunks: number;
+        chunkBytes: number;
+        contents: number;
+        historyRows: number;
+        gcQueued: number;
+        snapshots: number;
+        jobs: number;
+        databaseBytes: number;
+    }>;
 }
 //# sourceMappingURL=SandboxFs.d.ts.map

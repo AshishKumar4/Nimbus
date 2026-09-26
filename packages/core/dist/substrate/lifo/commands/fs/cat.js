@@ -1,6 +1,7 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { SinkWriter, streamRange } from '../../../../_shared/byte-stream.js';
+import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
         // Read from stdin if available (enables piping: echo hi | cat)
@@ -19,9 +20,9 @@ const command = async (ctx) => {
     for (const arg of ctx.args) {
         const path = resolve(ctx.cwd, arg);
         try {
-            const stat = (await ctx.vfs.stat(path));
+            const stat = (await statOrThrow(ctx.vfs, path));
             if (stat.type === 'directory')
-                throw new VFSError('EISDIR', `'${arg}': is a directory`);
+                throw new VfsError('EISDIR', `'${arg}': is a directory`);
             if (stat.size > 0) {
                 // A regular file's size is its exact extent — copy precisely that, in
                 // bounded steps, so a large file never becomes a large buffer.
@@ -37,7 +38,7 @@ const command = async (ctx) => {
             }
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`cat: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }

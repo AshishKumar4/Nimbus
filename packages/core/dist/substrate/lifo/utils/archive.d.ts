@@ -1,4 +1,4 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 export declare function compressGzip(data: Uint8Array): Promise<Uint8Array>;
 export declare function decompressGzip(data: Uint8Array): Promise<Uint8Array>;
 export interface TarEntry {
@@ -23,5 +23,5 @@ export declare function parseZip(data: Uint8Array): ZipEntry[];
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export declare function collectFiles(vfs: ExecutionFs, basePath: string, paths: string[]): Promise<TarEntry[]>;
+export declare function collectFiles(vfs: ProcessView, basePath: string, paths: string[]): Promise<TarEntry[]>;
 //# sourceMappingURL=archive.d.ts.map

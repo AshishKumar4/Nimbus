@@ -1,4 +1,4 @@
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 export interface PackageInfo {
     name: string;
     url: string;

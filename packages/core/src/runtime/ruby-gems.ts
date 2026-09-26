@@ -1,6 +1,7 @@
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { extractTarball } from '../_shared/tarball.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { exists, isDirectory } from '../vfs/vfs.js';
 
 const RUBYGEMS_API = 'https://rubygems.org';
 const DEFAULT_GEM_HOME = 'home/user/.gem';

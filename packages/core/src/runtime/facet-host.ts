@@ -20,7 +20,6 @@
  * substrate answered and never asks.
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { WasiParking } from './wasi/types.js';
 
 /**

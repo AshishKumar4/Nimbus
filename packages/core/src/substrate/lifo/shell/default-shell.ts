@@ -1,5 +1,6 @@
 import type { Command } from '../commands/types.js';
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
+import { exists } from '../../../vfs/vfs.js';
 
 export type DefaultShell = 'lifo' | 'bash';
 
@@ -8,7 +9,7 @@ export function defaultShellPath(home: string): string {
   return `${normalizedHome}/.config/nimbus/shell`;
 }
 
-export async function readDefaultShell(vfs: Pick<ExecutionFs, 'readFileString'>, home: string): Promise<DefaultShell> {
+export async function readDefaultShell(vfs: Pick<ProcessView, 'readFileString'>, home: string): Promise<DefaultShell> {
   try {
     return (await vfs.readFileString(defaultShellPath(home))).trim() === 'bash' ? 'bash' : 'lifo';
   } catch {
@@ -16,7 +17,7 @@ export async function readDefaultShell(vfs: Pick<ExecutionFs, 'readFileString'>,
   }
 }
 
-async function writeDefaultShell(vfs: ExecutionFs, home: string, shell: DefaultShell): Promise<void> {
+async function writeDefaultShell(vfs: ProcessView, home: string, shell: DefaultShell): Promise<void> {
   const path = defaultShellPath(home);
   const parent = path.slice(0, path.lastIndexOf('/'));
   if (!(await vfs.exists(parent))) (await vfs.mkdir(parent, { recursive: true }));

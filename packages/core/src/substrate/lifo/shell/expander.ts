@@ -1,5 +1,5 @@
 import type { WordPart } from './types.js';
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
 import { readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './interpreter.js';
@@ -15,7 +15,7 @@ export interface ExpandContext {
   positionals?: readonly string[];
   lastExitCode: number;
   cwd: string;
-  vfs: ExecutionFs;
+  vfs: ProcessView;
   options: ShellOptions;
   executeCapture?: (input: string) => Promise<CapturedCommand>;
   /**

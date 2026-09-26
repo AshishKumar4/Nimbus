@@ -5,7 +5,7 @@ import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ExecutionFs, withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ProcessView, withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -46,6 +46,7 @@ export type RuntimeCommandHost = Pick<SessionInternal,
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
   const sqliteFs = workspace.vfs;
   const kernelFs = sqliteFs.as(CRED_KERNEL);
+  const namespaceFs = workspace.filesystem.namespaceFs(CRED_KERNEL);
   const kernel = workspace.kernel;
   const shell = workspace.shell;
   const registry = workspace.registry;
@@ -251,7 +252,7 @@ workspace.runtimes.registerRunner(
             cred,
             setUmask: (mask: number) => ctx.setUmask(mask),
             runAs: (targetCred, argv) => ctx.runAs(targetCred, argv),
-            vfs: new ExecutionFs(workspace.filesystem.bind({ pid, cred })),
+            vfs: new ProcessView(workspace.filesystem.bind({ pid, cred })),
             signal: new AbortController().signal,
             stdout,
             stderr,
@@ -325,7 +326,7 @@ const nodeSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
       }
       return self.esbuildService!;
     },
@@ -476,7 +477,7 @@ const bunSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
       }
       return self.esbuildService!;
     },
@@ -521,7 +522,7 @@ const bunSpec: RuntimeSpec = {
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
           }
           return self.esbuildService!;
         },
@@ -620,7 +621,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     // Lazy-init esbuild
     if (!self.esbuildService) {
       self.ensureSqliteFs();
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
     }
 
     // Parse --root flag; default to the shell cwd so `npm run dev` from
@@ -1584,7 +1585,7 @@ registry.register('help', createHelpCommand(registry));
 // Awaited: the runtime is composed with them registered. A failure leaves the
 // shell without those commands, and says so.
 try {
-  await withHostFilesystem(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
+  await withHostView(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
 } catch (error) {
   console.error('[nimbus] global npm commands were not restored:', error);
 }

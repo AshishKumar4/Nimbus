@@ -11,6 +11,8 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-workspace-'));
 const dbPath = join(dir, 'workspace.sqlite');
@@ -112,27 +114,22 @@ try {
   // release the lease it opened when the rest of the recipe throws.
   let leasesOpened = 0;
   let leasesDisposed = 0;
-  const countingAuthority = (authority) => ({
-    namespace: authority.namespace,
-    bind: (binding) => authority.bind(binding),
-    openHost: (cred, options) => {
+  class CountingFiles extends ProcessFiles {
+    openHost(cred, options) {
       leasesOpened++;
-      const lease = authority.openHost(cred, options);
+      const lease = super.openHost(cred, options);
       return { fs: lease.fs, dispose: async () => { leasesDisposed++; await lease.dispose(); } };
-    },
-    releaseProcess: (pid) => authority.releaseProcess(pid),
-    activateAppendWriter: (pid, writerId) => authority.activateAppendWriter(pid, writerId),
-    revokeAppendWriter: (pid, writerId) => authority.revokeAppendWriter(pid, writerId),
-    revokeAppendWriters: (pid) => authority.revokeAppendWriters(pid),
-    revokeAppendWritersThrough: (maxPid) => authority.revokeAppendWritersThrough(maxPid),
-  });
+    }
+  }
+  const failingVfs = new SqliteVFS(harness.sql, harness.ctx);
 
   await assert.rejects(
     () => NimbusWorkspace.create({
       sql: harness.sql,
       transactions: harness.ctx,
       generation: 4,
-      filesystem: countingAuthority,
+      vfs: failingVfs,
+      filesystem: new CountingFiles(failingVfs),
       runtimes: [{
         manifest: { name: 'broken', version: '0.0.1' },
         readBlob() { throw new Error('runtime payload unavailable'); },

@@ -21,7 +21,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ESM_TRANSFORM_CACHE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
@@ -57,7 +57,7 @@ const manager = new FacetManager(
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+manager.setVfs(vfs, new ProcessFiles(vfs));
 // Stands in for esbuild's CJS emit (the wasm is a wrangler-time binding, not
 // available here), as the transform host the session's esbuild uses: the
 // output is the input's size, which is what the bound prices.

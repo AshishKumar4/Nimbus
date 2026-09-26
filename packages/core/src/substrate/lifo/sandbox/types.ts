@@ -3,52 +3,10 @@ import type { CommandRegistry } from '../commands/registry.js';
 import type { Kernel } from '../kernel/index.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
-import type { FileType, MountProvider } from '../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
+import type { SqliteVFS } from '../../../vfs/sqlite-vfs.js';
 
 // ─── Sandbox Options ───
-
-export interface SandboxOptions {
-  /** Enable kernel persistence through the configured backend (default: false). */
-  persist?: boolean;
-  /** Extra environment variables (merged with defaults) */
-  env?: Record<string, string>;
-  /** Initial working directory (default: /home/user) */
-  cwd?: string;
-  /** Pre-populate files: path → content */
-  files?: Record<string, string | Uint8Array>;
-  /** Attach a pre-created ITerminal for visual mode */
-  terminal?: ITerminal;
-  /**
-   * Mount native filesystem directories into the virtual filesystem at boot time.
-   * Only works in Node.js environments (or when a custom fsModule is provided).
-   */
-  mounts?: Array<{
-    /** Path inside the virtual filesystem where the mount will appear */
-    virtualPath: string;
-    /** Host filesystem path to mount */
-    hostPath: string;
-    /** If true, the mount is read-only (default: false) */
-    readOnly?: boolean;
-    /** Custom fs module implementing NativeFsModule. If omitted, node:fs is used. */
-    fsModule?: NativeFsModule;
-  }>;
-  /**
-   * Directories whose storage comes from a provider rather than from the
-   * in-memory tree — a durable filesystem, for instance.
-   *
-   * Applied before anything reads the filesystem, because boot reads it:
-   * `create` sources `/etc/profile`, and a provider that arrived afterwards
-   * would have been invisible to it. Native `mounts` overlay an already-booted
-   * sandbox and keep their existing position.
-   */
-  providerMounts?: Array<{
-    /** Path inside the virtual filesystem where the mount will appear. */
-    virtualPath: string;
-    /** Supplies every operation under `virtualPath`. */
-    provider: MountProvider;
-  }>;
-}
 
 // ─── Command Execution ───
 
@@ -103,10 +61,11 @@ export interface SandboxFs {
   rename(oldPath: string, newPath: string): Promise<void>;
   cp(src: string, dest: string): Promise<void>;
   writeFiles(files: Array<{ path: string; content: string | Uint8Array }>): Promise<void>;
-  /** Export entire VFS as a tar.gz snapshot */
-  exportSnapshot(): Promise<Uint8Array>;
-  /** Restore VFS from a tar.gz snapshot */
-  importSnapshot(data: Uint8Array): Promise<void>;
+  /**
+   * The content store's diagnostic. Snapshots, diff, restore and the paged
+   * export/import are the embedder's, with kernel authority: `ws.vfs`.
+   */
+  storeStats(): Promise<ReturnType<SqliteVFS['storeStats']>>;
 }
 
 // ─── Internal types for Sandbox internals ───

@@ -46,3 +46,30 @@ export class VfsError extends Error {
 export function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError {
   return error instanceof VfsError && (code === undefined || error.code === code);
 }
+
+/**
+ * An error from a layer that throws `{ code }` errors (the SQLite engine, a
+ * process bridge), as a VfsError on `path`; anything without a known code is
+ * returned as it is.
+ */
+export function toVfsError(error: unknown, path: string): unknown {
+  if (error instanceof VfsError) return error;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code in VFS_ERRNO) {
+    // The layer's message already names what failed: keep it as it is.
+    const message = error instanceof Error ? error.message.replace(new RegExp(`^${code}: `), '') : String(error);
+    return new VfsError(code as VfsErrorCode, message, undefined, { cause: error });
+  }
+  return error;
+}
+
+/** strerror(3) for a code: the text GNU coreutils print. */
+export const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>> = {
+  EPERM: 'Operation not permitted', ENOENT: 'No such file or directory', EIO: 'Input/output error',
+  ENXIO: 'No such device or address', EAGAIN: 'Resource temporarily unavailable', EACCES: 'Permission denied',
+  EBUSY: 'Device or resource busy', EEXIST: 'File exists', EXDEV: 'Invalid cross-device link',
+  ENOTDIR: 'Not a directory', EISDIR: 'Is a directory', EINVAL: 'Invalid argument',
+  ENOSPC: 'No space left on device', EROFS: 'Read-only file system', ELOOP: 'Too many levels of symbolic links',
+  ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
+  ESTALE: 'Stale file handle',
+};

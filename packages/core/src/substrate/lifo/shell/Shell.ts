@@ -1,5 +1,5 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
-import { ExecutionFs, bindExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
+import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import type { CommandContext, CommandRunAsHost } from '../commands/types.js';
@@ -7,7 +7,7 @@ import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-con
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
-import { VFSError } from '../kernel/vfs/index.js';
+
 import {
   ExitSignal,
   Interpreter,
@@ -30,6 +30,8 @@ import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
+import { exists, statOrThrow } from '../../../vfs/vfs.js';
 
 function shellPromptParts(env: Record<string, string>, cwd: string): {
   displayPath: string;
@@ -99,8 +101,8 @@ export interface ShellCommandIdentity {
 
 export class Shell {
   private terminal: ITerminal;
-  private get vfs(): ExecutionFs {
-    return bindExecutionFs(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
+  private get vfs(): ProcessView {
+    return bindProcessView(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
   }
   private registry: CommandRegistry;
   cwd: string;
@@ -169,7 +171,7 @@ export class Shell {
 
   constructor(
     terminal: ITerminal,
-    readonly filesystem: ShellFilesystem,
+    readonly filesystem: NimbusFilesystemAuthority,
     registry: CommandRegistry,
     env: Record<string, string>,
     processRegistry: ProcessRegistry,
@@ -285,7 +287,7 @@ export class Shell {
     return this.env;
   }
 
-  getVfs(): ExecutionFs {
+  getVfs(): ProcessView {
     return this.vfs;
   }
 
@@ -1078,7 +1080,7 @@ export class Shell {
     }
 
     try {
-      const stat = (await this.vfs.stat(newPath));
+      const stat = (await statOrThrow(this.vfs, newPath));
       if (stat.type !== 'directory') {
         (await stderr.write(`cd: ${target}: Not a directory\n`));
         return 1;
@@ -1087,7 +1089,7 @@ export class Shell {
       this.setCwd(newPath);
       return 0;
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         (await stderr.write(`cd: ${target}: ${e.message}\n`));
         return 1;
       }

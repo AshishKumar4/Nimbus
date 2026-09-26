@@ -133,13 +133,8 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
 export declare function residentFacetName(slot: number): string;
 /** The prefix every durable application's facet name carries. */
 export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
-/**
- * Drop one facet's SQLite by name — the ONLY call site that may delete facet
- * storage. `spawnResident` releases ephemeral processes with abort+delete
- * (storage is slot-reuse hygiene) and durable ones with abort alone (the
- * storage IS the durable application's state); explicit removal arrives here
- * through the coordinator's durable-slot book, owner-checked.
- */
+/** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
+export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
 /**
  * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.

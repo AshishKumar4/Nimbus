@@ -26,13 +26,14 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { withHostFilesystem } from '../shell/execution-fs.js';
+import { withHostView } from './process-files.js';
 import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/platform/w7-frame.js';
+import { statOrThrow } from '../vfs/vfs.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
@@ -50,7 +51,7 @@ export function makeClangRunnerFactory(deps) {
         // Installed toolchain blobs are supervisor-owned artifacts, so they are read
         // through a kernel host lease that lives exactly as long as one invocation.
         return function clangBinHandler(ctx) {
-            return withHostFilesystem(deps.filesystem, CRED_KERNEL, (runtimeVfs) => compileOrLink(ctx, runtimeVfs));
+            return withHostView(deps.filesystem, CRED_KERNEL, (runtimeVfs) => compileOrLink(ctx, runtimeVfs));
         };
         async function compileOrLink(ctx, runtimeVfs) {
             const vfs = ctx.vfs;
@@ -148,7 +149,7 @@ export function makeClangRunnerFactory(deps) {
                 facet: deps.facets.open({
                     tag: `clang-runner-${primaryName}`,
                     concurrency: 1,
-                    syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+                    syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
                     preamble: CLANG_RUNNER_PREAMBLE,
                     wasmModules: { 'primary.wasm': image },
                 }),
@@ -300,7 +301,7 @@ async function producedFile(vfs, guestPath) {
     const path = guestPath.replace(/^\/+/, '');
     if (!(await vfs.isFile(path)))
         return false;
-    return (await vfs.stat(path)).size > 0;
+    return (await statOrThrow(vfs, path)).size > 0;
 }
 /** Recognized C / C++ source extensions for input classification. */
 function isSourceExt(p) {
@@ -525,7 +526,7 @@ function parseSysrootStamp(text) {
 async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
     const dir = sysrootDir.replace(/^\/+/, '');
     const stampPath = `${dir}/${SYSROOT_STAMP}`;
-    const tarSize = (await vfs.stat(tarVfsPath)).size;
+    const tarSize = (await statOrThrow(vfs, tarVfsPath)).size;
     if (await vfs.isFile(stampPath)) {
         const stamp = parseSysrootStamp(await vfs.readFileString(stampPath));
         if (stamp && stamp.tarSize === tarSize)
@@ -565,7 +566,7 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
     }));
     const write = async (inodes) => {
         const chunks = inodes.flatMap((inode) => chunksByPath.get(inode.path) ?? []);
-        const result = await vfs.authority.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+        const result = await vfs.process.writeStream(encodeWriteBatchStream({ inodes, chunks }));
         if (!result.ok)
             throw new Error(`sysroot unpack failed at ${inodes[0].path}: ${result.error.message}`);
     };

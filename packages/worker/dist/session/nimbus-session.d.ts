@@ -21,7 +21,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -302,8 +302,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * Lazy: sqliteFs exists only after ensureSqliteFs().
      */
     private _supervisorOps;
-    private filesystemAuthority;
-    getFilesystemAuthority(): SqliteFilesystemAuthority;
+    private processFiles;
+    /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
+    getFilesystemAuthority(): ProcessFiles;
     private supervisorOps;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */
     supervisorBridge(pid?: number): RuntimeFsBridge;
@@ -327,6 +328,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
+    _rpcFsStorageGrant(facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
+        granted: number;
+    }>;
     _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
     _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;

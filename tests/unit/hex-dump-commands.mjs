@@ -16,8 +16,8 @@
  */
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { testBox } from './lib/test-box.mjs';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { TerminalStdin } from '../../packages/core/src/substrate/lifo/shell/terminal-stdin.ts';
@@ -45,8 +45,7 @@ root.writeFile('tmp/one80.bin', bytes([0x80]), { mode: 0o644 });
 root.writeFile('tmp/k3.bin', bytes(Array(3072).fill(0)), { mode: 0o644 });
 root.writeFile('tmp/big.bin', bytes(Array.from({ length: 70000 }, (_, i) => i % 251)), { mode: 0o644 });
 
-const box = await Sandbox.create({ persist: false });
-box.kernel.vfs.mount('/tmp', new SqliteVFSProvider(rawVfs, 'tmp'));
+const box = await testBox({ harness, vfs: rawVfs });
 registerUnixCommands(box.commands.registry, rawVfs);
 
 async function sh(line) {

@@ -5,22 +5,19 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = rawVfs.as(CRED_KERNEL);
-// The kernel owns the virtual mounts (/dev, /proc); the authority resolves a
-// caller's path against them before falling through to session storage.
-const kernel = new Kernel();
-kernel.initFilesystem();
-const authority = new SqliteFilesystemAuthority(rawVfs, kernel.vfs);
-const filesystemFor = cred => new ExecutionFs(authority.bind({ pid: cred.uid === 0 ? 72 : 71, cred }));
+// The namespace has /dev and /proc mounted; a caller's path resolves there
+// before it reaches session storage.
+const authority = new ProcessFiles(rawVfs);
+const filesystemFor = cred => new ProcessView(authority.bind({ pid: cred.uid === 0 ? 72 : 71, cred }));
 
 root.mkdir('etc', { mode: 0o755 });
 root.writeFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n', { mode: 0o644 });

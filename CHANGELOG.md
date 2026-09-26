@@ -6,6 +6,86 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+### Breaking changes for embedders
+
+The workspace has one filesystem: a `CompositeVFS` rooted at SQLite, with
+`/proc` and `/dev` mounted, bound to processes by `ProcessFiles`. The lifo
+kernel no longer has a filesystem. Each removed or changed public import or
+option, with its replacement:
+
+- `@nimbus-sh/core/runtime/filesystem-authority.js` (`SqliteFilesystemAuthority`)
+  is removed. Use `ProcessFiles` from `@nimbus-sh/core/runtime/process-files.js`:
+  `new ProcessFiles(sqliteVfs)`, with the same `bind`, `openHost`,
+  `releaseProcess` and append-writer methods, plus `vfs` (the mount table),
+  `proc`, `mounts(cred)`, `view(binding)` and `withHost(cred, use)`. Do not
+  subclass it to add mounts; mount on `vfs` (below).
+- `@nimbus-sh/core/substrate/lifo/kernel/vfs/*` is removed, with `VFS`,
+  `VFSError`, `ErrorCode`, the Proc, Dev and NativeFs providers,
+  `MountProvider`/`VirtualProvider`, and `Stat`/`FileType`:
+  - Errors: `VfsError` and `isVfsError(e, code?)` from
+    `@nimbus-sh/core/vfs/vfs-error.js`. Commands recognise only `VfsError`; a
+    mount that throws another class reports an unexpected failure instead
+    of the POSIX error.
+  - Types: `VFS`, `VfsStat`, `VfsFileType` and the `S_IF*` bits from
+    `@nimbus-sh/core/vfs/vfs.js`.
+  - A mount provider: implement `VFS` (`@nimbus-sh/core/vfs/vfs.js`; it may
+    be sync, async or both) and mount it (below).
+- `NimbusWorkspaceOptions.filesystem` was a hook, `(authority) => authority`.
+  It is now an optional `ProcessFiles` instance over the workspace's own
+  `SqliteVFS`. To mount a filesystem, call
+  `ws.filesystem.vfs.mount(point, source)`, where `source` is a `VFS` or
+  `(principal) => VFS | null` for a per-principal source such as Kinu's
+  `/context`. The mount then answers `df`, `mount` and `/proc/mounts`.
+- `NimbusWorkspaceOptions.mounts` is removed: the top-level directories are
+  fixed (`SEEDED_TOP_LEVEL_DIRS` in `@nimbus-sh/core/constants.js`, which
+  replaces `DEFAULT_MOUNT_POINTS`). Mount other trees with
+  `ws.filesystem.vfs.mount()`.
+- `seedBaseFilesystem(vfs, mounts)` is now `seedBaseFilesystem(vfs)`.
+- `workspace.kernel.vfs`, `kernel.proc`, `kernel.boot()`,
+  `kernel.initFilesystem()` and `kernel.serviceManager` are removed. Read
+  the namespace through `ws.filesystem.vfs.as(cred)`, a process's view
+  through `ws.filesystem.view({ pid, cred })`, and SQLite directly through
+  `ws.vfs.as(cred)`. Add `/proc` files with `ws.filesystem.proc.register()`.
+- Removed from `@nimbus-sh/core/substrate/lifo`: `Sandbox` (use
+  `NimbusWorkspace`), `ServiceManager` and `systemctl`, `parseUnitFile`,
+  `PersistenceManager` and the persistence backends, `ContentStore`,
+  `BlobStore` and `MemoryBlobStore`, `NativeFsProvider`, `VFS` and
+  `VFSError`. The mime helpers are still exported.
+- A command's `ctx.vfs` is a `ProcessView` (from
+  `@nimbus-sh/core/runtime/process-files.js`), not `ExecutionFs`:
+  - `stat` returns `null` when nothing is there; `statOrThrow`/`lstatOrThrow`
+    from `@nimbus-sh/core/vfs/vfs.js` keep the old throw.
+  - `lstat(p)` is `stat(p, { follow: false })`.
+  - Stat times are `mtimeMs`, `atimeMs` and `ctimeMs`.
+  - `copyFile`/`copyTree` are `copy(from, to, { recursive })`, and
+    `rmdirRecursive(p)` is `remove(p, { recursive: true })`.
+  - `.authority` is `.process`, and `.local` is gone.
+  - Every failure is a `VfsError`.
+  - `ExecutionFs`, `bindExecutionFs` and `withHostFilesystem` are
+    `ProcessView`, `bindProcessView` and `withHostView`.
+- Behaviour change: the probes `exists`, `isFile`, `isDirectory` and
+  `isSymlink` (on `ProcessView` and in `@nimbus-sh/core/vfs/vfs.js`) answer
+  `false` for a path that runs through a file (`exists('f/g')` where `f` is a
+  file), as Node's `existsSync` does. Before, they threw `ENOTDIR`. A denial
+  still throws.
+- The mount listing (`mounts(cred)`, `df`, `mount`, `/proc/mounts`) is in
+  mount order (`/`, `/proc`, `/dev`, then the embedder's), as on Linux.
+- `ws.fs` (`SandboxFs`) no longer has `exportSnapshot()`/`importSnapshot()`
+  (a tar.gz of the whole tree). The content store is the embedder's, with
+  kernel authority, on `ws.vfs` (the workspace's `SqliteVFS`):
+  `snapshot(name, { quiesce })`, `snapshots()`, `dropSnapshot(name)`,
+  `diff(from, to, { after, limit })`, `at(name, cred?)`, `restore`/
+  `restoreAsync(name, { subtree })`, `exportPage`/`exportChunks`/
+  `importPage`/`pageDigest`. `ws.fs` and the per-credential handles carry
+  only `storeStats()`. Snapshots hold the SQLite-rooted tree, not mounts.
+- `snapshot(name, { quiesce: true })` waits for spanning work (writeStream,
+  restoreAsync, sliced copyTree) and for exclusive leases, and holds
+  spanning work that starts meanwhile until the snapshot is taken. It
+  waits; it never answers EBUSY.
+- The content store's schema is 3. A database a schema-2 build wrote (staging
+  and throwaways only) is reset when it opens, and `legacyReset` tells the
+  session once.
+
 ### filesystem
 
 - SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name

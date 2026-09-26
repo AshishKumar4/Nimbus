@@ -35,6 +35,7 @@
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -187,6 +188,9 @@ export interface FacetProcessManagerDeps {
         facets?: {
             abort?: (name: string, e?: any) => void;
             delete?: (name: string) => void;
+        };
+        storage?: {
+            sql?: SqlDatabase;
         };
     };
     /** Optional Worker Loader pool for isolating child-process dispatch. */

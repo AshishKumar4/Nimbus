@@ -1,8 +1,11 @@
 import type { Command, CommandContext, CommandInputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError, isCharacterDevice } from '../../kernel/vfs/index.js';
+
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { isCharacterDevice, statOrThrow } from '../../../../vfs/vfs.js';
+import { exists } from '../../../../vfs/vfs.js';
 
 /**
  * dd — copy blocks between a source and a destination.
@@ -115,7 +118,7 @@ async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<
 async function inputLimit(ctx: CommandContext, options: DdOptions, path: string): Promise<number> {
   if (options.count !== undefined) return options.count * options.inputBlockSize;
 
-  const stat = await ctx.vfs.stat(path);
+  const stat = await statOrThrow(ctx.vfs, path);
   if (isCharacterDevice(stat.mode)) {
     throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
   }
@@ -132,7 +135,7 @@ async function readInput(
   try {
     return await ctx.vfs.readRange(path, offset, length);
   } catch (error) {
-    if (error instanceof VFSError) throw new Error(`${label}: ${error.message}`);
+    if (isVfsError(error)) throw new Error(`${label}: ${error.message}`);
     throw error;
   }
 }

@@ -1,6 +1,6 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SandboxFsImpl } from '@nimbus-sh/core/substrate/lifo/sandbox/SandboxFs.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
@@ -56,6 +56,8 @@ class RuntimeOwner {
     scheduling = new Set();
     fileLeases = new Map();
     services;
+    /** The workspace's namespace and process bindings. */
+    getFilesystemAuthority() { return this.options.workspace.filesystem; }
     constructor(options) {
         this.options = options;
         hostNamespaceBinding(options.env, 'HostedRuntime');
@@ -274,7 +276,7 @@ class RuntimeOwner {
             lease = workspace.filesystem.openHost(identity);
             this.fileLeases.set(key, lease);
         }
-        const view = new SandboxFsImpl(new ExecutionFs(lease.fs), () => workspace.shell.getCwd());
+        const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd(), workspace.vfs);
         return Object.assign(view, { as: (next) => this.files(next) });
     }
     close() {

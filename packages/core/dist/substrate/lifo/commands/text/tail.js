@@ -1,6 +1,7 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 const command = async (ctx) => {
     let count = 10;
     const files = [];
@@ -39,7 +40,7 @@ const command = async (ctx) => {
     for (const file of files) {
         const path = resolve(ctx.cwd, file);
         try {
-            (await ctx.vfs.stat(path));
+            (await statOrThrow(ctx.vfs, path));
             if (isBinaryMime(getMimeType(path))) {
                 await ctx.stderr.write(`tail: ${file}: binary file, skipping\n`);
                 continue;
@@ -50,7 +51,7 @@ const command = async (ctx) => {
             await tailText(content);
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`tail: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }

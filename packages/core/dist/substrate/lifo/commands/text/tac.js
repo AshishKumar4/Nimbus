@@ -1,5 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const command = async (ctx) => {
     let exitCode = 0;
     const processContent = async (content) => {
@@ -18,7 +18,7 @@ const command = async (ctx) => {
             await processContent(await ctx.vfs.readFileString(path));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`tac: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }

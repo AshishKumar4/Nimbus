@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 interface SymbolicClause {
   who: string;        // subset of 'ugoa'; '' means 'a'
@@ -84,7 +85,7 @@ const command: Command = async (ctx) => {
 
   let exitCode = 0;
 
-  async function applyChmod(filePath: string): Promise<void> { const st = (await ctx.vfs.stat(filePath));
+  async function applyChmod(filePath: string): Promise<void> { const st = (await statOrThrow(ctx.vfs, filePath));
   (await ctx.vfs.chmod(filePath, applyModeSpec(spec!, st.mode, st.type === 'directory')));
   if (recursive && st.type === 'directory') {
     for (const entry of (await ctx.vfs.readdir(filePath))) {
@@ -96,7 +97,7 @@ const command: Command = async (ctx) => {
     try {
       (await applyChmod(resolve(ctx.cwd, file)));
     } catch (e) {
-      const message = e instanceof VFSError || e instanceof Error ? e.message : String(e);
+      const message = isVfsError(e) || e instanceof Error ? e.message : String(e);
       await ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
       exitCode = 1;
     }

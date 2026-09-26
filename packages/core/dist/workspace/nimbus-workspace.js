@@ -28,12 +28,12 @@ import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
-import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
+import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_PATH, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
-import { ExecutionFs } from '../shell/execution-fs.js';
+import { ProcessFiles } from '../runtime/process-files.js';
+import { ProcessView } from '../runtime/process-files.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
@@ -41,7 +41,7 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
-import { formatProcMounts, registerMountCommands } from '../shell/mount-commands.js';
+import { registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
@@ -102,10 +102,9 @@ export class NimbusWorkspace {
         this.runtimes = runtimes;
         this.shellProcessPid = shellProcessPid;
         this.commands = new SandboxCommandsImpl(shell, registry);
-        // NOT the kernel VFS as it stands, which is kernel-credentialed because
-        // the shell re-credentials per command; a host calling `.fs` has no
-        // process behind it and must not inherit that.
-        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd());
+        // The shell's own process view: a host calling `.fs` acts as the
+        // session user, never as the kernel.
+        this.fs = new SandboxFsImpl(shell.getVfs(), () => shell.getCwd(), vfs);
     }
     static async create(options) {
         if (options.fabric)
@@ -117,28 +116,18 @@ export class NimbusWorkspace {
         if (options.filesystemNamespace !== undefined && options.filesystemNamespace !== vfs.namespace) {
             throw new Error('filesystemNamespace differs from the supplied filesystem namespace');
         }
-        const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
-        seedBaseFilesystem(vfs, mounts);
+        seedBaseFilesystem(vfs);
+        // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
+        const filesystem = options.filesystem ?? new ProcessFiles(vfs);
+        if (filesystem.engine !== vfs)
+            throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
         const kernel = new Kernel();
-        // Seeds the in-memory tree. Mounting AFTER it is what keeps a durable
-        // /etc from being overwritten by the defaults on every boot.
-        kernel.initFilesystem();
-        for (const mount of mounts) {
-            kernel.vfs.mount(`/${mount}`, new SqliteVFSProvider(vfs, mount));
-        }
-        const defaultAuthority = new SqliteFilesystemAuthority(vfs, kernel.vfs);
-        const filesystem = options.filesystem?.(defaultAuthority) ?? defaultAuthority;
-        if (filesystem instanceof SqliteFilesystemAuthority)
-            filesystem.attachKernel(kernel.vfs);
-        if (filesystem.namespace !== defaultAuthority.namespace)
-            throw new Error('Selected authority must preserve the workspace namespace');
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
         registerUnixCommands(registry, vfs);
         // df, mount and /proc/mounts all read the selected authority's listing.
         registerMountCommands(registry, filesystem);
-        kernel.proc.register('mounts', (cred) => formatProcMounts(filesystem.mounts?.(cred ?? CRED_KERNEL) ?? []));
         const processes = options.processes ?? new SessionProcessSupervisor();
         // Only a supervisor this workspace created gets its pid base set here; a
         // host-supplied one keeps the base its owner configured.
@@ -168,7 +157,7 @@ export class NimbusWorkspace {
         // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
         // to run it, and re-checks the caller's own execute permission at
         // invocation time — the `authorize` wrapper in exec-dispatch.ts.
-        installPathExecResolver(registry, vfs.as(CRED_KERNEL), () => shell.getCwd());
+        installPathExecResolver(registry, filesystem.namespaceFs(CRED_KERNEL), () => shell.getCwd());
         // node/curl/wget are bound to THIS workspace's kernel: their localhost
         // traffic resolves through its port registry and loopback router, not the
         // process-wide defaults the lazily-loaded commands would share.
@@ -183,7 +172,7 @@ export class NimbusWorkspace {
         // belonged to is never constructed, so nobody is left to close() it.
         try {
             const runtimes = new RuntimeManager({
-                vfs: new ExecutionFs(runtimeLease.fs),
+                vfs: new ProcessView(runtimeLease.fs),
                 registry,
                 getHome,
                 source: options.runtimeSource
@@ -480,7 +469,7 @@ async function registerWasmRuntimes(deps) {
         getEsbuild: () => {
             if (!esbuild) {
                 esbuild = import('../runtime/esbuild-service.js')
-                    .then((module) => new module.EsbuildService(deps.vfs.as(CRED_KERNEL)));
+                    .then((module) => new module.EsbuildService(deps.filesystem.namespaceFs(CRED_KERNEL)));
             }
             return esbuild;
         },
@@ -546,20 +535,14 @@ const WORKSPACE_TABLES = [
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
  */
-export function seedBaseFilesystem(vfs, mounts) {
+export function seedBaseFilesystem(vfs) {
     const fs = vfs.as(CRED_SESSION_USER);
     const rootFs = vfs.as(CRED_KERNEL);
     // Top-level directories are the kernel's to make (`/` is 0755 root), and
     // handed to the session user, who owns their own tree: seeding them owned
     // by the kernel is what makes a workspace where `.fs` cannot write.
-    for (const mount of mounts) {
-        if (mount === 'etc' || rootFs.exists(mount))
-            continue;
-        rootFs.mkdir(mount, { mode: 0o777 & ~CRED_SESSION_USER.umask });
-        rootFs.chown(mount, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-    }
-    for (const top of ['home', 'tmp', 'var', 'usr']) {
-        if (rootFs.exists(top))
+    for (const top of SEEDED_TOP_LEVEL_DIRS) {
+        if (top === 'etc' || rootFs.exists(top))
             continue;
         rootFs.mkdir(top, { mode: 0o777 & ~CRED_SESSION_USER.umask });
         rootFs.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);

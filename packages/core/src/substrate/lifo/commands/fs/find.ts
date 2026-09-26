@@ -1,7 +1,8 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { globMatch } from '../../utils/glob.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const command: Command = async (ctx) => {
   let searchPath = '.';
@@ -55,14 +56,14 @@ const command: Command = async (ctx) => {
   }
 
   try {
-    const stat = (await ctx.vfs.stat(absPath));
+    const stat = (await statOrThrow(ctx.vfs, absPath));
     if (stat.type !== 'directory') {
       // If it's a file, just check if it matches
       await ctx.stdout.write(absPath + '\n');
       return 0;
     }
   } catch (e) {
-    if (e instanceof VFSError) {
+    if (isVfsError(e)) {
       await ctx.stderr.write(`find: '${searchPath}': ${e.message}\n`);
       return 1;
     }

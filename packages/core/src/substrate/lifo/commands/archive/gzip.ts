@@ -2,7 +2,7 @@ import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { compressGzip, decompressGzip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 
 const spec = {
   keep: { type: 'boolean' as const, short: 'k' },
@@ -61,7 +61,7 @@ const command: Command = async (ctx) => {
         if (!keep) (await ctx.vfs.unlink(path));
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`gzip: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {

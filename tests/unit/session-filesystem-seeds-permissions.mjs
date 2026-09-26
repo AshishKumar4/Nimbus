@@ -11,8 +11,8 @@ import { registerUnixCommands } from '../../packages/core/src/shell/unix-command
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
-import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
@@ -49,7 +49,7 @@ try {
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  const authority = new SqliteFilesystemAuthority(rawVfs);
+  const authority = new ProcessFiles(rawVfs);
   const insecureUserVfs = rawVfs.as(USER);
   // A workspace an older build left with a user-owned, world-writable /etc.
   rawVfs.as(CRED_KERNEL).mkdir('etc', { mode: 0o777 });
@@ -209,7 +209,7 @@ try {
       env: {},
       cwd: '/',
       stdin,
-      vfs: new ExecutionFs(authority.bind({ pid: cred.uid === 0 ? 2 : 1, cred })),
+      vfs: new ProcessView(authority.bind({ pid: cred.uid === 0 ? 2 : 1, cred })),
       stdout: { write: (value) => { stdout += String(value); } },
       stderr: { write: (value) => { stderr += String(value); } },
       signal: new AbortController().signal,

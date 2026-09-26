@@ -1,5 +1,5 @@
 import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
+import type { CompositeVFS } from '../vfs/composite.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
@@ -18,12 +18,17 @@ export declare function createSqliteDescriptorScope(): SqliteDescriptorScope;
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
-    private readonly getKernel?;
+    private readonly namespace?;
+    /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
+    private readonly mountedIno;
     readonly synchronous: RuntimeSynchronousFs;
     private legacySymlinks;
     private readonly vfs;
-    constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, getKernel?: (() => VFS | undefined) | undefined);
-    private get kernel();
+    /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
+    private readonly mounted;
+    constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, namespace?: CompositeVFS | undefined, 
+    /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
+    mountedIno?: (path: string) => number);
     /**
      * The legacy registry's key for one of this caller's names. Its entries are
      * keyed by storage key, so a confined caller's /tmp/x is its own, and an
@@ -32,11 +37,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private legacyKey;
     dispose(): void;
     /**
-     * Where a path lives, decided only after confinement: a kernel mount is
+     * Where a path lives, decided only after confinement: the namespace is
      * consulted with the fully resolved path, so a `..` or an absolute path
      * inside a capability can never reach `/proc` or `/dev` sideways.
      */
     private locate;
+    /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
     private virtualStat;
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
     private rootStat;
@@ -60,7 +66,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
-    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: {
+    utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
     chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt;
@@ -115,6 +121,18 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     releaseExclusiveMutation(owner: string): void;
     private pathArgument;
     private resolveDataPath;
+    /**
+     * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+     * namespace walk does it (VFS-COMP-006): each component needs the directory
+     * it leaves to be a searchable directory; `..` at the root, and any
+     * absolute link, is ENOTCAPABLE; a missing component is ENOENT unless it is
+     * the last. Links resolve in the namespace, 40 hops, then null (ELOOP).
+     */
+    private resolveBeneath;
+    /** ENOENT, ENOTDIR or EACCES unless `dir` (resolved, no links) is a directory the caller may search. */
+    private searchDirectory;
+    /** A mounted (or composed) entry's link target, or null when it is not a link or not there. */
+    private mountedLink;
     private locateMutation;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;

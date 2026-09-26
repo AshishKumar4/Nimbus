@@ -1,7 +1,7 @@
 import { resolve } from '../../utils/path.js';
 import { createZip, collectFiles } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
     quiet: { type: 'boolean', short: 'q' },
@@ -47,7 +47,7 @@ const command = async (ctx) => {
         }
     }
     catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
             await ctx.stderr.write(`zip: ${e.message}\n`);
             return 1;
         }

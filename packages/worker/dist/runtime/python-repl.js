@@ -1,5 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
@@ -162,7 +162,7 @@ class PythonReplAdapter {
         }
     }
     async ensurePool() {
-        await withHostFilesystem(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
+        await withHostView(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
     }
     async ensurePoolFrom(vfs) {
         const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;

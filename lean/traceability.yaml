@@ -641,7 +641,7 @@ requirements:
       - Nimbus.Vfs.ProcessFiles.mem_map_keep
       - Nimbus.Vfs.ProcessFiles.step_accounted
     tsRefs:
-      - packages/core/src/runtime/filesystem-authority.ts#SqliteFilesystemAuthority.releaseProcess
+      - packages/core/src/runtime/process-files.ts#ProcessFiles.releaseProcess
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.assertMutationAllowed
     remainingEvidence:
@@ -747,3 +747,242 @@ requirements:
     remainingEvidence:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
+  N18-001:
+    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete; reservations count in used and are never evicted, a reservation is admitted like a write, a draw within its reservation is always admitted and changes no total, and a reservation shrinks only by its own draws, its release, releaseAll or a restart, whatever else runs.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.Ledger.sumB_nil
+      - Nimbus.Vfs.Ledger.sumB_cons
+      - Nimbus.Vfs.Ledger.sumB_append
+      - Nimbus.Vfs.Ledger.sumB_split
+      - Nimbus.Vfs.Ledger.sumB_filter_le
+      - Nimbus.Vfs.Ledger.fitDrop_some
+      - Nimbus.Vfs.Ledger.fitDrop_none
+      - Nimbus.Vfs.Ledger.fitDrop_min
+      - Nimbus.Vfs.Ledger.step_limit
+      - Nimbus.Vfs.Ledger.step_used
+      - Nimbus.Vfs.Ledger.used_le_limit
+      - Nimbus.Vfs.Ledger.refused_unchanged
+      - Nimbus.Vfs.Ledger.refuses_iff
+      - Nimbus.Vfs.Ledger.evicts_oldest_minimal
+      - Nimbus.Vfs.Ledger.only_eviction_frees
+      - Nimbus.Vfs.Ledger.facet_row_stays
+      - Nimbus.Vfs.Ledger.a_ledger_trace
+      - Nimbus.Vfs.Ledger.step_over
+      - Nimbus.Vfs.Ledger.admitted_within
+      - Nimbus.Vfs.Ledger.refuses_when_over
+      - Nimbus.Vfs.Ledger.an_over_report_refuses
+      - Nimbus.Vfs.Ledger.sumB_setR
+      - Nimbus.Vfs.Ledger.draw_within
+      - Nimbus.Vfs.Ledger.reservation_kept
+      - Nimbus.Vfs.Ledger.admitting_zero_can_be_refused
+    tsRefs:
+      - packages/core/src/runtime/storage-ledger.ts#StorageLedger
+    refinement:
+      - lean/fixtures/n18-ledger.json :: tests/unit/n18-ledger-refinement.mjs
+    remainingEvidence:
+      - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
+      - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
+  N17-001:
+    statement: N17 hydration in an import window, at chunk granularity (a path is local when every chunk hash it names is; chunks are shared by content address, so one hydration can make several paths local) - no reader, sync or async, is ever handed the bytes of a path with a state-1 chunk; hydrated chunks stay hydrated; every remote unhydrated chunk is in the job's queue; a sync read of a non-local path answers EIO naming it and moves its remote chunks to the front; a WASI launch's gate moves its named paths' remote chunks to the front, opens when every named path is local (at once when none has a remote chunk), after which no sync read of a named path answers EIO, and is always strictly before its deadline, D ticks after bind; with only job events after bind, every named path is local within as many hydrations as the named paths had remote chunks.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Vfs.Hydration.sync_never_state1
+      - Nimbus.Vfs.Hydration.async_never_state1
+      - Nimbus.Vfs.Hydration.resume_local
+      - Nimbus.Vfs.Hydration.raw_frame
+      - Nimbus.Vfs.Hydration.isLocal_mono
+      - Nimbus.Vfs.Hydration.hyd_mono
+      - Nimbus.Vfs.Hydration.settleG_open
+      - Nimbus.Vfs.Hydration.settleG_ok
+      - Nimbus.Vfs.Hydration.settleG_named
+      - Nimbus.Vfs.Hydration.raw_gates
+      - Nimbus.Vfs.Hydration.step_gateInv
+      - Nimbus.Vfs.Hydration.gateInv
+      - Nimbus.Vfs.Hydration.gate_ok_local
+      - Nimbus.Vfs.Hydration.bound_reads_never_eio
+      - Nimbus.Vfs.Hydration.gate_bounded
+      - Nimbus.Vfs.Hydration.nothing_named_starts
+      - Nimbus.Vfs.Hydration.jobs_hydrate
+      - Nimbus.Vfs.Hydration.hLocal_mono
+      - Nimbus.Vfs.Hydration.prio_mem
+      - Nimbus.Vfs.Hydration.step_covers
+      - Nimbus.Vfs.Hydration.queue_covers
+      - Nimbus.Vfs.Hydration.jobs_mono
+      - Nimbus.Vfs.Hydration.jobs_frame
+      - Nimbus.Vfs.Hydration.named_local_within
+      - Nimbus.Vfs.Hydration.a_shared_chunk
+    tsRefs:
+      - packages/core/src/runtime/process-files.ts#ProcessFiles
+    remainingEvidence:
+      - Parked until NodeNoMirrorBuild writes tests/unit/n17-hydration-refinement.mjs: Nimbus.Refine generates lean/fixtures/n17-hydration.json, and RefinementFixtures emits it again with the refinement entry
+      - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
+      - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound
+  CS-008:
+    statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles and is in no snapshot. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.Quiesce.pin1_snaps
+      - Nimbus.ContentStore.Quiesce.settleN_done
+      - Nimbus.ContentStore.Quiesce.settled
+      - Nimbus.ContentStore.Quiesce.settleN_cases
+      - Nimbus.ContentStore.Quiesce.pin1_inv
+      - Nimbus.ContentStore.Quiesce.settleN_inv
+      - Nimbus.ContentStore.Quiesce.raw_inv
+      - Nimbus.ContentStore.Quiesce.inv
+      - Nimbus.ContentStore.Quiesce.reach_settled
+      - Nimbus.ContentStore.Quiesce.pin_clean
+      - Nimbus.ContentStore.Quiesce.gated_on_newest
+      - Nimbus.ContentStore.Quiesce.pin_starts_its_waiters
+      - Nimbus.ContentStore.Quiesce.gated_on_pending
+      - Nimbus.ContentStore.Quiesce.acquire_never_waits
+      - Nimbus.ContentStore.Quiesce.settle_cases
+      - Nimbus.ContentStore.Quiesce.settle_id
+      - Nimbus.ContentStore.Quiesce.countP_map_lt
+      - Nimbus.ContentStore.Quiesce.progress
+      - Nimbus.ContentStore.Quiesce.wf_settle
+      - Nimbus.ContentStore.Quiesce.wf_resp
+      - Nimbus.ContentStore.Quiesce.drain
+      - Nimbus.ContentStore.Quiesce.deadlock_free
+      - Nimbus.ContentStore.Quiesce.stuck
+      - Nimbus.ContentStore.Quiesce.clone_pins
+      - Nimbus.ContentStore.Quiesce.clone_deadlocks_without_bypass
+      - Nimbus.ContentStore.Quiesce.lease_awaiting_copy_deadlocks
+      - Nimbus.ContentStore.Quiesce.job_awaiting_stream_deadlocks
+      - Nimbus.ContentStore.Quiesce.lease_after_gate
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.snapshot
+    refinement:
+      - lean/fixtures/quiesce.json :: tests/unit/quiesce-refinement.mjs
+    remainingEvidence:
+      - Who awaits whom (a lease holder's streams, a job's children) is the environment's; WF is a hypothesis the callers must keep (the engine's restoreAsync and copyTree start no spanning work)
+  VFS-COMP-006:
+    statement: Resolution beneath a root (WASI preopens, openat2 RESOLVE_BENEATH) through the composite - the root resolved from / (EACCES unless every directory from / to it grants search), then composite-perm's walk from the root (search per component from the root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at the root, an absolute link or an absolute path, checked per component and per hop; whatever it resolves to lies at or under the root across mounts and the directories above them, every directory from the root down grants the caller search, and it is exactly what the unrestricted walk from the root resolves to.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.Vfs.CompositeBeneath.prefix_dropLast
+      - Nimbus.Vfs.CompositeBeneath.walkB_contained
+      - Nimbus.Vfs.CompositeBeneath.beneath_contained
+      - Nimbus.Vfs.CompositeBeneath.namedFrom_snoc
+      - Nimbus.Vfs.CompositeBeneath.namedFrom_dropLast
+      - Nimbus.Vfs.CompositeBeneath.walkB_named
+      - Nimbus.Vfs.CompositeBeneath.beneath_named
+      - Nimbus.Vfs.CompositeBeneath.walkB_agrees
+      - Nimbus.Vfs.CompositeBeneath.beneath_agrees
+      - Nimbus.Vfs.CompositeBeneath.beneath_across_mounts
+      - Nimbus.Vfs.CompositeBeneath.beneath_root_searched
+    tsRefs:
+      - packages/core/src/vfs/composite.ts#CompositeVFS
+    refinement:
+      - lean/fixtures/beneath.json :: tests/unit/beneath-refinement.mjs
+    remainingEvidence:
+      - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
+  RT-PIPE-001:
+    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), settles only once every such pipe has no read end, to 141 exactly when one of them had more than the capacity unread then, and always settles once no process is alive.
+    status: proved-in-abstract-model
+    theorems:
+      - Nimbus.Runtime.Pipes.upd_same
+      - Nimbus.Runtime.Pipes.upd_ne
+      - Nimbus.Runtime.Pipes.sum_snoc
+      - Nimbus.Runtime.Pipes.sumTo_succ
+      - Nimbus.Runtime.Pipes.sumTo_congr
+      - Nimbus.Runtime.Pipes.sumTo_le
+      - Nimbus.Runtime.Pipes.sumTo_upd
+      - Nimbus.Runtime.Pipes.sumTo_eq_zero
+      - Nimbus.Runtime.Pipes.rs_stack
+      - Nimbus.Runtime.Pipes.ws_stack
+      - Nimbus.Runtime.Pipes.rs_pipes
+      - Nimbus.Runtime.Pipes.ws_pipes
+      - Nimbus.Runtime.Pipes.settle_procs
+      - Nimbus.Runtime.Pipes.settle_n
+      - Nimbus.Runtime.Pipes.settle_m
+      - Nimbus.Runtime.Pipes.settle_B
+      - Nimbus.Runtime.Pipes.settle_err
+      - Nimbus.Runtime.Pipes.setProc_pipes
+      - Nimbus.Runtime.Pipes.setProc_n
+      - Nimbus.Runtime.Pipes.setProc_m
+      - Nimbus.Runtime.Pipes.setProc_B
+      - Nimbus.Runtime.Pipes.setProc_err
+      - Nimbus.Runtime.Pipes.rs_settle
+      - Nimbus.Runtime.Pipes.enter_procs
+      - Nimbus.Runtime.Pipes.enter_pipes
+      - Nimbus.Runtime.Pipes.enter_m
+      - Nimbus.Runtime.Pipes.rs_enter
+      - Nimbus.Runtime.Pipes.ws_enter
+      - Nimbus.Runtime.Pipes.core_refuse
+      - Nimbus.Runtime.Pipes.sigpipe_only_readerless
+      - Nimbus.Runtime.Pipes.ignored_is_epipe
+      - Nimbus.Runtime.Pipes.default_is_sigpipe
+      - Nimbus.Runtime.Pipes.eof_only_writerless
+      - Nimbus.Runtime.Pipes.sched_some
+      - Nimbus.Runtime.Pipes.sched_none
+      - Nimbus.Runtime.Pipes.fork_keeps_parked
+      - Nimbus.Runtime.Pipes.fork_child_fresh
+      - Nimbus.Runtime.Pipes.books_settle
+      - Nimbus.Runtime.Pipes.books_upd
+      - Nimbus.Runtime.Pipes.books_procs
+      - Nimbus.Runtime.Pipes.books_finish
+      - Nimbus.Runtime.Pipes.books_abort
+      - Nimbus.Runtime.Pipes.books_core
+      - Nimbus.Runtime.Pipes.books_step
+      - Nimbus.Runtime.Pipes.core_B
+      - Nimbus.Runtime.Pipes.step_B
+      - Nimbus.Runtime.Pipes.books
+      - Nimbus.Runtime.Pipes.accounting
+      - Nimbus.Runtime.Pipes.budget
+      - Nimbus.Runtime.Pipes.drop_only_readerless
+      - Nimbus.Runtime.Pipes.abort_named
+      - Nimbus.Runtime.Pipes.meas_setProc
+      - Nimbus.Runtime.Pipes.meas_pipes
+      - Nimbus.Runtime.Pipes.meas_stack
+      - Nimbus.Runtime.Pipes.meas_settle
+      - Nimbus.Runtime.Pipes.meas_enter
+      - Nimbus.Runtime.Pipes.meas_finish
+      - Nimbus.Runtime.Pipes.meas_abort
+      - Nimbus.Runtime.Pipes.wt_run_pos
+      - Nimbus.Runtime.Pipes.meas_congr
+      - Nimbus.Runtime.Pipes.lt_of_set
+      - Nimbus.Runtime.Pipes.lt_of_set2
+      - Nimbus.Runtime.Pipes.lt_of_abort
+      - Nimbus.Runtime.Pipes.wt_next
+      - Nimbus.Runtime.Pipes.wt_pos
+      - Nimbus.Runtime.Pipes.wt_park
+      - Nimbus.Runtime.Pipes.core_run
+      - Nimbus.Runtime.Pipes.wt_wait
+      - Nimbus.Runtime.Pipes.wt_fin
+      - Nimbus.Runtime.Pipes.enabled_wait
+      - Nimbus.Runtime.Pipes.core_wait
+      - Nimbus.Runtime.Pipes.no_spin
+      - Nimbus.Runtime.Pipes.stuck_is_linux
+      - Nimbus.Runtime.PipesTraces.seq_uniq_wc_whole
+      - Nimbus.Runtime.PipesTraces.seq_uniq_wc_held_kill_loses
+      - Nimbus.Runtime.PipesTraces.fork_loop_whole
+      - Nimbus.Runtime.PipesTraces.parked_fork_keeps_the_write
+      - Nimbus.Runtime.PipesTraces.parked_fork_drops_the_write
+      - Nimbus.Runtime.PipesTraces.yes_head
+      - Nimbus.Runtime.PipesTraces.over_budget_fails_named
+      - Nimbus.Runtime.PipesTraces.over_budget_silent_truncates
+      - Nimbus.Runtime.PipesTraces.bash_middle_whole
+      - Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
+      - Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
+      - Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+      - Nimbus.Runtime.Pipes.hstep_core
+      - Nimbus.Runtime.Pipes.hrun_core
+      - Nimbus.Runtime.Pipes.settles_only_readerless
+      - Nimbus.Runtime.Pipes.settle_value
+      - Nimbus.Runtime.Pipes.rs_zero_of_dead
+      - Nimbus.Runtime.Pipes.all_settle
+      - Nimbus.Runtime.Pipes.seq_head
+      - Nimbus.Runtime.Pipes.seq_head_without_the_rule
+      - Nimbus.Runtime.Pipes.seq_small_head
+      - Nimbus.Runtime.Pipes.seq_uniq_wc_held
+      - Nimbus.Runtime.Pipes.yes_head_held
+    tsRefs:
+      - packages/core/src/runtime/bash/preamble.ts#writeThroughFd
+      - packages/core/src/runtime/bash/preamble.ts#newPipe
+    remainingEvidence:
+      - Parked until GitParityLane writes tests/unit/pipes-refinement.mjs; Nimbus.Refine.PipesCases generates lean/fixtures/pipes.json, and RefinementFixtures emits it with the refinement entry
+      - Traces are scaled down (capacity 4, small budgets); the rules do not depend on the sizes. A JSPI-host fixture case sets B large, as B never binds a JSPI writer
+      - SIGPIPE ignored is modeled and proved, but untestable on this runtime (bash.wasm cannot report its disposition); those fixture cases carry "untestable"
+      - A fork is synchronous here; a fork as a pending task on a local host is covered by the rule that a reader with nothing to run stops the command
+      - The held status equals Linux's for a pipe with one writer; with several writers another writer's later bytes count against a held one. A wait on a held pid is not modeled (the runtime waits until it settles)

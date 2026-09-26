@@ -266,7 +266,7 @@ function walkLeanSources(directory) {
     const path = join(directory, entry);
 
     if (statSync(path).isDirectory()) {
-      if (directory === leanRoot && [".lake", "scratch-verification"].includes(entry)) continue;
+      if (directory === leanRoot && [".lake", "negative-probes"].includes(entry)) continue;
       paths.push(...walkLeanSources(path));
     } else if (entry.endsWith(".lean") && !(directory === leanRoot && entry === "lakefile.lean")) {
       paths.push(path);
@@ -778,6 +778,8 @@ function fixtureNames() {
 const refinementFixtures = new Set();
 
 const refinementTests = new Set();
+/** Each bridged test, with the requirements and fixtures it refines. */
+const refinementOwners = new Map();
 
 const requirements = parseTraceability(readFileSync(traceabilityPath, "utf8"));
 
@@ -872,6 +874,8 @@ for (const requirement of requirements.values()) {
     const [, fixture, name, test] = match;
     refinementFixtures.add(fixture);
     refinementTests.add(test);
+    if (!refinementOwners.has(test)) refinementOwners.set(test, []);
+    refinementOwners.get(test).push(`${requirement.id} (${fixture})`);
     const problem = refinementProblem(fixture, name, test);
 
     if (problem !== undefined) fail(`${requirement.id}: refinement ${entry}: ${problem}`);
@@ -1081,6 +1085,38 @@ for (const name of expectedReports.values()) {
   if (!reported.has(name)) fail(`#print axioms command produced no matching audit record: ${name}`);
 }
 
+// `--run-refinements`: proved-and-refined means the deployed code agrees with the
+// fixture as committed, so run every bridged test here and fail on any disagreement
+// (a fixture merged ahead of its code is red in the proofs gate, not only in the
+// unit suite). A test that does not exist was reported above.
+let refinementRuns = 0;
+
+if (process.argv.includes("--run-refinements")) {
+  for (const [test, owners] of refinementOwners) {
+    const path = resolve(repoRoot, test);
+
+    try {
+      if (!statSync(path).isFile()) continue;
+    } catch {
+      continue;
+    }
+
+    const result = spawnSync(process.env.BUN ?? "bun", [test], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 15 * 60 * 1000,
+    });
+    refinementRuns++;
+
+    if (result.error !== undefined || result.status !== 0) {
+      const tail = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim().split("\n").slice(-12).join("\n");
+      fail(`${owners.join(", ")}: refinement test ${test} fails on the fixture as committed ` +
+        `(${result.error?.message ?? `exit ${result.status}`}); the fixture is ahead of the code, or the code of the model:\n${tail}`);
+    }
+  }
+}
+
 exitOnFailures();
 
 const statusCounts = new Map();
@@ -1094,5 +1130,6 @@ const statusSummary = [...statusCounts].map(([status, count]) => `${status}=${co
 console.log(
   `check-traceability: OK — ${requirements.size} requirements, ${reported.size} theorems, ` +
   `${declarations.axioms.size} trusted axiom, ${refinementFixtures.size} refinement fixtures ` +
-  `(${statusSummary})`,
+  `(${statusSummary})` +
+  (process.argv.includes("--run-refinements") ? `, ${refinementRuns} refinement tests pass on the committed fixtures` : ""),
 );

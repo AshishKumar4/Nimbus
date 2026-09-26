@@ -1,6 +1,6 @@
 import { resolve, dirname } from '../../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip, collectFiles } from '../../utils/archive.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const command = async (ctx) => {
     let create = false;
     let extract = false;
@@ -147,7 +147,7 @@ const command = async (ctx) => {
         }
     }
     catch (e) {
-        if (e instanceof VFSError) {
+        if (isVfsError(e)) {
             await ctx.stderr.write(`tar: ${e.message}\n`);
             return 2;
         }

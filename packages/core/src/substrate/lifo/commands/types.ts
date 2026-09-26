@@ -1,4 +1,4 @@
-import type { ExecutionFs } from '../../../shell/execution-fs.js';
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 
 export interface CommandOutputStream {
@@ -38,7 +38,7 @@ export interface CommandContext {
   args: string[];
   env: Record<string, string>;
   cwd: string;
-  vfs: ExecutionFs;
+  vfs: ProcessView;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
   signal: AbortSignal;

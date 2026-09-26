@@ -27,7 +27,6 @@
  *     — generic key/value bag for primitives. Today stores 'cwd'
  *       and 'env' (the env is JSON-serialised). One row per key.
  *
- *   nimbus_kernel_mounts (mount_point TEXT PRIMARY KEY)
  *     — explicit mount-point list (B'.2). Empty until B'.2 lands.
  *
  *   nimbus_terminal_scrollback (seq INTEGER PRIMARY KEY, ts INTEGER, data TEXT)
@@ -158,21 +157,6 @@ export declare function clearSessionState(ctx: any): void;
  *  recorder to populate snapshotKeysRehydrated. Cheap; bounded by
  *  the small key set above. */
 export declare function countSessionStateKeys(ctx: any): number;
-/**
- * Load the persisted mount-point list. Returns a plain string[] of
- * mount point names (without leading slash — same shape as
- * DEFAULT_MOUNT_POINTS). Empty array when no rows exist.
- */
-export declare function loadKernelMounts(ctx: any): string[];
-/**
- * Persist a mount-point list. Idempotent — replaces the entire
- * nimbus_kernel_mounts contents in a single transaction. Caller
- * provides the full desired set; we don't merge with existing rows.
- *
- * `mounts` should be plain names without leading slash
- * ('bin', 'etc', ...) — same shape DEFAULT_MOUNT_POINTS uses.
- */
-export declare function persistKernelMounts(ctx: any, mounts: string[]): void;
 /**
  * Append one coalesced output frame. Inserts a row, then evicts the
  * oldest rows until total bytes ≤ SCROLLBACK_MAX_BYTES.

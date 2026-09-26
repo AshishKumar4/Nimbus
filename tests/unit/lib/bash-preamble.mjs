@@ -14,12 +14,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { BASH_RUNNER_PREAMBLE } from '../../../packages/core/src/runtime/bash-runner.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { Kernel } from '../../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
 
 const wasmDir = fileURLToPath(new URL('../../../packages/worker/wasm/bash/', import.meta.url));
@@ -67,9 +66,7 @@ export function loadPreamble(opts = {}) {
   const evaluate = new Function('globalThis', `${BASH_RUNNER_PREAMBLE}\nreturn (source) => eval(source);`).call(scope, scope);
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const kernel = new Kernel();
-  kernel.initFilesystem();
-  const authority = new SqliteFilesystemAuthority(raw, kernel.vfs);
+  const authority = new ProcessFiles(raw);
   const root = raw.as(CRED_KERNEL);
   const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   for (const dir of ['bin', 'home/user', 'tmp', ...(opts.dirs ?? [])]) {

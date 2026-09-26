@@ -1,4 +1,4 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
@@ -7,10 +7,10 @@ import { type ExpandContext } from './expander.js';
  * Implementation of the `test` / `[` shell builtin (POSIX `test`).
  * `bracket` is true for `[`, whose last argument must be `]`.
  */
-export declare function evaluateTest(args: string[], vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext, bracket?: boolean): Promise<number>;
+export declare function evaluateTest(args: string[], vfs: ProcessView, stderr: CommandOutputStream, context?: BuiltinExecutionContext, bracket?: boolean): Promise<number>;
 /**
  * `[[ ... ]]`, whose operands are expanded only when the expression actually
  * reaches them: `[[ $# = 2 && $2 = x ]]` must not touch `$2` under `set -u`.
  */
-export declare function evaluateDoubleBracketWords(words: WordPart[][], expandCtx: ExpandContext, vfs: ExecutionFs, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
+export declare function evaluateDoubleBracketWords(words: WordPart[][], expandCtx: ExpandContext, vfs: ProcessView, stderr: CommandOutputStream, context?: BuiltinExecutionContext): Promise<number>;
 //# sourceMappingURL=test-builtin.d.ts.map

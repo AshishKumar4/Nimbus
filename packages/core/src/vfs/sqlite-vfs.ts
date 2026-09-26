@@ -63,6 +63,7 @@ import {
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import {
   CDC_MIN,
   ContentCutter,
@@ -86,16 +87,30 @@ import {
   type TransactionHost,
 } from '../runtime/os-contracts.js';
 
-/** Schema version of the v2 content store. */
-const VFS_SCHEMA = 2;
+/**
+ * Schema version of the content store. 3: `/` is inode 1 and the allocator
+ * starts at 2, and directories carry a default ACL (dacl). A schema-2 store
+ * numbered its first entry 1, so it is not read: it is reset, and the reset
+ * is told like a v1 filesystem's (legacyReset).
+ */
+const VFS_SCHEMA = 3;
+/** Every table of the content store, dropped when an older schema is reset. */
+const STORE_TABLES = [
+  'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
+  'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
+  'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
+  'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs',
+] as const;
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
+/** The root's inode number, reserved: the allocator starts at 2. */
+export const ROOT_INODE = 1;
 
 // CHUNK_SIZE / LRU_MAX_ENTRIES / BATCH_SIZE are imported from ./constants.js
 // (single source of truth). Facet-isolate code-strings duplicate the literal
 // 65_536 by necessity — see the inline `CHUNK_SIZE = 65536` in
-// generateGitNetworkFacetCode (git-network-facet.ts) and the parallel
-// preamble (parallel/generated-workers.ts).
+// generateGitNetworkFacetCode (worker git/network-facet.ts) and the
+// parallel preamble (worker loaders/generated-workers.ts).
 
 /**
  * The Node `process` global as far as this file probes it. workerd provides
@@ -229,7 +244,12 @@ export interface CredentialedVfs {
   readFileString(path: string): string;
   stat(path: string): VfsStat;
   lstat(path: string): VfsStat;
-  utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
+  /**
+   * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
+   * Only now/omit needs no more than write permission or ownership; an
+   * explicit time needs ownership. `followSymlinks: false` sets a link's own.
+   */
+  utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): void;
   chmod(path: string, mode: number): void;
   /**
    * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as
@@ -277,7 +297,12 @@ export interface CredentialedVfs {
    * may change between slices: each page is consistent, the whole copy is
    * point-in-time only with `at`.
    */
-  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string }): Promise<number>;
+  /**
+   * copyTree in slices. `mutationOwner`: the live exclusive lease this copy
+   * runs under (its holder awaits it), so it writes inside the lease and a
+   * quiescing snapshot never holds it.
+   */
+  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string; mutationOwner?: string }): Promise<number>;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   writeStream(
     stream: ReadableStream<Uint8Array>,
@@ -545,11 +570,6 @@ interface StagedPiece {
   named: boolean;
 }
 
-interface GcRef {
-  kind: typeof GC_CHUNK | typeof GC_CONTENT;
-  id: number;
-}
-
 interface TransactionPlanMetrics {
   blobBytes: number;
   logicalRows: number;
@@ -579,7 +599,6 @@ interface TransactionPlan {
   deletes: readonly PlannedDelete[];
   staged: readonly StagedPiece[];
   stagingCreated: readonly StagingContent[];
-  gcRefs: readonly GcRef[];
   affectedPaths: ReadonlySet<string>;
   metrics: TransactionPlanMetrics;
 }
@@ -624,7 +643,6 @@ class TransactionPlanBuilder {
   private readonly deletes: PlannedDelete[] = [];
   private readonly staged: StagedPiece[] = [];
   private readonly stagingCreated: StagingContent[] = [];
-  private readonly gcRefs: GcRef[] = [];
   private readonly affectedPaths = new Set<string>();
   private blobBytes = 0;
   private pieces = 0;
@@ -733,10 +751,6 @@ class TransactionPlanBuilder {
     if (dereference && prior !== undefined && !prior.isDir) this.gcRefCount++;
   }
 
-  addGcRef(ref: GcRef): void {
-    this.gcRefs.push(ref);
-  }
-
   wouldExceedPieces(additionalBlobBytes: number, additionalPieces: number): TransactionLimit | null {
     return exceededTransactionLimit(this.metricsWith({
       blobBytes: additionalBlobBytes,
@@ -782,8 +796,7 @@ class TransactionPlanBuilder {
     return this.inodes.length === 0
       && this.deletes.length === 0
       && this.staged.length === 0
-      && this.stagingCreated.length === 0
-      && this.gcRefs.length === 0;
+      && this.stagingCreated.length === 0;
   }
 
   build(): TransactionPlan {
@@ -792,7 +805,6 @@ class TransactionPlanBuilder {
       deletes: this.deletes,
       staged: this.staged,
       stagingCreated: this.stagingCreated,
-      gcRefs: this.gcRefs,
       affectedPaths: this.affectedPaths,
       metrics: this.metricsWith({}),
     };
@@ -811,7 +823,7 @@ class TransactionPlanBuilder {
     const manifestRows = this.manifestRows + (addition.manifestRows ?? 0);
     const contentRows = this.contentRows + (addition.contentRows ?? 0);
     // Every replaced or removed file may queue one reference; directories name none.
-    const gcRows = this.gcRefs.length + this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
+    const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
     const historyRows = this.history ? inodeRows + deletes : 0;
     return {
       blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
@@ -930,6 +942,8 @@ interface CopyTreeJob {
   /** The snapshot copied from, when not the live tree. */
   at?: string;
   atGen?: number;
+  /** Rows the copy writes, as admitted when it was planned (N18). */
+  rows?: number;
 }
 
 interface PreparedBatchTransaction {
@@ -1003,6 +1017,10 @@ export interface SqliteVfsOptions {
    * poisons (the reader reconciles against list()).
    */
   readonly tombstoneRows?: number;
+  /** The session's storage limit (N18); defaults to DO_STORAGE_LIMIT_BYTES. */
+  readonly storageLimit?: number;
+  /** Bytes below it only uid 0 may fill (N18); defaults to 1% of the limit, at least 16 MiB. */
+  readonly storageKernelReserve?: number;
   /**
    * Where chunks only snapshots reference may be moved (P6): an R2 bucket
    * or anything with its get/put/delete. Without it nothing is tiered.
@@ -1105,6 +1123,12 @@ class InodeTable {
 export class SqliteVFS {
   private readonly openNodes = new Set<OpenedNode>();
   private sql: SqlDatabase;
+  /** N18: the session's storage ledger, over this database (the session DO's). */
+  readonly ledger: StorageLedger;
+  /** The reservation the running synchronous operation draws from (N18). */
+  private activeReservation: string | null = null;
+  /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
+  private privileged = false;
   private ctx: TransactionHost | undefined;
   public readonly events: VfsEventEmitter;
 
@@ -1295,7 +1319,13 @@ export class SqliteVFS {
   /** Snapshot generations by name, loaded on first use. */
   private snapshotGens: Map<string, number> | null = null;
   /** writeStreams in flight, for snapshot's quiesce. */
-  private readonly activeStreams = new Set<Promise<unknown>>();
+  /**
+   * Work that spans awaits and changes the tree across them (writeStream,
+   * restoreAsync, sliced copyTree), for snapshot's quiesce.
+   */
+  private readonly activeWork = new Set<Promise<unknown>>();
+  /** Set while a quiesced snapshot waits: new spanning work starts after it. */
+  private quiesceGate: Promise<void> | null = null;
   /** Content keys computed for manifests whose digest could not be stored. */
   private readonly contentKeyMemo = new Map<number, string>();
 
@@ -1372,6 +1402,12 @@ export class SqliteVFS {
       throw vfsError('EINVAL', `tombstone retention must be a row count, not ${this.tombstoneRetain}`);
     }
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
+    this.ledger = new StorageLedger(sql, {
+      ...(options.storageLimit === undefined ? {} : { limit: options.storageLimit }),
+      ...(options.storageKernelReserve === undefined ? {} : { kernelReserve: options.storageKernelReserve }),
+    });
+    // No operation outlives the engine that ran it: what they reserved is free.
+    this.ledger.releaseAll();
     if (namespace === undefined) {
       let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
       if (!row) {
@@ -1404,8 +1440,23 @@ export class SqliteVFS {
 
   // ── Schema ────────────────────────────────────────────────────────────
 
+  /**
+   * An older schema's store is not read: its tables go, so the open below
+   * builds the current ones empty, and the loss is recorded to be told.
+   * True when it reset one.
+   */
+  private resetOlderStore(): boolean {
+    const hasState = [...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vfs_state'")].length > 0;
+    if (!hasState) return false;
+    const state = [...this.sql.exec('SELECT schema FROM vfs_state WHERE slot = 1')][0];
+    if (!state || Number(state.schema) >= VFS_SCHEMA) return false;
+    for (const table of STORE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    return true;
+  }
+
   private initSchema(): void {
     this.transactionSync(() => {
+      const olderStoreReset = this.resetOlderStore();
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_receipts_v2 (
         namespace TEXT NOT NULL,
         pid INTEGER NOT NULL,
@@ -1470,10 +1521,10 @@ export class SqliteVFS {
         // The first v2 open: a pre-v2 filesystem here is not read, so its
         // loss is recorded, to be told until acknowledgeLegacyReset().
         this.sql.exec(
-          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 1, 1, 1, 0, ?)',
+          'INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 2, 1, 1, 0, ?)',
           VFS_SCHEMA,
           crypto.randomUUID(),
-          this.presentLegacyTables().length > 0 ? 1 : 0,
+          olderStoreReset || this.presentLegacyTables().length > 0 ? 1 : 0,
         );
       } else if (Number(state.schema) !== VFS_SCHEMA) {
         throw new Error(`[sqlite-vfs] unsupported filesystem schema ${String(state.schema)}`);
@@ -1494,7 +1545,9 @@ export class SqliteVFS {
         chunk_id INTEGER NULL,
         content_id INTEGER NULL,
         dacl INTEGER NULL,
-        CHECK (chunk_id IS NULL OR content_id IS NULL)
+        CHECK (chunk_id IS NULL OR content_id IS NULL),
+        -- ROOT_INODE (1) is \`/\`'s, which has no row: no entry can hold it.
+        CHECK (ino > 1)
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_parent ON vfs_inodes(parent_path, kind)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_gen ON vfs_inodes(gen)');
@@ -2060,6 +2113,28 @@ export class SqliteVFS {
 
   // ── Filesystem operations ─────────────────────────────────────────────
 
+  /**
+   * uid 0's view: its writes may use the storage the ledger keeps back from
+   * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+   * Covers each call's synchronous part; the kernel's bookkeeping is that.
+   */
+  private privilegedView(view: CredentialedVfs): CredentialedVfs {
+    const out = {} as CredentialedVfs;
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(view))) {
+      const value = descriptor.value;
+      if (typeof value === 'function') {
+        descriptor.value = (...args: unknown[]) => {
+          const prior = this.privileged;
+          this.privileged = true;
+          try { return value(...args); } finally { this.privileged = prior; }
+        };
+      }
+      Object.defineProperty(out, key, descriptor);
+    }
+    return out;
+  }
+
+
   as(cred: VfsCred): CredentialedVfs {
     const engine = this;
     const bound = Object.freeze({
@@ -2068,7 +2143,7 @@ export class SqliteVFS {
       groups: Object.freeze([...cred.groups]),
       umask: cred.umask & 0o777,
     });
-    return {
+    const view: CredentialedVfs = {
       cred: bound,
       exists: (path) => this.exists(path, bound),
       isDirectory: (path) => this.isDirectory(path, bound),
@@ -2097,7 +2172,7 @@ export class SqliteVFS {
       readFileString: (path) => this.readFileString(path, bound),
       stat: (path) => this.stat(path, bound, true),
       lstat: (path) => this.stat(path, bound, false),
-      utimes: (path, atimeMs, mtimeMs) => this.utimes(path, atimeMs, mtimeMs, bound),
+      utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
       chmod: (path, mode) => this.chmod(path, mode, bound),
       setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
       getDefaultAcl: (path) => this.getDefaultAcl(path, bound),
@@ -2120,8 +2195,12 @@ export class SqliteVFS {
       removeRecursive: (path) => this.removeRecursive(path, bound),
       rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
-      copyTree: (src, dest, options) => this.runCopyTree(this.planCopyTree(src, dest, bound, options), null).copied,
-      copyTreeAsync: (src, dest, options) => this.copyTreeInSlices(this.planCopyTree(src, dest, bound, options)),
+      copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
+      copyTreeAsync: (src, dest, options) => {
+        const owner = options?.mutationOwner;
+        const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
+        return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
+      },
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -2133,6 +2212,7 @@ export class SqliteVFS {
       // Live: a view outlives rotateIncarnation.
       get epoch() { return engine._epoch; },
     };
+    return bound.uid === 0 ? this.privilegedView(view) : view;
   }
 
   private accessInode(inode: INode, want: number, cred: VfsCred): boolean {
@@ -2181,7 +2261,8 @@ export class SqliteVFS {
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     let current = this.nameOf(path, cred);
-    const seen = new Set<string>();
+    // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
+    // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
     for (let hops = 0; hops <= 40; hops++) {
       const parts = current.split('/').filter(Boolean);
       let prefix = '';
@@ -2195,8 +2276,7 @@ export class SqliteVFS {
           throw vfsError('ENOENT', prefix);
         }
         if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
-          if (seen.has(prefix) || hops === 40) throw vfsError('ELOOP', path);
-          seen.add(prefix);
+          if (hops === 40) throw vfsError('ELOOP', path);
           const target = dec.decode(this.readInodeBytes(inode.path, inode));
           const suffix = parts.slice(index + 1).join('/');
           const base = target.startsWith('/') ? target : `${this.parentPath(prefix)}/${target}`;
@@ -4189,22 +4269,26 @@ export class SqliteVFS {
 
   private utimes(
     path: string,
-    atimeMs: number | null,
-    mtimeMs: number | null,
+    atimeMs: number | null | undefined,
+    mtimeMs: number | null | undefined,
     cred: VfsCred,
+    followLeaf = true,
   ): void {
-    const resolved = this.checkAccess(path, 0, cred);
+    const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     this.assertMutationsAllowed([inode.path]);
-    const useNow = atimeMs === null && mtimeMs === null;
+    // Nothing explicit: only now (null) and omit (undefined).
+    const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
     if (useNow) {
       if (!this.accessInode(inode, 0o2, cred)) throw vfsError('EACCES', resolved.path);
     } else if (cred.uid !== 0 && cred.uid !== inode.uid) {
       throw vfsError('EPERM', resolved.path);
     }
-    const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
-    const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+    const at = (value: number | null | undefined, kept: number): number => (
+      value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
+    const atime = at(atimeMs, inode.atime);
+    const mtime = at(mtimeMs, inode.mtime);
     this.publishMetadata(inode, { atime, mtime });
   }
 
@@ -4878,7 +4962,25 @@ export class SqliteVFS {
         }
       }
     }
+    // N18: the whole copy is admitted before its first row, and reserved when
+    // it starts; its slices draw from the reservation, so no writer between
+    // them can leave it without room.
+    let rows = 1;
+    if (root.isDir) {
+      if (atGen === undefined) {
+        const range = subtreeRange(source.path);
+        rows += Number([...(range.upper === null
+          ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', range.lower)
+          : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper))][0]!.n);
+      } else {
+        for (const _ of this.subtreeAt(source.path, atGen)) rows++;
+      }
+    }
+    // Each page's transaction also writes the generation and the job's cursor.
+    rows += 2 * (Math.ceil(rows / COPY_PAGE_ROWS) + 1);
+    this.ledger.admit(rows * LEDGER_ROW_BYTES);
     const job: CopyTreeJob = {
+      rows,
       src: source.path,
       dst: target.path,
       uid: cred.uid,
@@ -4891,15 +4993,38 @@ export class SqliteVFS {
     return job;
   }
 
-  private async copyTreeInSlices(job: CopyTreeJob): Promise<number> {
-    let slice = this.runCopyTree(job, null, JOB_SLICE_PAGES);
-    let copied = slice.copied;
-    while (!slice.done) {
-      await yieldToStorage();
-      slice = this.runCopyTree(job, slice.id, JOB_SLICE_PAGES);
-      copied += slice.copied;
+  private async copyTreeInSlices(job: CopyTreeJob, owner?: string): Promise<number> {
+    const reservation = this.reserveCopy(job);
+    const run = (id: number | null) => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)));
+    try {
+      let slice = run(null);
+      let copied = slice.copied;
+      while (!slice.done) {
+        await yieldToStorage();
+        slice = run(slice.id);
+        copied += slice.copied;
+      }
+      return copied;
+    } finally {
+      this.ledger.release(reservation);
     }
-    return copied;
+  }
+
+  /** A whole copy in one turn: its reservation is drawn and then released. */
+  private copyTreeNow(job: CopyTreeJob): number {
+    const reservation = this.reserveCopy(job);
+    try {
+      return this.withReservation(reservation, () => this.runCopyTree(job, null)).copied;
+    } finally {
+      this.ledger.release(reservation);
+    }
+  }
+
+  /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
+  private reserveCopy(job: CopyTreeJob): string {
+    const id = crypto.randomUUID();
+    this.ledger.reserve(id, (job.rows ?? 0) * LEDGER_ROW_BYTES);
+    return id;
   }
 
   /** Every entry strictly under `root` as of generation `g`, a page at a time. */
@@ -5089,10 +5214,56 @@ export class SqliteVFS {
   snapshot(name: string, options: { quiesce?: boolean } = {}): SnapshotInfo | Promise<SnapshotInfo> {
     if (typeof name !== 'string' || name === '' || name.length > 256) throw vfsError('EINVAL', 'invalid snapshot name');
     if (!options.quiesce) return this.pinSnapshot(name);
+    return this.quiesced(() => this.pinSnapshot(name));
+  }
+
+  /**
+   * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+   * check and `pin` run in one turn, so nothing can start between them. New
+   * spanning work waits behind the gate until then (Kinu N14: await, never
+   * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+   * is waited out too.
+   */
+  private quiesced<T>(pin: () => T): Promise<T> {
+    const previous = this.quiesceGate ?? Promise.resolve();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const chained = previous.then(() => gate);
+    this.quiesceGate = chained;
     return (async () => {
-      while (this.activeStreams.size > 0) await Promise.allSettled([...this.activeStreams]);
-      return this.pinSnapshot(name);
+      try {
+        await previous;
+        for (;;) {
+          if (this.activeWork.size > 0) { await Promise.allSettled([...this.activeWork]); continue; }
+          if (this.exclusiveMutationLeases.size > 0) { await yieldToStorage(); continue; }
+          return pin();
+        }
+      } finally {
+        open();
+        if (this.quiesceGate === chained) this.quiesceGate = null;
+      }
     })();
+  }
+
+  /**
+   * Spanning work: held behind a quiescing snapshot, and awaited by the next
+   * one. Work under a live exclusive lease (`owner`) is part of what the
+   * snapshot already waits for, the lease, so it is never held: holding it
+   * would hold the lease forever (a clone streaming its batches).
+   */
+  private spanning<T>(start: () => Promise<T>, owner?: string): Promise<T> {
+    // Tracked once started: the snapshot waits for running work, never for
+    // work it is itself holding back.
+    const begin = (): Promise<T> => {
+      const run = start();
+      this.activeWork.add(run);
+      const settled = (): void => { this.activeWork.delete(run); };
+      run.then(settled, settled);
+      return run;
+    };
+    const gate = this.quiesceGate;
+    if (gate === null || (owner !== undefined && this.exclusiveMutationLeases.has(owner))) return begin();
+    return gate.then(begin);
   }
 
   private pinSnapshot(name: string): SnapshotInfo {
@@ -5369,12 +5540,22 @@ export class SqliteVFS {
     return { restored: this.runRestore(id, job, startGen).restored };
   }
 
-  /** restore in slices with a yield between, for a restore of any size in workerd. */
-  async restoreAsync(name: string, options: { subtree?: string } = {}): Promise<{ restored: number }> {
-    const { id, job, startGen } = this.restoreJob(name, options);
+  /**
+   * restore in slices with a yield between, for a restore of any size in
+   * workerd. `mutationOwner`: the live exclusive lease it runs under (its
+   * holder awaits it), so it restores inside the lease and a quiescing
+   * snapshot never holds it.
+   */
+  restoreAsync(name: string, options: { subtree?: string; mutationOwner?: string } = {}): Promise<{ restored: number }> {
+    return this.spanning(() => this.restoreInSlices(name, options), options.mutationOwner);
+  }
+
+  private async restoreInSlices(name: string, options: { subtree?: string; mutationOwner?: string }): Promise<{ restored: number }> {
+    const owner = options.mutationOwner;
+    const { id, job, startGen } = this.withMutationOwner(owner, () => this.restoreJob(name, options));
     let restored = 0;
     for (;;) {
-      const slice = this.runRestore(id, job, startGen, JOB_SLICE_PAGES);
+      const slice = this.withMutationOwner(owner, () => this.runRestore(id, job, startGen, JOB_SLICE_PAGES));
       restored += slice.restored;
       if (slice.done) return { restored };
       await yieldToStorage();
@@ -5386,7 +5567,12 @@ export class SqliteVFS {
     const g = this.requireSnapshot(name);
     const subtree = options.subtree === undefined ? '' : normalizeVfsPath(options.subtree);
     if (subtree !== '') this.assertMutationsAllowed([subtree]);
-    else if (this.exclusiveMutationLeases.size > 0) throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+    else {
+      // A full restore changes everything: only the caller's own global lease may be live.
+      const owner = this.activeMutationOwner;
+      const others = [...this.exclusiveMutationLeases].filter(([id, root]) => id !== owner || root !== '');
+      if (others.length > 0) throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
+    }
     this.assertSnapshotLocal(g, subtree, name);
     // A restore a reset or a cold chunk stopped continues rather than starting over.
     for (const row of [...this.sql.exec("SELECT id, args, start_gen FROM vfs_jobs WHERE kind = 'restore'")]) {
@@ -5859,6 +6045,27 @@ export class SqliteVFS {
     dst: string,
     page: VfsExportPage,
     chunks: Iterable<VfsExportChunk> = [],
+  ): { imported: number; want: string[]; done: boolean } {
+    // N18: the page's rows and the bytes it brings are admitted and reserved
+    // before its first transaction, which then draw from the reservation.
+    const given = [...chunks];
+    let bytes = 0;
+    for (const chunk of given) bytes += chunk.data.byteLength;
+    const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
+    const rows = (Array.isArray(page?.rows) ? page.rows.length : 0) + pieces + 2;
+    const reservation = crypto.randomUUID();
+    this.ledger.reserve(reservation, bytes + rows * LEDGER_ROW_BYTES);
+    try {
+      return this.withReservation(reservation, () => this.importPageNow(dst, page, given));
+    } finally {
+      this.ledger.release(reservation);
+    }
+  }
+
+  private importPageNow(
+    dst: string,
+    page: VfsExportPage,
+    chunks: Iterable<VfsExportChunk>,
   ): { imported: number; want: string[]; done: boolean } {
     if (page?.schema !== VFS_EXPORT_SCHEMA) {
       throw vfsError('EINVAL', `export schema ${String(page?.schema)}, this filesystem reads ${VFS_EXPORT_SCHEMA}`);
@@ -6556,11 +6763,7 @@ export class SqliteVFS {
     options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string } = {},
     cred: VfsCred,
   ): Promise<WriteBatchStreamResult> {
-    const run = this.consumeStream(stream, options, cred);
-    this.activeStreams.add(run);
-    const settled = (): void => { this.activeStreams.delete(run); };
-    run.then(settled, settled);
-    return run;
+    return this.spanning(() => this.consumeStream(stream, options, cred), options.mutationOwner);
   }
 
   private async consumeStream(
@@ -7169,7 +7372,6 @@ export class SqliteVFS {
         let nextContent = Number(state.next_content) - reserve.contents;
         const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
         const queue = new GcQueue();
-        for (const ref of plan.gcRefs) queue.add(ref.kind, ref.id);
 
         // Before-images for every row this transaction replaces or removes
         // that a snapshot can see (gen <= pin_gen). None without a snapshot.
@@ -7567,6 +7769,46 @@ export class SqliteVFS {
     }
   }
 
+  /**
+   * N18: a transaction that can grow the database is admitted by the
+   * session's ledger before it runs (ENOSPC, nothing written, when it would
+   * cross the storage limit). Collection and pure removals only free, and are
+   * never refused.
+   */
+  private admitTransaction(plan: TransactionPlan, execution: TransactionExecution): { id: string; take: number } | null {
+    if (execution.source === 'content-gc') return null;
+    const grows = plan.inodes.length > 0 || plan.staged.length > 0 || plan.stagingCreated.length > 0
+      || plan.metrics.blobBytes > 0 || plan.deletes.length === 0;
+    if (!grows) return null;
+    const need = plan.metrics.blobBytes + plan.metrics.logicalRows * LEDGER_ROW_BYTES;
+    const id = this.activeReservation;
+    if (id === null) {
+      this.ledger.admit(need, this.privileged);
+      return null;
+    }
+    return { id, take: this.ledger.draw(id, need, this.privileged) };
+  }
+
+  /**
+   * Run `fn` (synchronous, so nothing interleaves) as the operation that
+   * holds reservation `id`: its transactions draw from it.
+   */
+  private withReservation<T>(id: string | undefined, fn: () => T): T {
+    if (id === undefined) return fn();
+    const prior = this.activeReservation;
+    this.activeReservation = id;
+    try {
+      return fn();
+    } finally {
+      this.activeReservation = prior;
+    }
+  }
+
+  /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
+  databaseBytes(): number {
+    return databaseBytesOf(this.sql);
+  }
+
   private executeMeasuredTransaction(
     plan: TransactionPlan,
     execution: TransactionExecution,
@@ -7575,10 +7817,14 @@ export class SqliteVFS {
     if (this._activeTransaction !== null) {
       throw new Error('[sqlite-vfs] nested transaction plan execution is not supported');
     }
+    const drawn = this.admitTransaction(plan, execution);
     const startedAt = performance.now();
     this._activeTransaction = { startedAt, plan, execution };
     try {
       this.transactionSync(callback);
+    } catch (error) {
+      if (drawn !== null) this.ledger.refund(drawn.id, drawn.take);
+      throw error;
     } finally {
       const durationMs = performance.now() - startedAt;
       this.recordDuration(this._transactionDuration, durationMs);
@@ -7987,7 +8233,6 @@ export class SqliteVFS {
       deletes: [],
       staged: [],
       stagingCreated: [],
-      gcRefs: [],
       affectedPaths: new Set(),
       metrics,
     };
@@ -8761,70 +9006,4 @@ function recentPercentile(samples: Float64Array, count: number, percentile: numb
 
 function clampNonNegativeInt(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
-}
-
-// ── SqliteVFSProvider (MountProvider for Nimbus Kernel VFS) ────────────────────
-
-export class SqliteVFSProvider {
-  private raw: SqliteVFS;
-  private vfs: CredentialedVfs;
-  private prefix: string;
-
-  constructor(vfs: SqliteVFS, prefix: string, cred: VfsCred = CRED_KERNEL) {
-    this.raw = vfs;
-    this.vfs = vfs.as(cred);
-    this.prefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
-  }
-
-  as(cred: VfsCred): SqliteVFSProvider { return new SqliteVFSProvider(this.raw, this.prefix, cred); }
-
-  private resolve(sub: string): string {
-    const c = sub.replace(/^\/+/, '').replace(/\/+$/, '');
-    return c ? this.prefix + '/' + c : this.prefix;
-  }
-
-  readFile(sub: string): Uint8Array { return this.vfs.readFile(this.resolve(sub)); }
-  readFileString(sub: string): string { return this.vfs.readFileString(this.resolve(sub)); }
-  lstat(sub: string): VfsStat { return this.vfs.lstat(this.resolve(sub)); }
-  readlink(sub: string): string { return this.vfs.readlink(this.resolve(sub)); }
-  symlink(target: string, sub: string): void { this.vfs.symlink(target, this.resolve(sub)); }
-  utimes(sub: string, atimeMs: number, mtimeMs: number): void { this.vfs.utimes(this.resolve(sub), atimeMs, mtimeMs); }
-
-  readRange(sub: string, offset: number, length: number): Uint8Array {
-    return this.vfs.readRange(this.resolve(sub), offset, length);
-  }
-
-  writeFile(sub: string, content: string | Uint8Array): void {
-    const fp = this.resolve(sub);
-    const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
-    if (pp && !this.vfs.exists(pp)) this.vfs.mkdir(pp, { recursive: true });
-    this.vfs.writeFile(fp, content);
-  }
-
-  writeRange(sub: string, offset: number, bytes: Uint8Array): void {
-    const fp = this.resolve(sub);
-    const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
-    if (pp && !this.vfs.exists(pp)) this.vfs.mkdir(pp, { recursive: true });
-    this.vfs.writeRange(fp, offset, bytes);
-  }
-
-  truncate(sub: string, size: number): void { this.vfs.truncate(this.resolve(sub), size); }
-
-  exists(sub: string): boolean { return this.vfs.exists(this.resolve(sub)); }
-  access(sub: string, mode: number): void { this.vfs.access(this.resolve(sub), mode); }
-  stat(sub: string) { return this.vfs.stat(this.resolve(sub)); }
-  readdir(sub: string) { return this.vfs.readdir(this.resolve(sub)); }
-  unlink(sub: string): void { this.vfs.unlink(this.resolve(sub)); }
-
-  mkdir(sub: string, opts?: { recursive?: boolean }): void {
-    this.vfs.mkdir(this.resolve(sub), opts);
-  }
-
-  rmdir(sub: string): void { this.vfs.rmdir(this.resolve(sub)); }
-  rename(o: string, n: string): void { this.vfs.rename(this.resolve(o), this.resolve(n)); }
-  copyFile(s: string, d: string): void { this.vfs.copyFile(this.resolve(s), this.resolve(d)); }
-  chmod(sub: string, mode: number): void { this.vfs.chmod(this.resolve(sub), mode); }
-  chown(sub: string, uid: number | null, gid: number | null): void {
-    this.vfs.chown(this.resolve(sub), uid, gid);
-  }
 }

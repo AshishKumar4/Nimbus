@@ -32,6 +32,8 @@ import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -384,6 +386,42 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
 export async function _rpcFsAcquire(self, epoch, cursor, options, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
     return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
+}
+const FsStorageGrantArgsSchema = z.object({
+    facet: z.string().min(1),
+    bytes: z.number().int().min(0),
+    databaseSize: z.number().min(0),
+});
+/**
+ * N18: a process's facet store asks for room to grow, reporting what its
+ * database measures. The ledger's row for the facet first takes the
+ * measurement where it is over the record (overshoot), then admits `bytes`
+ * more under the facet's name; refused, nothing is granted and the store
+ * keeps what it has (reading the rest through the session).
+ */
+export async function _rpcFsStorageGrant(self, facet, bytes, databaseSize, pid) {
+    const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
+    const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
+    if (owner !== undefined && owner !== args.facet) {
+        throw new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`);
+    }
+    const ledger = self.sqliteFs?.ledger;
+    if (ledger === undefined)
+        return { granted: 0 };
+    const recorded = ledger.view().facets[args.facet] ?? 0;
+    if (args.databaseSize > recorded)
+        ledger.report(args.facet, args.databaseSize);
+    if (args.bytes === 0)
+        return { granted: 0 };
+    try {
+        ledger.fill(args.facet, args.bytes);
+        return { granted: args.bytes };
+    }
+    catch (error) {
+        if (isVfsError(error, 'ENOSPC'))
+            return { granted: 0 };
+        throw error;
+    }
 }
 /**
  * The ACQUIRE a delivery carries, so the process it is delivered to applies
@@ -1035,7 +1073,7 @@ export async function _rpcTransform(self, code, loader) {
         self.ensureSqliteFs();
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.sqliteFs.as(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
     }
     try {
         const result = await self.esbuildService.transform(code, {

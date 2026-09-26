@@ -14,6 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import { VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 /** A backend's version of a file: a generation number, or an opaque persisted identity. */
 export type VfsRevision = number | string;
@@ -35,6 +36,8 @@ export interface VfsStat {
     ctimeMs?: number;
     ino?: number;
     nlink?: number;
+    /** The filesystem the entry lives on (st_dev): distinct per mount. */
+    dev?: number;
 }
 /** A directory entry; `stat` when the backend has it for free (it saves a call per child). */
 export interface VfsDirent {
@@ -197,13 +200,43 @@ export interface SyncVFS {
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Uint8Array;
 }
 /** Whether anything is at `path`. */
-export declare function exists(vfs: VFS, path: string): Promise<boolean>;
+export declare function exists(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
 /** The file as UTF-8 text. */
-export declare function readText(vfs: VFS, path: string): Promise<string>;
+export declare function readText(vfs: Pick<VFS, 'readFile'>, path: string): Promise<string>;
 /** Write `text` as UTF-8. */
 export declare function writeText(vfs: VFS, path: string, text: string, options?: {
     mode?: number;
 }): Promise<void>;
+/** File type bits of a mode (st_mode & S_IFMT). */
+export declare const S_IFMT = 61440;
+export declare const S_IFREG = 32768;
+export declare const S_IFDIR = 16384;
+export declare const S_IFCHR = 8192;
+export declare const S_IFLNK = 40960;
+/** True for a character device such as `/dev/zero`, which streams rather than stores. */
+export declare function isCharacterDevice(mode: number | undefined): boolean;
+/** The `ls -l` type character for a mode, falling back to the entry's type. */
+export declare function fileTypeChar(mode: number | undefined, type: VfsFileType): string;
+/** The entry at `path`; ENOENT when nothing is there (for callers that treat absence as an error). */
+export declare function statOrThrow<S extends VfsStat>(vfs: {
+    stat(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<S | null>;
+}, path: string, options?: {
+    follow?: boolean;
+}): Promise<S>;
+/** The entry at `path` itself, a link not followed (lstat); ENOENT when nothing is there. */
+export declare function lstatOrThrow<S extends VfsStat>(vfs: {
+    stat(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<S | null>;
+}, path: string): Promise<S>;
+/** Whether `path` is a directory (links followed). */
+export declare function isDirectory(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
+/** Whether `path` is a regular file (links followed). */
+export declare function isFile(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
+/** Whether `path` itself is a symbolic link. */
+export declare function isSymlink(vfs: Pick<VFS, 'stat'>, path: string): Promise<boolean>;
 /** What rm -r of a tree did: maximal removed subtrees, entries still there, and why. */
 export interface VfsRemoval {
     removed: string[];
@@ -212,6 +245,6 @@ export interface VfsRemoval {
 }
 export interface VfsRemovalFailure {
     path: string;
-    error: import('./vfs-error.js').VfsError;
+    error: VfsError;
 }
 //# sourceMappingURL=vfs.d.ts.map

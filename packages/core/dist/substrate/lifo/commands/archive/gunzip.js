@@ -1,7 +1,7 @@
 import { resolve } from '../../utils/path.js';
 import { decompressGzip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 const spec = {
     keep: { type: 'boolean', short: 'k' },
     force: { type: 'boolean', short: 'f' },
@@ -44,7 +44,7 @@ const command = async (ctx) => {
                 (await ctx.vfs.unlink(path));
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 await ctx.stderr.write(`gunzip: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }

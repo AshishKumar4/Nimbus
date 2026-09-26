@@ -6,9 +6,9 @@
 // interactive command that is still running.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 const shell = box.shell;
 
 // The programmatic command starts first, so at its end the controller it
@@ -43,7 +43,7 @@ console.log('shell concurrent abort controller: ok');
 // same Shell. A single mutable controller slot makes the later programmatic
 // command steal the terminal's signal.
 {
-  const inverse = await Sandbox.create({ persist: false });
+  const inverse = await testBox();
   const inverseShell = inverse.shell;
   let interactiveAborted = false;
   let programmaticAborted = false;

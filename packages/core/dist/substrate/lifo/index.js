@@ -1,5 +1,3 @@
-// Sandbox (high-level API)
-export { Sandbox } from './sandbox/index.js';
 // Kernel
 export { Kernel } from './kernel/index.js';
 // Network Stack
@@ -9,17 +7,8 @@ export { VETHPair } from './kernel/network/tunnel/VETHPair.js';
 export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
 // Bridge
 export { Bridge } from './kernel/network/Bridge.js';
-// VFS
-export { VFS, VFSError, ErrorCode } from './kernel/vfs/index.js';
-export { getMimeType, getFileCategory, isBinaryMime } from './kernel/vfs/index.js';
-export { NativeFsProvider } from './kernel/vfs/index.js';
-// Blob storage & content store
-export { MemoryBlobStore, hashBytes } from './kernel/storage/index.js';
-export { ContentStore, CHUNK_THRESHOLD, CHUNK_SIZE } from './kernel/storage/index.js';
-// Persistence
-export { PersistenceManager } from './kernel/persistence/index.js';
-export { MemoryPersistenceBackend } from './kernel/persistence/index.js';
-export { serialize, deserialize } from './kernel/persistence/index.js';
+// Filesystem: the namespace is core/src/vfs (CompositeVFS), bound by ProcessFiles.
+export { getMimeType, getFileCategory, isBinaryMime } from './utils/mime.js';
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
 // Factory commands
@@ -36,16 +25,8 @@ export { createRouteCommand } from './commands/net/route.js';
 export { createNetstatCommand } from './commands/net/netstat.js';
 export { createHostCommand } from './commands/net/host.js';
 export { createIPCommand } from './commands/net/ip.js';
-export { createTunnelCommand } from './commands/net/tunnel.js';
-export { createForwardCommand, createUnforwardCommand } from './commands/net/forward.js';
-export { createPortsCommand } from './commands/net/ports.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
-export { createLogoutCommand } from './commands/system/logout.js';
-export { createSystemctlCommand } from './commands/system/systemctl.js';
-// Service manager
-export { ServiceManager } from './kernel/ServiceManager.js';
-export { parseUnitFile } from './kernel/unit-parser.js';
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
@@ -62,5 +43,3 @@ export { createModuleMap, ProcessExitError } from './node-compat/index.js';
 export { Buffer } from './node-compat/buffer.js';
 // Path utilities
 export { resolve, dirname, join, normalize, basename, extname } from './utils/path.js';
-// Color utilities
-export { RESET, BOLD, DIM, ITALIC, UNDERLINE, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, BRIGHT_RED, BRIGHT_GREEN, BRIGHT_YELLOW, BRIGHT_BLUE, BRIGHT_MAGENTA, BRIGHT_CYAN, red, green, yellow, blue, magenta, cyan, bold, dim, } from './utils/colors.js';

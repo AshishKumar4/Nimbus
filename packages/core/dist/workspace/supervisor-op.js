@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 const FsPath = z.union([
     z.string(),
@@ -82,7 +82,7 @@ export const SUPERVISOR_OPS = [
     'readFile', 'readFileBytes', 'writeFile', 'stat', 'lstat',
     'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
     'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink',
-    'symlink', 'fsAcquire', 'fsRevision', 'fsList', 'wsOpen', 'wsPoll',
+    'symlink', 'fsAcquire', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
     'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
     'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
     'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
@@ -104,6 +104,7 @@ export const SUPERVISOR_OP_ROUTES = {
     setUmask: { method: '_rpcSetUmask', args: [0, 'pid'] },
     fsAcquire: { method: '_rpcFsAcquire', args: [0, 1, 2, 'pid'] },
     fsList: { method: '_rpcFsList', args: [0, 1, 'pid'] },
+    fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0, 1, 2, 'pid'] },
     wsOpen: { method: '_rpcWsOpen', args: [0, 1, 'pid'] },
     wsPoll: { method: '_rpcWsPoll', args: [0, 1, 'pid'] },
     wsSend: { method: '_rpcWsSend', args: [0, 1, 2, 'pid'] },
@@ -232,7 +233,7 @@ const ROUTE_BY_OP = SUPERVISOR_OP_ROUTES;
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(deps) {
-    const authority = deps.filesystem ?? new SqliteFilesystemAuthority(deps.vfs);
+    const authority = deps.filesystem ?? new ProcessFiles(deps.vfs);
     const hostLeases = new Map();
     return {
         bridge: (pid, cred) => {

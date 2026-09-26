@@ -14,4 +14,12 @@ export declare class VfsError extends Error {
 }
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
 export declare function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsError;
+/**
+ * An error from a layer that throws `{ code }` errors (the SQLite engine, a
+ * process bridge), as a VfsError on `path`; anything without a known code is
+ * returned as it is.
+ */
+export declare function toVfsError(error: unknown, path: string): unknown;
+/** strerror(3) for a code: the text GNU coreutils print. */
+export declare const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>>;
 //# sourceMappingURL=vfs-error.d.ts.map

@@ -9,13 +9,13 @@
 // behaviours of Kinu's tests/unit-vfs-mounts.test.ts on the new API:
 // routing, ENXIO with the stated reason, EBUSY at mount points, EXDEV across
 // mounts, native vs walked removal with a partial report, readRange
-// pass-through or ENOTSUP, per-principal visibility, moveAcross rollback,
+// pass-through or ENOTSUP, per-principal visibility,
 // the sync view, nested and synthesized mount points.
 
 import assert from 'node:assert/strict';
 
 const base = new URL('../../packages/core/src/vfs/', import.meta.url).pathname;
-const { CompositeVFS, moveAcross, normalizePath } = await import(`${base}/composite.ts`);
+const { CompositeVFS, normalizePath } = await import(`${base}/composite.ts`);
 const { MemoryVFS } = await import(`${base}/memory.ts`);
 const { VfsError, isVfsError } = await import(`${base}/vfs-error.ts`);
 const { exists, readText, writeText } = await import(`${base}/vfs.ts`);
@@ -202,25 +202,6 @@ const cases = {
     // The device has no rename: EXDEV (mv copies), never an emulated move.
     assert.equal(await code(vfs.rename('/pc/b.txt', '/pc/b2.txt')), 'EXDEV');
     assert.equal(await readText(vfs, '/pc/b.txt'), 'B');
-  },
-
-  async 'moveAcross copies, confirms, then removes; a failure puts both sides back'() {
-    const pc = device({ '/b.txt': 'B' });
-    const box = sandbox({ '/w/keep.txt': 'old' });
-    const vfs = new CompositeVFS(new MemoryVFS());
-    vfs.mount('/pc', () => pc);
-    vfs.mount('/sandbox', () => box);
-    await moveAcross(vfs, '/pc/b.txt', '/sandbox/w/b.txt');
-    assert.equal(await readText(vfs, '/sandbox/w/b.txt'), 'B');
-    assert.equal(await exists(vfs, '/pc/b.txt'), false);
-    // The source cannot be removed: the destination gets its old bytes back.
-    const stuck = { ...device({ '/s.txt': 'S' }) };
-    stuck.unlink = async (p) => { throw new VfsError('EACCES', 'held open', p); };
-    vfs.mount('/stuck', () => stuck);
-    assert.equal(await code(moveAcross(vfs, '/stuck/s.txt', '/sandbox/w/keep.txt')), 'EACCES');
-    assert.equal(await readText(vfs, '/sandbox/w/keep.txt'), 'old');
-    assert.equal(await readText(vfs, '/stuck/s.txt'), 'S');
-    assert.equal(await code(moveAcross(vfs, '/sandbox/w', '/pc/w')), 'EISDIR');
   },
 
   async 'removeRecursive: native where the backend has it, walked where not, with a partial report'() {

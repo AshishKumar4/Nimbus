@@ -1,6 +1,6 @@
 import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
-import type { ExecutionFs as VFS } from './execution-fs.js';
+import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { textSink } from '../_shared/bytes.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';

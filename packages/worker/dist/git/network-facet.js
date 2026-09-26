@@ -2648,6 +2648,7 @@ export default {
           ref: opts.ref,
           singleBranch: true,
           author: opts.author || { name: 'user', email: 'user@nimbus.dev' },
+          committer: opts.committer,
           onProgress,
           onAuth,
         });

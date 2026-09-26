@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
@@ -40,7 +40,7 @@ root.chown('home/b', B.uid, B.gid);
 const a = raw.as(A);
 const b = raw.as(B);
 const plain = raw.as(PLAIN);
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const aFs = authority.bind({ pid: 7101, cred: A });
 const plainFs = authority.bind({ pid: 7102, cred: PLAIN });
 

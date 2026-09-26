@@ -47,7 +47,7 @@
  *     CSP rejects that path, and the facet host exists to make it moot.
  */
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { withHostFilesystem } from '../shell/execution-fs.js';
+import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
@@ -159,7 +159,7 @@ export function makeWasmRunner(deps) {
         // for it, so a host lease carries the read rather than a process binding.
         let bytes;
         try {
-            const program = await withHostFilesystem(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
+            const program = await withHostView(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFile(wasmPath) : null);
             if (program === null) {
                 return {
                     exitCode: 1,

@@ -21,7 +21,7 @@
  */
 
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { errorText } from '../_shared/error-text.js';
 import {
   listInstalledManifestsView,
@@ -41,6 +41,7 @@ import {
   type RuntimeSource,
   type SeededRuntime,
 } from './runtime-package.js';
+import { exists } from '../vfs/vfs.js';
 
 export interface RuntimeManagerOptions {
   vfs: CredentialedVfs;

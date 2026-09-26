@@ -1,9 +1,10 @@
 import type { Command } from '../types.js';
-import type { FileType } from '../../kernel/vfs/types.js';
+import type { VfsFileType as FileType } from '../../../../vfs/vfs.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { BOLD, BLUE, RESET } from '../../utils/colors.js';
-import { VFSError, fileTypeChar } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { fileTypeChar, statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   long: { type: 'boolean' as const, short: 'l' },
@@ -41,7 +42,7 @@ interface LsEntry {
   name: string;
   type: FileType;
   size: number;
-  mtime: number;
+  mtimeMs: number;
   mode: number;
 }
 
@@ -53,7 +54,7 @@ function formatEntry(entry: LsEntry, long: boolean): string {
   if (long) {
     const mode = formatMode(entry.mode, entry.type === 'directory');
     const size = String(entry.size).padStart(6, ' ');
-    const date = formatDate(entry.mtime);
+    const date = formatDate(entry.mtimeMs);
     return `${mode}  1 user user ${size} ${date} ${displayName}\n`;
   }
   return displayName;
@@ -78,20 +79,20 @@ const command: Command = async (ctx) => {
   for (const target of targets) {
     const targetPath = resolve(ctx.cwd, target);
     try {
-      const stat = (await ctx.vfs.stat(targetPath));
+      const stat = (await statOrThrow(ctx.vfs, targetPath));
       if (stat.type === 'file') {
         fileEntries.push({
           name: target,
           type: stat.type,
           size: stat.size,
-          mtime: stat.mtime,
+          mtimeMs: stat.mtimeMs,
           mode: stat.mode,
         });
       } else {
         dirTargets.push(target);
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`ls: ${e.message}\n`);
         exitCode = 1;
       } else {
@@ -145,7 +146,7 @@ const command: Command = async (ctx) => {
         }
       }
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`ls: ${e.message}\n`);
         exitCode = 1;
       } else {

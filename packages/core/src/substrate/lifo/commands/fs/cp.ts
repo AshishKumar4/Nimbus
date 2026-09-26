@@ -1,7 +1,8 @@
 import type { Command, CommandContext } from '../types.js';
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { VfsError, isVfsError } from '../../../../vfs/vfs-error.js';
+import { exists, lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   recursive: { type: 'boolean' as const, short: 'r' },
@@ -56,7 +57,7 @@ const command: Command = async (ctx) => {
     const src = resolve(ctx.cwd, source);
     const target = destIsDir ? resolve(dest, basename(src)) : dest;
     try {
-      const stat = await ctx.vfs.lstat(src);
+      const stat = await lstatOrThrow(ctx.vfs, src);
       if (stat.type === 'directory') {
         if (!recursive) {
           await ctx.stderr.write(`cp: -r not specified; omitting directory '${source}'\n`);
@@ -75,7 +76,7 @@ const command: Command = async (ctx) => {
       }
       if (flags.verbose) await ctx.stdout.write(`'${source}' -> '${target}'\n`);
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`cp: ${e.message}\n`);
         exitCode = 1;
         continue;
@@ -88,9 +89,9 @@ const command: Command = async (ctx) => {
 
 async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> {
   try {
-    return (await ctx.vfs.stat(path)).type === 'directory';
+    return (await statOrThrow(ctx.vfs, path)).type === 'directory';
   } catch (error) {
-    if (error instanceof VFSError && error.code === 'ENOENT') return false;
+    if (isVfsError(error) && error.code === 'ENOENT') return false;
     throw error;
   }
 }
@@ -107,19 +108,19 @@ function errorCode(error: unknown): unknown {
 async function copyTree(ctx: CommandContext, src: string, target: string, preserve: boolean, noClobber: boolean): Promise<void> {
   if (!(await ctx.vfs.exists(target))) {
     try {
-      await ctx.vfs.copyTree(src, target, { preserve });
+      await ctx.vfs.copy(src, target, { recursive: true, preserve });
       return;
     } catch (error) {
       if (errorCode(error) !== 'EXDEV') throw error;
     }
   }
-  const stat = await ctx.vfs.lstat(src);
+  const stat = await lstatOrThrow(ctx.vfs, src);
   if (!(await ctx.vfs.exists(target))) await ctx.vfs.mkdir(target, { mode: stat.mode | 0o700 });
-  else if ((await ctx.vfs.lstat(target)).type !== 'directory') throw new VFSError('ENOTDIR', target);
+  else if ((await lstatOrThrow(ctx.vfs, target)).type !== 'directory') throw new VfsError('ENOTDIR', target);
   for (const entry of await ctx.vfs.readdir(src)) {
     const from = resolve(src, entry.name);
     const to = resolve(target, entry.name);
-    const child = await ctx.vfs.lstat(from);
+    const child = await lstatOrThrow(ctx.vfs, from);
     if (child.type === 'directory') await copyTree(ctx, from, to, preserve, noClobber);
     else if (!(noClobber && (await ctx.vfs.exists(to)))) await copyEntry(ctx, from, to, child, preserve);
   }
@@ -130,27 +131,27 @@ async function copyEntry(
   ctx: CommandContext,
   src: string,
   target: string,
-  stat: { type: string; mode: number; mtime: number; atime?: number },
+  stat: { type: string; mode: number; mtimeMs: number; atimeMs?: number },
   preserve: boolean,
 ): Promise<void> {
-  if (!(await ctx.vfs.exists(dirname(target)))) throw new VFSError('ENOENT', dirname(target));
+  if (!(await ctx.vfs.exists(dirname(target)))) throw new VfsError('ENOENT', dirname(target));
   if (stat.type === 'symlink') {
     const link = await ctx.vfs.readlink(src);
     if (await ctx.vfs.exists(target)) await ctx.vfs.unlink(target);
     await ctx.vfs.symlink(link, target);
     return;
   }
-  await ctx.vfs.copyFile(src, target);
+  await ctx.vfs.copy(src, target);
   if (preserve) await applyPreserved(ctx, target, stat);
 }
 
 async function applyPreserved(
   ctx: CommandContext,
   target: string,
-  stat: { mode: number; mtime: number; atime?: number },
+  stat: { mode: number; mtimeMs: number; atimeMs?: number },
 ): Promise<void> {
   await ctx.vfs.chmod(target, stat.mode);
-  await ctx.vfs.utimes(target, stat.atime ?? stat.mtime, stat.mtime);
+  await ctx.vfs.utimes(target, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs);
 }
 
 export default command;

@@ -53,7 +53,7 @@ export async function startRealVite(self, opts) {
         if (cfgPath) {
             try {
                 if (!self.esbuildService)
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
                 const bundleResult = await self.esbuildService.build([cfgPath], {
                     bundle: true,
                     format: 'esm',

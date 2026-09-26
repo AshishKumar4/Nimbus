@@ -3,7 +3,7 @@
 //
 // `spawnWorker` for a self-owned durable app persists the launch's code,
 // modules, and env as content-addressed blobs under `.nimbus/images/` —
-// kernel VFS, so a user process cannot rewrite or delete what its own
+// kernel-owned, so a user process cannot rewrite or delete what its own
 // re-drive will boot from — and the journal row names the digests it wrote.
 // A reset re-drives the recipe through the session's fallback resolver, which
 // reads those blobs back and hands the launch its env and modules again.
@@ -34,7 +34,7 @@ import {
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -65,7 +65,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,
   });
-  fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+  fm.setVfs(vfs, new ProcessFiles(vfs));
   return { boots, lines, world, ctx, env, fm, processes, portRegistry, storage, vfs, disk };
 }
 

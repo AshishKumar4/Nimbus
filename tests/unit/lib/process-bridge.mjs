@@ -4,7 +4,7 @@
 // implement it, so the implementation can change under them.
 
 import { SqliteRuntimeFsBridge } from '../../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { SqliteFilesystemAuthority } from '../../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 
 /**
  * A `RuntimeFsBridge` over `rawVfs` as `credOrView`: a credential, or a view
@@ -17,5 +17,5 @@ export function processBridge(rawVfs, credOrView) {
 
 /** The session's process-binding authority (`bind`, `openHost`, `releaseProcess`) over `rawVfs`. */
 export function processFiles(rawVfs) {
-  return new SqliteFilesystemAuthority(rawVfs);
+  return new ProcessFiles(rawVfs);
 }

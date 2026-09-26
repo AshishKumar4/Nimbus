@@ -1,13 +1,13 @@
 /**
- * vfs-path.ts — Canonical VFS path normalization.
+ * vfs/path.ts — Canonical VFS path normalization.
  *
  * Replaces three near-duplicate implementations that lived in
- * git-commands.ts, esbuild-service.ts, and require-resolver.ts. The
- * git-commands version had a defensive bounds check (`out.length > 0`
+ * git/commands.ts, esbuild-service.ts, and require-resolver.ts. The
+ * git version had a defensive bounds check (`out.length > 0`
  * before pop) that the others lacked — that safer behavior is the one
  * preserved here.
  *
- * Facet-isolate code-string copies (for example git-network-facet,
+ * Facet-isolate code-string copies (for example git/network-facet.ts,
  * pre-bundle-facet, and node-shims generated/runtime strings) cannot import
  * this module and must keep their inline implementations; those copies are
  * documented as justified.

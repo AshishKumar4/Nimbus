@@ -1,6 +1,7 @@
 import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 // ─── Gzip (browser CompressionStream/DecompressionStream) ───
 export async function compressGzip(data) {
     const cs = new CompressionStream('gzip');
@@ -278,14 +279,14 @@ export async function collectFiles(vfs, basePath, paths) {
     const relBase = basePath === '/' ? '/' : basePath + '/';
     const member = (absPath) => absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
     async function walk(absPath) {
-        const stat = (await vfs.stat(absPath));
+        const stat = (await statOrThrow(vfs, absPath));
         if (stat.type === 'directory') {
             entries.push({
                 path: member(absPath),
                 data: new Uint8Array(0),
                 type: 'directory',
                 mode: stat.mode,
-                mtime: stat.mtime,
+                mtime: stat.mtimeMs,
             });
             const children = (await vfs.readdir(absPath));
             for (const child of children) {
@@ -298,7 +299,7 @@ export async function collectFiles(vfs, basePath, paths) {
                 data: (await vfs.readFile(absPath)),
                 type: 'file',
                 mode: stat.mode,
-                mtime: stat.mtime,
+                mtime: stat.mtimeMs,
             });
         }
     }

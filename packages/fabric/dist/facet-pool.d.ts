@@ -41,6 +41,7 @@
  * whichever acts second aborts or retires facets the other still tracks,
  * and the facet-id ledger here counts only the names this pool minted.
  */
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** `ctx.facets`, as the pool drives it — same surface the facet host uses. */
 export interface FacetPoolContainer {
     get(name: string, start: () => Promise<{
@@ -56,6 +57,8 @@ export interface FacetPoolContext {
     storage: {
         get(key: string): Promise<unknown> | unknown;
         put(key: string, value: unknown): Promise<void>;
+        /** The session's SQL, where the storage ledger (N18) records facet databases. */
+        sql?: SqlDatabase;
     };
 }
 /**

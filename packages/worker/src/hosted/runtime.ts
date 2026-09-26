@@ -5,7 +5,7 @@ import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs
 import type { NimbusHostFilesystemLease, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { SandboxFsImpl } from '@nimbus-sh/core/substrate/lifo/sandbox/SandboxFs.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SandboxFs } from '@nimbus-sh/core/substrate/lifo/sandbox/types.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { FacetProcessManager } from '../facets/process.js';
@@ -32,6 +32,7 @@ import { registerHostedCommands } from './commands.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 
 const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor']);
 export type HostedRuntimeTask = z.infer<typeof HostedTask>;
@@ -96,6 +97,9 @@ class RuntimeOwner {
   private readonly scheduling = new Set<Promise<void>>();
   private readonly fileLeases = new Map<string, NimbusHostFilesystemLease>();
   private readonly services: ReturnType<typeof services.bindRuntimeServices>;
+
+  /** The workspace's namespace and process bindings. */
+  getFilesystemAuthority(): ProcessFiles { return this.options.workspace.filesystem; }
 
   constructor(readonly options: HostedRuntimeOptions) {
     hostNamespaceBinding(options.env, 'HostedRuntime');
@@ -313,7 +317,7 @@ class RuntimeOwner {
       lease = workspace.filesystem.openHost(identity);
       this.fileLeases.set(key, lease);
     }
-    const view = new SandboxFsImpl(new ExecutionFs(lease.fs), () => workspace.shell.getCwd());
+    const view = new SandboxFsImpl(new ProcessView(lease.fs), () => workspace.shell.getCwd(), workspace.vfs);
     return Object.assign(view, { as: (next: VfsCred) => this.files(next) });
   }
 

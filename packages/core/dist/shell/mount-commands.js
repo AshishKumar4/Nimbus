@@ -1,5 +1,6 @@
 import { resolveVfsPath } from '../vfs/path.js';
 import { fsErrorMessage } from './unix-commands.js';
+import { statOrThrow } from '../vfs/vfs.js';
 /** The mount `path` (absolute, normalized) lives on: the longest mount point
  *  containing it; of equal ones the later, which shadows the earlier. */
 function mountOf(entries, path) {
@@ -159,7 +160,7 @@ function createDfCommand(filesystem) {
             for (const operand of parsed.operands) {
                 const path = `/${resolveVfsPath(operand, ctx.cwd)}`;
                 try {
-                    await ctx.vfs.stat(path);
+                    await statOrThrow(ctx.vfs, path);
                 }
                 catch (error) {
                     await ctx.stderr.write(`df: ${operand}: ${fsErrorMessage(error)}\n`);

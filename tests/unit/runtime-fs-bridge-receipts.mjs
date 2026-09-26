@@ -14,13 +14,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/index.ts';
-import { NativeFsProvider } from '../../packages/core/src/substrate/lifo/kernel/vfs/providers/NativeFsProvider.ts';
-import * as nodeFs from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -94,23 +89,22 @@ await assert.rejects(async () => bridge.chmod('/home/user/missing.txt', 0o644), 
 await assert.rejects(async () => bridge.chown('/home/user/missing.txt', 1, 1), { code: 'ENOENT' });
 
 // ── Mount branch: the raw clock never moves for a mount ──
-// A kernel mount outside SQLite answers a receipt whose two sides are equal:
-// ACQUIRE never lists mount paths, so nothing is stamped from it.
+// A path the namespace routes to a mount other than SQLite answers a receipt
+// whose two sides are equal: ACQUIRE never lists mount paths, so nothing is
+// stamped from it.
 {
-  const kernel = new VFS();
-  kernel.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
-  const root = mkdtempSync(join(tmpdir(), 'nimbus-receipts-'));
-  kernel.mount('/mnt', new NativeFsProvider(root, nodeFs));
-  const mounted = new SqliteRuntimeFsBridge(vfs, rawVfs, undefined, () => kernel);
+  const files = new ProcessFiles(rawVfs);
+  const scratch = new MemoryVFS({ uid: 0, gid: 0 });
+  files.vfs.mount('/mnt', scratch);
+  const mounted = files.bind({ pid: 77, cred: CRED_KERNEL });
   const clock = rawVfs.revision();
   const created = await mounted.writeRange('/mnt/f.txt', 0, enc.encode('mount'));
   assert.deepEqual(created, { before: clock, after: clock }, 'writeRange on a mount reports a clock that did not move');
   assert.deepEqual(await mounted.truncate('/mnt/f.txt', 2), { before: clock, after: clock });
-  // (The native provider supports no timestamps, modes or owners, so the
-  // metadata forms answer ENOTSUP before any receipt is minted.)
+  assert.deepEqual(await mounted.chmod('/mnt/f.txt', 0o600), { before: clock, after: clock });
+  assert.deepEqual(await mounted.utimes('/mnt/f.txt', 1000, 2000), { before: clock, after: clock });
   assert.equal(rawVfs.revision(), clock, 'the raw clock never moved');
-  assert.equal(nodeFs.readFileSync(join(root, 'f.txt'), 'utf8'), 'mo', 'and the mount took the mutations');
-  rmSync(root, { recursive: true, force: true });
+  assert.equal(new TextDecoder().decode(scratch.readFile('/f.txt')), 'mo', 'and the mount took the mutations');
 }
 
 console.log('runtime-fs-bridge-receipts: all assertions passed');

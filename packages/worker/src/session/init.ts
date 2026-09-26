@@ -17,9 +17,8 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 // one-time Worker Startup Time paid on every fresh-isolate cold run.
 import { hasSeededProject, SEED_PROJECT_DIR, SEED_PROJECT_NAME, SEED_PROJECT_TILDE } from '@nimbus-sh/core/vfs/seed-project.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
 import { takeLegacyResetNotice } from './legacy-reset.js';
-import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, loadScrollback, type ShellStateSnapshot } from './state-store.js';
+import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadScrollback, type ShellStateSnapshot } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
@@ -156,19 +155,6 @@ export async function initSession(
     // through Phase O.
     setPhase(self, 'build', 'init-session');
 
-    // ── Mount list = DEFAULT_MOUNT_POINTS ∪ persisted-mounts [B'.2] ──
-    //
-    // The defaults are always present (they're platform invariants);
-    // any extras a future custom-mount feature might add survive
-    // reconnect via the nimbus_kernel_mounts table. The persist step
-    // below writes the merged list back so the table tracks the live
-    // mount tree — today the same 7 rows every initSession.
-    const persistedMounts = loadKernelMounts(self.ctx);
-    const mountPoints = Array.from(new Set([
-      ...DEFAULT_MOUNT_POINTS,
-      ...persistedMounts,
-    ]));
-
     // ── What the session adds to the workspace's environment [B'.1] ──
     //
     // The platform defaults — PATH, PS1, HOME, PORT, HOST and the rest —
@@ -224,8 +210,7 @@ export async function initSession(
       // have been called many requests ago; a second SqliteVFS over the
       // same rows would be a second cache serving stale reads.
       vfs: self.sqliteFs!,
-      filesystem: () => self.getFilesystemAuthority(),
-      mounts: mountPoints,
+      filesystem: self.getFilesystemAuthority(),
       env: envOverlay,
       terminal: self.terminal,
       processes: self.processes,
@@ -242,8 +227,6 @@ export async function initSession(
     const env = workspace.env;
     const sqliteFs = self.sqliteFs!;
     const facetMgr = self.facetManager!;
-
-    try { persistKernelMounts(self.ctx, mountPoints); } catch { /* fail-soft */ }
 
     // ── editor/monaco (2026-05-13): editor-pane fs bridge ──
     //

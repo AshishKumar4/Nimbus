@@ -12,7 +12,7 @@
  */
 import type { Command } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
-import { ExecutionFs } from '../../../../shell/execution-fs.js';
+import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { ShellExecuteFn } from './npm.js';
 export declare function createLifoPkgCommand(registry: CommandRegistry, _shellExecute?: ShellExecuteFn, kernel?: Kernel): Command;
@@ -35,5 +35,5 @@ export declare function createLifoPkgCommand(registry: CommandRegistry, _shellEx
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export declare function rehydrateGlobalPackages(vfs: ExecutionFs, registry: CommandRegistry): Promise<void>;
+export declare function rehydrateGlobalPackages(vfs: ProcessView, registry: CommandRegistry): Promise<void>;
 //# sourceMappingURL=lifo.d.ts.map

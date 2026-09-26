@@ -14,13 +14,13 @@
  *
  * Every expectation below was produced by running the identical script under
  * GNU sed 4.9, and everything runs through the command wiring a session
- * resolves through — SqliteVFS mounted into the kernel VFS plus
- * registerUnixCommands, i.e. exactly the commands a prod terminal runs.
+ * resolves through: a workspace over SQLite, i.e. exactly the commands a
+ * prod terminal runs.
  */
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { testBox } from './lib/test-box.mjs';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -30,8 +30,7 @@ const root = rawVfs.as(CRED_KERNEL);
 root.mkdir('tmp', { mode: 0o777 });
 root.chown('tmp', 1000, 1000);
 
-const box = await Sandbox.create({ persist: false });
-box.kernel.vfs.mount('/tmp', new SqliteVFSProvider(rawVfs, 'tmp'));
+const box = await testBox({ harness, vfs: rawVfs });
 registerUnixCommands(box.commands.registry, rawVfs);
 
 const failures = [];
@@ -227,7 +226,7 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
   // readable file that followed it.
   check('a missing first file fails with exit 1 and the later files still print',
     r.exitCode === 1 && r.stdout === '1\n2\n3\n4\n'
-      && r.stderr === 'sed: /tmp/gone.txt: ENOENT: /tmp/gone.txt\n',
+      && /^sed: \/tmp\/gone\.txt: ENOENT\b.*\n$/.test(r.stderr),
     `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
 }
 {
@@ -398,6 +397,18 @@ b/p'`);
     r.exitCode === 1 && r.stderr === 'sed: missing expression\n',
     `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
 }
+
+// ── extended regular expressions: -E, -r, --regexp-extended ─────────────────
+// GNU treats -r and --regexp-extended as -E. In an ERE `(` groups and `\(`
+// is a literal parenthesis. (Expected output: GNU sed 4.9.)
+await sh("printf 'foo boo\\na(b)c\\n' > /tmp/ere.txt");
+await expectOut('-r is -E, not a file name', `sed -r 's/(o+)/[\\1]/' /tmp/ere.txt`, 'f[oo] boo\na(b)c\n');
+await expectOut('-E groups and back-references', `sed -E 's/(o+)/[\\1]/g' /tmp/ere.txt`, 'f[oo] b[oo]\na(b)c\n');
+await expectOut('--regexp-extended, where \\( is a literal parenthesis',
+  `sed --regexp-extended -n '/a\\(b\\)/p' /tmp/ere.txt`, 'a(b)c\n');
+await expectOut('-E in a cluster, with an interval', `sed -nE '/o{2}/p' /tmp/ere.txt`, 'foo boo\n');
+await expectOut('-rn, an alternation', `sed -rn 's/(b|c)$/<\\1>/p' /tmp/ere.txt`, 'a(b)<c>\n');
+await expectOut('-E before -e', `sed -E -e 's/x|o/Z/' /tmp/ere.txt`, 'fZo boo\na(b)c\n');
 
 box.destroy();
 

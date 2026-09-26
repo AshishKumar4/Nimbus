@@ -3,8 +3,8 @@
 // tempting axioms still fail, every fixture is exactly what the models
 // generate, and lean/traceability.yaml holds (every theorem enrolled, kernel
 // axioms only, every tsRef resolves, every fixture bridged to a test that reads
-// it). The refinement tests themselves are ordinary unit files. About 20 s from
-// a clean lean/.lake; needs Lean 4.16 via elan (`lake`).
+// it), and every bridged refinement test passes on the fixture as committed, so a
+// fixture merged ahead of its code is red here too. Needs Lean 4.16 via elan (`lake`).
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -49,4 +49,4 @@ try {
   rmSync(fresh, { recursive: true, force: true });
 }
 
-console.log(run('node', ['check-traceability.mjs'], { env }).trim());
+console.log(run('node', ['check-traceability.mjs', '--run-refinements'], { env }).trim());

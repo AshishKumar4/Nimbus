@@ -36,6 +36,7 @@
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseShellInvocation } from '@nimbus-sh/core/shell/shell-invocation.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 /** A text producer's edge onto the byte hooks. */
 export function textBytes(text) {
     return enc.encode(text);
@@ -691,6 +692,8 @@ export class FacetProcessManager {
             try {
                 if (this.deps.ctx?.facets?.delete) {
                     this.deps.ctx.facets.delete(child.facetName);
+                    if (this.deps.ctx.storage?.sql)
+                        forgetFacetStorage(this.deps.ctx.storage.sql, child.facetName);
                 }
             }
             catch { /* best-effort */ }

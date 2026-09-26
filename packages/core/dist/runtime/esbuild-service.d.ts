@@ -8,7 +8,7 @@
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { NamespaceFs } from './process-files.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -209,7 +209,7 @@ export declare class EsbuildService {
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
     /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-    constructor(vfs?: CredentialedVfs, options?: EsbuildServiceOptions);
+    constructor(vfs?: NamespaceFs, options?: EsbuildServiceOptions);
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate(): boolean;
     /**

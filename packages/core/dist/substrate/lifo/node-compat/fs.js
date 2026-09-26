@@ -1,9 +1,9 @@
-import { VFSError } from '../kernel/vfs/index.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
 function toNodeStat(stat) {
     const isFile = stat.type === 'file';
     const isDir = stat.type === 'directory';
@@ -209,10 +209,8 @@ export function createFs(vfs, cwd) {
         vfs.writeFile(abs, data.slice(0, newLen));
     }
     // ─── File descriptor sync API ───
-    // NOTE: File descriptor operations work with mounted native filesystems via VFS
-    // delegation. The fd table maps fds to VFS paths. When operations like readSync/
-    // writeSync call vfs.readFile()/vfs.writeFile() on those paths, the VFS mount system
-    // automatically delegates to the appropriate provider (e.g. NativeFsProvider).
+    // The fd table maps fds to paths; readSync/writeSync read and write those
+    // paths through the process's filesystem, which routes them to their mount.
     function openSync(path, flags, _mode) {
         const abs = resolvePath(cwd, path);
         const numFlags = parseFlags(flags ?? 'r');
@@ -312,7 +310,7 @@ export function createFs(vfs, cwd) {
                 cb(null, result);
             }
             catch (e) {
-                if (e instanceof VFSError) {
+                if (isVfsError(e)) {
                     cb(toNodeError(e, '', ''));
                 }
                 else if (e.code) {
@@ -403,10 +401,7 @@ export function createFs(vfs, cwd) {
         },
     });
     // ─── Stream API ───
-    // NOTE: createReadStream works with mounted native filesystems via VFS delegation.
-    // When the path is under a NativeFsProvider mount, vfs.readFile() delegates to the
-    // mount provider, which reads from the real host filesystem. The data is still buffered
-    // in memory before being pushed to the stream.
+    // The whole file is read, then pushed to the stream.
     function createReadStream(path, options) {
         const abs = resolvePath(cwd, path);
         const stream = new Readable();
@@ -431,9 +426,6 @@ export function createFs(vfs, cwd) {
         });
         return stream;
     }
-    // NOTE: createWriteStream works with mounted native filesystems via VFS delegation.
-    // When the path is under a NativeFsProvider mount, vfs.writeFile() and vfs.appendFile()
-    // delegate to the mount provider, which writes to the real host filesystem.
     function createWriteStream(path, options) {
         const abs = resolvePath(cwd, path);
         const flags = options?.flags ?? 'w';
@@ -543,7 +535,7 @@ export function createFs(vfs, cwd) {
                 }
             }
             catch (e) {
-                if (options?.force && e instanceof VFSError && e.code === 'ENOENT')
+                if (options?.force && isVfsError(e) && e.code === 'ENOENT')
                     return;
                 throw e;
             }

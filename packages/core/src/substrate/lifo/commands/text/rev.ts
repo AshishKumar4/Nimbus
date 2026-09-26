@@ -1,7 +1,10 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+
 
 function reverseLines(text: string): string {
   return text.split('\n').map(line => [...line].reverse().join('')).join('\n');
@@ -23,7 +26,7 @@ const command: Command = async (ctx) => {
   for (const arg of ctx.args) {
     const path = resolve(ctx.cwd, arg);
     try {
-      (await ctx.vfs.stat(path));
+      (await statOrThrow(ctx.vfs, path));
       if (isBinaryMime(getMimeType(path))) {
         await ctx.stderr.write(`rev: ${arg}: binary file, skipping\n`);
         continue;
@@ -31,7 +34,7 @@ const command: Command = async (ctx) => {
       const content = (await ctx.vfs.readFileString(path));
       await ctx.stdout.write(reverseLines(content));
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`rev: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {

@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+
 
 async function sha256(data: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer);
@@ -32,7 +33,7 @@ const command: Command = async (ctx) => {
     try {
       content = (await ctx.vfs.readFileString(path));
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`sha256sum: ${files[0]}: ${e.message}\n`);
         return 1;
       }
@@ -74,7 +75,7 @@ const command: Command = async (ctx) => {
       const hash = await sha256(data);
       await ctx.stdout.write(`${hash}  ${file}\n`);
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`sha256sum: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {

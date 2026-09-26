@@ -26,7 +26,8 @@ import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
+import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -70,8 +71,6 @@ export interface NimbusWorkspaceOptions {
      * hosts that persist must supply a counter that never repeats.
      */
     readonly generation?: number;
-    /** Top-level directories backed by `sql`. Defaults to DEFAULT_MOUNT_POINTS. */
-    readonly mounts?: readonly string[];
     /** Overlaid on the Nimbus default environment. */
     readonly env?: Record<string, string>;
     readonly cwd?: string;
@@ -132,7 +131,12 @@ export interface NimbusWorkspaceOptions {
     readonly processes?: SessionProcessSupervisor;
     readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
     readonly filesystemNamespace?: string;
-    readonly filesystem?: (defaultAuthority: NimbusFilesystemAuthority) => NimbusFilesystemAuthority;
+    /**
+     * The namespace and process bindings, when the host made them before the
+     * workspace (a session's facets and RPC bind processes before it composes
+     * one). Must be over `vfs`. Embedders mount on `filesystem.vfs`.
+     */
+    readonly filesystem?: ProcessFiles;
     /** Host operations, including overrides for host-specific accounting. */
     readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
     /**
@@ -162,7 +166,7 @@ export interface NimbusWorkspaceOptions {
 export declare class NimbusWorkspace {
     private readonly sql;
     private readonly supervisorOps;
-    readonly filesystem: NimbusFilesystemAuthority;
+    readonly filesystem: ProcessFiles;
     private readonly runtimeLease;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
@@ -241,5 +245,5 @@ export declare class NimbusWorkspace {
  * shell: the Nimbus session seeds its starter project for a browser that hits
  * `/preview` without ever opening a terminal.
  */
-export declare function seedBaseFilesystem(vfs: SqliteVFS, mounts: readonly string[]): void;
+export declare function seedBaseFilesystem(vfs: SqliteVFS): void;
 //# sourceMappingURL=nimbus-workspace.d.ts.map

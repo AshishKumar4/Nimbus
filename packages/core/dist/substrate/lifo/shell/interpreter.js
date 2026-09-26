@@ -1,4 +1,4 @@
-import { bindExecutionFs } from '../../../shell/execution-fs.js';
+import { bindProcessView } from '../../../runtime/process-files.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
@@ -9,6 +9,7 @@ import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 /**
  * Bytes a file-backed descriptor holds before committing. Matches the stream
  * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
@@ -154,7 +155,7 @@ export class Interpreter {
         if (options?.signal)
             io.signal = options.signal;
         if (io.commandIdentity)
-            io.vfs = bindExecutionFs(this.config.filesystem, {
+            io.vfs = bindProcessView(this.config.filesystem, {
                 pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
             });
         try {
@@ -595,7 +596,7 @@ export class Interpreter {
         if (abortCode !== null)
             return abortCode;
         if (io.commandIdentity)
-            io = { ...io, vfs: bindExecutionFs(this.config.filesystem, {
+            io = { ...io, vfs: bindProcessView(this.config.filesystem, {
                     pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
                 }) };
         const expandCtx = this.createExpandContext(io);
@@ -1312,38 +1313,20 @@ export class Interpreter {
         const targetPath = resolve(this.config.getCwd(), target);
         const vfs = io.vfs ?? this.config.vfs;
         try {
-            if (!vfs.local) {
-                const bridge = vfs.bridge;
-                if ('open' in bridge) {
-                    const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
-                    const push = async (bytes) => {
-                        let offset = 0;
-                        while (offset < bytes.length) {
-                            const written = await bridge.write(handle.id, null, bytes.subarray(offset));
-                            if (written <= 0 || written > bytes.length - offset)
-                                throw new Error('EIO: invalid redirection write length');
-                            offset += written;
-                        }
-                    };
-                    const stream = { write: text => push(encode(text)), writeBytes: push };
-                    fds.opened.set(stream, async () => { await bridge.close(handle.id); });
-                    return { stream, terminal: false };
+            const bridge = vfs.process;
+            const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+            const push = async (bytes) => {
+                let offset = 0;
+                while (offset < bytes.length) {
+                    const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+                    if (written <= 0 || written > bytes.length - offset)
+                        throw new Error('EIO: invalid redirection write length');
+                    offset += written;
                 }
-            }
-            if (mode === 'write') {
-                (await vfs.writeFile(targetPath, ''));
-                return { stream: this.createFileWriter(vfs, targetPath, 'truncate'), terminal: false };
-            }
-            if ((await vfs.exists(targetPath))) {
-                if ((await vfs.stat(targetPath)).type === 'directory') {
-                    throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
-                }
-                (await vfs.access(targetPath, 0o2));
-            }
-            else {
-                (await vfs.writeFile(targetPath, ''));
-            }
-            return { stream: this.createFileWriter(vfs, targetPath, 'append'), terminal: false };
+            };
+            const stream = { write: text => push(encode(text)), writeBytes: push };
+            fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+            return { stream, terminal: false };
         }
         catch (error) {
             throw new RedirectionOpenError(target, error);
@@ -1365,18 +1348,15 @@ export class Interpreter {
             // Open-authorize before the command runs, the way open(2) would: a
             // missing, unreadable, or directory target fails the redirection even
             // when the command never reads a byte.
-            if ((await vfs.stat(targetPath)).type === 'directory') {
+            if ((await statOrThrow(vfs, targetPath)).type === 'directory') {
                 throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
             }
             await vfs.access(targetPath, 0o4);
-            const bridge = vfs.bridge;
-            if ('open' in bridge) {
-                const handle = await bridge.open(targetPath, { read: true });
-                const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
-                fds.opened.set(stream, async () => { await bridge.close(handle.id); });
-                return { stream, terminal: false };
-            }
-            return { stream: this.createFileReader(vfs, targetPath), terminal: false };
+            const bridge = vfs.process;
+            const handle = await bridge.open(targetPath, { read: true });
+            const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
+            fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+            return { stream, terminal: false };
         }
         catch (error) {
             throw new RedirectionOpenError(target, error);
@@ -1401,7 +1381,7 @@ export class Interpreter {
         let offset = 0;
         let pending = [];
         let pendingBytes = 0;
-        const endOfFile = async () => ((await vfs.exists(path)) ? (await vfs.stat(path)).size : 0);
+        const endOfFile = async () => ((await vfs.exists(path)) ? (await statOrThrow(vfs, path)).size : 0);
         const flush = async () => {
             if (pendingBytes === 0)
                 return;

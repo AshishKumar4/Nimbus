@@ -1,5 +1,7 @@
 import type { Command } from '../types.js';
-import type { ExecutionFs as VFS } from '../../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+
 
 // ─── ANSI helpers ───
 
@@ -168,7 +170,7 @@ async function getDiskInfo(vfs: VFS): Promise<string> {
         const full = dir === '/' ? '/' + entry.name : dir + '/' + entry.name;
         if (entry.type === 'file') {
           totalFiles++;
-          totalBytes += (await vfs.stat(full)).size;
+          totalBytes += (await statOrThrow(vfs, full)).size;
         } else {
           (await walk(full));
         }

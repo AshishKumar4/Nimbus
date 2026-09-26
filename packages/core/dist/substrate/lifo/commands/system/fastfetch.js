@@ -1,3 +1,4 @@
+import { statOrThrow } from '../../../../vfs/vfs.js';
 // ─── ANSI helpers ───
 const ESC = '\x1b[';
 const RST = `${ESC}0m`;
@@ -140,7 +141,7 @@ async function getDiskInfo(vfs) {
                 const full = dir === '/' ? '/' + entry.name : dir + '/' + entry.name;
                 if (entry.type === 'file') {
                     totalFiles++;
-                    totalBytes += (await vfs.stat(full)).size;
+                    totalBytes += (await statOrThrow(vfs, full)).size;
                 }
                 else {
                     (await walk(full));

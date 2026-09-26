@@ -1,9 +1,10 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
-import type { FileType } from '../kernel/vfs/types.js';
+import type { SqliteVFS } from '../../../vfs/sqlite-vfs.js';
+import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 import { resolve, dirname } from '../utils/path.js';
-import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
-import type { TarEntry } from '../utils/archive.js';
+import { exists } from '../../../vfs/vfs.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
@@ -11,8 +12,10 @@ import type { TarEntry } from '../utils/archive.js';
  */
 export class SandboxFsImpl implements ISandboxFs {
   constructor(
-    private vfs: ExecutionFs,
+    private vfs: ProcessView,
     private getCwd: () => string,
+    /** The SQLite filesystem the namespace is rooted at, for storeStats. */
+    private store: SqliteVFS,
   ) {}
 
   private resolvePath(path: string): string {
@@ -41,8 +44,8 @@ export class SandboxFsImpl implements ISandboxFs {
 
   async stat(path: string): Promise<{ type: FileType; size: number; mtime: number }> {
     const abs = this.resolvePath(path);
-    const s = (await this.vfs.stat(abs));
-    return { type: s.type, size: s.size, mtime: s.mtime };
+    const s = await statOrThrow(this.vfs, abs);
+    return { type: s.type, size: s.size, mtime: s.mtimeMs };
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -52,10 +55,10 @@ export class SandboxFsImpl implements ISandboxFs {
 
   async rm(path: string, options?: { recursive?: boolean }): Promise<void> {
     const abs = this.resolvePath(path);
-    const s = (await this.vfs.stat(abs));
+    const s = await statOrThrow(this.vfs, abs);
     if (s.type === 'directory') {
       if (options?.recursive) {
-        (await this.vfs.rmdirRecursive(abs));
+        (await this.vfs.remove(abs, { recursive: true }));
       } else {
         (await this.vfs.rmdir(abs));
       }
@@ -78,7 +81,7 @@ export class SandboxFsImpl implements ISandboxFs {
   async cp(src: string, dest: string): Promise<void> {
     const absSrc = this.resolvePath(src);
     const absDest = this.resolvePath(dest);
-    (await this.vfs.copyFile(absSrc, absDest));
+    (await this.vfs.copy(absSrc, absDest));
   }
 
   async writeFiles(files: Array<{ path: string; content: string | Uint8Array }>): Promise<void> {
@@ -87,74 +90,6 @@ export class SandboxFsImpl implements ISandboxFs {
     }
   }
 
-  /** Directories to skip during export (virtual providers) */
-  private static SKIP_DIRS = new Set(['/proc', '/dev']);
-
-  async exportSnapshot(): Promise<Uint8Array> {
-    const entries: TarEntry[] = [];
-
-    const walk = async (absPath: string): Promise<void> => {
-      if (SandboxFsImpl.SKIP_DIRS.has(absPath)) return;
-
-      const stat = (await this.vfs.stat(absPath));
-
-      if (stat.type === 'directory') {
-        // Add directory entry (skip root itself)
-        if (absPath !== '/') {
-          entries.push({
-            path: absPath,
-            data: new Uint8Array(0),
-            type: 'directory',
-            mode: stat.mode,
-            mtime: stat.mtime,
-          });
-        }
-
-        const children = (await this.vfs.readdir(absPath));
-        for (const child of children) {
-          const childPath = absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`;
-          (await walk(childPath));
-        }
-      } else {
-        entries.push({
-          path: absPath,
-          data: (await this.vfs.readFile(absPath)),
-          type: 'file',
-          mode: stat.mode,
-          mtime: stat.mtime,
-        });
-      }
-    };
-
-    (await walk('/'));
-
-    const tar = createTar(entries);
-    return (await compressGzip(tar));
-  }
-
-  async importSnapshot(data: Uint8Array): Promise<void> {
-    const tar = await decompressGzip(data);
-    const entries = parseTar(tar);
-
-    // Process directories first, then files, to ensure parents exist
-    const dirs = entries.filter((e) => e.type === 'directory');
-    const files = entries.filter((e) => e.type === 'file');
-
-    for (const entry of dirs) {
-      const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-      if (!(await this.vfs.exists(path))) {
-        (await this.vfs.mkdir(path, { recursive: true }));
-      }
-    }
-
-    for (const entry of files) {
-      const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-      // Ensure parent directory exists
-      const parent = dirname(path);
-      if (parent !== '/' && !(await this.vfs.exists(parent))) {
-        (await this.vfs.mkdir(parent, { recursive: true }));
-      }
-      (await this.vfs.writeFile(path, entry.data));
-    }
-  }
+  /** How the session's content store is doing (its diagnostic; nothing in it is per-user). */
+  async storeStats() { return this.store.storeStats(); }
 }

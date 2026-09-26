@@ -311,6 +311,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * enumerating. `next === null` marks the final page, so a short page is
    * never mistaken for a complete listing.
    */
+  /** N18: `bytes` more for this process's facet store, reporting what it measures. */
+  async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number }> {
+    return this._call(this._fsOp('fsStorageGrant', [facet, bytes, databaseSize]));
+  }
+
   async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
     return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
   }

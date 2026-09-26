@@ -42,6 +42,9 @@ import {
   type ResidentFacet,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import {
   headerPairs,
   isolateToken,
@@ -539,6 +542,46 @@ export async function _rpcFsAcquire(
   const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
   return self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options);
 }
+
+const FsStorageGrantArgsSchema = z.object({
+  facet: z.string().min(1),
+  bytes: z.number().int().min(0),
+  databaseSize: z.number().min(0),
+});
+
+/**
+ * N18: a process's facet store asks for room to grow, reporting what its
+ * database measures. The ledger's row for the facet first takes the
+ * measurement where it is over the record (overshoot), then admits `bytes`
+ * more under the facet's name; refused, nothing is granted and the store
+ * keeps what it has (reading the rest through the session).
+ */
+export async function _rpcFsStorageGrant(
+  self: RpcHost,
+  facet: string,
+  bytes: number,
+  databaseSize: number,
+  pid?: number,
+): Promise<{ granted: number }> {
+  const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
+  const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
+  if (owner !== undefined && owner !== args.facet) {
+    throw new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`);
+  }
+  const ledger: StorageLedger | undefined = self.sqliteFs?.ledger;
+  if (ledger === undefined) return { granted: 0 };
+  const recorded = ledger.view().facets[args.facet] ?? 0;
+  if (args.databaseSize > recorded) ledger.report(args.facet, args.databaseSize);
+  if (args.bytes === 0) return { granted: 0 };
+  try {
+    ledger.fill(args.facet, args.bytes);
+    return { granted: args.bytes };
+  } catch (error) {
+    if (isVfsError(error, 'ENOSPC')) return { granted: 0 };
+    throw error;
+  }
+}
+
 
 /** What a process passes to fsAcquire: the cursor its resident set is at. */
 export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;
@@ -1255,7 +1298,7 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
     if (!self.esbuildService) {
       self.ensureSqliteFs();
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.sqliteFs.as(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
     }
     try {
       const result = await self.esbuildService.transform(code, {

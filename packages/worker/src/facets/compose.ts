@@ -54,6 +54,7 @@ import {
 } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
 import { supervisorEsbuildService } from './esbuild-transform.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 
 export type {
   FacetManagerHooks,
@@ -94,7 +95,7 @@ export interface FacetManagerDeps {
   portRegistry: PortRegistry;
   vfs: SqliteVFS;
   /** The session's one authority — the manager never constructs a second. */
-  filesystem: NimbusFilesystemAuthority;
+  filesystem: ProcessFiles;
   /**
    * A host's esbuild, shared with the manager. Absent: one whose transforms
    * run in the loader-backed transform facet, never in this isolate.
@@ -182,7 +183,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
   };
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, hooks);
   manager.setVfs(vfs, deps.filesystem);
-  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, vfs.as(CRED_KERNEL)));
+  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
   const { portRegistry } = deps;
   const capabilityHost = { ctx, portRegistry };
   return {

@@ -28,9 +28,12 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+import { StorageLedger } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
+/** The root's inode number, reserved: the allocator starts at 2. */
+export declare const ROOT_INODE = 1;
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -101,7 +104,14 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
-    utimes(path: string, atimeMs: number | null, mtimeMs: number | null): void;
+    /**
+     * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
+     * Only now/omit needs no more than write permission or ownership; an
+     * explicit time needs ownership. `followSymlinks: false` sets a link's own.
+     */
+    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+        followSymlinks?: boolean;
+    }): void;
     chmod(path: string, mode: number): void;
     /**
      * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as
@@ -152,9 +162,15 @@ export interface CredentialedVfs {
      * may change between slices: each page is consistent, the whole copy is
      * point-in-time only with `at`.
      */
+    /**
+     * copyTree in slices. `mutationOwner`: the live exclusive lease this copy
+     * runs under (its holder awaits it), so it writes inside the lease and a
+     * quiescing snapshot never holds it.
+     */
     copyTreeAsync(src: string, dest: string, options?: {
         preserve?: boolean;
         at?: string;
+        mutationOwner?: string;
     }): Promise<number>;
     writeBatch(payload: BatchWritePayload): {
         inodes: number;
@@ -295,6 +311,10 @@ export interface SqliteVfsOptions {
      * poisons (the reader reconciles against list()).
      */
     readonly tombstoneRows?: number;
+    /** The session's storage limit (N18); defaults to DO_STORAGE_LIMIT_BYTES. */
+    readonly storageLimit?: number;
+    /** Bytes below it only uid 0 may fill (N18); defaults to 1% of the limit, at least 16 MiB. */
+    readonly storageKernelReserve?: number;
     /**
      * Where chunks only snapshots reference may be moved (P6): an R2 bucket
      * or anything with its get/put/delete. Without it nothing is tiered.
@@ -312,6 +332,12 @@ export interface VfsColdStore {
 export declare class SqliteVFS {
     private readonly openNodes;
     private sql;
+    /** N18: the session's storage ledger, over this database (the session DO's). */
+    readonly ledger: StorageLedger;
+    /** The reservation the running synchronous operation draws from (N18). */
+    private activeReservation;
+    /** Whether the running synchronous call is uid 0's (it may use the kernel reserve). */
+    private privileged;
     private ctx;
     readonly events: VfsEventEmitter;
     private readonly inodes;
@@ -393,7 +419,13 @@ export declare class SqliteVFS {
     /** Snapshot generations by name, loaded on first use. */
     private snapshotGens;
     /** writeStreams in flight, for snapshot's quiesce. */
-    private readonly activeStreams;
+    /**
+     * Work that spans awaits and changes the tree across them (writeStream,
+     * restoreAsync, sliced copyTree), for snapshot's quiesce.
+     */
+    private readonly activeWork;
+    /** Set while a quiesced snapshot waits: new spanning work starts after it. */
+    private quiesceGate;
     /** Content keys computed for manifests whose digest could not be stored. */
     private readonly contentKeyMemo;
     private _activeTransaction;
@@ -441,6 +473,12 @@ export declare class SqliteVFS {
      * so opening costs the same at ten files and at a million.
      */
     constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string, options?: SqliteVfsOptions);
+    /**
+     * An older schema's store is not read: its tables go, so the open below
+     * builds the current ones empty, and the loss is recorded to be told.
+     * True when it reset one.
+     */
+    private resetOlderStore;
     private initSchema;
     /** Tables a pre-v2 Nimbus filesystem left here, recognised by their columns. */
     private presentLegacyTables;
@@ -581,6 +619,12 @@ export declare class SqliteVFS {
      * session user need.
      */
     private logicalPath;
+    /**
+     * uid 0's view: its writes may use the storage the ledger keeps back from
+     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+     * Covers each call's synchronous part; the kernel's bookkeeping is that.
+     */
+    private privilegedView;
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
@@ -1013,6 +1057,10 @@ export declare class SqliteVFS {
      */
     private planCopyTree;
     private copyTreeInSlices;
+    /** A whole copy in one turn: its reservation is drawn and then released. */
+    private copyTreeNow;
+    /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
+    private reserveCopy;
     /** Every entry strictly under `root` as of generation `g`, a page at a time. */
     private subtreeAt;
     /**
@@ -1042,6 +1090,21 @@ export declare class SqliteVFS {
     snapshot(name: string, options: {
         quiesce: true;
     }): Promise<SnapshotInfo>;
+    /**
+     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+     * check and `pin` run in one turn, so nothing can start between them. New
+     * spanning work waits behind the gate until then (Kinu N14: await, never
+     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+     * is waited out too.
+     */
+    private quiesced;
+    /**
+     * Spanning work: held behind a quiescing snapshot, and awaited by the next
+     * one. Work under a live exclusive lease (`owner`) is part of what the
+     * snapshot already waits for, the lease, so it is never held: holding it
+     * would hold the lease forever (a clone streaming its batches).
+     */
+    private spanning;
     private pinSnapshot;
     private snapshotGen;
     private requireSnapshot;
@@ -1073,12 +1136,19 @@ export declare class SqliteVFS {
     }): {
         restored: number;
     };
-    /** restore in slices with a yield between, for a restore of any size in workerd. */
+    /**
+     * restore in slices with a yield between, for a restore of any size in
+     * workerd. `mutationOwner`: the live exclusive lease it runs under (its
+     * holder awaits it), so it restores inside the lease and a quiescing
+     * snapshot never holds it.
+     */
     restoreAsync(name: string, options?: {
         subtree?: string;
+        mutationOwner?: string;
     }): Promise<{
         restored: number;
     }>;
+    private restoreInSlices;
     /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
     private restoreJob;
     private runRestore;
@@ -1195,6 +1265,7 @@ export declare class SqliteVFS {
         want: string[];
         done: boolean;
     };
+    private importPageNow;
     /**
      * Store chunks for an import into `dst` ahead of its pages, a bounded
      * transaction at a time, so no page has to carry bytes and a file of any
@@ -1369,6 +1440,20 @@ export declare class SqliteVFS {
      */
     private insertManifestRows;
     private insertRows;
+    /**
+     * N18: a transaction that can grow the database is admitted by the
+     * session's ledger before it runs (ENOSPC, nothing written, when it would
+     * cross the storage limit). Collection and pure removals only free, and are
+     * never refused.
+     */
+    private admitTransaction;
+    /**
+     * Run `fn` (synchronous, so nothing interleaves) as the operation that
+     * holds reservation `id`: its transactions draw from it.
+     */
+    private withReservation;
+    /** The bytes this database occupies on the host (workerd's databaseSize; SQLite's pages elsewhere). */
+    databaseBytes(): number;
     private executeMeasuredTransaction;
     /**
      * Bounded, idempotent content maintenance: at most `maxTransactions`
@@ -1649,39 +1734,5 @@ export declare class SqliteVFS {
             floor: number;
         };
     };
-}
-export declare class SqliteVFSProvider {
-    private raw;
-    private vfs;
-    private prefix;
-    constructor(vfs: SqliteVFS, prefix: string, cred?: VfsCred);
-    as(cred: VfsCred): SqliteVFSProvider;
-    private resolve;
-    readFile(sub: string): Uint8Array;
-    readFileString(sub: string): string;
-    lstat(sub: string): VfsStat;
-    readlink(sub: string): string;
-    symlink(target: string, sub: string): void;
-    utimes(sub: string, atimeMs: number, mtimeMs: number): void;
-    readRange(sub: string, offset: number, length: number): Uint8Array;
-    writeFile(sub: string, content: string | Uint8Array): void;
-    writeRange(sub: string, offset: number, bytes: Uint8Array): void;
-    truncate(sub: string, size: number): void;
-    exists(sub: string): boolean;
-    access(sub: string, mode: number): void;
-    stat(sub: string): VfsStat;
-    readdir(sub: string): {
-        name: string;
-        type: VfsInodeKind;
-    }[];
-    unlink(sub: string): void;
-    mkdir(sub: string, opts?: {
-        recursive?: boolean;
-    }): void;
-    rmdir(sub: string): void;
-    rename(o: string, n: string): void;
-    copyFile(s: string, d: string): void;
-    chmod(sub: string, mode: number): void;
-    chown(sub: string, uid: number | null, gid: number | null): void;
 }
 //# sourceMappingURL=sqlite-vfs.d.ts.map

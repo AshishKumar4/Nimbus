@@ -10,10 +10,10 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
@@ -107,8 +107,7 @@ try {
   session.facetProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);
-  const shellVfs = new VFS();
-  shellVfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
+  const shellVfs = new ProcessFiles(rawVfs);
   session.shell = new Shell(
     {
       write() {},

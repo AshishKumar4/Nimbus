@@ -60,7 +60,7 @@ export function composeFacetManager(deps) {
     };
     const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, hooks);
     manager.setVfs(vfs, deps.filesystem);
-    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, vfs.as(CRED_KERNEL)));
+    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
     const { portRegistry } = deps;
     const capabilityHost = { ctx, portRegistry };
     return {

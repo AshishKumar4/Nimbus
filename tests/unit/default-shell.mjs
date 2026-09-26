@@ -8,7 +8,7 @@ import {
   readDefaultShell,
 } from '../../packages/core/src/substrate/lifo/shell/default-shell.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { memoryFiles } from './lib/test-box.mjs';
 import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 
@@ -41,12 +41,10 @@ function commandContext(vfs, args = []) {
 }
 
 {
-  const vfs = new VFS();
-  vfs.mkdir('/home', { recursive: true });
-  vfs.mkdir('/home/user', { recursive: true });
-  vfs.mkdir('/home/user/.config', { recursive: true });
+  const { root, view: vfs } = memoryFiles();
+  await vfs.mkdir('/home/user/.config');
   assert.equal(defaultShellPath('/home/user'), '/home/user/.config/nimbus/shell');
-  assert.equal(vfs.exists('/home/user/.config/nimbus'), false);
+  assert.equal(root.exists('home/user/.config/nimbus'), false);
   assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
 
   const chsh = makeChshCommand({ isBashInstalled: () => false });
@@ -58,9 +56,9 @@ function commandContext(vfs, args = []) {
   const installedChsh = makeChshCommand({ isBashInstalled: () => true });
   const setBash = commandContext(vfs, ['-s', 'bash']);
   assert.equal(await installedChsh(setBash), 0);
-  assert.equal(vfs.exists('/home/user/.config/nimbus'), true);
+  assert.equal(await vfs.exists('/home/user/.config/nimbus'), true);
   assert.equal((await readDefaultShell(vfs, '/home/user')), 'bash');
-  assert.equal(vfs.readFileString(defaultShellPath('/home/user')), 'bash\n');
+  assert.equal(await vfs.readFileString(defaultShellPath('/home/user')), 'bash\n');
 
   const current = commandContext(vfs);
   assert.equal(await installedChsh(current), 0);
@@ -69,20 +67,19 @@ function commandContext(vfs, args = []) {
   const setSh = commandContext(vfs, ['-s', 'sh']);
   assert.equal(await installedChsh(setSh), 0);
   assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
-  assert.equal(vfs.readFileString(defaultShellPath('/home/user')), 'lifo\n');
+  assert.equal(await vfs.readFileString(defaultShellPath('/home/user')), 'lifo\n');
 
-  vfs.writeFile(defaultShellPath('/home/user'), 'invalid\n');
+  await vfs.writeFile(defaultShellPath('/home/user'), 'invalid\n');
   assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
 }
 
 async function startShell(defaultShell) {
-  const vfs = new VFS();
-  vfs.mkdir('/home', { recursive: true });
-  vfs.mkdir('/home/user', { recursive: true });
+  const { files: vfs, root } = memoryFiles();
+  root.mkdir('home/user', { recursive: true });
   if (defaultShell) {
     const path = defaultShellPath('/home/user');
-    vfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
-    vfs.writeFile(path, `${defaultShell}\n`);
+    root.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    root.writeFile(path, `${defaultShell}\n`);
   }
 
   const registry = createDefaultRegistry();

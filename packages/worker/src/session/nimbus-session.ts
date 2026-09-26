@@ -22,7 +22,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
@@ -65,7 +65,7 @@ import type { NpmInstaller } from '../npm/installer.js';
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
-import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_VERSION } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
@@ -148,38 +148,10 @@ import { WebSocketRelay } from './ws-relay.js';
 import * as _routes from './routes.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
-// Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
-// S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
-import { z } from 'zod/v4';
-
-const CpFacetDirectPayloadSchema = z.object({
-  command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-  args: z.array(z.unknown()).optional().transform((value) => (value || []).map((item) => String(item))),
-  env: z.record(z.string(), z.unknown()).optional().transform((value) => {
-    const out: Record<string, string> = {};
-    for (const [key, item] of Object.entries(value || {})) out[key] = String(item);
-    return out;
-  }),
-  cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
-  stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-  processPid: z.number().int().positive(),
-}).passthrough();
-
-function normalizeCpCommandName(name: string): string {
-  const text = String(name || '').trim();
-  if (!text.startsWith('/')) return text;
-  const slash = text.lastIndexOf('/');
-  const base = slash >= 0 ? text.slice(slash + 1) : text;
-  const dir = text.slice(0, Math.max(0, text.length - base.length));
-  if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
-    return base;
-  }
-  return text;
-}
 
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
@@ -785,12 +757,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * Lazy: sqliteFs exists only after ensureSqliteFs().
    */
   private _supervisorOps: SessionSupervisorOps | null = null;
-  private filesystemAuthority: SqliteFilesystemAuthority | null = null;
+  private processFiles: ProcessFiles | null = null;
 
-  getFilesystemAuthority(): SqliteFilesystemAuthority {
+  /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
+  getFilesystemAuthority(): ProcessFiles {
     this.ensureSqliteFs();
     if (!this.sqliteFs) throw new Error('Filesystem is not initialized');
-    return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+    return this.processFiles ??= new ProcessFiles(this.sqliteFs);
   }
 
   private supervisorOps(): SessionSupervisorOps {
@@ -834,6 +807,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
   async _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult> {
     return _rpc._rpcFsAcquire(this as any, epoch, cursor, options, pid);
+  }
+  async _rpcFsStorageGrant(facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{ granted: number }> {
+    return _rpc._rpcFsStorageGrant(this as any, facet, bytes, databaseSize, pid);
   }
   async _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage> {
     return _rpc._rpcFsList(this as any, after, limit, pid);
@@ -1267,7 +1243,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * checks and changes nothing.
    */
   seedFilesystem() {
-    seedBaseFilesystem(this.sqliteFs!, DEFAULT_MOUNT_POINTS);
+    seedBaseFilesystem(this.sqliteFs!);
 
     const fs = this.sqliteFs!.as(CRED_SESSION_USER);
     const rootFs = this.sqliteFs!.as(CRED_KERNEL);

@@ -1,7 +1,6 @@
-import { bindExecutionFs } from '../../../shell/execution-fs.js';
+import { bindProcessView } from '../../../runtime/process-files.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
-import { VFSError } from '../kernel/vfs/index.js';
 import { ExitSignal, Interpreter, assignScalar, } from './interpreter.js';
 import { continuationState, lex } from './lexer.js';
 import { TokenKind } from './types.js';
@@ -14,6 +13,8 @@ import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
 import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
+import { isVfsError } from '../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../vfs/vfs.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? '/home/user';
     let displayPath = cwd;
@@ -39,7 +40,7 @@ export class Shell {
     filesystem;
     terminal;
     get vfs() {
-        return bindExecutionFs(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
+        return bindProcessView(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
     }
     registry;
     cwd;
@@ -939,7 +940,7 @@ export class Shell {
             newPath = resolve(this.cwd, target);
         }
         try {
-            const stat = (await this.vfs.stat(newPath));
+            const stat = (await statOrThrow(this.vfs, newPath));
             if (stat.type !== 'directory') {
                 (await stderr.write(`cd: ${target}: Not a directory\n`));
                 return 1;
@@ -949,7 +950,7 @@ export class Shell {
             return 0;
         }
         catch (e) {
-            if (e instanceof VFSError) {
+            if (isVfsError(e)) {
                 (await stderr.write(`cd: ${target}: ${e.message}\n`));
                 return 1;
             }

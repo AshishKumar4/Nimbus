@@ -53,7 +53,7 @@ export function createViteCommand(self) {
                     // Transform TS to JS
                     if (cfgName.endsWith('.ts')) {
                         if (!self.esbuildService)
-                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
                         const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
                         cfgCode = t.code;
                     }
@@ -89,7 +89,7 @@ export function createViteCommand(self) {
                     ' (' + buildSkippedPlugins.join(', ') + '); output is the plain-Vite bundle.\n');
             }
             if (!self.esbuildService)
-                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
             const htmlPath = cwd + '/index.html';
             let entryPoint = cwd + '/src/main.tsx';
             let origHtml = '';
@@ -295,7 +295,7 @@ export function createViteCommand(self) {
             }
             // Start vite on the dist directory
             if (!self.esbuildService)
-                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
             if (self.viteDevServer?.isRunning)
                 self.viteDevServer.stop();
             const previewBasePath = self.viteBasePath;
@@ -502,7 +502,7 @@ export function createViteCommand(self) {
                 ' (' + devSkipped.join(', ') + '); serving the plain-Vite app.\n');
         }
         if (!self.esbuildService)
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, kernelFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
         const previewBasePath = self.viteBasePath;
         const viteDefine = viteConfig.define;
         // Vite dev servers are represented as long-running process-table

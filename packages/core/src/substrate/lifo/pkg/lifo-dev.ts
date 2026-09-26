@@ -5,10 +5,11 @@
  * to local VFS paths.  `lifo link` adds entries, `lifo unlink` removes them.
  */
 
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { join } from '../utils/path.js';
 import { createLifoCommand, readLifoManifest } from './lifo-runtime.js';
+import { exists } from '../../../vfs/vfs.js';
 
 const DEV_LINKS_PATH = '/etc/lifo/dev-links.json';
 

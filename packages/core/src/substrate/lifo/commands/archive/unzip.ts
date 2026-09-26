@@ -2,7 +2,8 @@ import type { Command } from '../types.js';
 import { resolve, dirname } from '../../utils/path.js';
 import { parseZip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { exists } from '../../../../vfs/vfs.js';
 
 const spec = {
   list: { type: 'boolean' as const, short: 'l' },
@@ -94,7 +95,7 @@ const command: Command = async (ctx) => {
       if (!quiet) await ctx.stdout.write(`  extracting: ${entry.path}\n`);
     }
   } catch (e) {
-    if (e instanceof VFSError) {
+    if (isVfsError(e)) {
       await ctx.stderr.write(`unzip: ${e.message}\n`);
       return 1;
     }

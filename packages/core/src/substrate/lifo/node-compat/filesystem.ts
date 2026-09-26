@@ -1,20 +1,36 @@
-import type { RuntimeFsBridge } from '../../../runtime/os-contracts.js';
-import { VFSError, type VFS } from '../kernel/vfs/index.js';
+import type { RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import { VfsError } from '../../../vfs/vfs-error.js';
 
-export type NodeFilesystem = Pick<VFS,
-  'readFile' | 'readFileString' | 'writeFile' | 'appendFile' | 'exists' | 'stat'
-  | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rmdirRecursive' | 'rename'
-  | 'copyFile' | 'chmod' | 'onChange' | 'isFile' | 'isDirectory'>;
+/** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
+export interface NodeFilesystem {
+  readFile(path: string): Uint8Array;
+  readFileString(path: string): string;
+  writeFile(path: string, data: string | Uint8Array): void;
+  appendFile(path: string, data: string | Uint8Array): void;
+  exists(path: string): boolean;
+  isFile(path: string): boolean;
+  isDirectory(path: string): boolean;
+  stat(path: string): RuntimeVfsStat;
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
+  readdir(path: string): RuntimeVfsDirEntry[];
+  unlink(path: string): void;
+  rmdir(path: string): void;
+  rmdirRecursive(path: string): void;
+  rename(from: string, to: string): void;
+  copyFile(from: string, to: string): void;
+  chmod(path: string, mode: number): void;
+  onChange: (() => void) | undefined;
+}
 
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands
  * the authority's synchronous capability. The demand is made on first use:
  * a program that never touches fs runs on a host without one.
  */
-export function synchronousFilesystem(view: { local: VFS | null; authority: RuntimeFsBridge }): () => NodeFilesystem {
+export function synchronousFilesystem(view: { process: RuntimeFsBridge }): () => NodeFilesystem {
   let opened: NodeFilesystem | null = null;
   return () => {
-    opened ??= view.local ?? bridgeFilesystem(view.authority);
+    opened ??= bridgeFilesystem(view.process);
     return opened;
   };
 }
@@ -24,7 +40,7 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
   if (!fs) throw new Error('This Node interpreter requires a synchronous filesystem capability; asynchronous hosts use the resident Node runtime');
   const read = (path: string): Uint8Array => {
     const data = fs.readFile(path);
-    if (data === null) throw new VFSError('ENOENT', path);
+    if (data === null) throw new VfsError('ENOENT', path);
     return data;
   };
   let listener: (() => void) | undefined;
@@ -50,11 +66,11 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     isDirectory: path => fs.stat(path)?.type === 'directory',
     stat(path) {
       const stat = fs.stat(path);
-      if (!stat) throw new VFSError('ENOENT', path);
+      if (!stat) throw new VfsError('ENOENT', path);
       return stat;
     },
     mkdir: (path, options) => fs.mkdir(path, options),
-    readdir: path => fs.readdir(path),
+    readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],
     unlink: path => fs.unlink(path),
     rmdir: path => fs.rmdir(path),
     rmdirRecursive: path => fs.remove(path, { recursive: true }),

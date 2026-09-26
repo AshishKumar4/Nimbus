@@ -1,6 +1,8 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { lex } from './lexer.js';
 import { TokenKind } from './types.js';
+
+
 
 const MAX_HISTORY = 1000;
 
@@ -8,7 +10,7 @@ export class HistoryManager {
   private entries: string[] = [];
   private loaded: Promise<void> | undefined;
 
-  constructor(private readonly filesystem: () => ExecutionFs, private readonly home: () => string) {}
+  constructor(private readonly filesystem: () => ProcessView, private readonly home: () => string) {}
 
   async load(): Promise<void> {
     return this.loaded ??= this.readHistory();

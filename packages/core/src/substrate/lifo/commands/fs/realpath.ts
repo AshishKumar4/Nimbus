@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
@@ -15,7 +15,7 @@ const command: Command = async (ctx) => {
     try {
       await ctx.stdout.write(await ctx.vfs.realpath(path) + '\n');
     } catch (e) {
-      if (e instanceof VFSError) {
+      if (isVfsError(e)) {
         await ctx.stderr.write(`realpath: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {

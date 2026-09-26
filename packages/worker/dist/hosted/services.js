@@ -3,7 +3,7 @@ import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { SqliteFilesystemAuthority } from "@nimbus-sh/core/runtime/filesystem-authority.js";
+import { ProcessFiles } from "@nimbus-sh/core/runtime/process-files.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import { CF_COMPAT_DATE } from "@nimbus-sh/core/constants.js";
@@ -69,15 +69,15 @@ export function ensureFacetManager(self, runtimeContext) {
         // The manager reaches the disk behind the authority (boot images, the
         // launch journal), so a host that credentials something other than this
         // session's SQLite filesystem cannot compose one.
-        if (!(filesystem instanceof SqliteFilesystemAuthority)) {
-            throw new Error('Nimbus: the facet manager needs the session SqliteFilesystemAuthority, not a foreign filesystem authority');
+        if (!(filesystem instanceof ProcessFiles)) {
+            throw new Error('Nimbus: the facet manager needs the session ProcessFiles, not a foreign filesystem authority');
         }
         self.facetManagerComposed = composeFacetManager({
             ctx: runtimeContext.ctx,
             env: runtimeContext.env,
             processes: self.processes,
             portRegistry: self.portRegistry,
-            vfs: filesystem.vfs,
+            vfs: filesystem.engine,
             filesystem,
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
@@ -449,7 +449,7 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     if (!self.esbuildService) {
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.sqliteFs.as(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval

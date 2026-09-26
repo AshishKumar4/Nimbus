@@ -1,109 +1,86 @@
-import type { ExecutionFs } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
+import { exists } from '../../../vfs/vfs.js';
 
 /**
- * Match a glob pattern against a text string.
- * Supports: * ? [abc] [!abc] [a-z]
+ * Match a glob pattern against a text string, as fnmatch(3) without flags:
+ * `*`, `?`, `[abc]`, `[!a-z]` (`^` too; `]` first is literal), `\` quotes the
+ * next character (a trailing one matches nothing), and a `[` with no closing
+ * `]` is a literal `[`.
  */
 export function globMatch(pattern: string, text: string): boolean {
   let pi = 0;
   let ti = 0;
   let starPi = -1;
   let starTi = -1;
-
   while (ti < text.length) {
-    if (pi < pattern.length && pattern[pi] === '[') {
-      const result = matchCharClass(pattern, pi, text[ti]);
-      if (result.matched) {
-        pi = result.end;
-        ti++;
-        continue;
-      }
-      // No match in char class
-      if (starPi >= 0) {
-        pi = starPi + 1;
-        starTi++;
-        ti = starTi;
-        continue;
-      }
-      return false;
-    }
-
-    if (pi < pattern.length && pattern[pi] === '?') {
-      pi++;
-      ti++;
-      continue;
-    }
-
     if (pi < pattern.length && pattern[pi] === '*') {
-      starPi = pi;
+      starPi = pi++;
       starTi = ti;
-      pi++;
       continue;
     }
-
-    if (pi < pattern.length && pattern[pi] === text[ti]) {
-      pi++;
+    const next = pi < pattern.length ? matchOne(pattern, pi, text[ti]!) : -1;
+    if (next >= 0) {
+      pi = next;
       ti++;
       continue;
     }
-
-    if (starPi >= 0) {
-      pi = starPi + 1;
-      starTi++;
-      ti = starTi;
-      continue;
-    }
-
-    return false;
+    if (starPi < 0) return false;
+    pi = starPi + 1;
+    ti = ++starTi;
   }
-
-  while (pi < pattern.length && pattern[pi] === '*') {
-    pi++;
-  }
-
+  while (pi < pattern.length && pattern[pi] === '*') pi++;
   return pi === pattern.length;
 }
 
-function matchCharClass(pattern: string, pos: number, ch: string): { matched: boolean; end: number } {
-  let i = pos + 1; // skip [
-  let negate = false;
+/** Where the pattern continues after its token at `pi` matched `ch`, or -1. */
+function matchOne(pattern: string, pi: number, ch: string): number {
+  const c = pattern[pi]!;
+  if (c === '?') return pi + 1;
+  if (c === '\\') {
+    // A trailing backslash quotes nothing and matches nothing (glibc).
+    return pi + 1 < pattern.length && pattern[pi + 1] === ch ? pi + 2 : -1;
+  }
+  if (c === '[') {
+    const cls = matchCharClass(pattern, pi, ch);
+    if (cls !== null) return cls.matched ? cls.end : -1;
+  }
+  return c === ch ? pi + 1 : -1;
+}
 
+/** A bracket expression at `pos`: whether it matches `ch` and where it ends; null when it never closes. */
+function matchCharClass(pattern: string, pos: number, ch: string): { matched: boolean; end: number } | null {
+  let i = pos + 1;
+  let negate = false;
   if (i < pattern.length && (pattern[i] === '!' || pattern[i] === '^')) {
     negate = true;
     i++;
   }
-
   let matched = false;
   const start = i;
-
   while (i < pattern.length && (pattern[i] !== ']' || i === start)) {
+    let lo = pattern[i]!;
+    if (lo === '\\' && i + 1 < pattern.length) lo = pattern[++i]!;
     if (i + 2 < pattern.length && pattern[i + 1] === '-' && pattern[i + 2] !== ']') {
-      // Range
-      if (ch >= pattern[i] && ch <= pattern[i + 2]) {
-        matched = true;
-      }
-      i += 3;
+      let hi = pattern[i + 2]!;
+      let end = i + 3;
+      if (hi === '\\' && i + 3 < pattern.length) { hi = pattern[i + 3]!; end = i + 4; }
+      if (ch >= lo && ch <= hi) matched = true;
+      i = end;
     } else {
-      if (ch === pattern[i]) {
-        matched = true;
-      }
+      if (ch === lo) matched = true;
       i++;
     }
   }
-
-  if (i < pattern.length && pattern[i] === ']') {
-    i++; // skip ]
-  }
-
-  return { matched: negate ? !matched : matched, end: i };
+  if (i >= pattern.length) return null;
+  return { matched: negate ? !matched : matched, end: i + 1 };
 }
 
 /**
  * Expand a glob pattern against the VFS.
  * Returns sorted matching paths, or [pattern] if no matches.
  */
-export async function expandGlob(pattern: string, cwd: string, vfs: ExecutionFs): Promise<string[]> {
+export async function expandGlob(pattern: string, cwd: string, vfs: ProcessView): Promise<string[]> {
   // If no glob chars, return as-is
   if (!hasGlobChars(pattern)) {
     return [pattern];

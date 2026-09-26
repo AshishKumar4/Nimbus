@@ -1,4 +1,4 @@
-import { withHostFilesystem } from '../shell/execution-fs.js';
+import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
@@ -254,7 +254,7 @@ export function makeBashRunnerFactory(deps) {
             // through its bound view; only the installed runtime blobs are read
             // through a kernel host lease, as for every other runtime.
             const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
-            const filesystem = ctx.vfs.authority;
+            const filesystem = ctx.vfs.process;
             const argv = [...(ctx.args ?? [])];
             const cwd = ctx.cwd || '/home/user';
             // Resolve a relative script path against the session cwd.
@@ -286,7 +286,7 @@ export function makeBashRunnerFactory(deps) {
             }
             let session = null;
             try {
-                session = await withHostFilesystem(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
+                session = await withHostView(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
                     facets: deps.facets,
                     artifacts,
                     filesystem,

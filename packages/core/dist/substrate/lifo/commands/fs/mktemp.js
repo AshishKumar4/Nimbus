@@ -1,5 +1,6 @@
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     directory: { type: 'boolean', short: 'd' },
     tmpdir: { type: 'string', short: 'p' },
@@ -26,7 +27,7 @@ const command = async (ctx) => {
     try {
         // Ensure parent dir exists
         try {
-            (await ctx.vfs.stat(dir));
+            (await statOrThrow(ctx.vfs, dir));
         }
         catch {
             (await ctx.vfs.mkdir(dir, { recursive: true }));

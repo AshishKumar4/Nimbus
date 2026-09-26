@@ -39,6 +39,8 @@ import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shel
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
+import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -211,7 +213,10 @@ export interface FacetProcessManagerDeps {
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
   /** Optional: ctx for facets.abort/delete in production. */
-  ctx?: { facets?: { abort?: (name: string, e?: any) => void; delete?: (name: string) => void } };
+  ctx?: {
+    facets?: { abort?: (name: string, e?: any) => void; delete?: (name: string) => void };
+    storage?: { sql?: SqlDatabase };
+  };
   /** Optional Worker Loader pool for isolating child-process dispatch. */
   spawnPool?: {
     runOne: (
@@ -945,6 +950,7 @@ export class FacetProcessManager {
       try {
         if (this.deps.ctx?.facets?.delete) {
           this.deps.ctx.facets.delete(child.facetName);
+          if (this.deps.ctx.storage?.sql) forgetFacetStorage(this.deps.ctx.storage.sql, child.facetName);
         }
       } catch { /* best-effort */ }
     });

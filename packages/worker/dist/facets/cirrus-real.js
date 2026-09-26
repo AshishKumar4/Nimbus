@@ -58,6 +58,7 @@ import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cir
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -888,7 +889,7 @@ export class CirrusReal {
         // until the supervisor itself is evicted).
         if (this._facetName && ctx) {
             try {
-                ctx.facets.delete(this._facetName);
+                deleteFacetStorage(ctx, this._facetName);
             }
             catch { }
         }

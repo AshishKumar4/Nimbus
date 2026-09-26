@@ -12,7 +12,6 @@ import {
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { hostRoute, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -23,6 +22,7 @@ import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
 import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
@@ -222,7 +222,7 @@ export async function runEsbuildCli(
  * The esbuild a Durable Object's supervisor shares: its transforms and its
  * builds run in its esbuild facet, and build() reads `vfs` from here.
  */
-export function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: CredentialedVfs): EsbuildService {
+export function supervisorEsbuildService(ctx: DurableObjectState, env: unknown, vfs: NamespaceFs): EsbuildService {
   return new EsbuildService(vfs, {
     transformHost: esbuildTransformHost(ctx, env),
     buildHost: esbuildBuildHost(ctx, env),

@@ -18,7 +18,7 @@ const CATEGORIES = {
     'System': [
         'env', 'uname', 'date', 'sleep', 'uptime', 'whoami', 'hostname',
         'free', 'which', 'ps', 'top', 'kill', 'watch', 'cal', 'bc',
-        'man', 'help', 'systemctl',
+        'man', 'help',
     ],
     'Network': ['curl', 'wget', 'ping', 'dig'],
     'Archive': ['tar', 'gzip', 'gunzip', 'zip', 'unzip'],

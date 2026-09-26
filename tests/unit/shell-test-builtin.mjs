@@ -4,22 +4,22 @@
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const root = raw.as(CRED_KERNEL);
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 root.mkdir('/w', { mode: 0o777 });
 root.chown('/w', user.uid, user.gid);
-const box = await Sandbox.create({ persist: false });
+const box = await testBox();
 registerUnixCommands(box.commands.registry, raw);
 const shell = new Shell(new HeadlessTerminal(), authority, box.commands.registry,
   { HOME: '/w', PATH: '/bin', USER: 'user' }, box.shell.getProcessRegistry(),

@@ -31,8 +31,8 @@
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { testBox } from './lib/test-box.mjs';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
@@ -67,9 +67,7 @@ root.writeFile('home/user/extract/proteus/bin/cli', '#!/bin/sh\n', { mode: 0o755
 root.mkdir('home/user/extract/proteus/src', { mode: 0o755 });
 root.writeFile('home/user/extract/proteus/src/a.ts', 'export const a = 1;\n', { mode: 0o644 });
 
-const box = await Sandbox.create({ persist: false });
-box.kernel.vfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
-box.kernel.vfs.mount('/tmp', new SqliteVFSProvider(rawVfs, 'tmp'));
+const box = await testBox({ harness, vfs: rawVfs });
 installPathExecResolver(box.commands.registry, root, () => box.shell.getCwd?.() ?? '/home/user');
 registerUnixCommands(box.commands.registry, rawVfs);
 registerShellEntrypointCommands(
@@ -178,6 +176,19 @@ await check(
   'cd /home/user\nfind nosuchdir\n',
   { stdout: '', exitCode: 1, stderr: "find: 'nosuchdir': No such file or directory\n" },
 );
+
+// ── -name bracket classes (fnmatch; checked with uutils findutils 0.8.0) ──
+await check('-name matches a bracket class',
+  sorted("find extract -name '[ab]*'"),
+  { stdout: 'extract/proteus/bin\nextract/proteus/src/a.ts\n' });
+
+await check('-name matches a negated range',
+  sorted("find extract -maxdepth 1 -name '[!e-p]*'"),
+  { stdout: 'extract/3k.bin\n' });
+
+await check('-iname folds case inside a class',
+  sorted("find extract -iname '[A-C]*'"),
+  { stdout: 'extract/proteus/bin\nextract/proteus/bin/cli\nextract/proteus/src/a.ts\n' });
 
 // ── operators: the silently-dropped category ──────────────────────────────
 await check('! negates the following test',

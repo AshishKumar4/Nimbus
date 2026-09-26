@@ -10,7 +10,7 @@
  */
 
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { NamespaceFs } from './process-files.js';
 import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
@@ -1421,7 +1421,7 @@ function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptio
 
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
-  private vfs: CredentialedVfs | null;
+  private vfs: NamespaceFs | null;
   private readonly transformHost: EsbuildTransformHost | null;
   private readonly buildHost: EsbuildBuildHost | null;
   private initialized = false;
@@ -1430,7 +1430,7 @@ export class EsbuildService {
   private _esbuild: typeof esbuild | null = null;
 
   /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-  constructor(vfs?: CredentialedVfs, options: EsbuildServiceOptions = {}) {
+  constructor(vfs?: NamespaceFs, options: EsbuildServiceOptions = {}) {
     this.vfs = vfs ?? null;
     this.transformHost = options.transformHost ?? null;
     this.buildHost = options.buildHost ?? null;
@@ -1741,7 +1741,7 @@ export class EsbuildService {
       metafile: outcome.metafile,
     };
   }
-  private requireVfs(): CredentialedVfs {
+  private requireVfs(): NamespaceFs {
     if (!this.vfs) throw new Error('EsbuildService build requires a VFS');
     return this.vfs;
   }
@@ -1760,7 +1760,7 @@ export class EsbuildService {
     const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
     const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
 
-    // Path helpers shared with git-commands via ./vfs-path.ts.
+    // Path helpers shared with git/commands.ts via vfs/path.ts.
     // Local aliases preserve the existing call-site readability inside this
     // closure; behavior is identical (the canonical normalizeVfsPath has a
     // bounds check on `..` that the previous local `normalize` lacked, but

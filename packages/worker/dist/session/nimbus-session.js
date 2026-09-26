@@ -2,7 +2,7 @@ import * as runtimeServices from '../hosted/services.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -32,7 +32,7 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
-import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_VERSION } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { routeSessionLoopback } from './ai.js';
 import { seedProject, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -71,38 +71,10 @@ import { buildSessionSupervisorOps } from './supervisor-op.js';
 import * as _routes from './routes.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
-// Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
-// S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
-import { z } from 'zod/v4';
-const CpFacetDirectPayloadSchema = z.object({
-    command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-    args: z.array(z.unknown()).optional().transform((value) => (value || []).map((item) => String(item))),
-    env: z.record(z.string(), z.unknown()).optional().transform((value) => {
-        const out = {};
-        for (const [key, item] of Object.entries(value || {}))
-            out[key] = String(item);
-        return out;
-    }),
-    cwd: z.unknown().optional().transform((value) => value == null ? '/' : String(value)),
-    stdin: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-    processPid: z.number().int().positive(),
-}).passthrough();
-function normalizeCpCommandName(name) {
-    const text = String(name || '').trim();
-    if (!text.startsWith('/'))
-        return text;
-    const slash = text.lastIndexOf('/');
-    const base = slash >= 0 ? text.slice(slash + 1) : text;
-    const dir = text.slice(0, Math.max(0, text.length - base.length));
-    if (dir === '/bin/' || dir === '/usr/bin/' || dir === '/usr/local/bin/') {
-        return base;
-    }
-    return text;
-}
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
 // import site elsewhere in the codebase.
@@ -680,12 +652,13 @@ export class NimbusSession extends CloudflareDurableObject {
      * Lazy: sqliteFs exists only after ensureSqliteFs().
      */
     _supervisorOps = null;
-    filesystemAuthority = null;
+    processFiles = null;
+    /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority() {
         this.ensureSqliteFs();
         if (!this.sqliteFs)
             throw new Error('Filesystem is not initialized');
-        return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+        return this.processFiles ??= new ProcessFiles(this.sqliteFs);
     }
     supervisorOps() {
         if (!this._supervisorOps)
@@ -725,6 +698,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcRename(from, to, pid, cred) { return _rpc._rpcRename(this, from, to, pid, cred); }
     async _rpcFsAcquire(epoch, cursor, options, pid) {
         return _rpc._rpcFsAcquire(this, epoch, cursor, options, pid);
+    }
+    async _rpcFsStorageGrant(facet, bytes, databaseSize, pid) {
+        return _rpc._rpcFsStorageGrant(this, facet, bytes, databaseSize, pid);
     }
     async _rpcFsList(after, limit, pid) {
         return _rpc._rpcFsList(this, after, limit, pid);
@@ -1090,7 +1066,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * checks and changes nothing.
      */
     seedFilesystem() {
-        seedBaseFilesystem(this.sqliteFs, DEFAULT_MOUNT_POINTS);
+        seedBaseFilesystem(this.sqliteFs);
         const fs = this.sqliteFs.as(CRED_SESSION_USER);
         const rootFs = this.sqliteFs.as(CRED_KERNEL);
         {

@@ -141,6 +141,8 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     env: {},
     sqliteFs: null,
     esbuildService: null,
+    // The namespace as host code reads it: this fake session's one filesystem.
+    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
     bundlePool,
     viteDevServer: null,
     cirrusReal: null,

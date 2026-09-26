@@ -34,6 +34,8 @@ const installed = realpathSync(resolvePackageDir('isomorphic-git', { start: work
 const storeSiblings = dirname(dirname(installed));
 const images = patchImages(patchFile);
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-cf-git-patch-'));
+// The preconditions below can fail before the cases' try: the exit hook removes the scratch tree however the test ends.
+process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 
 // The installed copy is patched (the suite runs after install); its pristine index.js is the patch reversed.
 assert.ok(blobId(join(installed, 'index.js')).startsWith(images.post), 'this checkout\'s cf-git is not patched');

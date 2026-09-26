@@ -10,7 +10,7 @@ import { synchronousFilesystem } from '../node-compat/filesystem.js';
  */
 
 import type { Command, CommandContext } from '../commands/types.js';
-import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
+import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
@@ -18,6 +18,7 @@ import { Buffer } from '../node-compat/buffer.js';
 import { createModuleMap } from '../node-compat/index.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import type { NodeContext } from '../node-compat/index.js';
+
 
 // ─── Types ───
 

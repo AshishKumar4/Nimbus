@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -62,7 +62,7 @@ root.chown('home/user/notes.txt', PLAIN.uid, PLAIN.gid);
 
 const a = raw.as(A);
 const plain = raw.as(PLAIN);
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const aFs = authority.bind({ pid: 7001, cred: A });
 const plainFs = authority.bind({ pid: 7002, cred: PLAIN });
 
@@ -225,18 +225,18 @@ sharedIntact();
 
 // ── WASI: lookups rooted at a preopened /tmp, by path and by descriptor ───
 // The link targets are A's names, so a link inside the preopen stays inside
-// it, including one that leaves and comes back.
+// it. One that leaves and comes back is refused, as RESOLVE_BENEATH refuses
+// any `..` above the root (VFS-COMP-006).
 a.symlink('renamed.txt', '/tmp/inner');
 a.symlink('../tmp/renamed.txt', '/tmp/back');
-for (const name of ['inner', 'back']) {
-  assert.equal(dec.decode(aFs.readFile({ root: '/tmp', path: name, beneath: true })), 'mine', name);
-}
+const beneathCode = (fn) => { try { fn(); return 'ok'; } catch (error) { return error.code; } };
+assert.equal(dec.decode(aFs.readFile({ root: '/tmp', path: 'inner', beneath: true })), 'mine');
+assert.equal(beneathCode(() => aFs.readFile({ root: '/tmp', path: 'back', beneath: true })), 'ENOTCAPABLE');
 absent('WASI rel', () => aFs.readFile({ root: '/tmp', path: 'rel', beneath: true }), ['ENOENT', 'ENOTCAPABLE']);
 {
   const dir = aFs.open('/tmp', { read: true, directory: true });
-  for (const name of ['inner', 'back']) {
-    assert.equal(dec.decode(aFs.readFile({ directory: dir.id, path: name, beneath: true })), 'mine', name);
-  }
+  assert.equal(dec.decode(aFs.readFile({ directory: dir.id, path: 'inner', beneath: true })), 'mine');
+  assert.equal(beneathCode(() => aFs.readFile({ directory: dir.id, path: 'back', beneath: true })), 'ENOTCAPABLE');
   aFs.close(dir.id);
 }
 

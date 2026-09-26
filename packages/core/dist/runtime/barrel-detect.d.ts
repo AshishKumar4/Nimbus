@@ -26,6 +26,8 @@
  * know "clearly a barrel" vs. not.
  */
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+/** What counting a package's files asks: the engine's view and the namespace both answer it. */
+type PackageTree = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readdir'>;
 /** A package with more than this many files is treated as a barrel. */
 export declare const BARREL_PKG_FILE_THRESHOLD = 1500;
 /**
@@ -36,11 +38,12 @@ export declare const BARREL_PKG_FILE_THRESHOLD = 1500;
  * VFS readdir is sync + in-memory inode lookup. For lucide-react
  * (4069 files), measured at <2 ms in dev.
  */
-export declare function countPackageFiles(vfs: CredentialedVfs, pkgDir: string, cap?: number): number;
+export declare function countPackageFiles(vfs: PackageTree, pkgDir: string, cap?: number): number;
 /**
  * Convenience: derive top-level package name from a bare specifier
  * (e.g. "lucide-react/icons/Cloud" → "lucide-react", "@radix-ui/react"
  * → "@radix-ui/react"). Used by callers building the pkgDir path.
  */
 export declare function packageNameFromSpecifier(specifier: string): string;
+export {};
 //# sourceMappingURL=barrel-detect.d.ts.map

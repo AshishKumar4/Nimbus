@@ -19,7 +19,7 @@
  * `install` reinstalls rather than answering a stale memo, and a failed
  * install is forgotten so the next attempt retries.
  */
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';

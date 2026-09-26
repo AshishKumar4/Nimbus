@@ -132,7 +132,7 @@ function workspace() {
   assert.equal(await code(() => vfs.readFile('/proc/nope')), 'ENOENT');
 }
 
-// The standard /proc has what the kernel's ProcProvider had.
+// The standard /proc: cpuinfo, meminfo, uptime, version, net/info.
 {
   const vfs = new CompositeVFS(new MemoryVFS());
   vfs.mount('/proc', standardProc());

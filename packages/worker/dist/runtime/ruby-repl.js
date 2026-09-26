@@ -27,7 +27,7 @@
 import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 class RubyReplAdapter {
     pool = null;
     deps;
@@ -147,7 +147,7 @@ class RubyReplAdapter {
             return;
         const { installRoot, facetMgr } = this.deps;
         const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
-        this.wasmBytesAB = toAB(await withHostFilesystem(this.deps.authority, CRED_KERNEL, async (vfs) => {
+        this.wasmBytesAB = toAB(await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
             if (!(await vfs.exists(wasmPath))) {
                 throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
             }

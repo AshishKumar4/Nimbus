@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
-import { SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { evaluateTest } from '../../packages/core/src/substrate/lifo/shell/test-builtin.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -83,12 +82,11 @@ assert.equal((await run('test', ['-r', 'class-binding'], USER)).exitCode, 1,
   'the matching owner class is binding even when other grants access');
 assert.equal((await run('test', ['-r', 'class-binding'], OTHER)).exitCode, 0);
 
-const mountedVfs = new VFS();
-mountedVfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
+const namespace = new ProcessFiles(rawVfs);
 for (const flag of ['-e', '-f', '-d', '-s']) {
   let stderr = '';
   assert.equal(
-    await evaluateTest([flag, '/home/user/hidden/file'], mountedVfs.as(USER), {
+    await evaluateTest([flag, '/home/user/hidden/file'], namespace.view({ pid: 5, cred: USER }), {
       write: (value) => { stderr += String(value); },
     }),
     1,

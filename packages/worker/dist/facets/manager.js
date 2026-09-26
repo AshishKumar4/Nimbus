@@ -55,6 +55,8 @@ import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
+import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import { RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -810,6 +812,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
     // vfs/facet-resident-store.ts.
     __residentBind(workerCtx);
+    __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
@@ -1083,7 +1086,13 @@ export class NimbusProcess extends DurableObject {
     if (startArgs) __nimbusStartArgs = startArgs;
     await __nimbusEnsureStarted(this.env, this.ctx, __nimbusStartArgs);
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
-    return { ok: true };
+    // What this facet's database holds now, and the cap its store keeps
+    // under, for the session's storage ledger (N18).
+    let databaseSize;
+    try { databaseSize = this.ctx.storage.sql.databaseSize; } catch {}
+    let storageCap = null;
+    try { storageCap = __residentStorageCap(); } catch {}
+    return { ok: true, databaseSize, storageCap };
   }
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
@@ -4109,7 +4118,7 @@ export class FacetManager {
      */
     async _planResidentData(entry, vfsState, cwd, home, pacer) {
         if (!this.vfs || !this.filesystem)
-            return [];
+            return { paths: [], storageBytes: 0 };
         const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
         const started = Date.now();
         const trace = (what) => {
@@ -4123,9 +4132,11 @@ export class FacetManager {
         const learned = await this._learnedReads(vfsState, entry.cred);
         trace(`${learned.length} learned; listing`);
         let pages = 0;
+        let names = 0;
         const plan = await planFacetData({
             list: async (after) => {
                 const page = await vfs.authority.list(after, FS_LIST_PAGE_LIMIT);
+                names += page.entries.length;
                 trace(`page ${++pages}: ${page.entries.length} entries`);
                 return { entries: page.entries, next: page.next };
             },
@@ -4155,7 +4166,13 @@ export class FacetManager {
             spend: (units) => pacer.spend(units),
         });
         trace(`planned ${plan.paths.length}`);
-        return plan.paths;
+        // What the facet's store will hold (N18), in the cost its store charges
+        // itself (facet-resident-store's __residentCellBytes): the planned bytes on
+        // overflow pages (1% over), a head and chunk rows per file, a namespace
+        // row per name, and slack for the last write's page.
+        const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
+        const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + 65_536;
+        return { paths: plan.paths, storageBytes };
     }
     /**
      * Paths earlier launches missed: this session's for the same build, and,
@@ -5571,7 +5588,7 @@ export class FacetManager {
             this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
         const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
         const planStart = Date.now();
-        const dataPlan = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
+        const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
         if (this.debugEnabled) {
             this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
         }
@@ -5652,6 +5669,7 @@ export class FacetManager {
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
                 startArgs: { vfsCursor, dataPlan, ...(this.debugEnabled ? { diag: true } : {}) },
+                storageBytes,
                 // A resident whose declared port is reserved binds the owner's
                 // durable slot — the same store a durable worker spawn takes — so the
                 // reservation's durability reaches this process's storage too.

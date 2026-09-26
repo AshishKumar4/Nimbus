@@ -18,7 +18,7 @@
 // nested `shell.execute`. Its output must land on the real terminal verbatim.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { testBox } from './lib/test-box.mjs';
 
 // The shell's streaming hooks carry bytes; this test reads them as text.
 const text = (b) => new TextDecoder().decode(b);
@@ -39,7 +39,7 @@ function makeRecordingTerminal() {
 }
 
 const terminal = makeRecordingTerminal();
-const box = await Sandbox.create({ persist: false, terminal });
+const box = await testBox({ terminal });
 
 try {
   let nestedResult = null;

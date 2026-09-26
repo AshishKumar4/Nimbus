@@ -2182,6 +2182,8 @@ const __fsMod = (() => {
       if (Array.isArray(result.paths)) {
         for (const entry of result.paths) _noteReport(entry);
       }
+      // N18: room for what it pushes, before it is held.
+      await __residentRoomForPushed(result);
       const applied = __residentAdmit(result);
       _cursor.epoch = applied.cursor.epoch;
       _cursor.rev = applied.cursor.rev;

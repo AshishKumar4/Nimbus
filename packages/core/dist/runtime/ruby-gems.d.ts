@@ -1,4 +1,4 @@
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { ProcessView as CredentialedVfs } from './process-files.js';
 export interface RubyGemRequest {
     name: string;
     requirements: string[];

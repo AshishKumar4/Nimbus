@@ -1,6 +1,6 @@
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
+import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { createBashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
 import { ReplSession, } from './repl-session.js';
@@ -84,7 +84,7 @@ class BashReplAdapter {
     async ensureSession(signal) {
         if (this.session)
             return null;
-        this.session = await withHostFilesystem(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
+        this.session = await withHostView(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
             facets: facetHostForManager(this.deps.facetMgr),
             artifacts,
             filesystem: this.deps.filesystem,

@@ -1,11 +1,13 @@
-import type { ExecutionFs, ExecutionStat } from "../../../shell/execution-fs.js";
+import type { ProcessView } from '../../../runtime/process-files.js';
+import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
 import { expandWord, type ExpandContext } from './expander.js';
 import { globMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
-import { S_IFCHR, S_IFMT } from '../kernel/vfs/types.js';
+import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
+import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 
 /**
  * Implementation of the `test` / `[` shell builtin (POSIX `test`).
@@ -13,7 +15,7 @@ import { S_IFCHR, S_IFMT } from '../kernel/vfs/types.js';
  */
 export async function evaluateTest(
   args: string[],
-  vfs: ExecutionFs,
+  vfs: ProcessView,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
   bracket = false,
@@ -36,7 +38,7 @@ export async function evaluateTest(
 export async function evaluateDoubleBracketWords(
   words: WordPart[][],
   expandCtx: ExpandContext,
-  vfs: ExecutionFs,
+  vfs: ProcessView,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
 ): Promise<number> {
@@ -96,7 +98,7 @@ function operatorTextOf(word: WordPart[] | undefined): string | undefined {
 
 async function evaluateTestExpression(
   operands: Operands,
-  vfs: ExecutionFs,
+  vfs: ProcessView,
   stderr: CommandOutputStream,
   context: BuiltinExecutionContext | undefined,
   mode: TestMode,
@@ -129,7 +131,7 @@ async function evaluateTestExpression(
  * general grammar should decide.
  */
 async function evaluateByArgCount(
-  ops: Operands, start: number, count: number, vfs: ExecutionFs,
+  ops: Operands, start: number, count: number, vfs: ProcessView,
   context: BuiltinExecutionContext | undefined,
 ): Promise<boolean | undefined> {
   const at = (i: number) => ops.literal(start + i) ?? '';
@@ -177,7 +179,7 @@ interface ExprResult {
  * literal operators alone) but never expands them.
  */
 async function parseOr(
-  ops: Operands, pos: number, vfs: ExecutionFs,
+  ops: Operands, pos: number, vfs: ProcessView,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parseAnd(ops, pos, vfs, context, mode, evaluate);
@@ -191,7 +193,7 @@ async function parseOr(
 }
 
 async function parseAnd(
-  ops: Operands, pos: number, vfs: ExecutionFs,
+  ops: Operands, pos: number, vfs: ProcessView,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parsePrimary(ops, pos, vfs, context, mode, evaluate);
@@ -205,7 +207,7 @@ async function parseAnd(
 }
 
 async function parsePrimary(
-  ops: Operands, pos: number, vfs: ExecutionFs,
+  ops: Operands, pos: number, vfs: ProcessView,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   if (pos >= ops.length) {
@@ -287,7 +289,7 @@ function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMod
 }
 
 async function evaluateUnary(
-  op: string, operand: string, vfs: ExecutionFs, context: BuiltinExecutionContext | undefined,
+  op: string, operand: string, vfs: ProcessView, context: BuiltinExecutionContext | undefined,
 ): Promise<boolean> {
   switch (op) {
     case '-z':
@@ -334,7 +336,7 @@ function hasPatternSyntax(value: string): boolean {
  * about a path at the root, so `[ -f config.json ]` was false for a file
  * sitting right there — silently taking the wrong branch rather than failing.
  */
-async function evaluateFileTest(flag: string, operand: string, vfs: ExecutionFs, cwd?: string): Promise<boolean> {
+async function evaluateFileTest(flag: string, operand: string, vfs: ProcessView, cwd?: string): Promise<boolean> {
   const path = cwd === undefined ? operand : resolve(cwd, operand);
   if (flag === 'h' || flag === 'L') {
     return (await statOf(vfs, path, false))?.type === 'symlink';
@@ -371,9 +373,9 @@ async function evaluateFileTest(flag: string, operand: string, vfs: ExecutionFs,
 const SPECIAL_FILE_FORMATS: Record<string, number> = { b: 0o060000, c: S_IFCHR, p: 0o010000, S: 0o140000 };
 const MODE_BITS: Record<string, number> = { u: 0o4000, g: 0o2000, k: 0o1000 };
 
-async function statOf(vfs: ExecutionFs, path: string, followSymlinks: boolean): Promise<ExecutionStat | null> {
+async function statOf(vfs: ProcessView, path: string, followSymlinks: boolean): Promise<ProcessStat | null> {
   try {
-    return followSymlinks ? await vfs.stat(path) : await vfs.lstat(path);
+    return followSymlinks ? await statOrThrow(vfs, path) : await lstatOrThrow(vfs, path);
   } catch {
     return null;
   }

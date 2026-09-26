@@ -1,5 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 // ─── ANSI escape helpers ───
 const CSI = '\x1b[';
 const CLEAR = `${CSI}2J`;
@@ -77,7 +77,7 @@ async function loadFile(ctx, path) {
         return { lines: lines.length === 0 ? [''] : lines, isNew: false };
     }
     catch (e) {
-        if (e instanceof VFSError && e.message.includes('ENOENT')) {
+        if (isVfsError(e) && e.message.includes('ENOENT')) {
             return { lines: [''], isNew: true };
         }
         throw e;

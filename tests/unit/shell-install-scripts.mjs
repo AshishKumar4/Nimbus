@@ -25,8 +25,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { testBox } from './lib/test-box.mjs';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
@@ -47,9 +47,7 @@ root.chown('home/user', 1000, 1000);
 root.mkdir('tmp', { mode: 0o777 });
 root.chown('tmp', 1000, 1000);
 
-const box = await Sandbox.create({ persist: false });
-box.kernel.vfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
-box.kernel.vfs.mount('/tmp', new SqliteVFSProvider(rawVfs, 'tmp'));
+const box = await testBox({ harness, vfs: rawVfs });
 installPathExecResolver(box.commands.registry, root, () => box.shell.getCwd?.() ?? '/home/user');
 registerUnixCommands(box.commands.registry, rawVfs);
 registerShellEntrypointCommands(

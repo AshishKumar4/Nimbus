@@ -253,6 +253,13 @@ export interface ProcessHostParams {
         name: string;
         durable: boolean;
     };
+    /**
+     * Bytes the process's store is filled with before it runs (its data plan).
+     * The hosting actor's storage ledger (N18) admits them under the facet's
+     * name before the facet starts: ENOSPC, and no facet, when they would cross
+     * the storage limit.
+     */
+    storageBytes?: number;
 }
 /**
  * One resident process, as its coordinator sees it. Identical in meaning on
@@ -524,6 +531,8 @@ export interface ResidentProcessSpawn {
         name: string;
         durable: boolean;
     };
+    /** See {@link ProcessHostParams.storageBytes}. */
+    storageBytes?: number;
     /**
      * Called before any concrete host capability can expose this writer.
      * A spawn must not proceed unless the supervisor accepts the authority.

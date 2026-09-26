@@ -1,5 +1,5 @@
 import { synchronousFilesystem, type NodeFilesystem } from '../../node-compat/filesystem.js';
-import type { ExecutionFs } from '../../../../shell/execution-fs.js';
+import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
@@ -9,6 +9,7 @@ import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
+import { exists } from '../../../../vfs/vfs.js';
 
 const NODE_VERSION = 'v20.0.0';
 
@@ -90,7 +91,7 @@ function packageType(filename: string, vfs: NodeFilesystem): PackageType {
 }
 
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
-async function mainPackageType(filename: string, vfs: ExecutionFs): Promise<PackageType> {
+async function mainPackageType(filename: string, vfs: ProcessView): Promise<PackageType> {
 	for (let dir = dirname(filename); ; dir = dirname(dir)) {
 		const pkgPath = join(dir, 'package.json');
 		if (await vfs.exists(pkgPath)) return declaredPackageType(await vfs.readFileString(pkgPath));

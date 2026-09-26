@@ -22,8 +22,5 @@ if ! diff -r fixtures .lake/fixtures-check >&2; then
   exit 1
 fi
 
-PATH="$(dirname "$(command -v "$LAKE")"):$PATH" node check-traceability.mjs
-
-mapfile -t refinement_tests < <(node check-traceability.mjs --list-refinement-tests)
-cd ..
-for test in "${refinement_tests[@]}"; do bun "$test"; done
+# The manifest holds, and every bridged refinement test passes on the committed fixtures.
+PATH="$(dirname "$(command -v "$LAKE")"):$PATH" node check-traceability.mjs --run-refinements

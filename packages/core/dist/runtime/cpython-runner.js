@@ -341,7 +341,7 @@ export function makeCPythonRunnerFactory(deps) {
                 // Never absent. Without the capability the facet reads its seed and can
                 // never write anything back — the program appears to run and its output
                 // never reaches the session.
-                syscalls: { vfs: ctx.vfs.authority, pid: ctx.pid },
+                syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
                 preamble: buildCPythonPreamble(),
                 wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
             });
