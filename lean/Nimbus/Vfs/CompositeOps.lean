@@ -257,6 +257,7 @@ def execX (S : St) (P : Principal) : X → XOut × St
   | .statMode raw =>
     match reach S P true raw with
     | .error "ENXIO" => (.other .null, S)
+    | .error "ENOENT" => (.other .null, S)
     | .error e => (.err e, S)
     | .ok p =>
       if p = [] then (.dir (some ((caps 0).rootMode.getD synthMode)), S)
