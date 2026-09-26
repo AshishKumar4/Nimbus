@@ -58,6 +58,7 @@ import {
 } from '../runtime/runtime-package.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
+import { rehydrateGlobalPackages } from '../substrate/lifo/commands/system/lifo.js';
 import { formatProcMounts, registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
@@ -395,6 +396,14 @@ export class NimbusWorkspace {
         }
       }
       await runtimes.rehydrate();
+      // Globally installed npm and lifo packages come back as commands, once,
+      // here: the workspace is composed with them registered (a failure
+      // leaves those commands out, and says so).
+      try {
+        await rehydrateGlobalPackages(new ProcessView(runtimeLease.fs), registry);
+      } catch (error) {
+        console.error('[nimbus] global npm commands were not restored:', error);
+      }
 
       // The one `nimbus` verb: installs go through the manager, and a host with
       // application verbs supplies them — a bare workspace reports that it has

@@ -1,8 +1,8 @@
-import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ProcessView, withHostView } from '@nimbus-sh/core/runtime/process-files.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -1482,13 +1482,4 @@ export async function registerHostedCommands(self, workspace) {
     registry.register('top', createTopCommand(processRegistry));
     registry.register('watch', createWatchCommand(registry));
     registry.register('help', createHelpCommand(registry));
-    // ── Rehydrate globally-installed npm packages ──
-    // Awaited: the runtime is composed with them registered. A failure leaves the
-    // shell without those commands, and says so.
-    try {
-        await withHostView(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
-    }
-    catch (error) {
-        console.error('[nimbus] global npm commands were not restored:', error);
-    }
 }
