@@ -671,7 +671,7 @@ requirements:
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP)
   VFS-COMP-004:
-    statement: ProcessFs's staged namespace over the composite equals the composite's staged view when the root feed is filtered to paths the composite routes to the root backend and each changes-mount's feed is re-rooted and filtered to its own paths; a mount-table change poisons (no feed reports it); a mount without changes stages nothing under its point; epoch-qualified CAS revisions identify one write across recoveries that regress gens.
+    statement: ProcessFs's staged namespace over the composite equals the composite's staged view (structural first - a live mount point and every directory above one is the composite's directory) in every reachable state, and is always a tree; the root feed filtered to paths the composite routes to the root backend and each changes-mount's feed re-rooted and filtered to its own non-structural paths make it exact, including subtree/structural entries (relisted where shown, a poison at a composite directory from the backend it routes to); a mount-table change between the two ends of the window poisons (no feed reports it), an ABA window does not; a mount without changes stages nothing under its point; epoch-qualified CAS revisions identify one write across recoveries that regress gens.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeFeed.feed_exact
@@ -685,11 +685,32 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.ownerPt_mem
       - Nimbus.Vfs.CompositeFeed.view_table_congr
       - Nimbus.Vfs.CompositeFeed.cas_inv
+      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
+      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
+      - Nimbus.Vfs.CompositeFeed.ownerPt_max
+      - Nimbus.Vfs.CompositeFeed.ownerPt_none
+      - Nimbus.Vfs.CompositeFeed.ownerPt_between
+      - Nimbus.Vfs.CompositeFeed.synthAnc_iff
+      - Nimbus.Vfs.CompositeFeed.dropLast_length_lt
+      - Nimbus.Vfs.CompositeFeed.structural_dropLast
+      - Nimbus.Vfs.CompositeFeed.view_closed
+      - Nimbus.Vfs.CompositeFeed.shown_below
+      - Nimbus.Vfs.CompositeFeed.shown_view
+      - Nimbus.Vfs.CompositeFeed.op_covered
+      - Nimbus.Vfs.CompositeFeed.op_other
+      - Nimbus.Vfs.CompositeFeed.apply_ops_exact
+      - Nimbus.Vfs.CompositeFeed.feedOps_exact
+      - Nimbus.Vfs.CompositeFeed.a_subtree_entry_at_a_composite_directory_must_poison
+      - Nimbus.Vfs.CompositeFeed.an_aba_window_needs_no_poison
+      - Nimbus.Vfs.CompositeFeed.owner_first_routing_is_not_a_tree
+      - Nimbus.Vfs.CompositeFeed.fs_inv
+      - Nimbus.Vfs.CompositeFeed.staged_closed
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     refinement:
       - lean/fixtures/composite-feed.json :: tests/unit/composite-feed-refinement.mjs
     remainingEvidence:
-      - Closedness of the staged view at answer time is a hypothesis of feed_exact (well-formed backends give it)
+      - Closedness is discharged (view_closed, fs_inv); what remains assumed is that every backend is a POSIX tree and that its log covers every changed path (at the path, or under a sub entry above it)
+      - An own mutation's delta is assumed to name every staged path it changed (FsStep.own); the lane's own-write overlay is not modeled here
       - One principal's table; per-principal source switches are table changes for that principal
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation

@@ -401,13 +401,33 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeFeed.lean -/
 
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_mem
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_max
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_none
+#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_between
+#print axioms Nimbus.Vfs.CompositeFeed.synthAnc_iff
+#print axioms Nimbus.Vfs.CompositeFeed.dropLast_length_lt
+#print axioms Nimbus.Vfs.CompositeFeed.structural_dropLast
+#print axioms Nimbus.Vfs.CompositeFeed.view_closed
 #print axioms Nimbus.Vfs.CompositeFeed.feed_values
 #print axioms Nimbus.Vfs.CompositeFeed.feed_exact
 #print axioms Nimbus.Vfs.CompositeFeed.an_unfiltered_root_feed_stages_a_shadowed_row
+#print axioms Nimbus.Vfs.CompositeFeed.shown_below
+#print axioms Nimbus.Vfs.CompositeFeed.shown_view
+#print axioms Nimbus.Vfs.CompositeFeed.op_covered
+#print axioms Nimbus.Vfs.CompositeFeed.op_other
+#print axioms Nimbus.Vfs.CompositeFeed.apply_ops_exact
+#print axioms Nimbus.Vfs.CompositeFeed.feedOps_exact
+#print axioms Nimbus.Vfs.CompositeFeed.a_subtree_entry_at_a_composite_directory_must_poison
+#print axioms Nimbus.Vfs.CompositeFeed.an_aba_window_needs_no_poison
+#print axioms Nimbus.Vfs.CompositeFeed.owner_first_routing_is_not_a_tree
 #print axioms Nimbus.Vfs.CompositeFeed.view_table_congr
 #print axioms Nimbus.Vfs.CompositeFeed.step_exact
 #print axioms Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
 #print axioms Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+#print axioms Nimbus.Vfs.CompositeFeed.fs_inv
+#print axioms Nimbus.Vfs.CompositeFeed.staged_closed
 #print axioms Nimbus.Vfs.CompositeFeed.cas_inv
 #print axioms Nimbus.Vfs.CompositeFeed.revision_unique
 #print axioms Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide
