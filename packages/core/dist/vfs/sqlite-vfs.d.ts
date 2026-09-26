@@ -1064,7 +1064,12 @@ export declare class SqliteVFS {
      * is waited out too.
      */
     private quiesced;
-    /** Spanning work: held behind a quiescing snapshot, and awaited by the next one. */
+    /**
+     * Spanning work: held behind a quiescing snapshot, and awaited by the next
+     * one. Work under a live exclusive lease (`owner`) is part of what the
+     * snapshot already waits for, the lease, so it is never held: holding it
+     * would hold the lease forever (a clone streaming its batches).
+     */
     private spanning;
     private pinSnapshot;
     private snapshotGen;

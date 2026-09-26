@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 
 const STORE_OPS = ['snapshot', 'snapshots', 'dropSnapshot', 'diff', 'at', 'restore', 'exportPage', 'exportChunks', 'importPage', 'pageDigest', 'exportSnapshot', 'importSnapshot'];
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -115,6 +116,39 @@ await waiting;
 await late;
 assert.equal(store.at('held').readFileString('home/user/app/src/a.txt'), 'three', 'the restore that started meanwhile ran after the snapshot');
 assert.equal(kernel.readFileString('home/user/app/src/a.txt'), 'one');
+
+// A clone's shape: it holds its lease and streams its batches under it. The
+// snapshot waits for the lease, so the clone's own streams must not be held
+// behind the snapshot, or neither ever finishes. A lease taken after the
+// snapshot started waiting, whose owner then streams, is the same.
+{
+  const f = (path) => ({ path, parentPath: path.slice(0, path.lastIndexOf('/')), isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 });
+  const batch = (path, data) => encodeWriteBatchStream({ inodes: [f(path)], chunks: [{ path, chunkId: 0, data: new TextEncoder().encode(data) }] });
+  kernel.mkdir('home/user/repo');
+  const clone = async (lease) => {
+    await kernel.writeStream(batch('home/user/repo/a', '1'), { mutationOwner: lease.owner });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await kernel.writeStream(batch('home/user/repo/b', '2'), { mutationOwner: lease.owner });
+    store.releaseExclusiveMutation(lease.owner);
+  };
+  const within = (promise, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`deadlock: ${what}`)), 3000))]);
+  const early = clone(store.acquireExclusiveMutation('home/user/repo'));
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  const pinned = store.snapshot('mid-clone', { quiesce: true });
+  await within(Promise.all([early, pinned]), 'a lease taken before the snapshot');
+  assert.equal(store.at('mid-clone').readFileString('home/user/repo/b'), '2', 'the pin waited for the whole clone');
+
+  kernel.removeRecursive('home/user/repo');
+  kernel.mkdir('home/user/repo');
+  kernel.writeFile('home/user/other', 'x');
+  const holder = store.acquireExclusiveMutation('home/user/other');
+  const waiting = store.snapshot('late-lease', { quiesce: true });
+  const lateClone = clone(store.acquireExclusiveMutation('home/user/repo'));
+  const unrelated = kernel.writeStream(batch('home/user/unrelated', 'u'));
+  store.releaseExclusiveMutation(holder.owner);
+  await within(Promise.all([lateClone, waiting, unrelated]), 'a lease taken after the snapshot started waiting');
+  assert.equal(store.at('late-lease').exists('home/user/unrelated'), false, 'unowned work was held until the pin');
+}
 
 store.dropSnapshot('first');
 assert.equal(store.snapshots().some((s) => s.name === 'first'), false);

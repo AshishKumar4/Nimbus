@@ -4222,8 +4222,13 @@ export class SqliteVFS {
             }
         })();
     }
-    /** Spanning work: held behind a quiescing snapshot, and awaited by the next one. */
-    spanning(start) {
+    /**
+     * Spanning work: held behind a quiescing snapshot, and awaited by the next
+     * one. Work under a live exclusive lease (`owner`) is part of what the
+     * snapshot already waits for, the lease, so it is never held: holding it
+     * would hold the lease forever (a clone streaming its batches).
+     */
+    spanning(start, owner) {
         // Tracked once started: the snapshot waits for running work, never for
         // work it is itself holding back.
         const begin = () => {
@@ -4234,7 +4239,9 @@ export class SqliteVFS {
             return run;
         };
         const gate = this.quiesceGate;
-        return gate === null ? begin() : gate.then(begin);
+        if (gate === null || (owner !== undefined && this.exclusiveMutationLeases.has(owner)))
+            return begin();
+        return gate.then(begin);
     }
     pinSnapshot(name) {
         if (this.snapshotGen(name) !== undefined)
@@ -5619,7 +5626,7 @@ export class SqliteVFS {
      * stored exactly as the same bytes written any other way.
      */
     writeStream(stream, options = {}, cred) {
-        return this.spanning(() => this.consumeStream(stream, options, cred));
+        return this.spanning(() => this.consumeStream(stream, options, cred), options.mutationOwner);
     }
     async consumeStream(stream, options, cred) {
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
