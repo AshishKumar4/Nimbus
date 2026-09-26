@@ -2221,7 +2221,8 @@ export class SqliteVFS {
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     let current = this.nameOf(path, cred);
-    const seen = new Set<string>();
+    // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
+    // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
     for (let hops = 0; hops <= 40; hops++) {
       const parts = current.split('/').filter(Boolean);
       let prefix = '';
@@ -2235,8 +2236,7 @@ export class SqliteVFS {
           throw vfsError('ENOENT', prefix);
         }
         if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
-          if (seen.has(prefix) || hops === 40) throw vfsError('ELOOP', path);
-          seen.add(prefix);
+          if (hops === 40) throw vfsError('ELOOP', path);
           const target = dec.decode(this.readInodeBytes(inode.path, inode));
           const suffix = parts.slice(index + 1).join('/');
           const base = target.startsWith('/') ? target : `${this.parentPath(prefix)}/${target}`;

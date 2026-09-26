@@ -616,7 +616,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (rooted && path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
     const pending = this.pathArgument(path).split('/').filter(Boolean);
     const resolved: string[] = [];
-    const seen = new Set<string>();
+    let hops = 0;
 
     while (pending.length > 0) {
       const segment = pending.shift();
@@ -653,8 +653,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         resolved.push(segment);
         continue;
       }
-      if (seen.has(candidate)) return null;
-      seen.add(candidate);
+      // Hops are counted, as Linux does (40): a link met again on a longer
+      // path is one more hop, not a cycle.
+      if (++hops > MAX_LINK_HOPS) return null;
       if (root !== null && root !== '' && target !== root && !target.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
       pending.unshift(...target.split('/').filter(Boolean));
       resolved.length = 0;
@@ -799,6 +800,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   fchown(handleId: number, uid: number, gid: number): void { this.description(handleId).node.chown(uid, gid); }
   futimes(handleId: number, atime: number, mtime: number): void { this.description(handleId).node.utimes(atime, mtime); }
 }
+
+/** Links followed before ELOOP (Linux MAXSYMLINKS). */
+const MAX_LINK_HOPS = 40;
 
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located = { mount: SyncVFS; path: string } | { mount?: undefined; path: string };

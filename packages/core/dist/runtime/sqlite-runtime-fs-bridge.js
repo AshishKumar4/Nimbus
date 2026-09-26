@@ -620,7 +620,7 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ENOTCAPABLE', 'path', path);
         const pending = this.pathArgument(path).split('/').filter(Boolean);
         const resolved = [];
-        const seen = new Set();
+        let hops = 0;
         while (pending.length > 0) {
             const segment = pending.shift();
             if (segment === undefined)
@@ -660,9 +660,10 @@ export class SqliteRuntimeFsBridge {
                 resolved.push(segment);
                 continue;
             }
-            if (seen.has(candidate))
+            // Hops are counted, as Linux does (40): a link met again on a longer
+            // path is one more hop, not a cycle.
+            if (++hops > MAX_LINK_HOPS)
                 return null;
-            seen.add(candidate);
             if (root !== null && root !== '' && target !== root && !target.startsWith(root + '/'))
                 throw fsError('ENOTCAPABLE', 'path', path);
             pending.unshift(...target.split('/').filter(Boolean));
@@ -809,6 +810,8 @@ export class SqliteRuntimeFsBridge {
     fchown(handleId, uid, gid) { this.description(handleId).node.chown(uid, gid); }
     futimes(handleId, atime, mtime) { this.description(handleId).node.utimes(atime, mtime); }
 }
+/** Links followed before ELOOP (Linux MAXSYMLINKS). */
+const MAX_LINK_HOPS = 40;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp(fn, syscall, path) {
     if (typeof fn !== 'function')
