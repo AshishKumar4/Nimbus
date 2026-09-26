@@ -395,6 +395,13 @@ import Nimbus.Refine
 
 #print axioms Nimbus.Refine.ContentStoreCases.chunkFor_ok
 
+/-! ## Nimbus/Refine/ProcessFilesCases.lean -/
+
+#print axioms Nimbus.Refine.ProcessFilesCases.flushH_files
+#print axioms Nimbus.Refine.ProcessFilesCases.flushAll_files
+#print axioms Nimbus.Refine.ProcessFilesCases.viewAs_is_flush
+#print axioms Nimbus.Refine.ProcessFilesCases.viewAs_other
+
 /-! ## Nimbus/Refine/RevisionFloorCases.lean -/
 
 #print axioms Nimbus.Refine.RevisionFloorCases.dropOnce_step

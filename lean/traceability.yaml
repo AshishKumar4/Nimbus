@@ -624,7 +624,7 @@ requirements:
     remainingEvidence:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
   VFS-PF-001:
-    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes.
+    statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes; a process reads and stats its own handles' pending writes merged in by the flush merge (Linux page-cache semantics), and another process sees the flushed file.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.ProcessFiles.acked_accounted
@@ -640,6 +640,10 @@ requirements:
       - Nimbus.Vfs.ProcessFiles.mem_map_upd
       - Nimbus.Vfs.ProcessFiles.mem_map_keep
       - Nimbus.Vfs.ProcessFiles.step_accounted
+      - Nimbus.Refine.ProcessFilesCases.flushH_files
+      - Nimbus.Refine.ProcessFilesCases.flushAll_files
+      - Nimbus.Refine.ProcessFilesCases.viewAs_is_flush
+      - Nimbus.Refine.ProcessFilesCases.viewAs_other
     tsRefs:
       - packages/core/src/runtime/process-files.ts#ProcessFiles.releaseProcess
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.acquireExclusiveMutation
