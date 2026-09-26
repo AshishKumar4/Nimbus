@@ -358,12 +358,6 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   };
 }
 
-function getAuthor(ctx: Ctx) {
-  return {
-    name: ctx.env.GIT_AUTHOR_NAME || ctx.env.USER || 'user',
-    email: ctx.env.GIT_AUTHOR_EMAIL || 'user@nimbus.dev',
-  };
-}
 
 /** fetch, pull and push: `-q`/`--quiet` wherever it appears; the other words keep their order. */
 function takeQuiet(args: readonly string[]): { quiet: boolean; rest: string[] } {
@@ -1025,29 +1019,51 @@ function parseGitDate(text: string, nowSeconds = Math.floor(Date.now() / 1000)):
   return { seconds, zone: gitTimezone(minutesEast) };
 }
 
+/** An identity as cf-git takes it; timezoneOffset is JavaScript's (minutes west of UTC). */
+interface GitIdent { name: string; email: string; timestamp: number; timezoneOffset: number }
+
 /**
- * The committer identity git stamps a tag with: GIT_COMMITTER_NAME and
- * GIT_COMMITTER_EMAIL, else user.name and user.email from the config (never
- * the author's), and GIT_COMMITTER_DATE or now. A date git cannot read is
- * its error.
+ * The author or committer identity git stamps an object with (ident.c):
+ * GIT_<ROLE>_NAME and GIT_<ROLE>_EMAIL, else user.name and user.email from
+ * the config, then the login name; and GIT_<ROLE>_DATE read by
+ * parseGitDate, or now. A date git cannot read is its error.
  */
-async function committerIdent(ctx: Ctx, git: CfGit, fs: unknown, dir: string): Promise<string | { error: string }> {
+async function gitIdent(ctx: Ctx, git: CfGit, fs: unknown, dir: string, role: 'AUTHOR' | 'COMMITTER'): Promise<GitIdent | { error: string }> {
   const config = async (key: string) => {
     try { const value = await git.getConfig({ fs, dir, path: key }); return typeof value === 'string' ? value : undefined; }
     catch { return undefined; }
   };
-  const name = ctx.env.GIT_COMMITTER_NAME || await config('user.name') || ctx.env.USER || 'user';
-  const email = ctx.env.GIT_COMMITTER_EMAIL || await config('user.email') || 'user@nimbus.dev';
-  let when: { seconds: number; zone: string };
-  if (ctx.env.GIT_COMMITTER_DATE) {
-    const parsed = parseGitDate(ctx.env.GIT_COMMITTER_DATE);
-    if (!parsed) return { error: `fatal: invalid date format: ${ctx.env.GIT_COMMITTER_DATE}\n` };
-    when = parsed;
+  const name = ctx.env[`GIT_${role}_NAME`] || await config('user.name') || ctx.env.USER || 'user';
+  const email = ctx.env[`GIT_${role}_EMAIL`] || await config('user.email') || 'user@nimbus.dev';
+  const raw = ctx.env[`GIT_${role}_DATE`];
+  let seconds: number;
+  let minutesEast: number;
+  if (raw) {
+    const parsed = parseGitDate(raw);
+    if (!parsed) return { error: `fatal: invalid date format: ${raw}\n` };
+    seconds = parsed.seconds;
+    const zone = /^([+-])(\d{2})(\d{2})$/.exec(parsed.zone)!;
+    minutesEast = (zone[1] === '-' ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3]));
   } else {
-    const seconds = Math.floor(Date.now() / 1000);
-    when = { seconds, zone: gitTimezone(-new Date().getTimezoneOffset()) };
+    seconds = Math.floor(Date.now() / 1000);
+    minutesEast = -new Date(seconds * 1000).getTimezoneOffset();
   }
-  return `${name} <${email}> ${when.seconds} ${when.zone}`;
+  // Not -0: cf-git writes a negative zero offset as -0000, which is git's "zone unknown".
+  return { name, email, timestamp: seconds, timezoneOffset: minutesEast === 0 ? 0 : -minutesEast };
+}
+
+/** An identity as a signature line: `Name <email> <seconds> ±hhmm`. */
+function identLine(ident: GitIdent): string {
+  return `${ident.name} <${ident.email}> ${ident.timestamp} ${gitTimezone(-ident.timezoneOffset)}`;
+}
+
+/** Both identities a commit takes, or git's error for a date it cannot read. */
+async function commitIdents(ctx: Ctx, git: CfGit, fs: unknown, dir: string): Promise<{ author: GitIdent; committer: GitIdent } | { error: string }> {
+  const author = await gitIdent(ctx, git, fs, dir, 'AUTHOR');
+  if ('error' in author) return author;
+  const committer = await gitIdent(ctx, git, fs, dir, 'COMMITTER');
+  if ('error' in committer) return committer;
+  return { author, committer };
 }
 
 /**
@@ -1219,11 +1235,12 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
   }
   let value: string;
   if (messages.length > 0) {
-    const tagger = await committerIdent(ctx, git, fs, dir);
-    if (typeof tagger !== 'string') {
-      await ctx.stderr.write(tagger.error);
+    const ident = await gitIdent(ctx, git, fs, dir, 'COMMITTER');
+    if ('error' in ident) {
+      await ctx.stderr.write(ident.error);
       return 128;
     }
+    const tagger = identLine(ident);
     // The object as git writes it, byte for byte: the headers, a blank line,
     // then the cleaned message (nothing at all when it is empty). cf-git's
     // annotatedTag appends a newline after the message, which an empty one
@@ -1909,9 +1926,11 @@ export async function runGitCommand(
         const message = messages.length ? messages.join('\n\n') : 'commit';
         if (!message) { ctx.stderr.write('error: empty commit message\n'); return 1; }
         if (all) await stageTracked(git, fs, dir);
+        const idents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in idents) { await ctx.stderr.write(idents.error); return 128; }
         const sha = await git.commit({
           fs, dir, message,
-          author: getAuthor(ctx),
+          ...idents,
         });
         if (!quiet) ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
         return 0;
@@ -2058,6 +2077,8 @@ export async function runGitCommand(
           ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
           return 1;
         }
+        const pullIdents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in pullIdents) { await ctx.stderr.write(pullIdents.error); return 128; }
         if (!quiet) ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'pull',
@@ -2066,7 +2087,7 @@ export async function runGitCommand(
           remote,
           ref: branch,
           quiet,
-          author: getAuthor(ctx),
+          ...pullIdents,
           auth: {
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
@@ -2117,9 +2138,11 @@ export async function runGitCommand(
         // Into the current branch, or HEAD when detached. The branch moves only once the worktree
         // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
         const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
+        const mergeIdents = await commitIdents(ctx, git, fs, dir);
+        if ('error' in mergeIdents) { await ctx.stderr.write(mergeIdents.error); return 128; }
         const merged = await git.merge({
           fs, dir, ours, theirs,
-          author: getAuthor(ctx),
+          ...mergeIdents,
           noUpdateBranch: true,
         });
         if (!merged.alreadyMerged) {

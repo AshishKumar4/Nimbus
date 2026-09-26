@@ -989,6 +989,82 @@ try {
     }
   }
 
+  // ── Commits stamp the author and committer git's environment and config name ──
+  // Both gits commit the same tree with the same identities and dates, so the commit
+  // objects (and their ids) are byte-identical; a date git cannot read is its error.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      git('add', 'f');
+      git('commit', '-q', '-m', 'base');
+    });
+    const catHead = (cwd) => realGit(cwd, ['cat-file', 'commit', 'HEAD']).stdout.toString();
+    const identity = Object.fromEntries(Object.entries(GIT_ENV).filter(([k]) => /^GIT_(AUTHOR|COMMITTER)_/.test(k)));
+    const commitBoth = async (label, content, overrides, extra = {}) => {
+      const env = { ...identity, ...overrides };
+      rewriteBoth(repo, 'f', content);
+      sh(repo.disk, ['add', 'f']);
+      { const r = await nimbusGit(repo.virtual, ['add', 'f'], env); assert.equal(r.code, 0, r.stderr); }
+      const expected = realGit(repo.disk, ['commit', '-q', '-m', 'msg'], env);
+      const actual = await nimbusGit(repo.virtual, ['commit', '-q', '-m', 'msg'], env);
+      assert.equal(actual.code, expected.code, `${label}: exit (${actual.stderr})`);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), `${label}: the commit object`);
+      checks++;
+    };
+    const people = {
+      GIT_AUTHOR_NAME: 'Au Thor', GIT_AUTHOR_EMAIL: 'au@x', GIT_AUTHOR_DATE: 'Thu, 02 Jan 2020 03:04:05 -0800',
+      GIT_COMMITTER_NAME: 'Co Mitter', GIT_COMMITTER_EMAIL: 'co@x', GIT_COMMITTER_DATE: '2021-03-04T05:06:07+05:30',
+    };
+    await commitBoth('a commit with GIT_ENV\'s identities and dates', '2\n', {});
+    await commitBoth('author and committer apart, in two date forms', '3\n', people);
+    await commitBoth('git\'s own date format, and @epoch', '4\n',
+      { ...people, GIT_AUTHOR_DATE: 'Thu Jan 2 03:04:05 2020 -0800', GIT_COMMITTER_DATE: '@1700000000 +0100' });
+    // No name in the environment: user.name and user.email from the config, for both.
+    for (const cwd of [repo.disk]) sh(cwd, ['config', 'user.name', 'Conf Igured'], ['config', 'user.email', 'conf@x']);
+    { const r = await nimbusGit(repo.virtual, ['config', 'user.name', 'Conf Igured']); assert.equal(r.code, 0, r.stderr); }
+    { const r = await nimbusGit(repo.virtual, ['config', 'user.email', 'conf@x']); assert.equal(r.code, 0, r.stderr); }
+    const noNames = { GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '' };
+    const unset = (env) => Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+    {
+      rewriteBoth(repo, 'f', '5\n');
+      sh(repo.disk, ['add', 'f']);
+      assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+      // Real git gets the names removed from its environment; Nimbus gets none.
+      const r = spawnSync('git', ['commit', '-q', '-m', 'msg'], { cwd: repo.disk, env: unset({ ...GIT_ENV, ...noNames }) });
+      assert.equal(r.status, 0, r.stderr.toString());
+      const n = await nimbusGit(repo.virtual, ['commit', '-q', '-m', 'msg'], { GIT_AUTHOR_DATE: GIT_ENV.GIT_AUTHOR_DATE, GIT_COMMITTER_DATE: GIT_ENV.GIT_COMMITTER_DATE });
+      assert.equal(n.code, 0, n.stderr);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), 'identities from the config: the commit object');
+    }
+    rewriteBoth(repo, 'f', '6\n');
+    sh(repo.disk, ['add', 'f']);
+    assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+    await agreeOn('an author date git cannot read', repo, ['commit', '-q', '-m', 'msg'], { env: { ...identity, GIT_AUTHOR_DATE: 'garbage' } });
+  }
+  // A merge that makes a commit stamps both lines the same way.
+  {
+    const repo = scenario(({ put, git }) => {
+      put('f', '1\n');
+      put('g', 'g\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+      git('checkout', '-q', '-b', 'b');
+      put('f', '2\n');
+      git('commit', '-q', '-a', '-m', 'b');
+      git('checkout', '-q', 'main');
+      put('g', 'g2\n');
+      git('commit', '-q', '-a', '-m', 'm');
+    });
+    const people = { GIT_AUTHOR_NAME: 'Au', GIT_AUTHOR_EMAIL: 'au@x', GIT_AUTHOR_DATE: '1600000000 +0200',
+      GIT_COMMITTER_NAME: 'Co', GIT_COMMITTER_EMAIL: 'co@x', GIT_COMMITTER_DATE: '1600000100 -0400' };
+    const expected = realGit(repo.disk, ['merge', '-q', '--no-edit', 'b'], people);
+    const actual = await nimbusGit(repo.virtual, ['merge', '-q', '--no-edit', 'b'], people);
+    assert.equal(actual.code, expected.code, `a merge commit: exit (${actual.stderr})`);
+    const signatures = (cwd) => realGit(cwd, ['cat-file', 'commit', 'HEAD']).stdout.toString().split('\n').filter((l) => /^(author|committer) /.test(l)).join('\n');
+    assert.equal(signatures(copyOf(repo)), signatures(repo.disk), 'a merge commit: its author and committer');
+    checks++;
+  }
+
   // ── A same-size rewrite in the second the index was written ──
   // Its stat still matches the index entry, so only git's racily-clean rule
   // (read-cache.c is_racy_timestamp) sees it: an entry whose mtime is not older
