@@ -293,7 +293,8 @@ async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson):
 export function getBinEntries(pkg: PackageJson): Record<string, string> {
 	if (!pkg.bin) return {};
 	if (typeof pkg.bin === 'string') {
-		return { [pkg.name || 'unknown']: pkg.bin };
+		// npm names a lone bin after the package, without its scope.
+		return { [(pkg.name || 'unknown').replace(/^@[^/]+\//, '')]: pkg.bin };
 	}
 	return pkg.bin;
 }

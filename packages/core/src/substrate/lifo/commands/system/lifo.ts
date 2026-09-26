@@ -14,7 +14,6 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import { ExecutionFs } from '../../../../shell/execution-fs.js';
-import type { VFS } from '../../kernel/vfs/index.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { ShellExecuteFn } from './npm.js';
 import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
@@ -458,8 +457,7 @@ export function createLifoPkgCommand(
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export async function rehydrateGlobalPackages(storage: VFS, registry: CommandRegistry): Promise<void> {
-  const vfs = new ExecutionFs(storage);
+export async function rehydrateGlobalPackages(vfs: ExecutionFs, registry: CommandRegistry): Promise<void> {
   // 1. Restore dev links
   (await loadDevLinks(vfs, registry));
 
@@ -505,9 +503,4 @@ export async function rehydrateGlobalPackages(storage: VFS, registry: CommandReg
       }
     }
   }
-}
-
-/** @deprecated Use rehydrateGlobalPackages() instead. */
-export async function bootLifoPackages(vfs: VFS, registry: CommandRegistry): Promise<void> {
-  (await rehydrateGlobalPackages(vfs, registry));
 }

@@ -197,7 +197,8 @@ export function getBinEntries(pkg) {
     if (!pkg.bin)
         return {};
     if (typeof pkg.bin === 'string') {
-        return { [pkg.name || 'unknown']: pkg.bin };
+        // npm names a lone bin after the package, without its scope.
+        return { [(pkg.name || 'unknown').replace(/^@[^/]+\//, '')]: pkg.bin };
     }
     return pkg.bin;
 }

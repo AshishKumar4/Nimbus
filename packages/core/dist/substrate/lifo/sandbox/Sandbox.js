@@ -16,7 +16,8 @@ import { createNetstatCommand } from '../commands/net/netstat.js';
 import { createHostCommand } from '../commands/net/host.js';
 import { createIPCommand } from '../commands/net/ip.js';
 import { createNpmCommand, createNpxCommand } from '../commands/system/npm.js';
-import { createLifoPkgCommand, bootLifoPackages } from '../commands/system/lifo.js';
+import { createLifoPkgCommand, rehydrateGlobalPackages } from '../commands/system/lifo.js';
+import { ExecutionFs } from '../../../shell/execution-fs.js';
 import { createSystemctlCommand } from '../commands/system/systemctl.js';
 import { NativeFsProvider } from '../kernel/vfs/providers/NativeFsProvider.js';
 import { SandboxFsImpl } from './SandboxFs.js';
@@ -65,7 +66,7 @@ export class Sandbox {
         }
         // 2. Create command registry
         const registry = createDefaultRegistry();
-        bootLifoPackages(kernel.vfs, registry);
+        await rehydrateGlobalPackages(new ExecutionFs(kernel.vfs), registry);
         // 3. Pre-populate files if provided
         if (options?.files) {
             for (const [path, content] of Object.entries(options.files)) {

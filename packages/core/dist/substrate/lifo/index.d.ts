@@ -37,7 +37,7 @@ export { createIPCommand } from './commands/net/ip.js';
 export { createTunnelCommand } from './commands/net/tunnel.js';
 export { createForwardCommand, createUnforwardCommand } from './commands/net/forward.js';
 export { createPortsCommand } from './commands/net/ports.js';
-export { createLifoPkgCommand, bootLifoPackages, rehydrateGlobalPackages } from './commands/system/lifo.js';
+export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
 export { createSystemctlCommand } from './commands/system/systemctl.js';

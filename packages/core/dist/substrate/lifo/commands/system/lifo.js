@@ -10,7 +10,6 @@
  *   link    <path>       dev-link a local package directory
  *   unlink  <name>       remove a dev link
  */
-import { ExecutionFs } from '../../../../shell/execution-fs.js';
 import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
 import { RegistrySearchResponseSchema } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
@@ -387,8 +386,7 @@ export function createLifoPkgCommand(registry, _shellExecute, kernel) {
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export async function rehydrateGlobalPackages(storage, registry) {
-    const vfs = new ExecutionFs(storage);
+export async function rehydrateGlobalPackages(vfs, registry) {
     // 1. Restore dev links
     (await loadDevLinks(vfs, registry));
     if (!await vfs.exists(GLOBAL_MODULES))
@@ -434,8 +432,4 @@ export async function rehydrateGlobalPackages(storage, registry) {
             }
         }
     }
-}
-/** @deprecated Use rehydrateGlobalPackages() instead. */
-export async function bootLifoPackages(vfs, registry) {
-    (await rehydrateGlobalPackages(vfs, registry));
 }

@@ -5,7 +5,7 @@ import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
+import { ExecutionFs, withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -1581,7 +1581,11 @@ registry.register('watch', createWatchCommand(registry));
 registry.register('help', createHelpCommand(registry));
 
 // ── Rehydrate globally-installed npm packages ──
+// Awaited: the runtime is composed with them registered. A failure leaves the
+// shell without those commands, and says so.
 try {
-  rehydrateGlobalPackages(kernel.vfs, registry);
-} catch {}
+  await withHostFilesystem(workspace.filesystem, CRED_KERNEL, (fs) => rehydrateGlobalPackages(fs, registry));
+} catch (error) {
+  console.error('[nimbus] global npm commands were not restored:', error);
+}
 }
