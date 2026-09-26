@@ -1,4 +1,4 @@
-import { SqliteVFSProvider, type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, SqliteVFSProvider, type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
@@ -90,7 +90,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const now = Date.now();
     return {
       dev: this.rawVfs.deviceId, ino: 0, nlink: 1, type: 'directory', size: 0,
-      ctime: now, atime: now, mtime: now, mode: 0o40755, uid: 0, gid: 0,
+      ctime: now, atime: now, mtime: now, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0,
       revision: this.rawVfs.revision(),
     };
   }

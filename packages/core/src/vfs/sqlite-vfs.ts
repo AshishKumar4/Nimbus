@@ -88,6 +88,8 @@ import {
 
 /** Schema version of the v2 content store. */
 const VFS_SCHEMA = 2;
+/** The root directory has no row; this is what it is. */
+export const ROOT_DIRECTORY_MODE = 0o40755;
 
 // CHUNK_SIZE / LRU_MAX_ENTRIES / BATCH_SIZE are imported from ./constants.js
 // (single source of truth). Facet-isolate code-strings duplicate the literal
@@ -2186,9 +2188,17 @@ export class SqliteVFS {
     return resolved;
   }
 
+  /**
+   * `/` has no row: it is 0755 root:root by definition, and adding or
+   * removing a name in it needs write and search there like any directory.
+   */
+  private checkRootWritable(path: string, cred: VfsCred): void {
+    if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred)) throw vfsError('EACCES', normalizeVfsPath(path));
+  }
+
   private checkParentAccess(path: string, cred: VfsCred): void {
     const parent = this.parentPath(normalizeVfsPath(path));
-    if (parent === '') return;
+    if (parent === '') { this.checkRootWritable(path, cred); return; }
     const resolved = this.checkAccess(parent, 0o3, cred);
     if (resolved.inode?.kind !== 'directory') throw vfsError('ENOTDIR', parent);
   }
@@ -6221,7 +6231,7 @@ export class SqliteVFS {
     const placedParents = new Set<string>();
     const checkParent = (path: string, placing: boolean): void => {
       const parent = this.parentPath(path);
-      if (parent === '') return;
+      if (parent === '') { this.checkRootWritable(path, cred); return; }
       const checked = placing ? placedParents : checkedParents;
       if (checked.has(parent)) return;
       checked.add(parent);

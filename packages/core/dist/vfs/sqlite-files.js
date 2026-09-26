@@ -108,7 +108,12 @@ export class SqliteFiles {
         return this.run(path, () => this.view.readdir(path).map((entry) => ({ name: entry.name, type: entry.type })));
     }
     mkdir(path, options) {
-        this.run(path, () => this.view.mkdir(path, options));
+        this.run(path, () => {
+            // mkdir(2): an existing name is EEXIST (the engine's own mkdir is idempotent).
+            if (!options?.recursive && this.view.exists(path))
+                throw new VfsError('EEXIST', 'file exists', path);
+            this.view.mkdir(path, options);
+        });
     }
     unlink(path) {
         this.run(path, () => this.view.unlink(path));

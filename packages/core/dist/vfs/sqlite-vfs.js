@@ -42,6 +42,8 @@ import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, c
 import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 /** Schema version of the v2 content store. */
 const VFS_SCHEMA = 2;
+/** The root directory has no row; this is what it is. */
+export const ROOT_DIRECTORY_MODE = 0o40755;
 /**
  * Live view of the global object. `process` is not in the Workers lib, so its
  * shape is declared here rather than assumed present.
@@ -1553,10 +1555,20 @@ export class SqliteVFS {
         }
         return resolved;
     }
+    /**
+     * `/` has no row: it is 0755 root:root by definition, and adding or
+     * removing a name in it needs write and search there like any directory.
+     */
+    checkRootWritable(path, cred) {
+        if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred))
+            throw vfsError('EACCES', normalizeVfsPath(path));
+    }
     checkParentAccess(path, cred) {
         const parent = this.parentPath(normalizeVfsPath(path));
-        if (parent === '')
+        if (parent === '') {
+            this.checkRootWritable(path, cred);
             return;
+        }
         const resolved = this.checkAccess(parent, 0o3, cred);
         if (resolved.inode?.kind !== 'directory')
             throw vfsError('ENOTDIR', parent);
@@ -5230,8 +5242,10 @@ export class SqliteVFS {
         const placedParents = new Set();
         const checkParent = (path, placing) => {
             const parent = this.parentPath(path);
-            if (parent === '')
+            if (parent === '') {
+                this.checkRootWritable(path, cred);
                 return;
+            }
             const checked = placing ? placedParents : checkedParents;
             if (checked.has(parent))
                 return;

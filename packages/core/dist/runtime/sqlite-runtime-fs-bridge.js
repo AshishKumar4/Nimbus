@@ -1,4 +1,4 @@
-import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 export function createSqliteDescriptorScope() {
@@ -61,7 +61,7 @@ export class SqliteRuntimeFsBridge {
         const now = Date.now();
         return {
             dev: this.rawVfs.deviceId, ino: 0, nlink: 1, type: 'directory', size: 0,
-            ctime: now, atime: now, mtime: now, mode: 0o40755, uid: 0, gid: 0,
+            ctime: now, atime: now, mtime: now, mode: ROOT_DIRECTORY_MODE, uid: 0, gid: 0,
             revision: this.rawVfs.revision(),
         };
     }

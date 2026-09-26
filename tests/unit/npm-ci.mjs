@@ -196,14 +196,14 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
       },
     },
   }));
-  await ws.exec('mkdir -p /proj/node_modules/stale && echo x > /proj/node_modules/stale/index.js && echo "{}" > /proj/package.json');
-  const noLock = await ws.exec('cd /proj && npm ci');
+  await ws.exec('mkdir -p /home/user/proj/node_modules/stale && echo x > /home/user/proj/node_modules/stale/index.js && echo "{}" > /home/user/proj/package.json');
+  const noLock = await ws.exec('cd /home/user/proj && npm ci');
   assert.equal(noLock.exitCode, 1);
   assert.match(noLock.stderr, /package-lock\.json/);
   assert.equal(calls.length, 0);
 
-  await ws.exec('echo "{}" > /proj/package-lock.json');
-  const r = await ws.exec('cd /proj && npm ci --omit=dev --ignore-scripts --no-audit');
+  await ws.exec('echo "{}" > /home/user/proj/package-lock.json');
+  const r = await ws.exec('cd /home/user/proj && npm ci --omit=dev --ignore-scripts --no-audit');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].spec.fromLockfile, true);
@@ -212,10 +212,10 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 
   // A lock the host rejects fails the command and leaves the project as it was.
   rejectLock = true;
-  const rejected = await ws.exec('cd /proj && npm ci');
+  const rejected = await ws.exec('cd /home/user/proj && npm ci');
   assert.equal(rejected.exitCode, 1);
   assert.match(rejected.stderr, /in sync/);
-  assert.equal(await ws.vfs.as(CRED_KERNEL).exists('/proj/node_modules/stale/index.js'), true,
+  assert.equal(await ws.vfs.as(CRED_KERNEL).exists('/home/user/proj/node_modules/stale/index.js'), true,
     'node_modules is not touched before the lock is accepted');
 }
 

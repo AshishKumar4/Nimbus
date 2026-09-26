@@ -4,6 +4,19 @@ An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+### filesystem
+
+- SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name
+  directly in it needs write permission on `/`, as on Linux. Before, the
+  filesystem skipped that check at the root, so any user (a confined agent
+  uid included) could create top-level entries, rename or remove kernel
+  directories, and unlink kernel files there. The session user can no
+  longer `mkdir /foo`; the top-level directories a session has (`/home`,
+  `/tmp`, `/usr`, `/var`, `/opt`, `/bin`) are made by the kernel at boot
+  and owned by the session user, as before.
+
 ## 2026-09-24
 
 ### filesystem

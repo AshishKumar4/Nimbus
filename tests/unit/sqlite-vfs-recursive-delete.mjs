@@ -286,21 +286,24 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 // the recursive walk got from readdir, which resolving from the index skips.
 {
   const { rawVfs, vfs } = openVfs();
-  vfs.mkdir('u/opaque', { recursive: true });
-  vfs.writeFile('u/opaque/secret.txt', 'x');
-  vfs.chown('u', 1000, 1000);
-  vfs.chown('u/opaque', 1000, 1000);
-  vfs.chown('u/opaque/secret.txt', 1000, 1000);
-  vfs.chmod('u/opaque', 0o333);
+  // Under a directory the user owns: removing a name from `/` is the kernel's.
+  vfs.mkdir('w');
+  vfs.chown('w', 1000, 1000);
+  vfs.mkdir('w/u/opaque', { recursive: true });
+  vfs.writeFile('w/u/opaque/secret.txt', 'x');
+  vfs.chown('w/u', 1000, 1000);
+  vfs.chown('w/u/opaque', 1000, 1000);
+  vfs.chown('w/u/opaque/secret.txt', 1000, 1000);
+  vfs.chmod('w/u/opaque', 0o333);
 
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('u'), /EACCES/);
+  assert.throws(() => user.removeRecursive('w/u'), /EACCES/);
   // Nothing was removed: the refusal precedes the first commit.
-  assert.equal(vfs.exists('u/opaque/secret.txt'), true);
-  assert.equal(vfs.exists('u/opaque'), true);
+  assert.equal(vfs.exists('w/u/opaque/secret.txt'), true);
+  assert.equal(vfs.exists('w/u/opaque'), true);
 
-  vfs.chmod('u/opaque', 0o755);
-  assert.equal(user.removeRecursive('u'), 3);
+  vfs.chmod('w/u/opaque', 0o755);
+  assert.equal(user.removeRecursive('w/u'), 3);
 }
 
 // Removal still needs write+execute on the parent of the root.

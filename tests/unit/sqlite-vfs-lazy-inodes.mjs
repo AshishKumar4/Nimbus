@@ -239,12 +239,14 @@ function counters(rawVfs) {
 {
   const PATHS = 4400; // past one 4096-row page
   const { harness, rawVfs, vfs } = openVfs(undefined, { inodeCacheEntries: 64 });
-  vfs.mkdir('big/aaa-opaque', { recursive: true });
-  vfs.writeFile('big/aaa-opaque/kept', 'x');
-  const created = ['big', 'big/aaa-opaque', 'big/aaa-opaque/kept'];
+  vfs.mkdir('w');
+  vfs.chown('w', 1000, 1000);
+  vfs.mkdir('w/big/aaa-opaque', { recursive: true });
+  vfs.writeFile('w/big/aaa-opaque/kept', 'x');
+  const created = ['w/big', 'w/big/aaa-opaque', 'w/big/aaa-opaque/kept'];
   for (let dir = 0; created.length < PATHS; dir++) {
-    const parent = `big/d-${String(dir).padStart(3, '0')}`;
-    const inodes = [{ path: parent, parentPath: 'big', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
+    const parent = `w/big/d-${String(dir).padStart(3, '0')}`;
+    const inodes = [{ path: parent, parentPath: 'w/big', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
     for (let f = 0; f < 40; f++) {
       inodes.push({ path: `${parent}/f-${f}`, parentPath: parent, isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0 });
     }
@@ -253,19 +255,19 @@ function counters(rawVfs) {
   }
   rawVfs.getStats();
   // Sorts first, so a descending walk reaches it on the last page.
-  vfs.chown('big', 1000, 1000);
-  vfs.chown('big/aaa-opaque', 1000, 1000);
-  vfs.chmod('big/aaa-opaque', 0o333);
+  vfs.chown('w/big', 1000, 1000);
+  vfs.chown('w/big/aaa-opaque', 1000, 1000);
+  vfs.chmod('w/big/aaa-opaque', 0o333);
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('big'), /EACCES: big\/aaa-opaque/);
-  assert.equal(rawVfs.getStats().inodes.total, created.length, 'a refused removal removed something');
+  assert.throws(() => user.removeRecursive('w/big'), /EACCES: w\/big\/aaa-opaque/);
+  assert.equal(rawVfs.getStats().inodes.total, created.length + 1, 'a refused removal removed something'); // + w
 
   const order = [];
   rawVfs.events.on((batch) => {
     for (const event of batch) if (event.type === 'unlink' || event.type === 'unlinkDir') order.push(event.path);
   });
   const from = harness.statements.length;
-  assert.equal(vfs.removeRecursive('big'), created.length);
+  assert.equal(vfs.removeRecursive('w/big'), created.length);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(inodeTableScans(harness, from), []);
   assert.equal(order.length, created.length);
@@ -275,7 +277,7 @@ function counters(rawVfs) {
     if (position.has(parent)) assert.ok(position.get(path) < position.get(parent), `${parent} went before ${path}`);
   }
   assert.equal(rawVfs._verifyCounters(), null);
-  assert.deepEqual(counters(rawVfs), { files: 0, directories: 0, usedBytes: 0 });
+  assert.deepEqual(counters(rawVfs), { files: 0, directories: 1, usedBytes: 0 }); // w remains
   assert.ok(rawVfs.getStats().inodes.resident <= 64);
 }
 

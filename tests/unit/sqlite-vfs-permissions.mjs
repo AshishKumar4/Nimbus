@@ -16,7 +16,14 @@ const OTHER = Object.freeze({ uid: 2001, gid: 2001, groups: Object.freeze([2001]
 function makeVfs(db = new Database(':memory:')) {
   const harness = createSqliteVfsTestHarness(db);
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
   return {
+    // A top-level directory is the kernel's to make (`/` is 0755 root), then the user's.
+    userTop(name, mode) {
+      root.mkdir(name);
+      root.chown(name, USER.uid, USER.gid);
+      root.chmod(name, mode);
+    },
     db,
     harness,
     vfs,
@@ -40,7 +47,9 @@ function errorCode(fn, expected) {
 {
   const db = new Database(':memory:');
   const first = makeVfs(db);
-  first.user.mkdir('home', { mode: 0o777 });
+  first.root.mkdir('home', { mode: 0o777 });
+  first.root.chown('home', USER.uid, USER.gid);
+  first.root.chmod('home', 0o777);
   first.user.writeFile('home/user-file', 'u');
   first.root.writeFile('home/root-file', 'r');
   assert.deepEqual(
@@ -61,8 +70,8 @@ function errorCode(fn, expected) {
 
 // First matching class is binding; root gets R/W but X requires some execute bit.
 {
-  const { user, root, group, other } = makeVfs();
-  user.mkdir('d', { mode: 0o777 });
+  const { userTop, user, root, group, other } = makeVfs();
+  userTop('d', 0o777);
   user.writeFile('d/f', 'secret', { mode: 0o004 });
   errorCode(() => user.readFile('d/f'), 'EACCES');
   assert.equal(new TextDecoder().decode(other.readFile('d/f')), 'secret');
@@ -75,8 +84,8 @@ function errorCode(fn, expected) {
 
 // Traverse denial wins over a missing leaf; stat needs traverse only, readdir needs R.
 {
-  const { user, root, other } = makeVfs();
-  user.mkdir('private', { mode: 0o700 });
+  const { userTop, user, root, other } = makeVfs();
+  userTop('private', 0o700);
   user.writeFile('private/present', 'x', { mode: 0o000 });
   errorCode(() => other.stat('private/missing'), 'EACCES');
   errorCode(() => other.stat('private/present'), 'EACCES');
@@ -90,7 +99,7 @@ function errorCode(fn, expected) {
 
 // Creation requires W+X on the parent and applies the creating process's umask.
 {
-  const { vfs, user, root } = makeVfs();
+  const { vfs, userTop, user, root } = makeVfs();
   root.mkdir('owned', { mode: 0o755 });
   root.chown('owned', 1000, 1000);
   root.chmod('owned', 0o555);
@@ -108,8 +117,8 @@ function errorCode(fn, expected) {
 
 // chmod is owner-or-root (EPERM), distinct from access denials (EACCES).
 {
-  const { user, root, other } = makeVfs();
-  user.mkdir('d', { mode: 0o777 });
+  const { userTop, user, root, other } = makeVfs();
+  userTop('d', 0o777);
   user.writeFile('d/f', 'x');
   errorCode(() => other.chmod('d/f', 0o777), 'EPERM');
   user.chmod('d', 0o700);
@@ -121,8 +130,8 @@ function errorCode(fn, expected) {
 // chown: self uid no-op is allowed, foreign uid is root-only, owned-group changes are allowed,
 // and a successful non-root ownership operation clears setuid/setgid.
 {
-  const { vfs, user, root } = makeVfs();
-  user.mkdir('d', { mode: 0o777 });
+  const { vfs, userTop, user, root } = makeVfs();
+  userTop('d', 0o777);
   user.writeFile('d/f', 'x');
   user.chown('d/f', 1000, 1000);
   errorCode(() => user.chown('d/f', 2000, null), 'EPERM');
@@ -140,8 +149,8 @@ function errorCode(fn, expected) {
 
 // Explicit utimes is owner-or-root; "now" follows the write-access rule.
 {
-  const { user, root, other } = makeVfs();
-  user.mkdir('d', { mode: 0o777 });
+  const { userTop, user, root, other } = makeVfs();
+  userTop('d', 0o777);
   user.writeFile('d/f', 'x');
   user.chmod('d/f', 0o002);
   errorCode(() => other.utimes('d/f', 1, 2), 'EPERM');
@@ -181,8 +190,8 @@ function errorCode(fn, expected) {
 // Real reads keep failing honestly, and permission denials still throw
 // so traverse enforcement cannot be masked into a quiet false.
 {
-  const { user, other } = makeVfs();
-  user.mkdir('home', { mode: 0o755 });
+  const { userTop, user, other } = makeVfs();
+  userTop('home', 0o755);
   user.writeFile('home/lib.js', 'export {}');
   assert.equal(user.exists('home/lib.js/index.js'), false, 'exists through a file answers false');
   assert.equal(user.isDirectory('home/lib.js/index.js'), false, 'isDirectory through a file answers false');

@@ -51,7 +51,10 @@ try {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const authority = new SqliteFilesystemAuthority(rawVfs);
   const insecureUserVfs = rawVfs.as(USER);
-  insecureUserVfs.mkdir('etc', { mode: 0o777 });
+  // A workspace an older build left with a user-owned, world-writable /etc.
+  rawVfs.as(CRED_KERNEL).mkdir('etc', { mode: 0o777 });
+  rawVfs.as(CRED_KERNEL).chown('etc', USER.uid, USER.gid);
+  rawVfs.as(CRED_KERNEL).chmod('etc', 0o777);
   insecureUserVfs.writeFile(
     'etc/passwd',
     'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n',

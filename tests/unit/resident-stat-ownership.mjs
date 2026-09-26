@@ -46,6 +46,7 @@ async function boot({ inBundle = false, inPlan = true, tmp = false } = {}) {
   const root = authority.rawVfs.as(CRED_KERNEL);
   if (tmp) {
     root.mkdir('tmp', { recursive: true });
+    root.chown('tmp', 0, 0);
     root.chmod('tmp', 0o1777);
     root.writeFile('tmp/theirs', 'root secret');
     root.chmod('tmp/theirs', 0o644);

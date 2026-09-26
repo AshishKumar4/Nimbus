@@ -41,6 +41,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const dir = '/home/user/p';
 vfs.mkdir(dir, { recursive: true });
+vfs.mkdir('opt'); // seeded by the kernel, and the user's (ownTree)
 
 ownTree();
 const supervisor = {

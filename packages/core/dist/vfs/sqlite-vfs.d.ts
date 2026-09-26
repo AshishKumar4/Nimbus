@@ -29,6 +29,8 @@
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+/** The root directory has no row; this is what it is. */
+export declare const ROOT_DIRECTORY_MODE = 16877;
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -584,6 +586,11 @@ export declare class SqliteVFS {
      */
     private resolvePath;
     private checkAccess;
+    /**
+     * `/` has no row: it is 0755 root:root by definition, and adding or
+     * removing a name in it needs write and search there like any directory.
+     */
+    private checkRootWritable;
     private checkParentAccess;
     /**
      * POSIX sticky-bit restriction on a shared directory.

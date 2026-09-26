@@ -39,12 +39,12 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
 }));
 
 // ── Local install spec ──────────────────────────────────────────────────
-await ws.exec('mkdir -p /proj');
-await ws.exec('sh -c \'echo "{\\"name\\":\\"p\\",\\"dependencies\\":{}}" > /proj/package.json\'');
+await ws.exec('mkdir -p /home/user/proj');
+await ws.exec('sh -c \'echo "{\\"name\\":\\"p\\",\\"dependencies\\":{}}" > /home/user/proj/package.json\'');
 {
-  const r = await ws.exec('cd /proj && npm install example');
+  const r = await ws.exec('cd /home/user/proj && npm install example');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(calls.at(-1).projectDir, '/proj');
+  assert.equal(calls.at(-1).projectDir, '/home/user/proj');
   assert.deepEqual(calls.at(-1).packages, ['example']);
   assert.equal(calls.at(-1).global, false);
   assert.equal(calls.at(-1).globalPrefix, undefined);
@@ -56,17 +56,17 @@ await ws.exec('sh -c \'echo "{\\"name\\":\\"p\\",\\"dependencies\\":{}}" > /proj
   assert.match(r.stdout, /\(1 from cache\)/);
 }
 
-await ws.exec('mkdir -p /nopkg');
+await ws.exec('mkdir -p /home/user/nopkg');
 {
   const before = calls.length;
-  const r = await ws.exec('cd /nopkg && npm install');
+  const r = await ws.exec('cd /home/user/nopkg && npm install');
   assert.equal(r.exitCode, 1);
   assert.equal(calls.length, before, 'pre-check must not reach the port');
   assert.match(r.stderr, /npm ERR! no package\.json found/);
 }
 // ── Global install: --prefix is honoured in the spec ────────────────────
 {
-  const r = await ws.exec('cd /proj && npm install -g example --prefix /custom');
+  const r = await ws.exec('cd /home/user/proj && npm install -g example --prefix /custom');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(calls.at(-1).global, true);
   assert.equal(calls.at(-1).globalPrefix, '/custom');
@@ -76,14 +76,14 @@ await ws.exec('mkdir -p /nopkg');
 
 // npm_config_prefix is the fallback when --prefix is absent.
 {
-  const r = await ws.exec('cd /proj && npm_config_prefix=/envpfx npm install -g example');
+  const r = await ws.exec('cd /home/user/proj && npm_config_prefix=/envpfx npm install -g example');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(calls.at(-1).globalPrefix, '/envpfx');
 }
 
 // Default prefix.
 {
-  const r = await ws.exec('cd /proj && npm install -g example');
+  const r = await ws.exec('cd /home/user/proj && npm install -g example');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(calls.at(-1).globalPrefix, '/usr/local');
 }
@@ -91,7 +91,7 @@ await ws.exec('mkdir -p /nopkg');
 // ── Global install with no name: worker's exact error text ──────────────
 {
   const before = calls.length;
-  const r = await ws.exec('cd /proj && npm install -g');
+  const r = await ws.exec('cd /home/user/proj && npm install -g');
   assert.equal(r.exitCode, 1);
   assert.equal(calls.length, before);
   assert.match(r.stderr, /npm ERR! missing package name for global install/);
@@ -106,7 +106,7 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
   },
 }));
 {
-  const r = await ws.exec('cd /proj && npm install -g example');
+  const r = await ws.exec('cd /home/user/proj && npm install -g example');
   assert.equal(r.exitCode, 1);
   assert.match(r.stderr, /Failed: example/);
   assert.match(r.stdout, /added 1 packages \(2 files\) in \d+\.\ds \(1 failed, see above\)/);
@@ -122,7 +122,7 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
   },
 }));
 {
-  const r = await ws.exec('cd /proj && npm install example');
+  const r = await ws.exec('cd /home/user/proj && npm install example');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.match(r.stdout, /up to date in \d+\.\ds/);
   assert.doesNotMatch(r.stdout, /added \d+ packages/);
@@ -137,7 +137,7 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
   },
 }));
 {
-  const r = await ws.exec('cd /proj && npm install example');
+  const r = await ws.exec('cd /home/user/proj && npm install example');
   assert.equal(r.exitCode, 1);
   assert.match(r.stderr, /npm install failed: registry exploded/i);
   assert.doesNotMatch(r.stderr, /npm ERR! registry exploded/);
@@ -155,7 +155,7 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
       },
     },
   }));
-  const r = await ws.exec('cd /proj && npm install --loglevel=http example');
+  const r = await ws.exec('cd /home/user/proj && npm install --loglevel=http example');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(typeof sawLog, 'function', 'npmLog is handed to the port');
   assert.match(r.stderr, /npm http fetch GET/);
@@ -178,11 +178,11 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
       },
     },
   }));
-  let r = await ws.exec('cd /proj && npm install example');
+  let r = await ws.exec('cd /home/user/proj && npm install example');
   assert.equal(r.exitCode, 0, r.stderr);
-  r = await ws.exec('cd /proj && NPM_REGISTRY=http://npm-registry.invalid/ npm install example');
+  r = await ws.exec('cd /home/user/proj && NPM_REGISTRY=http://npm-registry.invalid/ npm install example');
   assert.equal(r.exitCode, 0, r.stderr);
-  r = await ws.exec('cd /proj && export NPM_REGISTRY=https://mirror.invalid && npm install example');
+  r = await ws.exec('cd /home/user/proj && export NPM_REGISTRY=https://mirror.invalid && npm install example');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.deepEqual(seen, ['https://registry.npmjs.org', 'http://npm-registry.invalid', 'https://mirror.invalid']);
 }

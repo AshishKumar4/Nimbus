@@ -549,11 +549,20 @@ const WORKSPACE_TABLES = [
 export function seedBaseFilesystem(vfs, mounts) {
     const fs = vfs.as(CRED_SESSION_USER);
     const rootFs = vfs.as(CRED_KERNEL);
-    // Created AS the session user, so the user owns their own tree. Seeding
-    // these as the kernel is what makes a workspace where `.fs` cannot write.
+    // Top-level directories are the kernel's to make (`/` is 0755 root), and
+    // handed to the session user, who owns their own tree: seeding them owned
+    // by the kernel is what makes a workspace where `.fs` cannot write.
     for (const mount of mounts) {
-        if (mount !== 'etc' && !fs.exists(mount))
-            fs.mkdir(mount, { recursive: true });
+        if (mount === 'etc' || rootFs.exists(mount))
+            continue;
+        rootFs.mkdir(mount, { mode: 0o777 & ~CRED_SESSION_USER.umask });
+        rootFs.chown(mount, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    }
+    for (const top of ['home', 'tmp', 'var', 'usr']) {
+        if (rootFs.exists(top))
+            continue;
+        rootFs.mkdir(top, { mode: 0o777 & ~CRED_SESSION_USER.umask });
+        rootFs.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
     }
     for (const dir of [
         'home/user', 'home/user/.config', 'home/user/projects',

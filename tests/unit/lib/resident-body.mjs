@@ -96,6 +96,12 @@ export function createAuthority(vfsOptions) {
   const root = rawVfs.as(CRED_KERNEL);
   root.mkdir('home/user', { recursive: true, mode: 0o755 });
   root.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  // What seedBaseFilesystem gives a session: top-level directories the
+  // kernel makes (`/` is 0755 root) and hands to the session user.
+  for (const top of ['opt', 'tmp', 'var', 'usr']) {
+    root.mkdir(top, { mode: 0o755 });
+    root.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
   const kfs = rawVfs.as(CRED_SESSION_USER);
   const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} };
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
