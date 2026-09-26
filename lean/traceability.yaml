@@ -813,3 +813,41 @@ requirements:
       - Parked until NodeNoMirrorBuild writes tests/unit/n17-hydration-refinement.mjs: Nimbus.Refine generates lean/fixtures/n17-hydration.json, and RefinementFixtures emits it again with the refinement entry
       - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
       - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound
+  CS-008:
+    statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles and is in no snapshot. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
+    status: proved-and-refined
+    theorems:
+      - Nimbus.ContentStore.Quiesce.pin1_snaps
+      - Nimbus.ContentStore.Quiesce.settleN_done
+      - Nimbus.ContentStore.Quiesce.settled
+      - Nimbus.ContentStore.Quiesce.settleN_cases
+      - Nimbus.ContentStore.Quiesce.pin1_inv
+      - Nimbus.ContentStore.Quiesce.settleN_inv
+      - Nimbus.ContentStore.Quiesce.raw_inv
+      - Nimbus.ContentStore.Quiesce.inv
+      - Nimbus.ContentStore.Quiesce.reach_settled
+      - Nimbus.ContentStore.Quiesce.pin_clean
+      - Nimbus.ContentStore.Quiesce.gated_on_newest
+      - Nimbus.ContentStore.Quiesce.pin_starts_its_waiters
+      - Nimbus.ContentStore.Quiesce.gated_on_pending
+      - Nimbus.ContentStore.Quiesce.acquire_never_waits
+      - Nimbus.ContentStore.Quiesce.settle_cases
+      - Nimbus.ContentStore.Quiesce.settle_id
+      - Nimbus.ContentStore.Quiesce.countP_map_lt
+      - Nimbus.ContentStore.Quiesce.progress
+      - Nimbus.ContentStore.Quiesce.wf_settle
+      - Nimbus.ContentStore.Quiesce.wf_resp
+      - Nimbus.ContentStore.Quiesce.drain
+      - Nimbus.ContentStore.Quiesce.deadlock_free
+      - Nimbus.ContentStore.Quiesce.stuck
+      - Nimbus.ContentStore.Quiesce.clone_pins
+      - Nimbus.ContentStore.Quiesce.clone_deadlocks_without_bypass
+      - Nimbus.ContentStore.Quiesce.lease_awaiting_copy_deadlocks
+      - Nimbus.ContentStore.Quiesce.job_awaiting_stream_deadlocks
+      - Nimbus.ContentStore.Quiesce.lease_after_gate
+    tsRefs:
+      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.snapshot
+    refinement:
+      - lean/fixtures/quiesce.json :: tests/unit/quiesce-refinement.mjs
+    remainingEvidence:
+      - Who awaits whom (a lease holder's streams, a job's children) is the environment's; WF is a hypothesis the callers must keep (the engine's restoreAsync and copyTree start no spanning work)

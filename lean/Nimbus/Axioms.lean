@@ -289,6 +289,37 @@ import Nimbus.Refine
 #print axioms Nimbus.ContentStore.commit_live_ne
 #print axioms Nimbus.ContentStore.commit_atRef
 
+/-! ## Nimbus/ContentStore/Quiesce.lean -/
+
+#print axioms Nimbus.ContentStore.Quiesce.pin1_snaps
+#print axioms Nimbus.ContentStore.Quiesce.settleN_done
+#print axioms Nimbus.ContentStore.Quiesce.settled
+#print axioms Nimbus.ContentStore.Quiesce.settleN_cases
+#print axioms Nimbus.ContentStore.Quiesce.pin1_inv
+#print axioms Nimbus.ContentStore.Quiesce.settleN_inv
+#print axioms Nimbus.ContentStore.Quiesce.raw_inv
+#print axioms Nimbus.ContentStore.Quiesce.inv
+#print axioms Nimbus.ContentStore.Quiesce.reach_settled
+#print axioms Nimbus.ContentStore.Quiesce.pin_clean
+#print axioms Nimbus.ContentStore.Quiesce.gated_on_newest
+#print axioms Nimbus.ContentStore.Quiesce.pin_starts_its_waiters
+#print axioms Nimbus.ContentStore.Quiesce.gated_on_pending
+#print axioms Nimbus.ContentStore.Quiesce.acquire_never_waits
+#print axioms Nimbus.ContentStore.Quiesce.settle_cases
+#print axioms Nimbus.ContentStore.Quiesce.settle_id
+#print axioms Nimbus.ContentStore.Quiesce.countP_map_lt
+#print axioms Nimbus.ContentStore.Quiesce.progress
+#print axioms Nimbus.ContentStore.Quiesce.wf_settle
+#print axioms Nimbus.ContentStore.Quiesce.wf_resp
+#print axioms Nimbus.ContentStore.Quiesce.drain
+#print axioms Nimbus.ContentStore.Quiesce.deadlock_free
+#print axioms Nimbus.ContentStore.Quiesce.stuck
+#print axioms Nimbus.ContentStore.Quiesce.clone_pins
+#print axioms Nimbus.ContentStore.Quiesce.clone_deadlocks_without_bypass
+#print axioms Nimbus.ContentStore.Quiesce.lease_awaiting_copy_deadlocks
+#print axioms Nimbus.ContentStore.Quiesce.job_awaiting_stream_deadlocks
+#print axioms Nimbus.ContentStore.Quiesce.lease_after_gate
+
 /-! ## Nimbus/ContentStore/Safety.lean -/
 
 #print axioms Nimbus.ContentStore.init_inv

@@ -20,6 +20,7 @@ import Nimbus.Vfs.Ledger
 import Nimbus.Vfs.Hydration
 import Nimbus.Vfs.ProcessFiles
 import Nimbus.ContentStore.Bugs
+import Nimbus.ContentStore.Quiesce
 import Nimbus.ContentStore.Tier
 import Nimbus.Coherence.StoreBugs
 import Nimbus.Coherence.Refetch
