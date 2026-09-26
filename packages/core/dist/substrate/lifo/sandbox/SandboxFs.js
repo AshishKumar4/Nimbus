@@ -77,5 +77,8 @@ export class SandboxFsImpl {
         }
     }
     /** How the session's content store is doing (its diagnostic; nothing in it is per-user). */
-    async storeStats() { return this.store.storeStats(); }
+    async storeStats() {
+        const { ledger, ...store } = this.store.storeStats();
+        return { ...store, ledger: { used: ledger.used, limit: ledger.limit, available: Math.max(0, ledger.limit - ledger.used) } };
+    }
 }

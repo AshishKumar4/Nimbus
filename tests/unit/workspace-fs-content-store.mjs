@@ -30,6 +30,19 @@ const kernel = store.as(CRED_KERNEL);
 // Nothing a user holds carries the store.
 for (const op of STORE_OPS) assert.equal(op in ws.fs, false, `ws.fs.${op}`);
 assert.equal(typeof (await ws.fs.storeStats()).chunks, 'number', 'the diagnostic stays');
+// The ledger's breakdown (facet names, and the namespace images keyed by
+// principal) is the kernel's: a user handle gets totals only.
+store.ledger.fill('proc-slot-7', 4096);
+{
+  const user = await ws.fs.storeStats();
+  assert.deepEqual(Object.keys(user.ledger).sort(), ['available', 'limit', 'used']);
+  const kernelView = store.storeStats().ledger;
+  assert.equal(user.ledger.used, kernelView.used);
+  assert.equal(user.ledger.limit, kernelView.limit);
+  assert.equal(user.ledger.available, kernelView.limit - kernelView.used);
+  assert.equal(kernelView.facets['proc-slot-7'], 4096, 'the kernel sees each facet');
+  assert.equal(JSON.stringify(user).includes('proc-slot-7'), false, 'no facet name reaches a user');
+}
 
 // A root-only file stays root's: a user never reaches the store to export it.
 kernel.mkdir('root', { mode: 0o700 });

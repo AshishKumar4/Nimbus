@@ -1,5 +1,5 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
-import type { SandboxFs as ISandboxFs } from './types.js';
+import type { SandboxFs as ISandboxFs, UserStoreStats } from './types.js';
 import type { SqliteVFS } from '../../../vfs/sqlite-vfs.js';
 import type { VfsFileType as FileType } from '../../../vfs/vfs.js';
 /**
@@ -41,16 +41,6 @@ export declare class SandboxFsImpl implements ISandboxFs {
         content: string | Uint8Array;
     }>): Promise<void>;
     /** How the session's content store is doing (its diagnostic; nothing in it is per-user). */
-    storeStats(): Promise<{
-        chunks: number;
-        chunkBytes: number;
-        contents: number;
-        historyRows: number;
-        gcQueued: number;
-        snapshots: number;
-        jobs: number;
-        databaseBytes: number;
-        ledger: import("../../../runtime/storage-ledger.js").StorageLedgerView;
-    }>;
+    storeStats(): Promise<UserStoreStats>;
 }
 //# sourceMappingURL=SandboxFs.d.ts.map

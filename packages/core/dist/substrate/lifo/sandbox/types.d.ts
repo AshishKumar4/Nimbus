@@ -36,6 +36,14 @@ export interface SandboxCommands {
      */
     readonly registry: CommandRegistry;
 }
+/** What a user handle's storeStats reports: the store, and the ledger's totals. */
+export type UserStoreStats = Omit<ReturnType<SqliteVFS['storeStats']>, 'ledger'> & {
+    ledger: {
+        used: number;
+        limit: number;
+        available: number;
+    };
+};
 export interface SandboxFs {
     readFile(path: string): Promise<string>;
     readFile(path: string, encoding: null): Promise<Uint8Array>;
@@ -63,10 +71,12 @@ export interface SandboxFs {
         content: string | Uint8Array;
     }>): Promise<void>;
     /**
-     * The content store's diagnostic. Snapshots, diff, restore and the paged
-     * export/import are the embedder's, with kernel authority: `ws.vfs`.
+     * The content store's diagnostic, with the storage ledger's totals only
+     * (used, limit, available). Which facets and namespace images hold what is
+     * the kernel's, with snapshots, diff, restore and the paged export/import:
+     * `ws.vfs.storeStats()`.
      */
-    storeStats(): Promise<ReturnType<SqliteVFS['storeStats']>>;
+    storeStats(): Promise<UserStoreStats>;
 }
 export interface SandboxInternals {
     kernel: Kernel;
