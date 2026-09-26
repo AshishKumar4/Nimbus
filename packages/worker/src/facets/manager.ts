@@ -121,7 +121,7 @@ import {
   FS_LIST_PAGE_LIMIT,
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
+import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -634,7 +634,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -645,10 +645,29 @@ ${VFS_CURSOR_SEED_SOURCE}
     // ends it early.
     const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
-    const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
+    // The same store, namespace and data plan a resident boots on, backed by
+    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
+    // Declared inside the request, beside the shims, so a loader that reuses
+    // this isolate for another run starts it from an empty store.
+${sources.residentStore}
+    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __residentSetStorage(undefined, __supervisor);
+    __nsSetCred(cred);
+    __residentSetPlan(dataPlan);
+    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    // The module bundle stays at module scope: a reused isolate adopts it
+    // again on its next run, and its text cells are shared, not copied.
+    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor);
+    if (__residentBooted.cursor) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+    }
+    if (__residentBooted.failure) {
+      try { globalThis.__nimbusResidentFillError = __residentBooted.failure; } catch {}
+    }
+    const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     // Fix 6 orphan counters (same as NodeProcess.run) — count RPC writes
     // that get dropped during isolate teardown so reportExit can report them.
@@ -5247,7 +5266,11 @@ export class FacetManager {
     const onShellAbort = () => abortController.abort();
     opts.signal?.addEventListener('abort', onShellAbort, { once: true });
     try {
-      const result = await this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink);
+      // A one-shot holds its module map and what it was seen to read (both in
+      // the bundle), and plans nothing beyond them: a data plan is chosen from
+      // a listing of the namespace, and a one-shot takes no listing of its own
+      // (§2.8: the principal's image is where that comes from).
+      const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
       this._flushVfsWrites(result, entry.pid);
       this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
       this.processes.exit(entry.pid, result.exitCode);
@@ -5346,6 +5369,7 @@ export class FacetManager {
     opts: { argv?: string[]; env?: Record<string, string>; cwd?: string; filename?: string; dirname?: string; stdin?: string; captureOutput?: boolean },
     entry: ProcessEntry,
     vfsState: FacetVfsState,
+    dataPlan: string[],
     signal: AbortSignal,
     diagSink?: ExecDiagSink,
   ): Promise<FacetExecResult> {
@@ -5371,6 +5395,7 @@ export class FacetManager {
       captureOutput: !!opts.captureOutput,
       cred: { ...entry.cred, groups: [...entry.cred.groups] },
       vfsCursor: vfsState.cursor,
+      dataPlan,
       ...(diagSink ? { diag: true } : {}),
     });
 
