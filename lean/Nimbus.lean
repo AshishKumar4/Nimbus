@@ -5,7 +5,7 @@
 
   Vfs: RevisionFloor, FastCdc, Composite, CompositeOps, CompositeCache, CompositeFeed, CompositePerm, CompositeBeneath, Ledger, Hydration, ProcessFiles
   ContentStore: Model, Lemmas, Inv, Frames, Steps, Safety, Gc, Bugs, Tier
-  Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Refetch, Namespace, DurableDelta, Visibility, VisibleDelta, ContentKey, ContentKeyAsync, Relist
+  Coherence: Store, StoreSafety, StoreSteps, StoreBugs, Held, Refetch, Namespace, DurableDelta, Visibility, VisibleDelta, ContentKey, ContentKeyAsync, Relist
   Refine (a separate root): the generators of `lean/fixtures/`
 -/
 
@@ -28,6 +28,7 @@ import Nimbus.ContentStore.Bugs
 import Nimbus.ContentStore.Quiesce
 import Nimbus.ContentStore.Tier
 import Nimbus.Coherence.StoreBugs
+import Nimbus.Coherence.Held
 import Nimbus.Coherence.Refetch
 import Nimbus.Coherence.Namespace
 import Nimbus.Coherence.DurableDelta

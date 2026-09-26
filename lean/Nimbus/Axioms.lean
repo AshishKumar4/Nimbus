@@ -46,6 +46,35 @@ import Nimbus.Refine
 #print axioms Nimbus.Coherence.DurableDelta.sql_delta_exact
 #print axioms Nimbus.Coherence.DurableDelta.a_pruned_tombstone_hides_a_delete
 
+/-! ## Nimbus/Coherence/Held.lean -/
+
+#print axioms Nimbus.Coherence.Store.drop_inv
+#print axioms Nimbus.Coherence.Store.held_inv
+#print axioms Nimbus.Coherence.Store.no_stale_of_inv
+#print axioms Nimbus.Coherence.Store.held_no_stale
+#print axioms Nimbus.Coherence.Store.no_pre_peer_bytes
+#print axioms Nimbus.Coherence.Store.held_own_no_pre_peer
+#print axioms Nimbus.Coherence.Store.last_le
+#print axioms Nimbus.Coherence.Store.afterCommit_reach
+#print axioms Nimbus.Coherence.Store.afterAck_reach
+#print axioms Nimbus.Coherence.Store.beforeList_reach
+#print axioms Nimbus.Coherence.Store.beforeRecon_reach
+#print axioms Nimbus.Coherence.Store.hreach_breach
+#print axioms Nimbus.Coherence.Store.afterBuilt_reach
+#print axioms Nimbus.Coherence.Store.afterFixed_reach
+#print axioms Nimbus.Coherence.Store.held_stale_after_repair
+#print axioms Nimbus.Coherence.Store.the_fixed_repair_drops_the_held_cell
+#print axioms Nimbus.Coherence.Store.held_report_missed_across_repair
+#print axioms Nimbus.Coherence.Store.the_fixed_repair_reports_the_held_own_cell
+#print axioms Nimbus.Coherence.Store.reach_core
+#print axioms Nimbus.Coherence.Store.refillOne_reach
+#print axioms Nimbus.Coherence.Store.refills_reach
+#print axioms Nimbus.Coherence.Store.repairAfter_reach
+#print axioms Nimbus.Coherence.Store.xBarrier_reach
+#print axioms Nimbus.Coherence.Store.xFlush_reach
+#print axioms Nimbus.Coherence.Store.exec_reach
+#print axioms Nimbus.Coherence.Store.run_reach
+
 /-! ## Nimbus/Coherence/Namespace.lean -/
 
 #print axioms Nimbus.Coherence.Namespace.closed_above
