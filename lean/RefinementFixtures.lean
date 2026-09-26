@@ -23,9 +23,10 @@ def fixtures : List (String × String) :=
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture),
    ("quiesce.json", QuiesceCases.fixture),
-   ("beneath.json", BeneathCases.fixture)]
-   -- n18-ledger.json (LedgerCases.fixture) and n17-hydration.json (HydrationCases.fixture):
-   -- emitted again when their bridges exist (N18-001, N17-001)
+   ("beneath.json", BeneathCases.fixture),
+   ("n18-ledger.json", LedgerCases.fixture)]
+   -- pipes.json (PipesCases.fixture): emitted with its bridge (RT-PIPE-001)
+   -- n17-hydration.json (HydrationCases.fixture): emitted again when its bridge exists (N17-001)
 
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "fixtures"
