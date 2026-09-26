@@ -333,6 +333,8 @@ function parseCommitArgs(args) {
     const messages = [];
     let quiet = false;
     let all = false;
+    let cleanup = null;
+    let allowEmptyMessage = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === '--')
@@ -341,6 +343,12 @@ function parseCommitArgs(args) {
             quiet = true;
         else if (arg === '--all')
             all = true;
+        else if (arg === '--allow-empty-message')
+            allowEmptyMessage = true;
+        else if (arg === '--cleanup')
+            cleanup = args[++i] ?? '';
+        else if (arg.startsWith('--cleanup='))
+            cleanup = arg.slice('--cleanup='.length);
         else if (arg === '--message')
             messages.push(args[++i] ?? '');
         else if (arg.startsWith('--message='))
@@ -358,7 +366,35 @@ function parseCommitArgs(args) {
             }
         }
     }
-    return { messages, quiet, all };
+    return { messages, quiet, all, cleanup, allowEmptyMessage };
+}
+/**
+ * The message `-m` options make (builtin/commit.c opt_parse_m): each value
+ * ends in a newline, and one after another is joined by a blank line; an
+ * empty value adds nothing.
+ */
+function joinMessageOptions(values) {
+    let buf = '';
+    for (const value of values) {
+        if (buf.length)
+            buf += '\n';
+        buf += value;
+        if (buf.length && !buf.endsWith('\n'))
+            buf += '\n';
+    }
+    return buf;
+}
+/**
+ * The cleanup mode a commit message gets (builtin/commit.c): --cleanup, else
+ * commit.cleanup. With no editor, as for -m, `default` and `scissors` are
+ * `whitespace`. Null for a mode git does not know.
+ */
+function commitCleanupMode(value) {
+    if (value === undefined || value === 'default' || value === 'scissors' || value === 'whitespace')
+        return 'whitespace';
+    if (value === 'strip' || value === 'verbatim')
+        return value;
+    return null;
 }
 function isNotFound(error) {
     return error instanceof Error && 'code' in error && error.code === 'NotFoundError';
@@ -1110,12 +1146,13 @@ async function commitIdents(ctx, git, fs, dir) {
     return { author, committer };
 }
 /**
- * git's `strip` cleanup, the default for a tag message: lines starting with
- * the comment character go, then trailing whitespace, runs of blank lines
- * and blank lines at either end. A non-empty result ends with a newline.
+ * git's stripspace (strbuf_stripspace): trailing whitespace, runs of blank
+ * lines and blank lines at either end go, and with `stripComments` (the
+ * `strip` cleanup, the default for a tag message) lines starting with the
+ * comment character too. A non-empty result ends with a newline.
  */
-function cleanupMessage(text) {
-    const lines = text.split('\n').filter((line) => !line.startsWith('#')).map((line) => line.replace(/\s+$/, ''));
+function cleanupMessage(text, stripComments = true) {
+    const lines = text.split('\n').filter((line) => !stripComments || !line.startsWith('#')).map((line) => line.replace(/\s+$/, ''));
     const out = [];
     for (const line of lines) {
         if (line === '' && (out.length === 0 || out[out.length - 1] === ''))
@@ -1125,6 +1162,37 @@ function cleanupMessage(text) {
     while (out.length > 0 && out[out.length - 1] === '')
         out.pop();
     return out.length ? `${out.join('\n')}\n` : '';
+}
+/**
+ * Commit the index with exactly `message`. cf-git renders a commit's message
+ * through normalizeNewlines (CRs dropped, leading newlines dropped, one
+ * trailing newline), which is what whitespace and strip cleanups leave
+ * anyway. A message it would change (a verbatim one, one with a CR, an
+ * allowed empty one) is written as its bytes instead, over the tree and
+ * parents cf-git's own commit made; that stand-in object is removed and the
+ * branch (or a detached HEAD) moved to the real one.
+ */
+async function writeCommit(git, fs, dir, gitdir, message, idents) {
+    const normalized = message.replace(/\r/g, '').replace(/^\n+/, '').replace(/\n+$/, '') + '\n';
+    if (message !== '' && normalized === message)
+        return git.commit({ fs, dir, message, ...idents });
+    const standIn = await git.commit({ fs, dir, message: 'stand-in', ...idents, noUpdateBranch: true });
+    const { object } = await git.readObject({ fs, dir, oid: standIn, cache: {}, format: 'content' });
+    const headers = dec.decode(object);
+    const tree = /^tree ([0-9a-f]{40})$/m.exec(headers)[1];
+    const parents = [...headers.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((m) => m[1]);
+    const body = `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}`
+        + `author ${identLine(idents.author)}\ncommitter ${identLine(idents.committer)}\n\n${message}`;
+    const oid = await git.writeObject({ fs, dir, type: 'commit', object: new TextEncoder().encode(body), format: 'content' });
+    if (oid !== standIn) {
+        try {
+            await fs.promises.unlink(`${gitdir}/objects/${standIn.slice(0, 2)}/${standIn.slice(2)}`);
+        }
+        catch { /* already gone */ }
+    }
+    const branch = await git.currentBranch({ fs, gitdir, fullname: true });
+    await git.writeRef({ fs, dir, ref: branch ?? 'HEAD', value: oid, force: true });
+    return oid;
 }
 /** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
 function tagPattern(pattern) {
@@ -2024,10 +2092,26 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
             case 'add':
                 return await addCommand(ctx, git, fs, credentialedVfs, subArgs);
             case 'commit': {
-                const { messages, quiet, all } = parseCommitArgs(subArgs);
-                const message = messages.length ? messages.join('\n\n') : 'commit';
-                if (!message) {
-                    ctx.stderr.write('error: empty commit message\n');
+                const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
+                let configured;
+                if (cleanup === null) {
+                    try {
+                        const value = await git.getConfig({ fs, dir, path: 'commit.cleanup' });
+                        if (typeof value === 'string')
+                            configured = value;
+                    }
+                    catch { /* unset */ }
+                }
+                const requested = cleanup ?? configured;
+                const mode = commitCleanupMode(requested);
+                if (!mode) {
+                    await ctx.stderr.write(`fatal: Invalid cleanup mode ${requested}\n`);
+                    return 128;
+                }
+                const raw = messages.length ? joinMessageOptions(messages) : 'commit\n';
+                const message = mode === 'verbatim' ? raw : cleanupMessage(raw, mode === 'strip');
+                if (!message && !allowEmptyMessage) {
+                    await ctx.stderr.write('Aborting commit due to empty commit message.\n');
                     return 1;
                 }
                 if (all)
@@ -2037,12 +2121,10 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     await ctx.stderr.write(idents.error);
                     return 128;
                 }
-                const sha = await git.commit({
-                    fs, dir, message,
-                    ...idents,
-                });
+                const gitdir = discoverRepo(credentialedVfs, dir)?.gitdir ?? `${dir}/.git`;
+                const sha = await writeCommit(git, fs, dir, gitdir, message, idents);
                 if (!quiet)
-                    ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
+                    ctx.stdout.write(`[${sha.slice(0, 7)}] ${message.split('\n')[0]}\n`);
                 return 0;
             }
             case 'rev-parse':

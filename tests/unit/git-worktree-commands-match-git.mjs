@@ -1036,6 +1036,47 @@ try {
       assert.equal(n.code, 0, n.stderr);
       assert.equal(catHead(copyOf(repo)), catHead(repo.disk), 'identities from the config: the commit object');
     }
+    // The message as git's cleanup modes leave it (-m has no editor, so `default` and
+    // `scissors` are `whitespace`; `strip` drops comment lines; `verbatim` keeps every byte).
+    const messy = '\n\n  x  \n# c\n\n\n\ny\t\n\n';
+    let n = 10;
+    const commitMessage = async (label, args, env = {}) => {
+      rewriteBoth(repo, 'f', `${n++}\n`);
+      sh(repo.disk, ['add', 'f']);
+      assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
+      const both = { ...identity, ...env };
+      const expected = realGit(repo.disk, ['commit', '-q', ...args], both);
+      const actual = await nimbusGit(repo.virtual, ['commit', '-q', ...args], both);
+      assert.equal(actual.code, expected.code, `${label}: exit (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+      assert.equal(catHead(copyOf(repo)), catHead(repo.disk), `${label}: the commit object`);
+      checks++;
+    };
+    for (const mode of [null, 'default', 'strip', 'whitespace', 'verbatim', 'scissors']) {
+      await commitMessage(`-m, cleanup ${mode ?? 'unset'}`, [...(mode ? [`--cleanup=${mode}`] : []), '-m', messy]);
+    }
+    await commitMessage('two -m paragraphs', ['-m', 'a', '-m', 'b']);
+    await commitMessage('an empty -m before another', ['-m', '', '-m', 'b']);
+    await commitMessage('two -m, verbatim', ['--cleanup', 'verbatim', '-m', ' a ', '-m', ' b ']);
+    await commitMessage('a carriage return kept by whitespace', ['-m', 'a\rb']);
+    await commitMessage('a message that cleans to nothing', ['-m', '   ']);
+    await commitMessage('an empty message, allowed', ['--allow-empty-message', '-m', '   ']);
+    await commitMessage('an empty verbatim message', ['--cleanup=verbatim', '-m', '']);
+    await commitMessage('only a comment, stripped', ['--cleanup=strip', '-m', '#only']);
+    await commitMessage('a cleanup mode git does not know', ['--cleanup=bogus', '-m', 'x']);
+    // The stand-in commit a byte-exact message is written over leaves nothing behind.
+    {
+      const fsck = realGit(copyOf(repo), ['fsck', '--no-progress', '--dangling', '--unreachable']);
+      assert.equal(fsck.code, 0, fsck.stderr);
+      // Blobs staged for the refused commits above are unreachable in both gits; a commit or tree is not.
+      assert.deepEqual(fsck.stdout.toString().split('\n').filter((l) => / (commit|tree) /.test(l)), [], 'no stand-in commit or tree left');
+    }
+    sh(repo.disk, ['config', 'commit.cleanup', 'strip']);
+    { const r = await nimbusGit(repo.virtual, ['config', 'commit.cleanup', 'strip']); assert.equal(r.code, 0, r.stderr); }
+    await commitMessage('commit.cleanup from the config', ['-m', '# c\nz']);
+    await commitMessage('--cleanup over the config', ['--cleanup=whitespace', '-m', '# c\nz']);
+    sh(repo.disk, ['config', '--unset', 'commit.cleanup']);
+    { const r = await nimbusGit(repo.virtual, ['config', '--unset', 'commit.cleanup']); assert.equal(r.code, 0, r.stderr); }
     rewriteBoth(repo, 'f', '6\n');
     sh(repo.disk, ['add', 'f']);
     assert.equal((await nimbusGit(repo.virtual, ['add', 'f'])).code, 0);
