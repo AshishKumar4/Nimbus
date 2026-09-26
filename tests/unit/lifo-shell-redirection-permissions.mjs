@@ -6,7 +6,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -82,7 +82,7 @@ try {
 {
   root.mkdir('work', { mode: 0o777 });
   root.chown('work', USER.uid, USER.gid);
-  const authority = new SqliteFilesystemAuthority(rawVfs);
+  const authority = new ProcessFiles(rawVfs);
   const opens = [];
   const closes = [];
   const counted = (view) => new Proxy(view, {

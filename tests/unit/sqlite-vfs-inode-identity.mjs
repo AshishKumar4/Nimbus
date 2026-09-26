@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -56,7 +56,7 @@ const text = (d) => new TextDecoder().decode(d);
 {
   const h = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(h.sql, h.ctx);
-  const authority = new SqliteFilesystemAuthority(raw);
+  const authority = new ProcessFiles(raw);
   const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
   fs.writeFile('/shared', 'data');
   const first = fs.open('/shared', { read: true, write: true });
@@ -88,7 +88,7 @@ const text = (d) => new TextDecoder().decode(d);
 {
   const h = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(h.sql, h.ctx);
-  const authority = new SqliteFilesystemAuthority(raw);
+  const authority = new ProcessFiles(raw);
   const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
   fs.writeFile('/atomic', bytes('A'.repeat(200 * 1024)));
   const detached = fs.open('/atomic', { read: true, write: true });
@@ -113,7 +113,7 @@ const text = (d) => new TextDecoder().decode(d);
 {
   const h = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(h.sql, h.ctx);
-  const authority = new SqliteFilesystemAuthority(raw);
+  const authority = new ProcessFiles(raw);
   const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
   fs.writeFile('/held', 'held-content');
   fs.writeFile('/free', 'free-content');

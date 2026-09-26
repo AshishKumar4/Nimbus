@@ -28,11 +28,11 @@ import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { textSink } from '../_shared/bytes.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import { ExecutionFs } from '../shell/execution-fs.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -41,7 +41,7 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
-import { formatProcMounts, registerMountCommands } from '../shell/mount-commands.js';
+import { registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
@@ -119,26 +119,18 @@ export class NimbusWorkspace {
         }
         const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
         seedBaseFilesystem(vfs, mounts);
+        // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
+        const filesystem = options.filesystem ?? new ProcessFiles(vfs);
+        if (filesystem.engine !== vfs)
+            throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
         const kernel = new Kernel();
-        // Seeds the in-memory tree. Mounting AFTER it is what keeps a durable
-        // /etc from being overwritten by the defaults on every boot.
         kernel.initFilesystem();
-        for (const mount of mounts) {
-            kernel.vfs.mount(`/${mount}`, new SqliteVFSProvider(vfs, mount));
-        }
-        const defaultAuthority = new SqliteFilesystemAuthority(vfs, kernel.vfs);
-        const filesystem = options.filesystem?.(defaultAuthority) ?? defaultAuthority;
-        if (filesystem instanceof SqliteFilesystemAuthority)
-            filesystem.attachKernel(kernel.vfs);
-        if (filesystem.namespace !== defaultAuthority.namespace)
-            throw new Error('Selected authority must preserve the workspace namespace');
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
         registerUnixCommands(registry, vfs);
         // df, mount and /proc/mounts all read the selected authority's listing.
         registerMountCommands(registry, filesystem);
-        kernel.proc.register('mounts', (cred) => formatProcMounts(filesystem.mounts?.(cred ?? CRED_KERNEL) ?? []));
         const processes = options.processes ?? new SessionProcessSupervisor();
         // Only a supervisor this workspace created gets its pid base set here; a
         // host-supplied one keeps the base its owner configured.

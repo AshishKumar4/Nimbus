@@ -1,39 +1,19 @@
 #!/usr/bin/env bun
-// The filesystem authority's mount listing is what df, mount and /proc/mounts
-// read. It derives from the kernel mount table: the SQLite directories are one
-// `/` entry with real usage, /proc, /dev and any kernel mount an embedder adds
-// are listed as their providers describe them. An embedder wrapping the
-// authority (Kinu mounts /pc/<name>, /context, ...) extends the listing by
-// overriding `mounts` and calling super.
+// The mount listing is what df, mount and /proc/mounts read. It is the
+// namespace's mount table: SQLite at `/` with real usage, /proc and /dev,
+// and every mount an embedder adds on the workspace's CompositeVFS (Kinu
+// mounts /pc/<name>, /context, ...), each as its backend describes itself,
+// in mount order, for the reading process's credential.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { DO_STORAGE_LIMIT_BYTES } from '../../packages/platform/src/limits.ts';
 
 const GiB = 2 ** 30;
 const creds = [];
-
-// Kinu's shape: a subclass constructed over the base authority's disk.
-class HostMountsAuthority extends SqliteFilesystemAuthority {
-  mounts(cred) {
-    creds.push(cred.uid);
-    return [
-      ...super.mounts(cred),
-      {
-        mountPoint: '/pc/laptop',
-        source: 'laptop:/Users/me',
-        type: 'kinu-pc',
-        options: ['rw', 'nosuid'],
-        usage: async () => ({ size: 500 * GiB, used: 123 * GiB, available: 377 * GiB }),
-      },
-      { mountPoint: '/context', source: 'kinu', type: 'kinu-context', options: ['ro'], usage: async () => null },
-    ];
-  }
-}
 
 const db = new Database(':memory:');
 const harness = createSqliteVfsTestHarness(db);
@@ -42,25 +22,23 @@ const pragma = (name) => Number(Object.values(db.query(`PRAGMA ${name}`).get())[
 const databaseSize = () => pragma('page_count') * pragma('page_size');
 const sql = { exec: harness.sql.exec, get databaseSize() { return databaseSize(); } };
 
-const ws = await NimbusWorkspace.create({
-  sql,
-  transactions: harness.ctx,
-  filesystem: (base) => new HostMountsAuthority(base.vfs),
-});
-ws.vfs.as(CRED_KERNEL).mkdir('/pc/laptop/projects', { recursive: true });
-ws.vfs.as(CRED_KERNEL).mkdir('/context', { recursive: true });
-// An embedder's kernel mount, whose provider reports usage.
-ws.kernel.vfs.mount('/mnt/scratch', {
-  exists: (subpath) => subpath === '/' || subpath === '',
-  stat: () => ({ type: 'directory', size: 0, ctime: 0, mtime: 0, mode: 0o755 }),
-  readdir: () => [],
-  readFile: () => new Uint8Array(0),
-  readFileString: () => '',
-  describeMount: () => ({
-    source: 'tmpfs', type: 'tmpfs', options: ['rw', 'noexec'],
-    usage: async () => ({ size: 64 * 2 ** 20, used: 2 ** 20, available: 63 * 2 ** 20 }),
-  }),
-});
+const ws = await NimbusWorkspace.create({ sql, transactions: harness.ctx });
+/** A backend that says what it is, as Kinu's adapters do. */
+const described = (description, usage) => Object.assign(new MemoryVFS(), { describe: () => description, usage });
+const table = ws.filesystem.vfs;
+table.mount('/mnt/scratch', described(
+  { source: 'tmpfs', type: 'tmpfs', options: ['rw', 'noexec'] },
+  async () => ({ size: 64 * 2 ** 20, used: 2 ** 20, available: 63 * 2 ** 20 }),
+));
+const laptop = described(
+  { source: 'laptop:/Users/me', type: 'kinu-pc', options: ['rw', 'nosuid'] },
+  async () => ({ size: 500 * GiB, used: 123 * GiB, available: 377 * GiB }),
+);
+laptop.mkdir('/projects');
+table.mount('/pc/laptop', laptop);
+// A per-principal source: Kinu's /context is resolved for each reader.
+const context = described({ source: 'kinu', type: 'kinu-context', options: ['ro'] }, async () => null);
+table.mount('/context', (principal) => { creds.push(principal.cred?.uid); return context; });
 
 const run = async (command) => {
   const result = await ws.exec(command);
@@ -96,9 +74,9 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(df.exitCode, 0, df.stderr);
   assert.deepEqual(
     df.lines.slice(1).map((line) => columns(line).at(-1)),
-    ['/', '/dev', '/mnt/scratch', '/proc', '/pc/laptop', '/context'],
+    ['/', '/proc', '/dev', '/mnt/scratch', '/pc/laptop', '/context'],
   );
-  assert.deepEqual(columns(df.lines[4]), ['proc', '-', '-', '-', '-', '/proc']);
+  assert.deepEqual(columns(df.lines[2]), ['proc', '-', '-', '-', '-', '/proc']);
   assert.deepEqual(columns(df.lines[6]), ['kinu', '-', '-', '-', '-', '/context']);
 }
 
@@ -141,7 +119,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(df.exitCode, 0, df.stderr);
   assert.match(df.lines[0], /^Filesystem\s+Type\s+Size\s+Used\s+Avail\s+Use%\s+Mounted on$/);
   assert.deepEqual(columns(df.lines[5]), ['laptop:/Users/me', 'kinu-pc', '500G', '123G', '377G', '25%', '/pc/laptop']);
-  assert.deepEqual(columns(df.lines[3]), ['tmpfs', 'tmpfs', '64M', '1.0M', '63M', '2%', '/mnt/scratch']);
+  assert.deepEqual(columns(df.lines[4]), ['tmpfs', 'tmpfs', '64M', '1.0M', '63M', '2%', '/mnt/scratch']);
   assert.equal(columns(df.lines[1])[2], '9.4G', 'the 10 GB store limit in binary units, rounded up');
 }
 
@@ -151,9 +129,9 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(mount.exitCode, 0, mount.stderr);
   assert.equal(mount.stdout, [
     'nimbus on / type nimbus-sqlite (rw)',
+    'proc on /proc type proc (ro)',
     'devtmpfs on /dev type devtmpfs (rw)',
     'tmpfs on /mnt/scratch type tmpfs (rw,noexec)',
-    'proc on /proc type proc (ro)',
     'laptop:/Users/me on /pc/laptop type kinu-pc (rw,nosuid)',
     'kinu on /context type kinu-context (ro)',
     '',
@@ -172,9 +150,9 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(proc.exitCode, 0, proc.stderr);
   assert.equal(proc.stdout, [
     'nimbus / nimbus-sqlite rw 0 0',
+    'proc /proc proc ro 0 0',
     'devtmpfs /dev devtmpfs rw 0 0',
     'tmpfs /mnt/scratch tmpfs rw,noexec 0 0',
-    'proc /proc proc ro 0 0',
     'laptop:/Users/me /pc/laptop kinu-pc rw,nosuid 0 0',
     'kinu /context kinu-context ro 0 0',
     '',

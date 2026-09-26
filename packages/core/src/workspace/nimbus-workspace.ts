@@ -42,7 +42,7 @@ import {
 } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import { ExecutionFs } from '../shell/execution-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -160,7 +160,12 @@ export interface NimbusWorkspaceOptions {
   readonly processes?: SessionProcessSupervisor;
   readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
   readonly filesystemNamespace?: string;
-  readonly filesystem?: (defaultAuthority: NimbusFilesystemAuthority) => NimbusFilesystemAuthority;
+  /**
+   * The namespace and process bindings, when the host made them before the
+   * workspace (a session's facets and RPC bind processes before it composes
+   * one). Must be over `vfs`. Embedders mount on `filesystem.vfs`.
+   */
+  readonly filesystem?: ProcessFiles;
   /** Host operations, including overrides for host-specific accounting. */
   readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
   /**
@@ -230,7 +235,7 @@ export class NimbusWorkspace {
     runtimes: RuntimeManager,
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
-    readonly filesystem: NimbusFilesystemAuthority,
+    readonly filesystem: ProcessFiles,
     private readonly runtimeLease: import('../runtime/os-contracts.js').NimbusHostFilesystemLease,
   ) {
     this.vfs = vfs;
@@ -259,25 +264,17 @@ export class NimbusWorkspace {
     const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
     seedBaseFilesystem(vfs, mounts);
 
+    // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
+    const filesystem = options.filesystem ?? new ProcessFiles(vfs);
+    if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     const kernel = new Kernel();
-    // Seeds the in-memory tree. Mounting AFTER it is what keeps a durable
-    // /etc from being overwritten by the defaults on every boot.
     kernel.initFilesystem();
-    for (const mount of mounts) {
-      kernel.vfs.mount(`/${mount}`, new SqliteVFSProvider(vfs, mount));
-    }
-
-    const defaultAuthority = new SqliteFilesystemAuthority(vfs, kernel.vfs);
-    const filesystem = options.filesystem?.(defaultAuthority) ?? defaultAuthority;
-    if (filesystem instanceof SqliteFilesystemAuthority) filesystem.attachKernel(kernel.vfs);
-    if (filesystem.namespace !== defaultAuthority.namespace) throw new Error('Selected authority must preserve the workspace namespace');
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.
     registerUnixCommands(registry, vfs);
     // df, mount and /proc/mounts all read the selected authority's listing.
     registerMountCommands(registry, filesystem);
-    kernel.proc.register('mounts', (cred) => formatProcMounts(filesystem.mounts?.(cred ?? CRED_KERNEL) ?? []));
 
     const processes = options.processes ?? new SessionProcessSupervisor();
     // Only a supervisor this workspace created gets its pid base set here; a

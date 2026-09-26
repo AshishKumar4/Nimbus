@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
@@ -164,7 +164,7 @@ assert.equal(a.stat('/tmp/drop').mode & 0o7777, 0o1700);
 //
 // The bash runtime's fchmod import and the esbuild CLI reach chmod through a
 // handle, not a path.
-const aFs = new SqliteFilesystemAuthority(raw).bind({ pid: 5001, cred: A });
+const aFs = new ProcessFiles(raw).bind({ pid: 5001, cred: A });
 const keyFd = aFs.open('/tmp/key', { read: true });
 assert.throws(() => aFs.fchmod(keyFd.id, 0o6777), /EPERM/, 'fchmod cannot widen either');
 assert.equal(a.stat('/tmp/key').mode & 0o7777, 0o600);

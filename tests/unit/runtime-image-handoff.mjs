@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -31,7 +31,7 @@ function installed(files) {
     root.mkdir(path.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
     root.writeFile(path, bytes, { mode: 0o644 });
   }
-  return { raw, filesystem: new SqliteFilesystemAuthority(raw) };
+  return { raw, filesystem: new ProcessFiles(raw) };
 }
 
 /** A facet host that records every wasm image it is handed. */

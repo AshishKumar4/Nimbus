@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -62,7 +62,7 @@ root.chown('home/user/notes.txt', PLAIN.uid, PLAIN.gid);
 
 const a = raw.as(A);
 const plain = raw.as(PLAIN);
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const aFs = authority.bind({ pid: 7001, cred: A });
 const plainFs = authority.bind({ pid: 7002, cred: PLAIN });
 

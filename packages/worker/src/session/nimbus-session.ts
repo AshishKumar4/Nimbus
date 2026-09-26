@@ -22,7 +22,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
@@ -785,12 +785,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * Lazy: sqliteFs exists only after ensureSqliteFs().
    */
   private _supervisorOps: SessionSupervisorOps | null = null;
-  private filesystemAuthority: SqliteFilesystemAuthority | null = null;
+  private processFiles: ProcessFiles | null = null;
 
-  getFilesystemAuthority(): SqliteFilesystemAuthority {
+  /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
+  getFilesystemAuthority(): ProcessFiles {
     this.ensureSqliteFs();
     if (!this.sqliteFs) throw new Error('Filesystem is not initialized');
-    return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+    return this.processFiles ??= new ProcessFiles(this.sqliteFs);
   }
 
   private supervisorOps(): SessionSupervisorOps {

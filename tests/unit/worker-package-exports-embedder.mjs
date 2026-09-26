@@ -29,7 +29,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { readPortExposure, readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -101,7 +101,7 @@ const WORKER = `${ROOT}packages/worker/`;
     processes,
     portRegistry,
     vfs,
-    filesystem: new SqliteFilesystemAuthority(vfs),
+    filesystem: new ProcessFiles(vfs),
     hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
   });
   const { apps, manager } = composed;

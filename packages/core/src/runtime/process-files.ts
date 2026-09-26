@@ -1,0 +1,285 @@
+/**
+ * ProcessFiles: what binds the session's namespace to its processes.
+ *
+ * The namespace is a CompositeVFS rooted at the session's SQLite
+ * filesystem, with `/proc` (ProcVFS) and `/dev` (DevVFS) mounted, and
+ * whatever an embedder mounts. ProcessFiles owns the per-process state on
+ * top of it: a descriptor scope per pid, retirement (`releaseProcess` →
+ * ESTALE for later binds), append-writer capabilities, host leases, and the
+ * mount listing df/mount/`/proc/mounts` read. Each bound bridge routes a
+ * path the composite resolves to a mount other than `/` through the
+ * composite, and everything on SQLite through the engine, which keeps its
+ * receipts, leases and descriptors.
+ *
+ * It implements the process-binding contract (NimbusFilesystemAuthority),
+ * which every consumer (supervisor RPC, facets, runners) already speaks.
+ */
+
+import type { SqliteVFS, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { VfsEvent } from '../vfs/events.js';
+import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
+import { CompositeVFS } from '../vfs/composite.js';
+import { DevVFS } from '../vfs/dev-vfs.js';
+import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
+import { sqliteFiles } from '../vfs/sqlite-files.js';
+import { formatProcMounts } from '../shell/mount-commands.js';
+import {
+  CRED_KERNEL,
+  requireVfsCred,
+  type NimbusFilesystemAuthority,
+  type NimbusFilesystemBinding,
+  type NimbusHostFilesystemLease,
+  type NimbusMountEntry,
+  type RuntimeFileHandle,
+  type RuntimeFsBridge,
+  type RuntimeFsPath,
+  type RuntimeOpenFlags,
+  type RuntimeReadOptions,
+  type RuntimeSynchronousFs,
+  type RuntimeVfsDirEntry,
+  type RuntimeVfsStat,
+  type VfsAcquireOptions,
+  type VfsAcquireResult,
+  type VfsCred,
+  type VfsListPage,
+  type VfsMutationReceipt,
+} from './os-contracts.js';
+import {
+  createSqliteDescriptorScope,
+  SqliteRuntimeFsBridge,
+  type SqliteDescriptorScope,
+} from './sqlite-runtime-fs-bridge.js';
+
+function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
+  const checked = requireVfsCred(cred, 'filesystem binding');
+  return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
+}
+
+/**
+ * Abort a stream commit when ANY of the given signals fires. AbortSignal.any
+ * is not in every runtime this code ships to, so the combination is a small
+ * linked controller instead.
+ */
+function linkedSignal(signals: readonly (AbortSignal | undefined)[]): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const listeners: Array<() => void> = [];
+  for (const signal of signals) {
+    if (!signal) continue;
+    if (signal.aborted) { controller.abort(signal.reason); break; }
+    const onAbort = (): void => controller.abort(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    listeners.push(() => signal.removeEventListener('abort', onAbort));
+  }
+  return { signal: controller.signal, dispose: () => { for (const remove of listeners) remove(); } };
+}
+
+/**
+ * A process's bridge with three checks at the door: abort first (the caller
+ * revoked), then a closed scope (EBADF, the POSIX answer for an operation on
+ * a released descriptor table), then the append-process identity (a bound
+ * process may only speak for its own pid).
+ */
+class GuardedProcessBridge implements RuntimeFsBridge {
+  constructor(
+    private readonly target: SqliteRuntimeFsBridge,
+    private readonly scope: SqliteDescriptorScope,
+    private readonly signal: AbortSignal | undefined,
+    private readonly pid: number | undefined,
+  ) {}
+
+  get synchronous(): RuntimeSynchronousFs { return this; }
+
+  private guard(): void {
+    this.signal?.throwIfAborted();
+    if (this.scope.closed) throw Object.assign(new Error('EBADF: filesystem scope closed'), { code: 'EBADF' });
+  }
+
+  private ownPid(pid: number): void {
+    if (this.pid === undefined || pid !== this.pid) {
+      throw Object.assign(new Error('EPERM: append process identity mismatch'), { code: 'EPERM' });
+    }
+  }
+
+  stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Uint8Array | null { this.guard(); return this.target.readFile(path, options); }
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
+    this.guard(); return this.target.writeFile(path, bytes, options);
+  }
+  readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
+    this.guard(); return this.target.readRange(path, offset, length, options);
+  }
+  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): VfsMutationReceipt {
+    this.guard(); return this.target.writeRange(path, offset, bytes, options);
+  }
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt { this.guard(); return this.target.truncate(path, size, options); }
+  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
+    this.guard(); return this.target.utimes(path, atimeMs, mtimeMs, options);
+  }
+  chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt { this.guard(); return this.target.chmod(path, mode); }
+  access(path: RuntimeFsPath, mode: number): void { this.guard(); return this.target.access(path, mode); }
+  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
+    this.guard(); return this.target.chown(path, uid, gid, options);
+  }
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle { this.guard(); return this.target.open(path, flags); }
+  read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.target.read(handleId, offset, length); }
+  write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
+  close(handleId: number): void { return this.target.close(handleId); }
+  readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): void { this.guard(); return this.target.mkdir(path, options); }
+  unlink(path: RuntimeFsPath): void { this.guard(); return this.target.unlink(path); }
+  rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
+  rename(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.rename(from, to); }
+  readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
+  symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
+  fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
+  revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult { this.guard(); return this.target.acquire(epoch, cursor, options); }
+  list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
+  subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
+    this.guard();
+    const unsubscribe = this.target.subscribe(path, listener);
+    const dispose = (): void => { unsubscribe(); this.scope.subscriptions.delete(dispose); };
+    this.scope.subscriptions.add(dispose);
+    return dispose;
+  }
+  realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): void { this.guard(); return this.target.remove(path, options); }
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
+    this.guard(); return this.target.copyTree(from, to, options);
+  }
+  fstat(handleId: number): RuntimeVfsStat { this.guard(); return this.target.fstat(handleId); }
+  dup(handleId: number): RuntimeFileHandle { this.guard(); return this.target.dup(handleId); }
+  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number { this.guard(); return this.target.seek(handleId, offset, whence); }
+  setStatus(handleId: number, status: { append?: boolean }): void { this.guard(); return this.target.setStatus(handleId, status); }
+  readdirHandle(handleId: number): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdirHandle(handleId); }
+  ftruncate(handleId: number, size: number): void { this.guard(); return this.target.ftruncate(handleId, size); }
+  fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
+  fchown(handleId: number, uid: number, gid: number): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
+  futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
+  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number {
+    this.guard(); this.ownPid(pid);
+    return this.target.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
+  }
+  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
+    this.guard(); this.ownPid(pid);
+    return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
+  }
+  writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } { this.guard(); return this.target.writeBatch(payload); }
+  writeStream(
+    stream: ReadableStream<Uint8Array>,
+    options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
+  ): Promise<WriteBatchStreamResult> {
+    this.guard();
+    // Closing the scope cancels the commit, so a released process cannot keep
+    // publishing groups into a filesystem it no longer holds descriptors on.
+    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
+  }
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
+    this.guard(); return this.target.acquireExclusiveMutation(path, options);
+  }
+  releaseExclusiveMutation(owner: string): void { this.guard(); return this.target.releaseExclusiveMutation(owner); }
+}
+
+/** The session's namespace and the processes bound to it. */
+export class ProcessFiles implements NimbusFilesystemAuthority {
+  readonly namespace: string;
+  /** The mount table: SQLite at `/`, `/proc`, `/dev`, and the embedder's. */
+  readonly vfs: CompositeVFS;
+  /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
+  readonly proc: ProcVFS;
+  private readonly processes = new Map<number, SqliteDescriptorScope>();
+  private readonly retired = new Set<number>();
+  /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
+  private readonly mountedInos = new Map<string, number>();
+  private readonly mountedIno = (path: string): number => {
+    let ino = this.mountedInos.get(path);
+    if (ino === undefined) this.mountedInos.set(path, ino = this.mountedInos.size + 1);
+    return ino;
+  };
+
+  constructor(readonly engine: SqliteVFS) {
+    this.namespace = engine.namespace;
+    this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
+    this.proc = standardProc();
+    this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
+    this.vfs.mount('/proc', this.proc);
+    this.vfs.mount('/dev', new DevVFS());
+  }
+
+  bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('filesystem binding requires a process pid');
+    if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
+    let scope = this.processes.get(pid);
+    if (!scope) { scope = createSqliteDescriptorScope(); this.processes.set(pid, scope); }
+    return this.view(scope, immutableCredential(cred), signal, pid);
+  }
+
+  openHost(cred: Readonly<VfsCred>, options: { signal?: AbortSignal } = {}): NimbusHostFilesystemLease {
+    const scope = createSqliteDescriptorScope();
+    const fs = this.view(scope, immutableCredential(cred), options.signal);
+    return { fs, dispose: async () => this.closeScope(scope) };
+  }
+
+  /** Host work over a credentialed lease released when the work settles. */
+  async withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T> {
+    const lease = this.openHost(cred);
+    try {
+      return await use(lease.fs);
+    } finally {
+      await lease.dispose();
+    }
+  }
+
+  async releaseProcess(pid: number): Promise<void> {
+    this.retired.add(pid);
+    const scope = this.processes.get(pid);
+    if (scope) this.closeScope(scope);
+    this.processes.delete(pid);
+    this.engine.revokeAppendWriters(pid);
+  }
+
+  async activateAppendWriter(pid: number, writerId: string): Promise<void> {
+    if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
+    this.engine.activateAppendWriter(pid, writerId);
+  }
+  async revokeAppendWriter(pid: number, writerId: string): Promise<void> { this.engine.revokeAppendWriter(pid, writerId); }
+  async revokeAppendWriters(pid: number): Promise<void> { this.engine.revokeAppendWriters(pid); }
+  async revokeAppendWritersThrough(maxPid: number): Promise<void> { this.engine.revokeAppendWritersThrough(maxPid); }
+
+  /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
+  mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
+    const engine = this.engine;
+    return this.vfs.as(immutableCredential(cred)).mounts().map((mount) => {
+      if (mount.point === '/') {
+        return { mountPoint: '/', source: 'nimbus', type: 'nimbus-sqlite', options: ['rw'], usage: async () => engine.storageUsage() };
+      }
+      const described = mount.describe();
+      return {
+        mountPoint: mount.point,
+        source: described.source,
+        type: described.type,
+        options: described.options,
+        usage: () => mount.usage(),
+      };
+    });
+  }
+
+  private closeScope(scope: SqliteDescriptorScope): void {
+    if (scope.closed) return;
+    for (const opened of scope.handles.values()) {
+      if (--opened.refs === 0) opened.node.close();
+    }
+    scope.handles.clear();
+    for (const dispose of scope.subscriptions) dispose();
+    scope.subscriptions.clear();
+    scope.closed = true;
+    scope.abort.abort();
+  }
+
+  private view(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.mountedIno);
+    return new GuardedProcessBridge(target, scope, signal, pid);
+  }
+}

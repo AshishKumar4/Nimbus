@@ -3,7 +3,7 @@ import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHo
 import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { SqliteFilesystemAuthority } from "@nimbus-sh/core/runtime/filesystem-authority.js";
+import { ProcessFiles } from "@nimbus-sh/core/runtime/process-files.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import type { NpmInstaller } from "../npm/installer.js";
@@ -99,15 +99,15 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
       // The manager reaches the disk behind the authority (boot images, the
       // launch journal), so a host that credentials something other than this
       // session's SQLite filesystem cannot compose one.
-      if (!(filesystem instanceof SqliteFilesystemAuthority)) {
-        throw new Error('Nimbus: the facet manager needs the session SqliteFilesystemAuthority, not a foreign filesystem authority');
+      if (!(filesystem instanceof ProcessFiles)) {
+        throw new Error('Nimbus: the facet manager needs the session ProcessFiles, not a foreign filesystem authority');
       }
       self.facetManagerComposed = composeFacetManager({
         ctx: runtimeContext.ctx,
         env: runtimeContext.env,
         processes: self.processes,
         portRegistry: self.portRegistry,
-        vfs: filesystem.vfs,
+        vfs: filesystem.engine,
         filesystem,
         ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
         hooks: {

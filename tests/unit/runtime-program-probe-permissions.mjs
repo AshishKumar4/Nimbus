@@ -6,7 +6,7 @@ import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpytho
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -63,7 +63,7 @@ function deniedProgramAuthority(runtimeFiles, deniedPath) {
     root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
     root.writeFile(clean, bytes, { mode: 0o644 });
   }
-  return new SqliteFilesystemAuthority(raw);
+  return new ProcessFiles(raw);
 }
 
 function invocationVfs(filesystem) {

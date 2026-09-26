@@ -31,6 +31,8 @@ import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
+/** The root's inode number, reserved: the allocator starts at 2. */
+export declare const ROOT_INODE = 1;
 export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;

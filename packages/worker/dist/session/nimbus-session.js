@@ -2,7 +2,7 @@ import * as runtimeServices from '../hosted/services.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { SqliteFilesystemAuthority } from '@nimbus-sh/core/runtime/filesystem-authority.js';
+import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -680,12 +680,13 @@ export class NimbusSession extends CloudflareDurableObject {
      * Lazy: sqliteFs exists only after ensureSqliteFs().
      */
     _supervisorOps = null;
-    filesystemAuthority = null;
+    processFiles = null;
+    /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority() {
         this.ensureSqliteFs();
         if (!this.sqliteFs)
             throw new Error('Filesystem is not initialized');
-        return this.filesystemAuthority ??= new SqliteFilesystemAuthority(this.sqliteFs);
+        return this.processFiles ??= new ProcessFiles(this.sqliteFs);
     }
     supervisorOps() {
         if (!this._supervisorOps)

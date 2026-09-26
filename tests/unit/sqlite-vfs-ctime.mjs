@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 let clock = 1_000_000;
@@ -81,7 +81,7 @@ assert.deepEqual([vfs.stat('/home/main/e').ino, vfs.stat('/home/main/e').ctime],
 assert.equal(vfs.stat('/home/main/e/child').ctime, childCtime, 'a descendant keeps its ctime');
 
 // ── Dropping the last link is a change to the inode still held open ─────────
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const fs = authority.bind({ pid: 1, cred: CRED_SESSION_USER });
 vfs.writeFile('/home/main/held', 'h');
 const held = fs.open('/home/main/held', { read: true, write: true });

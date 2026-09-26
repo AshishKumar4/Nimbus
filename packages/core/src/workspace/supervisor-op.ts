@@ -1,7 +1,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -353,7 +353,7 @@ export interface SupervisorOpBridgeStore {
 export function createSupervisorBridgeStore(
   deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>,
 ): SupervisorOpBridgeStore {
-  const authority = deps.filesystem ?? new SqliteFilesystemAuthority(deps.vfs);
+  const authority = deps.filesystem ?? new ProcessFiles(deps.vfs);
   const hostLeases = new Map<string, NimbusHostFilesystemLease>();
   return {
     bridge: (pid, cred) => {

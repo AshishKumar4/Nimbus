@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
-import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 const FsPath = z.union([
     z.string(),
@@ -232,7 +232,7 @@ const ROUTE_BY_OP = SUPERVISOR_OP_ROUTES;
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(deps) {
-    const authority = deps.filesystem ?? new SqliteFilesystemAuthority(deps.vfs);
+    const authority = deps.filesystem ?? new ProcessFiles(deps.vfs);
     const hostLeases = new Map();
     return {
         bridge: (pid, cred) => {

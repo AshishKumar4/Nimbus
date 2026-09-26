@@ -27,12 +27,11 @@ import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../../packages/core/src/runtime/wasi-instance.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { vfsSupervisor } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { Kernel } from '../../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 
@@ -71,11 +70,8 @@ export async function loadWasiPreamble() {
 export function makeSession(opts = {}) {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
-  // Mounted under a kernel as a session is: the namespace root is the
-  // kernel's, with an identity of its own, and /dev and /proc are its mounts.
-  const kernel = new Kernel();
-  kernel.initFilesystem();
-  const authority = new SqliteFilesystemAuthority(raw, kernel.vfs);
+  // The session's namespace, as a workspace has it: SQLite at `/`, with /proc and /dev mounted.
+  const authority = new ProcessFiles(raw);
   const root = raw.as(CRED_KERNEL);
   const cred = opts.cred ?? USER;
   const user = raw.as(cred);

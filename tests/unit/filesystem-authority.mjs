@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
@@ -9,7 +9,7 @@ import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts'
 
 const h = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(h.sql, h.ctx);
-const authority = new SqliteFilesystemAuthority(raw);
+const authority = new ProcessFiles(raw);
 const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
 const bytes = text => new TextEncoder().encode(text);
 const text = data => new TextDecoder().decode(data);
@@ -67,7 +67,7 @@ fs.writeFile('/moved', 'same-length');
 assert.throws(() => fs.readRange('/moved', 4, 4, { expectedEpoch: listing.epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
 const reopened = new SqliteVFS(h.sql, h.ctx);
 assert.equal(reopened.namespace, raw.namespace);
-const afterRestart = new SqliteFilesystemAuthority(reopened).bind({ pid: 3, cred: CRED_KERNEL });
+const afterRestart = new ProcessFiles(reopened).bind({ pid: 3, cred: CRED_KERNEL });
 assert.throws(() => afterRestart.readRange('/moved', 0, 1, { expectedEpoch: listing.epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
 await authority.releaseProcess(1);
 assert.throws(() => fs.readFile('/moved'), { code: 'EBADF' });
@@ -94,7 +94,7 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
 {
   const h2 = createSqliteVfsTestHarness();
   const raw2 = new SqliteVFS(h2.sql, h2.ctx);
-  const authority2 = new SqliteFilesystemAuthority(raw2);
+  const authority2 = new ProcessFiles(raw2);
   const pid2 = 9;
   const proc = authority2.bind({ pid: pid2, cred: CRED_KERNEL });
   const payload = {
@@ -154,7 +154,7 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   root.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   root.chown('home/user', 1000, 1000);
   root.chown('home/user/app', 1000, 1000);
-  const view = new SqliteFilesystemAuthority(raw3, kernel.vfs).bind({ pid: 9, cred: user });
+  const view = new ProcessFiles(raw3).bind({ pid: 9, cred: user });
   assert.equal(view.stat('/dev/null')?.type, 'file');
   assert.equal(view.readFile('/dev/null')?.byteLength, 0);
   const devNull = view.open('/dev/null', { write: true });

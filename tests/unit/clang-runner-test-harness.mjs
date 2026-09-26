@@ -9,7 +9,7 @@
 import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -166,7 +166,7 @@ export function makeInvocationVfs(options = {}) {
     parking: 'none',
     open(spec) { return toolchainFacet(spec, calls); },
   };
-  const filesystem = detachingAuthority(new SqliteFilesystemAuthority(raw));
+  const filesystem = detachingAuthority(new ProcessFiles(raw));
   const handler = makeClangRunnerFactory({ facets, filesystem })(
     MANIFEST, '/runtime/clang', 'clang', undefined,
   );

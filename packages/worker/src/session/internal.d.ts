@@ -155,7 +155,7 @@ export interface SessionInternal {
 
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): SqliteVFS;
-  getFilesystemAuthority(): import('@nimbus-sh/core/runtime/os-contracts.js').NimbusFilesystemAuthority;
+  getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): EsbuildBundlePool;
   _ensureFacetProcessManager(): any;

@@ -44,6 +44,8 @@ import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 const VFS_SCHEMA = 2;
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
+/** The root's inode number, reserved: the allocator starts at 2. */
+export const ROOT_INODE = 1;
 /**
  * Live view of the global object. `process` is not in the Workers lib, so its
  * shape is declared here rather than assumed present.
@@ -840,7 +842,7 @@ export class SqliteVFS {
             if (!state) {
                 // The first v2 open: a pre-v2 filesystem here is not read, so its
                 // loss is recorded, to be told until acknowledgeLegacyReset().
-                this.sql.exec('INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 1, 1, 1, 0, ?)', VFS_SCHEMA, crypto.randomUUID(), this.presentLegacyTables().length > 0 ? 1 : 0);
+                this.sql.exec('INSERT INTO vfs_state (slot, schema, incarnation, gen, pin_gen, next_ino, next_chunk, next_content, tomb_floor, legacy_reset) VALUES (1, ?, ?, 0, 0, 2, 1, 1, 0, ?)', VFS_SCHEMA, crypto.randomUUID(), this.presentLegacyTables().length > 0 ? 1 : 0);
             }
             else if (Number(state.schema) !== VFS_SCHEMA) {
                 throw new Error(`[sqlite-vfs] unsupported filesystem schema ${String(state.schema)}`);

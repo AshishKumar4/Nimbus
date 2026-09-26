@@ -36,7 +36,7 @@ import {
 } from '../../packages/worker/src/session/port-capability.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import {
   PUBLIC_BEARER_HEADER,
   PREVIEW_CAPABILITY_HEADER,
@@ -189,7 +189,7 @@ const CAP = 'abcdef0123456789abcdef01';
     notify: () => {},
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
   });
-  fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+  fm.setVfs(vfs, new ProcessFiles(vfs));
 
   // A durable application reserved 'public' with its capability minted on the
   // row — the shape ensureDurableApp writes before the app has ever run.

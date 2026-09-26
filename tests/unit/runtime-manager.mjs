@@ -14,7 +14,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { suppliedRuntimeSource } from '../../packages/core/src/runtime/runtime-package.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
@@ -65,7 +65,7 @@ const makeRegistry = () => {
 const makeManager = (vfs, source) => {
   const registry = makeRegistry();
   const manager = new RuntimeManager({
-    vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs),
+    vfs: new ExecutionFs(new ProcessFiles(vfs).openHost(KERNEL).fs),
     registry,
     getHome: () => HOME,
     source,
@@ -379,7 +379,7 @@ const toyRunner = () => async () => 0;
   };
   const registry = makeRegistry();
   const manager = new RuntimeManager({
-    vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs), registry, getHome: () => home, source,
+    vfs: new ExecutionFs(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, getHome: () => home, source,
   });
   manager.registerRunner('toy-runner', toyRunner);
 
@@ -408,7 +408,7 @@ const toyRunner = () => async () => 0;
     resolve: async (spec) => (spec === 'big' ? slow : spec === 'toy' ? toy : null),
   };
   const registry = makeRegistry();
-  const manager = new RuntimeManager({ vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs), registry, getHome: () => HOME, source });
+  const manager = new RuntimeManager({ vfs: new ExecutionFs(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, getHome: () => HOME, source });
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
 

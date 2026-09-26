@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../packages/core/src/runtime/vfs-supervisor.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -73,7 +73,7 @@ async function boot({ label, supervisor, parking, enter, makeImports }) {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
   seed(raw.as(CRED_KERNEL));
-  const authority = new SqliteFilesystemAuthority(raw);
+  const authority = new ProcessFiles(raw);
   const bridge = authority.bind({ pid: 11, cred: user });
   try {
     await boot({ label: 'local', supervisor: vfsSupervisor(bridge), parking: 'none', enter: (fn) => fn, makeImports: (options) => makeImportsWithoutJSPI(P, options) });
@@ -92,7 +92,7 @@ if (typeof WebAssembly.promising === 'function') {
   seed(raw.as(CRED_KERNEL));
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('python', ['python'], '/home/user', { cred: user });
-  const authority = new SqliteFilesystemAuthority(raw);
+  const authority = new ProcessFiles(raw);
   const store = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
   const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} });
   // Structured clone across the hop hands bytes back as ArrayBuffer, not

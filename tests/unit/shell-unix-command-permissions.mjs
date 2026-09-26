@@ -7,7 +7,7 @@ import { registerUnixCommands } from '../../packages/core/src/shell/unix-command
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { Kernel } from '../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -19,7 +19,7 @@ const root = rawVfs.as(CRED_KERNEL);
 // caller's path against them before falling through to session storage.
 const kernel = new Kernel();
 kernel.initFilesystem();
-const authority = new SqliteFilesystemAuthority(rawVfs, kernel.vfs);
+const authority = new ProcessFiles(rawVfs);
 const filesystemFor = cred => new ExecutionFs(authority.bind({ pid: cred.uid === 0 ? 72 : 71, cred }));
 
 root.mkdir('etc', { mode: 0o755 });
