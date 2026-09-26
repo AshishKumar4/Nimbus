@@ -45,7 +45,7 @@ import type {
 import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
-import { PIPE_CAPACITY, decideRead, decideWrite, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
+import { PIPE_CAPACITY, decideRead, decideWrite, heldExitIsSigpipe, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } from '../os-contracts.js';
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 
@@ -120,7 +120,7 @@ function newSession(args: BashBootArgs): BashSession {
     argv: args.argv, environ: args.environ,
     stdinTty: !!args.stdinTty,
     stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
-    procs: new Map(), pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), waiters: [],
+    procs: new Map(), pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
     pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
     out: '', err: '',
     missingWasi: new Set(),
@@ -177,7 +177,20 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   // this process's claim on it, and letting the rejection reach s.error
   // would report the whole slice as failed instead of its exit code.
   if (e.kind === 'authority') queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => {}));
-  if (e.kind === 'pipe') { bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp); }
+  if (e.kind === 'pipe') {
+    bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp);
+    if (e.end === 'r' && pp.readers === 0 && s.heldExits.size > 0) settleHeldExits(s, e.pipeId, pp.queued);
+  }
+}
+/** The last read end of `pipeId` closed with `unread` bytes in it: settle the exits held on it. */
+function settleHeldExits(s: BashSession, pipeId: number, unread: number): void {
+  for (const [pid, held] of [...s.heldExits]) {
+    if (!held.pipes.delete(pipeId)) continue;
+    if (heldExitIsSigpipe(unread, PIPE_CAPACITY)) held.sigpipe = true;
+    if (held.pipes.size > 0) continue;
+    s.heldExits.delete(pid);
+    publishExit(s, pid, held.ppid, held.sigpipe ? SIGPIPE : held.status);
+  }
 }
 function takeUpTo(src: BashByteQueue, max: number): Uint8Array {
   let need = max; const parts = [];
@@ -1162,18 +1175,34 @@ function finishProc(s: BashSession, proc: BashProc, code: number, signal = 0): v
   // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
   const st = signal ? signal & 0x7f : (code & 0xff) << 8;
   s.procs.delete(proc.pid);
+  // Pipes this exit is held on (pipe-rules holdsExit), taken before its own
+  // write ends close. The root process is never held: its exit ends the run.
+  const held = new Set<number>();
+  if (proc.ppid !== 0 && !signal) {
+    for (const e of proc.fds.values()) {
+      if (e.kind === 'pipe' && e.end === 'w' && holdsExit(s.pipes.get(e.pipeId) as BashPipe, pipeHost(s), PIPE_CAPACITY)) held.add(e.pipeId);
+    }
+  }
+  if (held.size > 0) s.heldExits.set(proc.pid, { status: st, ppid: proc.ppid, pipes: held, sigpipe: false });
   for (const fd of [...proc.fds.keys()]) closeFd(s, proc, fd);
   if (proc.ppid === 0) s.rootExit = signal ? 128 + signal : code;
-  s.exitStatus.set(proc.pid, { status: st, ppid: proc.ppid });
+  // A held exit is published when it settles (settleHeldExits), which may
+  // already have happened above if this process read its own pipe.
+  if (held.size === 0) publishExit(s, proc.pid, proc.ppid, st);
+}
+
+/** Make `pid`'s wait status reapable, handing it to its parent's pending wait. */
+function publishExit(s: BashSession, pid: number, ppid: number, st: number): void {
+  s.exitStatus.set(pid, { status: st, ppid });
   for (let i = 0; i < s.waiters.length; i++) {
     const w = s.waiters[i];
     // Only the parent may be woken by this exit — a waiter in another subshell
     // is not waiting for this child, and waking it hands over a status that was
     // never its to claim.
-    if (w.proc.pid === proc.ppid && (w.targetPid === proc.pid || w.targetPid <= 0)) {
+    if (w.proc.pid === ppid && (w.targetPid === pid || w.targetPid <= 0)) {
       s.waiters.splice(i, 1);
-      w.proc.ctx.resume = proc.pid; w.proc.ctx.resumeStatus = st;
-      s.exitStatus.delete(proc.pid);
+      w.proc.ctx.resume = pid; w.proc.ctx.resumeStatus = st;
+      s.exitStatus.delete(pid);
       resumeProc(w.proc);
       break;
     }

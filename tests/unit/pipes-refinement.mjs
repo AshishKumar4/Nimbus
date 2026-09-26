@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { decideRead, decideWrite, readerStops } from '../../packages/core/src/runtime/bash/pipe-rules.ts';
+import { decideRead, decideWrite, heldExitIsSigpipe, holdsExit, readerStops } from '../../packages/core/src/runtime/bash/pipe-rules.ts';
 
 const FIXTURE = 'lean/fixtures/pipes.json';
 const repo = resolve(import.meta.dirname, '../..');
@@ -47,21 +47,38 @@ function replay(c) {
   }
   const suspended = [];
   let error = null;
+  // Held exits (pipe-rules holdsExit): pid -> { status, pipes, sigpipe }.
+  const held = new Map();
+  let settled = [];
 
   const drop = (proc, { pipe, end }) => {
     const pp = pipes[pipe];
     if (end === 'r') {
       pp.readers--;
       // The last read end's close: what is in flight will never be read.
-      if (pp.readers === 0) { pp.discarded += pp.queued; pp.queued = 0; }
+      if (pp.readers === 0) {
+        for (const [pid, h] of [...held]) {
+          if (!h.pipes.delete(pipe)) continue;
+          if (heldExitIsSigpipe(pp.queued, c.C)) h.sigpipe = true;
+          if (h.pipes.size > 0) continue;
+          held.delete(pid);
+          procs.get(pid).status = h.sigpipe ? SIGPIPE_STATUS : h.status;
+          settled.push({ pid, status: procs.get(pid).status });
+        }
+        pp.discarded += pp.queued; pp.queued = 0;
+      }
     } else pp.writers--;
     proc.ends = proc.ends.filter((e) => !(e.pipe === pipe && e.end === end));
   };
-  const finish = (proc, status) => {
-    for (const e of [...proc.ends]) drop(proc, e);
+  // An exit (not a signal) may be held; returns whether it was.
+  const finish = (proc, status, { exiting = false } = {}) => {
+    const on = new Set(exiting ? proc.ends.filter((e) => e.end === 'w' && holdsExit(pipes[e.pipe], proc.host, c.C)).map((e) => e.pipe) : []);
     proc.alive = false;
-    proc.status = status;
     proc.pending = null;
+    proc.status = on.size > 0 ? 'held' : status;
+    if (on.size > 0) held.set(proc.pid, { status, pipes: on, sigpipe: false });
+    for (const e of [...proc.ends]) drop(proc, e);
+    return on.size > 0;
   };
   const writersOf = (pipe) => [...procs.values()].filter((p) => p.alive && p.ends.some((e) => e.pipe === pipe && e.end === 'w')).map((p) => p.pid);
   const stop = (message) => {
@@ -124,8 +141,10 @@ function replay(c) {
       assert.equal(proc.pending, null, `${where}: a new op while one is pending`);
     }
     let got;
-    if (step.op === 'end') { finish(proc, 0); got = { exited: 0 }; }
-    else if (step.op.exit !== undefined) { finish(proc, step.op.exit); got = { exited: step.op.exit }; }
+    settled = [];
+    const exited = (code) => (finish(proc, code, { exiting: true }) ? { exited: code, held: true } : { exited: code });
+    if (step.op === 'end') got = exited(0);
+    else if (step.op.exit !== undefined) got = exited(step.op.exit);
     else if (step.op.close) { drop(proc, step.op.close); got = 'closed'; }
     else if (step.op.fork) {
       const child = procs.get(step.op.fork.child);
@@ -138,7 +157,9 @@ function replay(c) {
     } else got = decide(proc, step.op);
     const want = typeof step.expect === 'object' && 'aborted' in step.expect ? { aborted: 'aborted' } : step.expect;
     assert.deepEqual(got, want, where);
+    assert.deepEqual(settled, step.settled ?? [], `${where}: settled`);
   });
+  assert.equal(held.size, 0, `${c.name}: an exit still held at the end`);
 
   const final = c.final;
   assert.deepEqual(c.procs.map((p) => procs.get(p.pid).status ?? null), final.status, `${c.name}: exit statuses`);

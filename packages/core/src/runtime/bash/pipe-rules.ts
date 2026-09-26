@@ -74,6 +74,30 @@ export function readerStops(writerPids: Iterable<number>, suspended: ReadonlySet
 }
 
 /**
+ * The held exit status. On Linux a writer that cannot park here would still
+ * be blocked writing when it exits with more than a pipe's capacity unread,
+ * so its exit status is held on that pipe (the host without JSPI; a parked
+ * writer never exits that way). The status changes nothing a reader sees:
+ * every byte is already in the pipe and the write end is closed.
+ */
+export function holdsExit(pipe: PipeCounts, host: PipeHost, capacity: number): boolean {
+  // Only while a reader is left: a hold settles when the last read end closes,
+  // so one taken on a readerless pipe would never settle. (The model discards
+  // a readerless pipe's bytes, so there the check is implied; the runner
+  // keeps them.)
+  return host === 'local' && pipe.readers > 0 && pipe.queued > capacity;
+}
+
+/**
+ * A held status settles when its pipe's last read end closes, never while a
+ * reader is alive: with more than capacity still unread the writer would have
+ * been killed by SIGPIPE; otherwise it would have finished writing and exited.
+ */
+export function heldExitIsSigpipe(unreadAtLastClose: number, capacity: number): boolean {
+  return unreadAtLastClose > capacity;
+}
+
+/**
  * Without JSPI, what one pipe may hold: an eighth of half the memory budget
  * (eight pipes at it, each read into a second copy, use half).
  */

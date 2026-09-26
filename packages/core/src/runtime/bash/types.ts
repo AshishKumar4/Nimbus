@@ -258,6 +258,17 @@ export interface BashExitStatus {
   ppid: number;
 }
 
+/**
+ * An exit whose status is held (pipe-rules holdsExit): the pipes it waits on,
+ * and whether one of them settled as SIGPIPE.
+ */
+export interface BashHeldExit {
+  status: number;
+  ppid: number;
+  pipes: Set<number>;
+  sigpipe: boolean;
+}
+
 export interface BashStats {
   instances: number;
   memPeak: number;
@@ -312,6 +323,8 @@ export interface BashSession {
    * process's child whenever two subshells have both had one exit.
    */
   exitStatus: Map<number, BashExitStatus>;
+  /** Exits held until their pipes' last readers close, by pid. */
+  heldExits: Map<number, BashHeldExit>;
   waiters: BashWaitEntry[];
   pidNext: number;
   pipeNext: number;

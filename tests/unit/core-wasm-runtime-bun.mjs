@@ -197,7 +197,12 @@ const ws = await open({ facets: localFacetHost() });
     ["seq 1000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n0 0\n'],
     ["seq 200000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '200000\n0 0 0\n'],
     ["seq 100000 | cat | while read x; do :; done; echo \"${PIPESTATUS[*]}\"", '0 0 0\n'],
-    ["seq 20000 | uniq -c | wc -l", '20000\n'],
+    ["seq 20000 | uniq -c | wc -l; echo \"${PIPESTATUS[*]}\"", '20000\n0 0 0\n'],
+    // A writer that exits with more than a pipe's capacity unread would still be
+    // blocked on Linux: its status is held, and is 141 if the reader leaves first.
+    ["seq 1000000 | head -2; echo \"${PIPESTATUS[*]}\"", '1\n2\n141 0\n'],
+    ["seq 100000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n141 0\n'],
+    ["seq 100000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '100000\n0 0 0\n'],
     // A bash process forking on every iteration, its output past a pipe's 64 KiB.
     ["i=0; while [ $i -lt 300 ]; do echo \"$(printf %0200d $i)\"; i=$((i+1)); done | wc -c", '60300\n'],
   ]) {
