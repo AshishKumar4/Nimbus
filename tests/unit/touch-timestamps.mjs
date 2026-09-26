@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -68,8 +68,9 @@ const vfsTimes = (name) => {
 
 let checks = 0;
 /** GNU touch and ours run `args` (shell words) over the same files. `now`: compare to the clock instead. */
-async function same(args, { files = ['f'], now = false } = {}) {
+async function same(args, { files = ['f'], now = false, near = false, setup } = {}) {
   reset();
+  setup?.();
   const shellArgs = args.map((a) => `'${a}'`).join(' ');
   const expected = spawnSync('sh', ['-c', `${GNU_TOUCH} ${shellArgs}`], { cwd: disk, env: ENV, encoding: 'utf8' });
   const actual = await box.shell.execute(`cd /tmp/w && touch ${shellArgs}`, {});
@@ -82,6 +83,9 @@ async function same(args, { files = ['f'], now = false } = {}) {
     if (now && want) {
       const t = Math.floor(Date.now() / 1000);
       assert.ok(got && got.every((s, i) => want[i] === OLD ? s === OLD : Math.abs(s - t) <= 2), `${label}: ${name} ${JSON.stringify(got)} is now`);
+    } else if (near && want && got) {
+      // A date relative to now: the two runs are milliseconds apart, and may straddle a second.
+      assert.ok(got.every((s, i) => Math.abs(s - want[i]) <= 2), `${label}: ${name} ${JSON.stringify(got)} near ${JSON.stringify(want)}`);
     } else {
       assert.deepEqual(got, want, `${label}: ${name} atime, mtime`);
     }
@@ -125,6 +129,35 @@ try {
   await same(['-Q', 'f']);
   await same(['--bogus', 'f']);
   await same(['-d'], { files: [] });
+  // GNU's date grammar: relative items, textual and US dates, date(1)'s own output, and a
+  // bare time; impossible dates and times are refused, as are `noon`, `midnight` and
+  // `@epoch` with anything after it.
+  for (const d of ['1 hour ago', 'yesterday', '2 days ago', '+1 day', 'tomorrow', '3 weeks ago', '1 month ago',
+    'next monday', 'last friday', 'now', 'today', '10:30', '10:30pm', 'Jan 1']) {
+    await same(['-d', d, 'f'], { near: true });
+  }
+  for (const d of ['20200101', 'Jan 1 2020', 'January 1, 2020 10:00', '1 Jan 2020', '1/2/2020',
+    'Wed, 01 Jan 2020 10:00:00 +0000', 'Wed Jan  1 10:00:00 UTC 2020', '2020-01-01 +2 hours',
+    '2020-01-01T10:00:00+02:00', '2020-02-29']) {
+    await same(['-d', d, 'f']);
+  }
+  for (const d of ['noon', 'midnight', '2020-02-31', '2021-02-29', '2020-01-01 25:00', '13:00pm', '@1600000000 +1 day', '1 hour']) {
+    await same(['-d', d, 'f']);
+  }
+  await same(['-t', '202002310000', 'f']);
+  await same(['-t', '202002290000', 'f']);
+  // -h: a link is never followed, and nothing is created (-h implies -c).
+  const link = (name, target) => () => {
+    rmSync(join(disk, name), { force: true });
+    symlinkSync(target, join(disk, name));
+    if (root.exists(`tmp/w/${name}`) || (() => { try { root.lstat(`tmp/w/${name}`); return true; } catch { return false; } })()) root.unlink(`tmp/w/${name}`);
+    root.symlink(target, `tmp/w/${name}`);
+  };
+  await same(['-h', '-d', '@1600000000', 'lnk'], { files: ['f'], setup: link('lnk', 'f') });
+  await same(['-h', 'dang'], { files: ['nofile'], setup: link('dang', 'nofile') });
+  await same(['-d', '@1600000000', 'dang'], { files: ['nofile'], setup: link('dang', 'nofile') });
+  await same(['-h', '-d', '@1600000000', 'f']);
+  await same(['-'], { files: [] });
   console.log(`touch-timestamps: ${checks} invocations match GNU touch`);
 } finally {
   box.destroy();
