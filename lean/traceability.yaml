@@ -964,7 +964,6 @@ requirements:
       - Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
     tsRefs:
       - packages/core/src/runtime/bash/preamble.ts#writeThroughFd
-      - packages/core/src/runtime/bash/preamble.ts#wakeWriters
       - packages/core/src/runtime/bash/preamble.ts#newPipe
     remainingEvidence:
       - Parked until GitParityLane writes tests/unit/pipes-refinement.mjs; Nimbus.Refine.PipesCases generates lean/fixtures/pipes.json, and RefinementFixtures emits it with the refinement entry
