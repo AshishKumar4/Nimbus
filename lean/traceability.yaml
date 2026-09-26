@@ -814,8 +814,8 @@ requirements:
       - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
       - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound
   CS-008:
-    statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
-    status: proved-in-abstract-model
+    statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles and is in no snapshot. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
+    status: proved-and-refined
     theorems:
       - Nimbus.ContentStore.Quiesce.pin1_snaps
       - Nimbus.ContentStore.Quiesce.settleN_done
@@ -847,6 +847,7 @@ requirements:
       - Nimbus.ContentStore.Quiesce.lease_after_gate
     tsRefs:
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.snapshot
+    refinement:
+      - lean/fixtures/quiesce.json :: tests/unit/quiesce-refinement.mjs
     remainingEvidence:
-      - Parked until NodeNoMirrorBuild writes tests/unit/quiesce-refinement.mjs; Nimbus.Refine.QuiesceCases generates lean/fixtures/quiesce.json, and RefinementFixtures emits it with the refinement entry
       - Who awaits whom (a lease holder's streams, a job's children) is the environment's; WF is a hypothesis the callers must keep (the engine's restoreAsync and copyTree start no spanning work)

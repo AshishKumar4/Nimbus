@@ -27,7 +27,9 @@
       pending nothing is gated.
   (2) Consistency (`pin_clean`): a snapshot pins only when no spanning work is running
       and no lease is held, and its contents are exactly the jobs done then: no
-      partial state of a spanning operation or a lease.
+      partial state of a spanning operation or a lease. An owned stream whose lease
+      was released before it ended is refused (ESTALE) and writes nothing: it settles
+      (it no longer holds a pin back) but is never in a snapshot's contents.
   (3) Liveness of unrelated work: a gated job waits on the snapshot that was newest
       when it arrived (`gated_on_newest`) and starts in the same step that snapshot
       pins (`pin_starts_its_waiters`); a lease never waits (`acquire_never_waits`).
@@ -57,6 +59,9 @@ inductive JSt where
   | gated (w : Nat)
   | running
   | done
+  /-- An owned stream whose lease was released before it ended: the write is refused
+      (ESTALE), nothing is written, and the job has settled. -/
+  | failed
   deriving DecidableEq, Repr
 
 structure Job where
@@ -129,7 +134,10 @@ def raw (s : St) : Ev → St
                starts := if go then s.starts ++ [s.jobs.length] else s.starts }
   | .endStream i =>
     match s.jobs[i]? with
-    | some j => if j.kind = .stream ∧ j.st = .running then { s with jobs := s.jobs.set i { j with st := .done } } else s
+    | some j =>
+      if j.kind = .stream ∧ j.st = .running then
+        { s with jobs := s.jobs.set i { j with st := if j.owner.all s.leases.contains then .done else .failed } }
+      else s
     | none => s
   | .tick => { s with jobs := s.jobs.map fun j => if j.kind ≠ .stream ∧ j.st = .running then { j with st := .done } else j }
   | .snapshot => { s with snaps := s.snaps ++ [s.nextSnap], nextSnap := s.nextSnap + 1 }
@@ -142,7 +150,10 @@ inductive Reach : St → Prop
 
 /-! ## The environment -/
 
-def childrenDone (s : St) (p : Par) : Bool := s.jobs.all fun j => j.parent != p || j.st == .done
+/-- Settled: done, or refused. -/
+def finished (j : Job) : Bool := j.st == .done || j.st == .failed
+
+def childrenDone (s : St) (p : Par) : Bool := s.jobs.all fun j => j.parent != p || finished j
 
 /-- The events the environment can take without breaking who-awaits-whom. -/
 def Resp (s : St) : Ev → Prop
@@ -297,13 +308,13 @@ theorem raw_inv {s : St} (h : Inv bypass s) (e : Ev) : Inv bypass (raw bypass s 
       · refine ⟨fun j hj w hw => ?_, fun j hj o ho => ?_, h.leasesIssued, fun hb j hj w o hw ho => ?_⟩
         · rcases List.mem_or_eq_of_mem_set hj with hj | rfl
           · exact h.gatedPending j hj w hw
-          · cases hw
+          · simp only at hw; split at hw <;> cases hw
         · rcases List.mem_or_eq_of_mem_set hj with hj | rfl
           · exact h.ownersIssued j hj o ho
           · exact h.ownersIssued j0 hm0 o ho
         · rcases List.mem_or_eq_of_mem_set hj with hj | rfl
           · exact h.gatedNotLive hb j hj w o hw ho
-          · cases hw
+          · simp only at hw; split at hw <;> cases hw
       · exact h
     · exact h
   | tick =>
@@ -385,7 +396,7 @@ theorem acquire_never_waits (s : St) :
 
 /-! ## (1) Deadlock freedom -/
 
-def notDone (j : Job) : Bool := j.st != .done
+def notDone (j : Job) : Bool := !finished j
 
 /-- The environment's remaining work: leases held and jobs not done. -/
 def work (s : St) : Nat := s.leases.length + s.jobs.countP notDone
@@ -463,9 +474,14 @@ theorem progress {s : St} (hr : Reach true s) (hw : WF s) (hs : s.snaps ≠ []) 
     · obtain ⟨hi', rfl⟩ := List.getElem?_eq_some_iff.mp hij
       simp only [raw, hij, hk, hjr, and_self, if_true, work]
       rw [List.countP_set _ _ _ _ hi']
-      simp [notDone, hjr]
+      have h2 : notDone s.jobs[i] = true := by simp [notDone, finished, hjr]
+      have h3 : ∀ x, x = JSt.done ∨ x = JSt.failed →
+          notDone { kind := Kind.stream, owner := s.jobs[i].owner, parent := s.jobs[i].parent, st := x } = false := by
+        rintro x (rfl | rfl) <;> rfl
+      rw [if_pos h2, h3 _ (by split <;> simp)]
+      simp only [Bool.false_eq_true, if_false]
       have : 0 < s.jobs.countP notDone :=
-        List.countP_pos_iff.mpr ⟨_, List.getElem_mem hi', by simp [notDone, hjr]⟩
+        List.countP_pos_iff.mpr ⟨_, List.getElem_mem hi', by simp [notDone, finished, hjr]⟩
       omega
     · simp only [raw, hij, hk, hjr, and_self, if_true]
   by_cases hrun : ∃ j ∈ s.jobs, j.st = .running
@@ -483,7 +499,7 @@ theorem progress {s : St} (hr : Reach true s) (hw : WF s) (hs : s.snaps ≠ []) 
         split
         · rfl
         · exact h)
-      ⟨j, hj, by simp [notDone, hjr], by simp [notDone, hk, hjr]⟩
+      ⟨j, hj, by simp [notDone, finished, hjr], by simp [notDone, finished, hk, hjr]⟩
     omega
   have hnr : anyRunning s = false := by
     cases h : anyRunning s
@@ -502,7 +518,8 @@ theorem progress {s : St} (hr : Reach true s) (hw : WF s) (hs : s.snaps ≠ []) 
       · right
         have ho := (hw j hj).1 n hp
         cases hjs : j.st with
-        | done => rfl
+        | done => simp [finished, hjs]
+        | failed => simp [finished, hjs]
         | running => exact absurd ⟨j, hj, hjs⟩ hrun
         | gated w => exact absurd (by rw [hl]; exact List.mem_cons_self _ _) (hi.gatedNotLive rfl j hj w n hjs ho)
       · exact Or.inl hp
@@ -631,7 +648,7 @@ theorem clone_deadlocks_without_bypass :
     refine ⟨⟨by simp [raw, hj], hl, hs⟩, by simp [canPin, raw, hl]⟩
   | release n =>
     by_cases hn : n = 0
-    · subst hn; simp [Resp, childrenDone, hj] at hr
+    · subst hn; simp [Resp, childrenDone, finished, hj] at hr
     · have hn' : (0 != n) = true := by simpa [bne_iff_ne] using Ne.symm hn
       refine ⟨⟨hj, by simp [raw, hl, hn'], hs⟩, by simp [canPin, raw, hl, hn']⟩
   | _ => exact hr.elim
@@ -660,7 +677,7 @@ theorem lease_awaiting_copy_deadlocks :
     refine ⟨⟨by simp [raw, hj], hl, hs⟩, by simp [canPin, raw, hl]⟩
   | release n =>
     by_cases hn : n = 0
-    · subst hn; simp [Resp, childrenDone, hj] at hr
+    · subst hn; simp [Resp, childrenDone, finished, hj] at hr
     · have hn' : (0 != n) = true := by simpa [bne_iff_ne] using Ne.symm hn
       refine ⟨⟨hj, by simp [raw, hl, hn'], hs⟩, by simp [canPin, raw, hl, hn']⟩
   | _ => exact hr.elim
@@ -689,7 +706,7 @@ theorem job_awaiting_stream_deadlocks :
     rw [this]; exact ⟨⟨hj, hl, hs⟩, hc u rfl⟩
   | tick =>
     have := hr 0 ⟨.restore, none, .none, .running⟩ (by simp [hj]) (by decide) rfl
-    simp [childrenDone, hj] at this
+    simp [childrenDone, finished, hj] at this
   | release n =>
     exact ⟨⟨hj, by simp [raw, hl], hs⟩, hc _ rfl⟩
   | _ => exact hr.elim

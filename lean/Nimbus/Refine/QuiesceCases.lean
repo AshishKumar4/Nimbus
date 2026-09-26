@@ -15,7 +15,10 @@
   - `{"op":"restore"}`, `{"op":"copy"}`: restoreAsync / sliced copyTree job `id`;
     they run to the end on their own, within the settle of the step that starts
     them (the model's `tick`s, taken until none runs: `settleJobs`).
-  - `{"op":"end","job"}`: the stream's source closes.
+  - `{"op":"end","job","refused"?}`: the stream's source closes. `"refused":"ESTALE"`
+    when it carries the owner of a lease released before now: the write is refused
+    and nothing is written, but the job has settled (it no longer holds a pin back)
+    and is in no snapshot's contents.
   - `{"op":"snapshot"}`: snapshot(`s<k>`, {quiesce:true}), k the number of
     snapshot steps before it.
   Each step's `expect`: `started`, the jobs that started during the step, in order;
@@ -61,7 +64,10 @@ def stepHead (s : St) : Step → List (String × Json)
       (match o with | some n => [("owner", .ofNat n)] | none => [])
   | .restore => [("op", .str "restore"), ("id", .ofNat s.jobs.length)]
   | .copy => [("op", .str "copy"), ("id", .ofNat s.jobs.length)]
-  | .finish j => [("op", .str "end"), ("job", .ofNat j)]
+  | .finish j => [("op", .str "end"), ("job", .ofNat j)] ++
+      (match s.jobs[j]? with
+       | some jb => if jb.st = .running ∧ !(jb.owner.all s.leases.contains) then [("refused", .str "ESTALE")] else []
+       | none => [])
   | .tick => [("op", .str "tick")]
   | .snapshot => [("op", .str "snapshot"), ("name", .str s!"s{s.nextSnap}")]
 
@@ -136,7 +142,7 @@ def directed : List Json :=
 
 def fixture : String :=
   fixtureText [("fixture", .str "quiesce"), ("model", .str "Nimbus.ContentStore.Quiesce.step"),
-      ("note", .str "one engine per case; settle after every step; leases, jobs and snapshots are numbered by call order; a stream carrying a live lease's owner starts at once, other spanning work waits for the newest pending snapshot and starts right after it pins; a snapshot pins after every earlier one, once no spanning work runs and no lease is held; restore and copy jobs finish within the settle of the step that starts them; contents are the jobs done at the pin")]
+      ("note", .str "one engine per case; settle after every step; leases, jobs and snapshots are numbered by call order; a stream carrying a live lease's owner starts at once, other spanning work waits for the newest pending snapshot and starts right after it pins; a snapshot pins after every earlier one, once no spanning work runs and no lease is held; restore and copy jobs finish within the settle of the step that starts them; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles, and is in no contents; contents are the jobs done at the pin")]
     (directed ++ runGen 0x51554945 (casesOf 150 genCase))
 
 end Nimbus.Refine.QuiesceCases
