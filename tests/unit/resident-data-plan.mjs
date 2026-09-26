@@ -33,7 +33,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 
 const PROJECT = '/home/user/proj';
@@ -190,7 +190,7 @@ let sessionCtxNow;
 function session(name) {
   sessionCtxNow = sessionCtx(name);
   const m = new FacetManager(sessionCtxNow, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
-  m.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
+  m.setVfs(sessionVfs, processFiles(sessionVfs));
   delete globalThis.__portRegistry;
   return m;
 }

@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -31,7 +31,7 @@ const root = rawVfs.as(CRED_KERNEL);
 root.mkdir('home/user', { recursive: true });
 root.chown('home/user', 1000, 1000);
 const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
-const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+const bridge = processBridge(rawVfs, vfs);
 const dec = new TextDecoder();
 
 vfs.mkdir('/home/user', { recursive: true });

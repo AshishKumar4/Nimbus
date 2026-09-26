@@ -31,7 +31,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -75,7 +75,7 @@ function createInstance(session, generation, label) {
     notify: (line) => { notices.push(line); },
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),
   });
-  manager.setVfs(session.vfs, new SqliteFilesystemAuthority(session.vfs));
+  manager.setVfs(session.vfs, processFiles(session.vfs));
   return { ctx, world, processes, manager, notices };
 }
 

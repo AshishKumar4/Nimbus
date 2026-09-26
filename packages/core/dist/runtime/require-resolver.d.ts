@@ -26,7 +26,23 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { Awaitable, RuntimeFsBridge } from './os-contracts.js';
+/**
+ * The filesystem the resolver reads: the four questions it asks, nothing
+ * more, so every caller (a process's view, the supervisor's bridge, the
+ * engine) meets it without an adapter per caller. A missing path is false,
+ * false, a throw, and null.
+ */
+export interface RequireFs {
+    exists(path: string): Awaitable<boolean>;
+    isDirectory(path: string): Awaitable<boolean>;
+    readFileString(path: string): Awaitable<string>;
+    stat(path: string): Awaitable<{
+        size: number;
+    } | null>;
+}
+/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
+export declare function requireFsOverBridge(bridge: RuntimeFsBridge): RequireFs;
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -65,5 +81,5 @@ export declare class ClosureBoundExceededError extends Error {
     constructor(outcome: ClosureBoundExceeded);
 }
 /** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): Promise<PrefetchOutcome>;
 //# sourceMappingURL=require-resolver.d.ts.map

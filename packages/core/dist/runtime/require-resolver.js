@@ -26,6 +26,22 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
+/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
+export function requireFsOverBridge(bridge) {
+    const decoder = new TextDecoder();
+    const stat = async (path) => await bridge.stat(path);
+    return {
+        exists: async (path) => (await stat(path)) !== null,
+        isDirectory: async (path) => (await stat(path))?.type === 'directory',
+        readFileString: async (path) => {
+            const bytes = await bridge.readFile(path);
+            if (bytes === null)
+                throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+            return decoder.decode(bytes);
+        },
+        stat,
+    };
+}
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, packageSelfReferenceSubpath, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates, } from '../_shared/typescript-specifiers.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
@@ -558,7 +574,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // did before this gate existed.
         let size = 0;
         try {
-            size = (await vfs.stat(vfsPath)).size;
+            size = (await vfs.stat(vfsPath))?.size ?? 0;
         }
         catch { /* size unknown */ }
         if (bytesSeen + size > maxBundleBytes) {

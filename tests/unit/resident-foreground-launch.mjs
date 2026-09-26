@@ -18,7 +18,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -36,7 +36,7 @@ function instance() {
   const disk = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(disk.sql, disk.ctx);
   const manager = new FacetManager(createFacetCtx(world, 'foreground', new Map()), { LOADER: world.loader }, processes, new PortRegistry(), processHostFor, {});
-  manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+  manager.setVfs(vfs, processFiles(vfs));
   return { processes, manager };
 }
 

@@ -27,7 +27,36 @@
  * de-quarantines it as the primary content-bundle source.
  */
 
-import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
+import type { Awaitable, RuntimeFsBridge } from './os-contracts.js';
+
+/**
+ * The filesystem the resolver reads: the four questions it asks, nothing
+ * more, so every caller (a process's view, the supervisor's bridge, the
+ * engine) meets it without an adapter per caller. A missing path is false,
+ * false, a throw, and null.
+ */
+export interface RequireFs {
+  exists(path: string): Awaitable<boolean>;
+  isDirectory(path: string): Awaitable<boolean>;
+  readFileString(path: string): Awaitable<string>;
+  stat(path: string): Awaitable<{ size: number } | null>;
+}
+
+/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
+export function requireFsOverBridge(bridge: RuntimeFsBridge): RequireFs {
+  const decoder = new TextDecoder();
+  const stat = async (path: string) => await bridge.stat(path);
+  return {
+    exists: async (path) => (await stat(path)) !== null,
+    isDirectory: async (path) => (await stat(path))?.type === 'directory',
+    readFileString: async (path) => {
+      const bytes = await bridge.readFile(path);
+      if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return decoder.decode(bytes);
+    },
+    stat,
+  };
+}
 import {
   resolvePackageEntry as sharedResolvePackageEntry,
   resolveExports as sharedResolveExports,
@@ -156,7 +185,7 @@ type PkgJsonSink = (pkgJsonPath: string) => void;
  * a directory-style require (e.g. `require('./mod')` where mod has
  * main='entry.js' and no index.js).
  */
-async function resolveFile(vfs: CredentialedVfs, base: string, sink?: PkgJsonSink): Promise<string | null> {
+async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink): Promise<string | null> {
   const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
   for (const ext of fileExts) {
     const p = normalizePath(base + ext);
@@ -263,7 +292,7 @@ interface ResolveSubpathResult {
  *      finds it through its extension-probe loop without needing
  *      a runtime-side fix.
  */
-async function resolvePkgSubpathEx(vfs: CredentialedVfs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
   const pkgJsonPath = pkgDir + '/package.json';
   if (!(await vfs.exists(pkgJsonPath))) {
     // No package.json — direct probe (matches node-shims fallback).
@@ -335,7 +364,7 @@ async function resolvePkgSubpathEx(vfs: CredentialedVfs, pkgDir: string, subpath
  * Returns null if there's no directory match or no readable nested
  * package.json (caller falls through to its existing null return).
  */
-async function tryLegacyDirectorySubpath(vfs: CredentialedVfs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
   if (subpath === '.' || !subpath.startsWith('./')) return null;
 
   const subRelative = subpath.replace(/^\.\//, '');
@@ -417,7 +446,7 @@ function relativeFrom(fromDir: string, toPath: string): string {
  * X.5-L: extended bare-spec resolver that also returns any synthetic
  * stub emitted by resolvePkgSubpathEx's legacy-directory branch.
  */
-async function resolveNodeModuleEx(vfs: CredentialedVfs, name: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
   let pkgName: string;
   let subpath: string;
   if (name.startsWith('@')) {
@@ -459,7 +488,7 @@ async function resolveNodeModuleEx(vfs: CredentialedVfs, name: string, fromDir: 
  * the legacy directory-subpath pattern. Relative paths never need
  * stubs, so for those we just return `{ resolved }` with no stub.
  */
-async function resolveRequireEx(vfs: CredentialedVfs, id: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
       ? strip(id)
@@ -504,7 +533,7 @@ async function resolveRequireEx(vfs: CredentialedVfs, id: string, fromDir: strin
  * `sink` so the runtime can repeat the same lookup from the bundle.
  */
 async function nearestPackageScope(
-  vfs: CredentialedVfs,
+  vfs: RequireFs,
   fromDir: string,
   sink?: PkgJsonSink,
 ): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
@@ -530,7 +559,7 @@ async function nearestPackageScope(
  * if not found). Mirrors node-shims.ts:__resolveImportsField.
  */
 async function resolveImportsField(
-  vfs: CredentialedVfs,
+  vfs: RequireFs,
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
@@ -569,7 +598,7 @@ async function resolveImportsField(
  * there and never consults node_modules, so neither does the caller.
  */
 async function resolvePackageSelf(
-  vfs: CredentialedVfs,
+  vfs: RequireFs,
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
@@ -633,7 +662,7 @@ export class ClosureBoundExceededError extends Error {
 
 /** Resolve the complete dependency graph starting from entry code. */
 export async function prefetchForRequire(
-  vfs: CredentialedVfs,
+  vfs: RequireFs,
   entryCode: string,
   cwd: string,
   entryFile?: string,
@@ -661,7 +690,7 @@ export async function prefetchForRequire(
     // failure means the size is unknown; the read attempt decides, as it
     // did before this gate existed.
     let size = 0;
-    try { size = (await vfs.stat(vfsPath)).size; } catch { /* size unknown */ }
+    try { size = (await vfs.stat(vfsPath))?.size ?? 0; } catch { /* size unknown */ }
     if (bytesSeen + size > maxBundleBytes) {
       if (lazy) return;
       closureExceeded = {

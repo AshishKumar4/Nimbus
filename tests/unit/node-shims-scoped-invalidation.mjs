@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -30,7 +30,7 @@ for (const dir of ['d', 'g', 'k']) {
   owner.writeFile(`/home/user/${dir}/f.txt`, `${dir} v1`);
 }
 // The process reads as READER, through its own view of the authority.
-const bridge = new SqliteRuntimeFsBridge(rawVfs.as(READER), rawVfs);
+const bridge = processBridge(rawVfs, rawVfs.as(READER));
 const dec = new TextDecoder();
 const supervisor = {
   readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },

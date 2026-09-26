@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -24,7 +24,7 @@ const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
 // The supervisor acts as the process's own credential, as SupervisorRPC does,
 // and the tree the process works in is its own: what it writes back is owned
 // by it, and a stat of it says so.
-const bridge = new SqliteRuntimeFsBridge(rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }), rawVfs);
+const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
 rawVfs.activateAppendWriter(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.

@@ -36,9 +36,9 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
@@ -149,7 +149,7 @@ import {
   k.writeFile(`${app}/node_modules/vue/index.js`, "module.exports = require('./dist/vue.cjs.js');\n", { mode: 0o644 });
   k.writeFile(`${app}/node_modules/vue/dist/vue.cjs.js`, 'exports.h = 1;\n', { mode: 0o644 });
   for (const d of ['home/user', app]) k.chown(d, 1000, 1000);
-  const fs = new ExecutionFs(new SqliteFilesystemAuthority(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs);
+  const fs = new ExecutionFs(processFiles(raw).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs);
   const state = await buildPrefetchBundle(
     fs, `/${app}/entry.js`, `/${app}`, '', undefined, undefined,
     new Set([`${app}/node_modules/vue/dist/vue.cjs.js`]),
@@ -170,10 +170,7 @@ let bridge = null;
 
 function makeSupervisor() {
   if (!bridge) {
-    bridge = new SqliteRuntimeFsBridge(
-      rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }),
-      rawVfs,
-    );
+    bridge = processBridge(rawVfs, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
   }
   return {
     async readFile(path) { const b = await bridge.readFile(path); return b ? dec.decode(b) : null; },
@@ -231,7 +228,7 @@ const manager = new FacetManager(
   createFacetCtx(createFacetWorld(() => ({})), 'observed-residency'),
   env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
-manager.setVfs(rawVfs, new SqliteFilesystemAuthority(rawVfs));
+manager.setVfs(rawVfs, processFiles(rawVfs));
 
 // A data file too large for the cwd snapshot's per-file bound, reached through
 // a path the program computes — so no static scan of the entry can find it
@@ -246,7 +243,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // The premise, asserted rather than assumed: nothing already stages it.
 {
   const state = await buildPrefetchBundle(
-    new ExecutionFs(new SqliteFilesystemAuthority(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs),
+    new ExecutionFs(processFiles(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs),
     '/home/user/example-app/entry.js', '/home/user/example-app', '', undefined,
   );
   assert.ok(

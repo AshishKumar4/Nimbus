@@ -23,7 +23,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -70,7 +70,7 @@ function makeManager(label, behave) {
   const manager = new FacetManager(ctx, env, processes, new PortRegistry(), hostFactory, {});
   const harness = createSqliteVfsTestHarness();
   const managerVfs = new SqliteVFS(harness.sql, harness.ctx);
-  manager.setVfs(managerVfs, new SqliteFilesystemAuthority(managerVfs));
+  manager.setVfs(managerVfs, processFiles(managerVfs));
   return { manager, processes };
 }
 

@@ -25,7 +25,7 @@ import {
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -68,7 +68,7 @@ const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
 const disk = createSqliteVfsTestHarness();
 const managerVfs = new SqliteVFS(disk.sql, disk.ctx);
-fm.setVfs(managerVfs, new SqliteFilesystemAuthority(managerVfs));
+fm.setVfs(managerVfs, processFiles(managerVfs));
 const none = new Set();
 const CONFLICT = /port reservation conflict: durable worker does not own port/;
 const record = (port) => ctx.storage.rows.get(`${PORT_CAPABILITY_KEY_PREFIX}${port}`);

@@ -19,7 +19,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
@@ -46,7 +46,7 @@ const manager = new FacetManager(ctx, env, processes, new PortRegistry(), proces
 });
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+manager.setVfs(vfs, processFiles(vfs));
 
 // The npm-bin runner's shape: the pid exists with its terminal open, then the
 // launch is handed to the manager, which returns before building anything.

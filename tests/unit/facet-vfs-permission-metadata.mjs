@@ -12,7 +12,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -65,7 +65,7 @@ const manager = new FacetManager(
   new PortRegistry(),
   processHostFor,
 );
-manager.setVfs(rawVfs, new SqliteFilesystemAuthority(rawVfs));
+manager.setVfs(rawVfs, processFiles(rawVfs));
 
 await manager.exec(
   `const fs = require('fs');

@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { processBridge } from './lib/process-bridge.mjs';
 import {
   coherenceStats,
   createAuthority,
@@ -265,7 +265,7 @@ await runScenarios(import.meta.path, {
     const { rawVfs, kfs } = authority;
     kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
     kfs.writeFile('home/user/app/f.txt', 'V1');
-    const bridge = new SqliteRuntimeFsBridge(kfs, rawVfs);
+    const bridge = processBridge(rawVfs, kfs);
     const dec = new TextDecoder();
     let dropped = false;
     const supervisor = {

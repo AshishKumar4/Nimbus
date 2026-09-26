@@ -24,7 +24,7 @@ import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 
 const PORT = 4471;
 
@@ -98,7 +98,7 @@ const ports = new PortRegistry();
 const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {});
 const harness = createSqliteVfsTestHarness();
 sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
+manager.setVfs(sessionVfs, processFiles(sessionVfs));
 
 delete globalThis.__portRegistry;
 

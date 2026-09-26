@@ -50,7 +50,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { processFiles } from './lib/process-bridge.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -149,7 +149,7 @@ const manager = new FacetManager(
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
+manager.setVfs(vfs, processFiles(vfs));
 
 const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/node_modules/dep/lib', { recursive: true, mode: 0o755 });
