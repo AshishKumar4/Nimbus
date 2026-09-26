@@ -361,4 +361,30 @@ assert.equal(await new ReadProfile(store).observe(evidence, 'not-a-tag', integri
   assert.equal(entry.score, 3);
 }
 
+// ── A change that loses every race is said and counted, not dropped silently ──
+{
+  const racing = bucket();
+  await new ReadProfile(racing).observe([{ path: `${APP}/x.js`, size: 1 }], tagB, integrityOf);
+  const put = racing.put;
+  // From here another writer lands between every read and write of this one.
+  racing.put = async (key, value, options) => {
+    await put(key, racing.objects.get(key) ?? '{"entries":{}}');
+    return null;
+  };
+  const conflicts = [];
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (message) => warned.push(String(message));
+  try {
+    const profile = new ReadProfile(racing, Date.now, (key, kind) => conflicts.push(kind));
+    assert.equal(await profile.observe([{ path: `${APP}/x.js`, size: 1 }], tagA, integrityOf), 0, 'a lost observation changed nothing');
+    await profile.settle([{ path: `${APP}/x.js`, size: 1, object: [...racing.objects.keys()][0], rel: 'x.js' }], new Set([`${APP}/x.js`]), new Set(), new Set([`${APP}/x.js`]), tagA);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(conflicts, ['observe', 'settle'], 'each dropped change is counted, with its kind');
+  assert.equal(warned.length, 2);
+  assert.match(warned[0], /observe of read-profiles\/v3\/.* lost 16 write races/);
+}
+
 console.log('read-profile: ok');

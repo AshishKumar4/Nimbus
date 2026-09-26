@@ -4352,6 +4352,8 @@ export class FacetManager {
    * (residencyProfiles).
    */
   private readProfile: ReadProfile | null = null;
+  /** Read-profile changes dropped after losing every write race. */
+  private readProfileConflicts = 0;
   /** Per module path: its static references at a revision (see _closureStaticRefs). */
   private staticRefsMemo = new Map<string, { rev: number; refs: StaticFsRefs }>();
   /** Modules whose references are remembered: a few programs' closures. */
@@ -4427,7 +4429,9 @@ export class FacetManager {
     const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NPM_TARBALL_CACHE')
       : undefined;
-    this.readProfile = profiles && typeof profiles === 'object' ? new ReadProfile(profiles as ReadProfileBucket) : null;
+    this.readProfile = profiles && typeof profiles === 'object'
+      ? new ReadProfile(profiles as ReadProfileBucket, Date.now, () => { this.readProfileConflicts++; })
+      : null;
     this.launchJournal = new FencedWork<ResidentLaunchRecord>(ctx.storage, {
       generationBase: () => this.processes.pidBase,
       waitUntil: (promise) => this.ctx.waitUntil(promise),
@@ -7245,5 +7249,5 @@ export class FacetManager {
     return this.portRegistry.has(port);
   }
 
-  get stats() { return this.processes.stats; }
+  get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
 }
