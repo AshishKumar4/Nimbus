@@ -15,7 +15,13 @@
   file `writeFile` creates is 0644 and a directory `mkdir` makes is 0755 (umask
   022), owned by the caller's uid and primary gid, except that in a setgid directory
   of a sqlite backend both take the directory's gid and a new directory is setgid
-  (02755). `final`: each backend's entries after the steps.
+  (02755). A sqlite directory may carry `defaultAcl` {user, group, other} (the
+  default ACL's base entries; `rootDefaultAcl` for the backend root): a new entry
+  there gets 0666 (file) or 0777 (directory) ANDed with it class by class, no umask,
+  and a new directory inherits the default ACL. `rename` (`path` to `to`, neither
+  followed) keeps the moved entries' owner, group, mode and default ACLs; EBUSY at a
+  structural path, EXDEV across backends. `final`: each backend's entries after the
+  steps, default ACLs included.
 -/
 
 import Nimbus.Vfs.CompositePerm
@@ -39,15 +45,23 @@ def metaJson (m : Meta) : List (String × Json) := [("mode", .ofNat m.mode), ("u
 
 def targetStr (abs : Bool) (t : List String) : String := (if abs then "/" else "") ++ "/".intercalate t
 
-def entJson (x : Path × BEnt) : Json :=
+def daclJson (a : Dacl) : Json := .obj [("user", .ofNat a.u), ("group", .ofNat a.g), ("other", .ofNat a.o)]
+
+def entJson (b : Backend) (x : Path × BEnt) : Json :=
   let extra : List (String × Json) := match x.2.k with
     | .dir => [("kind", .str "directory")]
     | .file n => [("kind", .str "file"), ("bytes", .str s!"v{n}")]
     | .link a t => [("kind", .str "symlink"), ("target", .str (targetStr a t))]
-  .obj ([("path", .str (key x.1))] ++ extra ++ metaJson x.2.m)
+  let acl := match daclAt b x.1 with
+    | some a => [("defaultAcl", daclJson a)]
+    | none => []
+  .obj ([("path", .str (key x.1))] ++ extra ++ metaJson x.2.m ++ acl)
+
+def entsJson (b : Backend) : Json := .arr (b.ents.map (entJson b))
 
 def backendJson (b : Backend) : Json :=
-  .obj [("kind", .str (if b.enforces then "sqlite" else "memory")), ("entries", .arr (b.ents.map entJson))]
+  .obj ([("kind", .str (if b.enforces then "sqlite" else "memory")), ("entries", entsJson b)] ++
+    (match daclAt b [] with | some a => [("rootDefaultAcl", daclJson a)] | none => []))
 
 def outJson : Out → Json
   | .ok => .str "ok"
@@ -105,13 +119,19 @@ def genTarget : Gen K := do
   else if k == 4 then return .link false ["..", "..", ← pick names, ← pick names]
   else return .link false [← pick names]
 
+def genDacl : Gen Dacl := do
+  return ⟨← pick [7, 6, 5], ← pick [7, 5, 4, 0], ← pick [5, 4, 0]⟩
+
 def genBackend (sql : Bool) (n : Nat) (v : Nat) : Gen Backend := do
-  let mut b : Backend := if sql then ⟨true, true, synthMeta, []⟩ else ⟨false, false, synthMeta, []⟩
+  let mut b : Backend := if sql then sqlite [] else memory []
   for i in [0:n] do
     let p ← genPath
     let k ← below 7
     let kind ← if k < 2 then pure K.dir else if k < 5 then pure (K.file (v + i)) else genTarget
     b ← addEnt b p kind
+  if sql then
+    for (p, e) in b.ents do
+      if e.k == .dir && (← below 3) == 0 then b := { b with dacls := b.dacls ++ [(p, ← genDacl)] }
   return b
 
 def genOpPath (ms : List Mnt) : Gen Path := do
@@ -151,7 +171,7 @@ def genCase : Gen (Option Json) := do
   for m in ms do
     bks := bks ++ [(m.bk, ← genBackend ((← below 3) != 0) ((← below 5) + 1) 20)]
   let get (l : List (Nat × Backend)) (k : Nat) : Backend :=
-    ((l.find? (·.1 == k)).map (·.2)).getD ⟨false, false, synthMeta, []⟩
+    ((l.find? (·.1 == k)).map (·.2)).getD (memory [])
   let mut S : St := { mounts := ms, bks := get bks }
   let S0 := S
   let mut steps : Array Json := #[]
@@ -159,15 +179,27 @@ def genCase : Gen (Option Json) := do
   for i in [0:n] do
     let c ← pick creds
     let p ← genOpPath ms
-    let op ← genOp (40 + i)
-    let (o, S') := cOp S c op p
-    S := S'
-    steps := steps.push (opJson c op p o)
+    if (← below 6) == 0 then
+      let held := ((S.bks 0).ents.map (·.1)) ++ ms.flatMap fun m => (S.bks m.bk).ents.map (m.point ++ ·.1)
+      let p ← if held.isEmpty then pure p else pick held
+      let q ← if (← below 2) == 0 && !held.isEmpty then do
+          let h ← pick held
+          pure (h.dropLast ++ [← pick names])
+        else genOpPath ms
+      let (o, S') := cRename S c p q
+      S := S'
+      steps := steps.push (.obj [("as", .ofNat c.uid), ("op", .str "rename"), ("path", .str (key p)),
+        ("to", .str (key q)), ("expect", outJson o)])
+    else
+      let op ← genOp (40 + i)
+      let (o, S') := cOp S c op p
+      S := S'
+      steps := steps.push (opJson c op p o)
   let ks := bks.map (·.1)
   return some (.obj [("mounts", .arr (ms.map fun m => .obj [("point", .str (key m.point)), ("backend", .str s!"b{m.bk}")])),
     ("backends", .obj (ks.map fun k => (s!"b{k}", backendJson (S0.bks k)))),
     ("steps", .arr steps.toList),
-    ("final", .obj (ks.map fun k => (s!"b{k}", .arr ((S.bks k).ents.map entJson))))])
+    ("final", .obj (ks.map fun k => (s!"b{k}", entsJson (S.bks k))))])
 
 def mountsJson (ms : List Mnt) : Json :=
   .arr (ms.map fun m => .obj [("point", .str (key m.point)), ("backend", .str s!"b{m.bk}")])
@@ -180,7 +212,25 @@ def traceCase (S : St) (ks : List Nat) (steps : List (Cred × Op × Path)) : Jso
     T := T'
     out := out.push (opJson c op p o)
   return .obj [("mounts", mountsJson S.mounts), ("backends", .obj (ks.map fun k => (s!"b{k}", backendJson (S.bks k)))),
-    ("steps", .arr out.toList), ("final", .obj (ks.map fun k => (s!"b{k}", .arr ((T.bks k).ents.map entJson))))]
+    ("steps", .arr out.toList), ("final", .obj (ks.map fun k => (s!"b{k}", entsJson (T.bks k))))]
+
+/-- `a_default_acl_masks_and_is_inherited`, with the rename. -/
+def aclCase : Json := Id.run do
+  let c : Cred := ⟨1, 1, [1, 10]⟩
+  let S0 := aclTrace
+  let mut S := S0
+  let mut out : Array Json := #[]
+  for (op, p) in [(Op.writeFile 3, ["a", "f"]), (.mkdir, ["a", "d"]), (.writeFile 4, ["a", "d", "g"]),
+      (.stat, ["a", "f"]), (.stat, ["a", "d"]), (.stat, ["a", "d", "g"])] do
+    let (o, S') := cOp S c op p
+    S := S'
+    out := out.push (opJson c op p o)
+  let (o, S') := cRename S kernel ["a", "f"] ["f"]
+  S := S'
+  out := out.push (.obj [("as", .ofNat 0), ("op", .str "rename"), ("path", .str "/a/f"), ("to", .str "/f"), ("expect", outJson o)])
+  out := out.push (opJson c .stat ["f"] (cOp S c .stat ["f"]).1)
+  return .obj [("mounts", .arr []), ("backends", .obj [("b0", backendJson (S0.bks 0))]),
+    ("steps", .arr out.toList), ("final", .obj [("b0", entsJson (S.bks 0))])]
 
 /-- The perm.mjs trace (`the_perm_trace`), links (`links_resolve_in_the_callers_namespace`)
     and setgid (`a_setgid_directory_passes_its_group_on`). -/
@@ -196,12 +246,13 @@ def directed : List Json :=
     traceCase sgTrace [0]
       [(⟨1, 1, [1, 10]⟩, .writeFile 3, ["g", "f"]), (⟨1, 1, [1, 10]⟩, .mkdir, ["g", "d"]),
        (⟨1, 1, [1, 10]⟩, .stat, ["g", "f"]), (⟨1, 1, [1, 10]⟩, .stat, ["g", "d"]),
-       (⟨1, 1, [1, 10]⟩, .writeFile 4, ["g", "d", "e"]), (⟨1, 1, [1, 10]⟩, .stat, ["g", "d", "e"])] ]
+       (⟨1, 1, [1, 10]⟩, .writeFile 4, ["g", "d", "e"]), (⟨1, 1, [1, 10]⟩, .stat, ["g", "d", "e"])],
+    aclCase ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-perm"), ("model", .str "Nimbus.Vfs.CompositePerm.cOp"),
       ("principals", .arr (creds.map credJson)),
-      ("note", .str "b0 is the root backend; kind sqlite = SqliteVFS (chown/chmod each entry as listed; root 0755 0:0), memory = MemoryVFS (no modes); every symlink resolves in the caller's namespace (absolute from its root, relative from the link's directory, .. at a mount root to the mount point's parent), 40 hops then ELOOP, search checked per hop; steps run on composite.as(cred of as) in order, carrying state; created files 0644 and directories 0755, the caller's uid and primary gid, but in a setgid sqlite directory the directory's gid, and new directories setgid; stat mode has no type bits; readdir names sorted")]
+      ("note", .str "b0 is the root backend; kind sqlite = SqliteVFS (chown/chmod each entry as listed; root 0755 0:0), memory = MemoryVFS (no modes); every symlink resolves in the caller's namespace (absolute from its root, relative from the link's directory, .. at a mount root to the mount point's parent), 40 hops then ELOOP, search checked per hop; steps run on composite.as(cred of as) in order, carrying state; created files 0644 and directories 0755, the caller's uid and primary gid, but in a setgid sqlite directory the directory's gid, and new directories setgid; a directory's defaultAcl masks a new entry's create mode (0666/0777) class by class instead of the umask, and a new directory inherits it; rename keeps meta and default ACLs; stat mode has no type bits; readdir names sorted")]
     (directed ++ runGen 0x5045524D (casesOf 150 genCase))
 
 end Nimbus.Refine.CompositePermCases

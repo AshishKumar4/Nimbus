@@ -447,6 +447,9 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositePerm.lean -/
 
 #print axioms Nimbus.Vfs.CompositePerm.setgid_inherits
+#print axioms Nimbus.Vfs.CompositePerm.aclMode_classes
+#print axioms Nimbus.Vfs.CompositePerm.and_bit
+#print axioms Nimbus.Vfs.CompositePerm.acl_never_widens
 #print axioms Nimbus.Vfs.CompositePerm.root_dir
 #print axioms Nimbus.Vfs.CompositePerm.named_snoc
 #print axioms Nimbus.Vfs.CompositePerm.named_dropLast
@@ -463,6 +466,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositePerm.the_backend_alone_grants_the_leak
 #print axioms Nimbus.Vfs.CompositePerm.links_resolve_in_the_callers_namespace
 #print axioms Nimbus.Vfs.CompositePerm.a_setgid_directory_passes_its_group_on
+#print axioms Nimbus.Vfs.CompositePerm.a_default_acl_masks_and_is_inherited
 
 /-! ## Nimbus/Vfs/FastCdc.lean -/
 
