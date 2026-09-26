@@ -853,7 +853,7 @@ requirements:
       - Who awaits whom (a lease holder's streams, a job's children) is the environment's; WF is a hypothesis the callers must keep (the engine's restoreAsync and copyTree start no spanning work)
   VFS-COMP-006:
     statement: Resolution beneath a root (WASI preopens, openat2 RESOLVE_BENEATH) through the composite - the root resolved from / (EACCES unless every directory from / to it grants search), then composite-perm's walk from the root (search per component from the root down, every link followed in the namespace, 40 hops then ELOOP) with ENOTCAPABLE for .. at the root, an absolute link or an absolute path, checked per component and per hop; whatever it resolves to lies at or under the root across mounts and the directories above them, every directory from the root down grants the caller search, and it is exactly what the unrestricted walk from the root resolves to.
-    status: proved-in-abstract-model
+    status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeBeneath.prefix_dropLast
       - Nimbus.Vfs.CompositeBeneath.walkB_contained
@@ -868,6 +868,7 @@ requirements:
       - Nimbus.Vfs.CompositeBeneath.beneath_root_searched
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS
+    refinement:
+      - lean/fixtures/beneath.json :: tests/unit/beneath-refinement.mjs
     remainingEvidence:
-      - Parked until NodeNoMirrorBuild writes tests/unit/beneath-refinement.mjs; Nimbus.Refine.BeneathCases generates lean/fixtures/beneath.json, and RefinementFixtures emits it with the refinement entry
       - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
