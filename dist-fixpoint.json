@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a9712a14fe0c395b85ce4659e1ebcb7f022c2186b951d31f2ea1146a12b14977",
+  "fingerprint": "09f1f0d419efc190cc320687385ee6c4bbc6ca3e04347479d197b08918466e84",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -252,9 +252,9 @@
     "packages/core/dist/runtime/python-server-adapter.d.ts": "c32aea244014813fc9a6d9cbc8b3c022a214c1dab27e9977200d456a0fe5943f",
     "packages/core/dist/runtime/python-server-adapter.d.ts.map": "32f3ed6df9611a72a7d5baf0465d53bdfed2bf8bcde54f0a269e2da05027cce0",
     "packages/core/dist/runtime/python-server-adapter.js": "48bb1597d57c98ae8b5abd429cd5561c15fdf4907e1710264ebdf6a7085a6ce4",
-    "packages/core/dist/runtime/require-resolver.d.ts": "6e40a25177e87cf94a5ac491f2faca240fe405d49e5452acb214d00e65d8b350",
-    "packages/core/dist/runtime/require-resolver.d.ts.map": "73799d4f95743d00672742068d03c9e376b3333c2c34312a1a2c61ad12bcd786",
-    "packages/core/dist/runtime/require-resolver.js": "a2dd6fea1c2da44153eb582513462dade8959f60e8e49ded242a48f3f03817bd",
+    "packages/core/dist/runtime/require-resolver.d.ts": "7a753b8f49133be35c2265ac58e062acfa889c1d2afd6592cc1b14c8a2464ca0",
+    "packages/core/dist/runtime/require-resolver.d.ts.map": "8ad9b1096d2cd7abe2d85828761baf1dd1a5a644d954349da54ba18c2ba96b48",
+    "packages/core/dist/runtime/require-resolver.js": "d9524bac928b863b9123f56f6d5aeced4249e886eeb2bd03aa2a2d6d9e117da8",
     "packages/core/dist/runtime/router-basename.d.ts": "2ddac310d985cb9f2aee88223d5e1cbf064870b5ea08ff2d84b2ff718ddb6883",
     "packages/core/dist/runtime/router-basename.d.ts.map": "01b2455cddd015fb5a0385c96bef3f449c7c0adc9de65fba48379846e5f621ff",
     "packages/core/dist/runtime/router-basename.js": "082fa144ed8e92a2e37e46769edb16e9a333b8fd1e966f78e36407fbeef4a6e2",
@@ -1034,7 +1034,7 @@
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/python-pip.ts": "0365d63007b18aa0dd4959b1c3da2a9d29ab381c04d19442696acb15fb679abd",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
-    "packages/core/src/runtime/require-resolver.ts": "3855a673b14695e49f0d7f2372b1ae5c50cfe57c2d8fc4d733ae1f0469136863",
+    "packages/core/src/runtime/require-resolver.ts": "d4993ff0bbef911bc063cb53dc94dd23efee6b6adc4c2dbf2efea197ea3cafdd",
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
     "packages/core/src/runtime/ruby-gems.ts": "582c097c9391f695a0659bbf06152b1de89a87f90a135419d6851d8aa121c79c",
     "packages/core/src/runtime/ruby-green-threads.ts": "7701efca15303c30d1ecd7bb9151a952c79e77ed2c5db3dc0819bbe4775f5eb6",

@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { Awaitable, RuntimeFsBridge } from './os-contracts.js';
+import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 /**
  * The filesystem the resolver reads: the four questions it asks, nothing
  * more, so every caller (a process's view, the supervisor's bridge, the
@@ -41,8 +41,19 @@ export interface RequireFs {
         size: number;
     } | null>;
 }
-/** The resolver's filesystem over a bound process bridge (supervisor RPC or in-process). */
-export declare function requireFsOverBridge(bridge: RuntimeFsBridge): RequireFs;
+/**
+ * The resolver's filesystem over a bound process bridge (supervisor RPC or
+ * in-process), plus the two reads a launch builder needs. Every probe answers
+ * a missing path (ENOENT, however the bridge reports it) with null or false;
+ * other errors are the bridge's.
+ */
+export interface BridgeRequireFs extends RequireFs {
+    stat(path: string): Promise<RuntimeVfsStat | null>;
+    /** The entry itself, a final link not followed. */
+    lstat(path: string): Promise<RuntimeVfsStat | null>;
+    readBytes(path: string): Promise<Uint8Array | null>;
+}
+export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
