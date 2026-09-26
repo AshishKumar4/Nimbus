@@ -1,6 +1,7 @@
 import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
+import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // Sizing is measurement-grounded (local pre-gate stats): bash's deepest
 // observed asyncify capture is ~25 KiB (full control suite), so 8 MiB
@@ -29,6 +30,19 @@ function clockNs(id) {
 class Exit {
     constructor(c) { this.code = c; }
 }
+/** A process killed by a signal's default action: SIGPIPE, a write to a pipe no one can read. */
+class Signalled {
+    constructor(signal) { this.signal = signal; }
+}
+const SIGPIPE = 13;
+/** The answer writeGate gives when the bash process unwound to park its write. */
+const WRITE_UNWOUND = Symbol('write-unwound');
+/**
+ * Without JSPI a synchronous WASI child cannot wait: the command fails, with
+ * this, rather than lose data or report a false end of input.
+ */
+function pipeLimitExceeded(s) { return new Error(pipeLimitMessage(s.pipeBudget)); }
+const pipeHost = (s) => (s.parking === 'jspi' ? 'jspi' : 'local');
 let S = null;
 let filesystem = null;
 function norm(p) {
@@ -65,11 +79,11 @@ function newSession(args) {
         throw new Error('bash requires a process filesystem capability');
     const cwd = args.cwd;
     return {
-        mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pending: new Set(),
+        mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
         argv: args.argv, environ: args.environ,
         stdinTty: !!args.stdinTty,
         stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
-        procs: new Map(), pipes: new Map(), runnable: [], exitStatus: new Map(), waiters: [],
+        procs: new Map(), pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
         pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
         out: '', err: '',
         missingWasi: new Set(),
@@ -78,7 +92,51 @@ function newSession(args) {
     };
 }
 function initStdinQueued(s) { s.stdin.queued = s.stdin.chunks.reduce((a, c) => a + c.length, 0); }
-function newPipe(s) { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [] }); return id; }
+function newPipe(s) { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [], writeW: [] }); return id; }
+/** The pipe `fd` writes to, when it is a pipe's write end. */
+function writePipe(s, proc, fd) {
+    const e = proc.fds.get(fd);
+    return e && e.kind === 'pipe' && e.end === 'w' ? s.pipes.get(e.pipeId) : null;
+}
+/** The pids holding a write end of pipe `pipeId`. */
+function pipeWriterPids(s, pipeId) {
+    const pids = [];
+    for (const proc of s.procs.values()) {
+        for (const e of proc.fds.values()) {
+            if (e.kind === 'pipe' && e.end === 'w' && e.pipeId === pipeId) {
+                pids.push(proc.pid);
+                break;
+            }
+        }
+    }
+    return pids;
+}
+/** Without JSPI: run what can run, nested, with `proc` marked suspended beneath it. */
+function pumpSuspended(s, proc) {
+    s.suspended.add(proc.pid);
+    try {
+        return pumpOne(s);
+    }
+    finally {
+        s.suspended.delete(proc.pid);
+    }
+}
+/** With JSPI, a writer to this pipe must wait (pipe-rules decideWrite: 'park'). */
+function atCapacity(pp) { return decideWrite(pp, 0, 'jspi', PIPE_CAPACITY, Infinity) === 'park'; }
+/** Wake the writers a drained pipe, or one whose last read end closed, lets through. */
+function wakeWriters(pp) {
+    while (pp.writeW.length && !atCapacity(pp)) {
+        const w = pp.writeW.shift();
+        if (!w)
+            break;
+        if ('complete' in w) {
+            w.complete();
+            continue;
+        }
+        w.proc.writeResumed = true;
+        resumeProc(w.proc);
+    }
+}
 // fd 3 is the wasi-libc '/' preopen. It lives in the fd table as a
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
@@ -101,7 +159,29 @@ function closeFd(s, proc, fd) {
         queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
-        wakePipe(s, s.pipes.get(e.pipeId));
+        const pp = s.pipes.get(e.pipeId);
+        wakePipe(s, pp);
+        wakeWriters(pp);
+        if (e.end === 'r')
+            settleHeldExits(s, pp);
+    }
+}
+/** After a read from `pp` or a close of one of its read ends: settle the exits held on it (pipe-rules heldExitSettles). */
+function settleHeldExits(s, pp) {
+    if (s.heldExits.size === 0)
+        return;
+    const settles = heldExitSettles(pp, PIPE_CAPACITY);
+    if (settles === null)
+        return;
+    for (const [pid, held] of [...s.heldExits]) {
+        if (!held.pipes.delete(pp))
+            continue;
+        if (settles === 'sigpipe')
+            held.sigpipe = true;
+        if (held.pipes.size > 0)
+            continue;
+        s.heldExits.delete(pid);
+        publishExit(s, pid, held.ppid, held.sigpipe ? SIGPIPE : held.status);
     }
 }
 function takeUpTo(src, max) {
@@ -173,6 +253,8 @@ function wakePipe(s, pp) {
         proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
         resumeProc(proc);
     }
+    settleHeldExits(s, pp);
+    wakeWriters(pp);
 }
 function wakeStdin(s) {
     const st = s.stdin;
@@ -268,13 +350,24 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false) {
             return E.BADF; U8().fill(0, out, out + 24); DV().setUint8(out, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out + 8, 0x1fffffffn, true); DV().setBigUint64(out + 16, 0x1fffffffn, true); return 0; },
         fd_fdstat_set_flags(fd, flags) { return !proc.fds.has(fd) ? E.BADF : flags === 0 ? 0 : E.NOSYS; },
         fd_read: (fd, p, n, out) => io.read(fd, readIovs(DV(), p, n), out),
-        fd_write(fd, p, n, out) { if (!proc.fds.has(fd))
-            return E.BADF; let written = 0; for (const v of readIovs(DV(), p, n).list) {
-            const count = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
-            if (count === null)
+        fd_write(fd, p, n, out) {
+            if (!proc.fds.has(fd))
                 return E.BADF;
-            written += count;
-        } DV().setUint32(out, written, true); return 0; },
+            const write = () => { let written = 0; for (const v of readIovs(DV(), p, n).list) {
+                const count = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
+                if (count === null)
+                    return E.BADF;
+                written += count;
+            } DV().setUint32(out, written, true); return 0; };
+            // A pipe at capacity makes the writer wait before any byte of this call
+            // is written, so a call re-entered after the wait never writes twice.
+            const gate = io.writeGate?.(fd);
+            if (gate === WRITE_UNWOUND)
+                return 0;
+            if (gate instanceof Promise)
+                return gate.then(write);
+            return write();
+        },
         poll_oneoff: (p, q, n, out) => io.poll(p, q, n, out),
         clock_time_get(id, _precision, out) { const ns = clockNs(id); if (ns === null)
             return E.INVAL; DV().setBigUint64(out, ns, true); return 0; },
@@ -302,6 +395,24 @@ function writeThroughFd(s, proc, fd, bytes) {
         if (e.end === 'r')
             return null;
         const pp = s.pipes.get(e.pipeId);
+        // Without JSPI nothing parks on a write: past the pipe's budget the
+        // writer runs the pipe's readers nested until they bring it back under,
+        // and with nothing it can run the command fails rather than grow the pipe
+        // without bound (see pipes-design: a synchronous reader cannot wait).
+        // A JSPI writer at capacity parked in its gate before it got here, so on
+        // this host only the local-host 'nest' and the 'sigpipe' decisions remain.
+        for (;;) {
+            const decision = decideWrite(pp, bytes.length, pipeHost(s), PIPE_CAPACITY, s.pipeBudget);
+            if (decision !== 'nest') {
+                // No one can read it, now or ever: SIGPIPE, whose default action ends
+                // the writer; bash reports it as 128 + 13 = 141. What stops `yes | head`.
+                if (decision === 'sigpipe')
+                    throw new Signalled(SIGPIPE);
+                break;
+            }
+            if (!pumpSuspended(s, proc))
+                throw pipeLimitExceeded(s);
+        }
         pp.chunks.push(bytes.slice());
         pp.queued += bytes.length;
         wakePipe(s, pp);
@@ -321,8 +432,12 @@ function tryReadFd(s, proc, fd, dv, u8, iov, nreadPtr) {
     const deliver = (bytes) => { dv.setUint32(nreadPtr, scatter(u8, iov, bytes), true); return { errno: 0 }; };
     if (e && e.kind === 'pipe') {
         const pp = s.pipes.get(e.pipeId);
-        if (pp.queued > 0)
-            return deliver(takeUpTo(pp, iov.total));
+        if (pp.queued > 0) {
+            const read = deliver(takeUpTo(pp, iov.total));
+            wakeWriters(pp);
+            settleHeldExits(s, pp);
+            return read;
+        }
         if (pp.writers === 0) {
             dv.setUint32(nreadPtr, 0, true);
             return { errno: 0 };
@@ -478,8 +593,8 @@ function blockTarget(s, proc, fd) {
 function makeProc(s, pid, ppid, fds) {
     const proc = {
         pid, ppid, fds, preopenMoved: new Map(), cwd: s.cwd, inst: null, __s: s,
-        ctx: { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0 },
-        MAIN_BUF: 0, SLOT0: 0, pendingRead: null,
+        ctx: { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 },
+        MAIN_BUF: 0, SLOT0: 0, pendingRead: null, writeResumed: false,
         slotByEnv: new Map(), freeSlots: [],
     };
     const DV = () => new DataView(proc.inst.exports.memory.buffer);
@@ -538,6 +653,24 @@ function makeProc(s, pid, ppid, fds) {
             return 0;
         },
         write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
+        writeGate: (fd) => {
+            if (proc.writeResumed) { // the re-entered call of a write that waited: stop the rewind, go ahead
+                proc.inst.exports.asyncify_stop_rewind();
+                c.rewinding = false;
+                proc.writeResumed = false;
+            }
+            // Only a host whose readers can wait lets a writer wait (pipes-design).
+            if (s.parking !== 'jspi')
+                return undefined;
+            const pp = writePipe(s, proc, fd);
+            if (!pp || !atCapacity(pp))
+                return undefined;
+            c.reason = 'blockwrite';
+            c.writeFd = fd;
+            initHdr(proc.MAIN_BUF, MAIN_SIZE);
+            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            return WRITE_UNWOUND;
+        },
         poll: (inPtr, outPtr, nsubs, retPtr) => {
             if (proc.pendingRead) { // poll resume: report the fd readable
                 proc.inst.exports.asyncify_stop_rewind();
@@ -843,6 +976,20 @@ function resumeProc(proc) {
     proc.ctx.rewinding = true;
     proc.inst.exports.asyncify_start_rewind(proc.MAIN_BUF);
     proc.__s.runnable.push(proc);
+    wakeScheduler(proc.__s);
+}
+/**
+ * The scheduler awaits pending tasks when nothing is runnable. A task that
+ * makes a process runnable without settling (a JSPI reader that drains a
+ * pipe and wakes its parked writer, then reads on) must wake it, or the
+ * writer waits on a reader that waits on the writer.
+ */
+function wakeScheduler(s) {
+    const wake = s.wake;
+    if (wake) {
+        s.wake = null;
+        wake();
+    }
 }
 function trackArena(s, proc, bufAddr, size, isSlot) {
     const used = proc.DV().getUint32(bufAddr, true) - (bufAddr + 8);
@@ -861,6 +1008,10 @@ function step(s, proc) {
     catch (e) {
         if (e instanceof Exit) {
             finishProc(s, proc, e.code);
+            return;
+        }
+        if (e instanceof Signalled) {
+            finishProc(s, proc, 0, e.signal);
             return;
         }
         throw e;
@@ -913,9 +1064,24 @@ function step(s, proc) {
             target.wake();
         }
     }
+    else if (r === 'blockwrite') {
+        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+        const pp = writePipe(s, proc, c.writeFd);
+        if (pp && atCapacity(pp))
+            pp.writeW.push({ proc });
+        else {
+            proc.writeResumed = true;
+            resumeProc(proc);
+        }
+    }
     else if (r === 'exec') {
         trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
-        queueSessionTask(s, doExec(s, proc));
+        // With JSPI a child parks on a pipe it would block on; without it, it runs
+        // synchronously, so it waits here until what it could depend on has run.
+        if (s.parking === 'jspi')
+            queueSessionTask(s, doExec(s, proc));
+        else
+            s.deferred.push(proc);
     }
     else if (r === 'filesystem') {
         const pending = proc.pendingFs;
@@ -929,10 +1095,23 @@ function step(s, proc) {
     }
 }
 function pumpOne(s) {
-    if (!s.runnable.length)
-        return false;
-    step(s, s.runnable.shift());
-    return true;
+    if (s.runnable.length) {
+        step(s, s.runnable.shift());
+        return true;
+    }
+    // A deferred child may be the writer a blocked reader is waiting for: it runs
+    // nested, to completion or to its own blocked read, as a runnable step does.
+    if (s.deferred.length) {
+        startDeferred(s);
+        return true;
+    }
+    return false;
+}
+/** Start the next process that reached exec (see BashSession.deferred). */
+function startDeferred(s) {
+    const proc = s.deferred.shift();
+    if (s.procs.has(proc.pid))
+        queueSessionTask(s, doExec(s, proc));
 }
 // exec re-homes the forked child onto a staged plain-WASI coreutil
 // bound to the process fd table (M2 exec-into-runner, in-facet). The
@@ -993,13 +1172,33 @@ async function doExec(s, proc) {
                     return ready.errno;
                 if (canPark)
                     return waitInput(fd, iov, out);
-                if (!pumpOne(s)) {
-                    DV().setUint32(out, 0, true);
-                    return 0;
-                }
+                // A synchronous reader cannot wait (pipes-design). If every writer of
+                // its pipe is suspended beneath it, nothing it runs can feed it: stop.
+                const e = proc.fds.get(fd);
+                const piped = e && e.kind === 'pipe' && e.end === 'r' && decideRead(s.pipes.get(e.pipeId), 'local', 'child') === 'nest';
+                if (piped && readerStops(pipeWriterPids(s, e.pipeId), s.suspended))
+                    throw pipeLimitExceeded(s);
+                if (pumpSuspended(s, proc))
+                    continue;
+                // Nothing it can run, and a write end of its pipe is open (its next
+                // write is a pending task): the end of input it would report is false.
+                if (piped)
+                    throw pipeLimitExceeded(s);
+                DV().setUint32(out, 0, true);
+                return 0;
             }
         },
         write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
+        writeGate: (fd) => {
+            if (!canPark)
+                return undefined;
+            const pp = writePipe(s, proc, fd);
+            if (!pp || !atCapacity(pp))
+                return undefined;
+            // Parks until the pipe drains below its capacity or its readers leave;
+            // the write is then checked again from the top (SIGPIPE included).
+            return new Promise((complete) => { pp.writeW.push({ complete }); });
+        },
         poll: (input, output, count, used) => {
             const subscriptions = readSubs(DV(), input, count);
             const ready = emitReady(s, proc, DV(), output, subscriptions);
@@ -1150,6 +1349,7 @@ async function doExec(s, proc) {
     if (!isEntry(start))
         throw new Error('WASI child has no _start export');
     let code = 0;
+    let signal = 0;
     try {
         if (canPark)
             await WebAssembly.promising(start)();
@@ -1159,10 +1359,12 @@ async function doExec(s, proc) {
     catch (error) {
         if (error instanceof Exit)
             code = error.code;
+        else if (error instanceof Signalled)
+            signal = error.signal;
         else
             throw error;
     }
-    finishProc(s, proc, code);
+    finishProc(s, proc, code, signal);
 }
 async function doFork(s, parent) {
     const childPid = s.pidNext++;
@@ -1232,24 +1434,45 @@ function doWait(s, proc) {
         s.waiters.push({ proc, targetPid: t });
     }
 }
-function finishProc(s, proc, code) {
-    const st = (code & 0xff) << 8;
+function finishProc(s, proc, code, signal = 0) {
+    // A wait status: the exit code in the second byte, or the killing signal in
+    // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
+    const st = signal ? signal & 0x7f : (code & 0xff) << 8;
     s.procs.delete(proc.pid);
+    // Pipes this exit is held on (pipe-rules holdsExit), taken before its own
+    // write ends close. The root process is never held: its exit ends the run.
+    const held = new Set();
+    if (proc.ppid !== 0 && !signal) {
+        for (const e of proc.fds.values()) {
+            const pp = e.kind === 'pipe' && e.end === 'w' ? s.pipes.get(e.pipeId) : null;
+            if (pp && holdsExit(pp, pipeHost(s), PIPE_CAPACITY))
+                held.add(pp);
+        }
+    }
+    if (held.size > 0)
+        s.heldExits.set(proc.pid, { status: st, ppid: proc.ppid, pipes: held, sigpipe: false });
     for (const fd of [...proc.fds.keys()])
         closeFd(s, proc, fd);
     if (proc.ppid === 0)
-        s.rootExit = code;
-    s.exitStatus.set(proc.pid, { status: st, ppid: proc.ppid });
+        s.rootExit = signal ? 128 + signal : code;
+    // A held exit is published when it settles (settleHeldExits), which may
+    // already have happened above if this process read its own pipe.
+    if (held.size === 0)
+        publishExit(s, proc.pid, proc.ppid, st);
+}
+/** Make `pid`'s wait status reapable, handing it to its parent's pending wait. */
+function publishExit(s, pid, ppid, st) {
+    s.exitStatus.set(pid, { status: st, ppid });
     for (let i = 0; i < s.waiters.length; i++) {
         const w = s.waiters[i];
         // Only the parent may be woken by this exit — a waiter in another subshell
         // is not waiting for this child, and waking it hands over a status that was
         // never its to claim.
-        if (w.proc.pid === proc.ppid && (w.targetPid === proc.pid || w.targetPid <= 0)) {
+        if (w.proc.pid === ppid && (w.targetPid === pid || w.targetPid <= 0)) {
             s.waiters.splice(i, 1);
-            w.proc.ctx.resume = proc.pid;
+            w.proc.ctx.resume = pid;
             w.proc.ctx.resumeStatus = st;
-            s.exitStatus.delete(proc.pid);
+            s.exitStatus.delete(pid);
             resumeProc(w.proc);
             break;
         }
@@ -1262,11 +1485,18 @@ function queueSessionTask(s, task) {
 }
 async function pump(s) {
     try {
-        while (s.runnable.length || s.pending.size) {
+        while (s.runnable.length || s.pending.size || s.deferred.length) {
             if (!s.runnable.length) {
                 if (s.stdin.waiters.length && !s.stdin.closed && s.stdin.queued === 0)
                     break;
-                await Promise.race(s.pending);
+                // A deferred child starts only once every pending fork and exec has
+                // settled, so the stages it reads from exist and have run what they can.
+                if (s.pending.size) {
+                    await Promise.race([...s.pending, new Promise((resolve) => { s.wake = resolve; })]);
+                    s.wake = null;
+                    continue;
+                }
+                startDeferred(s);
                 continue;
             }
             if (++s.steps > 5_000_000)

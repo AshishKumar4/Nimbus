@@ -178,6 +178,29 @@ kernel credential, because Nimbus follows POSIX here:
   failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
   without JSPI) still gets EAGAIN, naming the mount.
 - `find /` prints `/home`, not `//home`, as GNU find does.
+- `sed` is GNU sed 4.9's language: every command except `e` (`{}`, `=`,
+  `a`, `b`, `c`, `d`, `D`, `F`, `g`, `G`, `h`, `H`, `i`, `l`, `n`, `N`, `p`,
+  `P`, `q`, `Q`, `r`, `R`, `s`, `t`, `T`, `w`, `W`, `x`, `y`, `z`, labels),
+  GNU's addresses (`first~step`, `0,/re/`, `addr,+N`, `addr,~N`, `I`/`M`),
+  `s` flags `g p N i m w` and `\L \U \l \u \E` in replacements, and `-s`,
+  `-i[SUFFIX]`, `-f`, `-z`, `-l`, with GNU's messages and exit statuses (2
+  for an unreadable input file, 4 for a missing label). Before, it had `s`,
+  `d` and `p` only.
+- `sort`, `uniq`, `tail`, `wc`, `nl`, `tr`, `rev` and `sed` keep bytes: a
+  byte that is not valid UTF-8 (Latin-1 text, binary data) passes through
+  unchanged, as GNU's tools pass it. Before, input was decoded as UTF-8 and
+  every such byte came out as U+FFFD (three different bytes). Each has one
+  implementation, shared by the workspace shell and the lifo registry, and
+  each answers as GNU coreutils 9.7 does (`rev` as util-linux 2.41, `sed` as
+  GNU sed 4.9), checked on the fixtures in `tests/fixtures/gnu/`. Also:
+  `wc -l` counts newlines (a last line without one is not counted), `tail`
+  prints the input's own last bytes and adds no newline, `sort` collates as
+  glibc's en_US.UTF-8 does (punctuation and symbols ignored first, lower case
+  first) with `-n -g -h -M -V -k -t -s -c -o`, `uniq` has `-f -s -w -D
+  --group -z`, `tr` has `-c -t [c*n] [=c=]`, and a sed regex's `.` never
+  matches an invalid byte while `[a-z]` takes glibc's collated range.
+  Known limit: `sort` can order two lines that differ only in punctuation
+  differently from glibc.
 - `grep`, `od` and `cut` answer as GNU's do, byte for byte, checked against
   GNU grep 3.12 and GNU coreutils 9.7 on 415 cases (`tests/fixtures/gnu/`).
   grep: basic and extended POSIX patterns (a `+` is literal in a basic

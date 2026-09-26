@@ -2,6 +2,7 @@ import type { Command, CommandInputStream } from '../types.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import { resolve } from '../../utils/path.js';
 import { globMatch as fnmatch } from '../../utils/glob.js';
+import { NOT_WORD, PosixRegexSyntax, WORD, translate, literalChar } from '../../utils/posix-regex.js';
 
 // GNU grep (3.12) in a UTF-8 locale. Patterns: BRE (default), ERE (-E),
 // fixed strings (-F) and Perl-style (-P, as JavaScript's regex). A line is a
@@ -20,7 +21,6 @@ export interface GrepContext {
 }
 
 class GrepUsage extends Error {}
-class GrepSyntax extends Error {}
 
 const enc = new TextEncoder();
 const utf8 = new TextDecoder('utf-8');
@@ -28,155 +28,6 @@ const utf8Strict = new TextDecoder('utf-8', { fatal: true });
 /** GNU's read size: a NUL anywhere in what one read brings makes that read binary. */
 const BUFFER = 98304;
 
-const WORD = '[\\p{L}\\p{N}_]';
-const NOT_WORD = '[^\\p{L}\\p{N}_]';
-
-const CLASSES: Readonly<Record<string, string>> = {
-  alpha: '\\p{L}', digit: '0-9', alnum: '\\p{L}\\p{Nd}', upper: '\\p{Lu}', lower: '\\p{Ll}',
-  space: '\\s', blank: ' \\t', punct: '\\p{P}\\p{S}', print: '\\P{C}', graph: '\\p{L}\\p{M}\\p{N}\\p{P}\\p{S}',
-  cntrl: '\\p{Cc}', xdigit: '0-9A-Fa-f',
-};
-
-/** A character as a literal in a JavaScript `u` pattern; `-` is escaped only in a class. */
-function literal(ch: string, inClass = false): string {
-  if (ch === '-') return inClass ? '\\-' : '-';
-  return /[\\^$.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;
-}
-
-/** A POSIX bracket expression starting at `i` (after '['): its JS class and where it ends. */
-function bracket(p: string, i: number): { source: string; end: number } {
-  let out = '[';
-  if (p[i] === '^') { out += '^'; i++; }
-  let first = true;
-  for (;;) {
-    if (i >= p.length) throw new GrepSyntax('Unmatched [, [^, [:, [., or [=');
-    const ch = p[i];
-    if (ch === ']' && !first) return { source: out + ']', end: i + 1 };
-    first = false;
-    if (ch === '[' && (p[i + 1] === ':' || p[i + 1] === '=' || p[i + 1] === '.')) {
-      const kind = p[i + 1];
-      const close = p.indexOf(`${kind}]`, i + 2);
-      if (close === -1) throw new GrepSyntax('Unmatched [, [^, [:, [., or [=');
-      const name = p.slice(i + 2, close);
-      if (kind === ':') {
-        const cls = CLASSES[name];
-        if (cls === undefined) throw new GrepSyntax('Invalid character class name');
-        out += cls;
-      } else {
-        out += [...name].map((c) => literal(c, true)).join('');
-      }
-      i = close + 2;
-      continue;
-    }
-    // A range keeps its dash; any other character is taken literally.
-    if (ch === '-' && !first && p[i + 1] !== ']' && out.length > 1 && out !== '[^') out += '-';
-    else out += literal(ch, true);
-    i++;
-  }
-}
-
-/** A BRE or ERE as JavaScript regex source (`u` flag). */
-function translate(p: string, extended: boolean): string {
-  let out = '';
-  // Where an operator would have nothing to apply to (so it is literal), and open groups.
-  let atStart = true;
-  let depth = 0;
-  let groups = 0;
-  for (let i = 0; i < p.length;) {
-    const ch = p[i];
-    const start = atStart;
-    atStart = false;
-    if (ch === '\\') {
-      const next = p[i + 1];
-      if (next === undefined) throw new GrepSyntax('Trailing backslash');
-      i += 2;
-      if (!extended && next === '(') { out += '('; depth++; groups++; atStart = true; continue; }
-      if (!extended && next === ')') {
-        if (depth === 0) throw new GrepSyntax('Unmatched ) or \\)');
-        out += ')'; depth--; continue;
-      }
-      if (!extended && next === '|') { out += '|'; atStart = true; continue; }
-      if (!extended && (next === '+' || next === '?')) { out += start ? literal(next) : next; continue; }
-      if (!extended && next === '{') {
-        const close = p.indexOf('\\}', i);
-        if (close === -1) throw new GrepSyntax('Unmatched \\{');
-        out += interval(p.slice(i, close), start);
-        i = close + 2;
-        continue;
-      }
-      if (/[1-9]/.test(next)) {
-        if (Number(next) > groups) throw new GrepSyntax('Invalid back reference');
-        out += `\\${next}`;
-        continue;
-      }
-      if (next === '<') { out += `(?<!${WORD})(?=${WORD})`; continue; }
-      if (next === '>') { out += `(?<=${WORD})(?!${WORD})`; continue; }
-      if (next === 'b') { out += `(?:(?<=${WORD})(?!${WORD})|(?<!${WORD})(?=${WORD}))`; continue; }
-      if (next === 'B') { out += `(?:(?<=${WORD})(?=${WORD})|(?<!${WORD})(?!${WORD}))`; continue; }
-      if (next === 'w') { out += WORD; continue; }
-      if (next === 'W') { out += NOT_WORD; continue; }
-      if (next === 's') { out += '\\s'; continue; }
-      if (next === 'S') { out += '\\S'; continue; }
-      if (next === '`') { out += '^'; continue; }
-      if (next === "'") { out += '$'; continue; }
-      out += literal(next);
-      continue;
-    }
-    i++;
-    if (ch === '[') {
-      if (p.startsWith(':', i) && /^:[a-z]+:\]/.test(p.slice(i))) {
-        throw new GrepSyntax('character class syntax is [[:space:]], not [:space:]');
-      }
-      const b = bracket(p, i);
-      out += b.source;
-      i = b.end;
-      continue;
-    }
-    if (ch === '.') { out += '.'; continue; }
-    if (ch === '*') { out += start ? '\\*' : '*'; continue; }
-    if (ch === '^') {
-      // BRE: an anchor only first in the pattern or a group; ERE: always.
-      if (extended || start) { out += '^'; atStart = true; } else out += '\\^';
-      continue;
-    }
-    if (ch === '$') {
-      const last = i === p.length || (!extended && (p.startsWith('\\)', i) || p.startsWith('\\|', i)));
-      out += extended || last ? '$' : '\\$';
-      continue;
-    }
-    if (extended) {
-      if (ch === '(') { out += '('; depth++; groups++; atStart = true; continue; }
-      if (ch === ')') {
-        // An unmatched ) is an ordinary character in GNU's ERE.
-        if (depth === 0) { out += '\\)'; continue; }
-        out += ')'; depth--; continue;
-      }
-      if (ch === '|') { out += '|'; atStart = true; continue; }
-      if (ch === '+' || ch === '?') { out += start ? literal(ch) : ch; continue; }
-      if (ch === '{') {
-        const close = p.indexOf('}', i);
-        const body = close === -1 ? null : p.slice(i, close);
-        if (start || body === null || !/^\d*(,\d*)?$/.test(body) || body === '' || body === ',') { out += '\\{'; continue; }
-        out += interval(body, false);
-        i = close + 1;
-        continue;
-      }
-    }
-    out += literal(ch);
-  }
-  if (depth > 0) throw new GrepSyntax('Unmatched ( or \\(');
-  return out;
-}
-
-function interval(body: string, start: boolean): string {
-  if (start) throw new GrepSyntax('Invalid preceding regular expression');
-  const m = /^(\d*)(,?)(\d*)$/.exec(body);
-  if (m === null || (m[1] === '' && m[2] === '')) throw new GrepSyntax('Invalid content of \\{\\}');
-  const lo = m[1] === '' ? 0 : Number(m[1]);
-  const hi = m[2] === '' ? lo : m[3] === '' ? Infinity : Number(m[3]);
-  if (hi < lo || lo > 32767 || (hi !== Infinity && hi > 32767)) throw new GrepSyntax('Invalid content of \\{\\}');
-  return m[2] === '' ? `{${lo}}` : hi === Infinity ? `{${lo},}` : `{${lo},${hi}}`;
-}
 
 type Syntax = 'G' | 'E' | 'F' | 'P';
 
@@ -188,7 +39,7 @@ interface Matcher {
 function compile(patterns: string[], syntax: Syntax, ignoreCase: boolean, word: boolean, whole: boolean, multiline: boolean): Matcher {
   const flags = `u${ignoreCase ? 'i' : ''}${multiline ? 's' : ''}`;
   const sources = patterns.map((p) => {
-    let source = syntax === 'F' ? [...p].map((c) => literal(c)).join('') : syntax === 'P' ? p : translate(p, syntax === 'E');
+    let source = syntax === 'F' ? [...p].map((c) => literalChar(c)).join('') : syntax === 'P' ? p : translate(p, { extended: syntax === 'E' });
     if (whole) source = `^(?:${source})$`;
     else if (word) source = `(?<!${WORD})(?:${source})(?!${WORD})`;
     return source;
@@ -197,7 +48,7 @@ function compile(patterns: string[], syntax: Syntax, ignoreCase: boolean, word: 
   try {
     regexes = sources.map((source) => new RegExp(source, `${flags}g`));
   } catch (error) {
-    throw new GrepSyntax(syntax === 'P' ? (error as Error).message : 'Invalid regular expression');
+    throw new PosixRegexSyntax(syntax === 'P' ? (error as Error).message : 'Invalid regular expression');
   }
   // Leftmost, then longest: JavaScript takes the first alternative that
   // matches; POSIX takes the longest, so an alternation is extended.
@@ -475,7 +326,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
   try {
     matcher = compile(o.patterns, o.syntax, o.ignoreCase, o.word, o.whole, o.nullData);
   } catch (error) {
-    if (!(error instanceof GrepSyntax)) throw error;
+    if (!(error instanceof PosixRegexSyntax)) throw error;
     await ctx.stderr.write(`grep: ${error.message}\n`);
     return 2;
   }

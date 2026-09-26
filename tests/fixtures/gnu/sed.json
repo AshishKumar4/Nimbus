@@ -1,0 +1,677 @@
+{
+ "tool": "sed",
+ "recorded": "GNU sed 4.9, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)",
+ "inputs": {
+  "l1": "Y2Fm6QpuYe92ZQqAgf7/CnBsYWluCmjDqWxsbwo=",
+  "nul": "YQBiCmMACmQK",
+  "crlf": "b25lDQp0d28NCg==",
+  "noeol": "YQpiCmM=",
+  "empty": "",
+  "u8": "aMOpbGxvIHfDtnJsZArDiWNvbGUgw6dhCuaXpeacrOiqniDjg4bjgq3jgrnjg4gK8J+YgCB4Cg==",
+  "nums": "MTAKOQotMwoxLDAwMAoyLjUKMWUzCjB4MTAKYWJjCgogNwotMAorNAoxLjVLCjJNCjUxMgo=",
+  "words": "YgphCkIKQQpfeAp4Ci14Cnp6Clp6CsOpY2xhaXIKZWNsYWlyCmZvbyBiYXIKZm9vCmZvbzEwCmZvbzIKLmhpZGRlbgpoaWRkZW4KICBsZWFkCmxlYWQK",
+  "kv": "YiAyIHgKYSAxMCB5CmMgMSB6CmEgMiB3CmIgIDMgdgo=",
+  "csv": "cGVhciwzLHoKYXBwbGUsMTAsYQpmaWcsMixtCmFwcGxlLDIsYgo=",
+  "months": "TWFyCkpBTgpmZWIKeHl6CiBkZWMKQXByCg==",
+  "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
+  "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
+  "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo=",
+  "seq": "MQoyCjMKNAo1CjYKNwo4CjkKMTAKMTEKMTIK",
+  "para": "YQpiCgpjCmQKZQoKZgo=",
+  "script.sed": "cy8xL29uZS8KLzUvLC83L2QKJGFcCkVORAo=",
+  "fa": "MQoyCg==",
+  "fb": "MTAKMjA=",
+  "bak/.keep": ""
+ },
+ "cases": [
+  {
+   "args": "s/a/X/ l1",
+   "stdout": "cXfé\nnXïve\nþÿ\nplXin\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n p l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/./X/g' l1",
+   "stdout": "XXXé\nXXïXX\nþÿ\nXXXXX\nXXXXX\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/\\(.\\)\\(.\\)/\\2\\1/' l1",
+   "stdout": "acfé\nanïve\nþÿ\nlpain\nÃ©hllo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '$p' noeol",
+   "stdout": "c",
+   "exit": 0
+  },
+  {
+   "args": "'s/b/B/' noeol",
+   "stdout": "a\nB\nc",
+   "exit": 0
+  },
+  {
+   "args": "p nul",
+   "stdout": "a\u0000b\na\u0000b\nc\u0000\nc\u0000\nd\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/\\x00/@/g' nul",
+   "stdout": "a@b\nc@\nd\n",
+   "exit": 0
+  },
+  {
+   "args": "s/one/1/ crlf",
+   "stdout": "1\r\ntwo\r\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/$/!/' l1",
+   "stdout": "café!\nnaïve!\nþÿ!\nplain!\nhÃ©llo!\n",
+   "exit": 0
+  },
+  {
+   "args": "'2d' l1",
+   "stdout": "café\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[^a-z]//g' l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/\\x80/p' l1",
+   "stdout": "þÿ\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/h/H/' u8",
+   "stdout": "HÃ©llo wÃ¶rld\nÃcole Ã§a\næ¥æ¬èª ãã­ã¹ã\nð x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/./X/' u8",
+   "stdout": "XÃ©llo wÃ¶rld\nXcole Ã§a\nXæ¬èª ãã­ã¹ã\nX x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/caf/CAF/' l1",
+   "stdout": "CAFé\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/.*/[&]/' l1",
+   "stdout": "[caf]é\n[na]ïve\n[]þÿ\n[plain]\n[hÃ©llo]\n",
+   "exit": 0
+  },
+  {
+   "args": "cat l1 | %T 's/i/I/'",
+   "stdout": "café\nnaïve\nþÿ\nplaIn\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-e 's/a/b/' -e 's/b/c/' words",
+   "stdout": "c\nc\nB\nA\n_x\nx\n-x\nzz\nZz\nÃ©clcir\neclcir\nfoo cbr\nfoo\nfoo10\nfoo2\n.hidden\nhidden\n  lecd\nlecd\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[a-z]/_/g' u8",
+   "stdout": "_____ _____\nÃ____ __\næ¥æ¬èª ãã­ã¹ã\nð _\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[A-Z]/_/g' u8",
+   "stdout": "hÃ©llo wÃ¶rld\n_cole Ã§a\næ¥æ¬èª ãã­ã¹ã\nð x\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[^a-z ]/_/g' u8",
+   "stdout": "hÃ©llo wÃ¶rld\n_cole Ã§a\n___ ____\n_ x\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/[a-z]/p' l1",
+   "stdout": "café\nnaïve\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[[:alpha:]]/_/g' u8",
+   "stdout": "_____ _____\n_____ __\n___ ____\nð _\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[b-d]/_/g' l1",
+   "stdout": "_afé\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'y/abc/xyz/' l1",
+   "stdout": "zxfé\nnxïve\nþÿ\nplxin\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'=' l1",
+   "stdout": "1\ncafé\n2\nnaïve\n3\nþÿ\n4\nplain\n5\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "'1!G;h;$!d' l1",
+   "stdout": "hÃ©llo\nplain\nþÿ\nnaïve\ncafé\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 'l' l1",
+   "stdout": "caf\\351$\nna\\357ve$\n\\200\\201\\376\\377$\nplain$\nh\\303\\251llo$\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '3p' seq",
+   "stdout": "3\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '$p' seq",
+   "stdout": "12\n",
+   "exit": 0
+  },
+  {
+   "args": "'3,5d' seq",
+   "stdout": "1\n2\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'3,+2d' seq",
+   "stdout": "1\n2\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2,~4d' seq",
+   "stdout": "1\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'0~3d' seq",
+   "stdout": "1\n2\n4\n5\n7\n8\n10\n11\n",
+   "exit": 0
+  },
+  {
+   "args": "'1~3d' seq",
+   "stdout": "2\n3\n5\n6\n8\n9\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2~0p' -n seq",
+   "stdout": "2\n",
+   "exit": 0
+  },
+  {
+   "args": "'/4/,/6/d' seq",
+   "stdout": "1\n2\n3\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'0,/1/d' seq",
+   "stdout": "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'1,/1/d' seq",
+   "stdout": "11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'/5/,3d' seq",
+   "stdout": "1\n2\n3\n4\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'5!d' seq",
+   "stdout": "5\n",
+   "exit": 0
+  },
+  {
+   "args": "'/1/!d' seq",
+   "stdout": "1\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2q' seq",
+   "stdout": "1\n2\n",
+   "exit": 0
+  },
+  {
+   "args": "'2Q' seq",
+   "stdout": "1\n",
+   "exit": 0
+  },
+  {
+   "args": "'3q5' seq",
+   "stdout": "1\n2\n3\n",
+   "exit": 5
+  },
+  {
+   "args": "'n;d' seq",
+   "stdout": "1\n3\n5\n7\n9\n11\n",
+   "exit": 0
+  },
+  {
+   "args": "'$!N;s/\\n/-/' seq",
+   "stdout": "1-2\n3-4\n5-6\n7-8\n9-10\n11-12\n",
+   "exit": 0
+  },
+  {
+   "args": "'N;P;D' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'$!N;P;D' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "':a;N;$!ba;s/\\n/,/g' seq",
+   "stdout": "1,2,3,4,5,6,7,8,9,10,11,12\n",
+   "exit": 0
+  },
+  {
+   "args": "'1!G;h;$!d' seq",
+   "stdout": "12\n11\n10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n",
+   "exit": 0
+  },
+  {
+   "args": "'x;$!d' seq",
+   "stdout": "11\n",
+   "exit": 0
+  },
+  {
+   "args": "'h;G' seq",
+   "stdout": "1\n1\n2\n2\n3\n3\n4\n4\n5\n5\n6\n6\n7\n7\n8\n8\n9\n9\n10\n10\n11\n11\n12\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'H;$!d;x' seq",
+   "stdout": "\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/1/X/2' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n1X\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/1/X/2g' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n1X\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/\\(.\\)/[\\1]/g' seq",
+   "stdout": "[1]\n[2]\n[3]\n[4]\n[5]\n[6]\n[7]\n[8]\n[9]\n[1][0]\n[1][1]\n[1][2]\n",
+   "exit": 0
+  },
+  {
+   "args": "-E 's/(1)(0|1)/\\2\\1/' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n01\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/1*/<&>/g' seq",
+   "stdout": "<1>\n<>2<>\n<>3<>\n<>4<>\n<>5<>\n<>6<>\n<>7<>\n<>8<>\n<>9<>\n<1>0<>\n<11>\n<1>2<>\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/x*/-/g' seq",
+   "stdout": "-1-\n-2-\n-3-\n-4-\n-5-\n-6-\n-7-\n-8-\n-9-\n-1-0-\n-1-1-\n-1-2-\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/[0-9]/\\U&x/' seq",
+   "stdout": "1X\n2X\n3X\n4X\n5X\n6X\n7X\n8X\n9X\n1X0\n1X1\n1X2\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/.*/\\L\\uABC &/' seq",
+   "stdout": "Abc 1\nAbc 2\nAbc 3\nAbc 4\nAbc 5\nAbc 6\nAbc 7\nAbc 8\nAbc 9\nAbc 10\nAbc 11\nAbc 12\n",
+   "exit": 0
+  },
+  {
+   "args": "'y/123/abc/' seq",
+   "stdout": "a\nb\nc\n4\n5\n6\n7\n8\n9\na0\naa\nab\n",
+   "exit": 0
+  },
+  {
+   "args": "'y/\\n/x/' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/1/{p;p}' seq",
+   "stdout": "1\n1\n10\n10\n11\n11\n12\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'/3/,/5/{s/^/>/;s/$/</}' seq",
+   "stdout": "1\n2\n>3<\n>4<\n>5<\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2i\\\ninserted' seq",
+   "stdout": "1\ninserted\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2a appended' seq",
+   "stdout": "1\n2\nappended\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'$a\\\nlast' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\nlast\n",
+   "exit": 0
+  },
+  {
+   "args": "'3c\\\nchanged' seq",
+   "stdout": "1\n2\nchanged\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'2,4c\\\nrange' seq",
+   "stdout": "1\nrange\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'=' seq",
+   "stdout": "1\n1\n2\n2\n3\n3\n4\n4\n5\n5\n6\n6\n7\n7\n8\n8\n9\n9\n10\n10\n11\n11\n12\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '$=' seq",
+   "stdout": "12\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 'l' l1",
+   "stdout": "caf\\351$\nna\\357ve$\n\\200\\201\\376\\377$\nplain$\nh\\303\\251llo$\n",
+   "exit": 0
+  },
+  {
+   "args": "'l 5' seq",
+   "stdout": "1$\n1\n2$\n2\n3$\n3\n4$\n4\n5$\n5\n6$\n6\n7$\n7\n8$\n8\n9$\n9\n10$\n10\n11$\n11\n12$\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '/^$/!p' para",
+   "stdout": "a\nb\nc\nd\ne\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "'/^$/d' para",
+   "stdout": "a\nb\nc\nd\ne\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/b/B/;tx;s/$/!/;:x' para",
+   "stdout": "a!\nB\n!\nc!\nd!\ne!\n!\nf!\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/b/B/;Tx;s/$/!/;:x' para",
+   "stdout": "a\nB!\n\nc\nd\ne\n\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/a/A/w /dev/stdout' para",
+   "stdout": "A\nA\nb\n\nc\nd\ne\n\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "-s -n '$p' seq para",
+   "stdout": "12\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "-n '$p' seq para",
+   "stdout": "f\n",
+   "exit": 0
+  },
+  {
+   "args": "-z 's/\\n/,/g' seq",
+   "stdout": "1,2,3,4,5,6,7,8,9,10,11,12,",
+   "exit": 0
+  },
+  {
+   "args": "-f script.sed seq",
+   "stdout": "one\n2\n3\n4\n8\n9\none0\none1\none2\nEND\n",
+   "exit": 0
+  },
+  {
+   "args": "-e 's/1/I/' -e 's/2/II/' seq",
+   "stdout": "I\nII\n3\n4\n5\n6\n7\n8\n9\nI0\nI1\nIII\n",
+   "exit": 0
+  },
+  {
+   "args": "-n -e '/3/{' -e 'p' -e '}' seq",
+   "stdout": "3\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/1/a\\\nb/' seq",
+   "stdout": "a\nb\n2\n3\n4\n5\n6\n7\n8\n9\na\nb0\na\nb1\na\nb2\n",
+   "exit": 0
+  },
+  {
+   "args": "'s|1|/|' seq",
+   "stdout": "/\n2\n3\n4\n5\n6\n7\n8\n9\n/0\n/1\n/2\n",
+   "exit": 0
+  },
+  {
+   "args": "'s|1\\|2|x|' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "-E 's|1\\|2|x|' seq",
+   "stdout": "x\nx\n3\n4\n5\n6\n7\n8\n9\nx0\nx1\nx2\n",
+   "exit": 0
+  },
+  {
+   "args": "'F' seq",
+   "stdout": "seq\n1\nseq\n2\nseq\n3\nseq\n4\nseq\n5\nseq\n6\nseq\n7\nseq\n8\nseq\n9\nseq\n10\nseq\n11\nseq\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'z;s/^$/empty/' seq",
+   "stdout": "empty\nempty\nempty\nempty\nempty\nempty\nempty\nempty\nempty\nempty\nempty\nempty\n",
+   "exit": 0
+  },
+  {
+   "args": "'r nope' seq",
+   "stdout": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'1r seq' para",
+   "stdout": "a\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\nb\n\nc\nd\ne\n\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "'2R seq' para",
+   "stdout": "a\nb\n1\n\nc\nd\ne\n\nf\n",
+   "exit": 0
+  },
+  {
+   "args": "'p;p' -n seq",
+   "stdout": "1\n1\n2\n2\n3\n3\n4\n4\n5\n5\n6\n6\n7\n7\n8\n8\n9\n9\n10\n10\n11\n11\n12\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "'s/1/X/;s//Y/' seq",
+   "stdout": "X\n2\n3\n4\n5\n6\n7\n8\n9\nX0\nXY\nX2\n",
+   "exit": 0
+  },
+  {
+   "args": "'/1/s//Z/' seq",
+   "stdout": "Z\n2\n3\n4\n5\n6\n7\n8\n9\nZ0\nZ1\nZ2\n",
+   "exit": 0
+  },
+  {
+   "args": "'bx' seq",
+   "stdout": "",
+   "exit": 4
+  },
+  {
+   "args": "'{p' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'p}' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'k' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'s/a/b' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'s/a/b/q' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'y/ab/c/' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'3,' seq",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-n nope",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "seq nope",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "'2a\\\nx\\\ny' seq",
+   "stdout": "1\n2\nx\ny\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 'p;p' noeol",
+   "stdout": "a\na\nb\nb\nc\nc",
+   "exit": 0
+  },
+  {
+   "args": "'a end' noeol",
+   "stdout": "a\nend\nb\nend\nc\nend\n",
+   "exit": 0
+  },
+  {
+   "args": "'$!d' noeol",
+   "stdout": "c",
+   "exit": 0
+  },
+  {
+   "args": "'s/c/C/p' noeol",
+   "stdout": "a\nb\nC\nC",
+   "exit": 0
+  },
+  {
+   "args": "'=' noeol",
+   "stdout": "1\na\n2\nb\n3\nc",
+   "exit": 0
+  },
+  {
+   "args": "'$ i before' noeol",
+   "stdout": "a\nb\nbefore\nc",
+   "exit": 0
+  },
+  {
+   "args": "-i 's/1/X/' fa fb",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "fa": "X\n2\n",
+    "fb": "X0\n20"
+   }
+  },
+  {
+   "args": "-i.bak 's/1/X/' fa",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "fa": "X\n2\n",
+    "fa.bak": "1\n2\n"
+   }
+  },
+  {
+   "args": "-i'bak/*' 's/1/X/' fa",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "fa": "X\n2\n",
+    "bak/fa": "1\n2\n"
+   }
+  },
+  {
+   "args": "-i -n '$p' fa fb",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "fa": "2\n",
+    "fb": "20"
+   }
+  },
+  {
+   "args": "'s/1/X/w out' fa",
+   "stdout": "X\n2\n",
+   "exit": 0,
+   "after": {
+    "out": "X\n"
+   }
+  },
+  {
+   "args": "-n '/2/w out' fa fb",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "out": "2\n20"
+   }
+  },
+  {
+   "args": "'1d;w out' fa",
+   "stdout": "2\n",
+   "exit": 0,
+   "after": {
+    "out": "2\n"
+   }
+  },
+  {
+   "args": "-s -n 'W out' fa fb",
+   "stdout": "",
+   "exit": 0,
+   "after": {
+    "out": "1\n2\n10\n20"
+   }
+  }
+ ]
+}

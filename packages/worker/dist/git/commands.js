@@ -411,12 +411,16 @@ async function writeBinary(stream, bin) {
         await stream.write(dec.decode(bytes));
 }
 // ── Staging ──────────────────────────────────────────────────────────────
-/** `commit -a`'s staging of tracked changes, under one index write, a path at a time: 1,000 concurrent deflates reset the isolate. */
+/**
+ * `commit -a`'s staging of tracked changes: the status refresh, the removals
+ * and the additions under one index write, as git's, and a path at a time
+ * (1,000 concurrent deflates reset the isolate).
+ */
 async function stageTracked(git, fs, dir) {
     const cache = {};
     const added = [];
     const removed = [];
-    for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache })) {
+    for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache, deferRefresh: true })) {
         if (stage === 0)
             continue;
         if (head === workdir && workdir === stage)
@@ -426,10 +430,7 @@ async function stageTracked(git, fs, dir) {
         else
             added.push(filepath);
     }
-    if (removed.length)
-        await git.remove({ fs, dir, filepath: removed, cache });
-    if (added.length)
-        await git.add({ fs, dir, filepath: added, parallel: false, cache });
+    await git.stage({ fs, dir, cache, add: added, remove: removed, parallel: false });
 }
 // ── Repository discovery ─────────────────────────────────────────────────
 const NOT_A_REPOSITORY = 'fatal: not a git repository (or any of the parent directories): .git\n';
@@ -736,7 +737,8 @@ async function addCommand(ctx, git, fs, vfs, args) {
     const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
     const inSpec = (path, spec) => spec === '' || path === spec || path.startsWith(`${spec}/`);
     const cache = {};
-    const matrix = await git.statusMatrix({ fs, dir: root, cache });
+    // Its stat refreshes ride in the one index write that stages (git add writes once).
+    const matrix = await git.statusMatrix({ fs, dir: root, cache, deferRefresh: !dryRun });
     // -f takes the ignored files below each pathspec as well.
     const forced = force
         ? await git.statusMatrix({ fs, dir: root, cache, ignored: true, filepaths: specs.map((spec) => spec || '.') })
@@ -810,10 +812,7 @@ async function addCommand(ctx, git, fs, vfs, args) {
     if (!dryRun) {
         const removed = tracked.filter(([, action]) => action === 'remove').map(([path]) => path);
         const added = [...tracked.filter(([, action]) => action === 'add').map(([path]) => path), ...untracked];
-        if (removed.length)
-            await git.remove({ fs, dir: root, filepath: removed, cache });
-        if (added.length)
-            await git.add({ fs, dir: root, filepath: added, parallel: false, force: true, cache });
+        await git.stage({ fs, dir: root, cache, add: added, remove: removed, parallel: false, force: true });
     }
     return ignored.length ? 1 : 0;
 }

@@ -1,60 +1,147 @@
-import { resolve } from '../../utils/path.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { statOrThrow } from '../../../../vfs/vfs.js';
+import { concatBytes, fsErrorText, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+class TailUsage extends Error {
+}
+function parseCount(value, unit) {
+    const m = /^([+-]?)(\d+)([bkKmMgG]?|[kKmMgG]B|[kKmMgG]iB)?$/.exec(value);
+    if (m === null)
+        throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
+    const scale = { '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000, KiB: 1024, m: 1048576, M: 1048576, MB: 1e6, MiB: 1048576, g: 1073741824, G: 1073741824, GB: 1e9, GiB: 1073741824 };
+    const factor = scale[m[3] ?? ''];
+    if (factor === undefined)
+        throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
+    return { unit, count: Number(m[2]) * factor, fromStart: m[1] === '+' };
+}
 const command = async (ctx) => {
-    let count = 10;
+    let mode = { unit: 'lines', count: 10, fromStart: false };
+    let headers = null;
+    let delim = 0x0a;
     const files = [];
-    for (let i = 0; i < ctx.args.length; i++) {
-        const arg = ctx.args[i];
-        if (arg === '-n' && i + 1 < ctx.args.length) {
-            count = parseInt(ctx.args[++i], 10);
-            if (isNaN(count)) {
-                await ctx.stderr.write('tail: invalid number of lines\n');
-                return 1;
+    const usage = async (message) => {
+        await ctx.stderr.write(`tail: ${message}\nTry 'tail --help' for more information.\n`);
+        return 1;
+    };
+    try {
+        const args = ctx.args;
+        for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (arg === '--') {
+                files.push(...args.slice(i + 1));
+                break;
+            }
+            if (arg.startsWith('--')) {
+                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
+                const value = () => inline ?? args[++i];
+                if (name === 'lines')
+                    mode = parseCount(value() ?? '', 'lines');
+                else if (name === 'bytes')
+                    mode = parseCount(value() ?? '', 'bytes');
+                else if (name === 'quiet' || name === 'silent')
+                    headers = false;
+                else if (name === 'verbose')
+                    headers = true;
+                else if (name === 'zero-terminated')
+                    delim = 0;
+                else
+                    return usage(`unrecognized option '--${name}'`);
+                continue;
+            }
+            if (!arg.startsWith('-') || arg === '-') {
+                files.push(arg);
+                continue;
+            }
+            // The obsolete -N (as the first option): the last N lines.
+            if (/^-\d+$/.test(arg)) {
+                mode = parseCount(arg.slice(1), 'lines');
+                continue;
+            }
+            for (let j = 1; j < arg.length; j++) {
+                const flag = arg[j];
+                if (flag === 'n' || flag === 'c') {
+                    let value = arg.slice(j + 1);
+                    if (value === '')
+                        value = args[++i];
+                    if (value === undefined)
+                        return usage(`option requires an argument -- '${flag}'`);
+                    mode = parseCount(value, flag === 'n' ? 'lines' : 'bytes');
+                    break;
+                }
+                if (flag === 'q')
+                    headers = false;
+                else if (flag === 'v')
+                    headers = true;
+                else if (flag === 'z')
+                    delim = 0;
+                else if (flag === 'f' || flag === 'F') { /* a finished input has nothing to follow */ }
+                else
+                    return usage(`invalid option -- '${flag}'`);
             }
         }
-        else if (/^-\d+$/.test(arg)) {
-            count = parseInt(arg.slice(1), 10);
-        }
-        else {
-            files.push(arg);
-        }
     }
-    async function tailText(text) {
-        const lines = text.replace(/\n$/, '').split('\n');
-        const selected = lines.slice(-count);
-        await ctx.stdout.write(selected.join('\n') + '\n');
+    catch (error) {
+        if (error instanceof TailUsage)
+            return usage(error.message);
+        throw error;
     }
-    if (files.length === 0) {
-        if (ctx.stdin) {
-            await tailText(await ctx.stdin.readAll());
-        }
-        else {
-            await ctx.stderr.write('tail: missing file operand\n');
-            return 1;
-        }
-        return 0;
-    }
-    let exitCode = 0;
+    if (files.length === 0)
+        files.push('-');
+    const label = headers ?? files.length > 1;
+    let status = 0;
+    let first = true;
     for (const file of files) {
-        const path = resolve(ctx.cwd, file);
+        let bytes;
         try {
-            (await statOrThrow(ctx.vfs, path));
-            const content = (await ctx.vfs.readFileString(path));
-            if (files.length > 1)
-                await ctx.stdout.write(`==> ${file} <==\n`);
-            await tailText(content);
+            const parts = [];
+            for await (const chunk of inputChunks(ctx, file))
+                parts.push(chunk);
+            bytes = concatBytes(parts);
         }
-        catch (e) {
-            if (isVfsError(e)) {
-                await ctx.stderr.write(`tail: ${file}: ${e.message}\n`);
-                exitCode = 1;
-            }
-            else {
-                throw e;
-            }
+        catch (error) {
+            await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${fsErrorText(error)}\n`);
+            status = 1;
+            continue;
         }
+        if (label)
+            await writeBytes(ctx.stdout, asciiBytes(`${first ? '' : '\n'}==> ${file === '-' ? 'standard input' : file} <==\n`));
+        first = false;
+        await writeBytes(ctx.stdout, select(bytes, mode, delim));
     }
-    return exitCode;
+    return status;
 };
+/** The part of `bytes` tail prints. */
+function select(bytes, mode, delim) {
+    if (mode.unit === 'bytes') {
+        if (mode.fromStart)
+            return bytes.subarray(Math.min(bytes.length, Math.max(0, mode.count - 1)));
+        return bytes.subarray(Math.max(0, bytes.length - mode.count));
+    }
+    if (mode.fromStart) {
+        // From line N on: skip N-1 delimiters.
+        let at = 0;
+        for (let skipped = 0; skipped < mode.count - 1; skipped++) {
+            const i = bytes.indexOf(delim, at);
+            if (i === -1)
+                return bytes.subarray(bytes.length);
+            at = i + 1;
+        }
+        return bytes.subarray(at);
+    }
+    if (mode.count === 0)
+        return bytes.subarray(bytes.length);
+    // The last N lines: a final line without its delimiter is a line too.
+    let end = bytes.length;
+    if (end > 0 && bytes[end - 1] === delim)
+        end--;
+    let start = end;
+    for (let found = 0;;) {
+        if (start === 0)
+            return bytes.subarray(0);
+        const i = bytes.lastIndexOf(delim, start - 1);
+        if (i === -1)
+            return bytes.subarray(0);
+        found++;
+        if (found === mode.count)
+            return bytes.subarray(i + 1);
+        start = i;
+    }
+}
 export default command;

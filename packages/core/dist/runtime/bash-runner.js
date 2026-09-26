@@ -165,6 +165,7 @@ export async function createBashFacetSession(deps) {
             cwd: deps.cwd,
             cred: deps.cred,
             parking: deps.facets.parking,
+            memoryBudgetBytes: deps.facets.memoryBudgetBytes,
             stdinData: deps.stdinData ?? '',
             stdinClosed: deps.stdinClosed,
             stdinTty: deps.stdinTty,

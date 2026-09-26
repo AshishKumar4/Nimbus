@@ -1,12 +1,8 @@
-import type { Command, CommandOutputStream } from '../types.js';
-import type { VfsStat } from '../../../../vfs/vfs.js';
+import type { Command, CommandInputStream, CommandOutputStream } from '../types.js';
 type SedVfs = {
-    stat(path: string): VfsStat | null | Promise<VfsStat | null>;
-    readFileString(path: string): string | Promise<string>;
+    stat(path: string): unknown;
+    readFile(path: string): Uint8Array | Promise<Uint8Array>;
     writeFile(path: string, content: string | Uint8Array): void | Promise<void>;
-};
-type SedInput = {
-    readAll(): Promise<string>;
 };
 export type SedExecutionContext = {
     args: string[];
@@ -14,7 +10,7 @@ export type SedExecutionContext = {
     vfs: SedVfs;
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
-    stdin?: SedInput;
+    stdin?: string | CommandInputStream;
 };
 export declare function runSed(ctx: SedExecutionContext): Promise<number>;
 declare const command: Command;

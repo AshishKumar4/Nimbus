@@ -144,6 +144,14 @@ export interface FacetHost {
      *   view instead of a suspending one.
      */
     readonly parking: WasiParking;
+    /**
+     * The memory a guest may use for buffered data it cannot hand on yet: pipe
+     * contents a writer produced before its reader ran. A host that cannot park
+     * a guest (`parking: 'none'`) must buffer instead, and past this it fails
+     * the command visibly rather than grow without bound. Unstated: 128 MiB,
+     * a Worker isolate's.
+     */
+    readonly memoryBudgetBytes?: number;
     open(spec: FacetSpec): Facet;
 }
 //# sourceMappingURL=facet-host.d.ts.map

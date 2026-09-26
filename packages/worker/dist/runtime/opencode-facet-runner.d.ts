@@ -84,10 +84,6 @@ export interface OpencodeRunnerOptions {
      * the SUPERVISOR RPC binding.
      */
     vfsBundle: string;
-    /** Serialized VFS directory manifest (JSON) for readdir/stat coherence. */
-    vfsManifest: string;
-    /** Serialized VFS inode metadata (JSON) for stat and permission checks. */
-    vfsMetadata: string;
     /** The coherence cursor the snapshot above was read at, as a JSON literal. */
     vfsCursor: string;
     /**
