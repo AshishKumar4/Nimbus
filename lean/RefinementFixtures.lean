@@ -19,7 +19,7 @@ def fixtures : List (String × String) :=
    ("node-visible-namespace.json", NodeCases.nsFixture),
    ("node-overlay.json", NodeCases.overlayFixture),
    ("composite-vfs.json", CompositeCases.fixture),
-   ("process-files.json", ProcessFilesCases.fixture),
+   -- process-files.json (ProcessFilesCases.fixture): emitted again when the cutover adds its bridge (VFS-PF-001)
    ("composite-feed.json", CompositeFeedCases.fixture),
    ("composite-perm.json", CompositePermCases.fixture)]
 
