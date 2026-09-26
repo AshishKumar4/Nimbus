@@ -16,13 +16,17 @@
   true when the pid was parked or suspended and this step completes its pending op;
   `expect` `{"wrote":n}` | `{"read":n}` | `"eof"` | `"parked"` | `"suspended"` | `"sigpipe"`
   | `"epipe"` | `{"forked":k}` | `"closed"` | `{"exited":c}` | `{"aborted":message}`.
-  `final`: `status` per pid (exit code, 128 + signal, 1 when stopped by the command's
-  error; 0 for a pid never run), `pipes` (`inFlight`, `read`, `discarded`), `error`.
+  An `exit` (or `"end"`) of a writer on a local host that leaves a pipe it writes with
+  more than `C` unread bytes and a reader: `{"exited": c, "held": true}`; the step at
+  which every such pipe has lost its last read end carries `"settled": [{pid, status}]`
+  (141 if one had more than `C` unread then, else the exit code).
+  `final`: `status` per pid, settled (exit code, 128 + signal, 1 when stopped by the
+  command's error; 0 for a pid never run; "held" if never settled), `pipes` (`inFlight`, `read`, `discarded`), `error`.
   Cases with `"untestable"` state why the runtime cannot run them (SIGPIPE ignored:
   bash.wasm cannot tell the host its disposition).
 -/
 
-import Nimbus.Runtime.PipesTraces
+import Nimbus.Runtime.PipesHeld
 import Nimbus.Refine.Json
 
 namespace Nimbus.Refine.PipesCases
@@ -66,23 +70,33 @@ def slotJson (k : Nat) (sl : Slot) (bashOnJspi : Bool) : Json :=
     ("started", .bool sl.started)]
 
 def runJson (name : String) (c : Cmd) (bashPids : List Nat := []) (extra : List (String × Json) := []) : Json := Id.run do
-  let mut s := c.init
+  let mut H : HSt := { core := c.init }
   let mut out : Array Json := #[]
   for _ in [0:400] do
-    match schedStep Rules.ok s with
-    | some (i, o, s') =>
+    match hstep Rules.ok H with
+    | some (i, o, H', nw) =>
+      let s := H.core
       let pr := s.procs i
       let op : Json := if i = s.n then .str "stuck" else match pr.prog.head? with
         | some a => actJson a
         | none => .str "end"
       let resumed := pr.st == .parkW || pr.st == .parkR || pr.st == .susp
-      out := out.push (.obj [("pid", .ofNat i), ("op", op), ("resumed", .bool resumed), ("expect", outJson o)])
-      s := s'
+      let held := H'.holds.any (·.pid == i) && !(H.holds.any (·.pid == i))
+      let ex : Json := match o, held with
+        | .exited c, true => .obj [("exited", .ofNat c), ("held", .bool true)]
+        | _, _ => outJson o
+      let st : List (String × Json) := if nw.isEmpty then [] else
+        [("settled", .arr (nw.map fun (p, v) => .obj [("pid", .ofNat p), ("status", .ofNat v)]))]
+      out := out.push (.obj ([("pid", .ofNat i), ("op", op), ("resumed", .bool resumed), ("expect", ex)] ++ st))
+      H := H'
     | none => break
+  let s := H.core
   let procs := (c.slots.zip (List.range c.slots.length)).map fun (sl, k) => slotJson k sl (bashPids.contains k)
   return .obj ([("name", .str name), ("C", .ofNat c.C), ("B", .ofNat c.B), ("pipes", .ofNat c.m),
     ("procs", .arr procs), ("steps", .arr out.toList),
-    ("final", .obj [("status", .arr ((List.range s.n).map fun i => .ofNat (status (s.procs i)))),
+    ("final", .obj [("status", .arr ((List.range s.n).map fun i => match hstatus H i with
+        | some v => .ofNat v
+        | none => .str "held")),
       ("pipes", .arr ((List.range s.m).map fun p => .obj [("inFlight", .ofNat (s.pipes p).q),
         ("read", .ofNat (s.pipes p).rd), ("discarded", .ofNat (s.pipes p).drop)])),
       ("error", match s.err with | some e => .str e | none => .null)])] ++ extra)
@@ -101,7 +115,11 @@ def directed : List Json :=
     runJson "yes | while read | wc -c (local host)" bashMiddle,
     runJson "trap \"\" PIPE; yes | head -1 (local host)" (yesHead true)
       (extra := [("untestable", .str "bash.wasm has no sigaction import: the host cannot see an ignored SIGPIPE")]),
-    runJson "a JSPI writer parks at capacity and resumes as the reader drains (jspi host)" parkedFork ]
+    runJson "a JSPI writer parks at capacity and resumes as the reader drains (jspi host)" parkedFork,
+    runJson "seq 1000000 | head -2 (local host): the held exit settles to 141" seqHead,
+    runJson "seq 20000 | uniq -c | wc -l (local host): held exits settle to 0" seqUniqWcBig,
+    runJson "yes | head -2 (local host)" yesHead2,
+    runJson "seq 1000 | head -1 (local host): below the capacity, nothing held" seqSmallHead ]
 
 def mode : Gen Mode := do
   let k ← below 3
@@ -142,7 +160,7 @@ def genCase : Gen (Option Json) := do
 
 def fixture : String :=
   fixtureText [("fixture", .str "pipes"), ("model", .str "Nimbus.Runtime.Pipes (Rules.ok, per-pipe budget)"),
-      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends while its pipe holds at most B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with a named error (match any {aborted}: the runtime has one message for both, with its B figure); the last read end's close discards what is in flight; the scheduler order is lowest runnable pid first, without N24's deferral of children (one valid schedule: replay it in the given order)")]
+      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends while its pipe holds at most B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with a named error (match any {aborted}: the runtime has one message for both, with its B figure); the last read end's close discards what is in flight; a writer on a local host that exits with more than C unread in a pipe it writes, with a reader left, is held ({exited, held:true}) until every such pipe has no read end, then settles (a step's settled list) to 141 if one of them had more than C unread when its last reader left, else to its own status; final.status is the settled statuses; the scheduler order is lowest runnable pid first, without N24's deferral of children (one valid schedule: replay it in the given order)")]
     (directed ++ runGen 0x50495045 (casesOf 150 genCase))
 
 end Nimbus.Refine.PipesCases

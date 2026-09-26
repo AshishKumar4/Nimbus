@@ -401,6 +401,20 @@ import Nimbus.Refine
 #print axioms Nimbus.Refine.RevisionFloorCases.dropWhileOver_reach
 #print axioms Nimbus.Refine.RevisionFloorCases.execBump_reach
 
+/-! ## Nimbus/Runtime/PipesHeld.lean -/
+
+#print axioms Nimbus.Runtime.Pipes.hstep_core
+#print axioms Nimbus.Runtime.Pipes.hrun_core
+#print axioms Nimbus.Runtime.Pipes.settles_only_readerless
+#print axioms Nimbus.Runtime.Pipes.settle_value
+#print axioms Nimbus.Runtime.Pipes.rs_zero_of_dead
+#print axioms Nimbus.Runtime.Pipes.all_settle
+#print axioms Nimbus.Runtime.Pipes.seq_head
+#print axioms Nimbus.Runtime.Pipes.seq_head_without_the_rule
+#print axioms Nimbus.Runtime.Pipes.seq_small_head
+#print axioms Nimbus.Runtime.Pipes.seq_uniq_wc_held
+#print axioms Nimbus.Runtime.Pipes.yes_head_held
+
 /-! ## Nimbus/Runtime/PipesProofs.lean -/
 
 #print axioms Nimbus.Runtime.Pipes.upd_same
