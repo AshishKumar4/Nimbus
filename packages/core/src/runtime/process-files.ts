@@ -20,11 +20,12 @@ import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult }
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
-import { CompositeVFS } from '../vfs/composite.js';
+import { CompositeVFS, isAsyncMountRefusal } from '../vfs/composite.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
@@ -51,6 +52,10 @@ import {
 } from './os-contracts.js';
 import {
   createSqliteDescriptorScope,
+  fsError,
+  MAX_LINK_HOPS,
+  modeAllows,
+  runtimeStatOf,
   SqliteRuntimeFsBridge,
   type SqliteDescriptorScope,
 } from './sqlite-runtime-fs-bridge.js';
@@ -175,6 +180,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard(); return this.target.copyTree(from, to, options);
   }
   fstat(handleId: number): RuntimeVfsStat { this.guard(); return this.target.fstat(handleId); }
+  descriptorPath(handleId: number): string { this.guard(); return this.target.descriptorPath(handleId); }
   dup(handleId: number): RuntimeFileHandle { this.guard(); return this.target.dup(handleId); }
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number { this.guard(); return this.target.seek(handleId, offset, whence); }
   setStatus(handleId: number, status: { append?: boolean }): void { this.guard(); return this.target.setStatus(handleId, status); }
@@ -216,6 +222,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   /** `/proc`: the host registers generated files here (`mounts` is ProcessFiles'). */
   readonly proc: ProcVFS;
   private readonly processes = new Map<number, SqliteDescriptorScope>();
+  /** Each scope's descriptors on asynchronous mounts: a process's, whichever bridge it binds per call. */
+  private readonly awaitedDescriptors = new WeakMap<SqliteDescriptorScope, AwaitedDescriptors>();
   private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -382,6 +390,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       if (--opened.refs === 0) opened.node.close();
     }
     scope.handles.clear();
+    this.awaitedDescriptors.get(scope)?.opened.clear();
     for (const dispose of scope.subscriptions) dispose();
     scope.subscriptions.clear();
     scope.closed = true;
@@ -390,7 +399,390 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
 
   private bridgeFor(scope: SqliteDescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number): RuntimeFsBridge {
     const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.bufferedWriteBytes);
-    return new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
+    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
+    // Every other method is the guarded bridge's own (forwarded by the proxy below).
+    let awaited = this.awaitedDescriptors.get(scope);
+    if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
+    return new AwaitingProcessBridge(guarded, this.vfs.as(cred), () => this.engine.revision(), cred, awaited) as unknown as RuntimeFsBridge;
+  }
+}
+
+/**
+ * A process's asynchronous face (ProcessView, supervisor ops, RPC,
+ * fs.promises): the guarded bridge, except that a path an asynchronous-only
+ * mount refuses to a synchronous caller is answered by awaiting that mount,
+ * through the namespace as the process's credential. `synchronous` (node's
+ * sync fs, non-JSPI WASI, host reads that cannot wait) stays the guarded
+ * bridge, where such a mount's refusal is the answer.
+ */
+/** Where descriptors on asynchronous mounts are numbered: clear of the scope's own. */
+const AWAITED_DESCRIPTOR_BASE = 0x4000_0000;
+
+/** An open file description on an asynchronous mount: what its descriptors (dups included) share. */
+interface AwaitedDescription {
+  readonly path: string;
+  readonly flags: RuntimeFileHandle['flags'];
+  position: number;
+}
+
+interface AwaitedDescriptors {
+  readonly opened: Map<number, AwaitedDescription>;
+  next: number;
+}
+
+class AwaitingProcessBridge {
+  constructor(
+    private readonly bridge: GuardedProcessBridge,
+    private readonly namespace: CompositeVFS,
+    private readonly clock: () => number,
+    private readonly cred: VfsCred,
+    private readonly descriptors: AwaitedDescriptors,
+  ) {
+    return new Proxy(this, {
+      get(target, key, receiver) {
+        if (key in target) return Reflect.get(target, key, receiver);
+        const value = Reflect.get(bridge, key, bridge);
+        return typeof value === 'function' ? value.bind(bridge) : value;
+      },
+    });
+  }
+
+  get synchronous(): RuntimeSynchronousFs { return this.bridge; }
+
+  /**
+   * The guarded bridge's answer, as it gives it (synchronously when it can),
+   * or on an asynchronous mount's refusal, `awaited`.
+   */
+  private either<T>(paths: RuntimeFsPath[], sync: () => T | Promise<T>, awaited: () => Promise<T>): T | Promise<T> {
+    // Relative to one of this face's own descriptors: the bridge has never seen it.
+    if (paths.some((path) => typeof path !== 'string' && 'directory' in path && this.awaited.has(path.directory))) return awaited();
+    const refused = (error: unknown) => {
+      if (!isAsyncMountRefusal(error)) throw error;
+      return awaited();
+    };
+    let answer: T | Promise<T>;
+    try {
+      answer = sync();
+    } catch (error) {
+      return refused(error);
+    }
+    return answer instanceof Promise ? answer.catch(refused) : answer;
+  }
+
+
+  /**
+   * `path` as an absolute namespace path. A path beneath a root (a WASI
+   * preopen) is walked here as the synchronous bridge walks it: each
+   * directory left must be searchable, `..` at the root and an absolute link
+   * are ENOTCAPABLE, links resolve (the last only when `follow`), 40 hops.
+   */
+  private async path(path: RuntimeFsPath, follow = true): Promise<string> {
+    if (typeof path === 'string') return path;
+    const base = 'root' in path ? '/' + normalizeVfsPath(path.root)
+      : this.awaited.get(path.directory)?.path ?? this.bridge.descriptorPath(path.directory);
+    if (!path.beneath) {
+      if (path.path.startsWith('/')) return path.path;
+      if ((await this.namespace.stat(base))?.type !== 'directory') throw fsError('ENOTDIR', 'path', path.path);
+      return (base === '/' ? '' : base) + '/' + path.path;
+    }
+    if (path.path.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+    const resolved = base.split('/').filter(Boolean);
+    const depth = resolved.length;
+    const pending = path.path.split('/').filter(Boolean);
+    let hops = 0;
+    while (pending.length > 0) {
+      const segment = pending.shift()!;
+      const dir = '/' + resolved.join('/');
+      const searched = await this.namespace.stat(dir, { follow: false });
+      if (searched === null) throw fsError('ENOENT', 'path', path);
+      if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+      if (!modeAllows(searched, 1, this.cred)) throw fsError('EACCES', 'path', path);
+      if (segment === '.') continue;
+      if (segment === '..') {
+        if (resolved.length === depth) throw fsError('ENOTCAPABLE', 'path', path);
+        resolved.pop();
+        continue;
+      }
+      const candidate = (dir === '/' ? '' : dir) + '/' + segment;
+      const isFinal = pending.length === 0;
+      const stat = await this.namespace.stat(candidate, { follow: false });
+      if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
+      if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
+        resolved.push(segment);
+        continue;
+      }
+      if (++hops > MAX_LINK_HOPS) throw fsError('ELOOP', 'path', path);
+      const target = (await this.namespace.readlink(candidate)) ?? '';
+      if (target.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+      pending.unshift(...target.split('/').filter(Boolean));
+    }
+    return '/' + resolved.join('/');
+  }
+
+  private receipt(): VfsMutationReceipt {
+    const r = this.clock();
+    return { before: r, after: r };
+  }
+
+  private absent<T>(read: () => Promise<T>): Promise<T | null> {
+    return read().catch((error: unknown) => {
+      if ((error as { code?: string })?.code === 'ENOENT') return null;
+      throw error;
+    });
+  }
+
+  stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.stat(path, options), async () => {
+      const stat = await this.namespace.stat((await this.path(path, options?.followSymlinks !== false)), { follow: options?.followSymlinks !== false });
+      return stat === null ? null : runtimeStatOf(stat);
+    });
+  }
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => this.namespace.readFile((await this.path(path, options?.followSymlinks !== false)))));
+  }
+  readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {
+    return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
+      const p = (await this.path(path));
+      if (typeof this.namespace.readRange === 'function') return await this.namespace.readRange(p, offset, length);
+      return (await this.namespace.readFile(p)).slice(offset, offset + length);
+    }));
+  }
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
+    return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
+      const p = (await this.path(path));
+      if (options?.createParents) await this.namespace.mkdir(p.slice(0, p.lastIndexOf('/')) || '/', { recursive: true });
+      await this.namespace.writeFile(p, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
+      return this.clock();
+    });
+  }
+  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
+    return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
+      await this.mountOp('writeRange', path)((await this.path(path)), offset, bytes);
+      return this.receipt();
+    });
+  }
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
+      await this.mountOp('truncate', path)((await this.path(path)), size);
+      return this.receipt();
+    });
+  }
+  utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.utimes(path, atimeMs, mtimeMs, options), async () => {
+      const p = (await this.path(path, options?.followSymlinks !== false));
+      const now = Date.now();
+      const kept = atimeMs === undefined || mtimeMs === undefined ? await this.namespace.stat(p) : null;
+      await this.mountOp('utimes', path)(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
+      return this.receipt();
+    });
+  }
+  chmod(path: RuntimeFsPath, mode: number) {
+    return this.either([path], () => this.bridge.chmod(path, mode), async () => {
+      await this.mountOp('chmod', path)((await this.path(path)), mode);
+      return this.receipt();
+    });
+  }
+  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.chown(path, uid, gid, options), async () => {
+      await this.mountOp('chown', path)((await this.path(path, options?.followSymlinks !== false)), uid, gid);
+      return this.receipt();
+    });
+  }
+  access(path: RuntimeFsPath, mode: number) {
+    return this.either([path], () => this.bridge.access(path, mode), async () => {
+      const p = await this.path(path);
+      const stat = await this.namespace.stat(p);
+      if (stat === null) throw new VfsError('ENOENT', 'access', p);
+      if (!modeAllows(stat, mode, this.cred)) throw new VfsError('EACCES', 'access', p);
+    });
+  }
+  readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.readdir(path, options), async () =>
+      (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
+  }
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }) {
+    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
+  }
+  unlink(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
+  }
+  rmdir(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.rmdir(path), async () => this.mountOp('rmdir', path)((await this.path(path, false))));
+  }
+  rename(from: RuntimeFsPath, to: RuntimeFsPath) {
+    return this.either([from, to], () => this.bridge.rename(from, to), async () => this.mountOp('rename', from)((await this.path(from, false)), (await this.path(to, false))));
+  }
+  readlink(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.readlink(path), () => this.absent(async () => this.mountOp('readlink', path)((await this.path(path, false)))));
+  }
+  symlink(target: string, path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.symlink(target, path), async () => this.mountOp('symlink', path)(target, (await this.path(path, false))));
+  }
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }) {
+    return this.either([path], () => this.bridge.remove(path, options), async () => {
+      const p = (await this.path(path, false));
+      const stat = await this.namespace.stat(p, { follow: false });
+      if (stat === null) {
+        if (options?.force) return;
+        throw new VfsError('ENOENT', 'rm', p);
+      }
+      if (stat.type !== 'directory') return this.namespace.unlink(p);
+      if (!options?.recursive) throw new VfsError('EISDIR', 'rm', p);
+      const report = await this.mountOp('removeRecursive', path)(p);
+      const failed = (report as { failures?: { path: string; code: string }[] } | undefined)?.failures?.[0];
+      if (failed) throw new VfsError(failed.code as never, 'rm', failed.path);
+    });
+  }
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
+    return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.mountOp('copy', from)((await this.path(from)), (await this.path(to)), { recursive: false }));
+  }
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }) {
+    return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
+      await this.mountOp('copy', from)((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
+      return 0;
+    });
+  }
+
+  // ── descriptors on an asynchronous mount ─────────────────────────────
+  // Held per descriptor scope, in an id range the scope never issues; a dup
+  // shares the description (its offset and status flags). A write goes to
+  // the mount at once (its writeRange, or the whole file rewritten where it
+  // has none); an append lands at the end as it then is.
+  private get awaited() { return this.descriptors.opened; }
+
+  private issue(description: AwaitedDescription): RuntimeFileHandle {
+    const id = this.descriptors.next++;
+    this.awaited.set(id, description);
+    return { id, path: description.path, flags: { ...description.flags }, position: description.position, closed: false };
+  }
+
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags) {
+    return this.either([path], () => this.bridge.open(path, flags), async () => {
+      const p = await this.path(path, flags.followSymlinks !== false);
+      const stat = await this.namespace.stat(p, { follow: flags.followSymlinks !== false });
+      if (stat !== null && flags.create && flags.exclusive) throw new VfsError('EEXIST', 'open', p);
+      if (stat === null && !flags.create) throw new VfsError('ENOENT', 'open', p);
+      if (stat !== null && stat.type === 'directory' && (flags.write || flags.truncate || flags.append)) throw new VfsError('EISDIR', 'open', p);
+      if (flags.directory && stat !== null && stat.type !== 'directory') throw new VfsError('ENOTDIR', 'open', p);
+      if (stat === null || flags.truncate) await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+      return this.issue({
+        path: p,
+        flags: {
+          read: !!flags.read, write: !!flags.write, append: !!flags.append, create: !!flags.create,
+          exclusive: !!flags.exclusive, directory: !!flags.directory, truncate: !!flags.truncate,
+          followSymlinks: flags.followSymlinks !== false,
+        },
+        position: 0,
+      });
+    });
+  }
+
+  private opened(handleId: number): AwaitedDescription {
+    const opened = this.awaited.get(handleId);
+    if (opened === undefined) throw fsError('EBADF', 'fd', String(handleId));
+    return opened;
+  }
+
+  /** The bridge's own descriptor, or this one's `awaited` answer. */
+  private on<T>(handleId: number, own: () => T, awaited: (description: AwaitedDescription) => Promise<T>): T | Promise<T> {
+    const description = this.awaited.get(handleId);
+    return description === undefined ? own() : awaited(description);
+  }
+
+  read(handleId: number, offset: number | null, length: number) {
+    return this.on(handleId, () => this.bridge.read(handleId, offset, length), async (d) => {
+      if (!d.flags.read) throw fsError('EBADF', 'read', d.path);
+      const start = offset ?? d.position;
+      const bytes = typeof this.namespace.readRange === 'function'
+        ? await this.namespace.readRange(d.path, start, length)
+        : (await this.namespace.readFile(d.path)).slice(start, start + length);
+      if (offset === null) d.position = start + bytes.byteLength;
+      return bytes;
+    });
+  }
+
+  write(handleId: number, offset: number | null, bytes: Uint8Array) {
+    return this.on(handleId, () => this.bridge.write(handleId, offset, bytes), async (d) => {
+      if (!d.flags.write) throw fsError('EBADF', 'write', d.path);
+      const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
+      try {
+        await this.mountOp('writeRange', d.path)(d.path, start, bytes);
+      } catch (error) {
+        if (!(error instanceof VfsError && error.code === 'ENOTSUP')) throw error;
+        const file = await this.namespace.readFile(d.path);
+        const next = new Uint8Array(Math.max(file.byteLength, start + bytes.byteLength));
+        next.set(file);
+        next.set(bytes, start);
+        await this.namespace.writeFile(d.path, next);
+      }
+      if (offset === null || d.flags.append) d.position = start + bytes.byteLength;
+      return bytes.byteLength;
+    });
+  }
+
+  close(handleId: number) {
+    if (!this.awaited.delete(handleId)) return this.bridge.close(handleId);
+  }
+
+  fsync(handleId?: number) {
+    if (handleId === undefined || !this.awaited.has(handleId)) return this.bridge.fsync(handleId);
+  }
+
+  fstat(handleId: number) {
+    return this.on(handleId, () => this.bridge.fstat(handleId), async (d) => {
+      const stat = await this.namespace.stat(d.path);
+      if (stat === null) throw new VfsError('ENOENT', 'fstat', d.path);
+      return runtimeStatOf(stat);
+    });
+  }
+
+  dup(handleId: number) {
+    return this.on(handleId, () => this.bridge.dup(handleId), async (d) => this.issue(d));
+  }
+
+  seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end') {
+    return this.on(handleId, () => this.bridge.seek(handleId, offset, whence), async (d) => {
+      const base = whence === 'set' ? 0 : whence === 'current' ? d.position : ((await this.namespace.stat(d.path))?.size ?? 0);
+      if (base + offset < 0) throw new VfsError('EINVAL', 'seek', d.path);
+      d.position = base + offset;
+      return d.position;
+    });
+  }
+
+  setStatus(handleId: number, status: { append?: boolean }) {
+    return this.on(handleId, () => this.bridge.setStatus(handleId, status), async (d) => {
+      if (status.append !== undefined) d.flags.append = status.append;
+    });
+  }
+
+  readdirHandle(handleId: number) {
+    return this.on(handleId, () => this.bridge.readdirHandle(handleId), async (d) =>
+      (await this.namespace.readdir(d.path)).map((entry) => ({ name: entry.name, type: entry.type })));
+  }
+
+  ftruncate(handleId: number, size: number) {
+    return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
+      if (!d.flags.write) throw fsError('EINVAL', 'ftruncate', d.path);
+      await this.mountOp('truncate', d.path)(d.path, size);
+    });
+  }
+
+  fchmod(handleId: number, mode: number) {
+    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.mountOp('chmod', d.path)(d.path, mode); });
+  }
+
+  fchown(handleId: number, uid: number, gid: number) {
+    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.mountOp('chown', d.path)(d.path, uid, gid); });
+  }
+
+  futimes(handleId: number, atimeMs: number, mtimeMs: number) {
+    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.mountOp('utimes', d.path)(d.path, atimeMs, mtimeMs); });
+  }
+
+  private mountOp(name: keyof VFS, path: RuntimeFsPath): (...args: any[]) => Promise<any> {
+    const op = (this.namespace as unknown as Record<string, unknown>)[name];
+    if (typeof op !== 'function') throw new VfsError('ENOTSUP', String(name), typeof path === 'string' ? path : path.path);
+    return (op as (...args: unknown[]) => Promise<any>).bind(this.namespace);
   }
 }
 

@@ -12,9 +12,10 @@ const authority = new ProcessFiles(raw);
 const fs = authority.bind({ pid: 1, cred: CRED_KERNEL });
 const bytes = text => new TextEncoder().encode(text);
 const text = data => new TextDecoder().decode(data);
-assert.equal(fs.synchronous, fs);
 fs.writeFile('/file', 'abcdef');
 const opened = fs.open('/file', { read: true, write: true });
+// The synchronous face is the same process: its descriptors are the bound face's.
+assert.equal(text(fs.synchronous.read(opened.id, 0, 6)), 'abcdef');
 const originalIdentity = fs.stat('/file');
 assert.throws(() => fs.open('/file', { write: true, create: true, exclusive: true }), { code: 'EEXIST' });
 assert.throws(() => fs.open('/file', { write: true, truncate: true, directory: true }), { code: 'ENOTDIR' });

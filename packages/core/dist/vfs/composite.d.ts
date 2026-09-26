@@ -101,6 +101,8 @@ interface Views {
     refs: Map<string, WeakRef<CompositeVFS>>;
     gone: FinalizationRegistry<string>;
 }
+/** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
+export declare function isAsyncMountRefusal(error: unknown): boolean;
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export declare function normalizePath(path: string): string;
 export declare class CompositeVFS implements VFS {

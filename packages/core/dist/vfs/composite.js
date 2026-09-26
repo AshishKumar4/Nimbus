@@ -17,6 +17,10 @@ const SYNTH_RUNTIME_STAT = {
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
 /** Where the namespace's own device numbers for mounts start (see Mount.dev). */
 const ANONYMOUS_DEV = 0x10000;
+/** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
+export function isAsyncMountRefusal(error) {
+    return typeof error === 'object' && error !== null && error.asyncMount === true;
+}
 const ROOT_POINT = '/';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
@@ -428,7 +432,7 @@ export class CompositeVFS {
         if (!sync)
             return files;
         if (files.sync === undefined) {
-            throw new VfsError('EAGAIN', `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`, route.path);
+            throw Object.assign(new VfsError('EAGAIN', `${route.mount.point} is an asynchronous mount; this caller cannot wait for it`, route.path), { asyncMount: true });
         }
         return files.sync;
     }

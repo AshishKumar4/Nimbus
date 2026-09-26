@@ -1277,8 +1277,9 @@ function mkFind(vfs, registry) {
                     if (state.quit)
                         break;
                     await walk({
-                        vfsPath: entry.vfsPath + '/' + child.name,
-                        display: entry.display + '/' + child.name,
+                        // A start path ending in a slash (`/`) is joined without another, as GNU find does.
+                        vfsPath: entry.vfsPath.endsWith('/') ? entry.vfsPath + child.name : entry.vfsPath + '/' + child.name,
+                        display: entry.display.endsWith('/') ? entry.display + child.name : entry.display + '/' + child.name,
                         name: child.name,
                         type: child.type,
                         depth: entry.depth + 1,

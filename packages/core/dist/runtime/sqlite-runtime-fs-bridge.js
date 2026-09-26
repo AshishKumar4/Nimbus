@@ -967,6 +967,8 @@ export class SqliteRuntimeFsBridge {
         return description;
     }
     getHandle(handleId) { return this.description(handleId).handle; }
+    /** The absolute path a descriptor was opened at. */
+    descriptorPath(handleId) { return '/' + normalizeVfsPath(this.description(handleId).node.path()); }
     fstat(handleId) {
         return { ...this.description(handleId).node.stat(), revision: this.rawVfs.revision() };
     }
@@ -998,7 +1000,7 @@ export class SqliteRuntimeFsBridge {
     futimes(handleId, atime, mtime) { this.description(handleId).node.utimes(atime, mtime); }
 }
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
-const MAX_LINK_HOPS = 40;
+export const MAX_LINK_HOPS = 40;
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
@@ -1023,7 +1025,7 @@ function removeTree(mount, path) {
 }
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
 /** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
-function runtimeStatOf(stat) {
+export function runtimeStatOf(stat) {
     const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
     const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
     return {
@@ -1033,7 +1035,7 @@ function runtimeStatOf(stat) {
     };
 }
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
-function modeAllows(stat, want, cred) {
+export function modeAllows(stat, want, cred) {
     const requested = want & 7;
     if (requested === 0 || stat.mode === undefined)
         return true;
@@ -1056,7 +1058,7 @@ function normalizeOpenFlags(flags) {
         expectedRevision: flags.expectedRevision,
     };
 }
-function fsError(code, syscall, path) {
+export function fsError(code, syscall, path) {
     const name = typeof path === 'string' ? path : path.path;
     return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
 }

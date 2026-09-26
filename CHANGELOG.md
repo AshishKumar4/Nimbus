@@ -123,6 +123,14 @@ option, with its replacement:
 
 ### filesystem
 
+- A mount with no synchronous face (an embedder's Drive, `/pc`, `/sandbox`)
+  works for every caller that can wait: shell commands (`ls /`, `cat`, `find
+  /`, redirects), node's `fs.promises`, the supervisor RPC, and bash under
+  JSPI, including paths beneath a WASI preopen and descriptors opened on the
+  mount. Before, any of these that touched the mount got EAGAIN (`ls /`
+  failed as a whole). Only a caller that cannot wait (node's sync fs, WASI
+  without JSPI) still gets EAGAIN, naming the mount.
+- `find /` prints `/home`, not `//home`, as GNU find does.
 - SECURITY: `/` is 0755 root:root, and adding, removing or renaming a name
   directly in it needs write permission on `/`, as on Linux. Before, the
   filesystem skipped that check at the root, so any user (a confined agent

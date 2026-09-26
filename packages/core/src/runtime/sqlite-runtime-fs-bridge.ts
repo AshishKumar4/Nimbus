@@ -945,6 +945,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   private getHandle(handleId: number): RuntimeFileHandle { return this.description(handleId).handle; }
 
+  /** The absolute path a descriptor was opened at. */
+  descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.description(handleId).node.path()); }
+
   fstat(handleId: number): RuntimeVfsStat {
     return { ...this.description(handleId).node.stat(), revision: this.rawVfs.revision() };
   }
@@ -979,7 +982,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 }
 
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
-const MAX_LINK_HOPS = 40;
+export const MAX_LINK_HOPS = 40;
 
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located = { mount: SyncVFS; path: string } | { mount?: undefined; path: string };
@@ -1007,7 +1010,7 @@ function removeTree(mount: SyncVFS, path: string): void {
 
 /** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
 /** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
-function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
+export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
   const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
   return {
@@ -1018,7 +1021,7 @@ function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
 }
 
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
-function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
+export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
   const requested = want & 7;
   if (requested === 0 || stat.mode === undefined) return true;
   const perms = stat.mode & 0o777;
@@ -1048,7 +1051,7 @@ interface FsError extends Error {
   path: string;
 }
 
-function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {
+export function fsError(code: string, syscall: string, path: RuntimeFsPath): FsError {
   const name = typeof path === 'string' ? path : path.path;
   return Object.assign(new Error(`${code}: ${syscall} '${name}'`), { code, syscall, path: name });
 }
