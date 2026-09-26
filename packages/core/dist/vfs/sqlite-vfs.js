@@ -3582,11 +3582,9 @@ export class SqliteVFS {
             const child = String(row.path);
             results.push({ name: child.slice(child.lastIndexOf('/') + 1), type: inodeKindFromCode(Number(row.kind)) });
         }
-        // W2.6a: sort lexicographically, by UTF-16 code unit. Consumers that
-        // walk readdir results — buildPrefetchBundle, buildManifest, the
-        // kernel-VFS mount layer — rely on a stable order, and this is the one
-        // they have always had. SQLite's byte order is not it: the two disagree
-        // on names outside the Basic Multilingual Plane.
+        // Sorted by UTF-16 code unit: callers that walk a listing (the prefetch
+        // closure walk among them) rely on a stable order. SQLite's byte order
+        // differs from it for names outside the Basic Multilingual Plane.
         results.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
         return results;
     }
