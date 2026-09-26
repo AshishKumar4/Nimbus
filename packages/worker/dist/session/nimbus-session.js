@@ -75,6 +75,9 @@ import * as _programmatic from './programmatic.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
+import { ServedReads } from '../facets/read-profile.js';
+/** The ops whose non-null answer is a file's content served to a process. */
+const SERVED_READ_OPS = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
 // Re-exports preserved for callers that import from nimbus-session
 // directly (the historical entry point). Each one has a dedicated
 // import site elsewhere in the codebase.
@@ -675,8 +678,18 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     // Supervisor RPC (file/log/HMR/batch)
     supervisorOp(envelope) {
-        return this.supervisorOps().dispatch(envelope);
+        const answer = this.supervisorOps().dispatch(envelope);
+        if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number')
+            return answer;
+        // What this session served a process is the read profile's only evidence (read-profile.ts).
+        return answer.then((value) => {
+            if (value !== null && value !== undefined)
+                this.servedReads.note(envelope.pid, envelope.args?.[0]);
+            return value;
+        });
     }
+    /** Async reads served per process, for the shared read profile. */
+    servedReads = new ServedReads();
     async _rpcReadFile(path, pid, cred) { return _rpc._rpcReadFile(this, path, pid, cred); }
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
@@ -738,7 +751,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
     async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
     async _rpcStderr(pid, data) { return _rpc._rpcStderr(this, pid, data); }
-    async _rpcReportExit(pid, code, tail, residencyMisses) { return _rpc._rpcReportExit(this, pid, code, tail, residencyMisses); }
+    async _rpcReportExit(pid, code, tail, residencyMisses, profileUnread) { return _rpc._rpcReportExit(this, pid, code, tail, residencyMisses, profileUnread); }
     // W3 emitters / external-exit / log janitor
     _emitExitDump(pid, code) { return _rpc._emitExitDump(this, pid, code); }
     _emitShellExecDone(pid, cmd, code, durationMs) { return _rpc._emitShellExecDone(this, pid, cmd, code, durationMs); }

@@ -22,6 +22,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
+import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
@@ -186,7 +187,14 @@ type FacetVfsDenial = {
 };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
 interface FacetVfsState {
+    /** The shared read profile's entries this launch was offered: staged ones, and those no regular file answered. */
+    profileOffer?: {
+        staged: StagedProfileEntry[];
+        unresolved: string[];
+    };
     bundle: FacetVfsBundle;
+    /** What the module map costs the facet's store, taken before its cells are released (N18). */
+    moduleStorageBytes?: number;
     /**
      * The VFS cursor these cells were read at.
      *
@@ -318,7 +326,9 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget): Promise<FacetVfsBundleSource>;
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume }?: {
+    consume?: boolean;
+}): Promise<FacetVfsBundleSource>;
 /**
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
@@ -446,7 +456,7 @@ export declare function addStaticReadFileAssets(vfs: LaunchFs, cwd: string, bund
  *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
  *
  * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (manifest pass at buildManifest enumerates it). But the runtime
+ * (the namespace lists it). But the runtime
  * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
  * `__vfsBundle` only, and none of the existing bundle-population
  * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
@@ -546,12 +556,19 @@ export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<s
  * Admitted smallest-first for the same reason as the entry-package walk: the
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
+ *
+ * `room` is what the snapshot bound leaves after what is already committed
+ * (the static closure, and for learned entries this session's own misses), in
+ * raw bytes: evidence fills that room and never pushes the snapshot past the
+ * bound, so it can never be the reason a launch fails. `bytes` is what this
+ * call staged, in the same unit.
  */
 export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}): Promise<{
+}, room?: number): Promise<{
     added: number;
+    bytes: number;
 }>;
 /**
  * The set of bundle entries the facet's startup pre-compile loop turns into
@@ -620,7 +637,7 @@ export declare const BUNDLE_PRECOMPILE_LOOP: string;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -891,6 +908,8 @@ export declare class FacetManager {
     private launchesClosed;
     private _pairedServeFacet;
     private readonly residentBundleKeys;
+    /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
+    private readonly residentProfileOffers;
     /**
      * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
      * sets it: the host's own, or one whose transforms run in the session's
@@ -901,12 +920,12 @@ export declare class FacetManager {
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
      * exec — dominant wall-clock on large node_modules. This memoizes the
-     * result (including the serialized facet bundle + manifest) keyed on
+     * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
      * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
      * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
-     * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+     * pulls absolute-path literals like /tmp/x),
      * so a cwd-scoped subtree revision cannot guarantee invalidation. The
      * global revision bumps on ANY write, so the cache invalidates on every
      * mutation that could change any file the bundle reads — provably
@@ -929,8 +948,9 @@ export declare class FacetManager {
     private residencyProfiles;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
-     * when the deployment binds NIMBUS_READ_PROFILES. Absent, a miss is learned
-     * for this session only (residencyProfiles).
+     * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
+     * tarballs. Unbound, a miss is learned for this session only
+     * (residencyProfiles).
      */
     private readProfile;
     /** Per module path: its static references at a revision (see _closureStaticRefs). */
@@ -1086,12 +1106,18 @@ export declare class FacetManager {
      */
     private _planResidentData;
     /**
-     * Paths earlier launches missed: this session's for the same build, and,
-     * with a shared profile, every session's for the packages this closure
-     * loads. A learned path is planned only where the process's own listing
-     * shows a regular file (data-plan.ts), and read through its own credential.
+     * Paths earlier launches of the same build missed in this session. Other
+     * sessions' misses (the shared read profile) join the module map instead,
+     * in _buildProcessBundle, where a learned module brings its imports.
      */
     private _learnedReads;
+    /**
+     * The installed packages a closure can load: every package the lockfiles
+     * pin whose node_modules directory is on the resolution path of the cwd or
+     * of a closure file. A first miss is, by definition, in a package the
+     * closure did not already load, so its package's root is found this way.
+     */
+    private _profileRoots;
     /**
      * A package directory's identity for the shared read profile: the tarball
      * integrity the session's lockfiles pin, or, for a package no lockfile
@@ -1145,7 +1171,10 @@ export declare class FacetManager {
      * exit. A caller that launched the command must not record an exit for it.
      */
     hasResidentProcess(pid: number): boolean;
-    noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[]): void;
+    noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[], evidence?: {
+        served: ReadonlySet<string>;
+        profileUnread: readonly string[] | null;
+    }): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
      * Called when the attach TUI exits (reported / killed) so the OS-child serve
@@ -1302,8 +1331,6 @@ export declare class FacetManager {
     pumpResidentLaunches(): Promise<void>;
     private trackLaunchTask;
     closeLaunches(): Promise<void>;
-    /** Whether any launch is suspended waiting for a turn. */
-    get hasPendingLaunchTurns(): boolean;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     private _allocateLoopbackPort;
     /**

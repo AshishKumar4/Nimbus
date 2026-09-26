@@ -9,7 +9,7 @@
  */
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
-import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
+import { base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
 import { clearNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, isNimbusTenantSegment, NIMBUS_CF_OAUTH_AUTH_URL, readNimbusCookie, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
@@ -68,10 +68,24 @@ export async function handleAgentRequest(self, request, url) {
     }
     return json({ error: 'unknown agent endpoint' }, 404);
 }
-export function parseAgentOAuthStateParam(state) {
+/**
+ * The OAuth `state` a callback carries, if this deployment signed it. The
+ * router routes a callback by the session and tenant segment in `state`, so an
+ * unsigned one would let any client wake or create a Durable Object under any
+ * tenant segment; the signature (HMAC-SHA256 under the agent cookie secret)
+ * makes the router refuse it before routing. Null for anything else.
+ */
+export async function parseAgentOAuthStateParam(state, env) {
     if (!state)
         return null;
-    const payload = decodeState(state);
+    let secret;
+    try {
+        secret = readNimbusAgentCookieSecret(env);
+    }
+    catch {
+        return null;
+    }
+    const payload = await decodeState(state, secret);
     if (!payload || payload.v !== 1)
         return null;
     if (!isSessionId(payload.sessionId))
@@ -140,7 +154,16 @@ async function oauthStart(self, request, url) {
     const codeChallenge = await pkceChallenge(codeVerifier);
     const redirectUri = config.redirectUri;
     const payload = { v: 1, nonce, sessionId, tenantSegment };
-    const state = encodeState(payload);
+    let state;
+    try {
+        state = await signAgentOAuthState(payload, self.env);
+    }
+    catch (e) {
+        return json({
+            error: e?.message || String(e),
+            code: 'E_AGENT_COOKIE_SECRET',
+        }, 409);
+    }
     const now = Date.now();
     const stored = {
         ...payload,
@@ -174,7 +197,7 @@ async function oauthStart(self, request, url) {
 async function oauthCallback(self, request, url) {
     const code = url.searchParams.get('code');
     const error = url.searchParams.get('error');
-    const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
+    const payload = await parseAgentOAuthStateParam(url.searchParams.get('state'), self.env);
     if (error)
         return oauthResultHtml(false, 'Cloudflare authorization failed.', payload?.sessionId);
     if (!code || !payload)
@@ -1071,12 +1094,30 @@ setTimeout(function(){ try { window.close(); } catch {} }, 700);
         headers: responseHeaders,
     });
 }
-function encodeState(payload) {
-    return encodeJsonBase64Url(payload);
+const STATE_SIGNATURE_PURPOSE = 'nimbus-agent-oauth-state:v1';
+function stateSigningKey(secret, usage) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, [usage]);
 }
-function decodeState(state) {
+function stateSigned(body) {
+    return new TextEncoder().encode(`${STATE_SIGNATURE_PURPOSE}\0${body}`);
+}
+/** The `state` an OAuth flow carries: `<payload>.<signature>`, both base64url. */
+export async function signAgentOAuthState(payload, env) {
+    const secret = readNimbusAgentCookieSecret(env);
+    const body = encodeJsonBase64Url(payload);
+    const signature = await crypto.subtle.sign('HMAC', await stateSigningKey(secret, 'sign'), stateSigned(body));
+    return `${body}.${base64Url(new Uint8Array(signature))}`;
+}
+async function decodeState(state, secret) {
+    const dot = state.indexOf('.');
+    if (dot <= 0 || dot !== state.lastIndexOf('.'))
+        return null;
+    const body = state.slice(0, dot);
     try {
-        return decodeJsonBase64Url(state);
+        const signature = base64UrlDecode(state.slice(dot + 1));
+        if (!await crypto.subtle.verify('HMAC', await stateSigningKey(secret, 'verify'), signature, stateSigned(body)))
+            return null;
+        return decodeJsonBase64Url(body);
     }
     catch {
         return null;

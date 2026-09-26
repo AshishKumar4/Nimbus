@@ -13,13 +13,22 @@ interface Host extends ProgrammaticHost, SessionAiHost {
     ctx: ProgrammaticHost['ctx'];
     env: ProgrammaticHost['env'] & Record<string, unknown>;
 }
-interface OAuthStatePayload {
+export interface OAuthStatePayload {
     v: 1;
     nonce: string;
     sessionId: string;
     tenantSegment: string;
 }
 export declare function handleAgentRequest(self: Host, request: Request, url: URL): Promise<Response>;
-export declare function parseAgentOAuthStateParam(state: string | null): OAuthStatePayload | null;
+/**
+ * The OAuth `state` a callback carries, if this deployment signed it. The
+ * router routes a callback by the session and tenant segment in `state`, so an
+ * unsigned one would let any client wake or create a Durable Object under any
+ * tenant segment; the signature (HMAC-SHA256 under the agent cookie secret)
+ * makes the router refuse it before routing. Null for anything else.
+ */
+export declare function parseAgentOAuthStateParam(state: string | null, env: Record<string, unknown>): Promise<OAuthStatePayload | null>;
+/** The `state` an OAuth flow carries: `<payload>.<signature>`, both base64url. */
+export declare function signAgentOAuthState(payload: OAuthStatePayload, env: Record<string, unknown>): Promise<string>;
 export {};
 //# sourceMappingURL=agent.d.ts.map

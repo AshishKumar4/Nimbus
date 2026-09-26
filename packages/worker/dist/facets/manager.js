@@ -27,12 +27,14 @@ import { deriveResidentOwner } from './resident-identity.js';
 import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
-import { unbindPublicPortCapability } from '../router/public-directory.js';
+import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { packageRootOf, planFacetData } from './data-plan.js';
-import { ReadProfile } from './read-profile.js';
+import { planFacetData } from './data-plan.js';
+import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
+/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
+const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -836,6 +838,9 @@ ${VFS_CURSOR_SEED_SOURCE}
     __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // The shared read profile's files this launch staged; each is struck off
+    // when read, and what is left at exit is reported unread (read-profile.ts).
+    globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
@@ -1006,7 +1011,7 @@ ${RESIDENCY_MISS_REPORT}
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses());
+      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])]);
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -1126,6 +1131,14 @@ export class NimbusProcess extends DurableObject {
  * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
  * length) plus 1%, a row per chunk and head, and a page of slack.
  */
+/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only. */
+function moduleMapStorageBytes(bundle) {
+    let bytes = 0;
+    for (const cell of Object.values(bundle)) {
+        bytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
+    }
+    return bytes;
+}
 function residentCellCost(cell) {
     const isText = typeof cell === 'string';
     const size = isText ? cell.length : cell.byteLength;
@@ -1222,6 +1235,12 @@ async function _readBundleCell(vfs, path) {
  * Strings counted as char-length (a slight under-count for non-ASCII
  * but matches the pre-fix behaviour); Uint8Array counted as byteLength.
  */
+/** A cell's raw bytes: UTF-8 for text, as the file is on disk. */
+function _bundleCellRawBytes(cell) {
+    if (cell instanceof Uint8Array)
+        return cell.byteLength;
+    return typeof cell === 'string' ? _encodedSourceBytes(cell) : 0;
+}
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
@@ -1553,7 +1572,13 @@ function _inlineBundleSourceBytes(bundle) {
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
  */
-export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer) {
+export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer, { consume = false } = {}) {
+    // \`consume\`: the caller releases the raw cells right after (a launch's
+    // build), so each is taken as its side module is serialized and the map is
+    // never held twice. Side modules always: an inline expression is copied
+    // again into the runner's own source.
+    if (consume)
+        forceSideModules = true;
     // Size the inline form before building it. A bundle that will be split has
     // no use for the whole-bundle expression, and building one to read its
     // length off cost a second full copy of the largest string this DO makes.
@@ -1604,46 +1629,55 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         }
         return pieces;
     }
-    const chunks = [];
-    let chunk = {};
-    let estimatedBytes = 0;
-    function flushChunk() {
-        if (Object.keys(chunk).length === 0)
-            return;
-        chunks.push(chunk);
-        chunk = {};
-        estimatedBytes = 0;
-    }
-    for (const [path, cell] of Object.entries(bundle)) {
-        for (const [piecePath, pieceCell] of splitCell(path, cell)) {
-            const pieceBytes = sourceBytes(piecePath, pieceCell);
-            if (piecePath in chunk
-                || (estimatedBytes > 0 && estimatedBytes + pieceBytes > maxModuleBytes)) {
-                flushChunk();
-            }
-            chunk[piecePath] = pieceCell;
-            estimatedBytes += pieceBytes;
-        }
-    }
-    flushChunk();
     const modules = {};
     const imports = [];
     const aliases = [];
-    for (let index = 0; index < chunks.length; index++) {
+    let chunk = {};
+    let chunkPaths = [];
+    let estimatedBytes = 0;
+    // A chunk becomes its side module the moment it is full, so the cells it
+    // carries and their serialization are never both held for the whole map:
+    // consumed, a cell leaves the bundle as its module is written.
+    async function flushChunk() {
+        // Pieces of a split cell fill chunks before the cell's path is complete,
+        // so emptiness is the chunk's own, not its finished paths'.
+        if (estimatedBytes === 0)
+            return;
+        const index = aliases.length;
         const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
         const alias = `__nimbusVfsBundle${index}`;
-        const source = _facetBundleModuleSource(chunks[index]);
+        const source = _facetBundleModuleSource(chunk);
         if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
             throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
         }
         modules[moduleName] = source;
         imports.push(`import ${alias} from "${moduleName}";`);
         aliases.push(alias);
+        if (consume)
+            for (const path of chunkPaths)
+                delete bundle[path];
+        chunk = {};
+        chunkPaths = [];
+        estimatedBytes = 0;
         // Each side module is an independent serialization of its own cells, so
         // the turn may end between any two of them.
         if (pacer)
             await pacer.spend(source.length);
     }
+    for (const path of Object.keys(bundle)) {
+        const cell = bundle[path];
+        for (const [piecePath, pieceCell] of splitCell(path, cell)) {
+            const pieceBytes = sourceBytes(piecePath, pieceCell);
+            if (piecePath in chunk
+                || (estimatedBytes > 0 && estimatedBytes + pieceBytes > maxModuleBytes)) {
+                await flushChunk();
+            }
+            chunk[piecePath] = pieceCell;
+            estimatedBytes += pieceBytes;
+        }
+        chunkPaths.push(path);
+    }
+    await flushChunk();
     const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
         `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
         `if(__prev===undefined){__out[__k]=__v;}` +
@@ -2198,7 +2232,7 @@ export async function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
  *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
  *
  * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (manifest pass at buildManifest enumerates it). But the runtime
+ * (the namespace lists it). But the runtime
  * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
  * `__vfsBundle` only, and none of the existing bundle-population
  * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
@@ -2557,10 +2591,17 @@ export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
  * Admitted smallest-first for the same reason as the entry-package walk: the
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
+ *
+ * `room` is what the snapshot bound leaves after what is already committed
+ * (the static closure, and for learned entries this session's own misses), in
+ * raw bytes: evidence fills that room and never pushes the snapshot past the
+ * bound, so it can never be the reason a launch fails. `bytes` is what this
+ * call staged, in the same unit.
  */
-export async function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState) {
+export async function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState, room = Infinity) {
     if (!observed || observed.size === 0)
-        return { added: 0 };
+        return { added: 0, bytes: 0 };
+    let bytes = 0;
     const candidates = [];
     for (const path of observed) {
         if (path === '')
@@ -2594,8 +2635,12 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         const cellLen = _bundleCellLength(content);
         if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
             continue;
+        const raw = _bundleCellRawBytes(content);
+        if (bytes + raw > room)
+            continue;
         bundle[candidate.path] = content;
         requiredPaths.add(candidate.path);
+        bytes += raw;
         budgetState.totalBytes += cellLen;
         budgetState.fileCount++;
         added++;
@@ -2620,14 +2665,18 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
                 break;
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 continue;
+            const raw = _bundleCellRawBytes(content);
+            if (bytes + raw > room)
+                continue;
             bundle[dep] = content;
             requiredPaths.add(dep);
+            bytes += raw;
             budgetState.totalBytes += cellLen;
             budgetState.fileCount++;
             added++;
         }
     }
-    return { added };
+    return { added, bytes };
 }
 const RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS = new Set([
     'docs',
@@ -3279,7 +3328,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes, learnedFor) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
     // resetting the DO three times. Take the budget the enrichment passes are
@@ -3289,14 +3338,14 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, maxBundleBytes);
+        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, maxBundleBytes, learnedFor);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES) {
+async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3311,9 +3360,15 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     }
     const bundle = { ...prefetch.bundle };
     const closurePaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
-    // Grows with evidence; `closurePaths` stays the static closure. An observed
-    // subpath is not the closure choosing that corner of a package.
-    const requiredPaths = new Set(closurePaths);
+    // Evidence is kept apart from the closure: an observed subpath is not the
+    // closure choosing that corner of a package, and only the closure can fail
+    // a launch. The room evidence may fill is what the closure leaves under the
+    // bound, this session's own misses first, then what other sessions learned.
+    const observedPaths = new Set();
+    const learnedPaths = new Set();
+    let room = maxBundleBytes;
+    for (const path of closurePaths)
+        room -= _bundleCellRawBytes(bundle[path]);
     let truncated = false;
     const budgetState = { totalBytes: 0, fileCount: 0 };
     // Each enrichment pass below re-scans the bundle accumulated so far, so a
@@ -3335,8 +3390,16 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //     admitted first, ahead of every guess, and they join the required set
     //     rather than the evictable one, because a file evicted here misses
     //     again on the next run and the loop never closes.
-    const observedAdd = (await addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState));
-    void observedAdd;
+    // Other sessions' misses in the packages this closure can load
+    // (read-profile.ts) are evidence of the same kind: a learned module joins
+    // the module map with its imports, as this session's own misses do.
+    const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+    const own = await addObservedReads(vfs, observedReads, bundle, observedPaths, budgetState, Math.max(0, room));
+    room -= own.bytes;
+    const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
+    await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room));
+    for (const path of observedPaths)
+        learnedPaths.delete(path);
     await paceAfterPass();
     // 2. Greedy oversample — every installed pkg's pkg.json + main.
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
@@ -3462,16 +3525,44 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    content for a given file was capped out.
     await paceAfterPass();
     await paceAfterPass();
-    // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
-    //    units) because that is what workerd charges against the per-module
-    //    text-size budget. Only OPTIONAL enrichment is evictable, largest
-    //    first; the manifest and the static require closure stay.
+    // 4. The snapshot's size guard, in the unit the session DO's memory was
+    //    measured in and the require walk counts: raw bytes, a cell's UTF-8
+    //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
+    //    set its own). The per-module text limit is met by side modules and is
+    //    not a reason to evict. Only
+    //    OPTIONAL enrichment is evictable; the static require closure stays, and
+    //    a closure past the bound by itself fails the launch by name.
     //
     //    Evicting an enrichment file is a real loss — the sync fs reads it
     //    exists for cannot fall back to the supervisor — so the paths that
     //    went are named rather than silently dropped.
     const size = encodedBundleSize(bundle);
-    if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
+    const rawBytes = new Map();
+    let rawTotal = 0;
+    for (const [path, cell] of Object.entries(bundle)) {
+        const bytes = _bundleCellRawBytes(cell);
+        rawBytes.set(path, bytes);
+        rawTotal += bytes;
+    }
+    if (rawTotal > maxBundleBytes) {
+        // Only the walk's closure can fail a launch, and the path it names is the
+        // one whose bytes (with its compiled cell) crossed the bound, in walk order.
+        let closureBytes = 0;
+        let crossedAt = null;
+        for (const path of closurePaths) {
+            closureBytes += (rawBytes.get(path) ?? 0) + (rawBytes.get(compiledCellKey(path)) ?? 0);
+            if (crossedAt === null && closureBytes > maxBundleBytes)
+                crossedAt = path;
+        }
+        if (crossedAt !== null) {
+            throw new ClosureBoundExceededError({
+                kind: 'closure-exceeds-bound',
+                entry: scriptPath ?? 'entry code',
+                bytesSeen: closureBytes,
+                bound: maxBundleBytes,
+                lastPath: crossedAt,
+            });
+        }
         // A compiled cell goes with its source: required when the source is.
         //
         // Order matters as much as the bound. Largest-first alone ranks a cell by
@@ -3487,8 +3578,15 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         for (const path of prefetch.speculative)
             speculativeRank.set(path, speculativeRank.size);
         const rankOf = (path) => speculativeRank.get(compiledCellPath(path) ?? path) ?? -1;
-        const evictable = Object.keys(bundle)
-            .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
+        // Evidence goes after all enrichment: what others learned before this
+        // session's own misses, each tier last-admitted first.
+        const tierOf = (path) => {
+            const source = compiledCellPath(path) ?? path;
+            return closurePaths.has(source) ? 3 : observedPaths.has(source) ? 2 : learnedPaths.has(source) ? 1 : 0;
+        };
+        const lastAdmittedFirst = (tier) => [...tier].reverse().flatMap((path) => [compiledCellKey(path), path]).filter((path) => bundle[path] !== undefined);
+        const enrichment = Object.keys(bundle)
+            .filter((path) => tierOf(path) === 0)
             .sort((a, b) => {
             const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
             if (loadable !== 0)
@@ -3497,20 +3595,22 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
             const rankB = rankOf(b);
             if (rankA !== rankB)
                 return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
-            return _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]);
+            return (rawBytes.get(b) ?? 0) - (rawBytes.get(a) ?? 0);
         });
+        const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
         const evicted = [];
         for (const k of evictable) {
-            if (size.bytes <= BUNDLE_MAX_ENCODED_BYTES)
+            if (rawTotal <= maxBundleBytes)
                 break;
-            evicted.push([k, _bundleCellLength(bundle[k])]);
+            evicted.push([k, rawBytes.get(k) ?? 0]);
+            rawTotal -= rawBytes.get(k) ?? 0;
             delete bundle[k];
             size.remove(k);
         }
         if (evicted.length > 0) {
             truncated = true;
-            console.warn(`[facet-manager] prefetch snapshot exceeded ${BUNDLE_MAX_ENCODED_BYTES} encoded `
-                + `bytes; evicted ${evicted.length} optional file(s). They still exist and `
+            console.warn(`[facet-manager] prefetch snapshot exceeded ${maxBundleBytes} bytes; `
+                + `evicted ${evicted.length} optional file(s). They still exist and `
                 + `async reads still return them; synchronous reads raise EAGAIN: `
                 + `${describeBundleCells(evicted)}`);
         }
@@ -3606,6 +3706,8 @@ export class FacetManager {
     // The bundle a resident pid booted from, so the misses it reports at exit
     // stage into the next launch of the same entry, as a one-shot's do.
     residentBundleKeys = new Map();
+    /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
+    residentProfileOffers = new Map();
     /**
      * The esbuild the bundle's ESM→CJS pass transforms with. composeFacetManager
      * sets it: the host's own, or one whose transforms run in the session's
@@ -3616,12 +3718,12 @@ export class FacetManager {
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
      * exec — dominant wall-clock on large node_modules. This memoizes the
-     * result (including the serialized facet bundle + manifest) keyed on
+     * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
      * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
      * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
-     * pulls absolute-path literals like /tmp/x; buildManifest walks from '/'),
+     * pulls absolute-path literals like /tmp/x),
      * so a cwd-scoped subtree revision cannot guarantee invalidation. The
      * global revision bumps on ANY write, so the cache invalidates on every
      * mutation that could change any file the bundle reads — provably
@@ -3644,8 +3746,9 @@ export class FacetManager {
     residencyProfiles = new Map();
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
-     * when the deployment binds NIMBUS_READ_PROFILES. Absent, a miss is learned
-     * for this session only (residencyProfiles).
+     * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
+     * tarballs. Unbound, a miss is learned for this session only
+     * (residencyProfiles).
      */
     readProfile = null;
     /** Per module path: its static references at a revision (see _closureStaticRefs). */
@@ -3706,7 +3809,7 @@ export class FacetManager {
             : undefined;
         this.debugEnabled = debugVar === '1' || debugVar === 'true';
         const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-            ? Reflect.get(env, 'NIMBUS_READ_PROFILES')
+            ? Reflect.get(env, 'NPM_TARBALL_CACHE')
             : undefined;
         this.readProfile = profiles && typeof profiles === 'object' ? new ReadProfile(profiles) : null;
         this.launchJournal = new FencedWork(ctx.storage, {
@@ -3734,6 +3837,7 @@ export class FacetManager {
         // ended the process, and the delete must not be a floating promise there.
         this.processes.setOnTerminal((pid) => {
             this.residentBundleKeys.delete(pid);
+            this.residentProfileOffers.delete(pid);
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
         this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
@@ -4021,40 +4125,55 @@ export class FacetManager {
         // overflow pages (1% over), a head and chunk rows per file, a namespace
         // row per name, and slack for the last write's page.
         const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
-        // And the module map, which the store adopts at boot: the process's code.
-        let moduleBytes = 0;
-        for (const cell of Object.values(vfsState.bundle)) {
-            // A denial is a head row only.
-            moduleBytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
-        }
+        // And the module map, which the store adopts at boot: the process's code,
+        // costed when the map was built (its cells are released once serialized).
+        const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle);
         const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
         return { paths: plan.paths, storageBytes };
     }
     /**
-     * Paths earlier launches missed: this session's for the same build, and,
-     * with a shared profile, every session's for the packages this closure
-     * loads. A learned path is planned only where the process's own listing
-     * shows a regular file (data-plan.ts), and read through its own credential.
+     * Paths earlier launches of the same build missed in this session. Other
+     * sessions' misses (the shared read profile) join the module map instead,
+     * in _buildProcessBundle, where a learned module brings its imports.
      */
-    async _learnedReads(vfsState, cred) {
-        const own = vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
-        if (!this.readProfile)
-            return own;
-        const roots = new Set();
-        for (const path of vfsState.bundlePaths ?? []) {
-            const root = packageRootOf(path.replace(/^\/+/, ''));
-            if (root !== null)
-                roots.add(root);
+    async _learnedReads(vfsState, _cred) {
+        return vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
+    }
+    /**
+     * The installed packages a closure can load: every package the lockfiles
+     * pin whose node_modules directory is on the resolution path of the cwd or
+     * of a closure file. A first miss is, by definition, in a package the
+     * closure did not already load, so its package's root is found this way.
+     */
+    _profileRoots(closure, cwd) {
+        const sql = this.ctx.storage.sql;
+        if (!sql)
+            return [];
+        const integrities = new NpmCache(sql).installedIntegrities();
+        if (integrities.size === 0)
+            return [];
+        const dirs = new Set();
+        const ancestors = (dir) => {
+            for (let d = dir;;) {
+                const nm = d === '' ? 'node_modules' : `${d}/node_modules`;
+                if (dirs.has(nm))
+                    return;
+                dirs.add(nm);
+                if (d === '')
+                    return;
+                d = d.slice(0, Math.max(0, d.lastIndexOf('/')));
+            }
+        };
+        ancestors(cwd.replace(/^\/+|\/+$/g, ''));
+        for (const path of closure) {
+            const k = path.replace(/^\/+/, '');
+            ancestors(k.slice(0, Math.max(0, k.lastIndexOf('/'))));
         }
-        if (roots.size === 0)
-            return own;
-        try {
-            return [...own, ...await this.readProfile.lookup(roots, this._packageIdentity(cred))];
-        }
-        catch {
-            // The shared profile is an accelerator: unreachable, the launch plans without it.
-            return own;
-        }
+        return [...integrities.keys()].filter((root) => {
+            const i = root.lastIndexOf('/node_modules/');
+            const parent = i === -1 ? (root.startsWith('node_modules/') ? 'node_modules' : null) : root.slice(0, i + '/node_modules'.length);
+            return parent !== null && dirs.has(parent);
+        });
     }
     /**
      * A package directory's identity for the shared read profile: the tarball
@@ -4163,13 +4282,41 @@ export class FacetManager {
             this.prefetchBundleCache.set(key, cached);
             return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
         }
-        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, this.residencyProfiles.get(key), pacer);
+        const readProfile = this.readProfile;
+        const offered = [];
+        const learnedFor = readProfile === null ? undefined : async (closure) => {
+            const roots = this._profileRoots(closure, spec.cwd);
+            if (roots.length === 0)
+                return [];
+            offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+            return offered.map((entry) => entry.path);
+        };
+        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, this.residencyProfiles.get(key), pacer, undefined, learnedFor);
+        if (offered.length > 0) {
+            const staged = [];
+            const unresolved = [];
+            for (const entry of offered) {
+                if (vfsState.bundle[entry.path] !== undefined) {
+                    staged.push(entry);
+                    continue;
+                }
+                // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
+                const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
+                if (stat === null || stat.type !== 'file')
+                    unresolved.push(entry.path);
+            }
+            vfsState.profileOffer = { staged, unresolved };
+        }
         vfsState.bundleKey = key;
         vfsState.bundlePaths = Object.keys(vfsState.bundle);
-        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer);
-        // The only consumer of the raw cells past this point is a single boolean,
-        // so answer it now rather than hold ~17 MB (pi) to answer it later.
+        // The only consumer of the raw cells past serialization is a single
+        // boolean, so it is answered first; the serialization then consumes them.
         vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
+        // And what the module map costs the facet's store, which adopts it at boot
+        // (N18): taken now, while the cells exist, for every launch this state
+        // serves (a cache hit included).
+        vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle);
+        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { consume: true });
         vfsState.cacheHit = false;
         // Serialization is total: bundleSource/serializedManifest/serializedMetadata
         // carry every byte the raw cells and objects do, and both generators read
@@ -4305,14 +4452,42 @@ export class FacetManager {
     hasResidentProcess(pid) {
         return this.processRpcResources.has(pid);
     }
-    noteProcessReportedExit(pid, exitCode, residencyMisses) {
+    noteProcessReportedExit(pid, exitCode, residencyMisses, evidence) {
         // Filed before the exit marks the table: the terminal hook forgets the key.
         this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
         const exiting = this.processes.get(pid);
-        if (this.readProfile && exiting && residencyMisses && residencyMisses.length > 0) {
+        const offer = this.residentProfileOffers.get(pid);
+        this.residentProfileOffers.delete(pid);
+        if (this.readProfile && exiting) {
+            // The shared profile learns only what this supervisor served the process
+            // after a miss, as the process's own credential sees it (read-profile.ts).
             const profile = this.readProfile;
             const identity = this._packageIdentity(exiting.cred);
-            this.ctx.waitUntil(profile.record(residencyMisses, identity).catch(() => 0));
+            const view = this.vfs?.as(exiting.cred) ?? null;
+            const served = evidence?.served ?? new Set();
+            // Observers and vouchers are principals the router verified, read off
+            // this session's Durable Object name; an anonymous session only reads.
+            const principal = profilePrincipal(sessionIdentity({ ctx: this.ctx })?.tenantSegment);
+            this.ctx.waitUntil((async () => {
+                const tag = principal === null ? null : await principalTag(principal);
+                if (tag !== null && view !== null && residencyMisses && residencyMisses.length > 0) {
+                    const found = await verifiedEvidence(residencyMisses, served, async (path) => {
+                        try {
+                            const st = view.lstat(path.replace(/^\/+/, ''));
+                            return { type: st.type, size: st.size };
+                        }
+                        catch {
+                            return null;
+                        }
+                    });
+                    if (found.length > 0)
+                        await profile.observe(found, tag, identity);
+                }
+                if (tag !== null && offer !== undefined) {
+                    const unread = evidence?.profileUnread ? new Set(evidence.profileUnread) : null;
+                    await profile.settle(offer.staged, unread, served, new Set(offer.unresolved), tag);
+                }
+            })().catch(() => undefined));
         }
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
@@ -5046,10 +5221,6 @@ export class FacetManager {
             await Promise.allSettled([...this.launchTasks]);
         await Promise.all(this.rowAmendments.values());
     }
-    /** Whether any launch is suspended waiting for a turn. */
-    get hasPendingLaunchTurns() {
-        return this.launchPump.hasPending;
-    }
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     _allocateLoopbackPort() {
         for (let port = 4096; port < 4096 + 4096; port++) {
@@ -5486,6 +5657,9 @@ export class FacetManager {
         const vfsCursor = vfsState.cursor;
         if (vfsState.bundleKey)
             this.residentBundleKeys.set(entry.pid, vfsState.bundleKey);
+        const profileOffer = vfsState.profileOffer;
+        if (profileOffer !== undefined)
+            this.residentProfileOffers.set(entry.pid, profileOffer);
         // The map is generated; the state's only remaining job is its cursor.
         // Released here, before the boot — releasing afterwards keeps the copy
         // alive for exactly the window that was resetting the isolate. A state
@@ -5518,7 +5692,11 @@ export class FacetManager {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                startArgs: { vfsCursor, dataPlan, ...(this.debugEnabled ? { diag: true } : {}) },
+                startArgs: {
+                    vfsCursor, dataPlan,
+                    ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
+                    ...(this.debugEnabled ? { diag: true } : {}),
+                },
                 storageBytes,
                 // A resident whose declared port is reserved binds the owner's
                 // durable slot — the same store a durable worker spawn takes — so the

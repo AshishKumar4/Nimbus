@@ -404,7 +404,9 @@ export function createNimbusHandler(
     if (sdkResponse) return sdkResponse;
 
     if (url.pathname === '/api/nimbus/oauth/callback') {
-      const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
+      // Signed by the session that started the flow: a state this deployment
+      // did not sign never reaches a Durable Object.
+      const payload = await parseAgentOAuthStateParam(url.searchParams.get('state'), env);
       if (!payload || !isValidSessionId(payload.sessionId)) {
         return new Response('Invalid OAuth state', { status: 400 });
       }

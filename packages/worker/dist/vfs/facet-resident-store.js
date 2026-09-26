@@ -1102,6 +1102,7 @@ function __residentHead(path) {
  * is not held.
  */
 function __residentGet(path) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(path).replace(/^\\/+/, ""));
   const head = __residentHead(path);
   if (head === undefined) {
     const held = __residentHeld.get(path);
@@ -1225,23 +1226,6 @@ function __residentDelete(t, path) {
   t.chunkDelete(path);
   t.fileDelete(path);
   return had;
-}
-
-/**
- * The filler's door: write a cell whose provenance is the authority revision it
- * was read at. Legal while SEALED, because populating is exactly what a sealed
- * store is for — the seal stops READS of undated rows, not the writes that date
- * them.
- */
-function __residentPopulate(path, cell, rev) {
-  if (!__residentReady) throw new Error("Nimbus: __residentPopulate before __residentBind");
-  if (typeof rev !== "number") {
-    throw new Error(
-      "Nimbus: refusing to populate '" + path + "' with no authority revision. " +
-      "An undated row cannot be invalidated, so it would be served stale forever."
-    );
-  }
-  return __residentPut(__residentT, path, cell, rev);
 }
 
 /**
@@ -2337,6 +2321,29 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     cursor: judgeable ? listing.cursor : null,
     ...(listing.reason ? { incomplete: listing.reason } : {}),
   };
+}
+
+/**
+ * Refetch, after a delta the store applied without a listing, what it should
+ * hold and does not: the paths the delta dropped and the launch's data plan.
+ * The namespace (current as of that delta) gives each one's size and
+ * revision, as a listing entry would.
+ */
+async function __residentRefillFromNamespace(supervisor, dropped) {
+  const t = __residentT;
+  const cursor = __residentCursor();
+  if (cursor === null) return { requested: 0, filled: 0, failed: 0, bytes: 0 };
+  const fetch = [];
+  const seen = new Set();
+  for (const path of [...dropped, ...__residentPlan]) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    if (__residentHead(path) !== undefined || __residentHeld.has(path)) continue;
+    const row = __nsRowAt(t, path);
+    if (row === undefined || Number(row.kind) !== __NS_FILE) continue;
+    fetch.push({ path, size: Number(row.size), rev: Number(row.rev), epoch: cursor.epoch, ckey: null });
+  }
+  return __residentFetchFiles(supervisor, fetch);
 }
 
 /**

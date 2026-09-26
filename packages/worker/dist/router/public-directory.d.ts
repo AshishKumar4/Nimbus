@@ -48,6 +48,24 @@ export declare function publicDirectoryStub(env: unknown): {
     resolve(capability: string): Promise<PublicDirectoryEntry | null>;
 } | null;
 /**
+ * `{ tenantSegment, sid }` for the session DO this host is, read off its own
+ * DO name — `tn:sub:sid` (or `legacy:public:_:sid`), no request header
+ * needed. A host without a DO id (a unit-test stub) may carry the fields on
+ * itself.
+ */
+export declare function sessionIdentity(host: {
+    ctx?: {
+        id?: {
+            name?: unknown;
+        };
+    };
+    tenantSegment?: string;
+    sessionId?: string;
+}): {
+    tenantSegment: string;
+    sid: string;
+} | null;
+/**
  * Publish a public port's capability to the routing directory. A legacy-
  * public deployment needs no directory — its DO name is already the one
  * the public form resolves to — and is allowed to run without the binding.

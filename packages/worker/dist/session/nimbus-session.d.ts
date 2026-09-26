@@ -41,6 +41,7 @@ import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
+import { ServedReads } from '../facets/read-profile.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
 export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-detect.js';
 /**
@@ -311,6 +312,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
+    /** Async reads served per process, for the shared read profile. */
+    readonly servedReads: ServedReads;
     _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
@@ -353,7 +356,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcRecordCacheStats(events: any[]): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
-    _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[]): Promise<void>;
+    _rpcReportExit(pid: number, code: number, tail: string, residencyMisses?: string[], profileUnread?: string[] | null): Promise<void>;
     _emitExitDump(pid: number, code: number): void;
     _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
     _reportExternalExit(pid: number, code: number, reason: string): void;
