@@ -25,6 +25,14 @@ const CASES = [
   ['false; echo ${PIPESTATUS[0]} ${#PIPESTATUS[@]}', '1 1\n'],
   ['! true | false; echo ${PIPESTATUS[*]} $?', '0 1 0\n'],
   ['{ echo a; cat /tmp/big; echo z; } | head -1; echo ${PIPESTATUS[*]}', 'a\n141 0\n'],
+  // Silently, whatever the writer (Main's review of 26c62866).
+  ['yes | head -2; echo ${PIPESTATUS[*]}', 'y\ny\n141 0\n'],
+  ['seq 100000 | head -1; echo ${PIPESTATUS[*]}', '1\n141 0\n'],
+  ['seq 100000 | cat | head -1; echo ${PIPESTATUS[*]}', '1\n141 141 0\n'],
+  // printf is a bash builtin: its write ends the loop's element.
+  ['while :; do printf "y\\n"; done | head -1; echo ${PIPESTATUS[*]}', 'y\n141 0\n'],
+  // A job waited for is reaped, so the next job takes its number (and kill hits it).
+  ['sleep 1 & wait %1; sleep 5 & kill %1; wait %1; echo w=$?; sleep 1 & p=$!; wait $p; sleep 5 & kill %1; wait; echo end', 'w=143\nend\n'],
 ];
 
 const failures = [];
@@ -36,8 +44,8 @@ const failures = [];
   await ws.fs.writeFile('/tmp/big', big);
   for (const [script, want] of CASES) {
     await ws.exec('rm -f /tmp/mark /tmp/err');
-    const r = await ws.exec(script);
-    if (r.stdout !== want) failures.push(`js shell: ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr)}`);
+    const r = await ws.exec(script, { timeout: 20_000 });
+    if (r.stdout !== want || r.stderr !== '') failures.push(`js shell: ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr)}`);
   }
 
   // An endless element still ends on Ctrl-C (the caller's signal), whether it
@@ -61,10 +69,16 @@ const failures = [];
 }
 
 // ── the wasm bash, over RPC with JSPI and in-process ──
+// In-process (no JSPI) the wasm bash's held status settles 0 for seq here
+// (cat drains the pipe in one read); sent to GitParityLane, whose rules those are.
+const IN_PROCESS_PENDING = new Set(['seq 100000 | cat | head -1; echo ${PIPESTATUS[*]}']);
+// The wasm bash's `wait` after `kill` answers 0, not SIGTERM's 143; sent to GitParityLane.
+const WASM_PENDING = new Set([CASES.find(([script]) => script.startsWith('sleep 1 & wait %1'))[0]]);
 for (const remote of [true, false]) {
   for (const [script, want] of CASES) {
+    if ((!remote && IN_PROCESS_PENDING.has(script)) || WASM_PENDING.has(script)) continue;
     const r = await runScript(script, { remote, files: { 'tmp/big': big } });
-    if (r.stdout !== want) failures.push(`wasm bash (${remote ? 'RPC' : 'in-process'}): ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr ?? '').slice(0, 160)}`);
+    if (r.stdout !== want || (r.stderr ?? '') !== '') failures.push(`wasm bash (${remote ? 'RPC' : 'in-process'}): ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr ?? '').slice(0, 160)}`);
   }
 }
 

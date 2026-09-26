@@ -142,8 +142,6 @@ try {
   // that unwrapped the job promise made a successful job read as "no such
   // job" (127), which the Pi installer's background preflight check turned
   // into an offer to install Node.
-  // The `[n] pid (background)` notice on stderr is the job control's, not
-  // wait's; only stdout carries the status under test.
   await assertRunStdout('wait on a successful background job answers 0',
     'true & p=$!; wait "$p"; echo RC:$?', 'RC:0\n');
   await assertRunStdout('wait on a failed background job answers its status',

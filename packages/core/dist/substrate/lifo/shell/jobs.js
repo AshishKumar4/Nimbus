@@ -1,6 +1,6 @@
 export class JobTable {
     jobs = new Map();
-    add(command, promise, abortController) {
+    add(command, promise, abortController, pid) {
         // bash: one more than the highest job still in the table.
         const id = Math.max(0, ...this.jobs.keys()) + 1;
         const job = {
@@ -10,6 +10,7 @@ export class JobTable {
             abortController,
             status: 'running',
             exitCode: null,
+            ...(pid === undefined ? {} : { pid }),
         };
         promise.then((code) => {
             job.status = 'done';
@@ -23,6 +24,12 @@ export class JobTable {
     }
     list() {
         return Array.from(this.jobs.values());
+    }
+    byPid(pid) {
+        for (const job of this.jobs.values())
+            if (job.pid === pid)
+                return job;
+        return undefined;
     }
     get(id) {
         return this.jobs.get(id);

@@ -1046,6 +1046,7 @@ export class Shell {
 
     try {
       await this.interpreter.executeLine(actualLine, this.terminalStdin, {
+        interactive: true,
         commandIdentity: this.commandIdentity,
         runAs: this.commandIdentity.runAs,
         signal: this.abortController.signal,
@@ -1469,6 +1470,8 @@ export class Shell {
         .filter((job) => job.status === 'running')
         .map((job) => ({ promise: job.promise }))
       : await Promise.all(targets.map((target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
+    // A job waited for is reaped (bash): its number is free for the next.
+    const reap = targets.map((target) => (target.byJob ? this.jobTable.get(target.value) : this.jobTable.byPid(target.value)));
     // A bare `wait` reaps every job, as bash's does: their numbers are free again.
     if (targets.length === 0) {
       await Promise.all(waitables.map((w) => w?.promise.catch(() => undefined)));
@@ -1488,6 +1491,7 @@ export class Shell {
         last = 1;
       }
     }
+    for (const job of reap) if (job !== undefined) this.jobTable.remove(job.id);
     return last;
   }
 

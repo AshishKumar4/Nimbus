@@ -5,12 +5,14 @@ export interface Job {
   abortController: AbortController;
   status: 'running' | 'done' | 'stopped';
   exitCode: number | null;
+  /** The job's process, when it has one in the registry. */
+  pid?: number;
 }
 
 export class JobTable {
   private jobs = new Map<number, Job>();
 
-  add(command: string, promise: Promise<number>, abortController: AbortController): number {
+  add(command: string, promise: Promise<number>, abortController: AbortController, pid?: number): number {
     // bash: one more than the highest job still in the table.
     const id = Math.max(0, ...this.jobs.keys()) + 1;
     const job: Job = {
@@ -20,6 +22,7 @@ export class JobTable {
       abortController,
       status: 'running',
       exitCode: null,
+      ...(pid === undefined ? {} : { pid }),
     };
 
     promise.then((code) => {
@@ -36,6 +39,11 @@ export class JobTable {
 
   list(): Job[] {
     return Array.from(this.jobs.values());
+  }
+
+  byPid(pid: number): Job | undefined {
+    for (const job of this.jobs.values()) if (job.pid === pid) return job;
+    return undefined;
   }
 
   get(id: number): Job | undefined {

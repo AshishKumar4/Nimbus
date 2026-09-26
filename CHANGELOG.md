@@ -187,7 +187,11 @@ kernel credential, because Nimbus follows POSIX here:
   (`head` reads 8 KiB at a time, as GNU's does). Loops let the event loop run
   every 64 iterations, so Ctrl-C and `kill` reach one that never waits on
   I/O. The workspace shell has `kill`, and job numbers are reused as bash
-  reuses them (`wait` reaps finished jobs).
+  reuses them (`wait`, `wait %N` and `wait PID` reap). A command killed this
+  way ends silently (`yes | head -2` prints no EPIPE), and a bash builtin
+  served as a command (`printf`) ends its element, as `echo` does. A
+  background job's `[N] PID` notice appears only in the interactive shell,
+  in bash's form.
 - New: `md5sum`, `sha1sum`, `sha224sum`, `sha384sum`, `sha512sum`, `b2sum`,
   `cksum` (CRC, `-a` any of them, tagged, `--base64`, `--raw`) and `sum`
   (BSD and System V), with `sha256sum` on the same engine: `--tag`, `-b`,

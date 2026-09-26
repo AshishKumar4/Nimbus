@@ -11,7 +11,7 @@
 //
 // Nimbus:
 //   $ echo hello &
-//   [1] 14 (background)
+//   [1] 14
 //   user@nimbus:~$ hello    <-- same race, slightly different banner
 //
 // Fixing this would require either:
@@ -45,15 +45,15 @@ await t.waitForPrompt(60_000);
 {
   t.reset();
   t.cmd('echo bg-race-marker-7842 &');
-  // Wait for the (background) banner.
-  await t.waitFor((b) => /\(background\)/.test(b), 5_000, 'bg banner');
+  // Wait for the job notice, bash's `[1] PID`.
+  await t.waitFor((b) => /^\[1\] \d+\r?$/m.test(b), 5_000, 'bg banner');
   // Now poll for the actual output up to 3s.
   let sawOutput = false;
   for (let i = 0; i < 30; i++) {
     if (/\bbg-race-marker-7842\b/.test(stripAnsi(t.buf))) { sawOutput = true; break; }
     await sleep(100);
   }
-  a.check('naked cmd & emits the (background) banner', /\(background\)/.test(stripAnsi(t.buf)),
+  a.check('naked cmd & emits the [1] PID job notice', /^\[1\] \d+\r?$/m.test(stripAnsi(t.buf)),
     JSON.stringify(stripAnsi(t.buf).slice(-400)));
   a.check('naked cmd & eventually emits its stdout (race ok)', sawOutput,
     sawOutput ? '' : JSON.stringify(stripAnsi(t.buf).slice(-400)));

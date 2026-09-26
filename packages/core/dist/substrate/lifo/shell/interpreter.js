@@ -93,6 +93,28 @@ export function assignScalar(env, arrays, name, value) {
     else
         array[0] = value;
 }
+/**
+ * One turn of the event loop, unclamped: setImmediate where the host has it
+ * (Bun, Node, workerd with nodejs_compat), else a MessageChannel post. A
+ * timer would do, but hosts clamp it to about a millisecond.
+ */
+const eventLoopHost = globalThis;
+const yieldToEventLoop = typeof eventLoopHost.setImmediate === 'function'
+    ? () => new Promise((resolve) => eventLoopHost.setImmediate(resolve))
+    : (() => {
+        const channel = new eventLoopHost.MessageChannel();
+        const waiting = [];
+        channel.port1.onmessage = () => waiting.shift()?.();
+        return () => new Promise((resolve) => { waiting.push(resolve); channel.port2.postMessage(0); });
+    })();
+/** bash 5's builtins: in bash these run in the shell's own process. */
+const BASH_BUILTINS = new Set([
+    '.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete',
+    'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false',
+    'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
+    'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source',
+    'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait',
+]);
 export class Interpreter {
     config;
     lastExitCode = 0;
@@ -154,6 +176,8 @@ export class Interpreter {
             io.runAs = options.runAs;
         if (options?.signal)
             io.signal = options.signal;
+        if (options?.interactive)
+            io.interactive = true;
         if (io.commandIdentity)
             io.vfs = bindProcessView(this.config.filesystem, {
                 pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
@@ -206,13 +230,15 @@ export class Interpreter {
                 abortController,
             });
             const waitable = this.config.processRegistry.get(pid)?.promise ?? promise;
-            const jobId = this.config.jobTable.add(commandText, waitable, abortController);
+            const jobId = this.config.jobTable.add(commandText, waitable, abortController, pid);
             // `%N` (kill, fg, wait) names the job by the table's number.
             const registered = this.config.processRegistry.get(pid);
             if (registered)
                 registered.jobId = jobId;
             this.config.env['!'] = String(pid);
-            this.writeTerminal(io, `[${jobId}] ${pid} (background)\n`);
+            // An interactive bash reports the job; a script (bash -c) says nothing.
+            if (io.interactive)
+                this.writeTerminal(io, `[${jobId}] ${pid}\n`);
             // Don't auto-reap - let Shell collect zombies before next prompt
             // This matches Linux behavior where zombies persist until reaped
             return 0;
@@ -438,7 +464,7 @@ export class Interpreter {
      */
     async loopTick() {
         if (++this.loopTicks % 64 === 0)
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            await yieldToEventLoop();
     }
     async executeFor(node, io) {
         return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
@@ -808,6 +834,14 @@ export class Interpreter {
                                     resolvePromise?.(code);
                                     return code;
                                 }, async (err) => {
+                                    if (err?.code === 'EPIPE') {
+                                        // SIGPIPE: a builtin's ends its element (the catch below
+                                        // rethrows it); any other command alone dies, silently.
+                                        resolvePromise?.(141);
+                                        if (BASH_BUILTINS.has(name))
+                                            throw err;
+                                        return 141;
+                                    }
                                     rejectPromise?.(err);
                                     if (err instanceof Error && err.name === 'AbortError')
                                         return 130;
@@ -830,7 +864,11 @@ export class Interpreter {
                                     exitCode = 130;
                                 }
                                 else if (e?.code === 'EPIPE') {
-                                    // Killed by SIGPIPE: this command alone, silently.
+                                    // A bash builtin's write is the shell's own: in bash SIGPIPE
+                                    // kills the element's subshell, so its element ends.
+                                    if (BASH_BUILTINS.has(name))
+                                        throw e;
+                                    // Any other command is its own process: it alone dies, silently.
                                     exitCode = 141;
                                 }
                                 else {
@@ -1061,6 +1099,8 @@ export class Interpreter {
             next.runAs = io.runAs;
         if (io.vfs)
             next.vfs = io.vfs;
+        if (io.interactive)
+            next.interactive = true;
         return next;
     }
     /** Per-execution direct-terminal write, isolated from a nested capture. */

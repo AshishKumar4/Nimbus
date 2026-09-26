@@ -153,17 +153,7 @@ function stdinText(ctx: Ctx): string | undefined {
  * standard input as the byte stream it is (wrapStreaming), not a decoded string.
  */
 function textCommand(sqliteVfs: SqliteVFS, command: Command): (ctx: Ctx) => Promise<number> {
-  const run = withInvocationVfs(sqliteVfs, () => command as unknown as CmdFn);
-  // A reader that closed the pipe ends the writer silently, with SIGPIPE's status.
-  const guarded: CmdFn = async (ctx) => {
-    try {
-      return await run(ctx);
-    } catch (error) {
-      if (isBrokenPipe(error)) return 141;
-      throw error;
-    }
-  };
-  return wrapStreaming(guarded);
+  return wrapStreaming(withInvocationVfs(sqliteVfs, () => command as unknown as CmdFn));
 }
 
 function withInvocationVfs(
@@ -5508,6 +5498,8 @@ function wrapStreaming(fn: CmdFn): (ctx: Ctx) => Promise<number> {
       const result = (await fn(ctx));
       return await result;
     } catch (e) {
+      // A closed pipe is the shell's to report (SIGPIPE), not the command's.
+      if (isBrokenPipe(e)) throw e;
       (await ctx.stderr.write(`${errorText(e)}\n`));
       return 1;
     }
@@ -5559,6 +5551,8 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
       const result = (await fn(ctx));
       return await result;
     } catch (e) {
+      // A closed pipe is the shell's to report (SIGPIPE), not the command's.
+      if (isBrokenPipe(e)) throw e;
       (await ctx.stderr.write(`${errorText(e)}\n`));
       return 1;
     }

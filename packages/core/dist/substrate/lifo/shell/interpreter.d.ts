@@ -86,6 +86,8 @@ type ExecutionIo = {
     };
     runAs?: CommandRunAsHost;
     vfs?: ProcessView;
+    /** The terminal's own shell (bash -i): job notices are printed. */
+    interactive?: boolean;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -160,6 +162,7 @@ export declare class Interpreter {
         };
         runAs?: CommandRunAsHost;
         signal?: AbortSignal;
+        interactive?: boolean;
     }): Promise<number>;
     private executeList;
     private getListCommandText;
