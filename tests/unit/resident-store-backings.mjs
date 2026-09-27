@@ -32,6 +32,7 @@ function sqlShim() {
 }
 
 const STORE_API = 'onSql: __residentTablesOnSql, inMemory: __residentTablesInMemory, OWN: __RK_OWN_WRITE, ROW: __RESIDENT_ROW_BYTES,'
+  + ' nsReady: __nsReady, markReady: __nsMarkReady, replaceNamespace: __nsReplace, LINK: __NS_LINK,'
   + ' utf8: __residentUtf8Length, prefixEnd: __residentPrefixEnd, bindInMemory: __residentBindInMemory,'
   + ' adopt: __residentAdoptModuleBundle, fill: __residentFill, get: __residentGet, setStorage: __residentSetStorage,'
   + ' storageMiss: __residentStorageMiss, bytes: __residentDbBytes, bundle: __nimbusResidentBundle, heldMax: __RESIDENT_HELD_MAX_BYTES';
@@ -142,7 +143,11 @@ function heldBytes(t) {
   for (const path of new Set([...t.fileAllPaths(), ...PATHS])) {
     for (const cell of t.chunkParts(path)) total += store.ROW + (cell.txt != null ? store.utf8(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
   }
-  return total + t.nsCount() * store.ROW;
+  for (const { parent, name } of t.nsKeys()) {
+    const row = t.nsGet(parent, name);
+    total += store.ROW + 2 * (parent.length + name.length + (row.target?.length ?? 0));
+  }
+  return total;
 }
 
 const SEQUENCES = 300;
@@ -211,6 +216,46 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   assert.ok(s.heldMax > BUDGET, 'the facet\'s own held bound is not what limits a one-shot');
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(grants, 0, 'the heap backing never asks the ledger for room');
+}
+
+// Namespace replacements charge deltas, not a second row or inode; text and
+// link-target growth count before storage admits the row.
+{
+  const s = freshStore();
+  const t = s.bindInMemory(4096);
+  s.markReady(t, true);
+  const put = (name, target) => t.nsPut('home/user', name, s.LINK, target.length, 0o120777, 1000, 1000, 0, 0, 0, 7, 1, target);
+  put('link', 'x'.repeat(500));
+  const initial = s.bytes();
+  for (let i = 0; i < 20; i++) put('link', 'x'.repeat(500));
+  assert.equal(s.bytes(), initial, 'upsert does not double charge');
+  assert.equal(t.nsCount(), 1);
+  put('link', 'short');
+  assert.ok(s.bytes() < initial, 'shorter target releases its text cost');
+  const before = s.bytes();
+  assert.throws(() => put('link', 'x'.repeat(4096)), error => error.code === 'ENOSPC');
+  assert.equal(s.bytes(), before, 'refused growth changes no stored bytes');
+  assert.equal(t.nsGet('home/user', 'link').target, 'short');
+  assert.equal(s.nsReady(), false, 'a refused namespace update is never a ready partial view');
+  t.nsDelete('home/user', 'link');
+  assert.equal(t.nsCount(), 0);
+  assert.equal(t.nsBytes(), 0);
+  assert.equal(s.bytes(), 0);
+}
+
+{
+  const s = freshStore();
+  const t = s.bindInMemory(2800);
+  s.markReady(t, true);
+  const row = (name, target) => ({ path: 'home/user/' + name, rev: 1, linkTarget: target,
+    stat: { type: 'symlink', size: target.length, mode: 0o120777, uid: 1000, gid: 1000, atime: 0, mtime: 0, ctime: 0, ino: 1 } });
+  s.replaceNamespace(t, [row('a', 'x'), row('b', 'x'.repeat(1000))]);
+  const bytes = s.bytes();
+  s.replaceNamespace(t, [row('a', 'y'.repeat(1000)), row('b', 'y')]);
+  assert.equal(t.nsGet('home/user', 'a').target, 'y'.repeat(1000));
+  assert.equal(t.nsGet('home/user', 'b').target, 'y');
+  assert.equal(s.bytes(), bytes, 'same-size namespace replacement is admitted independent of row order');
+  assert.equal(t.nsCount(), 2);
 }
 
 console.log(`resident-store-backings: ${compared} states compared across ${SEQUENCES} sequences; the heap answers as SQLite does`);

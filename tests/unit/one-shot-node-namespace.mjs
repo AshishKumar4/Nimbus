@@ -51,9 +51,14 @@ adoptCtxExports({
 const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-one-shot-ns-'));
 process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
 let runnerN = 0;
+let injectedStoreBudget = null;
 const env = {
   LOADER: {
     load(config) {
+      if (injectedStoreBudget !== null) {
+        config = { ...config, modules: { ...config.modules } };
+        config.modules['runner.js'] = config.modules['runner.js'].replace(/__residentBindInMemory\(\d+\)/, `__residentBindInMemory(${injectedStoreBudget})`);
+      }
       const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
       const supervisor = config.env?.SUPERVISOR;
@@ -130,5 +135,55 @@ kfs.writeFile('home/user/elsewhere/y.txt', 'y');
 const second = await run();
 assert.deepEqual(second, { exists: true, size: 5, names: ['x.txt', 'y.txt'], bytes: 'two!!', closed: false },
   'the next one-shot sees what a peer wrote between the runs');
+
+// Runtime metadata growth seals the synchronous view, while an authoritative
+// async read can still complete. There is no successful partial readdir.
+kfs.mkdir('home/user/grow', { recursive: true });
+kfs.chown('home/user/grow', 1000, 1000);
+injectedStoreBudget = 16 * 1024;
+out = '';
+let growth;
+try {
+  growth = await manager.exec(`
+    const fs = require('fs');
+    (async () => {
+      let refusal;
+      for (let i = 0; i < 200; i++) {
+        try { fs.mkdirSync('/home/user/grow/dir-' + i); }
+        catch (error) { refusal = { code: error.code, message: error.message }; break; }
+      }
+      let sync;
+      try { fs.readdirSync('/home/user/grow'); sync = 'partial-success'; }
+      catch (error) { sync = error.code; }
+      const live = await fs.promises.readFile('/home/user/elsewhere/x.txt', 'utf8');
+      console.log(JSON.stringify({ refusal, sync, live }));
+    })();`, { filename: '/home/user/app/grow.js', dirname: '/home/user/app', cwd: '/home/user/app', captureOutput: true });
+} finally { Object.assign(globalThis, real); }
+assert.equal(growth.exitCode, 0, growth.stderr + out);
+const growthReport = JSON.parse((growth.stdout + out).trim().split('\n').at(-1));
+assert.match(growthReport.refusal.message, /namespace.*budget|budget.*namespace/i);
+assert.equal(growthReport.sync, 'EAGAIN');
+assert.equal(growthReport.live, 'two!!', 'async read comes from the authority despite a sealed namespace cache');
+
+// Drive actual one-shot boot with a deliberately small fixed heap allowance.
+// Metadata alone exceeds it; user code must never see a partial namespace.
+kfs.mkdir('home/user/many-names', { recursive: true });
+for (let i = 0; i < 200; i++) kfs.writeFile(`home/user/many-names/file-${i}`, 'x');
+injectedStoreBudget = 32 * 1024;
+out = '';
+let refused;
+try {
+  refused = await manager.exec('console.log("USER_CODE_MUST_NOT_START");', { filename: '/home/user/app/budget-check.js', cwd: '/home/user/app' });
+} finally {
+  globalThis.console = real.console;
+  globalThis.process = real.process;
+  globalThis.Buffer = real.Buffer;
+}
+assert.equal(refused.exitCode, 1, 'namespace over budget refuses launch');
+assert.match(refused.stderr + out, /namespace.*budget|budget.*namespace/i);
+assert.doesNotMatch(refused.stdout + out, /USER_CODE_MUST_NOT_START/);
+injectedStoreBudget = null;
+const afterRefusal = await run();
+assert.deepEqual(afterRefusal, second, 'normal allowance restores a complete coherent namespace');
 
 console.log('one-shot-node-namespace: a one-shot answers stat, exists and readdir from the namespace, and sees a peer\'s writes between runs');

@@ -421,6 +421,14 @@ kernel credential, because Nimbus follows POSIX here:
 
 ### node
 
+- One-shot namespace metadata shares the existing heap allowance with file
+  cells and pending own projections. Row costs include retained path and
+  symlink-target text. Listings stop accumulating before exceeding that
+  allowance; startup refuses by name before user code rather than publishing
+  a partial synchronous view. Runtime quota failures seal the sync view while
+  authoritative asynchronous reads remain usable. Replacements charge only
+  their delta, and optional data fills reserve room for mandatory metadata.
+
 - Dynamic imports inside required `.cjs` files use the process loader too.
   JSON `data:` URLs require the JSON import attribute and load when it is
   supplied. ESM source lookup uses the file path, while evaluation caching
