@@ -211,7 +211,14 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   for (const refs of input.refs) {
     for (const p of refs.exact) exact.add(key(p));
     for (const p of refs.listed) listed.add(key(p));
-    for (const p of refs.patterns) patterns.push({ dir: key(p.dir), prefix: p.prefix, suffix: p.suffix });
+    for (const p of refs.patterns) {
+      const dir = key(p.dir);
+      // `'/' + x`: a hole with nothing known around it at the root names every
+      // path there is. Nothing static bounds it, so it is a run-time read like
+      // any other, not an instruction to hold the filesystem.
+      if (dir === '' && p.prefix === '' && p.suffix === '') continue;
+      patterns.push({ dir, prefix: p.prefix, suffix: p.suffix });
+    }
     for (const p of refs.cwdRelative) exact.add(joinKey(cwd, p));
     for (const p of refs.syncReads) syncReads.add(p.startsWith('/') ? key(p) : joinKey(cwd, p));
   }

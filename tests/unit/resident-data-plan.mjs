@@ -222,7 +222,7 @@ t('big', () => { const b = fs.readFileSync(${JSON.stringify(BIG)}, 'utf8'); retu
 t('small', () => fs.readFileSync(${JSON.stringify(PROJECT + '/many/f287.txt')}, 'utf8'));
 t('static', () => require('tablepkg')().trim());
 (async () => {
-  t('late', () => fs.readFileSync(['', 'home', 'user', 'proj', 'node_modules', 'tablepkg', 'private', 'late.js'].join('/'), 'utf8'));
+  t('late', () => fs.readFileSync('/' + ['home', 'user', 'proj', 'node_modules', 'tablepkg', 'private', 'late.js'].join('/'), 'utf8'));
 if (${readOutside}) {
     t('outside', () => fs.readFileSync(outside, 'utf8'));
     t('exact', () => { const b = fs.readFileSync(${JSON.stringify(EXACT)}, 'utf8'); return b.length + ':' + b.slice(0, 4); });

@@ -144,4 +144,27 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.equal(syncPlan.rules.static.bytes, huge + PACKAGE_DATA_MAX_BYTES, 'the held bytes are counted toward the plan');
 }
 
+// A path folded to `'/' + <unknown>` names anything in the filesystem: it
+// stages nothing (the read is a run-time one). A hole under a named
+// directory still stages what it can match there.
+{
+  const ns = namespace({
+    'opt/data/a.json': '{}',
+    'opt/data/nested/b.json': '{}',
+    'opt/other/c.json': '{}',
+    'srv/x.txt': 'x',
+    'etc/y.conf': 'y',
+  });
+  const plan = async (source) => planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(source, '/home/user/app/reader.js')],
+  });
+  const unbounded = await plan(`const fs = require('fs'); fs.readFileSync('/' + process.argv[2].split(',').join('/'));`);
+  assert.deepEqual(unbounded.paths, [], `an unbounded root pattern stages nothing: ${JSON.stringify(unbounded.paths)}`);
+  const bounded = await plan(`const fs = require('fs'); fs.readFileSync('/opt/data/' + process.argv[2]);`);
+  assert.deepEqual(bounded.paths.sort(), ['opt/data/a.json', 'opt/data/nested/b.json'], 'a bounded pattern stages its match');
+  const suffixed = await plan(`const fs = require('fs'); fs.readFileSync('/' + process.argv[2] + '.txt');`);
+  assert.deepEqual(suffixed.paths, [], 'a root pattern with a known suffix stages only top-level names ending in it (none here)');
+}
+
 console.log('data-plan: ok');
