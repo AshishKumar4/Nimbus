@@ -1,3 +1,5 @@
+import { z } from 'zod/v4';
+
 /**
  * exports-resolver.ts — Single source of truth for `package.json#exports` /
  * `package.json#imports` resolution per the Node.js spec.
@@ -57,35 +59,35 @@ export interface ResolvablePackageJson {
   module?: string;
 }
 
-/** Whether `value` is an `ExportsField`: string, null, array of them, or object of them. */
-export function isExportsField(value: unknown): value is ExportsField {
-  if (value === null || typeof value === 'string') return true;
-  if (Array.isArray(value)) return value.every(isExportsField);
-  if (typeof value !== 'object') return false;
-  return Object.values(value).every(isExportsField);
-}
+const ExportsFieldSchema: z.ZodType<ExportsField> = z.lazy(() => z.union([
+  z.string(),
+  z.null(),
+  z.array(ExportsFieldSchema),
+  z.record(z.string(), ExportsFieldSchema),
+]));
+
+// Each entry field validates on its own: a field the resolver cannot read
+// (`main: 7`, `exports: true`) is dropped, the others stay. Whole-object
+// rejection would lose a valid `main` next to a bad `module`, which the
+// runtime resolver tolerates.
+const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
+  exports: ExportsFieldSchema.optional().catch(undefined),
+  imports: ExportsFieldSchema.optional().catch(undefined),
+  main: z.string().optional().catch(undefined),
+  module: z.string().optional().catch(undefined),
+});
 
 /**
- * The entry-point fields of a parsed package.json, or null when the value is
- * not an object or declares one of them in a shape the resolver cannot read
- * (`main: 7`, `exports: true`). A caller that reads package.json off disk
- * narrows through this rather than annotating `JSON.parse`; a malformed
- * package then resolves as "no entry" instead of throwing inside the resolver.
+ * The entry-point fields of a package.json read off disk, or null when the
+ * text is not JSON or not an object. A caller narrows through this rather
+ * than annotating `JSON.parse`, so a malformed package resolves as "no
+ * declared entry" instead of throwing inside the resolver.
  */
-export function resolvablePackageJson(value: unknown): ResolvablePackageJson | null {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  const out: ResolvablePackageJson = {};
-  for (const [key, field] of Object.entries(value)) {
-    if (field === undefined) continue;
-    if (key === 'exports' || key === 'imports') {
-      if (!isExportsField(field)) return null;
-      out[key] = field;
-    } else if (key === 'main' || key === 'module') {
-      if (typeof field !== 'string') return null;
-      out[key] = field;
-    }
-  }
-  return out;
+export function parseResolvablePackageJson(text: string): ResolvablePackageJson | null {
+  let json;
+  try { json = z.json().parse(JSON.parse(text)); } catch { return null; }
+  const result = ResolvablePackageJsonSchema.safeParse(json);
+  return result.success ? result.data : null;
 }
 
 /**

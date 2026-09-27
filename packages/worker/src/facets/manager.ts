@@ -79,7 +79,7 @@ import {
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
   resolvePackageEntry,
-  resolvablePackageJson,
+  parseResolvablePackageJson,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
@@ -2201,10 +2201,11 @@ export async function greedyAddMainEntries(
     // unreached one gets the guess below.
     if (!mainIsSpeculative(pkgDir)) return;
     // Malformed JSON, or a package whose entry fields the resolver cannot
-    // read (`main: 7`, `exports: true`), is a package with no declared entry:
-    // only the index probe below, and the next package unaffected.
+    // read (`main: 7`, `exports: true`) drops that field and keeps the rest;
+    // unparseable JSON is a package with no declared entry. Either way the
+    // next package is unaffected.
     let pkg: ResolvablePackageJson | null;
-    try { pkg = resolvablePackageJson(JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json')))); }
+    try { pkg = parseResolvablePackageJson((await filesOf(vfs).readFileString(pkgDir + '/package.json'))); }
     catch { pkg = null; }
     // The root entry a bare require of this package resolves to, in the
     // order the runtime resolves it (require-resolver.ts resolvePkgSubpathEx):
