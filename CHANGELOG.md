@@ -36,6 +36,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### Breaking changes for embedders
 
+Unused exports are removed from the new pre-1.0 release:
+`parseInstalledPyodidePackageManifest`, `InstalledPyodidePackageManifest`,
+`InstalledPyodidePackageManifestSchema`, `readMemoryLimits`,
+`createPsCommandFromJobTable`, and `CPYTHON_EXIT_MARKER` from core;
+`rpcRouteCapabilityPort` from worker's `session/programmatic` module.
+The session's active capability-port route remains unchanged.
+
 The published `@nimbus-sh/core` no longer carries the compiled output of the
 modules removed below (`runtime/filesystem-authority.js`, the lifo kernel
 VFS, `SandboxFs`, `ServiceManager`, kernel persistence and storage, and
