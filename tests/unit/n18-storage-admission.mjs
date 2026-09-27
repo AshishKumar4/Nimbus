@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// N18: one storage limit covers the session DO and every facet database under
-// it, and a write that crosses it resets the object. So the engine admits a
-// write before making it: past the limit it is ENOSPC and the destination is
+// N18: one storage limit covers the session DO and its facet databases.
+// Admission refuses an over-limit write before mutating the destination.
+// The error is ENOSPC and the destination is
 // unchanged. Removals are never refused, a facet's recorded size counts until
 // the facet is deleted (an abort keeps it), and a restart keeps the ledger.
 

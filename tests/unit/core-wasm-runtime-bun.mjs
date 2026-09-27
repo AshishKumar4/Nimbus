@@ -171,9 +171,8 @@ const ws = await open({ facets: localFacetHost() });
   console.log('  ok  loops, pipelines and exit status behave');
 
   // N24: a pipeline of three or more stages delivers its last stage's output, to
-  // bash's own stdout and to a command substitution alike; every stage a BusyBox
-  // child exec'd without JSPI, so each blocked reader has to wait for the stage
-  // behind it rather than read its end of input early.
+  // bash's own stdout and to a command substitution alike. Each stage is a
+  // real BusyBox child, using the local host's advertised parking capability.
   for (const [command, want] of [
     ["echo a | cat | cat", 'a\n'],
     ["seq 3 | cat | cat", '1\n2\n3\n'],
@@ -189,7 +188,7 @@ const ws = await open({ facets: localFacetHost() });
   }
   console.log('  ok  a pipeline of three or more stages delivers its last stage');
 
-  // Pipes without JSPI (pipe-rules.ts; under JSPI, bash-pipes-jspi.mjs). A
+  // Pipe behavior under the local host's advertised parking capability. A
   // writer whose readers are gone gets SIGPIPE, 141 as bash reports it; these
   // match real bash 5.2 with GNU coreutils.
   for (const [command, want] of [
