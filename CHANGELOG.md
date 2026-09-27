@@ -417,6 +417,10 @@ kernel credential, because Nimbus follows POSIX here:
   AST. Grammar, scope, exports and directives still use Acorn's parser. This
   reduces retained parsing memory for large bundled modules; it does not
   change the session's closure bound or dependency coverage.
+- A transient transform-isolate failure aborts launch before bundle or
+  Worker Loader cache publication. The next launch can transform again;
+  it no longer inherits a cached diagnostic shim from an infrastructure
+  failure. Permanent source errors remain lazy errors when required.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry
