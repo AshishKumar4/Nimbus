@@ -362,14 +362,22 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
       return;
     }
     const terminalMessage = TerminalMessageSchema.safeParse(value);
-    if (self.terminal && terminalMessage.success) self.terminal.handleMessage(terminalMessage.data);
+    if (self.terminal && terminalMessage.success) {
+      const terminal = self.terminal;
+      const completion = terminal.handleMessage(terminalMessage.data);
+      if (completion) {
+        const task = completion.catch((error: unknown) => {
+          console.error('[nimbus] terminal input failed:', errorText(error));
+          terminal.writeln(`terminal input failed: ${errorText(error)}`);
+        }).finally(() => snapshotShellState(self));
+        const ctx = (self as unknown as { ctx?: { waitUntil?: (promise: Promise<void>) => void } }).ctx;
+        // Retain the command without holding the WebSocket event open or serializing later input.
+        if (ctx?.waitUntil) ctx.waitUntil(task);
+        else await task;
+      }
+    }
     // ── B'.1 snapshot ───────────────────────────────────────────────
-    // Persist Shell state to DO SQLite after the terminal has handled
-    // the user's keystroke. The Shell builtin `cd` mutates this.cwd
-    // synchronously inside executeLine, so by the time we reach this
-    // line a `cd example-app\r` has already taken effect and we capture the
-    // new cwd. Cheap when nothing has changed; SESSION_ENV_MAX_BYTES
-    // is the only failure mode and is logged, not thrown.
+    // Capture immediate keystroke changes; async input completion takes a final snapshot above.
     snapshotShellState(self);
   } catch (e: any) {
     // Never let a message parsing error crash the DO
