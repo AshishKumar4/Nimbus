@@ -5,22 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- The in-process facet host (`localFacetHost()`, every embedder that is not
-  workerd) parks a wasm guest where the engine can suspend one: Bun ships
-  JSPI (`WebAssembly.Suspending`/`promising`), so a plain-WASI child now waits
-  at a full pipe as on Linux, and `seq 100000 | cat | head -1` reports GNU's
-  `141 141 0` instead of `0 141 0`; `yes | cat | head -1` and
-  `yes | head -c 80000000 | wc -c` run instead of failing on the pipe budget.
-  Node 22 has no JSPI, keeps `parking: 'none'`, and behaves as before. No
-  runner, artifact or rule change: the host states its capability and the
-  bash runner already carried both paths.
+- `localFacetHost()` uses JSPI when the engine exposes `WebAssembly.Suspending`
+  and `WebAssembly.promising`. On Bun 1.4, a WASI child now waits when its
+  output pipe is full. `seq 100000 | cat | head -1` reports GNU's `141 141 0`
+  instead of `0 141 0`. `yes | cat | head -1` and
+  `yes | head -c 80000000 | wc -c` complete instead of exceeding the pipe budget.
+  The tested Node 22.22 host lacks JSPI and keeps its existing `parking: 'none'`
+  behavior. The Bash runner, artifacts and pipe rules are unchanged.
 
-- A node launch's speculative main-entry pass resolves each package's root
-  entry with the shared exports resolver, in the runtime's order (exports
-  under CJS then ESM conditions, `main`, `index`). A root conditional map
-  with no `"."` key (`on-change@6`: `{ types, default }`, no `main`) was
-  previously read as empty and guessed `index.js`; nuxt dev then failed on
-  its first `require("on-change")` with "not in this launch's module map".
+- A Node launch's speculative package-entry pass uses the shared resolver in
+  the runtime's order: exports under CJS then ESM conditions, `main`, then `index`.
+  It now handles root conditional maps without a `"."` key, including
+  `on-change@6`'s `{ types, default }` map. The previous collector could miss
+  that entry and guess a nonexistent `index.js`.
 
 - WebSocket terminal input passes the async shell command's completion to
   the session or embedder's `waitUntil`, so a rejected command is logged and
