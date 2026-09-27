@@ -450,6 +450,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // swap the WebSocketTerminal's ws ref + replay scrollback.
         try {
           joinExistingSession(self as any, server, shellTerminalTee(self), loadScrollback);
+          // An activation the SDK built (initSession(null)) did not
+          // pre-warm; this terminal is its first. Once per activation.
+          self.prewarmEsbuildFacet();
         } catch (err: any) {
           console.error('warm-rejoin error:', err?.message, err?.stack);
           try { server.close(1011, 'rejoin failed'); } catch { /* already closing */ }

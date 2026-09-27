@@ -18,6 +18,7 @@ import {
   esbuildTransformHost,
   prewarmEsbuildFacet,
 } from '../../packages/worker/src/facets/esbuild-transform.ts';
+import { bindShellSocket } from '../../packages/worker/src/session/ws.ts';
 import { ESBUILD_JS_ASSET_PATH } from '../../packages/worker/src/esbuild-wasm-bundle.generated.ts';
 import { ESBUILD_CLI_ASSET_PATH } from '../../packages/worker/src/esbuild-cli-artifact.generated.ts';
 
@@ -189,6 +190,32 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
     assert.equal(counts.stubs, 1);
   }
   console.log('  ok  transforms, builds and the pre-warm share one stub and drop it when it fails');
+}
+
+// ── An activation the SDK built pre-warms when its first terminal attaches ──
+{
+  let initializations = 0;
+  globalThis.__prewarmHook = (initialize) => { initializations++; return initialize(); };
+  const { ctx, env, counts } = durableObject(await freshFacetClass());
+  const socket = () => ({ readyState: WebSocket.OPEN, send() {}, close() {} });
+  // Built by ensureRuntimeReady (initSession(null)): shell and kernel up, a
+  // headless terminal, no pre-warm.
+  const host = {
+    shell: {},
+    kernel: {},
+    terminal: { ws: null, attach(ws) { this.ws = ws; } },
+    // NimbusSession.prewarmEsbuildFacet.
+    prewarmEsbuildFacet() { void prewarmEsbuildFacet(ctx, env); },
+  };
+  assert.equal(esbuildPrewarmStatus(ctx), null, 'the SDK-built activation has not pre-warmed');
+  assert.equal(await bindShellSocket(host, socket()), true);
+  assert.equal(esbuildPrewarmStatus(ctx)?.state, 'pending', 'the attach started the pre-warm');
+  assert.equal(await bindShellSocket(host, socket()), true, 'a second terminal attaches too');
+  const status = await prewarmEsbuildFacet(ctx, env);
+  assert.equal(status.state, 'ok');
+  assert.equal(counts.loaderGets, 1, 'one facet load for the activation');
+  assert.equal(initializations, 1, 'one pre-warm initialized esbuild');
+  console.log('  ok  a terminal attaching to an SDK-built activation pre-warms it, once');
 }
 
 delete globalThis.__prewarmHook;

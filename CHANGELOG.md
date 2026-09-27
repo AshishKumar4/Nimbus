@@ -11,7 +11,8 @@ published independently in the `@nimbus-sh` npm scope.
   second). The pre-warm and the transforms share one facet stub and one
   esbuild initialization; a failed pre-warm is logged once and the first
   transform starts the facet as before. Only activations with an
-  interactive terminal pre-warm; the SDK path does not. Transforms, builds,
+  interactive terminal pre-warm; the SDK path does not until a terminal
+  attaches to it (warm rejoin or a woken socket). Transforms, builds,
   `esbuild` commands and the pre-warm share one facet stub, dropped when a
   call on it throws. A failed esbuild initialization inside the facet is no
   longer kept, so the next call retries it. `/api/_diag/session` reports
