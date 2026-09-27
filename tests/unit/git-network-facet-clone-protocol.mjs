@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const calls = [];
 let supervisorDisposeCount = 0;
@@ -156,6 +157,7 @@ const worker = {
 };
 
 const env = {
+  ASSETS: stagedAssets,
   LOADER: {
     load() {
       loadCount++;
@@ -308,7 +310,7 @@ const lateEntrypoint = {
 };
 const timedOut = await execGitNetwork(
   { id: { toString: () => 'test-do' } },
-  { LOADER: { load: () => ({ getEntrypoint: () => lateEntrypoint }) } },
+  { ASSETS: stagedAssets, LOADER: { load: () => ({ getEntrypoint: () => lateEntrypoint }) } },
   {
     op: 'clone',
     pid: 1,
@@ -345,6 +347,7 @@ try {
   const defaultBudget = await execGitNetwork(
     { id: { toString: () => 'test-do' } },
     {
+      ASSETS: stagedAssets,
       LOADER: {
         load: () => ({
           getEntrypoint: () => ({
@@ -405,6 +408,7 @@ const supervisorDisposalsBeforeEntrypointFailure = supervisorDisposeCount;
 const entrypointFailure = await execGitNetwork(
   { id: { toString: () => 'test-do' } },
   {
+    ASSETS: stagedAssets,
     LOADER: {
       load() {
         return {

@@ -20,6 +20,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-closed-world-'));
 
@@ -901,6 +902,7 @@ export const git = {
     return execGitNetwork(
       { id: { toString: () => 'closed-world-chunk-do' } },
       {
+        ASSETS: stagedAssets,
         LOADER: {
           load() {
             return {
@@ -1341,6 +1343,7 @@ export const git = {
   const existingResult = await execGitNetwork(
     { id: { toString: () => 'closed-world-do' } },
     {
+      ASSETS: stagedAssets,
       LOADER: {
         load() {
           return {

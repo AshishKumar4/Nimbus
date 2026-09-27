@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // Integrity guard for the staged build artifacts the supervisor compiles as
 // wasm modules or evaluates as facet code: the esbuild wasm, its JS adapter
-// and the `esbuild` command's runner, the sql.js wasm, and every file of the
-// opencode artifact.
+// and the `esbuild` command's runner, the sql.js wasm, every file of the
+// opencode artifact, the node-compat sources and the git network facet's module.
 //
 // The L2 tier (caches.default) is the untrusted one — a poisoned colo-cache
 // entry is served ahead of ASSETS and never re-derived from the deploy — so
@@ -43,6 +43,7 @@ import {
   RESIDENT_STORE_ENTRY,
   VFS_WRITE_LEDGER_ENTRY,
 } from '../../packages/worker/src/node-shims-artifact.generated.ts';
+import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -51,6 +52,7 @@ const workerRoot = path.resolve(
 
 // Imported per case, so each case gets its own memo (tests below).
 const NODE_FETCHER = '../../packages/worker/src/runtime/node-shims-artifact.ts';
+const GIT_FETCHER = '../../packages/worker/src/runtime/git-bundle-artifact.ts';
 
 const POISON = new TextEncoder().encode('attacker-controlled bytes');
 
@@ -285,11 +287,41 @@ try {
     assertServesStaged(await (await freshIsolate())(nodeAssets(null)), 'a clean fetch');
     assert.equal(entries.size, nodeSources.length, 'each source is cached under its own key');
   }
+
+  // The git network facet's module is the staged copy of the executable
+  // vendor module, verified the same way. A clean fetch must hand the facet
+  // exactly the bytes the supervisor itself imports.
+  {
+    const vendorText = readFileSync(path.join(workerRoot, 'vendor', 'git.generated.mjs'), 'utf8');
+    assert.equal(stagedText(GIT_BUNDLE_ENTRY), vendorText, 'the staged git module is the vendor module');
+    let gitIsolate = 0;
+    const freshGitFetcher = async () =>
+      (await import(`${GIT_FETCHER}?isolate=${++gitIsolate}`)).fetchGitBundleSource;
+    {
+      const entries = persistentCache();
+      const fetchGit = await freshGitFetcher();
+      await rejects(() => fetchGit(nodeAssets(GIT_BUNDLE_ENTRY)), /git-bundle asset integrity mismatch/,
+        'git-bundle: truncated ASSETS body');
+      assert.deepEqual(cachedFor(entries, GIT_BUNDLE_ENTRY), [], 'git-bundle: a truncated body is never cached');
+      assert.equal(await fetchGit(nodeAssets(null)), vendorText, 'git-bundle: the retry after a truncated body');
+    }
+    {
+      const entries = persistentCache();
+      assert.equal(await (await freshGitFetcher())(nodeAssets(null)), vendorText, 'git-bundle: a clean fetch');
+      const [key] = [...entries.keys()].filter((url) => new URL(url).pathname === GIT_BUNDLE_ENTRY);
+      assert.ok(key, 'git-bundle: a clean fetch caches the source');
+      entries.set(key, new TextDecoder().decode(POISON));
+      assert.equal(await (await freshGitFetcher())(nodeAssets(null)), vendorText, 'git-bundle: a poisoned L2 entry');
+      assert.deepEqual(cachedFor(entries, GIT_BUNDLE_ENTRY), [vendorText], 'git-bundle: the staged bytes replace the poisoned entry');
+    }
+    await rejects(() => freshGitFetcher().then((fetchGit) => fetchGit({})), /the git network facet requires an env\.ASSETS binding/,
+      'git-bundle: no ASSETS binding');
+  }
 } finally {
   delete globalThis.caches;
 }
 
 console.log(
   `staged-artifact-integrity OK: ${cases.length} readers and the node-compat sources reject poisoned ` +
-    `L2 + ASSETS bytes; ${Object.keys(OPENCODE_ARTIFACT_DIGESTS).length} opencode files pinned`,
+    `L2 + ASSETS bytes, as does the git facet module; ${Object.keys(OPENCODE_ARTIFACT_DIGESTS).length} opencode files pinned`,
 );

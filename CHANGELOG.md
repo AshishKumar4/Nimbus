@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The Worker bundle is back under its 7 MiB size gate (`-e production`
+  dry run: 7,704,433 to 7,289,911 bytes). The git network facet's copy of
+  the git module is now a staged asset
+  (`public/_assets/runtime/git-<hash>.js`), fetched and sha-256 verified
+  like the node-compat sources, instead of a second inlined copy of
+  `vendor/git.generated.mjs`; `GIT_BUNDLE_CODE` is replaced by
+  `GIT_BUNDLE_ENTRY`/`_BUILD_ID`/`_SHA256`. The facet manager no longer
+  pulls the resident store's source text into the Worker by importing two
+  constants from it; they now live in `vfs/facet-resident-limits.ts`.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged

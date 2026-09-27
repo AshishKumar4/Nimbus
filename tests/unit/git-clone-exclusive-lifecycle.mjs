@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 function registerCloneHarness() {
   let gitCommand;
@@ -104,6 +105,7 @@ function commandContext(args) {
   });
   const facetBodies = [];
   const env = {
+    ASSETS: stagedAssets,
     LOADER: {
       load() {
         return {

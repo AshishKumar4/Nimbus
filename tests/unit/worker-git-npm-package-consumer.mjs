@@ -81,8 +81,10 @@ try {
  await command('git commit -m "packed public git"');
  assert.match(await command('git log --oneline'), /packed public git/);
  const installed = new URL('./node_modules/@nimbus-sh/worker/', import.meta.url);
- const {GIT_BUNDLE_CODE} = await import(new URL('dist/git-bundle.generated.js', installed));
- assert.equal(readFileSync(new URL('vendor/git.generated.mjs', installed),'utf8'), GIT_BUNDLE_CODE, 'host and facet use byte-identical canonical git code');
+ const {GIT_BUNDLE_ENTRY, GIT_BUNDLE_SHA256} = await import(new URL('dist/git-bundle.generated.js', installed));
+ const staged = readFileSync(new URL('public' + GIT_BUNDLE_ENTRY, installed));
+ assert.equal(createHash('sha256').update(staged).digest('hex'), GIT_BUNDLE_SHA256, 'the packed facet git module is the pinned one');
+ assert.deepEqual(readFileSync(new URL('vendor/git.generated.mjs', installed)), staged, 'host and facet use byte-identical canonical git code');
  const {gitHttp} = await import(new URL('vendor/git.generated.mjs', installed));
  assert.equal(gitHttp.request, gitHttp.default.request, 'the namespace and default HTTP APIs expose the same request implementation');
 

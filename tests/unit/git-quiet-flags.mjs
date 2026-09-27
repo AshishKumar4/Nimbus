@@ -12,6 +12,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -72,6 +73,7 @@ const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
   adoptCtxExports({ SupervisorRPC() { return { async stdout() {}, [Symbol.dispose]() {} }; } });
   const bodies = [];
   const doEnv = {
+    ASSETS: stagedAssets,
     LOADER: {
       load() {
         return {
