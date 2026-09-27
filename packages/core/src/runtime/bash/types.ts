@@ -218,6 +218,10 @@ export interface BashInstance {
 export interface BashProc {
   pid: number;
   ppid: number;
+  /** Default-action signal delivered by the virtual kill syscall. */
+  killedBy?: number;
+  /** Wake a JSPI child parked on input/output when it is terminated. */
+  cancelWaits?: Set<() => void>;
   fds: Map<number, BashFdEntry>;
   /**
    * Descriptor a preopen was cached under by wasi-libc → where it lives now,
@@ -481,7 +485,7 @@ export type BashProcImports = {
   pipe(fdsPtr: number): number;
   dup(o: number): number;
   dup2(o: number, n: number): number;
-  kill(): number;
+  kill(pid: number, signal: number): number;
   setpgid(): number;
   getpgid(): number;
   getppid(): number;

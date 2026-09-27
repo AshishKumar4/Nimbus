@@ -403,7 +403,15 @@ kernel credential, because Nimbus follows POSIX here:
   JSON `data:` URLs require the JSON import attribute and load when it is
   supplied. ESM source lookup uses the file path, while evaluation caching
   uses the complete URL: distinct queries/fragments evaluate separately,
-  and importing the same URL again reuses its evaluation.
+  and importing the same URL again reuses its evaluation. Queryless imports,
+  `require`, and transformed static imports share the canonical evaluation.
+  `import.meta.url` receives that evaluation's complete URL, not a source-path
+  literal; extracted `import.meta.resolve` retains its module's parent.
+  Metadata rewriting visits actual `import.meta` syntax in the transform
+  facet, not user object properties with similar names. TypeScript is emitted
+  as JavaScript first; module strictness and local binding names are preserved.
+  Dot access, computed access and destructuring share the same per-evaluation
+  metadata object; its existing `url` and `resolve` behavior is consistent.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry
@@ -421,6 +429,15 @@ kernel credential, because Nimbus follows POSIX here:
   `require`. `import.meta.resolve` is the same resolver's, synchronous as in
   Node. The `import()` calls are found by parsing (acorn), in the esbuild
   facet, and the result is cached by content.
+
+### WASM bash
+
+- `kill` of a virtual child now delivers terminating signals instead of
+  returning success without doing anything. `wait` reports SIGTERM as 143
+  and SIGKILL as 137; `kill -0` probes virtual process existence. Pending
+  child work cannot publish a second exit after signal termination. These
+  operations never target host process IDs. Process-group signal delivery
+  and stop/continue/trap handling are not added by this change.
 
 ## 2026-09-24
 

@@ -814,34 +814,43 @@ interface SourceEdit {
   text: string;
 }
 
-function importMetaEdits(source: string, absoluteUrl: string): SourceEdit[] | null {
+function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
   const edits: SourceEdit[] = [];
+  const urlExpression = moduleFactory ? 'import.meta.url' : JSON.stringify(absoluteUrl);
   try {
     const tokens = tokenizer(source, {
       ecmaVersion: 'latest',
       sourceType: 'module',
       allowHashBang: true,
     });
+    let mentionsModule = false;
+    const nextToken = () => {
+      const token = tokens.getToken();
+      if (token.type === tokTypes.name && Reflect.get(token, 'value') === 'module') mentionsModule = true;
+      return token;
+    };
     while (true) {
-      const start = tokens.getToken();
-      if (start.type === tokTypes.eof) return edits;
+      const start = nextToken();
+      // The bounded declaration converter emits module.exports. If source
+      // may bind module, let the facet compiler perform binding-aware emit.
+      if (start.type === tokTypes.eof) return moduleFactory && mentionsModule && edits.length ? null : edits;
       if (start.type !== tokTypes._import) continue;
-      const dot1 = tokens.getToken();
+      const dot1 = nextToken();
       if (dot1.type !== tokTypes.dot) continue;
-      const meta = tokens.getToken();
+      const meta = nextToken();
       if (meta.type !== tokTypes.name || source.slice(meta.start, meta.end) !== 'meta') return null;
-      const dot2 = tokens.getToken();
+      const dot2 = nextToken();
       if (dot2.type !== tokTypes.dot) return null;
-      const property = tokens.getToken();
+      const property = nextToken();
       if (property.type !== tokTypes.name) return null;
       const propertyName = source.slice(property.start, property.end);
       if (propertyName === 'url') {
-        edits.push({ start: start.start, end: property.end, text: JSON.stringify(absoluteUrl) });
+        edits.push({ start: start.start, end: property.end, text: urlExpression });
       } else if (propertyName === 'resolve') {
         edits.push({
           start: start.start,
           end: property.end,
-          text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${JSON.stringify(absoluteUrl)}))`,
+          text: moduleFactory ? 'import.meta.resolve' : `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
         });
       } else {
         return null;
@@ -940,6 +949,7 @@ export function rewriteProvidedCommonJsModules(source: string): string {
 export function rewriteBundledEsmToCjs(
   source: string,
   absoluteUrl: string,
+  moduleFactory = false,
 ): TransformResult | null {
   if (hasUnscopedAwait(source)) return null;
   const declarations = topLevelModuleDeclarationRanges(source);
@@ -951,7 +961,7 @@ export function rewriteBundledEsmToCjs(
   }
   const converted = convertBundledModuleDeclarations(declarationSnippets);
   if (!converted) return null;
-  const metaEdits = importMetaEdits(source, absoluteUrl);
+  const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
 
   const edits: SourceEdit[] = [
@@ -1071,6 +1081,8 @@ export interface EsbuildTransformOptions {
   dynamicImportParent?: string;
   /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
   rewriteOnly?: boolean;
+  /** Bind compiler-produced import.meta references to the wrapper module. */
+  moduleMetadata?: boolean;
 }
 
 export interface TransformResult {
@@ -1126,7 +1138,7 @@ async function transformWithEsbuild(
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
       });
       return {
         code: direct.code,
@@ -1153,7 +1165,7 @@ async function transformWithEsbuild(
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
       });
       const { requires, body } = convertEsmImportsToRequire(pass1.code);
       return {
@@ -1180,7 +1192,7 @@ async function transformWithEsbuild(
     jsxFragment: options?.jsxFragment,
     tsconfigRaw: options?.tsconfigRaw,
     define: options?.define,
-    supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+    supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
   });
 
   return {
@@ -1204,15 +1216,29 @@ async function runTransformRequest(
   esbuildApi: EsbuildTransformApi,
   code: string,
   options: EsbuildTransformOptions | undefined,
-  rewrite: (code: string, parentUrl: string) => string,
+  rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean) => string,
 ): Promise<TransformResult> {
   const parent = options?.dynamicImportParent;
   if (options?.rewriteOnly) {
     if (parent === undefined) throw new Error('a rewrite-only transform needs dynamicImportParent');
-    return { code: rewrite(code, parent), map: '', warnings: [] };
+    return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
+  }
+  if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
+    // CJS emit replaces import.meta with an empty object even when syntax
+    // support is enabled. First emit JavaScript as ESM (including TS type
+    // erasure), rewrite real MetaProperty nodes, then lower declarations.
+    // Both passes and the sole AST parse stay in the transform facet.
+    const javascript = await esbuildApi.transform(code, {
+      loader: options.loader ?? 'js', format: 'esm', target: 'esnext',
+      jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
+      tsconfigRaw: options.tsconfigRaw, define: options.define,
+      supported: { 'dynamic-import': true, 'import-meta': true },
+    });
+    const routed = rewrite(javascript.code, parent, true);
+    return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false });
   }
   const result = await transformWithEsbuild(esbuildApi, code, options);
-  return parent === undefined ? result : { ...result, code: rewrite(result.code, parent) };
+  return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
 }
 
 /**
