@@ -293,6 +293,12 @@ Runtime rules:
   should invalidate or refresh at event-loop/request boundaries where possible.
 - WASI should use live bridge hostcalls where JSPI or `WebAssembly.Suspending`
   allows async imports.
+- WASI pipe backpressure needs the same capability. On Workers and on Bun 1.4,
+  a WASI child waits when its output pipe is full, so
+  `seq 100000 | cat | head -1` reports GNU's `PIPESTATUS` of `141 141 0`.
+  A host without JSPI (Node 22.22, tested) cannot suspend the child. The
+  writer finishes into the pipe budget and reports `0 141 0`. Output is the
+  same; only that exit status differs.
 - Ruby should converge through the live WASI path because ruby.wasm is
   WASI-backed.
 - Python/Pyodide should use a live mirror strategy: pull deltas before command

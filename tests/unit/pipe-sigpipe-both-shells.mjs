@@ -69,12 +69,14 @@ const failures = [];
 }
 
 // ── the wasm bash, over RPC with JSPI and in-process ──
-// In-process (no JSPI) the wasm bash's held status settles 0 for seq here
-// (cat drains the pipe in one read); sent to GitParityLane, whose rules those are.
-const IN_PROCESS_PENDING = new Set(['seq 100000 | cat | head -1; echo ${PIPESTATUS[*]}']);
+// The in-process harness has no JSPI parking, like a Node 22 host: a WASI
+// writer cannot wait on a full pipe, so seq reports 0 instead of GNU's 141.
+// docs/architecture/nimbus-os-runtime-spec.md (runtime rules) states this
+// host boundary. The RPC arm, which parks, asserts GNU's statuses.
+const NEEDS_PARKING = new Set(['seq 100000 | cat | head -1; echo ${PIPESTATUS[*]}']);
 for (const remote of [true, false]) {
   for (const [script, want] of CASES) {
-    if (!remote && IN_PROCESS_PENDING.has(script)) continue;
+    if (!remote && NEEDS_PARKING.has(script)) continue;
     const r = await runScript(script, { remote, files: { 'tmp/big': big } });
     if (r.stdout !== want || (r.stderr ?? '') !== '') failures.push(`wasm bash (${remote ? 'RPC' : 'in-process'}): ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr ?? '').slice(0, 160)}`);
   }
