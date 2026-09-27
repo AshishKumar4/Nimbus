@@ -5,6 +5,7 @@
  */
 
 export type VfsErrorCode =
+  | 'E2BIG'
   | 'EPERM'
   | 'ENOENT'
   | 'EIO'
@@ -27,7 +28,7 @@ export type VfsErrorCode =
 
 /** Linux errno numbers, negative as libuv reports them. */
 export const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>> = {
-  EPERM: -1, ENOENT: -2, EIO: -5, ENXIO: -6, EAGAIN: -11, EACCES: -13, EBUSY: -16, EEXIST: -17,
+  E2BIG: -7, EPERM: -1, ENOENT: -2, EIO: -5, ENXIO: -6, EAGAIN: -11, EACCES: -13, EBUSY: -16, EEXIST: -17,
   EXDEV: -18, ENOTDIR: -20, EISDIR: -21, EINVAL: -22, ENOSPC: -28, EROFS: -30, ELOOP: -40,
   ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116,
 };
@@ -70,6 +71,6 @@ export const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>> = {
   EBUSY: 'Device or resource busy', EEXIST: 'File exists', EXDEV: 'Invalid cross-device link',
   ENOTDIR: 'Not a directory', EISDIR: 'Is a directory', EINVAL: 'Invalid argument',
   ENOSPC: 'No space left on device', EROFS: 'Read-only file system', ELOOP: 'Too many levels of symbolic links',
-  ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
+  E2BIG: 'Argument list too long', ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
   ESTALE: 'Stale file handle',
 };
