@@ -50,6 +50,9 @@ try {
   const normal143 = await runBoundedProcess(process.execPath, ['-e', 'process.exit(143)']);
   assert.equal(normal143.code, 143);
   assert.equal(normal143.reason, '');
+  const normal203 = await runBoundedProcess(process.execPath, ['-e', 'process.exit(203)']);
+  assert.equal(normal203.code, 203);
+  assert.equal(normal203.reason, '', 'numeric user exit203 is not a systemd EXEC failure');
   const killed = await runBoundedProcess(process.execPath, ['-e', "process.kill(process.pid,'SIGTERM')"]);
   assert.equal(killed.code, null, 'a signal is not a normal exit143');
   assert.ok(killed.signal);

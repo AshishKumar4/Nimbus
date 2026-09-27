@@ -211,7 +211,6 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         if (props.Result && !['success', 'exit-code'].includes(props.Result)) reason ||= `cgroup result=${props.Result} ExecMainCode=${props.ExecMainCode} ExecMainStatus=${props.ExecMainStatus}`;
         if (props.ExecMainCode === '1') {
           code = Number(props.ExecMainStatus);
-          if (code === 203) reason ||= 'spawn failed: systemd EXEC status 203';
         } else if (props.ExecMainCode === '2' || props.ExecMainCode === '3') {
           signal = `signal ${props.ExecMainStatus}`;
           code = null;
