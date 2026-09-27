@@ -361,9 +361,10 @@ kernel credential, because Nimbus follows POSIX here:
   empty directory, and moving a directory to another parent needs write
   permission on it.
 - Storage admission (Kinu N18). One 10 GB limit covers the session and every
-  process facet under it. A write past it used to reset the whole object and
-  empty the destination. Now every write is admitted before it is made, and
-  a write that would cross the limit fails with `ENOSPC` and changes
+  process facet under it. At the wall an ordinary write failed as
+  `SQLITE_FULL`, and a facet clone past it reset the object and emptied the
+  destination. Now every write is admitted before it is made, and a write
+  that would cross the limit fails with `ENOSPC` and changes
   nothing. The ledger counts the session's database, each facet's database
   (live, dead or kept for a durable app, until `facets.delete`), and running
   operations' reservations. Nothing in it is evictable: the per-principal

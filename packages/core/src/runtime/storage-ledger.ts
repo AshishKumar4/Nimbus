@@ -1,10 +1,12 @@
 /**
  * The session's storage ledger (Kinu N18; model Nimbus.Vfs.Ledger, N18-001).
  *
- * One storage limit (10 GB) covers the session's Durable Object and every
- * facet database under it, and `databaseSize` reports only one database. A
- * write that crosses the limit resets the object and leaves the destination
- * empty, so every write is admitted before it is made:
+ * One storage limit (10 GB, DO_STORAGE_LIMIT_BYTES) is shared by the session's
+ * Durable Object and every facet database under it, and `databaseSize` reports
+ * only one database. At the wall an ordinary write fails catchably as
+ * SQLITE_FULL; a facet clone over it is an uncatchable reset that empties the
+ * destination. So every write is admitted against the shared limit before it
+ * is made, and clone admission is decided before the clone:
  *
  *   used = the session DO's own bytes
  *        + every recorded facet database (live, dead or persisted)
