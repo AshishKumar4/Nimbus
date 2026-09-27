@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Node's dependency walk uses the existing launch turn budget, including
+  metadata-only work before a closure-size refusal. Scheduling failures and
+  cancellation propagate through CJS and ESM resolution without becoming
+  missing dependencies. Each recursive or interleaved scan has its own regex
+  cursor. Directory-resolution package metadata finishes loading before the
+  closure returns. The 18 MiB snapshot limit is unchanged.
+
 - `localFacetHost()` uses JSPI when the engine exposes `WebAssembly.Suspending`
   and `WebAssembly.promising`. On Bun 1.4, a WASI child now waits when its
   output pipe is full. `seq 100000 | cat | head -1` reports GNU's `141 141 0`
