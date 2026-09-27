@@ -46,7 +46,7 @@ const ESBUILD_FACET_BODY = [
   '}',
   'export class EsbuildFacet extends DurableObject {',
   '  async transformMany(requests) {',
-  '    await ensureInitialized();',
+  '    if (requests.some(({ options }) => !options?.rewriteOnly)) await ensureInitialized();',
   '    const outcomes = [];',
   '    for (const { code, options } of requests) {',
   '      try {',

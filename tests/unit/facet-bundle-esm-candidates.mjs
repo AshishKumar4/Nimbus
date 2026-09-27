@@ -122,8 +122,9 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   );
   assert.equal(calls.length, 1, 'the whole launch is one round trip to the host');
   assert.equal(calls[0].length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
-  assert.match(state.bundle[large], /Object\.defineProperty\(module\.exports, "payload"/,
-    'the bounded rewrite needs no esbuild at all');
+  const compiled = { exports: {} };
+  new Function('exports', 'require', 'module', state.bundle[large])(compiled.exports, null, compiled);
+  assert.equal(compiled.exports.payload, 'x'.repeat(600_000), 'the bounded module exports its original value');
   for (const cell of [entry, unsupported, small]) assert.equal(state.bundle[cell], '/* hosted-cjs */\n', cell);
   assert.throws(() => new Function(state.bundle[broken])(), /esbuild transform failed for .*broken\.js: Unexpected ";"/,
     'a rejected module throws its reason when required, and costs the others nothing');

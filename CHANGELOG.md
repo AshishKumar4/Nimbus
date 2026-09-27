@@ -417,6 +417,10 @@ kernel credential, because Nimbus follows POSIX here:
   AST. Grammar, scope, exports and directives still use Acorn's parser. This
   reduces retained parsing memory for large bundled modules; it does not
   change the session's closure bound or dependency coverage.
+- Bounded module conversion addresses the actual CommonJS wrapper arguments,
+  not user variables named `module`, `require` or `exports`. Nested bundled
+  wrappers no longer force a large otherwise-supported module through Go.
+  Rewrite-only requests do not initialize the esbuild wasm heap.
 - A transient transform-isolate failure aborts launch before bundle or
   Worker Loader cache publication. The next launch can transform again;
   it no longer inherits a cached diagnostic shim from an infrastructure

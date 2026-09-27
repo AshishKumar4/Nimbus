@@ -130,6 +130,18 @@ assert.equal(rewriteDynamicImports('import(', parent), 'import(');
 // Code with no import() is returned as is, unparsed.
 assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
 
+// Pure JavaScript rewriting needs no wasm engine, even on a host where one
+// was never configured. Exercise metadata through both public entry points.
+{
+  const service = new EsbuildService();
+  const options = { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true };
+  const single = await service.transform('return import.meta.url;', options);
+  const [batch] = await service.transformMany([{ code: 'return import.meta["resolve"]("./value");', options }]);
+  const module = { __nimbusImportMeta: { url: parent, resolve: path => new URL(path, parent).href } };
+  assert.equal(new Function('exports', 'require', 'module', single.code)({}, null, module), parent);
+  assert.equal(new Function('exports', 'require', 'module', batch.code)({}, null, module), 'file:///home/user/app/lib/value');
+}
+
 // Through the transform: esbuild keeps the dynamic import (it no longer
 // lowers a literal one to require) and the rewrite routes it; a CommonJS cell
 // goes through the rewrite alone.

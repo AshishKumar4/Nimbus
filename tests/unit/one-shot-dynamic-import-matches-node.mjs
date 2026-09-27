@@ -46,7 +46,7 @@ const files = {
   // Bundler-shaped ESM beyond the large-cell rewrite threshold: its metadata
   // must also come from the evaluation, not from source transformation.
   'app/large-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst url = import.meta.url; export { url };\n',
-  'app/large-shadow-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst module = "local"; const url = import.meta.url; export { url, module };\n',
+  'app/large-shadow-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nimport { kind } from "./esm.mjs"; const module = "local-module"; const require = "local-require"; const exports = "local-exports"; const nested = (function(module, require, exports) { return [module, require, exports]; })(1,2,3); const value = [module,require,exports,kind,nested]; const url = import.meta.url; export { url, value };\n',
   'app/data.json': '{"k":1}\n',
   'app/dir/index.js': 'module.exports = "idx";\n',
   'app/rel.js': 'module.exports = "rel";\n',
@@ -109,7 +109,7 @@ const attempt = async (label, load) => {
   out.push(['extracted import.meta.resolve retains parent', one.resolve('./c.cjs')]);
   out.push(['large-cell import.meta.url follows evaluation', (await import('./large-meta.mjs?large#fragment')).url]);
   const shadowed = await import('./large-shadow-meta.mjs?shadow');
-  out.push(['module binding does not shadow metadata', [shadowed.module, shadowed.url]]);
+  out.push(['wrapper binding names remain user values', [shadowed.value, shadowed.url]]);
   out.push(['CommonJS wrapper arguments and strictness unchanged', require('./arity.cjs')]);
   const userMetadata = await import('./user-metadata.mjs');
   out.push(['user metadata spellings preserved', [userMetadata.value, userMetadata.shadow({__nimbusModuleUrl: 12,__nimbusImportMetaResolve: 34})]]);
