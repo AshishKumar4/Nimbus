@@ -23,6 +23,7 @@ import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
+import { prewarmEsbuildFacet } from '../facets/esbuild-transform.js';
 import type { SessionInternal } from './internal.js';
 
 /**
@@ -498,4 +499,13 @@ if (persisted.cwd) {
     if (options.resume === 'wake') await started;
 
     ws?.send(JSON.stringify({ type: 'ready' }));
+
+    // Once an interactive terminal's prompt is up, boot the esbuild facet in
+    // the background: its first transform (`vite` reading vite.config.ts, a
+    // TS entry's launch) otherwise pays the facet's cold start, about a
+    // second. Not for an activation with no terminal (the SDK path,
+    // ensureRuntimeReady): nothing there is waiting on a prompt, and an
+    // embedder's sandbox should not boot esbuild on every wake for nothing.
+    // Not awaited; never fails the session (esbuild-transform.ts).
+    if (ws) void started.then(() => prewarmEsbuildFacet(self.ctx, self.env));
 }

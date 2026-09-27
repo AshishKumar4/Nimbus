@@ -55,6 +55,7 @@ function wokenHost(build) {
     ctx: {},
     _w5PersistRing: () => null,
     _w9FlushOnClose: () => {},
+    prewarmEsbuildFacet: () => {},
     _wakeRebuild: null,
     initCalls: [],
     async initSession(ws, options) {

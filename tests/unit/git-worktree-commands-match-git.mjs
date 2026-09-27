@@ -24,10 +24,13 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { GIT_BUNDLE_CODE } from '../../packages/worker/src/git-bundle.generated.ts';
+import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+
+// The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
+const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');
 
 const GIT_ENV = {
   PATH: process.env.PATH,

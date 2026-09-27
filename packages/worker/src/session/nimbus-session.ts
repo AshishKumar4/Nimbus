@@ -111,6 +111,7 @@ import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession, type InitSessionOptions } from './init.js';
+import { prewarmEsbuildFacet } from '../facets/esbuild-transform.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -1223,6 +1224,15 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * build instead of starting its own. See session/ws.ts bindShellSocket.
    */
   _wakeRebuild: Promise<void> | null = null;
+
+  /**
+   * Boot this activation's esbuild facet in the background, for a terminal
+   * that attached (facets/esbuild-transform.ts prewarmEsbuildFacet; once per
+   * activation, so an activation already pre-warmed is a no-op).
+   */
+  prewarmEsbuildFacet(): void {
+    void prewarmEsbuildFacet(this.ctx, this.env);
+  }
 
 
   // ── Filesystem seeding ────────────────────────────────────────────────

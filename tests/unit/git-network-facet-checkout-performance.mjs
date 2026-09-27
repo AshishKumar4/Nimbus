@@ -16,10 +16,13 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-import { GIT_BUNDLE_CODE } from '../../packages/worker/src/git-bundle.generated.ts';
+import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
+
+// The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
+const GIT_BUNDLE_CODE = fs.readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');
 
 const execFile = promisify(execFileCallback);
 const repoRoot = resolve(import.meta.dirname, '../..');

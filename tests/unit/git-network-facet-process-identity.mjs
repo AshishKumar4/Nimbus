@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const supervisor = { [Symbol.dispose]() {} };
 const boundProps = [];
@@ -30,7 +31,7 @@ const worker = {
   getEntrypoint() { return entrypoint; },
   [Symbol.dispose]() {},
 };
-const env = { LOADER: { load() { return worker; } } };
+const env = { ASSETS: stagedAssets, LOADER: { load() { return worker; } } };
 const ctx = { id: { toString: () => 'git-identity-test' } };
 
 for (const pid of [undefined, 0, -1, 1.5]) {

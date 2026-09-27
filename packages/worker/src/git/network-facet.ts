@@ -28,7 +28,7 @@
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
+import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -711,6 +711,7 @@ export async function execGitNetwork(
     let worker: GitFacetWorker | undefined;
     let entrypoint: GitFacetEntrypoint | undefined;
     try {
+      const gitBundleSource = await fetchGitBundleSource(env);
       const loadedWorker: GitFacetWorker = env.LOADER.load({
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat'],
@@ -723,10 +724,11 @@ export async function execGitNetwork(
         //     `preamble` option provides for npm install. This is the
         //     W7 v3 emits one bounded record per pull; the receiver owns
         //     the aggregate 8 MiB payload-credit and transaction limits.
-        //   - the pre-bundled isomorphic-git (git-bundle.js)
+        //   - the pre-bundled isomorphic-git (git-bundle.js), the staged
+        //     copy of vendor/git.generated.mjs (runtime/git-bundle-artifact.ts)
         modules: {
           'git-network-worker.js': assembleGitNetworkFacetSource(),
-          'git-bundle.js': GIT_BUNDLE_CODE,
+          'git-bundle.js': gitBundleSource,
         },
         env: { SUPERVISOR: supervisorBinding },
       });
@@ -2571,7 +2573,7 @@ export default {
 
     // Import the pre-bundled isomorphic-git + http/web.
     // The bundle is provided via LOADER.load()'s modules record;
-    // see scripts/bundle-git.mjs and src/git-bundle.generated.ts.
+    // see scripts/bundle-git.mjs and src/runtime/git-bundle-artifact.ts.
     let git, http;
     try {
       const bundle = await import('./git-bundle.js');

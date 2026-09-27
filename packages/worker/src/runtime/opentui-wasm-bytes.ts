@@ -21,8 +21,7 @@ import {
   OPENTUI_WASM_ENTRY,
   OPENTUI_WASM_SHA256,
 } from '../opentui-wasm-artifact.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { fetchStagedBytes, type StagedAsset } from './staged-source.js';
 
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpenTUIWasmFetchEnv {
@@ -36,6 +35,22 @@ export interface OpenTUIWasmFetchEnv {
  */
 const OPENTUI_WASM_L2_KEY = `https://nimbus-cache.invalid${OPENTUI_WASM_ENTRY}?build=${OPENTUI_WASM_BUILD_ID}`;
 
+const OPENTUI_WASM_ASSET: StagedAsset = {
+  path: OPENTUI_WASM_ENTRY,
+  l2Key: OPENTUI_WASM_L2_KEY,
+  sha256: OPENTUI_WASM_SHA256,
+  contentType: 'application/wasm',
+  poisonedCache: 'reject',
+  missingBinding: `Nimbus: the OpenTUI backend requires an env.ASSETS binding (serves ${OPENTUI_WASM_ENTRY})`,
+  fetchFailed: (res) =>
+    `OpenTUI wasm asset fetch failed: ${res.status} ${res.statusText} for ` +
+    `${OPENTUI_WASM_ENTRY} — deploy is missing the staged opentui artifact`,
+  integrityFailed: (digest, from) =>
+    `OpenTUI wasm integrity check failed: expected ${OPENTUI_WASM_SHA256}, got ` +
+    `${digest} (${from}) — the staged artifact is ` +
+    `corrupt or out of sync with opentui-wasm-artifact.generated.ts`,
+};
+
 /**
  * Fetch the staged OpenTUI wasm bytes and verify their SHA-256 against the
  * generated digest.
@@ -44,57 +59,6 @@ const OPENTUI_WASM_L2_KEY = `https://nimbus-cache.invalid${OPENTUI_WASM_ENTRY}?b
  * failures are silent — ASSETS is always the source of truth. A non-200 from
  * ASSETS, or a digest mismatch, throws.
  */
-export async function fetchOpenTUIWasmBytes(env: OpenTUIWasmFetchEnv): Promise<ArrayBuffer> {
-  const caches = (globalThis as { caches?: { default?: Cache } }).caches;
-
-  let bytes: ArrayBuffer | null = null;
-
-  try {
-    if (caches?.default) {
-      const hit = await caches.default.match(new Request(OPENTUI_WASM_L2_KEY));
-      if (hit && hit.ok) bytes = await hit.arrayBuffer();
-    }
-  } catch { /* fall through to ASSETS */ }
-
-  let fromCache = bytes !== null;
-  if (!bytes) {
-    const url = `https://nimbus-internal.invalid${OPENTUI_WASM_ENTRY}`;
-    const res = await env.ASSETS.fetch(new Request(url));
-    try {
-      if (!res.ok) {
-        throw new Error(
-          `OpenTUI wasm asset fetch failed: ${res.status} ${res.statusText} for ` +
-            `${OPENTUI_WASM_ENTRY} — deploy is missing the staged opentui artifact`,
-        );
-      }
-      bytes = await res.arrayBuffer();
-    } finally {
-      disposeRpcResource(res);
-    }
-  }
-
-  const digest = await sha256Hex(bytes);
-  if (digest !== OPENTUI_WASM_SHA256) {
-    throw new Error(
-      `OpenTUI wasm integrity check failed: expected ${OPENTUI_WASM_SHA256}, got ` +
-        `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) — the staged artifact is ` +
-        `corrupt or out of sync with opentui-wasm-artifact.generated.ts`,
-    );
-  }
-
-  if (!fromCache) {
-    try {
-      if (caches?.default) {
-        const writeBack = new Response(new Uint8Array(bytes), {
-          headers: {
-            'Content-Type': 'application/wasm',
-            'Cache-Control': 'public, max-age=31536000, immutable',
-          },
-        });
-        await caches.default.put(new Request(OPENTUI_WASM_L2_KEY), writeBack);
-      }
-    } catch { /* silent */ }
-  }
-
-  return bytes;
+export function fetchOpenTUIWasmBytes(env: OpenTUIWasmFetchEnv): Promise<ArrayBuffer> {
+  return fetchStagedBytes(env, OPENTUI_WASM_ASSET);
 }

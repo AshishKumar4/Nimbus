@@ -55,6 +55,29 @@ published independently in the `@nimbus-sh` npm scope.
   its directory, and the direct files of a matching directory (one level); a bare hole under a named directory stages that
   directory's files, minus dependency, VCS and cache directories.
 
+- A session starts its esbuild facet in the background once the shell
+  prompt is up, so the first transform (`vite` reading `vite.config.ts`, a
+  TypeScript entry's launch) no longer pays the facet's cold start (about a
+  second). The pre-warm and the transforms share one facet stub and one
+  esbuild initialization; a failed pre-warm is logged once and the first
+  transform starts the facet as before. Only activations with an
+  interactive terminal pre-warm; the SDK path does not until a terminal
+  attaches to it (warm rejoin or a woken socket). Transforms, builds,
+  `esbuild` commands and the pre-warm share one facet stub, dropped when a
+  call on it throws. A failed esbuild initialization inside the facet is no
+  longer kept, so the next call retries it. `/api/_diag/session` reports
+  the pre-warm as `esbuildPrewarm`.
+
+- The Worker bundle is back under its 7 MiB size gate (`-e production`
+  dry run: 7,704,433 to 7,289,911 bytes). The git network facet's copy of
+  the git module is now a staged asset
+  (`public/_assets/runtime/git-<hash>.js`), fetched and sha-256 verified
+  like the node-compat sources, instead of a second inlined copy of
+  `vendor/git.generated.mjs`; `GIT_BUNDLE_CODE` is replaced by
+  `GIT_BUNDLE_ENTRY`/`_BUILD_ID`/`_SHA256`. The facet manager no longer
+  pulls the resident store's source text into the Worker by importing two
+  constants from it; they now live in `vfs/facet-resident-limits.ts`.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged

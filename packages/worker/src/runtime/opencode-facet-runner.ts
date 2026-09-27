@@ -39,7 +39,7 @@
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { NodeFacetSources } from './node-shims-artifact.js';
-import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-store.js';
+import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,

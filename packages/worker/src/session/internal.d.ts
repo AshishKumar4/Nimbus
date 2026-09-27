@@ -172,6 +172,8 @@ export interface SessionInternal {
   initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
   /** Rebuild in flight for a shell socket that woke a hibernated instance (session/ws.ts). */
   _wakeRebuild: Promise<void> | null;
+  /** Boot the esbuild facet in the background for an attaching terminal (once per activation). */
+  prewarmEsbuildFacet(): void;
   _w9FlushOnClose(): void;
   _w9WireProcessLogPersist(): void;
   _w5PersistRing(): Promise<void> | null;
