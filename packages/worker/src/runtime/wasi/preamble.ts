@@ -588,27 +588,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     }
   }
 
-  /** Scatter the given bytes across the iovec list; returns bytes consumed. */
-  function scatterIovs(bytes: Uint8Array, iovsPtr: number, iovsLen: number, dv: DataView, memU8: Uint8Array): number {
-    let done = 0;
-    for (let i = 0; i < iovsLen && done < bytes.length; i++) {
-      const iov = iovsPtr + i * 8;
-      const bufPtr = dv.getUint32(iov, true);
-      const bufLen = dv.getUint32(iov + 4, true);
-      const n = Math.min(bufLen, bytes.length - done);
-      if (n <= 0) break;
-      memU8.set(bytes.subarray(done, done + n), bufPtr);
-      done += n;
-      if (n < bufLen) break;
-    }
-    return done;
-  }
-  /** Total capacity of an iovec list. */
-  function iovsCapacity(iovsPtr: number, iovsLen: number, dv: DataView): number {
-    let total = 0;
-    for (let i = 0; i < iovsLen; i++) total += dv.getUint32(iovsPtr + i * 8 + 4, true);
-    return total;
-  }
 
   const imports: WasiImports = {
     // ── args / env ──
