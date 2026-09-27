@@ -45,6 +45,7 @@ import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, resolvePackageEntry, parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
@@ -1802,26 +1803,6 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             return false;
         }
     }
-    // X.5-C Fix #2 helper: walk a (possibly nested) exports value and
-    // collect every string-leaf path. unbuild-shaped packages like pathe
-    // nest two deep — `exports."."`.{require,import}.{types,default} —
-    // and the previous one-level loop only caught the inner string leaves
-    // when default was at the top, missing the unbuild shape entirely.
-    function collectExportLeaves(node, out) {
-        if (typeof node === 'string') {
-            out.add(node);
-            return;
-        }
-        if (!node || typeof node !== 'object')
-            return;
-        // Order matters for the "most likely usable" leaf: prefer require
-        // (most CJS-friendly), then default, then node, then import. We add
-        // ALL of them to the candidate set — addPkgEntry will probe each.
-        for (const k of ['require', 'node', 'default', 'import']) {
-            if (k in node)
-                collectExportLeaves(node[k], out);
-        }
-    }
     /**
      * Whether guessing at `pkgDir`'s main entry is still a guess.
      *
@@ -1858,34 +1839,36 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
         // unreached one gets the guess below.
         if (!mainIsSpeculative(pkgDir))
             return;
-        let meta;
+        // Malformed JSON, or a package whose entry fields the resolver cannot
+        // read (`main: 7`, `exports: true`) drops that field and keeps the rest;
+        // unparseable JSON is a package with no declared entry. Either way the
+        // next package is unaffected.
+        let pkg;
         try {
-            meta = JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json')));
+            pkg = parseResolvablePackageJson((await filesOf(vfs).readFileString(pkgDir + '/package.json')));
         }
         catch {
-            meta = null;
+            pkg = null;
         }
-        const candidates = new Set();
-        if (meta) {
-            if (typeof meta.main === 'string')
-                candidates.add(meta.main);
-            if (typeof meta.module === 'string')
-                candidates.add(meta.module);
-            const exp = meta.exports;
-            if (typeof exp === 'string')
-                candidates.add(exp);
-            else if (exp && typeof exp === 'object') {
-                const dot = exp['.'];
-                // X.5-C Fix #2: walk nested condition trees recursively. Without
-                // this, packages with two-level exports (pathe, magic-string,
-                // most unbuild-emitted libs) miss their actual entry leaf and
-                // greedyAddMainEntries falls back to /index.js probing — which
-                // doesn't exist for those packages.
-                collectExportLeaves(dot, candidates);
-            }
+        // The root entry a bare require of this package resolves to, in the
+        // order the runtime resolves it (require-resolver.ts resolvePkgSubpathEx):
+        // exports under the CJS conditions, then the ESM ones, then legacy main,
+        // then an index probe, each tried until one lands. A denied root
+        // (`"." : null`) resolves to nothing and falls through the same way. A
+        // hand-rolled walk of `exports["."]` read nothing from a root conditional
+        // map (on-change@6: `{ types, default }`, no ".", no main) and guessed
+        // `index.js`, which does not exist.
+        const candidates = [];
+        if (pkg) {
+            let entry = resolvePackageEntry(pkg, '.', DEFAULT_CJS_CONDITIONS);
+            if (entry === null && pkg.exports != null)
+                entry = resolvePackageEntry(pkg, '.', DEFAULT_ESM_CONDITIONS);
+            if (entry !== null)
+                candidates.push(entry);
+            if (pkg.main !== undefined)
+                candidates.push(pkg.main);
         }
-        if (candidates.size === 0)
-            candidates.add('index.js');
+        candidates.push('index.js');
         for (const rel of candidates) {
             const norm = rel.replace(/^\.\//, '');
             const base = pkgDir + '/' + norm;

@@ -2,16 +2,12 @@
   Nimbus.Vfs.Ledger — N18 admission (CUTOVER.md v3.1 §3, §2.8): the session's
   storage ledger and `admit`.
 
-  used = the session DO's own bytes (`sess`, without the namespace images) + every
-  recorded facet database (`nimbus_facet_storage`, live, dead or persisted) + the
-  per-principal namespace images (`nimbus_ns_image`, in least-recently-used order,
-  oldest first). A write of `need` bytes is admitted before it is made: if it does
-  not fit, the oldest images (other than the one being written) are dropped until it
-  does; if it would not fit even with every such image gone, it is refused with
-  ENOSPC and nothing changes — no image is dropped for a write that is refused
-  anyway (the one departure from the spec's literal wording "drops ... until the
-  write fits; only when no image is left does it refuse", which reaches the same
-  decision but loses the images first).
+  used = the session DO's own bytes (`sess`) + every recorded facet database
+  (`nimbus_facet_storage`, live, dead or persisted) + reservations. A write of
+  `need` bytes is admitted before it is made: it is refused with ENOSPC and nothing
+  changes when it does not fit. Nothing in the ledger is evictable: the namespace
+  image cache the original design proposed was never wired to a producer and was
+  removed rather than shipped as dead accounting.
 
   Proved, for every reachable state and every operation:
   - `used_le_limit`: used never exceeds the limit plus the overshoot facets
@@ -19,22 +15,18 @@
     `admitted_within`: an admitted operation that succeeds leaves used within the
     limit, so overshoot is never admitted more; `refuses_when_over`: while the
     session and facets are over the limit every admitted operation is refused.
-  - `refused_unchanged`: a refused write (session write, facet fill, image write)
-    leaves the whole state unchanged, destination included, and evicts nothing;
-    `refuses_iff`: it is refused exactly when it would not fit with every evictable
-    image gone.
-  - `evicts_oldest_minimal`: what is evicted is a prefix of the evictable images
-    (oldest first), and no shorter prefix would have made the write fit.
-  - `only_eviction_frees`: every operation other than a delete (a session delete,
-    `facets.delete`, a size settlement or report, the epoch drop of unused images) frees at
-    most the bytes of the images it evicted, and evicts only on admission.
+  - `refused_unchanged`: a refused write (session write, facet fill, reserve, draw)
+    leaves the whole state unchanged, destination included;
+    `refuses_iff`: it is refused exactly when it would not fit.
+  - `nothing_frees`: every operation other than a delete (a session delete,
+    `facets.delete`, a size settlement or report, a release) never lowers used.
   - `facet_row_stays`: a facet row leaves the ledger only by `facets.delete`
     (`abort` and a restart keep it).
 -/
 
 namespace Nimbus.Vfs.Ledger
 
-/-- A (key, bytes) row: a facet by name, an image by principal. -/
+/-- A (key, bytes) row: a facet by name, a reservation by id. -/
 abbrev Row := Nat × Nat
 
 def sumB (l : List Row) : Nat := (l.map (·.2)).sum
@@ -48,13 +40,12 @@ structure St where
   limit : Nat
   sess : Nat
   facets : List Row
-  images : List Row
   /-- Ghost: the bytes facets have reported beyond what they were admitted. -/
   over : Nat := 0
   /-- Reservations by id: admitted bytes not yet drawn. -/
   res : List Row := []
 
-def used (s : St) : Nat := s.sess + sumB s.facets + sumB s.images + sumB s.res
+def used (s : St) : Nat := s.sess + sumB s.facets + sumB s.res
 
 /-- Set `r`'s row to `v`, dropping it at 0. -/
 def setR (l : List Row) (r v : Nat) : List Row := others l r ++ (if v = 0 then [] else [(r, v)])
@@ -78,87 +69,16 @@ theorem sumB_split (l : List Row) (k : Nat) : sumB l = sumB (others l k) + cur l
 theorem sumB_setR (l : List Row) (r v : Nat) : sumB (setR l r v) = sumB (others l r) + v := by
   unfold setR; split <;> simp_all [sumB_append]
 
-theorem sumB_filter_le (l : List Row) (p : Row → Bool) : sumB (l.filter p) ≤ sumB l := by
-  induction l with
-  | nil => simp
-  | cons x l ih => simp only [List.filter_cons]; split <;> simp <;> omega
+/-! ## Admission -/
 
-/-! ## Eviction -/
+/-- `fixed + need` fits the limit. Nothing is evictable, so this is the whole decision. -/
+def fits (L need fixed : Nat) : Bool := decide (fixed + need ≤ L)
 
-/-- Drop the oldest images until `fixed + need` fits with the rest: the evicted
-    prefix and the survivors, or `none` when even dropping all of them is not enough. -/
-def fitDrop (L need fixed : Nat) : List Row → Option (List Row × List Row)
-  | [] => if fixed + need ≤ L then some ([], []) else none
-  | x :: r =>
-    if fixed + sumB (x :: r) + need ≤ L then some ([], x :: r)
-    else (fitDrop L need fixed r).map fun (ev, sv) => (x :: ev, sv)
+theorem fits_true {L need fixed : Nat} : fits L need fixed = true ↔ fixed + need ≤ L := by
+  simp [fits]
 
-theorem fitDrop_some {L need fixed : Nat} : ∀ {imgs : List Row} {ev sv : List Row},
-    fitDrop L need fixed imgs = some (ev, sv) → ev ++ sv = imgs ∧ fixed + sumB sv + need ≤ L := by
-  intro imgs
-  induction imgs with
-  | nil => intro ev sv h; simp only [fitDrop] at h; split at h <;> simp_all
-  | cons x r ih =>
-    intro ev sv h
-    simp only [fitDrop] at h
-    split at h
-    · rename_i hle
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, rfl⟩ := h
-      exact ⟨rfl, hle⟩
-    · cases hr : fitDrop L need fixed r with
-      | none => simp [hr] at h
-      | some p =>
-        obtain ⟨ev', sv'⟩ := p
-        simp only [hr, Option.map_some', Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        obtain ⟨h1, h2⟩ := ih hr
-        exact ⟨by simp [h1], h2⟩
-
-theorem fitDrop_none {L need fixed : Nat} : ∀ {imgs : List Row},
-    fitDrop L need fixed imgs = none ↔ L < fixed + need := by
-  intro imgs
-  induction imgs with
-  | nil => simp only [fitDrop]; split <;> simp <;> omega
-  | cons x r ih =>
-    simp only [fitDrop]
-    split
-    · simp; omega
-    · simp only [Option.map_eq_none']; exact ih
-
-/-- Minimality: the survivors fit, and keeping one more image would not. -/
-theorem fitDrop_min {L need fixed : Nat} : ∀ {imgs : List Row} {ev sv : List Row},
-    fitDrop L need fixed imgs = some (ev, sv) → ev = [] ∨ ∃ x, L < fixed + sumB (ev.getLast?.toList ++ sv) + need ∧
-      ev.getLast? = some x := by
-  intro imgs
-  induction imgs with
-  | nil => intro ev sv h; simp only [fitDrop] at h; split at h <;> simp_all
-  | cons x r ih =>
-    intro ev sv h
-    simp only [fitDrop] at h
-    split at h
-    · simp_all
-    · rename_i hn
-      cases hr : fitDrop L need fixed r with
-      | none => simp [hr] at h
-      | some p =>
-        obtain ⟨ev', sv'⟩ := p
-        simp only [hr, Option.map_some', Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        right
-        rcases ih hr with rfl | ⟨y, hy, hl⟩
-        · have := (fitDrop_some hr).1
-          simp at this; subst this
-          exact ⟨x, by simp at hn ⊢; omega, by simp⟩
-        · refine ⟨y, ?_, ?_⟩
-          · have : (x :: ev').getLast? = ev'.getLast? := by
-              cases ev' with
-              | nil => simp at hl
-              | cons _ _ => simp [List.getLast?_cons]
-            rw [this]; exact hy
-          · cases ev' with
-            | nil => simp at hl
-            | cons _ _ => simp [List.getLast?_cons] at hl ⊢; exact hl
+theorem fits_false {L need fixed : Nat} : fits L need fixed = false ↔ L < fixed + need := by
+  simp [fits]
 
 /-! ## Operations -/
 
@@ -167,10 +87,6 @@ inductive Op where
   | write (b : Nat)
   /-- A facet fill of `b` bytes into facet `n`. -/
   | fill (n b : Nat)
-  /-- A namespace-image write of `b` bytes for principal `k`. -/
-  | image (k b : Nat)
-  /-- A launch uses principal `k`'s image: it becomes the most recent. -/
-  | touch (k : Nat)
   | delSess (b : Nat)
   /-- `facets.delete(n)`. -/
   | delFacet (n : Nat)
@@ -179,8 +95,6 @@ inductive Op where
   /-- A facet reports a `databaseSize` (boot, after a fill, exit): the row becomes
       max(reported, recorded), and anything above the recorded bytes is overshoot. -/
   | report (n b : Nat)
-  /-- Epoch change: keep only the images of principals in `keep`. -/
-  | dropImages (keep : List Nat)
   /-- `facets.abort(n)`: the database persists. -/
   | abort (n : Nat)
   /-- A restart re-reads the ledger; reservations are released. -/
@@ -201,56 +115,42 @@ inductive Out where
   | enospc
   deriving DecidableEq, Repr
 
-/-- What admission cannot evict: the session's bytes, the facets, and reservations. -/
+/-- What admission charges: the session's bytes, the facets, and reservations. -/
 def fixedS (s : St) : Nat := s.sess + sumB s.facets + sumB s.res
 
-/-- One operation: the answer, the new state, and the images it evicted. -/
-def step (s : St) : Op → Out × St × List Row
+/-- One operation: the answer and the new state. -/
+def step (s : St) : Op → Out × St
   | .write b =>
-    match fitDrop s.limit b (fixedS s) s.images with
-    | some (ev, sv) => (.ok, { s with sess := s.sess + b, images := sv }, ev)
-    | none => (.enospc, s, [])
+    if fits s.limit b (fixedS s) then (.ok, { s with sess := s.sess + b }) else (.enospc, s)
   | .fill n b =>
-    match fitDrop s.limit b (fixedS s) s.images with
-    | some (ev, sv) => (.ok, { s with facets := others s.facets n ++ [(n, cur s.facets n + b)], images := sv }, ev)
-    | none => (.enospc, s, [])
-  | .image k b =>
-    match fitDrop s.limit b (fixedS s + cur s.images k) (others s.images k) with
-    | some (ev, sv) => (.ok, { s with images := sv ++ [(k, cur s.images k + b)] }, ev)
-    | none => (.enospc, s, [])
-  | .touch k =>
-    if s.images.any (·.1 == k) then (.ok, { s with images := others s.images k ++ [(k, cur s.images k)] }, [])
-    else (.ok, s, [])
-  | .delSess b => (.ok, { s with sess := s.sess - b }, [])
-  | .delFacet n => (.ok, { s with facets := others s.facets n }, [])
+    if fits s.limit b (fixedS s) then (.ok, { s with facets := others s.facets n ++ [(n, cur s.facets n + b)] })
+    else (.enospc, s)
+  | .delSess b => (.ok, { s with sess := s.sess - b })
+  | .delFacet n => (.ok, { s with facets := others s.facets n })
   | .settle n b =>
-    if s.facets.any (·.1 == n) then (.ok, { s with facets := others s.facets n ++ [(n, min b (cur s.facets n))] }, [])
-    else (.ok, s, [])
+    if s.facets.any (·.1 == n) then (.ok, { s with facets := others s.facets n ++ [(n, min b (cur s.facets n))] })
+    else (.ok, s)
   | .report n b =>
-    (.ok, { s with facets := others s.facets n ++ [(n, max b (cur s.facets n))], over := s.over + (b - cur s.facets n) }, [])
-  | .dropImages keep => (.ok, { s with images := s.images.filter (fun x => keep.contains x.1) }, [])
-  | .abort _ => (.ok, s, [])
-  | .restart => (.ok, { s with res := [] }, [])
+    (.ok, { s with facets := others s.facets n ++ [(n, max b (cur s.facets n))], over := s.over + (b - cur s.facets n) })
+  | .abort _ => (.ok, s)
+  | .restart => (.ok, { s with res := [] })
   | .reserve r b =>
-    match fitDrop s.limit b (fixedS s) s.images with
-    | some (ev, sv) => (.ok, { s with res := setR s.res r (cur s.res r + b), images := sv }, ev)
-    | none => (.enospc, s, [])
+    if fits s.limit b (fixedS s) then (.ok, { s with res := setR s.res r (cur s.res r + b) }) else (.enospc, s)
   | .draw r b =>
-    if b ≤ cur s.res r then (.ok, { s with sess := s.sess + b, res := setR s.res r (cur s.res r - b) }, [])
-    else match fitDrop s.limit (b - cur s.res r) (fixedS s) s.images with
-      | some (ev, sv) => (.ok, { s with sess := s.sess + b, res := setR s.res r 0, images := sv }, ev)
-      | none => (.enospc, s, [])
+    if b ≤ cur s.res r then (.ok, { s with sess := s.sess + b, res := setR s.res r (cur s.res r - b) })
+    else if fits s.limit (b - cur s.res r) (fixedS s) then (.ok, { s with sess := s.sess + b, res := setR s.res r 0 })
+    else (.enospc, s)
   | .refund r t =>
-    (.ok, { s with sess := s.sess - min t s.sess, res := setR s.res r (cur s.res r + min t s.sess) }, [])
-  | .release r => (.ok, { s with res := others s.res r }, [])
-  | .releaseAll => (.ok, { s with res := [] }, [])
+    (.ok, { s with sess := s.sess - min t s.sess, res := setR s.res r (cur s.res r + min t s.sess) })
+  | .release r => (.ok, { s with res := others s.res r })
+  | .releaseAll => (.ok, { s with res := [] })
 
 def Op.frees : Op → Bool
-  | .delSess _ | .delFacet _ | .settle _ _ | .report _ _ | .dropImages _ | .restart | .release _ | .releaseAll => true
+  | .delSess _ | .delFacet _ | .settle _ _ | .report _ _ | .restart | .release _ | .releaseAll => true
   | _ => false
 
 def Op.admits : Op → Bool
-  | .write _ | .fill _ _ | .image _ _ | .reserve _ _ => true
+  | .write _ | .fill _ _ | .reserve _ _ => true
   | _ => false
 
 def Op.isDraw : Op → Bool
@@ -258,76 +158,60 @@ def Op.isDraw : Op → Bool
   | _ => false
 
 def Op.need : Op → Nat
-  | .write b | .fill _ b | .image _ b | .reserve _ b => b
+  | .write b | .fill _ b | .reserve _ b => b
   | _ => 0
 
 inductive Reach : St → Prop
-  | init (L sess : Nat) (h : sess ≤ L) : Reach ⟨L, sess, [], [], 0, []⟩
-  | step {s : St} (op : Op) : Reach s → Reach (step s op).2.1
+  | init (L sess : Nat) (h : sess ≤ L) : Reach ⟨L, sess, [], 0, []⟩
+  | step {s : St} (op : Op) : Reach s → Reach (step s op).2
 
 /-! ## What is proved -/
 
-theorem step_limit (s : St) (op : Op) : (step s op).2.1.limit = s.limit := by
+theorem step_limit (s : St) (op : Op) : (step s op).2.limit = s.limit := by
   cases op <;> simp only [step] <;> (repeat' split) <;> rfl
 
-theorem step_over (s : St) (op : Op) : s.over ≤ (step s op).2.1.over := by
+theorem step_over (s : St) (op : Op) : s.over ≤ (step s op).2.over := by
   cases op <;> simp only [step] <;> (repeat' split) <;> simp
 
 /-- An admitted operation that succeeds leaves used within the limit: overshoot is
     never admitted more. -/
 theorem admitted_within (s : St) (op : Op) (ha : op.admits = true) (hok : (step s op).1 = .ok) :
-    used (step s op).2.1 ≤ s.limit := by
+    used (step s op).2 ≤ s.limit := by
   cases op <;> simp [Op.admits] at ha
   case write b =>
     simp only [step] at hok ⊢; split at hok
-    · rename_i ev sv hf; have := (fitDrop_some hf).2
-      simp only [used, fixedS] at this ⊢; omega
+    · rename_i hf; split
+      · have := fits_true.mp hf; simp only [used, fixedS] at this ⊢; omega
+      · rename_i hn; exact absurd hf hn
     · cases hok
   case fill n b =>
+    have e := sumB_split s.facets n
     simp only [step] at hok ⊢; split at hok
-    · rename_i ev sv hf; have := (fitDrop_some hf).2
-      have e := sumB_split s.facets n
-      simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this e ⊢; omega
-    · cases hok
-  case image k b =>
-    simp only [step] at hok ⊢; split at hok
-    · rename_i ev sv hf; have := (fitDrop_some hf).2
-      simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this ⊢; omega
+    · rename_i hf; split
+      · have := fits_true.mp hf; simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this e ⊢; omega
+      · rename_i hn; exact absurd hf hn
     · cases hok
   case reserve r b =>
+    have e := sumB_split s.res r
     simp only [step] at hok ⊢; split at hok
-    · rename_i ev sv hf; have := (fitDrop_some hf).2
-      have e := sumB_split s.res r
-      simp only [used, fixedS, sumB_setR] at this e ⊢; omega
+    · rename_i hf; split
+      · have := fits_true.mp hf; simp only [used, fixedS, sumB_setR] at this e ⊢; omega
+      · rename_i hn; exact absurd hf hn
     · cases hok
 
 theorem step_used (s : St) (h : used s ≤ s.limit + s.over) (op : Op) :
-    used (step s op).2.1 ≤ s.limit + (step s op).2.1.over := by
+    used (step s op).2 ≤ s.limit + (step s op).2.over := by
   have ho := step_over s op
   cases op with
   | write b =>
     simp only [step]; split
-    · rename_i ev sv hf
-      have := (fitDrop_some hf).2
-      simp only [used, fixedS] at this ⊢; omega
+    · rename_i hf; have := fits_true.mp hf; simp only [used, fixedS] at this ⊢; omega
     · exact h
   | fill n b =>
     simp only [step]; split
-    · rename_i ev sv hf
-      have := (fitDrop_some hf).2
+    · rename_i hf; have := fits_true.mp hf
       have e := sumB_split s.facets n
       simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this e ⊢; omega
-    · exact h
-  | image k b =>
-    simp only [step]; split
-    · rename_i ev sv hf
-      have := (fitDrop_some hf).2
-      simp only [used, fixedS, sumB_append, sumB_cons, sumB_nil] at this ⊢; omega
-    · exact h
-  | touch k =>
-    have e := sumB_split s.images k
-    simp only [step]; split
-    · simp only [used, sumB_append, sumB_cons, sumB_nil] at h e ⊢; omega
     · exact h
   | delSess b => simp only [step, used] at h ⊢; omega
   | delFacet n =>
@@ -344,15 +228,11 @@ theorem step_used (s : St) (h : used s ≤ s.limit + s.over) (op : Op) :
     simp only [step, used, sumB_append, sumB_cons, sumB_nil] at h e ⊢
     have : max b (cur s.facets n) = cur s.facets n + (b - cur s.facets n) := by omega
     omega
-  | dropImages keep =>
-    have := sumB_filter_le s.images (fun x => keep.contains x.1)
-    simp only [step, used] at h ⊢; omega
   | abort _ => exact h
   | restart => simp only [step, used, sumB_nil] at h ⊢; omega
   | reserve r b =>
     simp only [step]; split
-    · rename_i ev sv hf
-      have := (fitDrop_some hf).2
+    · rename_i hf; have := fits_true.mp hf
       have e := sumB_split s.res r
       simp only [used, fixedS, sumB_setR] at this e ⊢; omega
     · exact h
@@ -361,8 +241,7 @@ theorem step_used (s : St) (h : used s ≤ s.limit + s.over) (op : Op) :
     simp only [step]; split
     · simp only [used, sumB_setR] at h e ⊢; omega
     · split
-      · rename_i hb ev sv hf
-        have := (fitDrop_some hf).2
+      · rename_i hb hf; have := fits_true.mp hf
         simp only [used, fixedS, sumB_setR] at this e ⊢; omega
       · exact h
   | refund r t =>
@@ -389,101 +268,54 @@ theorem refuses_when_over (s : St) (op : Op) (ha : op.admits = true) (hov : s.li
   all_goals
     simp only [step]
     split
-    · rename_i hf; have := (fitDrop_some hf).2; omega
+    · rename_i hf; have := fits_true.mp hf; omega
     · rfl
 
-/-- A refused write changes nothing and evicts nothing. -/
+/-- A refused write changes nothing. -/
 theorem refused_unchanged (s : St) (op : Op) (h : (step s op).1 = .enospc) :
-    (step s op).2.1 = s ∧ (step s op).2.2 = [] := by
+    (step s op).2 = s := by
   cases op <;> simp only [step] at h ⊢ <;> (repeat' split) <;> simp_all
 
-/-- It is refused exactly when it would not fit with every evictable image gone. -/
+/-- It is refused exactly when it would not fit. -/
 theorem refuses_iff (s : St) (op : Op) (ha : op.admits = true) :
-    (step s op).1 = .enospc ↔
-      s.limit < fixedS s + (match op with | .image k _ => cur s.images k | _ => 0) + op.need := by
+    (step s op).1 = .enospc ↔ s.limit < fixedS s + op.need := by
   cases op <;> simp [Op.admits] at ha
   all_goals
     simp only [step, Op.need]
     split
-    · rename_i hf; simp only [reduceCtorEq, false_iff, Nat.not_lt]
-      have := (fitDrop_some hf).2; omega
-    · rename_i hf; simp only [true_iff]; have := fitDrop_none.mp hf; omega
+    · rename_i hf; simp only [reduceCtorEq, false_iff, Nat.not_lt]; exact fits_true.mp hf
+    · rename_i hf; simp only [true_iff]; exact fits_false.mp (by simpa using hf)
 
-/-- What is evicted is the oldest evictable images, and no fewer would have done. -/
-theorem evicts_oldest_minimal (s : St) (b : Nat) :
-    ∀ ev sv, fitDrop s.limit b (fixedS s) s.images = some (ev, sv) →
-      ev ++ sv = s.images ∧ (ev = [] ∨ ∃ x, ev.getLast? = some x ∧ s.limit < fixedS s + sumB (x :: sv) + b) := by
-  intro ev sv h
-  refine ⟨(fitDrop_some h).1, ?_⟩
-  rcases fitDrop_min h with e | ⟨x, hx, hl⟩
-  · exact Or.inl e
-  · exact Or.inr ⟨x, hl, by rw [hl] at hx; simpa using hx⟩
-
-/-- Every operation but a delete frees at most the bytes of the images it evicted,
-    and only an admitted write evicts. -/
-theorem only_eviction_frees (s : St) (op : Op) (hf : op.frees = false) :
-    used s ≤ used (step s op).2.1 + sumB (step s op).2.2 ∧
-      (op.admits = false → op.isDraw = false → (step s op).2.2 = []) := by
+/-- Every operation but a delete never lowers used: nothing is evicted on admission. -/
+theorem nothing_frees (s : St) (op : Op) (hf : op.frees = false) : used s ≤ used (step s op).2 := by
   cases op <;> simp [Op.frees] at hf
-  case write b =>
-    simp only [step]; split
-    · rename_i ev sv h
-      have := (fitDrop_some h).1
-      refine ⟨?_, by simp [Op.admits]⟩
-      simp only [used]; rw [← this, sumB_append]; omega
-    · simp
+  case write b => simp only [step]; split <;> simp [used] <;> omega
   case fill n b =>
+    have e := sumB_split s.facets n
     simp only [step]; split
-    · rename_i ev sv h
-      have := (fitDrop_some h).1
-      have e := sumB_split s.facets n
-      refine ⟨?_, by simp [Op.admits]⟩
-      simp only [used, sumB_append, sumB_cons, sumB_nil] at e ⊢; rw [← this, sumB_append]; omega
-    · simp
-  case image k b =>
-    simp only [step]; split
-    · rename_i ev sv h
-      have := (fitDrop_some h).1
-      have e := sumB_split s.images k
-      refine ⟨?_, by simp [Op.admits]⟩
-      simp only [used, sumB_append, sumB_cons, sumB_nil] at e ⊢
-      rw [e, ← this, sumB_append]; omega
-    · simp
-  case touch k =>
-    have e := sumB_split s.images k
-    simp only [step]; split
-    · refine ⟨?_, fun _ _ => rfl⟩
-      simp only [used, sumB_append, sumB_cons, sumB_nil]; omega
-    · simp
+    · simp only [used, sumB_append, sumB_cons, sumB_nil] at e ⊢; omega
+    · exact Nat.le_refl _
   case reserve r b =>
+    have e := sumB_split s.res r
     simp only [step]; split
-    · rename_i ev sv h
-      have := (fitDrop_some h).1
-      have e := sumB_split s.res r
-      refine ⟨?_, by simp [Op.admits]⟩
-      simp only [used, sumB_setR] at e ⊢; rw [← this, sumB_append]; omega
-    · simp
+    · simp only [used, sumB_setR] at e ⊢; omega
+    · exact Nat.le_refl _
   case draw r b =>
     have e := sumB_split s.res r
     simp only [step]; split
-    · refine ⟨?_, fun _ _ => rfl⟩
-      simp only [used, sumB_setR, sumB_nil]; omega
+    · simp only [used, sumB_setR, sumB_nil]; omega
     · split
-      · rename_i hb ev sv h
-        have := (fitDrop_some h).1
-        refine ⟨?_, by simp [Op.isDraw]⟩
-        simp only [used, sumB_setR] at e ⊢; rw [← this, sumB_append]; omega
-      · simp
+      · simp only [used, sumB_setR] at e ⊢; omega
+      · exact Nat.le_refl _
   case refund r t =>
     have e := sumB_split s.res r
     have := Nat.min_le_right t s.sess
-    refine ⟨?_, fun _ _ => rfl⟩
     simp only [step, used, sumB_setR, sumB_nil]; omega
   all_goals simp [step]
 
 /-- A facet row leaves the ledger only by `facets.delete`. -/
 theorem facet_row_stays (s : St) (op : Op) (n : Nat) (hd : ∀ m, op ≠ .delFacet m ∨ m ≠ n)
-    (hn : n ∈ s.facets.map (fun x : Row => x.1)) : n ∈ (step s op).2.1.facets.map (fun x : Row => x.1) := by
+    (hn : n ∈ s.facets.map (fun x : Row => x.1)) : n ∈ (step s op).2.facets.map (fun x : Row => x.1) := by
   have keep : ∀ m b, n ∈ (others s.facets m ++ [(m, b)]).map (fun x : Row => x.1) := by
     intro m b
     by_cases e : m = n
@@ -493,14 +325,12 @@ theorem facet_row_stays (s : St) (op : Op) (n : Nat) (hd : ∀ m, op ≠ .delFac
   cases op with
   | write b => simp only [step]; split <;> exact hn
   | fill m b => simp only [step]; split; exact keep m _; exact hn
-  | image k b => simp only [step]; split <;> exact hn
   | delFacet m =>
     rcases hd m with h | h
     · exact absurd rfl h
     · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hn
       exact List.mem_map.mpr ⟨x, List.mem_filter.mpr ⟨hx, by simpa using fun e => h e.symm⟩, rfl⟩
   | settle m b => simp only [step]; split; exact keep m _; exact hn
-  | touch k => simp only [step]; split <;> exact hn
   | report m b => exact keep m _
   | reserve q b => simp only [step]; split <;> exact hn
   | draw q b => simp only [step]; repeat' split
@@ -509,46 +339,44 @@ theorem facet_row_stays (s : St) (op : Op) (n : Nat) (hd : ∀ m, op ≠ .delFac
 
 /-! ## Traces -/
 
-/-- Limit 100; session 40, facet 1 at 20, images of principals 1 (15) and 2 (15),
-    1 oldest. A 20-byte write evicts principal 1's image only; a 60-byte write is
-    refused and nothing changes; after `abort` the dead facet still counts, and
-    `facets.delete` frees it. -/
+/-- Limit 100; session 40, facet 1 at 20. A 20-byte write fits (80 used); a 60-byte
+    write is refused and nothing changes; after `abort` the dead facet still counts,
+    and `facets.delete` frees it. -/
 theorem a_ledger_trace :
-    let s0 : St := ⟨100, 40, [(1, 20)], [(1, 15), (2, 15)], 0, []⟩
+    let s0 : St := ⟨100, 40, [(1, 20)], 0, []⟩
     let r1 := step s0 (.write 20)
-    let r2 := step r1.2.1 (.write 60)
-    let r3 := step r2.2.1 (.abort 1)
-    let r4 := step r3.2.1 (.delFacet 1)
-    r1.1 = .ok ∧ r1.2.2 = [(1, 15)] ∧ r1.2.1.images = [(2, 15)] ∧ used r1.2.1 = 95 ∧
-      r2.1 = .enospc ∧ used r2.2.1 = 95 ∧ used r3.2.1 = 95 ∧ used r4.2.1 = 75 := by
+    let r2 := step r1.2 (.write 60)
+    let r3 := step r2.2 (.abort 1)
+    let r4 := step r3.2 (.delFacet 1)
+    r1.1 = .ok ∧ used r1.2 = 80 ∧ r2.1 = .enospc ∧ used r2.2 = 80 ∧ used r3.2 = 80 ∧ used r4.2 = 60 := by
   decide
 
 /-- Facet 1 was admitted 20 bytes and reports 90: the ledger takes 90 (110 used,
     overshoot 70), and refuses even a 1-byte write until something is deleted. -/
 theorem an_over_report_refuses :
-    let s0 : St := ⟨100, 10, [(1, 20)], [], 0, []⟩
+    let s0 : St := ⟨100, 10, [(1, 20)], 0, []⟩
     let r1 := step s0 (.report 1 90)
-    let r2 := step r1.2.1 (.write 1)
-    let r3 := step r2.2.1 (.delFacet 1)
-    let r4 := step r3.2.1 (.write 1)
-    used r1.2.1 = 100 ∧ r1.2.1.over = 70 ∧ r2.1 = .enospc ∧ r4.1 = .ok := by
+    let r2 := step r1.2 (.write 1)
+    let r3 := step r2.2 (.delFacet 1)
+    let r4 := step r3.2 (.write 1)
+    used r1.2 = 100 ∧ r1.2.over = 70 ∧ r2.1 = .enospc ∧ r4.1 = .ok := by
   decide
 
 /-! ## Reservations -/
 
 /-- (1) A draw within its reservation is always admitted, and changes no total. -/
 theorem draw_within (s : St) (r b : Nat) (hb : b ≤ cur s.res r) :
-    (step s (.draw r b)).1 = .ok ∧ used (step s (.draw r b)).2.1 = used s ∧ (step s (.draw r b)).2.2 = [] := by
+    (step s (.draw r b)).1 = .ok ∧ used (step s (.draw r b)).2 = used s := by
   have e := sumB_split s.res r
   simp only [step, hb, if_true, used, sumB_setR]
-  refine ⟨trivial, by omega, trivial⟩
+  exact ⟨trivial, by omega⟩
 
 /-- A reservation only shrinks by its own draws, its release, or releasing all: nothing
-    else another operation does (another reservation, a write, a fill, an eviction,
-    an over-report) takes from it. -/
+    else another operation does (another reservation, a write, a fill, an over-report)
+    takes from it. -/
 theorem reservation_kept (s : St) (op : Op) (r : Nat)
     (hop : (∀ b, op ≠ .draw r b) ∧ op ≠ .release r ∧ op ≠ .releaseAll ∧ op ≠ .restart) :
-    cur s.res r ≤ cur (step s op).2.1.res r := by
+    cur s.res r ≤ cur (step s op).2.res r := by
   have setR_cur : ∀ (l : List Row) (q v : Nat), cur (setR l q v) r = if q = r then v else cur l r := by
     intro l q v
     unfold setR cur others
@@ -595,18 +423,16 @@ theorem reservation_kept (s : St) (op : Op) (r : Nat)
   | restart => exact absurd rfl hrs
   | write b => simp only [step]; split <;> exact Nat.le_refl _
   | fill n b => simp only [step]; split <;> exact Nat.le_refl _
-  | image k b => simp only [step]; split <;> exact Nat.le_refl _
-  | touch k => simp only [step]; split <;> exact Nat.le_refl _
   | settle n b => simp only [step]; split <;> exact Nat.le_refl _
   | _ => exact Nat.le_refl _
 
 /-- Why a draw inside its reservation must not be admitted at all: with a facet over its
     admitted bytes, admitting even 0 bytes is refused. -/
 theorem admitting_zero_can_be_refused :
-    let s0 : St := ⟨100, 10, [(1, 20)], [], 0, []⟩
-    let s1 := (step s0 (.reserve 7 30)).2.1
-    let s2 := (step s1 (.report 1 90)).2.1
-    (step s1 (.report 1 90)).1 = .ok ∧ fitDrop s2.limit 0 (fixedS s2) s2.images = none ∧
+    let s0 : St := ⟨100, 10, [(1, 20)], 0, []⟩
+    let s1 := (step s0 (.reserve 7 30)).2
+    let s2 := (step s1 (.report 1 90)).2
+    (step s1 (.report 1 90)).1 = .ok ∧ fits s2.limit 0 (fixedS s2) = false ∧
       (step s2 (.draw 7 30)).1 = .ok := by
   decide
 

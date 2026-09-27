@@ -51,6 +51,13 @@ export interface ResolvablePackageJson {
     module?: string;
 }
 /**
+ * The entry-point fields of a package.json read off disk, or null when the
+ * text is not JSON or not an object. A caller narrows through this rather
+ * than annotating `JSON.parse`, so a malformed package resolves as "no
+ * declared entry" instead of throwing inside the resolver.
+ */
+export declare function parseResolvablePackageJson(text: string): ResolvablePackageJson | null;
+/**
  * Resolve `package.json#exports` (or `#imports`) per Node spec.
  *
  * @param exportsField  Raw value from package.json#exports or #imports

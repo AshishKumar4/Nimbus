@@ -158,9 +158,9 @@ option, with its replacement:
   `importPage`/`pageDigest`, and `storeStats()`. Snapshots hold the
   SQLite-rooted tree, not mounts.
 - `df` reports the session's storage ledger for `/`: Used is everything
-  the 10 GB limit counts (this database, every process facet's, namespace
-  images and reservations), and Available leaves out the kernel's reserve,
-  as ext4's df leaves out root's reserved blocks.
+  the 10 GB limit counts (this database, every process facet's, and
+  reservations), and Available leaves out the kernel's reserve, as ext4's df
+  leaves out root's reserved blocks.
 - `snapshot(name, { quiesce: true })` waits for spanning work (writeStream,
   restoreAsync, sliced copyTree) and for exclusive leases, and holds
   spanning work that starts meanwhile until the snapshot is taken. It
@@ -181,7 +181,7 @@ option, with its replacement:
   `vfs_content_chunks`, `vfs_inode_history`, `vfs_gc_queue`, `vfs_jobs`,
   `vfs_snapshots`, `vfs_tombstones`, `vfs_cold_trash`, and the storage
   ledger's `nimbus_storage_ledger`, `nimbus_storage_reservation`,
-  `nimbus_facet_storage`, `nimbus_image_storage`. `NimbusWorkspace.destroy()`
+  `nimbus_facet_storage`. `NimbusWorkspace.destroy()`
   drops the `vfs_*` tables and keeps every `nimbus_*` table.
 - `EsbuildService`, `supervisorEsbuildService`, `installPathExecResolver`
   (`shell/exec-dispatch`) and `countPackageFiles` take a `NamespaceFs`:
@@ -381,13 +381,15 @@ kernel credential, because Nimbus follows POSIX here:
   empty directory, and moving a directory to another parent needs write
   permission on it.
 - Storage admission (Kinu N18). One 10 GB limit covers the session and every
-  process facet under it. A write past it used to reset the whole object and
-  empty the destination. Now every write is admitted before it is made, and
-  a write that would cross the limit fails with `ENOSPC` and changes
+  process facet under it. At the wall an ordinary write failed as
+  `SQLITE_FULL`, and a facet clone past it reset the object and emptied the
+  destination. Now every write is admitted before it is made, and a write
+  that would cross the limit fails with `ENOSPC` and changes
   nothing. The ledger counts the session's database, each facet's database
-  (live, dead or kept for a durable app, until `facets.delete`), and
-  namespace images, which are evicted oldest first when a write needs their
-  room. A sliced `copyTree` and an `importPage` reserve their room when they
+  (live, dead or kept for a durable app, until `facets.delete`), and running
+  operations' reservations. Nothing in it is evictable: the per-principal
+  namespace image cache the design proposed never gained a producer and is
+  not shipped. A sliced `copyTree` and an `importPage` reserve their room when they
   start, so a writer between their slices can't leave them half done. A
   copy resumed after a reset reserves again, or ends and removes what it
   had copied. A running node process's store asks for room before it grows;

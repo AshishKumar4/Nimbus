@@ -1,25 +1,27 @@
 /**
  * The session's storage ledger (Kinu N18; model Nimbus.Vfs.Ledger, N18-001).
  *
- * One storage limit (10 GB) covers the session's Durable Object and every
- * facet database under it, and `databaseSize` reports only one database. A
- * write that crosses the limit resets the object and leaves the destination
- * empty, so every write is admitted before it is made:
+ * One storage limit (10 GB, DO_STORAGE_LIMIT_BYTES) is shared by the session's
+ * Durable Object and every facet database under it, and `databaseSize` reports
+ * only one database. At the wall an ordinary write fails catchably as
+ * SQLITE_FULL; a facet clone over it is an uncatchable reset that empties the
+ * destination. So every write is admitted against the shared limit before it
+ * is made, and clone admission is decided before the clone:
  *
- *   used = the session DO's own bytes (without the namespace images)
+ *   used = the session DO's own bytes
  *        + every recorded facet database (live, dead or persisted)
- *        + the per-principal namespace images.
+ *        + reservations held by running operations.
  *
- * A write that does not fit drops the least recently used images (they are
- * regenerable), oldest first, never the one being written, and only as many
- * as it needs. When it would not fit with all of them gone, it is refused
- * with ENOSPC and nothing changes, not even the images. A facet's row leaves
- * only through `deleteFacet` (facets.delete): an aborted facet's database
- * persists, and a restart re-reads the tables.
+ * A write that does not fit is refused with ENOSPC and nothing changes.
+ * Nothing in the ledger is evictable: the per-principal namespace image cache
+ * the original design proposed never gained a producer and was removed
+ * rather than shipped as dead accounting. A facet's row leaves only through
+ * `deleteFacet` (facets.delete): an aborted facet's database persists, and a
+ * restart re-reads the tables.
  */
 import type { SqlDatabase } from './os-contracts.js';
 export interface StorageLedgerOptions {
-    /** The session DO's database bytes, images included; defaults to the database's own size. */
+    /** The session DO's database bytes; defaults to the database's own size. */
     sessionBytes?: () => number;
     limit?: number;
     /**
@@ -33,7 +35,6 @@ export interface StorageLedgerOptions {
 }
 /** The bytes a database occupies on the host: workerd's databaseSize, else SQLite's pages. */
 export declare function databaseBytesOf(sql: SqlDatabase): number;
-export declare function registerImageEvictor(sql: SqlDatabase, evict: (principal: string) => void): void;
 export interface StorageLedgerView {
     limit: number;
     used: number;
@@ -45,8 +46,6 @@ export interface StorageLedgerView {
     reservations: Record<string, number>;
     session: number;
     facets: Record<string, number>;
-    /** Oldest first. */
-    images: [principal: string, bytes: number][];
 }
 /** What admission charges a stored row (an inode, manifest or namespace row and its index entries), rounded up. */
 export declare const LEDGER_ROW_BYTES = 256;
@@ -56,14 +55,12 @@ export declare class StorageLedger {
     readonly kernelReserve: number;
     private readonly sessionBytes;
     constructor(sql: SqlDatabase, options?: StorageLedgerOptions);
-    /** A session-DO write of `bytes`: admitted (evicting what it must) or ENOSPC. */
+    /** A session-DO write of `bytes`: admitted or ENOSPC, changing nothing. */
     admit(bytes: number, privileged?: boolean): void;
     /** What an admission may fill up to. */
     private limitFor;
     /** A fill of `bytes` into facet `name`: admitted, and recorded before the fill is acknowledged. */
     fill(name: string, bytes: number): void;
-    /** A namespace-image write of `bytes` for `principal`; that image becomes the most recent. */
-    writeImage(principal: string, bytes: number): void;
     /**
      * An operation that writes over several turns (a sliced copy, a paged
      * import) reserves what it is admitted for: every other writer counts it as
@@ -83,10 +80,6 @@ export declare class StorageLedger {
     release(id: string): void;
     /** Reservations no running operation holds (after a restart): all of them are released. */
     releaseAll(): void;
-    /** A launch used `principal`'s image: it becomes the most recent. */
-    touchImage(principal: string): void;
-    /** At an epoch change: keep only the images of `keep`. */
-    dropImages(keep: Iterable<string>): void;
     /** `facets.delete(name)`: its database is gone. The only way a facet leaves the ledger. */
     deleteFacet(name: string): void;
     /** A facet reported `databaseSize` at or below its record (it freed space): the row becomes the smaller. */
@@ -101,19 +94,9 @@ export declare class StorageLedger {
     /** A facet's measured `databaseSize`: at or below its record it settles, above it is overshoot. */
     reportSize(name: string, bytes: number): void;
     view(): StorageLedgerView;
-    /** `fixed`: the session's own bytes and the facets', what no eviction frees; `images`: the rest. */
+    /** `fixed`: the session's own bytes, the facets' and the reservations. */
     private totals;
-    /**
-     * Drop the oldest of `evictable` until `fixed + evictable left + need` fits
-     * the limit; ENOSPC, dropping nothing, when it cannot fit at all.
-     */
-    private fit;
-    private evict;
     private reservation;
-    private images;
-    private image;
-    private hasImage;
-    private setImage;
     private facet;
     private hasFacet;
     private setFacet;
