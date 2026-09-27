@@ -57,17 +57,6 @@ export interface WasmMemoryLimits {
     readonly flags: number;
 }
 /**
- * Read the module's linear-memory declaration.
- *
- * Returns `null` for a module that neither defines nor imports a memory.
- * `imported` distinguishes the two cases that matter: an imported memory is
- * created by the host, so its limits are ours to choose at instantiation and
- * no binary rewrite is needed.
- */
-export declare function readMemoryLimits(bytes: Uint8Array): (WasmMemoryLimits & {
-    imported: boolean;
-}) | null;
-/**
  * Return a copy of `bytes` whose defined memory carries an explicit maximum of
  * at most `limitBytes`.
  *

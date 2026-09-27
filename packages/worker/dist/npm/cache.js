@@ -1,5 +1,5 @@
 /**
- * npm-cache.ts — SQLite-backed package cache for Nimbus npm v2.
+ * npm/cache.ts — SQLite-backed package cache for Nimbus npm v2.
  *
  * Four tables:
  *   1. pkg_registry_cache — packument metadata (avoids re-fetching full JSON)

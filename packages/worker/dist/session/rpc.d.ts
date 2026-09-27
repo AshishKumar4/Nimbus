@@ -85,10 +85,6 @@ export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: stri
 export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
 export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
 export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
-export declare function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
-export declare function _rpcChown(self: RpcHost, path: string, uid: number, gid: number, pid?: number, options?: {
-    followSymlinks?: boolean;
-}): Promise<void>;
 export declare function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number>;
 export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<{
     name: string;
@@ -233,7 +229,6 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
  * DO. The HmrBridge holds the client→WS map; we delegate to it.
  */
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
-export declare function _rpcUnlink(self: RpcHost, path: string, pid?: number): Promise<void>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -270,7 +265,7 @@ export declare function _rpcWriteBatchStream(self: RpcHost, stream: ReadableStre
  * resolver-facet to flush a wave of resolved packages back to the
  * supervisor without per-entry round-trips.
  *
- * Payload is the array of RegistryCacheEntry shapes from src/npm-cache.ts.
+ * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
  * Returns { written, failed } so the facet can surface partial-write
  * warnings to the install log.
  */

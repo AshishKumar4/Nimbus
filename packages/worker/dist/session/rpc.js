@@ -268,12 +268,6 @@ export async function _rpcLstat(self, path, pid, cred) {
 export async function _rpcChmod(self, path, mode, pid, cred) {
     await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
-export async function _rpcAccess(self, path, mode, pid) {
-    await self.supervisorBridge(pid).access(path, mode);
-}
-export async function _rpcChown(self, path, uid, gid, pid, options) {
-    await self.supervisorBridge(pid).chown(path, uid, gid, options);
-}
 export async function _rpcSetUmask(self, mask, pid) {
     return self.processes.setUmask(processPid(pid), mask);
 }
@@ -594,9 +588,6 @@ export async function _rpcHmrRelay(self, clientId, msg) {
         return;
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
-export async function _rpcUnlink(self, path, pid) {
-    await self.supervisorOp({ op: 'unlink', args: [path], pid });
-}
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -687,7 +678,7 @@ export async function _rpcWriteBatchStream(self, stream, mutationOwner, pid) {
  * resolver-facet to flush a wave of resolved packages back to the
  * supervisor without per-entry round-trips.
  *
- * Payload is the array of RegistryCacheEntry shapes from src/npm-cache.ts.
+ * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
  * Returns { written, failed } so the facet can surface partial-write
  * warnings to the install log.
  */

@@ -380,12 +380,6 @@ export declare function rpcRemoveDurableApp(self: ProgrammaticHost, owner: strin
     port: number | null;
 }>;
 /**
- * Route an embedder request that carries a port capability. The embedder has
- * authenticated the capability at its edge and stripped its own credentials,
- * so the guest's `Authorization` is preserved through this path and no other.
- */
-export declare function rpcRouteCapabilityPort(self: ProgrammaticHost, port: number, capability: string, request: Request, pathname: string): Promise<Response>;
-/**
  * `spawnWorker` for a colocated embedder holding the DO stub: boot the
  * embedder's own Worker-class program — its main module, inline modules and
  * content-addressed text/wasm modules — as one of this session's resident

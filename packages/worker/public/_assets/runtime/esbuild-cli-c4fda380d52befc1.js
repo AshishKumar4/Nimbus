@@ -1667,9 +1667,9 @@ return globalThis.Go;
   var empty$1 = [];
   pp$8.parseCatchClauseParam = function() {
     var param = this.parseBindingAtom();
-    var simple2 = param.type === "Identifier";
-    this.enterScope(simple2 ? SCOPE_SIMPLE_CATCH : 0);
-    this.checkLValPattern(param, simple2 ? BIND_SIMPLE_CATCH : BIND_LEXICAL);
+    var simple = param.type === "Identifier";
+    this.enterScope(simple ? SCOPE_SIMPLE_CATCH : 0);
+    this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH : BIND_LEXICAL);
     this.expect(types$1.parenR);
     return param;
   };
@@ -6094,19 +6094,18 @@ return globalThis.Go;
     lineBreakG,
     nonASCIIwhitespace
   };
-  function parse3(input, options) {
-    return Parser.parse(input, options);
-  }
 
-  function simple(node, visitors, baseVisitor, state, override) {
+  function full(node, callback, baseVisitor, state, override) {
     if (!baseVisitor) {
       baseVisitor = base;
     }
+    var last;
     (function c(node2, st, override2) {
       var type = override2 || node2.type;
       visitNode(baseVisitor, type, node2, st, c);
-      if (visitors[type]) {
-        visitors[type](node2, st);
+      if (last !== node2) {
+        callback(node2, st, type);
+        last = node2;
       }
     })(node, state, override);
   }
@@ -6425,10 +6424,28 @@ return globalThis.Go;
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
   }
-  function parseCell(code) {
-    for (const sourceType of ["script", "module"]) {
+  function parseCell(code, moduleFirst, visit, reset2) {
+    const StreamingParser = Parser.extend((Base) => {
+      const parseStatement = Reflect.get(Base.prototype, "parseStatement");
+      if (typeof parseStatement !== "function") throw new Error("Acorn statement parser unavailable");
+      return class extends Base {
+        parseStatement(context, topLevel, exports) {
+          const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+          if (!topLevel) return node;
+          full(node, visit);
+          if (node.type === "ExpressionStatement") {
+            const expression = Reflect.get(node, "expression");
+            if (expression?.type === "Literal" && typeof expression.value === "string") return node;
+          }
+          return { type: "EmptyStatement", start: node.start, end: node.end };
+        }
+      };
+    });
+    const grammars = moduleFirst ? ["module", "script"] : ["script", "module"];
+    for (const sourceType of grammars) {
+      reset2();
       try {
-        return parse3(code, {
+        return StreamingParser.parse(code, {
           ecmaVersion: "latest",
           sourceType,
           allowReturnOutsideFunction: true,
@@ -6440,24 +6457,54 @@ return globalThis.Go;
     }
     return null;
   }
-  function rewriteDynamicImports(code, parentUrl) {
-    if (!mayHaveDynamicImport(code)) return code;
-    const ast = parseCell(code);
-    if (ast === null) return code;
+  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
+    const metadata = moduleMetadata && code.includes("import");
+    if (!mayHaveDynamicImport(code) && !metadata) return code;
     const spans = [];
-    simple(ast, {
-      ImportExpression(node) {
-        const expression = node;
-        spans.push({ start: expression.start, end: expression.source.start });
-      }
-    });
-    if (spans.length === 0) return code;
-    spans.sort((a, b) => a.start - b.start);
+    const metadataSpans = metadata ? [] : null;
+    const identifiers = metadata ?   new Set() : null;
     const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
+    const ast = parseCell(code, metadata, (node) => {
+      if (identifiers && node.type === "Identifier") {
+        const identifier = node;
+        identifiers.add(identifier.name);
+      }
+      if (node.type === "ImportExpression") {
+        const expression = node;
+        spans.push({ start: expression.start, end: expression.source.start, text: call });
+      }
+      if (metadataSpans && node.type === "MetaProperty") {
+        const meta = node;
+        if (meta.meta.name === "import" && meta.property.name === "meta") metadataSpans.push({ start: meta.start, end: meta.end });
+      }
+    }, () => {
+      spans.length = 0;
+      if (metadataSpans) metadataSpans.length = 0;
+      identifiers?.clear();
+    });
+    if (ast === null) return code;
+    if (metadataSpans?.length) {
+      let binding = "__nimbusMetadataModule";
+      while (identifiers.has(binding)) binding += "_";
+      for (const meta of metadataSpans) {
+        spans.push({ start: meta.start, end: meta.end, text: `${binding}.__nimbusImportMeta` });
+      }
+      let insertion = ast.body[0]?.start ?? 0;
+      for (const statement of ast.body) {
+        if (!("directive" in statement) || typeof statement.directive !== "string") break;
+        insertion = statement.end;
+      }
+      spans.push({ start: insertion, end: insertion, text: `
+"use strict";
+const ${binding} = arguments[2];
+` });
+    }
+    if (spans.length === 0) return code;
+    spans.sort((a, b) => a.start - b.start || a.end - b.end);
     let out = "";
     let at2 = 0;
-    for (const { start, end } of spans) {
-      out += code.slice(at2, start) + call;
+    for (const { start, end, text } of spans) {
+      out += code.slice(at2, start) + text;
       at2 = end;
     }
     return out + code.slice(at2);

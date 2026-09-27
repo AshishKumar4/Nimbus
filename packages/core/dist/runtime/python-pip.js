@@ -3,7 +3,7 @@ import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxE
 import { z } from 'zod/v4';
 import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
-import { isRuntimePythonPackageArtifactMetadata, RuntimePythonPackageArtifactMetadataSchema, } from './runtime-manifest.js';
+import { isRuntimePythonPackageArtifactMetadata, } from './runtime-manifest.js';
 export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;
 const PYPI_API = 'https://pypi.org/pypi';
@@ -136,13 +136,6 @@ const PyodideLockfileSchema = z.object({
     packages: z.record(z.string(), PyodideLockPackageSchema),
 });
 const pypiCache = new Map();
-export const InstalledPyodidePackageManifestSchema = z.object({
-    version: z.literal(1),
-    packages: z.array(RuntimePythonPackageArtifactMetadataSchema),
-});
-export function parseInstalledPyodidePackageManifest(text) {
-    return InstalledPyodidePackageManifestSchema.parse(JSON.parse(text));
-}
 export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext = {}) {
     const wantsVersion = argv.includes('--version') || argv.includes('-V');
     const wantsHelp = argv.length === 0 || argv.includes('--help') || argv.includes('-h');

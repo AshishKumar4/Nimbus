@@ -3,7 +3,7 @@
  * state over the WebSocket attachment.
  *
  * Specified from Proteus's DeviceSocketHub (`cf-backend/src/user/device-hub.ts`)
- * and CLI rpc gate (`cf-backend/src/cli/rpc-gate.ts`), which split the
+ * and its original CLI rpc gate (`cf-backend/src/cli/rpc-gate.ts`), which split the
  * pattern into its two halves:
  *   - a TAG is the immutable-at-accept lookup key and authorization — it
  *     rides the hibernation state, which is why the rpc gate persists auth

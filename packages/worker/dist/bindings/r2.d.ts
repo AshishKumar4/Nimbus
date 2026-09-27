@@ -120,8 +120,6 @@ export declare class R2Emulator {
     }>;
     createMultipartUpload(_key: string, _options?: any): Promise<never>;
     resumeMultipartUpload(_key: string, _uploadId: string): Promise<never>;
-    private _ensureDir;
-    private _coerceBody;
     private _readSide;
     private _readSideEnc;
     private _readBody;

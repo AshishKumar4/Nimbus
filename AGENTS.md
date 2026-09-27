@@ -164,9 +164,10 @@ they are changing the runtime ingestion pipeline itself.
 The catalog is shared by every deployment that reads it, production included.
 A runtime rebuilt against a new runner contract (the bash preamble and
 `bash.async.wasm` agree on an import table and an Asyncify allowlist) is a
-new catalog version whose manifest names a new runner key, `bash-runner@2`
-today (`BASH_RUNNER` in `packages/core/src/runtime/os-contracts.ts`). Publish
-it with `bundle-runtime.mjs bash <version> --keep-default` so the catalog's
+new catalog version whose manifest names a new runner key, `bash-runner@3`
+in this source tree (`BASH_RUNNER` in `packages/core/src/runtime/os-contracts.ts`).
+Build `5.2.37-3` requires core `>=0.13.0`; older deployments still use build 2.
+Publish it with `bundle-runtime.mjs bash <version> --keep-default` so the catalog's
 default stays on the build older deployments bind; a workspace that cannot
 bind the default resolves the newest version whose runners it registers.
 Re-run without the flag once every deployment carries the new preamble.

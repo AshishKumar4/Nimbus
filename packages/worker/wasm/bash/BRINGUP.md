@@ -104,8 +104,9 @@ version `5.2.37-2`, and its manifest names the runner key `BASH_RUNNER`
 whose preamble predates the build registers `bash-runner` and never binds it;
 one that carries this preamble resolves it by capability even while the
 catalog's default still points at `5.2.37`. The next rebuild that changes
-the import table or the Asyncify allowlist takes `bash-runner@3` and a
-`5.2.37-3` publish, made with `--keep-default` until every deployment reading
+the import table, the Asyncify allowlist or required exports takes a new
+runner key and runtime build. Build `5.2.37-3` uses `bash-runner@3`; publish
+it with `--keep-default` until every deployment reading
 the catalog can bind it.
 
 ## Build 3: signal-disposition queries

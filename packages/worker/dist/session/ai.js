@@ -320,10 +320,6 @@ export async function clearSessionAiCredential(self) {
     lastSeenCookie.delete(self);
     await self.ctx.storage.delete(SESSION_AI_CREDENTIAL_KEY);
 }
-/** The stored credential, for surfaces that report connection state. */
-export async function readSessionAiCredential(self) {
-    return readStoredCredential(self);
-}
 // ── The OpenAI-compatible endpoint ────────────────────────────────────────
 /**
  * Serve one OpenAI-compatible request. This is the whole gateway: the loopback

@@ -171,7 +171,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * also flush eagerly when `dirtyChunks * pidCount` crosses a threshold
      * — but the debounce handles the steady-state case.
      *
-     * S5: storage keys + the debounce constant moved to ./nimbus-session-keys.ts.
+     * S5: storage keys + the debounce constant moved to ./keys.ts.
      */
     _w9FlushTimer: any;
     /**
@@ -609,7 +609,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      *  warm rejoins yet. Surfaced via /api/_diag/session.warmJoinCount. */
     _b4WarmJoinCount: number;
     _w5RehydrateRingFromStorage(): Promise<void>;
-    /** Snapshot + persist OOM ring. Delegator → ./nimbus-session-diag.ts (S10). */
+    /** Snapshot + persist OOM ring. Delegator → ./session/diag.ts (S10). */
     _w5PersistRing(): Promise<void> | null;
     /** The session's esbuild facet pool provider; constructing it does no work. */
     ensureBundlePool(): EsbuildBundlePool;
@@ -684,9 +684,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;
     webSocketError(ws: WebSocket, error?: any): Promise<void>;
-    /** W9: synchronous flush on close. Delegator → ./nimbus-session-hib.ts (S4). */
+    /** W9: synchronous flush on close. Delegator → ./session/hibernation.ts (S4). */
     _w9FlushOnClose(): void;
-    /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./nimbus-session-ws.ts (S7). */
+    /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./session/ws.ts (S7). */
     _w5SafePersistRing(): void;
 }
 export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';

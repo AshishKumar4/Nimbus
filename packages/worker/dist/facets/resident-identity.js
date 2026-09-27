@@ -26,6 +26,3 @@ export async function deriveResidentOwner(cwd, argv) {
         hex += byte.toString(16).padStart(2, '0');
     return `${DERIVED_OWNER_PREFIX}${hex.slice(0, 24)}`;
 }
-export function isDerivedOwner(owner) {
-    return owner.startsWith(DERIVED_OWNER_PREFIX);
-}

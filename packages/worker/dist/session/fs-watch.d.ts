@@ -118,15 +118,4 @@ export declare function handleFsWatchUnsubscribe(host: FsWatchHost, ws: WebSocke
  * wsError. Idempotent + no-op when nothing pending.
  */
 export declare function cleanupFsWatchOnClose(host: FsWatchHost, ws: WebSocket): void;
-/**
- * Diagnostic: total subscriber + pending-event counts across the host.
- * Useful for /api/_diag/* surfaces and leak-detection probes (the
- * cleanup-on-disconnect probe asserts counts return to 0 after WS close).
- */
-export declare function getFsWatchStats(host: FsWatchHost): {
-    wsCount: number;
-    subCount: number;
-    pendingTotal: number;
-    droppedTotal: number;
-};
 //# sourceMappingURL=fs-watch.d.ts.map

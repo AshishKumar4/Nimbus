@@ -61,9 +61,6 @@ function NATIVE_EXECUTABLE_REJECT(pkg) {
 function NATIVE_PLATFORM_REJECT(pkg) {
   return __policyNativePlatformReject(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
 }
-function NATIVE_BIN_ADVISORY(pkg) {
-  return __policyNativeBinAdvisory(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
-}
 function IS_OPTIONAL_NATIVE_BINDING(pkg) {
   return __policyIsOptionalNativeBinding(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
 }
@@ -73,30 +70,6 @@ function STAGED_ARTIFACT(name) {
 const STAGED_ARTIFACT_BIN_PREFIX = ${JSON.stringify(STAGED_ARTIFACT_BIN_PREFIX)};
 function STAGED_ARTIFACT_APPLY(pkg, entry) {
   __policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
-}
-
-// ── Registry telemetry: facet-side event collection ──────────────────────
-// The facet cannot import the registry's emitRegistryEvent (preamble has
-// no import surface). Instead, decision sites push into a shared
-// __pendingEvents array which resolveOnePackumentInFacet returns inside
-// ResolveOneResult.events. The supervisor drains it and flushes via
-// emitRegistryEvent (npm-installer.ts).
-//
-// Shape of each entry:
-//   { type: 'swap',            from, to,                     ctx: 'transitive' }
-//   { type: 'reject',          from, reason, suggest?,       ctx: 'transitive' }
-//   { type: 'transitive-skip', from, reason }
-//
-// Note: ctx is always 'transitive' from this path (the supervisor's
-// applyW6Registry handles 'top'-ctx events directly without the facet).
-const __pendingEvents = [];
-function __EMIT_EVENT(e) { __pendingEvents.push(e); }
-function __DRAIN_EVENTS() {
-  // Hand ownership to caller; reset for next run (defensive — facet
-  // function bodies are re-instantiated per run anyway).
-  const out = __pendingEvents.slice();
-  __pendingEvents.length = 0;
-  return out;
 }
 
 // ── Semver (embedded from src/npm/semver.ts) ────────────────────────────

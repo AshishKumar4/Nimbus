@@ -59,9 +59,6 @@ export async function ensureRuntimesProgrammatic(deps, specs, opts = {}) {
     }
     return results;
 }
-export async function listAvailableRuntimes(env) {
-    return runtimeCatalogSource(env).list();
-}
 /**
  * Command-not-found hints, catalog-driven: a bare name the shell could not
  * resolve is answered with the runtime that provides it, so `python3` hints

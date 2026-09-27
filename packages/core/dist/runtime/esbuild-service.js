@@ -694,16 +694,20 @@ function hasUnscopedAwait(source) {
         return true;
     }
 }
-function convertBundledModuleDeclarations(snippets) {
+function convertBundledModuleDeclarations(snippets, moduleFactory) {
     const imports = [];
     const exports = [];
+    // Only generated references use wrapper arguments. Source declarations
+    // named module/require/exports retain their own meanings.
+    const moduleTarget = moduleFactory ? 'arguments[2]' : 'module';
+    const requireTarget = moduleFactory ? 'arguments[1]' : 'module.require';
     let importIndex = 0;
     let markedEsm = false;
     for (const snippet of snippets) {
         const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
         if (bindingList && !/\}\s*from\b/.test(snippet)) {
             if (!markedEsm) {
-                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
                 markedEsm = true;
             }
             for (const binding of bindingList[1].split(',')) {
@@ -712,7 +716,7 @@ function convertBundledModuleDeclarations(snippets) {
                     return null;
                 const local = match[1];
                 const exported = match[2] || local;
-                exports.push(`Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
+                exports.push(`Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
             }
             continue;
         }
@@ -733,11 +737,11 @@ function convertBundledModuleDeclarations(snippets) {
                 return null;
             const specifiers = nodeList(declaration, 'specifiers');
             if (specifiers.length === 0) {
-                imports.push(`module.require(${JSON.stringify(source)});`);
+                imports.push(`${requireTarget}(${JSON.stringify(source)});`);
                 continue;
             }
             const moduleName = `__nimbus_import_${importIndex++}`;
-            imports.push(`const ${moduleName} = module.require(${JSON.stringify(source)});`);
+            imports.push(`const ${moduleName} = ${requireTarget}(${JSON.stringify(source)});`);
             for (const specifier of specifiers) {
                 const local = nodeName(nodeProp(specifier, 'local'));
                 if (!local)
@@ -764,7 +768,7 @@ function convertBundledModuleDeclarations(snippets) {
             if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration'))
                 return null;
             if (!markedEsm) {
-                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
                 markedEsm = true;
             }
             for (const specifier of nodeList(declaration, 'specifiers')) {
@@ -772,7 +776,7 @@ function convertBundledModuleDeclarations(snippets) {
                 const exported = nodeName(nodeProp(specifier, 'exported'));
                 if (!local || !exported)
                     return null;
-                exports.push(`Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
+                exports.push(`Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
             }
             continue;
         }
@@ -783,18 +787,19 @@ function convertBundledModuleDeclarations(snippets) {
             if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration')
                 return null;
             if (!markedEsm) {
-                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
                 markedEsm = true;
             }
-            exports.push(`Object.defineProperty(module.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`);
+            exports.push(`Object.defineProperty(${moduleTarget}.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`);
             continue;
         }
         return null;
     }
     return { imports: imports.join('\n'), exports: exports.join('\n') };
 }
-function importMetaEdits(source, absoluteUrl) {
+function importMetaEdits(source, absoluteUrl, moduleFactory) {
     const edits = [];
+    const urlExpression = moduleFactory ? 'import.meta.url' : JSON.stringify(absoluteUrl);
     try {
         const tokens = tokenizer(source, {
             ecmaVersion: 'latest',
@@ -821,13 +826,13 @@ function importMetaEdits(source, absoluteUrl) {
                 return null;
             const propertyName = source.slice(property.start, property.end);
             if (propertyName === 'url') {
-                edits.push({ start: start.start, end: property.end, text: JSON.stringify(absoluteUrl) });
+                edits.push({ start: start.start, end: property.end, text: urlExpression });
             }
             else if (propertyName === 'resolve') {
                 edits.push({
                     start: start.start,
                     end: property.end,
-                    text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${JSON.stringify(absoluteUrl)}))`,
+                    text: moduleFactory ? 'import.meta.resolve' : `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
                 });
             }
             else {
@@ -946,7 +951,7 @@ export function rewriteProvidedCommonJsModules(source) {
     parts.push(source.slice(cursor));
     return parts.join('');
 }
-export function rewriteBundledEsmToCjs(source, absoluteUrl) {
+export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false) {
     if (hasUnscopedAwait(source))
         return null;
     const declarations = topLevelModuleDeclarationRanges(source);
@@ -958,10 +963,10 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl) {
             && source.slice(declarations[i].end).trim() !== '')
             return null;
     }
-    const converted = convertBundledModuleDeclarations(declarationSnippets);
+    const converted = convertBundledModuleDeclarations(declarationSnippets, moduleFactory);
     if (!converted)
         return null;
-    const metaEdits = importMetaEdits(source, absoluteUrl);
+    const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
     if (!metaEdits)
         return null;
     const edits = [
@@ -979,7 +984,7 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl) {
     bodyParts.push(source.slice(cursor));
     const body = bodyParts.join('');
     return {
-        code: converted.imports + '\n' + body + '\n' + converted.exports,
+        code: (moduleFactory ? '"use strict";\n' : '') + converted.imports + '\n' + body + '\n' + converted.exports,
         map: '',
         warnings: [],
     };
@@ -1044,7 +1049,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
                 jsxFragment: options?.jsxFragment,
                 tsconfigRaw: options?.tsconfigRaw,
                 define: options?.define,
-                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
             });
             return {
                 code: direct.code,
@@ -1072,7 +1077,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
                 jsxFragment: options?.jsxFragment,
                 tsconfigRaw: options?.tsconfigRaw,
                 define: options?.define,
-                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
             });
             const { requires, body } = convertEsmImportsToRequire(pass1.code);
             return {
@@ -1097,7 +1102,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
     });
     return {
         code: result.code,
@@ -1120,10 +1125,24 @@ async function runTransformRequest(esbuildApi, code, options, rewrite) {
     if (options?.rewriteOnly) {
         if (parent === undefined)
             throw new Error('a rewrite-only transform needs dynamicImportParent');
-        return { code: rewrite(code, parent), map: '', warnings: [] };
+        return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
+    }
+    if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
+        // CJS emit replaces import.meta with an empty object even when syntax
+        // support is enabled. First emit JavaScript as ESM (including TS type
+        // erasure), rewrite real MetaProperty nodes, then lower declarations.
+        // Both passes and the sole AST parse stay in the transform facet.
+        const javascript = await esbuildApi.transform(code, {
+            loader: options.loader ?? 'js', format: 'esm', target: 'esnext',
+            jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
+            tsconfigRaw: options.tsconfigRaw, define: options.define,
+            supported: { 'dynamic-import': true, 'import-meta': true },
+        });
+        const routed = rewrite(javascript.code, parent, true);
+        return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false });
     }
     const result = await transformWithEsbuild(esbuildApi, code, options);
-    return parent === undefined ? result : { ...result, code: rewrite(result.code, parent) };
+    return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
 }
 /**
  * One esbuild build in which `plugin` resolves and loads every module,
@@ -1369,7 +1388,8 @@ export class EsbuildService {
                 throw new Error(outcome.error);
             return outcome;
         }
-        await this.ensureInit();
+        if (!options?.rewriteOnly)
+            await this.ensureInit();
         const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
         return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports);
     }
@@ -1403,7 +1423,8 @@ export class EsbuildService {
             hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
             return outcomes;
         }
-        await this.ensureInit();
+        if (prepared.some(({ options }) => !options?.rewriteOnly))
+            await this.ensureInit();
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {

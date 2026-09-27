@@ -8,7 +8,7 @@
  * isolate memory: the LIFO Shell instance owned cwd + env vars; the
  * LIFO Kernel owned mount points; the WebSocketTerminal had no
  * persistence at all. A wsClose / wsError nulled all three
- * (src/nimbus-session-ws.ts:165-167, :221-223), and the next /ws
+ * (src/session/ws.ts), and the next /ws
  * upgrade rebuilt them from defaults. Result: cwd reset to ~,
  * env vars lost, scrollback gone, MOTD reprinted — the user-
  * visible Bug C symptom.

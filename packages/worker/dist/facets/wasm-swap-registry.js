@@ -420,21 +420,6 @@ const ANSI_RESET = '\x1b[0m';
 export function formatSwapNotice(s) {
     return `[npm] ${ANSI_YELLOW}[swap]${ANSI_RESET} ${s.from} → ${s.to} (${s.reason})`;
 }
-/**
- * Single-line yellow notice emitted for a `[skip]`.
- *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
- *
- * When the entry carries an actionable suggestion it is appended inline
- * (`… try: <hint>`) — the same line shape for optional-shard skips and
- * required-package skips, so one grep explains every package the install
- * left out.
- */
-export function formatTransitiveSkip(r) {
-    const base = `[npm] ${ANSI_YELLOW}[skip]${ANSI_RESET} ${r.from} — ${r.reason}`;
-    if (r.suggest)
-        return `${base} ${ANSI_DIM}… try:${ANSI_RESET} ${r.suggest}`;
-    return base;
-}
 let _sink = null;
 let _sinkThrowCount = 0;
 /**
@@ -447,9 +432,6 @@ let _sinkThrowCount = 0;
  */
 export function setRegistryEventSink(s) {
     _sink = s;
-}
-export function getRegistryEventSink() {
-    return _sink;
 }
 /**
  * Forward an event to the sink. Sink throws are caught (telemetry must
@@ -599,16 +581,9 @@ export function policyNativePlatformReject(policy, pkg) {
  * skip classifier, which treats either native shape as skippable from
  * an optional edge.
  */
-export function policyNativeArtifactReject(policy, pkg) {
-    return (policyNativeBinAdvisory(policy, pkg) ??
-        policyNativePlatformReject(policy, pkg));
-}
 // Supervisor wrappers over the serializable policy functions.
 export function isOptionalNativeBinding(p) {
     return policyIsOptionalNativeBinding(PACKAGE_ABI_POLICY, p);
-}
-export function nativeExecutableReject(pkg) {
-    return policyNativeArtifactReject(PACKAGE_ABI_POLICY, pkg);
 }
 /**
  * Select which entries in `peerDependencies` should be auto-installed.

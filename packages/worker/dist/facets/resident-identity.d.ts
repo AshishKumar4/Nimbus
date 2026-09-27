@@ -19,5 +19,4 @@
 export declare const DERIVED_OWNER_PREFIX = "auto:";
 /** `auto:` + the first 24 hex of sha256(cwd ++ NUL ++ argv.join(NUL)). */
 export declare function deriveResidentOwner(cwd: string, argv: readonly string[]): Promise<string>;
-export declare function isDerivedOwner(owner: string): boolean;
 //# sourceMappingURL=resident-identity.d.ts.map

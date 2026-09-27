@@ -26,7 +26,5 @@
  *      also what makes each `python -c` a pristine interpreter rather than one
  *      carrying the last caller's __main__.
  */
-/** Marker the runner writes around the interpreter's exit status. */
-export declare const CPYTHON_EXIT_MARKER = "__NIMBUS_PY_EXIT__";
 export declare const CPYTHON_PREAMBLE_TAIL: string;
 //# sourceMappingURL=cpython-preamble.d.ts.map

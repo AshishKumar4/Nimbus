@@ -1,5 +1,5 @@
 /**
- * git-commands.ts — Nimbus v2.0 Git integration via isomorphic-git.
+ * git/commands.ts — Nimbus v2.0 Git integration via isomorphic-git.
  *
  * Provides a full `git` command with subcommands:
  * init, clone, status, add, commit, log, branch, checkout, diff,

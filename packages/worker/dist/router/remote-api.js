@@ -1,5 +1,6 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { z } from 'zod/v4';
+import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -11,10 +12,6 @@ const RemoteRpcBodySchema = z.object({
     root: z.string().optional(),
     op: z.string().optional(),
     args: z.array(z.unknown()).optional(),
-}).passthrough();
-const WireBytesSchema = z.object({
-    __nimbusWireType: z.literal('bytes'),
-    base64: z.string(),
 }).passthrough();
 export async function handleNimbusRemoteApi(request, env, sdk) {
     const remote = normalizeRemoteConfig(sdk?.remote);
@@ -37,7 +34,7 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     }
     let body;
     try {
-        body = RemoteRpcBodySchema.parse(decodeWire(await request.json()));
+        body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
     }
     catch (e) {
         return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
@@ -444,7 +441,7 @@ function trimSlashes(value) {
     return value.slice(start, end);
 }
 function remoteJson(value, status = 200) {
-    return corsResponse(JSON.stringify(encodeWire(value)), status, {
+    return corsResponse(JSON.stringify(WireEncoder.parse(value)), status, {
         'Content-Type': 'application/json',
     });
 }
@@ -459,66 +456,4 @@ function corsResponse(body, status, headers = {}) {
             'Access-Control-Allow-Headers': 'Authorization, Content-Type',
         },
     });
-}
-function encodeWire(value) {
-    if (value instanceof Uint8Array) {
-        return {
-            __nimbusWireType: 'bytes',
-            base64: bytesToBase64(value),
-        };
-    }
-    if (value instanceof ArrayBuffer) {
-        return {
-            __nimbusWireType: 'bytes',
-            base64: bytesToBase64(new Uint8Array(value)),
-        };
-    }
-    if (ArrayBuffer.isView(value)) {
-        const view = value;
-        return {
-            __nimbusWireType: 'bytes',
-            base64: bytesToBase64(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)),
-        };
-    }
-    if (Array.isArray(value))
-        return value.map(encodeWire);
-    if (value && typeof value === 'object') {
-        const out = {};
-        for (const [key, item] of Object.entries(value)) {
-            if (item !== undefined)
-                out[key] = encodeWire(item);
-        }
-        return out;
-    }
-    return value;
-}
-function decodeWire(value) {
-    const bytes = WireBytesSchema.safeParse(value);
-    if (bytes.success)
-        return base64ToBytes(bytes.data.base64);
-    if (Array.isArray(value))
-        return value.map(decodeWire);
-    if (value && typeof value === 'object') {
-        const out = {};
-        for (const [key, item] of Object.entries(value)) {
-            out[key] = decodeWire(item);
-        }
-        return out;
-    }
-    return value;
-}
-function bytesToBase64(bytes) {
-    let binary = '';
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary);
-}
-function base64ToBytes(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++)
-        bytes[i] = binary.charCodeAt(i);
-    return bytes;
 }

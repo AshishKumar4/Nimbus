@@ -4,7 +4,7 @@
  * Why this exists
  * ───────────────
  * Pre-bundling npm packages (the `Pre-bundling N modules…` step in
- * src/npm-installer.ts:704) used to call `EsbuildService.build(...)`
+ * src/npm/installer.ts) used to call `EsbuildService.build(...)`
  * inside the supervisor DO isolate. Each `esbuild.build` allocates
  * 30–80 MiB of WASM linear memory plus the input/output graph; against
  * the 128 MB DO heap cap this OOM-killed the supervisor on installs
@@ -45,9 +45,7 @@
  * contract.
  */
 import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
-export function buildSliceForSpecifier(vfs, specifier, nmDir) {
-    return buildSliceForSpecifierWithCap(vfs, specifier, nmDir, 24 * 1024 * 1024);
-}
+// ── Supervisor-side: build the slice for one specifier ──────────────────
 export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const externals = new Set();
     for (const e of getSharedRuntimeExternals(specifier)) {
@@ -286,7 +284,7 @@ export const prebundleOne = async function prebundleOne(spec, _env) {
         initPromise = (async () => {
             // Read the WebAssembly.Module the pool registered. The key matches
             // the name passed to IsolatePool's `wasmModules` option (see
-            // src/npm-installer.ts:prebundleUsedModules dispatch site).
+            // src/npm/installer.ts:prebundleUsedModules dispatch site).
             const wasmRegistry = globalThis.__NIMBUS_WASM;
             const wasmModule = wasmRegistry && wasmRegistry['esbuild.wasm'];
             if (!wasmModule) {

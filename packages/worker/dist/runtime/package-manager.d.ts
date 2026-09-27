@@ -14,7 +14,6 @@
 import { runtimeCatalogSource, type RuntimeCatalogEnv } from './runtime-catalog.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
-import type { RuntimeAvailability } from '@nimbus-sh/core/runtime/runtime-package.js';
 import { type RuntimeWarmHook } from '@nimbus-sh/core/runtime/nimbus-command.js';
 import type { MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 export { runtimeCatalogSource };
@@ -54,7 +53,6 @@ export declare function ensureRuntimesProgrammatic(deps: {
 }, specs: string[], opts?: {
     force?: boolean;
 }): Promise<RuntimeInstallSummary[]>;
-export declare function listAvailableRuntimes(env: RuntimeCatalogEnv): Promise<RuntimeAvailability[]>;
 /**
  * Command-not-found hints, catalog-driven: a bare name the shell could not
  * resolve is answered with the runtime that provides it, so `python3` hints

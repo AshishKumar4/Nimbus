@@ -13,6 +13,13 @@
  */
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
+export function replPushResult(result) {
+    if (result.exit)
+        return { kind: 'exit', exitCode: result.exitCode || 0, stdout: result.stdout, stderr: result.stderr };
+    if (result.incomplete)
+        return { kind: 'incomplete' };
+    return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+}
 export class ReplSession {
     adapter;
     detachRepl = null;
