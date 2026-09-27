@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A node launch's speculative main-entry pass resolves each package's root
+  entry with the shared exports resolver, in the runtime's order (exports
+  under CJS then ESM conditions, `main`, `index`). A root conditional map
+  with no `"."` key (`on-change@6`: `{ types, default }`, no `main`) was
+  previously read as empty and guessed `index.js`; nuxt dev then failed on
+  its first `require("on-change")` with "not in this launch's module map".
+
 - WebSocket terminal input retains the async shell command through the
   session or embedder's `waitUntil`. Previously the terminal discarded the
   callback's promise when the frame returned. Later input, including Ctrl-C,
