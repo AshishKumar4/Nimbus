@@ -63,7 +63,7 @@ export function loadPreamble(opts = {}) {
   const scope = { __NIMBUS_WASM: { ...table, ...opts.extraWasm } };
   // Direct eval inside the preamble's own function scope: a serialized step
   // evaluated through it sees exactly what it would see in a real facet.
-  const evaluate = new Function('globalThis', `${BASH_RUNNER_PREAMBLE}\nreturn (source) => eval(source);`).call(scope, scope);
+  const evaluate = new Function('globalThis', `${opts.preambleSource ?? BASH_RUNNER_PREAMBLE}\nreturn (source) => eval(source);`).call(scope, scope);
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
   const authority = new ProcessFiles(raw);

@@ -361,6 +361,15 @@ kernel credential, because Nimbus follows POSIX here:
   Node. The `import()` calls are found by parsing (acorn), in the esbuild
   facet, and the result is cached by content.
 
+### WASM bash
+
+- `kill` of a virtual child now delivers terminating signals instead of
+  returning success without doing anything. `wait` reports SIGTERM as 143
+  and SIGKILL as 137; `kill -0` probes virtual process existence. Pending
+  child work cannot publish a second exit after signal termination. These
+  operations never target host process IDs. Process-group signal delivery
+  and stop/continue/trap handling are not added by this change.
+
 ## 2026-09-24
 
 ### filesystem
