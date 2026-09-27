@@ -209,6 +209,31 @@ historical seen-ID table; the allocator still stays above the reserved bound.
 Rows also preserve directory default ACLs; ACL-only changes participate in
 `diff` and `pageDigest`, so imported shared directories retain inheritance.
 
+Identity-validation indexes belong to active preserving imports. They are
+created while the indexed tables are empty, retained across restarts, and
+dropped transactionally when no preserving job needs them. Ordinary trees
+pay no permanent identity-index cost. Freed index pages remain part of SQLite
+database-size accounting until reused; they are not deducted as an exemption.
+
+## Bounded export pages
+
+`exportPage` frames are bounded by rows, chunk references and serialized
+bytes, metadata included. A file whose manifest does not fit is exported as
+fragments: rows for the same path carry `pieceOffset` and consecutive
+references, and the cursor `next` is opaque, a (path, byte offset) position.
+Pass `next` back unchanged; do not construct cursors. Rows and page
+boundaries follow SQLite's path order (UTF-8 bytes), which differs from a JS
+string sort for names outside the BMP; the importer compares in the same order.
+
+The importer keeps one pending manifest per job, pinned against GC and
+recorded durably with its offset, so fragments survive a reset and a
+replayed fragment is verified against what already landed rather than applied
+twice. A fragment out of order, a changed metadata field, or a final digest
+that does not match the row's content key refuses the page before writing.
+The inode row publishes only when the last fragment completes the file's
+size and digest. Lazy imports (N17) still admit fragments naming pending
+chunks without their bytes.
+
 ## Mounts in df, mount and /proc/mounts
 
 The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,

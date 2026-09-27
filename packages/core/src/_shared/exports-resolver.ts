@@ -1,3 +1,5 @@
+import { z } from 'zod/v4';
+
 /**
  * exports-resolver.ts — Single source of truth for `package.json#exports` /
  * `package.json#imports` resolution per the Node.js spec.
@@ -55,6 +57,40 @@ export interface ResolvablePackageJson {
   imports?: ExportsField;
   main?: string;
   module?: string;
+}
+
+// An invalid leaf (`require: 7`) becomes `null`, the spec's "no target", so
+// resolveConditionValue skips it and a valid sibling (`default`) still
+// resolves. Rejecting the whole field would lose that sibling, which the
+// hand-rolled walk this replaced did not.
+const ExportsFieldSchema: z.ZodType<ExportsField> = z.lazy(() => z.union([
+  z.string(),
+  z.null(),
+  z.array(ExportsFieldSchema),
+  z.record(z.string(), ExportsFieldSchema),
+]).catch(null));
+
+// Each entry field validates on its own: a field the resolver cannot read
+// (`main: 7`) is dropped, the others stay. Whole-object rejection would lose
+// a valid `main` next to a bad `module`, which the runtime resolver tolerates.
+const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
+  exports: ExportsFieldSchema.optional(),
+  imports: ExportsFieldSchema.optional(),
+  main: z.string().optional().catch(undefined),
+  module: z.string().optional().catch(undefined),
+});
+
+/**
+ * The entry-point fields of a package.json read off disk, or null when the
+ * text is not JSON or not an object. A caller narrows through this rather
+ * than annotating `JSON.parse`, so a malformed package resolves as "no
+ * declared entry" instead of throwing inside the resolver.
+ */
+export function parseResolvablePackageJson(text: string): ResolvablePackageJson | null {
+  try {
+    const result = ResolvablePackageJsonSchema.safeParse(JSON.parse(text));
+    return result.success ? result.data : null;
+  } catch { return null; }
 }
 
 /**
