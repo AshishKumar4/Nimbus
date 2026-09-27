@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import {
+  esbuildBuildHost,
   esbuildFacetWorkerCode,
   esbuildPrewarmStatus,
   esbuildTransformHost,
@@ -51,10 +52,12 @@ async function freshFacetClass() {
 /**
  * A Durable Object as esbuild-transform sees it: `env.LOADER.get` hands out the
  * facet's worker (counted), and `ctx.facets.get` gives every caller of a name
- * the same facet instance, as workerd does.
+ * the same facet instance, as workerd does. The first `brokenStubs` stubs it
+ * mints throw on every call, as a stub whose connection dropped does; `build`
+ * on a sound stub answers without running esbuild (only the stub is in question).
  */
-function durableObject(EsbuildFacet) {
-  const counts = { loaderGets: 0, facetInstances: 0 };
+function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
+  const counts = { loaderGets: 0, facetInstances: 0, stubs: 0 };
   const instances = new Map();
   const ctx = {
     id: { toString: () => 'prewarm-do' },
@@ -67,7 +70,12 @@ function durableObject(EsbuildFacet) {
           }));
         }
         const instance = instances.get(name);
+        if (++counts.stubs <= brokenStubs) {
+          const broken = async () => { throw new Error(`stub ${counts.stubs} disconnected`); };
+          return { warm: broken, transformMany: broken, build: broken };
+        }
         return {
+          build: async () => ({ built: true }),
           warm: async () => (await instance).warm(),
           transformMany: async (requests) => structuredClone(await (await instance).transformMany(structuredClone(requests))),
         };
@@ -139,6 +147,48 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   assert.equal(initializations, 2, 'the transform initialized esbuild afresh');
   assert.equal(esbuildPrewarmStatus(ctx)?.state, 'failed', 'the recorded outcome stays the pre-warm\'s');
   console.log('  ok  a failed pre-warm is recorded and the next transform still works');
+}
+
+// ── A stub that threw is dropped: the next caller mints a fresh one ─────────
+{
+  globalThis.__prewarmHook = (initialize) => initialize();
+  // The transform host's retry must not reuse the shared stub that failed.
+  {
+    const { ctx, env, counts } = durableObject(await freshFacetClass(), { brokenStubs: 1 });
+    const [outcome] = await esbuildTransformHost(ctx, env)([request]);
+    assert.equal(outcome.error, undefined, outcome.error);
+    assert.match(outcome.code, /const n = 1;/);
+    assert.equal(counts.stubs, 2, 'the retry minted a second stub');
+  }
+  // A build, and a pre-warm, drop the stub they failed on; the next call gets a sound one.
+  {
+    const { ctx, env, counts } = durableObject(await freshFacetClass(), { brokenStubs: 1 });
+    await assert.rejects(esbuildBuildHost(ctx, env)({}, {}), /stub 1 disconnected/);
+    assert.deepEqual(await esbuildBuildHost(ctx, env)({}, {}), { built: true });
+    assert.equal(counts.stubs, 2);
+  }
+  {
+    const { ctx, env, counts } = durableObject(await freshFacetClass(), { brokenStubs: 1 });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      assert.equal((await prewarmEsbuildFacet(ctx, env)).state, 'failed');
+    } finally {
+      console.warn = warn;
+    }
+    assert.deepEqual(await esbuildBuildHost(ctx, env)({}, {}), { built: true });
+    assert.equal(counts.stubs, 2);
+  }
+  // A build during the pre-warm waits on its load: one LOADER.get, one stub.
+  {
+    const { ctx, env, counts } = durableObject(await freshFacetClass());
+    const prewarm = prewarmEsbuildFacet(ctx, env);
+    assert.deepEqual(await esbuildBuildHost(ctx, env)({}, {}), { built: true });
+    assert.equal((await prewarm).state, 'ok');
+    assert.equal(counts.loaderGets, 1);
+    assert.equal(counts.stubs, 1);
+  }
+  console.log('  ok  transforms, builds and the pre-warm share one stub and drop it when it fails');
 }
 
 delete globalThis.__prewarmHook;

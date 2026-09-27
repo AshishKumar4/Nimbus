@@ -150,10 +150,11 @@ async function esbuildFacet(ctx: DurableObjectState, env: unknown): Promise<Fetc
 }
 
 /**
- * The facet stub a Durable Object's transforms and its pre-warm share, so a
- * transform that starts while the pre-warm is still loading the facet waits
- * on that load instead of starting a second one. A load or call that failed
- * drops the entry; the next caller mints a fresh stub.
+ * The one way to a Durable Object's esbuild facet: its transforms, builds,
+ * `esbuild` commands and pre-warm share one stub, so a caller that starts
+ * while another is still loading the facet (fetching and verifying the 12 MiB
+ * wasm) waits on that load instead of starting a second one. A load or call
+ * that failed drops the entry; the next caller mints a fresh stub.
  */
 const sharedFacets = new WeakMap<DurableObjectState, Promise<Fetcher<EsbuildFacetRpc>>>();
 
@@ -170,6 +171,21 @@ function forgetEsbuildFacet(ctx: DurableObjectState, stub: Promise<Fetcher<Esbui
   if (sharedFacets.get(ctx) === stub) sharedFacets.delete(ctx);
 }
 
+/** One call on the shared facet; a call that throws drops the stub it used. */
+async function onEsbuildFacet<T>(
+  ctx: DurableObjectState,
+  env: unknown,
+  call: (facet: Fetcher<EsbuildFacetRpc>) => Promise<T>,
+): Promise<T> {
+  const stub = sharedEsbuildFacet(ctx, env);
+  try {
+    return await call(await stub);
+  } catch (error) {
+    forgetEsbuildFacet(ctx, stub);
+    throw error;
+  }
+}
+
 /** What became of a Durable Object's esbuild facet pre-warm. */
 export interface EsbuildPrewarmStatus {
   state: 'pending' | 'ok' | 'failed';
@@ -178,8 +194,8 @@ export interface EsbuildPrewarmStatus {
   error?: string;
 }
 
-const prewarms = new WeakMap<DurableObjectState, Promise<EsbuildPrewarmStatus>>();
-const prewarmStatuses = new WeakMap<DurableObjectState, EsbuildPrewarmStatus>();
+/** A Durable Object activation's one pre-warm: its status as it goes, and its outcome. */
+const prewarms = new WeakMap<DurableObjectState, { status: EsbuildPrewarmStatus; done: Promise<EsbuildPrewarmStatus> }>();
 
 /**
  * Load a Durable Object's esbuild facet and initialize its esbuild in the
@@ -194,19 +210,16 @@ const prewarmStatuses = new WeakMap<DurableObjectState, EsbuildPrewarmStatus>();
  */
 export function prewarmEsbuildFacet(ctx: DurableObjectState, env: unknown): Promise<EsbuildPrewarmStatus> {
   const existing = prewarms.get(ctx);
-  if (existing) return existing;
+  if (existing) return existing.done;
   const status: EsbuildPrewarmStatus = { state: 'pending' };
-  prewarmStatuses.set(ctx, status);
   const started = Date.now();
-  const stub = sharedEsbuildFacet(ctx, env);
-  const outcome = stub.then((facet) => facet.warm()).then(
+  const done = onEsbuildFacet(ctx, env, (facet) => facet.warm()).then(
     () => {
       status.state = 'ok';
       status.wallMs = Date.now() - started;
       return status;
     },
     (error: unknown) => {
-      forgetEsbuildFacet(ctx, stub);
       status.state = 'failed';
       status.wallMs = Date.now() - started;
       status.error = errorText(error);
@@ -214,13 +227,13 @@ export function prewarmEsbuildFacet(ctx: DurableObjectState, env: unknown): Prom
       return status;
     },
   );
-  prewarms.set(ctx, outcome);
-  return outcome;
+  prewarms.set(ctx, { status, done });
+  return done;
 }
 
 /** The pre-warm's outcome so far, or null before one started. */
 export function esbuildPrewarmStatus(ctx: DurableObjectState): EsbuildPrewarmStatus | null {
-  return prewarmStatuses.get(ctx) ?? null;
+  return prewarms.get(ctx)?.status ?? null;
 }
 
 /** Calls per slice: a slice whose call failed is sent once more. */
@@ -277,8 +290,7 @@ export function esbuildTransformHost(ctx: DurableObjectState, env: unknown): Esb
  */
 export function esbuildBuildHost(ctx: DurableObjectState, env: unknown): EsbuildBuildHost {
   return async (options, plugin) => {
-    const facet = await esbuildFacet(ctx, env);
-    return await facet.build(options, plugin);
+    return onEsbuildFacet(ctx, env, (facet) => facet.build(options, plugin));
   };
 }
 
@@ -300,8 +312,7 @@ export async function runEsbuildCli(
   const supervisor = mint<WasiSupervisorStub>({
     props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined },
   });
-  const facet = await esbuildFacet(ctx, env);
-  return await facet.cli(args, supervisor, output);
+  return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
 }
 
 /**

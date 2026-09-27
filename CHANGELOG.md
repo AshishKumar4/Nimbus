@@ -10,9 +10,12 @@ published independently in the `@nimbus-sh` npm scope.
   TypeScript entry's launch) no longer pays the facet's cold start (about a
   second). The pre-warm and the transforms share one facet stub and one
   esbuild initialization; a failed pre-warm is logged once and the first
-  transform starts the facet as before. A failed esbuild initialization
-  inside the facet is no longer kept, so the next call retries it.
-  `/api/_diag/session` reports the pre-warm as `esbuildPrewarm`.
+  transform starts the facet as before. Only activations with an
+  interactive terminal pre-warm; the SDK path does not. Transforms, builds,
+  `esbuild` commands and the pre-warm share one facet stub, dropped when a
+  call on it throws. A failed esbuild initialization inside the facet is no
+  longer kept, so the next call retries it. `/api/_diag/session` reports
+  the pre-warm as `esbuildPrewarm`.
 
 - The Worker bundle is back under its 7 MiB size gate (`-e production`
   dry run: 7,704,433 to 7,289,911 bytes). The git network facet's copy of

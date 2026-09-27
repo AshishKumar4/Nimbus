@@ -500,9 +500,12 @@ if (persisted.cwd) {
 
     ws?.send(JSON.stringify({ type: 'ready' }));
 
-    // Once the prompt is up, boot the esbuild facet in the background: a
-    // session's first transform (`vite` reading vite.config.ts, a TS entry's
-    // launch) otherwise pays its cold start, about a second. It is not
-    // awaited and never fails the session (esbuild-transform.ts).
-    void started.then(() => prewarmEsbuildFacet(self.ctx, self.env));
+    // Once an interactive terminal's prompt is up, boot the esbuild facet in
+    // the background: its first transform (`vite` reading vite.config.ts, a
+    // TS entry's launch) otherwise pays the facet's cold start, about a
+    // second. Not for an activation with no terminal (the SDK path,
+    // ensureRuntimeReady): nothing there is waiting on a prompt, and an
+    // embedder's sandbox should not boot esbuild on every wake for nothing.
+    // Not awaited; never fails the session (esbuild-transform.ts).
+    if (ws) void started.then(() => prewarmEsbuildFacet(self.ctx, self.env));
 }
