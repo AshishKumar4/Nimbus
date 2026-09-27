@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- In the workspace shell, `cat /dev/zero > file` (or into the terminal or
+  /dev/null) fails at once with the device's "produces bytes without end"
+  error again, instead of writing zeros until the session's storage is full.
+  `cat` streams an endless device only into a pipe, whose reader ends it;
+  `head -c N` and `head -n N` still read a slice of one. Commands that need
+  the whole input (`wc`, `sort`, `tail`, `head -c -N`, checksums) get the same
+  error for an endless device operand.
+
 - A resident Node process now holds, from launch, a file its code reads with
   `readFileSync` or `openSync` by a statically known path, whatever the file's
   size. The data plan used to drop every static reference of 256 KiB or more,
