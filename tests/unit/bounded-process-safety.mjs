@@ -44,6 +44,9 @@ try {
   assert.match(missing.reason, /spawn failed/);
   const emptyPath = await runBoundedProcess('sh', ['-c', 'exit 0'], { env: { ...process.env, PATH: '' } });
   assert.match(emptyPath.reason, /spawn failed/);
+  const narrowEnv = await runBoundedProcess(process.execPath, ['-e', 'console.log(JSON.stringify(process.env))'], { env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+  assert.equal(narrowEnv.ok, true, narrowEnv.reason);
+  assert.deepEqual(JSON.parse(narrowEnv.stdout), { PATH: '/usr/bin:/bin', LANG: 'C' });
   const normal143 = await runBoundedProcess(process.execPath, ['-e', 'process.exit(143)']);
   assert.equal(normal143.code, 143);
   assert.equal(normal143.reason, '');

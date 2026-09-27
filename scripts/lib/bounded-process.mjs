@@ -125,6 +125,10 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         return;
       }
     }
+    if (unit) {
+      executable = resolvePath(cwd ?? process.cwd(), executable);
+      try { accessSync(executable, constants.X_OK); } catch { resolveResultMissing(); return; }
+    }
     function resolveResultMissing() {
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
     }
@@ -137,10 +141,12 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       `--property=MemoryHigh=${process.env.NIMBUS_TEST_MEMORY_HIGH || '3G'}`, '--property=MemorySwapMax=0',
       '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TasksMax=256',
       '--property=TimeoutStopSec=1s', `--property=TimeoutStartSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}s`,
-      ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `--setenv=${key}=${value}`),
-      '--', executable, ...args,
+      // The launcher needs the caller's user-bus environment. The target
+      // receives only its requested environment, not the manager's defaults.
+      '--', '/usr/bin/env', '-i', ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}=${value}`),
+      executable, ...args,
     ] : args;
-    const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env, cwd });
+    const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;
     const job = {
       name,
