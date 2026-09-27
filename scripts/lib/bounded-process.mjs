@@ -134,7 +134,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     }
     const launchArgs = unit ? [
       // oneshot treats SIGTERM as a signal failure, not a clean service stop.
-      '--user', '--quiet', '--wait', '--pipe', '--service-type=oneshot',
+      '--user', '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
       `--unit=${unit}`, '--slice=nimbus-tests.slice',
       `--working-directory=${cwd ?? process.cwd()}`,
       `--property=MemoryMax=${process.env.NIMBUS_TEST_MEMORY_MAX || '4G'}`,
