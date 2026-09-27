@@ -280,6 +280,9 @@ export interface VfsExportRow {
     defaultAcl: number | null;
     atime: number;
     mtime: number;
+    contentKey: string | null;
+    /** Byte offset of this bounded manifest fragment. */
+    pieceOffset: number;
     /** False for content in one chunk (<= CHUNK_SIZE bytes). */
     manifest: boolean;
     /** Chunk sha256 (hex) and size, in content order. */
@@ -509,9 +512,8 @@ export declare class SqliteVFS {
     get legacyReset(): boolean;
     acknowledgeLegacyReset(): void;
     /**
-     * After a restart no operation is assembling anything, so every state-0
-     * content is an abandoned write: queue them all. Read first, so a store
-     * with none opens without a write.
+     * Queue interrupted staging after a restart. Durable import manifests
+     * have been re-pinned above, so GC skips them. A store with none stays read-only.
      */
     private queueAbandonedStaging;
     private tableColumns;
@@ -887,6 +889,7 @@ export declare class SqliteVFS {
      * another content already holds it.
      */
     private contentKeyOf;
+    private manifestDigest;
     /** contentKeyOf from a list row's joined chunk hash or digest, so a page costs no lookup per file. */
     private listedContentKey;
     private contentKey;
@@ -1143,8 +1146,15 @@ export declare class SqliteVFS {
     private inodeAt;
     /** The children of `dir` as of generation `g`, in UTF-16 name order (readdir's). */
     private childrenAt;
-    /** One keyset page of the tree as of `g`, in path order: live and history merged. */
+    /**
+     * One keyset page of the tree as of `g`, in SQLite's path order (UTF-8 bytes,
+     * the order `path > ?` keysets use): live and history merged in SQL, so the
+     * page boundary and the cursor never disagree. A JS `<` on strings orders by
+     * UTF-16 code units and would place U+10000 before U+E000.
+     */
     private pageAt;
+    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
+    private static comparePaths;
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
@@ -1237,13 +1247,7 @@ export declare class SqliteVFS {
         /** The session's storage ledger (N18): used, the limit, and its parts. */
         ledger: StorageLedgerView;
     };
-    /**
-     * One page of snapshot `at`'s tree under `root`, after the relative path
-     * `after` (null: from the start), in path order. Rows carry their chunk
-     * hashes and sizes, never bytes; a page stops at `limit` rows or
-     * EXPORT_PAGE_PIECES chunk references. `next` is the cursor for the
-     * following page, null after the last.
-     */
+    /** Bounded rows and manifest fragments; cursors are opaque (path, byte offset) positions. */
     exportPage(options: {
         at: string;
         root?: string;
@@ -1270,8 +1274,10 @@ export declare class SqliteVFS {
     wantChunks(page: VfsExportPage): string[];
     private absentChunks;
     /**
-     * The bytes of chunks by hash, up to `maxBytes` (at least one chunk);
-     * `rest` is what did not fit. ENOENT for a hash this database lacks.
+     * The bytes of chunks by hash, up to `maxBytes` (at least one chunk) and at
+     * most EXPORT_PAGE_PIECES chunks (a page names no more, so tiny chunks cannot
+     * make an object frame past the reference budget); `rest` is what did not
+     * fit. ENOENT for a hash this database lacks.
      */
     exportChunks(hashes: readonly string[], maxBytes?: number): {
         chunks: VfsExportChunk[];
@@ -1302,6 +1308,9 @@ export declare class SqliteVFS {
         pending: string[];
     };
     private importPageNow;
+    private ensureImportIdentityIndexes;
+    private dropUnusedImportIdentityIndexes;
+    private importIdentity;
     /**
      * Rows for chunks a lazy import names without bytes (N17): hash and size,
      * no data, state pending. Each is queued for collection too, so one that

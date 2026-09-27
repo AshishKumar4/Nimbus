@@ -873,10 +873,20 @@ const __fsMod = (() => {
   let _nsFresh = [];
   let _barrierBegins = 0;
   function _nsOwnSet(k, state, extra) {
+    const before = _nsOwn.get(k);
     const entry = { state, from: extra?.from, hide: !!extra?.hide, settled: null };
+    try { __residentNamespaceOverlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
+    catch (error) {
+      // The view is sealed by the store. Let the already-projected structural
+      // operation reach its authority/ack; aborting midway would strand
+      // earlier overlays with no owning mutation to retire them.
+      if (__residentInHeap && error?.code === "ENOSPC") return;
+      throw error;
+    }
     _nsOwn.set(k, entry);
     _nsFresh.push(entry);
   }
+  function _nsOwnCost(k, entry) { return __namespaceRowBytes("", k, entry.from); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
     const mine = _nsFresh;
@@ -884,7 +894,10 @@ const __fsMod = (() => {
     return () => { for (const entry of mine) if (entry.settled === null) entry.settled = _barrierBegins; };
   }
   function _nsRetire(begin) {
-    for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) _nsOwn.delete(k);
+    for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) {
+      _nsOwn.delete(k);
+      __residentNamespaceOverlayDelta(-_nsOwnCost(k, entry));
+    }
   }
 
   /**
@@ -1946,6 +1959,11 @@ const __fsMod = (() => {
       for (let joins = 0; ; joins++) {
         const joining = _residentRepair !== null;
         const namespaceOwed = !namespaceAsked && !_nsActive();
+        // A sealed heap view can release acknowledged overlays before its
+        // listing; otherwise the old overlay and replacement rows would
+        // consume the same scarce allowance while preventing each other's
+        // repair. Nothing synchronous may consult the sealed view here.
+        if (namespaceOwed && __residentInHeap) _nsRetire(begin);
         const needsRepair = result === null || result.poison === true || _storeRepairOwed || namespaceOwed;
         if (!joining && !needsRepair) break;
         if (namespaceOwed) { namespaceAsked = true; _stats.namespaceRepairs++; }

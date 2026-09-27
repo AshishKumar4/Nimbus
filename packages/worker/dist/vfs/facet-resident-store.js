@@ -310,15 +310,31 @@ let __residentFacet = null;
 let __residentSupervisor = null;
 let __residentGrantAsk = null;
 const __RESIDENT_ROW_BYTES = 256;
+function __namespaceRowBytes(parent, name, target) {
+  // JavaScript keeps path/target strings in the heap. Charge UTF-16 storage
+  // plus the existing row allowance, even when the engine can compress text.
+  return __RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
+}
 
 function __residentDbBytes() {
   // A one-shot's heap is one budget: the store's tables and the own writes
   // held beside them (__residentHold) count against the same cap.
-  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes : 0);
+  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes + __residentNamespaceOverlayBytes + __residentNamespaceReserveBytes : 0);
 }
 
 /** Whether the store is a one-shot's heap (__residentBindInMemory) rather than a facet's SQLite. */
 let __residentInHeap = false;
+let __residentNamespaceOverlayBytes = 0;
+let __residentNamespaceReserveBytes = 0;
+function __residentNamespaceOverlayDelta(bytes) {
+  if (!__residentInHeap) return;
+  if (bytes > 0 && __residentCap !== null && __residentDbBytes() + bytes > __residentCap) {
+    const cause = "namespace storage budget exceeded (" + __residentCap + " bytes)";
+    __nsMarkReady(__residentT, false, cause);
+    throw Object.assign(new Error(cause), { code: "ENOSPC" });
+  }
+  __residentNamespaceOverlayBytes += bytes;
+}
 
 /**
  * Whether the store may grow by \`bytes\` now; when not, and \`ask\`, more room
@@ -448,7 +464,7 @@ function __residentHold(path, cell) {
   const size = __residentCellSize({ cell });
   // In a facet the held cells have their own bound. In a one-shot's heap they
   // share the store's: what the cap leaves beside the tables.
-  const limit = __residentInHeap ? Math.max(0, Number(__residentCap) - __residentT.bytes()) : __RESIDENT_HELD_MAX_BYTES;
+  const limit = __residentInHeap ? Math.max(0, Number(__residentCap) - __residentT.bytes() - __residentNamespaceOverlayBytes - __residentNamespaceReserveBytes) : __RESIDENT_HELD_MAX_BYTES;
   if (size > limit) { __residentUnheld.add(path); return; }
   while (__residentHeldBytes + size > limit) {
     const [oldest, old] = __residentHeld.entries().next().value;
@@ -665,6 +681,7 @@ function __residentTablesInMemory() {
   let sorted = null;
   let used = 0;
   let names = 0;
+  let namespaceBytes = 0;
   const utf8 = (text) => __residentUtf8Length(text);
   // SQLite's binary collation orders TEXT by its UTF-8 bytes: code-point
   // order, which UTF-16 comparison is not past the BMP.
@@ -728,16 +745,22 @@ function __residentTablesInMemory() {
   const nsRow = (parent, name) => { const dir = ns.get(parent); return dir ? dir.get(name) : undefined; };
   const nsDrop = (parent, name) => {
     const dir = ns.get(parent);
-    if (!dir || !dir.delete(name)) return;
+    const row = dir?.get(name);
+    if (row === undefined) return;
+    dir.delete(name);
     names--;
-    used -= __RESIDENT_ROW_BYTES;
+    const bytes = __namespaceRowBytes(parent, name, row.target);
+    used -= bytes; namespaceBytes -= bytes;
     if (dir.size === 0) ns.delete(parent);
   };
   const nsDropParent = (parent) => {
     const dir = ns.get(parent);
     if (!dir) return;
     names -= dir.size;
-    used -= dir.size * __RESIDENT_ROW_BYTES;
+    for (const [name, row] of dir) {
+      const bytes = __namespaceRowBytes(parent, name, row.target);
+      used -= bytes; namespaceBytes -= bytes;
+    }
     ns.delete(parent);
   };
   const byName = cmp;
@@ -813,12 +836,21 @@ function __residentTablesInMemory() {
     },
     clear() {
       files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
-      sorted = null; used = 0; names = 0;
+      sorted = null; used = 0; names = 0; namespaceBytes = 0;
     },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
       let dir = ns.get(parent);
+      const previous = dir?.get(name);
+      const bytes = __namespaceRowBytes(parent, name, target);
+      const growth = bytes - (previous === undefined ? 0 : __namespaceRowBytes(parent, name, previous.target));
+      if (__residentInHeap && __residentCap !== null && used + __residentHeldBytes + __residentNamespaceOverlayBytes + __residentNamespaceReserveBytes + growth > __residentCap) {
+        const cause = "namespace storage budget exceeded (" + __residentCap + " bytes)";
+        __nsMarkReady(__residentT, false, cause);
+        throw Object.assign(new Error(cause), { code: "ENOSPC" });
+      }
       if (!dir) { dir = new Map(); ns.set(parent, dir); }
-      if (!dir.has(name)) { names++; used += __RESIDENT_ROW_BYTES; }
+      if (previous === undefined) names++;
+      used += growth; namespaceBytes += growth;
       dir.set(name, {
         kind: Number(kind), size: Number(size), mode: Number(mode), uid: Number(uid), gid: Number(gid),
         atime: Number(atime), mtime: Number(mtime), ctime: Number(ctime), ino: Number(ino), rev: Number(rev),
@@ -831,7 +863,8 @@ function __residentTablesInMemory() {
     nsDeleteParents(from, to) {
       for (const parent of [...ns.keys()]) if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0)) nsDropParent(parent);
     },
-    nsClear() { used -= names * __RESIDENT_ROW_BYTES; names = 0; ns.clear(); },
+    nsClear() { used -= namespaceBytes; names = 0; namespaceBytes = 0; ns.clear(); },
+    nsBytes() { return namespaceBytes; },
     nsKeys() {
       const out = [];
       for (const parent of [...ns.keys()].sort(byName)) for (const name of [...ns.get(parent).keys()].sort(byName)) out.push({ parent, name });
@@ -863,6 +896,8 @@ function __residentBindInMemory(budget) {
   __residentInHeap = true;
   __residentFacet = null;
   __residentCap = Number(budget);
+  __residentNamespaceOverlayBytes = 0;
+  __residentNamespaceReserveBytes = 0;
   return t;
 }
 
@@ -989,7 +1024,7 @@ function __residentAdmit(result) {
     for (const entry of result.paths) {
       if (floor !== null && Number(entry.rev) <= floor) continue;
       const path = entry.path;
-      if (namespaced) {
+      if (namespaced && __nsReady()) {
         const again = __nsApplyEntry(t, entry);
         if (again !== null) relist.push(again);
       }
@@ -1462,6 +1497,16 @@ function __nsPut(t, k, stat, rev, target) {
   if (kind === __NS_LINK) __nsLinks.add(k); else __nsLinks.delete(k);
 }
 
+// The authority operation may succeed while metadata cannot be cached.
+// nsPut has sealed the sync view on heap ENOSPC; preserve the async result.
+function __nsTryPut(t, k, stat, rev, target) {
+  try { __nsPut(t, k, stat, rev, target); return true; }
+  catch (error) {
+    if (__residentInHeap && error && error.code === "ENOSPC") return false;
+    throw error;
+  }
+}
+
 /** Delete everything beneath \`k\`, and \`k\` itself when \`self\`. */
 function __nsDeleteTree(t, k, self) {
   if (k === "") {
@@ -1561,7 +1606,7 @@ function __nsApplyEntry(t, entry) {
   if (k === "") return null;
   if (entry.stat === null) { __nsDeleteTree(t, k, true); return null; }
   const before = __nsRowAt(t, k);
-  __nsPut(t, k, entry.stat, entry.rev, entry.linkTarget);
+  if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget)) return null;
   const after = __nsRowAt(t, k);
   if (Number(after.kind) !== __NS_DIR) { __nsDeleteTree(t, k, false); return null; }
   const was = before !== undefined && __nsTraversable(before);
@@ -1578,6 +1623,27 @@ function __nsApplyEntry(t, entry) {
  */
 function __nsReplace(t, entries) {
   const listed = new Set();
+  for (const entry of entries) listed.add(String(entry.path).replace(/^\\/+/, ""));
+  // Remove stale rows before admitting replacements; do not transiently
+  // charge both versions of a complete namespace against the fixed cap.
+  for (const row of t.nsKeys()) {
+    const parent = String(row.parent);
+    const k = parent ? parent + "/" + String(row.name) : String(row.name);
+    if (!listed.has(k)) { t.nsDelete(parent, String(row.name)); __nsLinks.delete(k); }
+  }
+  // Free shrinking text before growing another surviving row; final-state
+  // admission must not depend on alphabetical replacement order.
+  if (__residentInHeap) {
+    for (const entry of entries) {
+      const k = String(entry.path).replace(/^\\/+/, "");
+      if (!k) continue;
+      const [parent, name] = __nsSplit(k);
+      const held = t.nsGet(parent, name);
+      if (held && __namespaceRowBytes(parent, name, held.target) > __namespaceRowBytes(parent, name, entry.linkTarget)) {
+        __nsPut(t, k, entry.stat, entry.rev, entry.linkTarget);
+      }
+    }
+  }
   for (const entry of entries) {
     const k = String(entry.path).replace(/^\\/+/, "");
     if (k === "") continue;
@@ -1592,16 +1658,6 @@ function __nsReplace(t, entries) {
       && Number(held.rev) === Number(entry.rev)
       && (held.target ?? null) === (entry.linkTarget ?? null)) continue;
     __nsPut(t, k, s, entry.rev, entry.linkTarget);
-  }
-  const stale = [];
-  for (const row of t.nsKeys()) {
-    const parent = String(row.parent);
-    const k = parent ? parent + "/" + String(row.name) : String(row.name);
-    if (!listed.has(k)) stale.push([parent, String(row.name), k]);
-  }
-  for (const [parent, name, k] of stale) {
-    t.nsDelete(parent, name);
-    __nsLinks.delete(k);
   }
 }
 
@@ -1618,7 +1674,7 @@ function __nsNoteOwnFile(k, size, rev) {
   const held = __nsRowAt(t, k);
   if (held !== undefined && Number(held.rev) >= rev) return;
   const now = Date.now();
-  __nsPut(t, k, {
+  __nsTryPut(t, k, {
     // A file the process created: its umask's mode, until the delta reports
     // the authority's own stat for it.
     type: "file", size, mode: held ? Number(held.mode) : 0o100666 & ~Number(__nsCred?.umask ?? 0o022),
@@ -1648,7 +1704,7 @@ function __nsNoteLiveStat(k, stat) {
     return;
   }
   if (!__nsDescribes(stat)) return;
-  __nsPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target ?? null);
+  __nsTryPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target ?? null);
 }
 
 /**
@@ -1832,6 +1888,15 @@ async function __nsRelist(supervisor, dir) {
   const t = __residentT;
   const prefix = dir + "/";
   const seen = [];
+  let replaceBytes = 0;
+  let incomingBytes = 0;
+  if (__residentInHeap) {
+    for (const row of t.nsKeys()) {
+      const key = row.parent ? row.parent + "/" + row.name : row.name;
+      if (!key.startsWith(prefix)) continue;
+      replaceBytes += __namespaceRowBytes(row.parent, row.name, t.nsGet(row.parent, row.name)?.target);
+    }
+  }
   let after = prefix;
   let done = false;
   for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES && !done; page++) {
@@ -1845,7 +1910,17 @@ async function __nsRelist(supervisor, dir) {
         if (k > prefix) { done = true; break; }
         continue;
       }
-      if (entry.stat) seen.push(entry);
+      if (entry.stat) {
+        if (__residentInHeap && __residentCap !== null) {
+          const [parent, name] = __nsSplit(k);
+          incomingBytes += __namespaceRowBytes(parent, name, entry.linkTarget);
+          if (__residentDbBytes() - replaceBytes + incomingBytes > __residentCap) {
+            __nsMarkReady(t, false, "namespace storage budget exceeded (" + __residentCap + " bytes)");
+            return;
+          }
+        }
+        seen.push(entry);
+      }
     }
     if (listed.next === null || listed.next === undefined) done = true;
     else after = listed.next;
@@ -1932,6 +2007,7 @@ async function __residentEnumerate(supervisor) {
   const entries = [];
   // Every name, whatever its kind: the namespace is built from these.
   const names = [];
+  let namespaceBytes = 0;
   let after = null;
   let cursor = null;
   for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES; page++) {
@@ -1945,7 +2021,19 @@ async function __residentEnumerate(supervisor) {
       return { entries, names, cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
     }
     for (const entry of listed.entries) {
-      if (entry.stat) names.push(entry);
+      if (entry.stat) {
+        if (__residentInHeap && __residentCap !== null) {
+          const key = String(entry.path).replace(/^\\/+/, "");
+          const [parent, name] = __nsSplit(key);
+          if (key) namespaceBytes += __namespaceRowBytes(parent, name, entry.linkTarget);
+          if (__residentDbBytes() - __residentT.nsBytes() + namespaceBytes > __residentCap) {
+            const cause = "namespace storage budget exceeded (" + __residentCap + " bytes)";
+            __nsMarkReady(__residentT, false, cause);
+            throw Object.assign(new Error(cause), { code: "ENOSPC" });
+          }
+        }
+        names.push(entry);
+      }
       // Directories carry no content, and a symlink's size is its TARGET's
       // length rather than the resolved file's — reading one by that size
       // would store a truncated file and call it whole. Content is fetched
@@ -1964,7 +2052,7 @@ async function __residentEnumerate(supervisor) {
       entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey) });
     }
     if (listed.next === null || listed.next === undefined) {
-      return { entries, names, cursor, complete: true, reason: null };
+      return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
     }
     after = listed.next;
   }
@@ -2205,6 +2293,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // complete enumeration: a truncated one cannot tell a path that was removed
   // from one that was never walked.
   const judgeable = listing.complete;
+  const describable = judgeable && listing.names.every((entry) => __nsDescribes(entry.stat));
   // May a held revision be COMPARED with a listed one? Only inside one
   // supervisor incarnation: across a restart the clocks are unrelated, and an
   // untouched path lists at rev 0, which would vouch for anything.
@@ -2289,7 +2378,18 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     if (plan.has(file.path) || wanted.has(file.path)
       || (__residentPushable(file.path) && (!comparable || file.rev > held.rev))) fetch.push(file);
   }
-  const filled = await __residentFetchFiles(supervisor, fetch);
+  // Reserve mandatory metadata growth while optional data is fetched, but
+  // retain the existing namespace publication order across the await.
+  const namespaceGrowth = __residentInHeap && describable ? Math.max(0, listing.namespaceBytes - t.nsBytes()) : 0;
+  if (__residentInHeap && __residentCap !== null && __residentDbBytes() + namespaceGrowth > __residentCap) {
+    const cause = "namespace storage budget exceeded (" + __residentCap + " bytes)";
+    __nsMarkReady(t, false, cause);
+    throw Object.assign(new Error(cause), { code: "ENOSPC" });
+  }
+  __residentNamespaceReserveBytes += namespaceGrowth;
+  let filled;
+  try { filled = await __residentFetchFiles(supervisor, fetch); }
+  finally { __residentNamespaceReserveBytes -= namespaceGrowth; }
 
   // The cursor may only advance to a state the rows actually describe, and
   // after a truncated listing they do not: a path in an unwalked page could
@@ -2297,7 +2397,6 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   if (judgeable) {
     // A listing that cannot describe every name restores the rows it vouches
     // for and the cursor, but not the namespace (see __nsDescribes).
-    const describable = listing.names.every((entry) => __nsDescribes(entry.stat));
     if (describable) __nsReplace(t, listing.names);
     __residentWriteCursor(t, listing.cursor);
     __nsMarkReady(t, describable, "the session's listing named an entry without its stat");
