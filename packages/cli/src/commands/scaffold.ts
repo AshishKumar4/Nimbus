@@ -18,6 +18,11 @@
 
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, basename, relative } from 'node:path';
+import { createRequire } from 'node:module';
+
+const { dependencies } = createRequire(import.meta.url)('../../package.json') as {
+  dependencies: Record<string, string>;
+};
 
 /**
  * Scaffold a new Nimbus project at the given directory.
@@ -138,9 +143,9 @@ function renderPackageJson(name: string): string {
         typecheck: 'tsc --noEmit',
       },
       dependencies: {
-        '@nimbus-sh/config': '^0.1.4',
-        '@nimbus-sh/worker': '^0.2.0',
-        '@nimbus-sh/sdk': '^0.2.0',
+        '@nimbus-sh/config': dependencies['@nimbus-sh/config'],
+        '@nimbus-sh/worker': dependencies['@nimbus-sh/worker'],
+        '@nimbus-sh/sdk': dependencies['@nimbus-sh/sdk'],
       },
       devDependencies: {
         '@cloudflare/workers-types': '^4.20250327.0',
@@ -215,6 +220,7 @@ function renderWranglerJsonc(name: string): string {
 function renderIndexTs(): string {
   return `import {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,
