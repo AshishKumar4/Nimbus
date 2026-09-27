@@ -1,13 +1,24 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'bounded-process-'));
 const owned = [];
+async function readyFile(path) {
+  for (let i = 0; i < 500 && !existsSync(path); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(existsSync(path), `missing readiness handshake: ${path}`);
+}
+async function lockStatus(path) {
+  const result = await runBoundedProcess('/usr/bin/flock', ['-n', path, '/usr/bin/true'], { timeoutMs: 1000 });
+  assert.equal(result.reason, '');
+  return result.code;
+}
 try {
   const binary = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write(Buffer.alloc(90000,255)); process.exit(7)'], { encoding: null });
   assert.equal(binary.code, 7);
@@ -26,22 +37,28 @@ try {
   assert.match(timed.reason, /timeout 100ms/);
   console.log('bounded-process-safety: overflow and deadline enforced');
 
-  // A setsid child may escape a PID census before its parent exits. Strong
-  // cleanup must empty its cgroup, not merely stop waiting for inherited pipes.
-  const pidFile = join(root, 'escaped.pid');
-  const grandchild = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, require('node:fs').readFileSync('/proc/self/cgroup')); setInterval(()=>{},1000);`;
-  const parent = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:true,stdio:'inherit'}).unref(); process.exit(0);`;
-  const escaped = await runBoundedProcess(process.execPath, ['-e', parent], { timeoutMs: 3000 });
-  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
-    assert.equal(escaped.ok, true, escaped.reason);
-    if (existsSync(pidFile)) {
-      const group = readFileSync(pidFile, 'utf8').trim().split('::')[1];
-      try { assert.match(readFileSync(`/sys/fs/cgroup${group}/cgroup.events`, 'utf8'), /populated 0/, 'escaped descendant survived'); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    }
-  } else assert.ok(escaped.ok || /cleanup deadline exceeded/.test(escaped.reason), escaped.reason);
-  // Whether the census caught it or not, the call returned without waiting
-  // for this endless descendant to voluntarily close stdout/stderr.
+  // The detached child acquires an exclusive lock, acknowledges over fd3,
+  // then stops itself. It cannot voluntarily release the lock. Requiring the
+  // lock busy before parent exit and free afterward proves actual teardown,
+  // not merely a closed output pipe or a marker that might never appear.
+  const lock = join(root, 'detached.lock');
+  const ready = join(root, 'detached.ready');
+  const release = join(root, 'parent.release');
+  const grandchild = `require('node:fs').writeSync(3,'ready'); process.kill(process.pid,'SIGSTOP');`;
+  const parent = `
+    const fs=require('node:fs');
+    const child=require('node:child_process').spawn('/usr/bin/flock', ['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(grandchild)}],{detached:true,stdio:['ignore',1,2,'pipe']});
+    child.stdio[3].once('data',()=>fs.writeFileSync(${JSON.stringify(ready)},'ready'));
+    setInterval(()=>{ if(fs.existsSync(${JSON.stringify(release)})) process.exit(0); },10);
+  `;
+  const escaped = runBoundedProcess(process.execPath, ['-e', parent], { timeoutMs: 10_000 });
+  let escapedResult;
+  try {
+    await readyFile(ready);
+    assert.equal(await lockStatus(lock), 1, 'detached child holds its lock before parent exit');
+  } finally { writeFileSync(release, 'release'); escapedResult = await escaped; }
+  assert.equal(escapedResult.ok, true, escapedResult.reason);
+  assert.equal(await lockStatus(lock), 0, 'stopped detached descendant was actually terminated');
   const missing = await runBoundedProcess(join(root, 'no-command'));
   assert.equal(missing.ok, false);
   assert.match(missing.reason, /spawn failed/);
@@ -50,6 +67,59 @@ try {
   const narrowEnv = await runBoundedProcess(process.execPath, ['-e', 'console.log(JSON.stringify(process.env))'], { env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
   assert.equal(narrowEnv.ok, true, narrowEnv.reason);
   assert.deepEqual(JSON.parse(narrowEnv.stdout), { PATH: '/usr/bin:/bin', LANG: 'C' });
+  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
+    const sentinel = `synthetic-${randomUUID()}`;
+    const marker = join(root, 'private-launch.ready');
+    const releasePrivate = join(root, 'private-launch.release');
+    const probe = join(root, 'private-launch.mjs');
+    writeFileSync(probe, `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const parentArgv = fs.readFileSync('/proc/'+process.ppid+'/cmdline','utf8');
+      const request = parentArgv.split('\\0').filter(Boolean).at(-1);
+      const group = fs.readFileSync('/proc/self/cgroup','utf8').trim().split('::')[1];
+      fs.writeFileSync(process.env.MARKER, JSON.stringify({ parentArgv, request, group,
+        mode: fs.statSync(request).mode & 511, dirMode: fs.statSync(path.dirname(request)).mode & 511,
+        received: process.env.SAFETY_SENTINEL }));
+      setInterval(()=>{ if(fs.existsSync(process.env.RELEASE)) process.exit(0); },10);
+    `);
+    const pending = runBoundedProcess(process.execPath, [probe], {
+      timeoutMs: 10_000,
+      env: { PATH: '/usr/bin:/bin', SAFETY_SENTINEL: sentinel, MARKER: marker, RELEASE: releasePrivate },
+    });
+    let request;
+    try {
+      await readyFile(marker);
+      const observed = JSON.parse(readFileSync(marker, 'utf8'));
+      request = observed.request;
+      assert.equal(observed.received, sentinel);
+      assert.equal(observed.mode, 0o600);
+      assert.equal(observed.dirMode, 0o700);
+      assert.ok(!observed.parentArgv.includes(sentinel), 'secret absent from launcher argv');
+      const unit = observed.group.split('/').at(-1);
+      const metadata = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${userInfo().username}@.host`, 'show', unit, '--property=Description,ExecStart'], { encoding: 'utf8', timeout: 3000 });
+      assert.equal(metadata.status, 0, metadata.stderr);
+      assert.match(metadata.stdout, /Description=Nimbus bounded subprocess/);
+      assert.ok(!metadata.stdout.includes(sentinel), 'secret absent from systemd metadata');
+    } finally {
+      writeFileSync(releasePrivate, 'release');
+      const result = await pending;
+      assert.equal(result.ok, true, result.reason);
+    }
+    assert.equal(existsSync(request), false, 'private launch request removed after completion');
+    const huge = await runBoundedProcess(process.execPath, ['-e', ''], { env: { HUGE: 'x'.repeat(1024 * 1024) } });
+    assert.match(huge.reason, /launch request exceeds/);
+    const entry = fileURLToPath(new URL('../../scripts/lib/subprocess-entry.mjs', import.meta.url));
+    const invalidRequest = join(root, 'invalid-request.json');
+    for (const content of ['{"executable":', JSON.stringify({ executable: process.execPath, args: ['-e', 'console.log("must not execute")'], env: null })]) {
+      rmSync(join(root, 'status.json'), { force: true });
+      writeFileSync(invalidRequest, content, { mode: 0o600 });
+      const refused = await runBoundedProcess(process.execPath, [entry, invalidRequest]);
+      assert.equal(refused.code, 1);
+      assert.equal(refused.stdout, '');
+      assert.equal(JSON.parse(readFileSync(join(root, 'status.json'), 'utf8')).code, null, 'invalid request is not a target exit');
+    }
+  }
   const normal143 = await runBoundedProcess(process.execPath, ['-e', 'process.exit(143)']);
   assert.equal(normal143.code, 143);
   assert.equal(normal143.reason, '');

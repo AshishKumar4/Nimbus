@@ -27,11 +27,10 @@ function populated(group) {
   } catch { return false; }
 }
 function fixture(name, source) { writeFileSync(join(unit, name + '.mjs'), source); }
-// Omit the wrapper's override: this exercises the runner's own serial default.
+// The workstation's wrapper requests one worker; repository defaults remain
+// available to controlled CI runs.
 const env = (name) => {
-  const result = { ...process.env, NIMBUS_UNIT_ONLY: name };
-  delete result.NIMBUS_UNIT_JOBS;
-  return result;
+  return { ...process.env, NIMBUS_UNIT_ONLY: name, NIMBUS_UNIT_JOBS: '1' };
 };
 const run = (name, extra = []) => runBoundedProcess(process.execPath, [join(unit, 'run-all.mjs'), ...extra], {
   cwd: root, env: env(name), timeoutMs: 15_000, name: `runner safety ${name}`,

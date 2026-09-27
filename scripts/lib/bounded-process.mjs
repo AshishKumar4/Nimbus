@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -146,21 +146,34 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     }
     let statusDir;
     let statusFile;
+    let requestFile;
     if (unit) {
       try { accessSync('/usr/bin/bwrap', constants.X_OK); } catch {
         resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: 'required PID isolation unavailable: /usr/bin/bwrap', code: null, signal: null, outputTruncated: false });
         return;
       }
+      const request = JSON.stringify({ executable, args, env });
+      if (Buffer.byteLength(request) > 1024 * 1024) {
+        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: 'launch request exceeds 1048576 bytes', code: null, signal: null, outputTruncated: false });
+        return;
+      }
       statusDir = mkdtempSync(resolvePath(tmpdir(), 'bounded-status-'));
       statusFile = resolvePath(statusDir, 'status.json');
+      requestFile = resolvePath(statusDir, 'request.json');
+      // Neither environment values nor target arguments enter the launcher's
+      // argv or systemd metadata. mkdtemp is 0700; this request is 0600.
+      try { writeFileSync(requestFile, request, { mode: 0o600 }); }
+      catch (error) { rmSync(statusDir, { recursive: true, force: true }); throw error; }
     }
+    const memoryMax = process.env.NIMBUS_TEST_MEMORY_MAX || '4G';
     const launchArgs = unit ? [
       // oneshot treats SIGTERM as a signal failure, not a clean service stop.
       '--user', `--machine=${hostMachine}`, '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
       `--unit=${unit}`, '--slice=nimbus-tests.slice',
+      '--description=Nimbus bounded subprocess',
       `--working-directory=${cwd ?? process.cwd()}`,
-      `--property=MemoryMax=${process.env.NIMBUS_TEST_MEMORY_MAX || '4G'}`,
-      `--property=MemoryHigh=${process.env.NIMBUS_TEST_MEMORY_HIGH || '3G'}`, '--property=MemorySwapMax=0',
+      `--property=MemoryMax=${memoryMax}`,
+      `--property=MemoryHigh=${process.env.NIMBUS_TEST_MEMORY_HIGH || memoryMax}`, '--property=MemorySwapMax=0',
       '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TasksMax=256',
       '--property=TimeoutStopSec=1s', `--property=TimeoutStartSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}s`,
       // The launcher needs the caller's user-bus environment. The target
@@ -168,9 +181,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       // PID/user namespaces isolate signals, not filesystem or network access.
       '--', '/usr/bin/bwrap', '--unshare-user', '--uid', String(process.getuid()), '--gid', String(process.getgid()),
       '--unshare-pid', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--die-with-parent',
-      '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), statusFile,
-      '/usr/bin/env', '-i', ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}=${value}`),
-      executable, ...args,
+      '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), requestFile,
     ] : args;
     const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;

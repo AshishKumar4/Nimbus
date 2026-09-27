@@ -13,10 +13,11 @@ published independently in the `@nimbus-sh` npm scope.
   tests still check blocked work, cancellation, timeout errors, exact output,
   and linear index replacement; hang guards remain finite.
 
-- Unit files run serially by default, with a five-minute deadline and a
+- Unit files have a five-minute deadline and a
   combined 1 MiB stdout/stderr limit. Timeout and output overflow kill the
   subprocess group; failures name the file, exit status or signal, and
-  bounded output diagnostics. Explicit worker-count overrides remain.
+  bounded output diagnostics. The bounded workstation wrapper sets one
+  worker; the repository's existing pool default remains available to CI.
 - Under the bounded test wrapper, each case runs in its own systemd cgroup
   with inherited memory limits, no swap, and group teardown, including
   detached descendants. A bubblewrap PID namespace prevents signals from
@@ -25,6 +26,10 @@ published independently in the `@nimbus-sh` npm scope.
   cleanup runs. Outside systemd, process groups and PID-start-time-checked
   polling provide weaker cleanup with a finite output-pipe drain deadline;
   that fallback is not a memory or detached-descendant containment boundary.
+- Launch arguments and environment travel in a size-bounded private request
+  file (0700 directory, 0600 file), not in systemd command lines or service
+  descriptions. The target still receives exact argument/environment values;
+  malformed requests fail before execution and private files are removed.
 
 ### Breaking changes for embedders
 

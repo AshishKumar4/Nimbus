@@ -10,7 +10,7 @@
 //
 // Concurrency:
 //   Each file is still its own `bun` process — only scheduling changed.
-//   Default pool width is 1; `--jobs N`
+//   Default pool width is min(8, os.availableParallelism()); `--jobs N`
 //   or NIMBUS_UNIT_JOBS override it and `--serial` forces 1 (the old
 //   sequential behavior, in sorted order).
 //
@@ -39,7 +39,7 @@
 
 import { runBoundedProcess, DEFAULT_TEST_TIMEOUT_MS } from '../../scripts/lib/bounded-process.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,7 +64,7 @@ function positiveInt(raw, what) {
   return n;
 }
 
-const DEFAULT_JOBS = 1;
+const DEFAULT_JOBS = Math.max(1, Math.min(8, availableParallelism()));
 const JOBS = process.argv.includes('--serial')
   ? 1
   : flagValue('--jobs', 'NIMBUS_UNIT_JOBS') !== undefined
