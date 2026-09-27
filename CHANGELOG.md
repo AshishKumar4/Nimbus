@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Trusted hosts can register a shared directory on the raw SqliteVFS. Its
+  strict descendants couple owner/group permissions on creation, chmod and
+  native adoption; ordinary POSIX and confined-owner rules remain unchanged
+  outside registered domains. Registration is engine-local, revocable and
+  never serialized with snapshots or imports. Descriptor chmod uses the
+  original credential without repeating ancestor lookup. Hosts must opt in;
+  this does not imply adoption by an embedding application.
+
 - Guessed Node package entries bring their readable literal dependencies on
   the first launch, including relative imports, re-exports and nested package
   resolution. Each root and its new dependency cells fit or decline together;

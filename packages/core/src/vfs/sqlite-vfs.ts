@@ -1329,6 +1329,7 @@ export class SqliteVFS {
    * generations back under cursors facets still hold.
    */
   rotateIncarnation(): string {
+    this.sharedDirectories.clear();
     const incarnation = crypto.randomUUID();
     this.transactionSync(() => {
       this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1', incarnation);
@@ -1972,13 +1973,7 @@ export class SqliteVFS {
         if (!rights.read) throw vfsError('EBADF', path);
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
-      chmod: mode => {
-        const node = current();
-        if (cred.uid !== 0 && cred.uid !== node.uid) throw vfsError('EPERM', path);
-        this.assertConfinedModeChange(node, mode, cred, opened.path ?? path);
-        if (opened.path !== null) this.chmod(opened.path, mode, CRED_KERNEL);
-        else { node.mode = inodeTypeBits(node.kind) | (mode & 0o7777); node.ctime = this.now(); }
-      },
+      chmod: mode => this.chmodInode(current(), mode, cred, opened.path),
       chown: (uid, gid) => {
         if (cred.uid !== 0) throw vfsError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
@@ -2038,6 +2033,63 @@ export class SqliteVFS {
    * unregistered credential, so the ordinary session user is untouched.
    */
   private confinedTmpRoots = new Map<number, string>();
+  private readonly sharedDirectories = new Map<string, { ino: number; gid: number; acl: number; mode: number }>();
+
+  /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
+  registerSharedDirectory(path: string): () => void {
+    const { path: root, inode } = this.checkAccess(path, 0, CRED_KERNEL);
+    if (!inode?.isDir || root === '') throw vfsError('EINVAL', 'shared root must be a non-root directory');
+    if (inode.uid !== 0 || (inode.mode & 0o2000) === 0 || inode.defaultAcl === null
+        || (inode.defaultAcl & 0o070) !== 0o070) throw vfsError('EPERM', 'shared root requires kernel ownership, setgid and a group-rwx default ACL');
+    this.assertMutationsAllowed([root]);
+    for (const key of this.sharedDirectories.keys()) if (pathsOverlap(key, root)) throw vfsError('EBUSY', 'shared roots overlap');
+    const registration = { ino: inode.ino, gid: inode.gid, acl: inode.defaultAcl, mode: inode.mode & 0o7777 };
+    this.sharedDirectories.set(root, registration);
+    return () => { if (this.sharedDirectories.get(root) === registration) this.sharedDirectories.delete(root); };
+  }
+
+  private sharedDirectory(path: string): { ino: number; gid: number; acl: number; mode: number } | undefined {
+    if (this.sharedDirectories.size === 0) return undefined;
+    for (let root = this.parentPath(path); root !== ''; root = this.parentPath(root)) {
+      const registration = this.sharedDirectories.get(root);
+      if (!registration) continue;
+      const inode = this.inodes.get(root);
+      if (!inode || inode.ino !== registration.ino || inode.uid !== 0 || inode.gid !== registration.gid
+          || (inode.mode & registration.mode) !== registration.mode || inode.defaultAcl === null
+          || (inode.defaultAcl & registration.acl) !== registration.acl) {
+        this.sharedDirectories.delete(root);
+        return undefined;
+      }
+      return registration;
+    }
+    return undefined;
+  }
+
+  private revokeSharedDirectories(path: string): void {
+    for (const root of this.sharedDirectories.keys()) {
+      if (path === '' || root === path || root.startsWith(path + '/')) this.sharedDirectories.delete(root);
+    }
+  }
+
+  private sharedMode(mode: number, directory: boolean): number {
+    return (mode & ~0o070) | ((mode & 0o700) >> 3) | (directory ? 0o2000 : 0);
+  }
+
+  private normalizeSharedEntry(entry: StoredInodeEntry, cred: VfsCred, owner = entry.uid): void {
+    if (entry.kind === 'symlink') return;
+    const registration = this.sharedDirectory(entry.path);
+    if (!registration) return;
+    const mode = this.sharedMode(entry.mode, entry.isDir);
+    const acl = entry.isDir ? registration.acl : entry.defaultAcl;
+    if (mode === entry.mode && entry.gid === registration.gid && acl === entry.defaultAcl) return;
+    if (cred.uid !== 0 && (owner !== cred.uid || !cred.groups.includes(registration.gid))) {
+      throw vfsError('EPERM', entry.path + ': shared metadata requires owner and group membership');
+    }
+    entry.mode = mode;
+    entry.gid = registration.gid;
+    if (entry.isDir) entry.defaultAcl = registration.acl;
+  }
+
 
   /**
    * Confine a principal. `tmpRoot` is a storage key, not a logical path — the
@@ -2107,6 +2159,13 @@ export class SqliteVFS {
     if (parent !== undefined && (parent.mode & 0o2000) !== 0) {
       gid = parent.gid;
       if (directory) mode |= 0o2000;
+    }
+    const shared = this.sharedDirectory(key);
+    if (shared) {
+      if (cred.uid !== 0 && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', key + ': shared group membership required');
+      mode = this.sharedMode(mode, directory);
+      gid = shared.gid;
+      return { mode, gid, defaultAcl: directory ? shared.acl : null };
     }
     return { mode, gid, defaultAcl: directory ? acl : null };
   }
@@ -4414,10 +4473,24 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred);
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
-    if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsError('EPERM', resolved.path);
-    this.assertConfinedModeChange(inode, mode, cred, resolved.path);
-    this.assertMutationsAllowed([inode.path]);
-    this.publishMetadata(inode, { mode: inodeTypeBits(inode.kind) | (mode & 0o7777) });
+    this.chmodInode(inode, mode, cred, resolved.path);
+  }
+
+  private chmodInode(inode: INode, mode: number, cred: VfsCred, path: string | null): void {
+    if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsError('EPERM', path ?? 'detached inode');
+    const shared = path === null ? undefined : this.sharedDirectory(path);
+    if (shared && cred.uid !== 0 && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', path + ': shared group membership required');
+    let gid = inode.gid;
+    if (shared) {
+      const delegated = 0o070 | (inode.isDir ? 0o2000 : 0);
+      this.assertConfinedModeChange(inode, (mode & ~delegated) | (inode.mode & delegated), cred, path ?? 'detached inode');
+      mode = this.sharedMode(mode, inode.isDir);
+      gid = shared.gid;
+    } else this.assertConfinedModeChange(inode, mode, cred, path ?? 'detached inode');
+    mode = inodeTypeBits(inode.kind) | (mode & 0o7777);
+    if (path === null) { inode.mode = mode; inode.ctime = this.now(); return; }
+    this.assertMutationsAllowed([path]);
+    this.publishMetadata(inode, { mode, gid });
   }
 
   private setDefaultAcl(path: string, perms: number | null, cred: VfsCred): void {
@@ -4896,8 +4969,12 @@ export class SqliteVFS {
         // Only the moved inode itself changes; its descendants keep their ctime.
         ctime: entry.path === oldPath ? undefined : entry.ctime,
       };
+      this.normalizeSharedEntry(stored, cred, entry.uid);
+      if (stored.mode !== entry.mode || stored.gid !== entry.gid || stored.defaultAcl !== entry.defaultAcl) stored.ctime = undefined;
       return { entry, stored };
     });
+    this.revokeSharedDirectories(oldPath);
+    this.revokeSharedDirectories(newPath);
     const committed: StoredInodeEntry[] = [];
     let group: StoredInodeEntry[] = [];
     const flushPublished = (): void => {
@@ -5083,6 +5160,8 @@ export class SqliteVFS {
     const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
     if (target.inode) throw vfsError('EEXIST', target.path);
     this.checkParentAccess(target.path, cred);
+    const sharing = this.sharedDirectory(target.path);
+    if (sharing && cred.uid !== 0 && !cred.groups.includes(sharing.gid)) throw vfsError('EPERM', target.path + ': shared group membership required');
     if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
       throw vfsError('EINVAL', `cannot copy ${source.path} into itself`);
     }
@@ -5222,6 +5301,10 @@ export class SqliteVFS {
           if (page.length > 0) {
             const lower = cursor === null ? job.src : cursor;
             const tail = job.src.length + 1;
+            const shared = this.sharedDirectory(job.dst);
+            const copiedMode = shared
+              ? '((mode & ~' + job.clearBits + ' & ~56) | ((mode & ~' + job.clearBits + ' & 448) >> 3) | CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN 1024 ELSE 0 END)'
+              : '(mode & ~' + job.clearBits + ')';
             this.sql.exec(
               `INSERT OR IGNORE INTO vfs_inodes
                  (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)
@@ -5229,14 +5312,15 @@ export class SqliteVFS {
                       CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
                       kind, size,
                       CASE WHEN ? THEN atime ELSE ? END, CASE WHEN ? THEN mtime ELSE ? END, ?,
-                      CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE mode & ~? END,
-                      CASE WHEN ? THEN uid ELSE ? END, CASE WHEN ? THEN gid ELSE ? END,
-                      ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id, dacl
+                      CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE ${copiedMode} END,
+                      CASE WHEN ? THEN uid ELSE ? END,
+                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_SYMLINK + ' THEN CASE WHEN ? THEN gid ELSE ? END ELSE ' + shared.gid + ' END' : 'CASE WHEN ? THEN gid ELSE ? END'},
+                      ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id,
+                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN ' + shared.acl + ' ELSE dacl END' : 'dacl'}
                FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`,
               job.dst, tail,
               job.src, this.parentPath(job.dst), job.dst, tail,
               job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now,
-              job.clearBits,
               job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid,
               firstIno, gen,
               lower, last,
@@ -5767,6 +5851,7 @@ export class SqliteVFS {
       if (others.length > 0) throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
     }
     this.assertSnapshotLocal(g, subtree, name);
+    this.revokeSharedDirectories(subtree);
     // A restore a reset or a cold chunk stopped continues rather than starting over.
     for (const row of [...this.sql.exec("SELECT id, args, start_gen FROM vfs_jobs WHERE kind = 'restore'")]) {
       const pending = JSON.parse(String(row.args)) as RestoreJob;
@@ -5790,6 +5875,7 @@ export class SqliteVFS {
 
   private runRestore(id: number, job: RestoreJob, startGen: number, maxPages = Infinity): { restored: number; done: boolean } {
     this.assertSnapshotLocal(job.g, job.subtree, job.name);
+    this.revokeSharedDirectories(job.subtree);
     const range = subtreeRange(job.subtree);
     // Path filter for both tables, as SQL plus its parameters.
     const within = job.subtree === ''
@@ -5831,21 +5917,25 @@ export class SqliteVFS {
       }
       const builder = this.newPlan();
       const deletedInodes: INode[] = [];
-      const restoredRow = (past: INode): StoredInodeEntry => ({
-        path: past.path,
-        parentPath: past.parentPath,
-        kind: past.kind,
-        isDir: past.isDir,
-        size: past.size,
-        atime: past.atime,
-        mtime: past.mtime,
-        mode: past.mode,
-        uid: past.uid,
-        gid: past.gid,
-        ino: past.ino,
-        content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
-        defaultAcl: past.defaultAcl,
-      });
+      const restoredRow = (past: INode): StoredInodeEntry => {
+        const entry: StoredInodeEntry = {
+          path: past.path,
+          parentPath: past.parentPath,
+          kind: past.kind,
+          isDir: past.isDir,
+          size: past.size,
+          atime: past.atime,
+          mtime: past.mtime,
+          mode: past.mode,
+          uid: past.uid,
+          gid: past.gid,
+          ino: past.ino,
+          content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
+          defaultAcl: past.defaultAcl,
+        };
+        this.normalizeSharedEntry(entry, CRED_KERNEL);
+        return entry;
+      };
       for (const live of changed) {
         const past = this.historyAt(live.path, job.g);
         if (past === undefined) {
@@ -6342,9 +6432,10 @@ export class SqliteVFS {
       const already = cursor !== null && (SqliteVFS.comparePaths(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
       if (already) {
         const inode = this.inodes.get(full(row.path));
-        if (!inode || inode.kind !== row.kind || inode.size !== row.size || (inode.mode & 0o7777) !== (row.mode & 0o7777)
-            || inode.uid !== row.uid || inode.gid !== row.gid || inode.mtime !== row.mtime
-            || (inode.defaultAcl ?? null) !== row.defaultAcl || (row.kind !== 'directory' && this.contentKeyOf(inode) !== row.contentKey)) {
+        const expected = this.importedEntry(full(row.path), row, { type: 'none' });
+        if (!inode || inode.kind !== row.kind || inode.size !== row.size || (inode.mode & 0o7777) !== (expected.mode & 0o7777)
+            || inode.uid !== row.uid || inode.gid !== expected.gid || inode.mtime !== row.mtime
+            || (inode.defaultAcl ?? null) !== expected.defaultAcl || (row.kind !== 'directory' && this.contentKeyOf(inode) !== row.contentKey)) {
           throw vfsError('EINVAL', `${row.path}: replay metadata differs`);
         }
         continue;
@@ -6405,6 +6496,7 @@ export class SqliteVFS {
       if (size !== undefined && !given.has(hash)) missing.push({ hash, size });
     }
     if (missing.length && !lazy) return { imported: 0, want: missing.map(({ hash }) => hash), done: false, pending: [] };
+    this.revokeSharedDirectories(target);
     if (lazy) this.insertPendingChunks(missing);
     const jobId = job?.id ?? this.beginImport(target);
     const state: z.infer<typeof ImportJobArgsSchema> = { dst: target, ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }) };
@@ -6750,7 +6842,7 @@ export class SqliteVFS {
     if (kind === 'directory' && (content.type !== 'none' || row.size !== 0)) {
       throw vfsError('EINVAL', `${row.path}: a directory with content`);
     }
-    return {
+    const entry: StoredInodeEntry = {
       path,
       parentPath: this.parentPath(path),
       kind,
@@ -6765,6 +6857,8 @@ export class SqliteVFS {
       defaultAcl: row.defaultAcl,
       content,
     };
+    this.normalizeSharedEntry(entry, CRED_KERNEL);
+    return entry;
   }
 
   // ── Cold tier: chunks only snapshots reference (P6) ───────────────────
@@ -7850,6 +7944,17 @@ export class SqliteVFS {
     ));
     const deletedPrior = new Map<string, INode | undefined>();
     for (const entry of plan.deletes) deletedPrior.set(entry.path, entry.prior);
+    if (this.sharedDirectories.size > 0) {
+      for (const entry of plan.deletes) this.revokeSharedDirectories(entry.path);
+      for (const entry of plan.inodes) {
+        const registration = this.sharedDirectories.get(entry.path);
+        if (registration && (entry.kind !== 'directory' || entry.uid !== 0 || entry.gid !== registration.gid
+            || (entry.ino !== undefined && entry.ino !== registration.ino) || (entry.mode & registration.mode) !== registration.mode
+            || (entry.defaultAcl !== undefined && (entry.defaultAcl === null || (entry.defaultAcl & registration.acl) !== registration.acl)))) {
+          this.sharedDirectories.delete(entry.path);
+        }
+      }
+    }
     let gen = 0;
     let pinGen = 0;
     const rewritten: number[] = [];
