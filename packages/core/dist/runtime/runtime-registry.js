@@ -334,6 +334,9 @@ export function buildRuntimeHandler(spec, ctx0) {
                     loader,
                     format: 'cjs',
                     define: importMetaDefines(absUrl),
+                    // Its import() calls are the process's: kept, and routed to the
+                    // process's ESM loader (dynamic-import-rewrite.ts).
+                    dynamicImportParent: absUrl,
                 });
                 code = bindImportMetaResolve(transformed.code, absUrl);
             }

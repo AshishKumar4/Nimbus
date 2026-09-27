@@ -60,6 +60,7 @@ import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
+import { createEsmResolver } from '../_shared/esm-resolver.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
 // far the dominant npm pattern; the others catch a long tail of
@@ -71,8 +72,10 @@ const REQUIRE_RE = /(?:require(?:\.resolve)?\s*\(\s*)(['"`])([^'"`]+?)\1\s*\)/g;
 // Without following it, the target file's content is excluded from the
 // bounded snapshot, so the runtime dynamic import resolves the path but
 // can't read it — the scaffolder exits silently. Only literal specifiers
-// are followed; computed `import(expr)` remains out of scope.
-const DYNIMPORT_RE = /\bimport\s*\(\s*(['"`])([^'"`]+?)\1\s*\)/g;
+// are followed; computed `import(expr)` remains out of scope. An entry
+// script the shell already transformed has them as the process's loader
+// calls (dynamic-import-rewrite.ts), `__nimbusDynamicImport("<parent>", "x")`.
+const DYNIMPORT_RE = /(?:\bimport\s*\(|\b__nimbusDynamicImport\(\s*"[^"]*"\s*,)\s*(['"`])([^'"`]+?)\1\s*\)/g;
 // Immediately-invoked `createRequire(<expr>)('literal')`. pi-coding-agent's
 // bin (dist/bundle/cli.js) is exactly:
 //   import { createRequire, enableCompileCache } from "node:module";
@@ -755,14 +758,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 deferredDynamic.push({ specifier, fromDir });
                 continue;
             }
-            const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+            const resolved = (await resolveDynamicImport(specifier, fromDir));
             if (closureExceeded)
                 break;
-            if (r) {
-                (await addFile(r.resolved));
-                if (r.stub)
-                    (await addStub(r.stub.path, r.stub.content));
-            }
+            if (resolved)
+                (await addFile(resolved));
         }
     }
     /**
@@ -787,6 +787,45 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             return;
         visited.add(stubPath);
         bundle[stubPath] = content;
+    }
+    // A dynamic `import()` loads what Node's ESM resolver names (the process's
+    // loader resolves it the same way, core/_shared/esm-resolver.ts): the
+    // "import" conditions, no extension probing. The package.json files it
+    // reads are staged too, since the loader reads the same ones.
+    const esm = createEsmResolver({
+        async kind(path) {
+            const key = strip(path);
+            if (!(await vfs.exists(key)))
+                return null;
+            return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+        },
+        // The walk sees paths as the module map holds them.
+        realpath: (path) => path,
+        async readText(path) {
+            const key = strip(path);
+            try {
+                const text = await vfs.readFileString(key);
+                if (key.endsWith('/package.json') || key === 'package.json')
+                    await addPkgJson(key);
+                return text;
+            }
+            catch {
+                return null;
+            }
+        },
+        isBuiltin: (specifier) => isFacetProvided(specifier),
+        cjsResolve: () => null,
+    });
+    /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
+    async function resolveDynamicImport(specifier, fromDir) {
+        const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
+        try {
+            const resolution = await esm.resolve(specifier, parentUrl);
+            return resolution.path === undefined ? null : strip(resolution.path);
+        }
+        catch {
+            return null;
+        }
     }
     /**
      * Sink for intermediate package.json files consulted during
@@ -850,12 +889,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     lazy = true;
     for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
         const { specifier, fromDir } = deferredDynamic[i];
-        const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
-        if (r) {
-            (await addFile(r.resolved));
-            if (r.stub)
-                (await addStub(r.stub.path, r.stub.content));
-        }
+        const resolved = (await resolveDynamicImport(specifier, fromDir));
+        if (resolved)
+            (await addFile(resolved));
     }
     return { bundle, speculative };
 }

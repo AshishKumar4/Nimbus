@@ -16,9 +16,17 @@
  * esbuild.wasm was built against, and stages the result as a static asset
  * (public/_assets/runtime/esbuild-cli-<buildId>.js in @nimbus-sh/worker). The
  * IIFE may contain no import, export or top-level await;
- * `globalThis.__esbuildCliRun` is its only entry point.
+ * `globalThis.__esbuildCliRun` is its entry point.
+ *
+ * The same staged script carries the one other thing the facet runs that
+ * esbuild does not: the parse that routes a module's dynamic `import()` to the
+ * process's ESM loader (dynamic-import-rewrite.ts), installed as
+ * `globalThis.__nimbusRewriteDynamicImports` for the facet's transforms. It is
+ * acorn's parse of a whole module, which is why it runs here and not in the
+ * session's isolate.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
+import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
 // Node's open(2) flag values. Go reads them off `fs.constants`.
 const O_WRONLY = 0o1, O_RDWR = 0o2, O_CREAT = 0o100, O_EXCL = 0o200, O_TRUNC = 0o1000, O_APPEND = 0o2000;
 const O_DIRECTORY = 0o200000;
@@ -339,3 +347,4 @@ globalThis.__esbuildCliRun = async function __esbuildCliRun(args, supervisor, ou
     await stdio.flush();
     return exitCode;
 };
+globalThis.__nimbusRewriteDynamicImports = rewriteDynamicImports;

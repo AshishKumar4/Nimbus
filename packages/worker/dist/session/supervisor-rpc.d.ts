@@ -324,7 +324,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * has error state it couldn't stream in-band (rare; main path drains
      * via __pendingIO first).
      */
-    reportExit(code: number, tail?: string, residencyMisses?: string[]): Promise<void>;
+    reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[]): Promise<void>;
     prefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     registerPort(port: number): Promise<void>;
     unregisterPort(port: number): Promise<void>;

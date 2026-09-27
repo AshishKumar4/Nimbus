@@ -4,6 +4,7 @@
  * Produced by scripts/bundle-facet-workers.mjs from:
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
  *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)
+ *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *
  * Consumed by src/loaders/loader-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -16,8 +17,10 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 4.58 KiB
- * W7 size:  30.09 KiB
+ * W7 size:  30.14 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
+/** Declares `function createEsmResolver(host)`; the node shims call it. */
+export declare const ESM_RESOLVER_PREAMBLE: string;
 //# sourceMappingURL=generated-workers.d.ts.map

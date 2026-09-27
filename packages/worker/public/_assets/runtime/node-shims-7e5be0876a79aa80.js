@@ -742,6 +742,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
+    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1446,6 +1447,8 @@ const __fsMod = (() => {
       // The namespace's failure state (a relist failed): synchronous calls
       // refused with its cause (_nsRequire), and barriers that repaired it.
       namespaceRefusals: 0, namespaceRepairs: 0,
+      // Repairs a delta from the store's durable floor answered, with no listing.
+      floorRepairs: 0,
     });
 
   /**
@@ -1674,11 +1677,50 @@ const __fsMod = (() => {
   let _storeRepairOwed = false;
 
   /**
+   * The repair's first try: the delta from the store's durable floor
+   * (__residentCursor), asked as every barrier asks it. True when it applied
+   * (the repair is done); false when a listing is needed after all.
+   */
+  async function _repairFromFloor(supervisor, result) {
+    if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
+    if (result !== null && result.poison === true) return false;
+    const floor = __residentCursor();
+    if (floor === null || (result !== null && result.epoch !== floor.epoch)) return false;
+    let delta;
+    try {
+      delta = await __nimbusUseRpcResult(supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true }), (r) => r);
+    } catch { return false; }
+    if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
+    if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
+    await __residentRoomForPushed(delta);
+    const applied = __residentAdmit(delta);
+    for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+    if (!_nsActive()) return false;
+    _cursor.epoch = applied.cursor.epoch;
+    _cursor.rev = applied.cursor.rev;
+    _stats.invalidations += applied.dropped.length;
+    // What it should hold and lost (dropped by this delta, or by the barrier
+    // that could not vouch for its rows), refetched by the namespace's stats.
+    const refilled = await __residentRefillFromNamespace(supervisor, applied.dropped);
+    _stats.fills += refilled.filled;
+    _stats.filledBytes += refilled.bytes;
+    _stats.floorRepairs++;
+    _storeRepairOwed = false;
+    return true;
+  }
+
+  /**
    * `result` is the ACQUIRE answer that asked for the repair: a poison, a
    * delta arriving while a repair is owed, or null for a barrier that got no
    * answer at all.
    */
   async function _runResidentRepair(supervisor, result) {
+    // Within one epoch, with the change log intact and the namespace
+    // answering, the store's rows are dated through its own durable cursor, so
+    // the delta from there names everything that moved since. Only an epoch
+    // change, a poison (the log truncated past the cursor), or a namespace
+    // that stopped answering needs the listing.
+    if (await _repairFromFloor(supervisor, result)) return;
     const ownAtStart = __residentOwnPaths();
     let repaired;
     try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
@@ -9582,34 +9624,6 @@ builtins["node:util/types"] = builtins["util/types"];
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
 
-/**
- * A cell's dynamic import() call.
- *
- * A cell is compiled with new Function, so an import() left in its body
- * is the RUNTIME's: it resolves against the module map and hands back the
- * platform's own builtins, not this process's. Real Vite reaches
- * node:http that way (config.js:14968), got a server whose listen bound no
- * port here, and the facet exited with no handles the moment boot returned.
- *
- * The ESM→CJS rewriter routes those calls here with the cell's own
- * require, so resolution is the one the process already has. The result is
- * shaped as a module namespace, since import() resolves to one and callers
- * destructure named exports off it.
- */
-globalThis.__nimbusCellImport = (req, id) => Promise.resolve().then(() => {
-  const loaded = req(id);
-  if (loaded && (loaded.__esModule || loaded[Symbol.toStringTag] === "Module")) return loaded;
-  // A CJS module's exports ARE the namespace's named exports, with the whole
-  // object as the default export — what an ESM importer of a CJS module sees.
-  if (loaded && (typeof loaded === "object" || typeof loaded === "function")) {
-    const ns = Object.create(null);
-    for (const key of Object.keys(loaded)) ns[key] = loaded[key];
-    if (!("default" in ns)) ns.default = loaded;
-    Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
-    return ns;
-  }
-  return { default: loaded };
-});
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -9734,9 +9748,6 @@ function __resolveFile(base) {
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
 // Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
 //           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-// the prior hand-rolled __resolvePkgEntry only honoured top-level
-// require|default|import and dropped subpath maps, wildcards, nested
-// conditions, the imports field, and null-target enforcement.
 
 // ── exports-resolver.js (auto-generated; keep in sync with src/_shared/exports-resolver.ts) ──
 const DEFAULT_ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
@@ -9935,10 +9946,6 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   return __resolveFile(pkgDir + "/" + rel);
 }
 
-/** Back-compat name used elsewhere in this file. */
-function __resolvePkgEntry(pkgDir) {
-  return __resolvePkgSubpath(pkgDir, null, ".");
-}
 
 /**
  * Resolve a bare specifier (e.g. "react", "@scope/pkg", "pkg/sub/path")
@@ -10151,11 +10158,12 @@ function __makeLoadingExports(mod) {
  * Load and execute a JS/JSON module from VFS.
  * Returns the module.exports value.
  */
-function __loadModule(resolvedPath) {
-  if (__moduleCache.has(resolvedPath)) return __moduleCache.get(resolvedPath);
+function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
+  if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
   const mod = { exports: {} };
-  __moduleCache.set(resolvedPath, __makeLoadingExports(mod));
+  __moduleCache.set(evaluationKey, __makeLoadingExports(mod));
 
   const code = __readFileOr(resolvedPath, null);
   if (code === null) throw new Error("Cannot read module: " + resolvedPath);
@@ -10163,7 +10171,7 @@ function __loadModule(resolvedPath) {
   // JSON
   if (resolvedPath.endsWith(".json")) {
     mod.exports = JSON.parse(code);
-    __moduleCache.set(resolvedPath, mod.exports);
+    __moduleCache.set(evaluationKey, mod.exports);
     return mod.exports;
   }
 
@@ -10231,7 +10239,7 @@ function __loadModule(resolvedPath) {
       }
     }
   } catch (e) {
-    __moduleCache.delete(resolvedPath);
+    __moduleCache.delete(evaluationKey);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
       try {
         Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
@@ -10251,7 +10259,7 @@ function __loadModule(resolvedPath) {
   }
 
   // Update cache with final exports (module.exports may have been reassigned)
-  __moduleCache.set(resolvedPath, mod.exports);
+  __moduleCache.set(evaluationKey, mod.exports);
   return mod.exports;
 }
 
@@ -10318,39 +10326,623 @@ function __resolveFrom(id, fromDir) {
   return __resolveNodeModule(id, fromDir);
 }
 
-globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
-  const currentFromParent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
-    ? parentUrl.replace(/^file:\/\/\/+/, "")
-    : "";
-  const current = currentFromParent || (
-    typeof globalThis.__currentModulePath === "string"
-      ? globalThis.__currentModulePath.replace(/^\/+/, "")
-      : ""
-  );
-  const fromDir = current.includes("/") ? current.substring(0, current.lastIndexOf("/")) : "";
-  const text = String(specifier);
-  if (text.startsWith("file:")) return text;
-  if (text.startsWith("./") || text.startsWith("../") || text.startsWith("/")) {
-    return new URL(text, current ? "file:///" + current : "file:///").href;
+// ═══════════════════════════════════════════════════════════════════════
+// ──  import() — Node's ESM loader ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// A cell's dynamic import() reaches here with its module's URL
+// (core/runtime/dynamic-import-rewrite.ts). Resolution is Node's ESM
+// algorithm (core/_shared/esm-resolver.ts, interpolated below): the "import"
+// conditions, no extension probing, a directory refused by name, file: URLs,
+// Node's error codes and messages. What resolves loads through the same
+// module cache require uses, shaped as the namespace Node would give.
+// Node's builtins that exist only with the scheme; the rest of the table is
+// the process's own builtins, undici among them, which the process provides
+// in place of any installed copy (see builtins.undici above).
+const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
+// Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
+// scripts/bundle-facet-workers.mjs): declares createEsmResolver.
+function createEsmResolver(host) {
+  const conditions =   new Set(["node", "import", "module-sync"]);
+  const ask = {
+    *kind(path) {
+      const kind = yield host.kind(path);
+      return kind === "file" || kind === "directory" ? kind : null;
+    },
+    *readText(path) {
+      const text = yield host.readText(path);
+      return typeof text === "string" ? text : null;
+    },
+    *realpath(path) {
+      const real = yield host.realpath(path);
+      return typeof real === "string" ? real : path;
+    },
+    *cjsResolve(specifier, parentPath) {
+      const found = yield host.cjsResolve(specifier, parentPath);
+      return typeof found === "string" ? found : null;
+    }
+  };
+  function codedError(Ctor, code, message) {
+    return Object.assign(new Ctor(message), { code });
   }
-  const resolved = __resolveFrom(text, fromDir);
-  // Node throws ERR_MODULE_NOT_FOUND rather than answering with the specifier
-  // it could not resolve, and packages are written against that: the standard
-  // shape is a try/catch that reports something the user can act on. Handing
-  // back the bare specifier passes the "unresolved" case off as a URL, so
-  // fileURLToPath downstream yields a path that was never on disk and the
-  // eventual error names a phantom file instead of the missing package.
-  // typescript@7 does exactly this: with the specifier echoed back it reports
-  // "Executable not found: @typescript/typescript-linux-x64/lib/tsc", where
-  // its own catch would have said the platform package is missing.
-  if (!resolved) {
-    const err = new Error(
-      "Cannot find package '" + text + "' imported from " + (current || fromDir || "<unknown>"),
+  const codeOf = (error) => error !== null && typeof error === "object" && "code" in error ? error.code : void 0;
+  const filePath = (url) => decodeURIComponent(new URL(String(url)).pathname);
+  const fileUrl = (path) => {
+    const url = new URL("file://");
+    url.pathname = path;
+    return url;
+  };
+  function isRelativeSpecifier(specifier) {
+    if (specifier[0] !== ".") return false;
+    if (specifier.length === 1 || specifier[1] === "/") return true;
+    return specifier[1] === "." && (specifier.length === 2 || specifier[2] === "/");
+  }
+  const isRelativeOrAbsolute = (specifier) => specifier !== "" && (specifier[0] === "/" || isRelativeSpecifier(specifier));
+  function* readPackageConfig(pjsonPath, specifier, base) {
+    const text = (yield* ask.kind(pjsonPath)) === "file" ? yield* ask.readText(pjsonPath) : null;
+    if (text === null) return { exists: false, pjsonPath, type: "none" };
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw codedError(
+        Error,
+        "ERR_INVALID_PACKAGE_CONFIG",
+        `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
+      );
+    }
+    const config = { exists: true, pjsonPath, type: "none" };
+    if (parsed === null || typeof parsed !== "object") return config;
+    if (typeof parsed.name === "string") config.name = parsed.name;
+    if (typeof parsed.main === "string") config.main = parsed.main;
+    if ("exports" in parsed) config.exports = parsed.exports;
+    if (parsed.imports !== null && typeof parsed.imports === "object") config.imports = parsed.imports;
+    if (parsed.type === "module" || parsed.type === "commonjs") config.type = parsed.type;
+    return config;
+  }
+  function* packageScopeConfig(resolved) {
+    let pjsonUrl = new URL("./package.json", resolved);
+    while (true) {
+      if (pjsonUrl.pathname.endsWith("node_modules/package.json")) break;
+      const config = yield* readPackageConfig(filePath(pjsonUrl), resolved.href, void 0);
+      if (config.exists) return config;
+      const last = pjsonUrl;
+      pjsonUrl = new URL("../package.json", pjsonUrl);
+      if (pjsonUrl.pathname === last.pathname) break;
+    }
+    return { exists: false, pjsonPath: filePath(pjsonUrl), type: "none" };
+  }
+  function invalidPackageTarget(key, target, pjsonUrl, internal, base) {
+    const text = typeof target === "object" && target !== null ? JSON.stringify(target, null, "") : `${target}`;
+    const pkgPath = filePath(new URL(".", pjsonUrl));
+    const related = !internal && text.length > 0 && !text.startsWith("./");
+    const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
+    return codedError(
+      Error,
+      "ERR_INVALID_PACKAGE_TARGET",
+      key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`
     );
-    err.code = "ERR_MODULE_NOT_FOUND";
-    throw err;
   }
-  return "file:///" + resolved.replace(/^\/+/, "");
+  const invalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))?(\\|\/|$)/i;
+  const deprecatedInvalidSegment = /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
+  function* resolveTargetString(target, subpath, match, pjsonUrl, base, pattern, internal, isPathMap) {
+    if (subpath !== "" && !pattern && target[target.length - 1] !== "/") {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (!target.startsWith("./")) {
+      if (internal && !target.startsWith("../") && !target.startsWith("/")) {
+        let isUrl = false;
+        try {
+          new URL(target);
+          isUrl = true;
+        } catch {
+        }
+        if (!isUrl) {
+          const exportTarget = pattern ? target.replace(/\*/g, () => subpath) : target + subpath;
+          return yield* packageResolve(exportTarget, pjsonUrl.href);
+        }
+      }
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (invalidSegment.test(target.slice(2)) && deprecatedInvalidSegment.test(target.slice(2))) {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    const resolved = new URL(target, pjsonUrl);
+    if (!resolved.pathname.startsWith(new URL(".", pjsonUrl).pathname)) {
+      throw invalidPackageTarget(match, target, pjsonUrl, internal, base);
+    }
+    if (subpath === "") return resolved;
+    if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
+      const request = pattern ? match.replace("*", () => subpath) : match + subpath;
+      throw codedError(
+        TypeError,
+        "ERR_INVALID_MODULE_SPECIFIER",
+        `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? "imports" : "exports"}" resolution of ${filePath(pjsonUrl)} imported from ${base}`
+      );
+    }
+    if (pattern) return new URL(resolved.href.replace(/\*/g, () => subpath));
+    return new URL(subpath, resolved);
+  }
+  function* resolveTarget(pjsonUrl, target, subpath, key, base, pattern, internal, isPathMap) {
+    if (typeof target === "string") {
+      return yield* resolveTargetString(target, subpath, key, pjsonUrl, base, pattern, internal, isPathMap);
+    }
+    if (Array.isArray(target)) {
+      if (target.length === 0) return null;
+      let lastException;
+      for (const item of target) {
+        let result;
+        try {
+          result = yield* resolveTarget(pjsonUrl, item, subpath, key, base, pattern, internal, isPathMap);
+        } catch (error) {
+          lastException = error;
+          if (codeOf(error) === "ERR_INVALID_PACKAGE_TARGET") continue;
+          throw error;
+        }
+        if (result === void 0) continue;
+        if (result === null) {
+          lastException = null;
+          continue;
+        }
+        return result;
+      }
+      if (lastException === void 0 || lastException === null) return lastException;
+      throw lastException;
+    }
+    if (typeof target === "object" && target !== null) {
+      const keys = Object.getOwnPropertyNames(target);
+      for (const condition of keys) {
+        if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
+          throw codedError(
+            Error,
+            "ERR_INVALID_PACKAGE_CONFIG",
+            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`
+          );
+        }
+      }
+      for (const condition of keys) {
+        if (condition !== "default" && !conditions.has(condition)) continue;
+        const result = yield* resolveTarget(
+          pjsonUrl,
+          Reflect.get(target, condition),
+          subpath,
+          key,
+          base,
+          pattern,
+          internal,
+          isPathMap
+        );
+        if (result === void 0) continue;
+        return result;
+      }
+      return void 0;
+    }
+    if (target === null) return null;
+    throw invalidPackageTarget(key, target, pjsonUrl, internal, base);
+  }
+  function patternKeyCompare(a, b) {
+    const aStar = a.indexOf("*");
+    const bStar = b.indexOf("*");
+    const baseA = aStar === -1 ? a.length : aStar + 1;
+    const baseB = bStar === -1 ? b.length : bStar + 1;
+    if (baseA > baseB) return -1;
+    if (baseB > baseA) return 1;
+    if (aStar === -1) return 1;
+    if (bStar === -1) return -1;
+    if (a.length > b.length) return -1;
+    if (b.length > a.length) return 1;
+    return 0;
+  }
+  function bestPattern(map, name) {
+    let best = "";
+    let bestSubpath = "";
+    for (const key of Object.getOwnPropertyNames(map)) {
+      const star = key.indexOf("*");
+      if (star === -1 || !name.startsWith(key.slice(0, star))) continue;
+      const trailer = key.slice(star + 1);
+      if (name.length >= key.length && name.endsWith(trailer) && patternKeyCompare(best, key) === 1 && key.lastIndexOf("*") === star) {
+        best = key;
+        bestSubpath = name.slice(star, name.length - trailer.length);
+      }
+    }
+    return best ? { key: best, subpath: bestSubpath } : null;
+  }
+  function exportsNotFound(subpath, pjsonUrl, base) {
+    const pkgPath = filePath(new URL(".", pjsonUrl));
+    return codedError(
+      Error,
+      "ERR_PACKAGE_PATH_NOT_EXPORTED",
+      subpath === "." ? `No "exports" main defined in ${pkgPath}package.json imported from ${base}` : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`
+    );
+  }
+  function* packageExportsResolve(pjsonUrl, subpath, config, base) {
+    let exports = config.exports;
+    const isSugar = (() => {
+      if (typeof exports === "string" || Array.isArray(exports)) return true;
+      if (typeof exports !== "object" || exports === null) return false;
+      let sugar = false;
+      let i = 0;
+      for (const key of Object.getOwnPropertyNames(exports)) {
+        const current = key === "" || key[0] !== ".";
+        if (i++ === 0) sugar = current;
+        else if (sugar !== current) {
+          throw codedError(
+            Error,
+            "ERR_INVALID_PACKAGE_CONFIG",
+            `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`
+          );
+        }
+      }
+      return sugar;
+    })();
+    if (isSugar) exports = { ".": exports };
+    const map = exports;
+    if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes("*") && !subpath.endsWith("/")) {
+      const result = yield* resolveTarget(pjsonUrl, map[subpath], "", subpath, base, false, false, false);
+      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
+      return result;
+    }
+    const best = bestPattern(map, subpath);
+    if (best) {
+      const result = yield* resolveTarget(pjsonUrl, map[best.key], best.subpath, best.key, base, true, false, subpath.endsWith("/"));
+      if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
+      return result;
+    }
+    throw exportsNotFound(subpath, pjsonUrl, base);
+  }
+  function* packageImportsResolve(name, baseUrl) {
+    const base = filePath(baseUrl);
+    if (name === "#" || name.startsWith("#/") || name.endsWith("/")) {
+      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
+    }
+    const config = yield* packageScopeConfig(new URL(baseUrl));
+    let pjsonUrl;
+    if (config.exists) {
+      pjsonUrl = fileUrl(config.pjsonPath);
+      const imports = config.imports;
+      if (imports) {
+        if (Object.prototype.hasOwnProperty.call(imports, name) && !name.includes("*")) {
+          const result = yield* resolveTarget(pjsonUrl, imports[name], "", name, base, false, true, false);
+          if (result != null) return result;
+        } else {
+          const best = bestPattern(imports, name);
+          if (best) {
+            const result = yield* resolveTarget(pjsonUrl, imports[best.key], best.subpath, best.key, base, true, true, false);
+            if (result != null) return result;
+          }
+        }
+      }
+    }
+    const where = pjsonUrl ? ` in package ${filePath(new URL(".", pjsonUrl))}package.json` : "";
+    throw codedError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
+  }
+  function* legacyMainResolve(pjsonUrl, config, base) {
+    const tries = [];
+    if (config.main !== void 0) {
+      for (const suffix of ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"]) tries.push(`./${config.main}${suffix}`);
+    }
+    tries.push("./index.js", "./index.json", "./index.node");
+    for (const candidate of tries) {
+      const url = new URL(candidate, pjsonUrl);
+      if ((yield* ask.kind(filePath(url))) === "file") return url;
+    }
+    const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
+    const missing = filePath(new URL(config.main ?? "index.js", dir));
+    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+  }
+  function* packageResolve(specifier, baseUrl) {
+    if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
+    const base = filePath(baseUrl);
+    let separator = specifier.indexOf("/");
+    let valid = true;
+    let scoped = false;
+    if (specifier[0] === "@") {
+      scoped = true;
+      if (separator === -1 || specifier.length === 0) valid = false;
+      else separator = specifier.indexOf("/", separator + 1);
+    }
+    const name = separator === -1 ? specifier : specifier.slice(0, separator);
+    if (/^\.|%|\\/.test(name)) valid = false;
+    if (!valid) {
+      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
+    }
+    const subpath = "." + (separator === -1 ? "" : specifier.slice(separator));
+    const self = yield* packageScopeConfig(new URL(baseUrl));
+    if (self.exists && self.exports != null && self.name === name) {
+      return yield* packageExportsResolve(fileUrl(self.pjsonPath), subpath, self, base);
+    }
+    let pjsonUrl = new URL("./node_modules/" + name + "/package.json", baseUrl);
+    let pjsonPath = filePath(pjsonUrl);
+    let lastPath;
+    do {
+      if ((yield* ask.kind(pjsonPath.slice(0, pjsonPath.length - 13))) !== "directory") {
+        lastPath = pjsonPath;
+        pjsonUrl = new URL((scoped ? "../../../../node_modules/" : "../../../node_modules/") + name + "/package.json", pjsonUrl);
+        pjsonPath = filePath(pjsonUrl);
+        continue;
+      }
+      const config = yield* readPackageConfig(pjsonPath, specifier, base);
+      if (config.exports != null) return yield* packageExportsResolve(pjsonUrl, subpath, config, base);
+      if (subpath === ".") return yield* legacyMainResolve(pjsonUrl, config, base);
+      return new URL(subpath, pjsonUrl);
+    } while (pjsonPath.length !== lastPath.length);
+    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${name}' imported from ${base}`);
+  }
+  function* formatOf(url, path) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const dot = base.lastIndexOf(".");
+    const ext = dot > 0 ? base.slice(dot) : "";
+    if (ext === ".mjs" || ext === ".mts") return "module";
+    if (ext === ".cjs" || ext === ".cts") return "commonjs";
+    if (ext === ".json") return "json";
+    if (ext === ".js" || ext === ".ts" || ext === "") {
+      const type = (yield* packageScopeConfig(url)).type;
+      if (type === "module") return "module";
+      if (type === "commonjs") return "commonjs";
+      return "detect";
+    }
+    throw codedError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${ext}" for ${path}`);
+  }
+  function* finalizeResolution(resolved, baseUrl) {
+    const base = filePath(baseUrl);
+    if (/%2f|%5c/i.test(resolved.pathname)) {
+      throw codedError(
+        TypeError,
+        "ERR_INVALID_MODULE_SPECIFIER",
+        `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`
+      );
+    }
+    const path = filePath(resolved);
+    const kind = path.endsWith("/") ? "directory" : yield* ask.kind(path);
+    if (kind === "directory") {
+      throw Object.assign(
+        codedError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
+        { url: resolved.href }
+      );
+    }
+    if (kind !== "file") {
+      throw Object.assign(
+        codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base}`),
+        { url: resolved.href }
+      );
+    }
+    const real = yield* ask.realpath(path);
+    const url = fileUrl(real);
+    url.search = resolved.search;
+    url.hash = resolved.hash;
+    return { url: url.href, path: real };
+  }
+  function* moduleResolve(specifier, parentUrl) {
+    let resolved;
+    if (isRelativeOrAbsolute(specifier)) resolved = new URL(specifier, parentUrl);
+    else if (specifier[0] === "#") resolved = yield* packageImportsResolve(specifier, parentUrl);
+    else {
+      try {
+        resolved = new URL(specifier);
+      } catch {
+        resolved = yield* packageResolve(specifier, parentUrl);
+      }
+    }
+    if (resolved.protocol === "node:") return { url: "node:" + resolved.pathname, builtin: resolved.pathname };
+    if (resolved.protocol !== "file:") return { url: resolved.href };
+    return yield* finalizeResolution(resolved, parentUrl);
+  }
+  function* loadable(resolved) {
+    if (resolved.builtin !== void 0) {
+      if (!host.isBuiltin("node:" + resolved.builtin)) {
+        throw codedError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", `No such built-in module: node:${resolved.builtin}`);
+      }
+      return { url: resolved.url, builtin: resolved.builtin, format: "builtin" };
+    }
+    if (resolved.url.startsWith("data:")) return { url: resolved.url, format: "data" };
+    if (resolved.path === void 0) {
+      throw codedError(
+        Error,
+        "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`
+      );
+    }
+    return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
+  }
+  function* commonJsHint(specifier, parentUrl) {
+    let found = yield* ask.cjsResolve(specifier, filePath(parentUrl));
+    if (found === null) return null;
+    if (isRelativeSpecifier(specifier)) {
+      const from = parentUrl.slice("file://".length, parentUrl.lastIndexOf("/")).split("/").filter(Boolean);
+      const to = fileUrl(found).pathname.split("/").filter(Boolean);
+      let common = 0;
+      while (common < from.length && common < to.length && from[common] === to[common]) common++;
+      found = [...from.slice(common).map(() => ".."), ...to.slice(common)].join("/");
+      if (!found.startsWith("../")) found = `./${found}`;
+    } else if (specifier[0] && specifier[0] !== "/" && specifier[0] !== ".") {
+      const slash = specifier.indexOf("/");
+      const pkg = slash === -1 ? specifier : specifier.slice(0, slash);
+      const needle = `/node_modules/${pkg}/`;
+      const at = found.lastIndexOf(needle);
+      found = at !== -1 ? pkg + "/" + found.slice(at + needle.length).split("/").map(encodeURIComponent).join("/") : fileUrl(found).href;
+    }
+    return found;
+  }
+  function* resolveWithHint(specifier, parentUrl) {
+    try {
+      return yield* moduleResolve(specifier, parentUrl);
+    } catch (error) {
+      const code = codeOf(error);
+      if (error instanceof Error && (code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT")) {
+        const asGiven = specifier.startsWith("file://") ? filePath(specifier) : specifier;
+        const found = yield* commonJsHint(asGiven, parentUrl);
+        if (found && found !== asGiven) error.message += `
+Did you mean to import ${JSON.stringify(found)}?`;
+      }
+      throw error;
+    }
+  }
+  function* importTarget(specifier, parentUrl) {
+    return yield* loadable(yield* resolveWithHint(specifier, parentUrl));
+  }
+  function* metaResolve(specifier, parentUrl) {
+    try {
+      return (yield* moduleResolve(specifier, parentUrl)).url;
+    } catch (error) {
+      const code = codeOf(error);
+      if ((code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT") && error !== null && typeof error === "object" && "url" in error && typeof error.url === "string") return error.url;
+      throw error;
+    }
+  }
+  function runSync(steps) {
+    let next = steps.next();
+    while (!next.done) {
+      if (next.value instanceof Promise) throw new Error("resolveSync: the host answered asynchronously");
+      next = steps.next(next.value);
+    }
+    return next.value;
+  }
+  return {
+    async resolve(specifier, parentUrl) {
+      const steps = importTarget(specifier, parentUrl);
+      let next = steps.next();
+      while (!next.done) {
+        let answer;
+        try {
+          answer = await next.value;
+        } catch (error) {
+          next = steps.throw(error);
+          continue;
+        }
+        next = steps.next(answer);
+      }
+      return next.value;
+    },
+    resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
+    metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
+    validateAttributes(url, format, attributes) {
+      for (const key of Object.keys(attributes)) {
+        if (key !== "type") {
+          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+        }
+      }
+      const type = attributes.type;
+      if (format === "json" || format === "data" && /^data:application\/json(?:;[^,]*)?,/.test(url)) {
+        if (type === "json") return;
+        if (!("type" in attributes)) {
+          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_MISSING", `Module "${url}" needs an import attribute of "type: json"`);
+        }
+      } else if (type == null) {
+        return;
+      }
+      if (typeof type !== "string") {
+        throw codedError(TypeError, "ERR_INVALID_ARG_TYPE", `The "type" argument must be of type string. Received ${typeof type}`);
+      }
+      if (type !== "json") {
+        throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "type" with value "${type}" is not supported in ${url}`);
+      }
+      throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE", `Module "${url}" is not of type "json"`);
+    }
+  };
+}
+const __esmResolver = createEsmResolver({
+  kind(path) {
+    const st = __fsMod.statSync(path, { throwIfNoEntry: false });
+    return !st ? null : st.isDirectory() ? "directory" : st.isFile() ? "file" : null;
+  },
+  realpath(path) {
+    try { return __fsMod.realpathSync(path); } catch { return path; }
+  },
+  readText(path) { return __readFileOr(path, null); },
+  isBuiltin(specifier) {
+    const scheme = specifier.startsWith("node:");
+    const name = scheme ? specifier.slice(5) : specifier;
+    if (!scheme && __ESM_SCHEME_ONLY_BUILTINS.has(name)) return false;
+    return Object.prototype.hasOwnProperty.call(builtins, name);
+  },
+  cjsResolve(specifier, parentPath) {
+    try {
+      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\/+/, "");
+      const found = __resolveFrom(specifier, dir);
+      return found ? "/" + String(found).replace(/^\/+/, "") : null;
+    } catch { return null; }
+  },
+});
+const __esmNamespaces = new Map();
+/** A module namespace: its names sorted, read through to the exports. */
+function __esmNamespaceOf(names, read) {
+  const ns = Object.create(null);
+  for (const name of [...names].sort()) {
+    Object.defineProperty(ns, name, { enumerable: true, get: () => read(name) });
+  }
+  Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
+  return Object.preventExtensions(ns);
+}
+function __esmLoad(resolution) {
+  const cached = __esmNamespaces.get(resolution.url);
+  if (cached) return cached;
+  let ns;
+  if (resolution.format === "builtin") {
+    const mod = __requireFrom("node:" + resolution.builtin, "");
+    const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
+    names.add("default");
+    ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+  } else if (resolution.format === "data") {
+    const match = /^data:application\/json(;[^,]*)?,/.exec(resolution.url);
+    if (!match) {
+      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
+    }
+    const body = resolution.url.slice(match[0].length);
+    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
+    ns = __esmNamespaceOf(["default"], () => value);
+  } else {
+    const key = resolution.path.replace(/^\/+/, "");
+    const esm = resolution.format === "module"
+      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+    // Source/precompiled code is shared by pathname. ESM evaluation is not:
+    // each resolved URL (query and fragment included) is a separate module.
+    const exports = __loadModule(key, esm ? resolution.url : key);
+    if (resolution.format === "json") {
+      ns = __esmNamespaceOf(["default"], () => exports);
+    } else if (esm) {
+      // The ESM→CJS transform's exports: the module's own names, live.
+      const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+      ns = __esmNamespaceOf(names, (name) => exports[name]);
+    } else {
+      // CommonJS: module.exports is the default, its names the named exports.
+      const mod = exports;
+      const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
+      names.delete("default");
+      names.add("default");
+      ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    }
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
+}
+globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
+  return Promise.resolve().then(() => {
+    const text = String(specifier);
+    const attributes = {};
+    // V8's own checks and messages (node 22), which run before resolution.
+    if (options !== undefined) {
+      if (options === null || typeof options !== "object") throw new TypeError("The second argument to import() must be an object");
+      const withAttributes = options.with;
+      if (withAttributes !== undefined) {
+        if (withAttributes === null || typeof withAttributes !== "object") throw new TypeError("The 'assert' option must be an object");
+        for (const key of Object.keys(withAttributes)) {
+          if (typeof withAttributes[key] !== "string") throw new TypeError("Import assertion value must be a string");
+          attributes[key] = withAttributes[key];
+        }
+      }
+    }
+    const resolution = __esmResolver.resolveSync(text, parentUrl);
+    __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
+    return __esmLoad(resolution);
+  });
+};
+
+// Node's import.meta.resolve, synchronous as in Node: the URL a specifier
+// names, even for a file or directory that will not load.
+globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
+  const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+    ? parentUrl
+    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\/+/, "");
+  return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 
 /**

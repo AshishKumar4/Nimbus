@@ -14,6 +14,7 @@ import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
+import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { scanJsSource } from './comment-strip.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
@@ -843,57 +844,6 @@ function importMetaEdits(source, absoluteUrl) {
  * esbuild-wasm. Returns null for module declarations that are not the compact,
  * semicolon-terminated shapes emitted by current JS bundlers.
  */
-/**
- * Rewrite every dynamic `import(...)` so it resolves the way `require` does.
- *
- * This rewriter only converts top-level STATIC declarations, and left dynamic
- * import alone by design. In a cell that is wrong: the cell is compiled with
- * `new Function`, so a surviving `import()` is the RUNTIME's, and the runtime
- * hands back its own builtin rather than the process's shim. Measured on real
- * Vite —
- *
- *     vite/dist/node/chunks/config.js:14968
- *     const { createServer } = await import("node:http");
- *     return createServer(app);
- *
- * — which gave Vite the platform's `node:http`, whose `listen()` binds no
- * port in the shims' registry. Vite printed its URL, nothing was bound, and
- * the facet exited as a program with no handles left, straight after "ready".
- *
- * esbuild's own `format: 'cjs'` transform rewrites a literal dynamic import
- * to a require, so this keeps the bounded path's output equivalent to the one
- * it stands in for rather than introducing a behaviour of its own.
- */
-function dynamicImportEdits(source) {
-    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
-    const edits = [];
-    const parentheses = [];
-    let previous = tokTypes.eof;
-    let importStart;
-    let closedImport = false;
-    while (true) {
-        const token = tokens.getToken();
-        if (token.type === tokTypes.eof)
-            return edits;
-        // A method named import needs parse context; leave it to the compiler.
-        if (closedImport && token.type === tokTypes.braceL)
-            return null;
-        closedImport = false;
-        if (token.type === tokTypes.parenL) {
-            parentheses.push(importStart !== undefined);
-            if (importStart !== undefined) {
-                edits.push({ start: importStart, end: token.end, text: '__nimbusCellImport(require, ' });
-            }
-        }
-        else if (token.type === tokTypes.parenR) {
-            closedImport = parentheses.pop() ?? false;
-        }
-        importStart = token.type === tokTypes._import && previous !== tokTypes.dot && previous !== tokTypes.questionDot
-            ? token.start
-            : undefined;
-        previous = token.type;
-    }
-}
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source) {
     const helpers = new Set(['__commonJS']);
@@ -1014,13 +964,9 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl) {
     const metaEdits = importMetaEdits(source, absoluteUrl);
     if (!metaEdits)
         return null;
-    const importCalls = dynamicImportEdits(source);
-    if (!importCalls)
-        return null;
     const edits = [
         ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
         ...metaEdits.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
-        ...importCalls.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     ].sort((a, b) => a.start - b.start);
     const bodyParts = [];
     let cursor = 0;
@@ -1099,7 +1045,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
                 jsxFragment: options?.jsxFragment,
                 tsconfigRaw: options?.tsconfigRaw,
                 define: options?.define,
-                supported: { 'dynamic-import': false },
+                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
             });
             return {
                 code: direct.code,
@@ -1127,7 +1073,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
                 jsxFragment: options?.jsxFragment,
                 tsconfigRaw: options?.tsconfigRaw,
                 define: options?.define,
-                supported: { 'dynamic-import': false },
+                supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
             });
             const { requires, body } = convertEsmImportsToRequire(pass1.code);
             return {
@@ -1152,7 +1098,7 @@ async function transformWithEsbuild(esbuildApi, source, options) {
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': false },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
     });
     return {
         code: result.code,
@@ -1162,6 +1108,23 @@ async function transformWithEsbuild(esbuildApi, source, options) {
             location: warning.location,
         })) || [],
     };
+}
+/**
+ * One transform request as a transform host runs it: esbuild (unless the
+ * code is already CommonJS), then, for a module whose dynamic `import()` is
+ * the process's, the rewrite that routes each one to the process's ESM loader.
+ * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports`, passed in
+ * because this function is serialized into the esbuild facet.
+ */
+async function runTransformRequest(esbuildApi, code, options, rewrite) {
+    const parent = options?.dynamicImportParent;
+    if (options?.rewriteOnly) {
+        if (parent === undefined)
+            throw new Error('a rewrite-only transform needs dynamicImportParent');
+        return { code: rewrite(code, parent), map: '', warnings: [] };
+    }
+    const result = await transformWithEsbuild(esbuildApi, code, options);
+    return parent === undefined ? result : { ...result, code: rewrite(result.code, parent) };
 }
 /**
  * One esbuild build in which `plugin` resolves and loads every module,
@@ -1210,6 +1173,7 @@ export function generateEsbuildFacetRuntimeSource() {
         hasEsmExports.toString(),
         convertEsmImportsToRequire.toString(),
         transformWithEsbuild.toString(),
+        runTransformRequest.toString(),
         buildWithEsbuild.toString(),
     ].join('\n');
 }
@@ -1424,7 +1388,8 @@ export class EsbuildService {
             return outcome;
         }
         await this.ensureInit();
-        return transformWithEsbuild(this._esbuild, withProvidedModuleRewrite(code, options), options);
+        const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
+        return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports);
     }
     /**
      * Transform many modules in one round trip to the transform host (or in
@@ -1439,7 +1404,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: withProvidedModuleRewrite(code, options), options });
+                prepared.push({ code: options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options), options });
                 positions.push(i);
             }
             catch (e) {
@@ -1460,7 +1425,7 @@ export class EsbuildService {
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = await transformWithEsbuild(this._esbuild, code, options);
+                outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

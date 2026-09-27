@@ -75,6 +75,13 @@ export declare const CALLER_SCOPES_HEADER = "x-nimbus-caller-scopes";
  * starting with that exact prefix-then-colon when JWT_SECRET is set).
  */
 export declare const LEGACY_PUBLIC_DO_SEGMENT = "legacy:public:_";
+/**
+ * The tenant of every anonymous session a deployment hands out (the hosted
+ * demo's `anon:anon:<sid>`). Anyone can mint such sessions, so they are one
+ * principal, and one that may read what verified tenants share but never
+ * write to it (read-profile.ts).
+ */
+export declare const ANONYMOUS_TENANT = "anon";
 export interface ParsedSessionRoute {
     /** Session ID portion (unverified until `isValidSessionId` check). */
     sessionId: string;
