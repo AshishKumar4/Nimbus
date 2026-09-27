@@ -160,6 +160,55 @@ must support nested savepoints for individual VFS writes. If reading those
 inodes back also fails, Nimbus throws an `AggregateError` carrying both
 failures; discard that VFS instance and reopen it after storage recovers.
 
+## Publishing changed rows
+
+For cross-database sync, export changed rows from a source snapshot and send
+only the chunk hashes `wantChunks` reports missing. Import into an empty
+staging root before taking a publication lease; unchanged files need no byte
+transfer.
+
+Acquire `vfs.acquireGlobalExclusiveMutation()`, then bind
+`vfs.as(cred, { mutationOwner: lease.owner })`. Recheck the destination revision
+and expected content keys before publishing through that view's rename,
+deletion and metadata methods. A subtree lease authorizes only mutations
+inside its root; moving from a separate staging root needs the global lease.
+The capability does not change the credential's permissions.
+
+Release the lease in `finally`. Mutations through the bound view then fail
+with `ESTALE`. `copyTreeAsync` and `writeStream` carry the bound owner through
+their slices without leaving an ambient owner across awaits. A quiesced
+snapshot waits for the lease to end.
+
+This is not an all-files atomic apply: readers can observe committed prefixes.
+The caller owns the saved publication plan, conflict checks and replay after
+interruption. The staged-apply test reopens the database and replays a prefix
+of nested replacements/deletions, preserving untouched inode identities and
+content keys.
+
+## Inode identities in row imports
+
+Export rows carry `ino`; each page carries the source allocator's exclusive
+`nextIno` high-water. A whole-root export imported at `/` preserves those
+numbers only in a fresh identity domain: allocator at 2, no live or historical
+inodes, snapshots, other jobs or open descriptions. Pre-staged import chunks
+do not consume inode identities. A used-but-empty filesystem, subtree import
+or staging import allocates destination-local inode numbers instead.
+Import before booting/seeding a `NimbusWorkspace` when preserving full-tree
+inode numbers is required.
+
+The import job records that decision and the first source high-water. Later
+source allocations may raise exported headers, but cannot enlarge the job's
+reserved identity range. Ordinary destination allocations start above that
+range. Active import progress follows the job cursor, not unrelated live
+paths; a reset before cursor persistence replays committed rows harmlessly.
+Invalid IDs and collisions are refused before publishing the page. Content
+keys remain portable, and page digests do not include local inode identity.
+Collision checks include live rows, unlinked open descriptions and rows still
+visible to snapshots. Fully deleted, unreferenced identities do not require a
+historical seen-ID table; the allocator still stays above the reserved bound.
+Rows also preserve directory default ACLs; ACL-only changes participate in
+`diff` and `pageDigest`, so imported shared directories retain inheritance.
+
 ## Mounts in df, mount and /proc/mounts
 
 The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,

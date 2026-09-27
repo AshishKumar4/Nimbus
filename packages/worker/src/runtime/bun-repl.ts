@@ -35,7 +35,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
-import { ReplSession } from './repl-session.js';
+import { ReplSession, replPushResult, type ReplFacetResult } from './repl-session.js';
 import { BUN_SHIM_PREAMBLE, BUN_VERSION } from './bun-runner.js';
 
 export interface BunReplDeps {
@@ -43,15 +43,6 @@ export interface BunReplDeps {
   terminal: WebSocketTerminal;
 }
 
-/** Result returned by the REPL-step facet fn. */
-interface BunReplFacetResult {
-  stdout: string;
-  stderr: string;
-  incomplete?: boolean;
-  exit?: boolean;
-  exitCode?: number;
-  error?: string;
-}
 
 class BunReplAdapter implements ReplAdapter {
   private pool: any = null;
@@ -111,25 +102,14 @@ class BunReplAdapter implements ReplAdapter {
       }
     }
 
-    let result: BunReplFacetResult;
+    let result: ReplFacetResult;
     try {
       result = await this.submitFacetFn({ mode: 'push', source });
     } catch (e: any) {
       return { kind: 'error', stderr: `[bun-repl] push dispatch failed: ${e?.message || e}\n` };
     }
 
-    if (result.exit) {
-      return {
-        kind: 'exit',
-        exitCode: result.exitCode || 0,
-        stdout: result.stdout,
-        stderr: result.stderr,
-      };
-    }
-    if (result.incomplete) {
-      return { kind: 'incomplete' };
-    }
-    return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+    return replPushResult(result);
   }
 
   async close(): Promise<void> {
@@ -158,7 +138,7 @@ class BunReplAdapter implements ReplAdapter {
   }
 
   private async submitFacetFn(args: { mode: 'init' | 'push'; source?: string }):
-      Promise<BunReplFacetResult> {
+      Promise<ReplFacetResult> {
     return await this.pool.submit(bunReplStepFacetFn, args, {
       timeoutMs: 60_000,
     });
@@ -178,7 +158,7 @@ class BunReplAdapter implements ReplAdapter {
  */
 function bunReplStepFacetFn(
   args: { mode: 'init' | 'push'; source?: string },
-): Promise<BunReplFacetResult> {
+): Promise<ReplFacetResult> {
   const g: any = globalThis as any;
 
   return (async function () {

@@ -354,20 +354,9 @@ export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?:
   await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
 
-export async function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
-  await self.supervisorBridge(pid).access(path, mode);
-}
 
-export async function _rpcChown(
-  self: RpcHost,
-  path: string,
-  uid: number,
-  gid: number,
-  pid?: number,
-  options?: { followSymlinks?: boolean },
-): Promise<void> {
-  await self.supervisorBridge(pid).chown(path, uid, gid, options);
-}
+
+
 
 export async function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number> {
   return self.processes.setUmask(processPid(pid), mask);
@@ -823,9 +812,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 
-export async function _rpcUnlink(self: RpcHost, path: string, pid?: number): Promise<void> {
-  await self.supervisorOp({ op: 'unlink', args: [path], pid });
-}
+
 
   /**
    * Bulk-write files and directories via one transactionSync().
@@ -925,7 +912,7 @@ export async function _rpcWriteBatchStream(self: RpcHost,
    * resolver-facet to flush a wave of resolved packages back to the
    * supervisor without per-entry round-trips.
    *
-   * Payload is the array of RegistryCacheEntry shapes from src/npm-cache.ts.
+   * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
    * Returns { written, failed } so the facet can surface partial-write
    * warnings to the install log.
    */

@@ -22,7 +22,7 @@ import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
   isRuntimePythonPackageArtifactMetadata,
-  RuntimePythonPackageArtifactMetadataSchema,
+
   type RuntimeArtifactMetadata,
   type RuntimePythonPackageArtifactMetadata,
 } from './runtime-manifest.js';
@@ -242,10 +242,7 @@ interface PipInstallPlan {
   exitCode: number;
 }
 
-export interface InstalledPyodidePackageManifest {
-  version: 1;
-  packages: RuntimePythonPackageArtifactMetadata[];
-}
+
 
 export interface PipInvocation {
   mode: 'pip' | 'none';
@@ -261,14 +258,9 @@ interface PypiCacheEntry {
 
 const pypiCache = new Map<string, PypiCacheEntry>();
 
-export const InstalledPyodidePackageManifestSchema: z.ZodType<InstalledPyodidePackageManifest> = z.object({
-  version: z.literal(1),
-  packages: z.array(RuntimePythonPackageArtifactMetadataSchema),
-});
 
-export function parseInstalledPyodidePackageManifest(text: string): InstalledPyodidePackageManifest {
-  return InstalledPyodidePackageManifestSchema.parse(JSON.parse(text));
-}
+
+
 
 export async function buildPipInvocation(
   argv: string[],

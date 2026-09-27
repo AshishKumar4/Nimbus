@@ -49,6 +49,22 @@ export type ReplPushResult =
   | { kind: 'exit'; exitCode: number; stdout?: string; stderr?: string }
   | { kind: 'error'; stderr: string };
 
+/** The result of one Node/Bun facet evaluation. */
+export interface ReplFacetResult {
+  stdout: string;
+  stderr: string;
+  incomplete?: boolean;
+  exit?: boolean;
+  exitCode?: number;
+  error?: string;
+}
+
+export function replPushResult(result: ReplFacetResult): ReplPushResult {
+  if (result.exit) return { kind: 'exit', exitCode: result.exitCode || 0, stdout: result.stdout, stderr: result.stderr };
+  if (result.incomplete) return { kind: 'incomplete' };
+  return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+}
+
 /**
  * Manages an interactive REPL session: stdin buffering with minimal
  * readline UX (line-mode), output routing to the WS terminal, prompt

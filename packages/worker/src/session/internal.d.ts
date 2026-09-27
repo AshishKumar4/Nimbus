@@ -30,7 +30,7 @@
  *
  * **NOT INCLUDED (deliberate omissions):**
  *   - `ctx` / `env` — `protected` on parent class. Pass explicitly.
- *   - `_W*_*` storage-key static constants — moved to nimbus-session-keys.ts.
+ *   - `_W*_*` storage-key static constants — moved to session/keys.ts.
  *   - Module-private helpers (`_emitExitDump` was historically `private`;
  *     post-refactor it's reachable from -rpc.ts so it lives here).
  *

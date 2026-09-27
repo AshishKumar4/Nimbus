@@ -28,6 +28,4 @@ export async function deriveResidentOwner(cwd: string, argv: readonly string[]):
   return `${DERIVED_OWNER_PREFIX}${hex.slice(0, 24)}`;
 }
 
-export function isDerivedOwner(owner: string): boolean {
-  return owner.startsWith(DERIVED_OWNER_PREFIX);
-}
+

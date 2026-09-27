@@ -495,7 +495,6 @@ retired only after the replacement path is routed and probed.
 | Node local HTTP `globalThis.__portRegistry` bridge | It is a separate request bridge from Python/Ruby virtual sockets | Move Node `net`/HTTP to the shared virtual socket kernel |
 | `substrate/lifo/node-compat/child_process.ts` throwing stubs | It conflicts with the real `node-shims.ts` child-process path if treated as product surface | Keep only if shell-internal and clearly isolated; otherwise remove or redirect to the real broker |
 | `substrate/lifo/kernel/network/*` | It is a separate virtual network concept from `PortRegistry` and `VirtualSocketKernel` | Quarantine as internal/experimental or retire after shared virtual socket kernel covers runtime networking |
-| `runtime/static-server.ts` | Appears to be an unused legacy helper; hidden static fallbacks would fake language server support if wired later | Delete if unneeded, or keep only for explicit static-serving commands, not as fallback for Flask/Rack/Node/WASI servers |
 | Duplicated npm native policy in loader preamble | Resolved: one `PackageAbiPolicy` is serialized into the preamble and fully parity-checked against the supervisor policy | Done. Keep the parity gate green when the policy changes |
 | Hardcoded runtime aliases/defaults | Resolved in `package-manager.ts` (aliases derive from catalog manifests); the CLI `DEFAULT_RUNTIME_VERSIONS` table is still hand-maintained | Make the CLI runtime list catalog-driven or parity-checked |
 | Stale comments describing real implementations as stubs, old runtime sizes, old WebSocket hibernation posture, or old concurrency | They mislead future implementation and docs | Clean comments when touching affected modules; do not change behavior only for comment cleanup unless in-scope |
@@ -1438,13 +1437,10 @@ matters because each step removes a future source of duplication.
     Node, Python, Ruby, and WASI adapters to it.
 12. Centralize ABI policy, validate loader-preamble parity, and make runtime
     aliases/defaults catalog-driven.
-13. Verify and remove the apparently unused static-server helper, or keep it
-    only for explicit static-serving commands once the virtual socket path
-    covers language server previews.
-14. Add production probes for unmodified opencode/local Proteus behavior or
+13. Add production probes for unmodified opencode/local Proteus behavior or
     exact unsupported boundaries, live runtime VFS, deeper shell grammar, and
     SDK/embed auth.
-15. Update README, SDK docs, and AGENTS from the support matrix proven by those
+14. Update README, SDK docs, and AGENTS from the support matrix proven by those
     probes.
 
 ## Design Guardrails

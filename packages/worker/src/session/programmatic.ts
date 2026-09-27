@@ -27,7 +27,7 @@ import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runti
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
+import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
@@ -1295,33 +1295,8 @@ export async function rpcRemoveDurableApp(
 }
 
 
-/**
- * Route an embedder request that carries a port capability. The embedder has
- * authenticated the capability at its edge and stripped its own credentials,
- * so the guest's `Authorization` is preserved through this path and no other.
- */
-export async function rpcRouteCapabilityPort(
-  self: ProgrammaticHost,
-  port: number,
-  capability: string,
-  request: Request,
-  pathname: string,
-): Promise<Response> {
-  await ensureProgrammaticReady(self);
-  await restorePortCapability(self, port);
-  if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    // A 101 cannot cross the DO RPC boundary this entrypoint is reached
-    // through; the session fetch route is the one that keeps fetch semantics.
-    return new Response('WebSocket upgrades must use the session fetch route', { status: 409 });
-  }
-  const routed = await self.portRegistry.routeCapabilityRequest(
-    Number(port),
-    String(capability),
-    request,
-    pathname,
-  );
-  return routed ?? new Response('Not found', { status: 404 });
-}
+
+
 
 /**
  * `spawnWorker` for a colocated embedder holding the DO stub: boot the

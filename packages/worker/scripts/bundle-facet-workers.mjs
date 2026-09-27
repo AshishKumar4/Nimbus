@@ -430,7 +430,7 @@ async function main() {
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *',
-    ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',
+    ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
     ' * worker module so user functions can reference the exported',
     ' * helpers by name.',

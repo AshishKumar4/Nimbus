@@ -456,7 +456,7 @@ export function makeWasmRunner(deps: {
         // sync-only WASI socket and polling support probes worked because they never hit a
         // Suspending import; the 7 async probes failed because they did.
         // The preamble is statically prepended to this same module body
-        // (loader-pool.ts:523-530), so the symbol is guaranteed in
+        // (fabric/isolate-pool.ts), so the symbol is guaranteed in
         // scope. typeof guard handles the impossible case of a preamble
         // pre-dating WASI socket and polling support (defensive only).
         const runStartAsync = typeof __wasiRunStartAsync === 'function'

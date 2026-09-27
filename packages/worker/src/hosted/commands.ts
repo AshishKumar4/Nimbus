@@ -864,7 +864,7 @@ const shellExecuteTracked = async (
   if (opts.longRunning) self.processes.setLongRunning(pid);
   const startedAt = Date.now();
 
-  // Spawn banner — matches facet-manager.ts onSpawn format.
+  // Spawn banner — matches facets/manager.ts onSpawn format.
   if (terminal) {
     const label = opts.longRunning ? 'started (long-running)' : 'started';
     terminal.write(

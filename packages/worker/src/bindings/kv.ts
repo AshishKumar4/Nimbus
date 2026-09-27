@@ -25,6 +25,7 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { coerceBindingBody, ensureBindingDir } from './body.js';
 
 export interface KvEmulatorOptions {
   vfs: CredentialedVfs;
@@ -121,8 +122,8 @@ export class KvEmulator {
     options?: KvPutOptions,
   ): Promise<void> {
     const enc = encKey(key);
-    const bodyBlob = await this._coerceBody(value);
-    this._ensureDir();
+    const bodyBlob = await coerceBindingBody(value);
+    ensureBindingDir(this.vfs, this.dir);
     this.vfs.writeFile(this.dir + '/' + enc, bodyBlob);
 
     // Build sidecar
@@ -198,38 +199,7 @@ export class KvEmulator {
 
   // ── internals ─────────────────────────────────────────────────────────
 
-  private _ensureDir(): void {
-    if (!this.vfs.exists(this.dir)) {
-      this.vfs.mkdir(this.dir, { recursive: true });
-    }
-  }
 
-  private async _coerceBody(value: any): Promise<Uint8Array> {
-    if (value == null) return new Uint8Array(0);
-    if (typeof value === 'string') return new TextEncoder().encode(value);
-    if (value instanceof Uint8Array) return value;
-    if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    if (ArrayBuffer.isView(value)) return new Uint8Array((value as any).buffer, (value as any).byteOffset, (value as any).byteLength);
-    if (typeof value === 'object' && typeof (value as any).getReader === 'function') {
-      // ReadableStream — drain
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      const reader = (value as any).getReader();
-      while (true) {
-        const { value: chunk, done } = await reader.read();
-        if (done) break;
-        const u = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-        chunks.push(u);
-        total += u.length;
-      }
-      const out = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) { out.set(c, off); off += c.length; }
-      return out;
-    }
-    // Fallback — try toString
-    return new TextEncoder().encode(String(value));
-  }
 
   private _project(body: Uint8Array, type: KvGetOptions['type']): any {
     const t = type || 'text';

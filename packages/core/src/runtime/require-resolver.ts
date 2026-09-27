@@ -3,8 +3,8 @@
  *
  * Runs on the supervisor (which has synchronous VFS access) to trace
  * all require() calls and build a complete file bundle reachable from
- * the entry point. The output is consumed by worker `facets/manager.ts`'s
- * `buildPrefetchBundle` (W2.6a) to ship ONLY the reachable set into
+ * the entry point. The output is consumed by worker `facets/manager.ts`
+ * to ship the reachable set into
  * the dynamic-worker module (rather than every file in node_modules
  * up to the legacy cap).
  *
@@ -19,8 +19,8 @@
  *   4. Return Record<string, string> of path → content.
  *
  * Static analysis still misses dynamic requires like `require(variable)`;
- * bounded greedy oversampling in worker facets/manager.ts buildPrefetchBundle
- * compensates without limiting the statically-proven require closure.
+ * The module-map construction in worker facets/manager.ts also admits learned
+ * reads without limiting the statically-proven require closure.
  *
  * History: this file was ARC-A-P1 quarantined after W2 because the
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
