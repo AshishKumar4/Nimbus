@@ -34,6 +34,7 @@ import {
   LRU_MAX_ENTRIES,
   BATCH_SIZE,
   FS_LIST_PAGE_LIMIT,
+  MAX_RPC_SAFE_PAYLOAD_BYTES,
   FS_READ_BATCH_REQUEST_BYTES,
   INODE_CACHE_MAX_ENTRIES,
 } from '../constants.js';
@@ -4497,13 +4498,21 @@ export class SqliteVFS {
     const rev = this._revision;
     const from = after === null || after === undefined ? '' : this.storageKey(after, cred);
     const entries: VfsListEntry[] = [];
+    // The page is bounded by its encoded bytes, not only its row count: a full
+    // page of long, escaped names or link targets can exceed the RPC frame.
+    const frameBytes = enc.encode(JSON.stringify({ epoch, rev, entries: [], next: null })).byteLength;
+    let entriesBytes = 0;
+    const pageEnding = (): VfsListPage => {
+      const last = entries[entries.length - 1];
+      return { epoch, rev, entries, next: last === undefined ? null : last.path };
+    };
     let cursor = from;
     // Rows arrive in path order, so a run of entries in one directory shares
     // one check of the directories above it.
     let checkedParent: string | null = null;
     let parentReachable = false;
     for (;;) {
-      const rows = [...this.sql.exec(
+      const rows = this.sql.exec(
         `SELECT ${INODE_SELECT_COLUMNS_AS_I}, c.hash AS chunk_hash, ct.digest AS content_digest
          FROM vfs_inodes i
          LEFT JOIN vfs_chunks c ON c.id = i.chunk_id
@@ -4511,9 +4520,13 @@ export class SqliteVFS {
          WHERE i.path > ? ORDER BY i.path LIMIT ?`,
         cursor,
         limit + 1,
-      )];
+      );
+      let visited = 0;
+      let lastStoragePath = cursor;
       for (const row of rows) {
-        if (entries.length >= limit) return { epoch, rev, entries, next: entries[entries.length - 1]!.path };
+        visited++;
+        lastStoragePath = String(row.path);
+        if (entries.length >= limit) return pageEnding();
         const path = String(row.path);
         // Reported in the caller's OWN path space. Enumerating raw storage keys
         // would name a private root the caller cannot address and does not know
@@ -4544,7 +4557,7 @@ export class SqliteVFS {
         // this entry is listed under: a confined caller's /tmp/x is its own
         // file, not the shared one at the same name.
         const pathRevision = this.pathRevision(path, inode);
-        entries.push({
+        const entry: VfsListEntry = {
           path: logical,
           kind: inode.kind,
           size: inode.size,
@@ -4555,10 +4568,20 @@ export class SqliteVFS {
           // under a link) made the whole enumeration throw ENOENT.
           ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(path, inode)) } : {}),
           ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
-        });
+        };
+        // The entry's actual encoding (escaping included) plus the cursor it
+        // would leave in `next` (its path in place of `null`), and a comma.
+        const bytes = enc.encode(JSON.stringify(entry)).byteLength;
+        const cursorBytes = Math.max(4, enc.encode(JSON.stringify(entry.path)).byteLength) - 4;
+        if (frameBytes + entriesBytes + (entries.length ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
+          if (entries.length === 0) throw vfsError('E2BIG', `${logical}: listing entry exceeds the RPC byte budget`);
+          return pageEnding();
+        }
+        entriesBytes += bytes + (entries.length ? 1 : 0);
+        entries.push(entry);
       }
-      if (rows.length <= limit) return { epoch, rev, entries, next: null };
-      cursor = String(rows[rows.length - 1]!.path);
+      if (visited <= limit) return { epoch, rev, entries, next: null };
+      cursor = lastStoragePath;
     }
   }
 
