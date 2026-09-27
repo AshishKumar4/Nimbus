@@ -255,6 +255,11 @@ kernel credential, because Nimbus follows POSIX here:
   writer whose reader closed the pipe ends silently with status 141, as
   SIGPIPE ends it. `scripts/record-gnu-fixtures.mjs` re-records the GNU
   fixtures from their specs on a host with the reference tools.
+- The GNU fixture recorder limits each oracle, version probe and locale
+  probe to 30 seconds and 8 MiB of combined output. Timeout, signal, spawn
+  failure or output overflow kills the child tree and leaves the fixture
+  unchanged. Normal nonzero exits remain valid reference results. Each
+  fixture is replaced only after all its cases finish normally.
 - `sed` is GNU sed 4.9's language: every command except `e` (`{}`, `=`,
   `a`, `b`, `c`, `d`, `D`, `F`, `g`, `G`, `h`, `H`, `i`, `l`, `n`, `N`, `p`,
   `P`, `q`, `Q`, `r`, `R`, `s`, `t`, `T`, `w`, `W`, `x`, `y`, `z`, labels),
