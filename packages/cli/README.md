@@ -5,6 +5,8 @@ runtime cache.
 
 ## Install
 
+Requires Node.js 20.10.0 or later for JSON import attributes.
+
 ```bash
 npx @nimbus-sh/cli --help
 npx @nimbus-sh/cli init my-app

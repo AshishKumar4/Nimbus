@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/cli",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "Nimbus CLI \u2014 `create-nimbus-app` scaffolder + `token mint` + `runtime sync`.",
   "keywords": [
     "cloudflare",
@@ -45,11 +45,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nimbus-sh/sdk": "^0.8.0",
-    "@nimbus-sh/worker": "^0.10.0"
+    "@nimbus-sh/config": "^0.2.2",
+    "@nimbus-sh/sdk": "^0.9.0",
+    "@nimbus-sh/worker": "^0.11.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.10.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

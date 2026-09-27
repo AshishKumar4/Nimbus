@@ -2,6 +2,8 @@
 
 Scaffold a Nimbus-powered Cloudflare Workers app.
 
+Requires Node.js 20.10.0 or later, matching the CLI's JSON import attributes.
+
 ```bash
 npx create-nimbus-app my-nimbus-worker
 cd my-nimbus-worker
