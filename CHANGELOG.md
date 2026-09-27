@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The in-process facet host (`localFacetHost()`, every embedder that is not
+  workerd) parks a wasm guest where the engine can suspend one: Bun ships
+  JSPI (`WebAssembly.Suspending`/`promising`), so a plain-WASI child now waits
+  at a full pipe as on Linux, and `seq 100000 | cat | head -1` reports GNU's
+  `141 141 0` instead of `0 141 0`; `yes | cat | head -1` and
+  `yes | head -c 80000000 | wc -c` run instead of failing on the pipe budget.
+  Node 22 has no JSPI, keeps `parking: 'none'`, and behaves as before. No
+  runner, artifact or rule change: the host states its capability and the
+  bash runner already carried both paths.
+
 - A node launch's speculative main-entry pass resolves each package's root
   entry with the shared exports resolver, in the runtime's order (exports
   under CJS then ESM conditions, `main`, `index`). A root conditional map
@@ -12,11 +22,14 @@ published independently in the `@nimbus-sh` npm scope.
   previously read as empty and guessed `index.js`; nuxt dev then failed on
   its first `require("on-change")` with "not in this launch's module map".
 
-- WebSocket terminal input retains the async shell command through the
-  session or embedder's `waitUntil`. Previously the terminal discarded the
-  callback's promise when the frame returned. Later input, including Ctrl-C,
-  is still delivered without waiting for the command. Rejected callbacks
-  are logged and reported to the terminal; shell state is saved on completion.
+- WebSocket terminal input passes the async shell command's completion to
+  the session or embedder's `waitUntil`, so a rejected command is logged and
+  reported to the terminal and shell state is saved when it finishes.
+  Previously the terminal discarded the callback's promise when the frame
+  returned, and neither happened. Later input, including Ctrl-C, is still
+  delivered without waiting for the command. This does not extend a Durable
+  Object's lifetime: `DurableObjectState.waitUntil` does not, per Cloudflare's
+  documentation.
 
 - Load esbuild's bundled WASM when the service initializes (Kinu N27).
   Importing service constants or constructing a service no longer evaluates
