@@ -39,11 +39,12 @@ import {
 // Network ops (clone, fetch, pull) are delegated to the git-network-facet
 // because the supervisor's CPU budget cannot handle packfile processing
 // for real-world repos (>100 files).
-let _git: any = null;
+let _git: typeof import('../../vendor/git.generated.mjs').git | null = null;
 async function getGit() {
   if (!_git) {
-    // @ts-ignore — CF-compatible fork (github:AshishKumar4/cf-git)
-    _git = await import('isomorphic-git');
+    // Same patched build artifact used by the network facet. A fresh npm
+    // consumer does not run Nimbus' repository dependency-patching hook.
+    _git = (await import('../../vendor/git.generated.mjs')).git;
   }
   return _git;
 }
@@ -436,7 +437,7 @@ interface WalkerEntry {
 /** An opaque TREE/STAGE/WORKDIR walker handle. */
 type Walker = object;
 
-/** The cf-git calls staging and worktree inspection make; `git` itself is loaded untyped. */
+/** The cf-git calls staging and worktree inspection make. */
 interface CfGit {
   // parallel: false (through the tracked cf-git patch) adds an array's paths one at a time.
   add(args: { fs: unknown; dir: string; filepath: string | string[]; parallel?: boolean; force?: boolean; cache?: object }): Promise<void>;

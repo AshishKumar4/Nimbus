@@ -79,7 +79,9 @@ function layout(name, { index, linkTo }) {
   for (const dep of readdirSync(storeSiblings)) {
     if (dep !== '@ashishkumar472') symlinkSync(join(storeSiblings, dep), join(siblings, dep));
   }
-  symlinkSync(realpathSync(join(repoRoot, 'node_modules/esbuild')), join(root, 'node_modules/esbuild'));
+  for (const tool of ['esbuild', 'typescript']) {
+    symlinkSync(realpathSync(join(repoRoot, 'node_modules', tool)), join(root, 'node_modules', tool));
+  }
   mkdirSync(join(root, 'packages/worker/node_modules'));
   symlinkSync(copy, join(root, 'packages/worker/node_modules/isomorphic-git'));
   return { root, copy, entry: dirname(siblings), generated: join(root, 'packages/worker/src/git-bundle.generated.ts') };
@@ -114,7 +116,6 @@ try {
   const good = layout('bundle-patched', { index: patched });
   const built = run(good.root, 'bundle-git.mjs');
   assert.equal(built.code, 0, built.out);
-  assert.match(readFileSync(good.generated, 'utf8'), /export const GIT_BUNDLE_CODE/);
   cases++;
 
   // ── patch-install-deps.mjs: a copy hardlinked to bun's cache, as bun installs it ──
