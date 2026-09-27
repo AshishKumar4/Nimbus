@@ -347,19 +347,26 @@ export declare function assertStagedBundleFitsRpcPayload(serialized: string, bun
  * prefetch via require-resolver covers the require() chain literally
  * present in source; greedy oversampling adds a safety net for dynamic
  * patterns the regex misses (jest/`bindings`/`import-local` style
- * computed-path requires). Bounded to package.json + 1 main-entry file
- * per package — sub-agent §Q3 quantified the worst-case cumulative
- * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
+ * computed-path requires). Each guessed root brings its readable literal
+ * closure as one optional admission/eviction unit, within the existing caps.
  *
  * `requiredPaths` is the static require closure. A package the closure
  * already reached — but reached only through a SUBPATH — has its main entry
  * skipped; see `mainIsSpeculative`.
  */
+interface OptionalModuleGroup {
+    root: string;
+    members: ReadonlySet<string>;
+}
 export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}, requiredPaths?: ReadonlySet<string>): Promise<{
+}, requiredPaths?: ReadonlySet<string>, options?: {
+    maxBundleBytes?: number;
+    pacer?: TurnBudget;
+}): Promise<{
     added: number;
+    groups: OptionalModuleGroup[];
 }>;
 /**
  * The packages a name resolved at runtime — a computed `require(name)`, or a

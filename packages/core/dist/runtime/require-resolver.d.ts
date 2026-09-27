@@ -28,10 +28,9 @@
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 /**
- * The filesystem the resolver reads: the four questions it asks, nothing
- * more, so every caller (a process's view, the supervisor's bridge, the
- * engine) meets it without an adapter per caller. A missing path is false,
- * false, a throw, and null.
+ * The filesystem questions resolution needs; held-cell reuse can additionally
+ * check current read authority without rereading bytes. A missing path is
+ * false, false, a throw, and null.
  */
 export interface RequireFs {
     exists(path: string): Awaitable<boolean>;
@@ -40,6 +39,8 @@ export interface RequireFs {
     stat(path: string): Awaitable<{
         size: number;
     } | null>;
+    /** Revalidate held content through the same principal without rereading its bytes. */
+    assertReadable?(path: string): Awaitable<void>;
 }
 /**
  * The resolver's filesystem over a bound process bridge (supervisor RPC or
@@ -87,6 +88,18 @@ export interface ClosureBoundExceeded {
     lastPath: string;
 }
 export type PrefetchOutcome = PrefetchResult | ClosureBoundExceeded;
+export interface DependencyClosurePolicy {
+    purpose: 'dependency-closure';
+    held: Readonly<Record<string, string | Uint8Array>>;
+    maxAdditionalBytes: number;
+    maxAdditionalFiles: number;
+}
+export interface DependencyClosureDeclined {
+    kind: 'dependency-closure-declined';
+    path: string;
+    reason: 'bytes' | 'files' | 'unreadable';
+}
+export type DependencyClosureOutcome = PrefetchOutcome | DependencyClosureDeclined;
 /** Error form of `ClosureBoundExceeded` for callers that cannot return it. */
 export declare class ClosureBoundExceededError extends Error {
     readonly outcome: ClosureBoundExceeded;
@@ -94,5 +107,6 @@ export declare class ClosureBoundExceededError extends Error {
 }
 /** Resolve the complete dependency graph starting from entry code. */
 export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy): Promise<DependencyClosureOutcome>;
 export {};
 //# sourceMappingURL=require-resolver.d.ts.map

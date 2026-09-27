@@ -50,6 +50,7 @@ export function requireFsOverBridge(bridge) {
             return decoder.decode(bytes);
         },
         stat,
+        assertReadable: path => bridge.access(path, 4),
         lstat: (path) => absent(() => bridge.stat(path, { followSymlinks: false })),
         readBytes,
     };
@@ -190,7 +191,7 @@ async function resolveFile(vfs, base, sink, progress) {
         await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
     if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
         let pkg = null;
-        const text = await packageText(vfs, pkgJsonPath, progress);
+        const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
         try {
             pkg = JSON.parse(text ?? '');
         }
@@ -198,7 +199,6 @@ async function resolveFile(vfs, base, sink, progress) {
         if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
             // Record this package.json so the bundle carries the content the
             // runtime resolver needs to repeat this directory resolution.
-            await sink?.(pkgJsonPath);
             const mainStripped = pkg.main.replace(/^\.\/+/, '').replace(/^\/+/, '');
             const mainBase = baseTrim + '/' + mainStripped;
             // Guard against pkg.main === '.' or empty → would re-enter same base.
@@ -281,7 +281,7 @@ async function resolvePkgSubpathEx(vfs, pkgDir, subpath, sink, progress) {
         return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress));
     }
     let pkg;
-    const text = await packageText(vfs, pkgJsonPath, progress);
+    const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
     try {
         pkg = JSON.parse(text ?? '');
     }
@@ -291,7 +291,6 @@ async function resolvePkgSubpathEx(vfs, pkgDir, subpath, sink, progress) {
     }
     // The runtime resolver reads this package.json unconditionally to walk
     // exports/main; record it so its content ships in the bundle.
-    await sink?.(pkgJsonPath);
     let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
     if (entry == null && pkg.exports != null) {
         entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
@@ -361,7 +360,7 @@ async function tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress) {
         return null;
     }
     let nested;
-    const text = await packageText(vfs, nestedPkgJson, progress);
+    const text = sink ? await sink(nestedPkgJson) : await packageText(vfs, nestedPkgJson, progress);
     try {
         nested = JSON.parse(text ?? '');
     }
@@ -370,7 +369,6 @@ async function tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress) {
     }
     // The runtime resolver reads this nested package.json to repeat the
     // resolution; record it so its content ships in the bundle.
-    await sink?.(nestedPkgJson);
     // Prefer `main` for CJS conditions; fall back to `module` if no main.
     // (resolvePackageEntry would do the same prioritisation, but nested
     // package.json files often only declare one of the two.)
@@ -529,9 +527,8 @@ async function nearestPackageScope(vfs, fromDir, sink, progress) {
         if (progress)
             await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
         if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
-            await sink?.(pkgJsonPath);
             let pkg = null;
-            const text = await packageText(vfs, pkgJsonPath, progress);
+            const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
             try {
                 pkg = JSON.parse(text ?? '');
             }
@@ -609,8 +606,7 @@ export class ClosureBoundExceededError extends Error {
         this.name = 'ClosureBoundExceededError';
     }
 }
-/** Resolve the complete dependency graph starting from entry code. */
-export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress) {
+export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress, policy) {
     const report = progress;
     if (report)
         progress = async (work) => {
@@ -626,13 +622,89 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     const visited = new Set();
     let bytesSeen = 0;
     let closureExceeded = null;
+    let declined = null;
+    let additionalBytes = 0;
+    let additionalFiles = 0;
+    const encoder = new TextEncoder();
+    function fits(path, bytes) {
+        if (!policy || policy.held[path] !== undefined)
+            return true;
+        if (additionalFiles >= policy.maxAdditionalFiles)
+            declined = { kind: 'dependency-closure-declined', path, reason: 'files' };
+        else if (additionalBytes + bytes > policy.maxAdditionalBytes)
+            declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
+        return declined === null;
+    }
+    // Metadata and generated stubs spend the same delta allowance as source.
+    async function stageCell(path, synthetic, kind = 'module') {
+        if (declined || closureExceeded)
+            return null;
+        if (bundle[path] !== undefined)
+            return bundle[path];
+        if (progress)
+            await progress(METADATA_CANDIDATE_WORK + path.length);
+        const held = policy?.held[path];
+        const authorize = vfs.assertReadable;
+        const reuseHeld = synthetic === undefined && typeof held === 'string' && authorize !== undefined;
+        if (reuseHeld) {
+            try {
+                await authorize.call(vfs, path);
+            }
+            catch {
+                declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
+                return null;
+            }
+        }
+        let size = 0;
+        if (synthetic === undefined && !reuseHeld && (policy || kind === 'module')) {
+            try {
+                size = (await vfs.stat(path))?.size ?? 0;
+            }
+            catch { /* the read decides */ }
+            if (!fits(path, size))
+                return null;
+            if (!policy && kind === 'module' && bytesSeen + size > maxBundleBytes) {
+                if (!lazy)
+                    closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
+                return null;
+            }
+        }
+        let content;
+        try {
+            content = reuseHeld ? held : synthetic ?? await vfs.readFileString(path);
+        }
+        catch {
+            if (policy)
+                declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
+            return null;
+        }
+        if (held !== undefined && content !== held) {
+            declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
+            return null;
+        }
+        if (policy && held === undefined) {
+            const actual = encoder.encode(content).byteLength;
+            if (!fits(path, actual))
+                return null;
+            additionalBytes += actual;
+            additionalFiles++;
+        }
+        if (!policy && kind === 'module')
+            bytesSeen += size;
+        bundle[path] = content;
+        if (lazy && kind === 'module' && synthetic === undefined)
+            speculative.add(path);
+        if (progress)
+            await progress(content.length);
+        return content;
+    }
     // Followed after the static closure so a lazy subtree never spends its bound.
     const deferredDynamic = [];
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
     async function addFile(vfsPath, entry = false) {
-        if (closureExceeded || visited.has(vfsPath))
+        if (closureExceeded || declined || visited.has(vfsPath))
             return;
         visited.add(vfsPath);
         // A native binary is answered by the ABI policy, never loaded from the map.
@@ -643,40 +715,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // stop here rather than buy the read that resets the isolate. A stat
         // failure means the size is unknown; the read attempt decides, as it
         // did before this gate existed.
-        let size = 0;
-        if (progress)
-            await progress(METADATA_CANDIDATE_WORK + vfsPath.length);
-        // No pacing point between the size check and the read: a turn may change
-        // the file, so always check its current size after resuming.
-        try {
-            size = (await vfs.stat(vfsPath))?.size ?? 0;
-        }
-        catch { /* size unknown */ }
-        if (bytesSeen + size > maxBundleBytes) {
-            if (lazy)
-                return;
-            closureExceeded = {
-                kind: 'closure-exceeds-bound',
-                entry: entryFile ?? 'entry code',
-                bytesSeen,
-                bound: maxBundleBytes,
-                lastPath: vfsPath,
-            };
+        const content = await stageCell(vfsPath);
+        if (content === null)
             return;
-        }
-        let content;
-        try {
-            content = (await vfs.readFileString(vfsPath));
-        }
-        catch {
-            return;
-        }
-        bytesSeen += size;
-        bundle[vfsPath] = content;
-        if (lazy)
-            speculative.add(vfsPath);
-        if (progress)
-            await progress(content.length);
         // Also add the package.json for the enclosing node_modules package
         // so the runtime resolver can read the same exports/main field we
         // walked here.
@@ -690,9 +731,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
                 if (!visited.has(pkgJsonPath) && (await vfs.exists(pkgJsonPath))) {
                     visited.add(pkgJsonPath);
-                    const pkgContent = await packageText(vfs, pkgJsonPath, progress);
-                    if (pkgContent !== null)
-                        bundle[pkgJsonPath] = pkgContent;
+                    await stageCell(pkgJsonPath, undefined, 'metadata');
                 }
             }
         }
@@ -720,9 +759,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
                 if ((await vfs.exists(dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
                     visited.add(dirPkgJson);
-                    const pkgContent = await packageText(vfs, dirPkgJson, progress);
-                    if (pkgContent !== null)
-                        bundle[dirPkgJson] = pkgContent;
+                    await stageCell(dirPkgJson, undefined, 'metadata');
                 }
             }
         }
@@ -737,6 +774,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
     }
     async function parseAndResolve(code, fromDir, entry = false) {
+        if (declined || closureExceeded)
+            return;
         if (progress)
             await progress(code.length);
         // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
@@ -768,7 +807,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
-            if (closureExceeded)
+            if (closureExceeded || declined)
                 break;
             const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
             if (r) {
@@ -783,7 +822,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
-            if (closureExceeded)
+            if (closureExceeded || declined)
                 break;
             const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
             if (r) {
@@ -802,7 +841,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
-            if (closureExceeded)
+            if (closureExceeded || declined)
                 break;
             const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
             if (r) {
@@ -813,6 +852,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
         for (const match of stripped.matchAll(DYNIMPORT_RE)) {
+            if (policy || declined)
+                break;
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
@@ -841,8 +882,6 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     async function addStub(stubPath, content) {
         if (visited.has(stubPath))
             return;
-        if (progress)
-            await progress(METADATA_CANDIDATE_WORK + stubPath.length);
         // Don't shadow a real on-disk file: if VFS already has something
         // at this path, skip the stub. (Defence-in-depth — should never
         // happen because the legacy-directory branch only fires when all
@@ -850,7 +889,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         if ((await vfs.exists(stubPath)) && !(await vfs.isDirectory(stubPath)))
             return;
         visited.add(stubPath);
-        bundle[stubPath] = content;
+        await stageCell(stubPath, content);
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
@@ -869,10 +908,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         realpath: (path) => path,
         async readText(path) {
             const key = strip(path);
-            const text = await packageText(vfs, key, progress);
-            if (text !== null && (key.endsWith('/package.json') || key === 'package.json'))
-                await addPkgJson(key);
-            return text;
+            return await addPkgJson(key);
         },
         isBuiltin: (specifier) => isFacetProvided(specifier),
         cjsResolve: () => null,
@@ -898,13 +934,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
      */
     async function addPkgJson(pkgJsonPath) {
         const k = strip(pkgJsonPath);
-        if (visited.has(k) || k in bundle)
-            return;
-        const content = await packageText(vfs, k, progress);
-        if (content === null)
-            return;
+        const content = await stageCell(k, undefined, 'metadata');
         visited.add(k);
-        bundle[k] = content;
+        return content;
     }
     // Start from entry code.
     //
@@ -927,23 +959,23 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             if (slash > 0)
                 entryFromDir = stripped.substring(0, slash);
         }
-        await parseAndResolve(entryCode, entryFromDir, true);
+        await parseAndResolve(entryCode, entryFromDir, policy === undefined);
         // If there's an entry file, add it (and recurse).
         if (entryFile)
-            await addFile(strip(entryFile), true);
+            await addFile(strip(entryFile), policy === undefined);
         // Also add cwd package.json if it exists (for npm scripts, main field etc).
         const cwdPkg = cwdStripped + '/package.json';
         if (progress)
             await progress(METADATA_CANDIDATE_WORK + cwdPkg.length);
         if ((await vfs.exists(cwdPkg)) && !visited.has(cwdPkg)) {
-            const c = await packageText(vfs, cwdPkg, progress);
-            if (c !== null) {
-                bundle[cwdPkg] = c;
-                visited.add(cwdPkg);
-            }
+            await addPkgJson(cwdPkg);
         }
+        if (declined)
+            return declined;
         if (closureExceeded)
             return closureExceeded;
+        if (policy)
+            return { bundle, speculative };
         // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
         lazy = true;
         for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
