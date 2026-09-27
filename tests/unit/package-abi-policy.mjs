@@ -23,13 +23,11 @@ import {
   findRejects,
   lookupSwap,
   lookupReject,
-  nativeExecutableReject,
   isOptionalNativeBinding,
   lookupStagedArtifact,
   applyStagedArtifact,
 } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
-import { registryEntryFromResolved } from '../../packages/worker/src/npm/resolver.ts';
 import { parseRegistryRequest } from '../../packages/worker/src/npm/resolve-one-facet.ts';
 
 // ── 1. Preamble parity: extract the injected policy + functions ────────
@@ -179,7 +177,7 @@ for (const name of ['fsevents', 'bufferutil', 'utf-8-validate', 'wrangler', '@cl
 // opencode-native-bin-diagnostic.mjs asserts these substrings against
 // production output. Update that probe in lockstep with any change.
 {
-  const reject = nativeExecutableReject({
+  const reject = facet.NATIVE_EXECUTABLE_REJECT({
     name: 'opencode-ai',
     bin: { opencode: 'bin/opencode.exe' },
   });
@@ -194,12 +192,12 @@ for (const name of ['fsevents', 'bufferutil', 'utf-8-validate', 'wrangler', '@cl
 }
 
 // .node bins reject; query/fragment suffixes don't hide the extension.
-assert.ok(nativeExecutableReject({ name: 'addon', bin: { a: 'dist/a.node' } }));
-assert.ok(nativeExecutableReject({ name: 'addon', bin: { a: 'dist/a.node?module#x' } }));
+assert.ok(facet.NATIVE_EXECUTABLE_REJECT({ name: 'addon', bin: { a: 'dist/a.node' } }));
+assert.ok(facet.NATIVE_EXECUTABLE_REJECT({ name: 'addon', bin: { a: 'dist/a.node?module#x' } }));
 
 // package.json os/cpu/libc allowlists classify as platform-native.
 {
-  const reject = nativeExecutableReject({
+  const reject = facet.NATIVE_EXECUTABLE_REJECT({
     name: 'opencode-linux-x64',
     bin: {},
     os: ['linux'],
@@ -212,31 +210,18 @@ assert.ok(nativeExecutableReject({ name: 'addon', bin: { a: 'dist/a.node?module#
   assert.match(reject.reason, new RegExp(`artifact class '${NATIVE_UNSUPPORTED_ABI}'`));
   assert.match(reject.reason, /JavaScript, WASM, or wasm32-wasi-nimbus artifact/);
 }
-assert.ok(nativeExecutableReject({ name: 'glibc-only', libc: ['glibc'] }));
+assert.ok(facet.NATIVE_EXECUTABLE_REJECT({ name: 'glibc-only', libc: ['glibc'] }));
 
 // Pure negations exclude platforms without requiring one — not native.
 assert.equal(
-  nativeExecutableReject({ name: 'not-windows', bin: { cli: 'dist/cli.js' }, os: ['!win32'] }),
+  facet.NATIVE_EXECUTABLE_REJECT({ name: 'not-windows', bin: { cli: 'dist/cli.js' }, os: ['!win32'] }),
   undefined,
 );
 
 // Plain JavaScript packages never reject.
-assert.equal(nativeExecutableReject({ name: 'pure', bin: { cli: 'dist/cli.js' } }), undefined);
-assert.equal(nativeExecutableReject({ name: 'no-bin' }), undefined);
+assert.equal(facet.NATIVE_EXECUTABLE_REJECT({ name: 'pure', bin: { cli: 'dist/cli.js' } }), undefined);
+assert.equal(facet.NATIVE_EXECUTABLE_REJECT({ name: 'no-bin' }), undefined);
 
-// Preamble-side classifier matches on the same fixtures.
-for (const fixture of [
-  { name: 'opencode-ai', bin: { opencode: 'bin/opencode.exe' } },
-  { name: 'opencode-linux-x64', os: ['linux'], cpu: ['x64'] },
-  { name: 'not-windows', os: ['!win32'] },
-  { name: 'pure', bin: { cli: 'dist/cli.js' } },
-]) {
-  assert.deepEqual(
-    facet.NATIVE_EXECUTABLE_REJECT(fixture),
-    nativeExecutableReject(fixture),
-    `native-reject parity: ${fixture.name}`,
-  );
-}
 
 // Optional-dependency native-binding heuristic (silent-skip path).
 assert.equal(isOptionalNativeBinding({ name: '@rollup/rollup-linux-x64-gnu', os: ['linux'] }), true);
@@ -304,41 +289,5 @@ for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
 // Names with no staged entry are left untouched by both paths.
 assert.equal(facet.STAGED_ARTIFACT('left-pad'), undefined);
 assert.deepEqual(facet.STAGED_ARTIFACT('left-pad'), lookupStagedArtifact('left-pad'));
-
-// ── 4. Registry-cache entries persist ABI-relevant metadata ────────────
-
-{
-  const entry = registryEntryFromResolved({
-    name: 'opencode-linux-x64',
-    version: '1.16.2',
-    tarballUrl: 'https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-1.16.2.tgz',
-    integrity: 'sha512-abc',
-    dependencies: {},
-    optionalDependencies: { fsevents: '^2.0.0' },
-    os: ['linux'],
-    cpu: ['x64'],
-    exports: null,
-    main: '',
-    module: '',
-    bin: {},
-  });
-  assert.deepEqual(JSON.parse(entry.platformJson), { os: ['linux'], cpu: ['x64'] });
-  assert.deepEqual(JSON.parse(entry.optionalDepsJson), { fsevents: '^2.0.0' });
-}
-{
-  const entry = registryEntryFromResolved({
-    name: 'left-pad',
-    version: '1.3.0',
-    tarballUrl: 'https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz',
-    integrity: 'sha512-def',
-    dependencies: {},
-    exports: null,
-    main: 'index.js',
-    module: '',
-    bin: {},
-  });
-  assert.deepEqual(JSON.parse(entry.platformJson), {});
-  assert.deepEqual(JSON.parse(entry.optionalDepsJson), {});
-}
 
 console.log('package-abi-policy: ok');

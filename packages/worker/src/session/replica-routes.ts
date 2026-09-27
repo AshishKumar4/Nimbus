@@ -22,7 +22,6 @@ import {
   inspectReplicaState as _w12InspectReplicaState,
   type TryEnableReplicasResult as W12EnableResult,
 } from '../replica/routing.js';
-import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspension.js';
 
 export type { W12EnableResult };
 
@@ -68,8 +67,7 @@ export function wireReplicasOnConstruct(ctx: any): W12EnableResult {
  *
  * - `state` / `error` come from the ctor-time enable result on `host`.
  * - `isReplica` / `bookmark` come from per-fetch `inspectReplicaState(ctx)`.
- * - `suspended` reflects the global write-burst guard
- *   (npm install / git clone in flight) per CF research §G.4.
+ * - `suspended` is false: no production path suspends replicas.
  *
  * Never throws. Callers can rely on the shape always being filled.
  *
@@ -91,13 +89,11 @@ export function getReplicaState(host: ReplicaHost, ctx: any): {
     isReplica = inspect.isReplica;
     bookmark = inspect.bookmark;
   } catch { /* never throw from a diag helper */ }
-  let suspended = false;
-  try { suspended = _w12ReplicasSuspended(); } catch {}
   return {
     state: enable.state,
     error: enable.error,
     isReplica,
     bookmark,
-    suspended,
+    suspended: false,
   };
 }

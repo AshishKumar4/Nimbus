@@ -11,7 +11,6 @@ import {
   PACKAGE_ABI_POLICY,
   lookupSwap,
   lookupReject,
-  nativeExecutableReject,
   isOptionalNativeBinding,
 } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../../packages/worker/src/loaders/npm-resolve-preamble.ts';
@@ -84,11 +83,6 @@ const fixtures = [
 ];
 
 for (const fixture of fixtures) {
-  same(
-    `native-reject(${fixture.name})`,
-    nativeExecutableReject(fixture),
-    facet.NATIVE_EXECUTABLE_REJECT(fixture),
-  );
   same(
     `optional-native-binding(${fixture.name})`,
     isOptionalNativeBinding(fixture),

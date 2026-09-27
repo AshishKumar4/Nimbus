@@ -354,20 +354,9 @@ export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?:
   await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
 
-export async function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
-  await self.supervisorBridge(pid).access(path, mode);
-}
 
-export async function _rpcChown(
-  self: RpcHost,
-  path: string,
-  uid: number,
-  gid: number,
-  pid?: number,
-  options?: { followSymlinks?: boolean },
-): Promise<void> {
-  await self.supervisorBridge(pid).chown(path, uid, gid, options);
-}
+
+
 
 export async function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number> {
   return self.processes.setUmask(processPid(pid), mask);
@@ -823,9 +812,7 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 
-export async function _rpcUnlink(self: RpcHost, path: string, pid?: number): Promise<void> {
-  await self.supervisorOp({ op: 'unlink', args: [path], pid });
-}
+
 
   /**
    * Bulk-write files and directories via one transactionSync().

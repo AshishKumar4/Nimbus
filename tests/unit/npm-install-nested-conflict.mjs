@@ -22,9 +22,8 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
-import { registryEntryFromResolved } from '../../packages/worker/src/npm/resolver.ts';
 import { resolveVersion } from '../../packages/worker/src/npm/semver.ts';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -60,7 +59,7 @@ function resolveFromRegistry(name, spec) {
   return {
     pkg, deps: pkg.dependencies, peerDeps: peerDependencies ?? {}, optionalDeps: {}, allPeerDependencies: peerDependencies ?? {},
     // The registry cache is what the next install's lock-check reads edges from.
-    cacheWrites: [registryEntryFromResolved(pkg)],
+    cacheWrites: [cacheRowForPackage(pkg)],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }

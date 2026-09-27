@@ -1,62 +1,43 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
+import { mock } from 'bun:test';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { _rpcLstat, _rpcUnlink } from '../../packages/worker/src/session/rpc.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 
+mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+} }));
+const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 {
-  let call;
-  const vfs = {
-    isSymlink: () => false,
-    exists: () => true,
-    stat(path) {
-      call = { path, options: { followSymlinks: false } };
-      return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
-    },
-    lstat(path) {
-      call = { path, options: { followSymlinks: false } };
-      return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
-    },
-    revision: () => 0,
-  };
-  const self = {
-    ensureSqliteFs() {},
-    processes: { cred: () => CRED_KERNEL },
-    sqliteFs: {
-      as: () => vfs,
-    },
-  };
-  const ops = buildSessionSupervisorOps(self);
-  self.supervisorOp = (envelope) => ops.dispatch(envelope);
-  const result = await _rpcLstat(self, '/home/user/link', 1);
-  assert.equal(result.type, 'symlink');
-  assert.deepEqual(call, {
-    path: 'home/user/link',
-    options: { followSymlinks: false },
-  });
-}
-
-{
-  const self = {
-    ensureSqliteFs() {},
-    processes: { cred: () => CRED_KERNEL },
-    sqliteFs: {
-      as: () => ({}),
-      assertMutationAllowed() {
-        throw new Error('EBUSY: clone destination is exclusively locked');
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const files = sqliteFs.as(CRED_KERNEL);
+    files.mkdir('repo');
+    files.writeFile('repo/file', 'kept until the lease ends');
+    const processes = new SessionProcessSupervisor();
+    const process = processes.spawn('node', [], '/', { cred: CRED_KERNEL });
+    const ops = buildSessionSupervisorOps({ sqliteFs, processes, ensureSqliteFs() {} });
+    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: process.pid } }, {
+      NIMBUS_SESSION: {
+        idFromName: (id) => ({ toString: () => id }),
+        idFromString: (id) => ({ toString: () => id }),
+        get: () => ({ supervisorOp: (envelope) => ops.dispatch(envelope) }),
       },
-    },
-  };
-  const ops2 = buildSessionSupervisorOps(self);
-  self.supervisorOp = (envelope) => ops2.dispatch(envelope);
-  await assert.rejects(
-    _rpcUnlink(self, '/home/user/repo/file', 1),
-    /EBUSY/,
-    'unlink must not swallow the exclusive-mutation failure',
-  );
+    });
+    const lease = sqliteFs.acquireExclusiveMutation('repo');
+    await assert.rejects(rpc.unlink('/repo/file'), (error) => error.code === 'EBUSY');
+    assert.equal(files.readFileString('repo/file'), 'kept until the lease ends');
+    sqliteFs.releaseExclusiveMutation(lease.owner);
+    await rpc.unlink('/repo/file');
+    assert.equal(files.exists('repo/file'), false);
+  } finally { harness.db.close(); }
 }
 
 {

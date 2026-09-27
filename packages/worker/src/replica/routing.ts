@@ -48,16 +48,11 @@ export type ReplicaPolicy =
   | 'primary-only-ws';
 
 /** Eventual-consistency tolerance in ms (replica-eligible routes only). */
-export interface RoutePolicy {
-  policy: ReplicaPolicy;
-  /** Max acceptable replication lag for this route, in ms. `null` for
-   *  primary-only routes (not replicable). */
-  toleranceMs: number | null;
-}
+
 
 const PROCESSES_LOGS_RE = /^\/api\/processes\/\d+\/logs$/;
 const PORT_RE = /^\/port\/\d+(\/.*)?$/;
-const TWO_SECONDS = 2000;
+
 
 /**
  * Pure routing decision. Mirrors the route table in W12-plan §2.
@@ -123,41 +118,9 @@ function isReadMethod(method: string): boolean {
   return method === 'GET' || method === 'HEAD';
 }
 
-/**
- * Eventual-consistency tolerance per route (in ms).
- *
- * Returns `null` for primary-only routes (not replicable) and a numeric
- * tolerance for replica-eligible routes. The probe
- * `eventual-consistency-window-ms.mjs` enforces that every eligible route
- * has a tolerance ≤ 2000ms.
- *
- * The 2-second budget aligns with D1 read-replication best practice
- * (D1 docs § "Replica lag and consistency model"); DO replicas are
- * the same architectural pattern.
- */
-export function getEventualConsistencyToleranceMs(pathname: string): number | null {
-  // Re-classify with a synthetic GET to figure out replica eligibility.
-  const policy = classifyReplicaPolicy(pathname, 'GET');
-  if (policy === 'replica-ok') return TWO_SECONDS;
-  if (policy === 'replica-warm-only') return TWO_SECONDS;
-  return null;
-}
 
-/** Tolerance lookup table (for diagnostics / observability surfaces). */
-export const REPLICA_POLICIES: Record<string, RoutePolicy> = {
-  '/api/memory':         { policy: 'replica-ok',         toleranceMs: TWO_SECONDS },
-  '/api/_diag/memory':   { policy: 'replica-ok',         toleranceMs: TWO_SECONDS },
-  '/api/processes':      { policy: 'replica-ok',         toleranceMs: TWO_SECONDS },
-  '/api/stats':          { policy: 'replica-ok',         toleranceMs: TWO_SECONDS },
-  '/preview/':           { policy: 'replica-warm-only',  toleranceMs: TWO_SECONDS },
-  '/ws':                 { policy: 'primary-only-ws',    toleranceMs: null },
-  '/api/write-file':     { policy: 'primary-only',       toleranceMs: null },
-  '/api/mkdir':          { policy: 'primary-only',       toleranceMs: null },
-  '/api/start-vite':     { policy: 'primary-only',       toleranceMs: null },
-  '/api/supervisor-rpc': { policy: 'primary-only',       toleranceMs: null },
-  '/worker/':            { policy: 'primary-only',       toleranceMs: null },
-  '/__nimbus/worker/':   { policy: 'primary-only',       toleranceMs: null },
-};
+
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Replica state — runtime probes
@@ -234,19 +197,7 @@ export function inspectReplicaState(ctx: any): ReplicaStateInspect {
   return { isReplica, primary: isReplica ? s.primary : null, bookmark };
 }
 
-/**
- * Capture the current bookmark immediately after a write completes on
- * the primary. The caller (e.g. /api/write-file) can stash the result in
- * a response header / cookie so the next read-your-writes call from the
- * same client can wait for the replica to catch up before responding.
- *
- * Phase 1 of W12 surfaces this as observability only (visible via
- * /api/_diag/memory.replica.bookmark). Phase 2 (W12.5 if measured demand)
- * wires the wait-for-bookmark contract end-to-end.
- */
-export function captureBookmarkAfterWrite(ctx: any): string | null {
-  return inspectReplicaState(ctx).bookmark;
-}
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Routing — should we delegate to primary?
