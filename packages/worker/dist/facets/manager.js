@@ -2582,7 +2582,7 @@ export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
  * bound, so it can never be the reason a launch fails. `bytes` is what this
  * call staged, in the same unit.
  */
-export async function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState, room = Infinity) {
+export async function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState, room = Infinity, pacer) {
     if (!observed || observed.size === 0)
         return { added: 0, bytes: 0 };
     let bytes = 0;
@@ -2634,7 +2634,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', path.slice(0, path.lastIndexOf('/')), '/' + path);
+        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer));
         if ('kind' in closure)
             continue;
         for (const [dep, content] of Object.entries(closure.bundle)) {
@@ -3349,7 +3349,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     const admitted = await vfs.acquire(null, 0);
     const cursor = { epoch: admitted.epoch, rev: admitted.rev };
     // 1. Static reachable-set walk from entry.
-    const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes));
+    const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer)));
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
         // snapshot. Surface it as the process's own failure rather than a
@@ -3392,10 +3392,10 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     // (read-profile.ts) are evidence of the same kind: a learned module joins
     // the module map with its imports, as this session's own misses do.
     const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
-    const own = await addObservedReads(vfs, observedReads, bundle, observedPaths, budgetState, Math.max(0, room));
+    const own = await addObservedReads(vfs, observedReads, bundle, observedPaths, budgetState, Math.max(0, room), pacer);
     room -= own.bytes;
     const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
-    await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room));
+    await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room), pacer);
     for (const path of observedPaths)
         learnedPaths.delete(path);
     await paceAfterPass();

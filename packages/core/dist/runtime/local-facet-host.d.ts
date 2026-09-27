@@ -23,10 +23,12 @@ import type { FacetHost } from './facet-host.js';
 /**
  * Run facets in this isolate.
  *
- * `parking: 'none'` is the whole character of this host, and everything else
- * follows from it: the guest is entered on an ordinary stack, so no syscall may
- * suspend it, so the supervisor it mints is the authority's synchronous view
- * and every syscall is answered on the guest's own stack.
+ * `parking` is the engine's: where it can suspend a guest the facet is entered
+ * through `WebAssembly.promising` and a syscall may park on a promise, so a
+ * plain-WASI child waits at a full pipe as it would on Linux. Where it cannot,
+ * the guest is entered on an ordinary stack, no syscall may suspend it, the
+ * supervisor it mints is the authority's synchronous view, and a pipe buffers
+ * to the host's {@link FacetHost.memoryBudgetBytes} instead (pipe-rules.ts).
  *
  * The one thing a substrate with its own isolates gives that this cannot:
  * {@link FacetSubmitOptions.timeoutMs} is not honoured. A guest spinning

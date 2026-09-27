@@ -566,7 +566,7 @@ export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<s
 export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}, room?: number): Promise<{
+}, room?: number, pacer?: TurnBudget): Promise<{
     added: number;
     bytes: number;
 }>;

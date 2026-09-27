@@ -54,6 +54,7 @@ export interface BridgeRequireFs extends RequireFs {
     readBytes(path: string): Promise<Uint8Array | null>;
 }
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
+type WalkProgress = (work: number) => Promise<void>;
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -92,5 +93,6 @@ export declare class ClosureBoundExceededError extends Error {
     constructor(outcome: ClosureBoundExceeded);
 }
 /** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress): Promise<PrefetchOutcome>;
+export {};
 //# sourceMappingURL=require-resolver.d.ts.map
