@@ -251,7 +251,16 @@ class RuntimeOwner {
         await this.attachTerminal(ws, 'wake');
         const text = typeof frame === 'string' ? frame : new TextDecoder().decode(frame);
         const input = InputFrame.parse(JSON.parse(text));
-        this.terminal.handleMessage(input);
+        const completion = this.terminal.handleMessage(input);
+        if (completion) {
+            this.options.lifecycle.waitUntil(completion.catch((error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error('[nimbus] terminal input failed:', message);
+                this.terminal.writeln(`terminal input failed: ${message}`);
+            }).finally(() => {
+                persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+            }));
+        }
         persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
     }
     terminalClose(ws) {

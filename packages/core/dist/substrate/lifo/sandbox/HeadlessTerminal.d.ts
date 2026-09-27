@@ -7,12 +7,12 @@ export declare class HeadlessTerminal implements ITerminal {
     private dataCallback;
     write(_data: string): void;
     writeln(_data: string): void;
-    onData(cb: (data: string) => void): void;
+    onData(cb: (data: string) => void | Promise<void>): void;
     get cols(): number;
     get rows(): number;
     focus(): void;
     clear(): void;
     /** Send data as if typed on keyboard (used internally for stdin) */
-    sendData(data: string): void;
+    sendData(data: string): void | Promise<void>;
 }
 //# sourceMappingURL=HeadlessTerminal.d.ts.map

@@ -24,4 +24,4 @@
  * The empty string means "not pinned yet" — the catalog stays out of L2 and
  * the supervisor warns once per isolate.
  */
-export const RUNTIME_CATALOG_SHA256 = "9cdc9cc0d96667234c6fed2adc81e7890fef96b3afe5bd80dd80612e822d3d3a";
+export const RUNTIME_CATALOG_SHA256 = "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0";
