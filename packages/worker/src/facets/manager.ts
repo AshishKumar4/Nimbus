@@ -4820,6 +4820,10 @@ export class FacetManager {
       readText: async (path) => {
         try { return await filesOf(vfs).readFileString(path); } catch { return null; }
       },
+      // A missing or unreadable component is not a link: the lookup ends there.
+      readlink: async (path) => {
+        try { return await vfs.readlink(path); } catch { return null; }
+      },
       stat: async (path) => {
         const st = await filesOf(vfs).stat(path).catch(() => null);
         return st && { kind: st.type, size: st.size };

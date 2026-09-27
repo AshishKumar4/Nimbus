@@ -28,7 +28,7 @@ published independently in the `@nimbus-sh` npm scope.
   files the code only stats, joins or reads asynchronously are still left out. A path the code
   builds as `'/' + <unknown>` no longer stages every small file in the
   filesystem. A hole with a known prefix or suffix stages matching names in
-  its directory only; a bare hole under a named directory stages that
+  its directory, and the direct files of a matching directory (one level); a bare hole under a named directory stages that
   directory's files, minus dependency, VCS and cache directories.
 
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its

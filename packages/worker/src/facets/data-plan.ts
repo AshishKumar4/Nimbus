@@ -34,6 +34,8 @@ export interface DataPlanSource {
   list(after: string | null): Promise<{ entries: DataPlanEntry[]; next: string | null }>;
   /** A file's text, or null when it cannot be read. */
   readText(path: string): Promise<string | null>;
+  /** A symlink's target as stored, or null when the path is not a symlink. */
+  readlink(path: string): Promise<string | null>;
   /** What is at a path, following symlinks, or null. */
   stat(path: string): Promise<{ kind: string; size: number } | null>;
 }
@@ -186,17 +188,20 @@ const MAX_LINK_HOPS = 40;
 
 /**
  * A key with every symlink along it replaced by its target, as a lookup
- * resolves it; null past MAX_LINK_HOPS (ELOOP).
+ * resolves it, asking the source one component at a time; null past
+ * MAX_LINK_HOPS (ELOOP).
  */
-function throughLinks(links: ReadonlyMap<string, string>, k: string): string | null {
+async function throughLinks(source: DataPlanSource, k: string): Promise<string | null> {
   let path = k;
   for (let hops = 0; hops <= MAX_LINK_HOPS; hops++) {
     const segs = path.split('/');
     let followed = false;
     for (let i = 1; i <= segs.length; i++) {
-      const target = links.get(segs.slice(0, i).join('/'));
-      if (target === undefined) continue;
-      path = joinKey(target, segs.slice(i).join('/'));
+      const at = segs.slice(0, i).join('/');
+      const target = await source.readlink('/' + at);
+      if (target === null) continue;
+      const base = target.startsWith('/') ? key(target) : joinKey(parentOf(at), target);
+      path = joinKey(base, segs.slice(i).join('/'));
       followed = true;
       break;
     }
@@ -288,7 +293,8 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   };
   /**
    * Whether a file is one a pattern `dir/prefix*suffix` can name. A hole with
-   * a known prefix or suffix fills one name in `dir`. A bare hole under a
+   * a known prefix or suffix fills one name in `dir`: a file there, or the
+   * files directly in a directory there. A bare hole under a
    * named directory (`join(dir, x)`) may be a relative path of any depth: the
    * directory's files, minus dependency, VCS and cache directories. A bare
    * hole at the root (`'/' + x`) names the whole filesystem, which nothing
@@ -302,8 +308,10 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
         if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(p.dir, k)) return true;
         continue;
       }
-      if (p.dir === dir && name.startsWith(p.prefix) && name.endsWith(p.suffix)
-        && name.length >= p.prefix.length + p.suffix.length) return true;
+      const named = (n: string) => n.startsWith(p.prefix) && n.endsWith(p.suffix) && n.length >= p.prefix.length + p.suffix.length;
+      if (p.dir === dir && named(name)) return true;
+      // A matched name may be a directory the code lists: its own files, one level.
+      if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(p.dir, k)) return true;
     }
     return false;
   };
@@ -318,10 +326,10 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
    * by that name: such a read cannot wait for bytes of any size. Its bytes
    * count toward the plan's storage, which the launch admits or refuses.
    */
+  /** Sync-read paths the walk found as files under their own name. */
+  const seenFiles = new Set<string>();
   const staticWorthy = (entry: DataPlanEntry) => !closure.has(entry.path)
     && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
-  /** Every symlink in the namespace, by key, as the key its target names. */
-  const links = new Map<string, string>();
 
   let after: string | null = null;
   for (;;) {
@@ -338,17 +346,17 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       const segs = k.split('/');
       if (entry.kind === 'symlink') {
         if (raw.linkTarget === undefined) continue;
-        const target = raw.linkTarget.startsWith('/') ? key(raw.linkTarget) : joinKey(parentOf(k), raw.linkTarget);
-        links.set(k, target);
         const inProject = (cwdPrefix === '' || k.startsWith(cwdPrefix))
           && !(cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/')).slice(0, -1).some((x) => PROJECT_EXCLUDED.has(x));
         const inHome = k.startsWith(homeDot) && homeKept(k) && !segs.includes('node_modules');
         if (inProject || inHome) {
+          const target = raw.linkTarget.startsWith('/') ? key(raw.linkTarget) : joinKey(parentOf(k), raw.linkTarget);
           linkedDirs.push({ target, rule: inProject ? 'project' : 'home' });
         }
         continue;
       }
       if (entry.kind !== 'file') continue;
+      if (exact.get(k) === true) seenFiles.add(k);
       const name = baseOf(k);
       if (name === 'package.json' && !segs.includes('.git')) { take(entry, 'package-json'); continue; }
       if (cwdPrefix === '' || k.startsWith(cwdPrefix)) {
@@ -405,17 +413,17 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   }
 
   // A synchronous read of a path through a symlink reads the file the link
-  // leads to, which the walk saw under its own name: hold that file.
-  if (links.size > 0) {
-    for (const [k, sync] of exact) {
-      if (!sync || planned.has(k)) continue;
-      const target = throughLinks(links, k);
-      if (target === null || target === k || planned.has(target)) continue;
-      const found = await source.stat(target);
-      if (found === null || found.kind !== 'file') continue;
-      const entry = { path: target, kind: 'file', size: found.size };
-      if (!closure.has(target)) take(entry, 'static');
-    }
+  // leads to, which the walk saw under its own name: hold that file. Only
+  // such a read's own path is resolved, one component at a time; the
+  // namespace's links are never collected.
+  for (const [k, sync] of exact) {
+    if (!sync || planned.has(k) || seenFiles.has(k)) continue;
+    const target = await throughLinks(source, k);
+    if (target === null || target === k || planned.has(target)) continue;
+    const found = await source.stat(target);
+    if (found === null || found.kind !== 'file') continue;
+    const entry = { path: target, kind: 'file', size: found.size };
+    if (!closure.has(target)) take(entry, 'static');
   }
 
   // Specifiers resolve through package.json files, so only those whose
