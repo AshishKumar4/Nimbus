@@ -58,7 +58,7 @@ export declare class WebSocketTerminal {
      */
     flushNow(): void;
     private flush;
-    onData(callback: (data: string) => void): void;
+    onData(callback: (data: string) => void | Promise<void>): void;
     handleMessage(msg: {
         type: string;
         data?: string;
@@ -68,7 +68,7 @@ export declare class WebSocketTerminal {
         content?: string;
         dir?: string;
         recursive?: boolean;
-    }): void;
+    }): void | Promise<void>;
     /**
      * editor/monaco (2026-05-13): install the fs-* message handler.
      * The callback receives the raw message + a reply lambda that
@@ -77,8 +77,8 @@ export declare class WebSocketTerminal {
      * reinstalls on warm rejoin via `attach()`.
      */
     onFs(cb: (msg: any, reply: (frame: any) => void) => void): void;
-    sendData(data: string): void;
-    attachRepl(input: (data: string) => void, dispose?: () => Promise<void>): () => void;
+    sendData(data: string): void | Promise<void>;
+    attachRepl(input: (data: string) => void | Promise<void>, dispose?: () => Promise<void>): () => void;
     focus(): void;
     clear(): void;
 }

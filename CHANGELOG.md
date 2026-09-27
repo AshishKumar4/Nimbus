@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- WebSocket terminal input retains the async shell command through the
+  session or embedder's `waitUntil`. Previously the terminal discarded the
+  callback's promise when the frame returned. Later input, including Ctrl-C,
+  is still delivered without waiting for the command. Rejected callbacks
+  are logged and reported to the terminal; shell state is saved on completion.
+
 - Load esbuild's bundled WASM when the service initializes (Kinu N27).
   Importing service constants or constructing a service no longer evaluates
   the WASM binding.

@@ -1,6 +1,6 @@
 
 interface ReplBinding {
-  input(data: string): void;
+  input(data: string): void | Promise<void>;
   dispose?: () => Promise<void>;
   previous: ReplBinding | null;
 }
@@ -9,7 +9,7 @@ interface ReplBinding {
 export class WebSocketTerminal {
   /** Null while the terminal is headless (composed before any attach). */
   public ws: WebSocket | null;
-  private dataCallback: ((data: string) => void) | null = null;
+  private dataCallback: ((data: string) => void | Promise<void>) | null = null;
 
   /**
    * editor/monaco (2026-05-13): Editor-pane file-system bridge.
@@ -135,13 +135,13 @@ export class WebSocketTerminal {
     }
   }
 
-  onData(callback: (data: string) => void): void { this.dataCallback = callback; }
+  onData(callback: (data: string) => void | Promise<void>): void { this.dataCallback = callback; }
 
-  handleMessage(msg: { type: string; data?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void {
+  handleMessage(msg: { type: string; data?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void | Promise<void> {
     switch (msg.type) {
       case 'input':
-        if (msg.data) this.sendData(msg.data);
-        break;
+        if (msg.data) return this.sendData(msg.data);
+        return;
       case 'resize':
         if (msg.cols) this._cols = msg.cols;
         if (msg.rows) this._rows = msg.rows;
@@ -194,11 +194,11 @@ export class WebSocketTerminal {
   onFs(cb: (msg: any, reply: (frame: any) => void) => void): void {
     this.fsCallback = cb;
   }
-  sendData(data: string): void {
-    if (this.replBinding) this.replBinding.input(data);
-    else this.dataCallback?.(data);
+  sendData(data: string): void | Promise<void> {
+    if (this.replBinding) return this.replBinding.input(data);
+    return this.dataCallback?.(data);
   }
-  attachRepl(input: (data: string) => void, dispose?: () => Promise<void>): () => void {
+  attachRepl(input: (data: string) => void | Promise<void>, dispose?: () => Promise<void>): () => void {
     if (this.replTeardown) throw new Error('Cannot attach a REPL while cleanup is running');
     const binding: ReplBinding = { input, dispose, previous: this.replBinding };
     this.replBinding = binding;

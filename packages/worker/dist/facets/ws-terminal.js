@@ -141,8 +141,8 @@ export class WebSocketTerminal {
         switch (msg.type) {
             case 'input':
                 if (msg.data)
-                    this.sendData(msg.data);
-                break;
+                    return this.sendData(msg.data);
+                return;
             case 'resize':
                 if (msg.cols)
                     this._cols = msg.cols;
@@ -202,9 +202,8 @@ export class WebSocketTerminal {
     }
     sendData(data) {
         if (this.replBinding)
-            this.replBinding.input(data);
-        else
-            this.dataCallback?.(data);
+            return this.replBinding.input(data);
+        return this.dataCallback?.(data);
     }
     attachRepl(input, dispose) {
         if (this.replTeardown)

@@ -23,6 +23,6 @@ export class HeadlessTerminal {
     clear() { }
     /** Send data as if typed on keyboard (used internally for stdin) */
     sendData(data) {
-        this.dataCallback?.(data);
+        return this.dataCallback?.(data);
     }
 }

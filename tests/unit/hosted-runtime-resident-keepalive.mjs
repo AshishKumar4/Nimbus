@@ -99,6 +99,7 @@ const env = {
 
 /** Every `lifecycle.schedule` the runtime asked of its embedder. */
 const scheduled = [];
+const owned = [];
 const keepalives = () => scheduled.filter(([task]) => task === 'resident-keepalive');
 
 const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
@@ -111,13 +112,35 @@ const runtime = await bundle.composeHostedRuntime({
   env,
   ports: new bundle.PortRegistry(),
   lifecycle: {
-    waitUntil: (task) => { facetCtx.waitUntil(task); },
+    waitUntil: (task) => { owned.push(task); facetCtx.waitUntil(task); },
     async schedule(task, at) { scheduled.push([task, at]); },
     async cancel() {},
   },
 });
 
 try {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  workspace.registry.register('lifetime-check', async () => {
+    entered.resolve();
+    await release.promise;
+    return 0;
+  });
+  const ws = { readyState: 1, send() {} };
+  await runtime.attachTerminal(ws);
+  const beforeInput = owned.length;
+  try {
+    await runtime.terminalFrame(ws, JSON.stringify({ type: 'input', data: 'lifetime-check\r' }));
+    await entered.promise;
+
+    let settled = false;
+    const completion = Promise.all(owned.slice(beforeInput)).then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(settled, false, 'command remains owned after terminalFrame returns');
+    release.resolve();
+    await completion;
+    assert.equal(settled, true);
+  } finally { release.resolve(); }
   assert.deepEqual(keepalives(), [], 'no keep-alive before a resident runs');
 
   // ── starting a resident schedules the keep-alive ────────────────────────

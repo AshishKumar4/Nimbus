@@ -1464,6 +1464,13 @@ export class SqliteVFS {
     this.events = new VfsEventEmitter();
     this.inodes = new InodeTable(inodeCacheEntries, (path) => this.loadInode(path), this.openNodes);
     this.initSchema();
+    for (const row of this.sql.exec("SELECT args FROM vfs_jobs WHERE kind = 'import'")) {
+      const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+      if (job.preserveInos) this.transactionSync(() => this.ensureImportIdentityIndexes());
+    }
+    if ([...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino') LIMIT 1")].length) {
+      this.transactionSync(() => this.dropUnusedImportIdentityIndexes());
+    }
     this.resumeAppendMaintenance();
     this.queueAbandonedStaging();
     this.resumeJobs();
@@ -1583,7 +1590,6 @@ export class SqliteVFS {
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_parent ON vfs_inodes(parent_path, kind)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_gen ON vfs_inodes(gen)');
-      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_ino ON vfs_inodes(ino)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_chunk ON vfs_inodes(chunk_id) WHERE chunk_id IS NOT NULL');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_content ON vfs_inodes(content_id) WHERE content_id IS NOT NULL');
       // A 64 KiB row is far past WITHOUT ROWID's row-size guidance, so chunks
@@ -1634,7 +1640,6 @@ export class SqliteVFS {
         PRIMARY KEY (path, gen_to)
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
-      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_ino ON vfs_inode_history(ino)');
       // (gen_to, path): drop's keyset walk seeks it; gen_to alone made each page a scan.
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen_path ON vfs_inode_history(gen_to, path)');
       // One row per deleted path, written with the delete: what lets
@@ -6310,7 +6315,10 @@ export class SqliteVFS {
     const jobId = job?.id ?? this.beginImport(target);
     if (job?.sourceNextIno === undefined) {
       this.transactionSync(() => {
-        if (preserveInos) this.sql.exec('UPDATE vfs_state SET next_ino = MAX(next_ino, ?) WHERE slot = 1', sourceNextIno);
+        if (preserveInos) {
+          this.ensureImportIdentityIndexes();
+          this.sql.exec('UPDATE vfs_state SET next_ino = MAX(next_ino, ?) WHERE slot = 1', sourceNextIno);
+        }
         this.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify({ dst: target, sourceRoot, sourceNextIno, preserveInos }), jobId);
       });
     }
@@ -6372,7 +6380,10 @@ export class SqliteVFS {
     flush();
     const done = page.next === null;
     if (done) {
-      this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId); });
+      this.transactionSync(() => {
+        this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
+        this.dropUnusedImportIdentityIndexes();
+      });
       const held = this.importStagings.get(target);
       this.importStagings.delete(target);
       if (held !== undefined && held.id !== 0) this.abandonStaging(held);
@@ -6519,6 +6530,24 @@ export class SqliteVFS {
     }
     flush();
     return { stored };
+  }
+
+  private ensureImportIdentityIndexes(): void {
+    const names = new Set([...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino')")].map((row) => String(row.name)));
+    if (!names.has('vfs_inodes_ino')) {
+      if ([...this.sql.exec('SELECT 1 FROM vfs_inodes LIMIT 1')].length) throw vfsError('EIO', 'active import lost its inode index');
+      this.sql.exec('CREATE INDEX vfs_inodes_ino ON vfs_inodes(ino)');
+    }
+    if (!names.has('vfs_history_ino')) {
+      if ([...this.sql.exec('SELECT 1 FROM vfs_inode_history LIMIT 1')].length) throw vfsError('EIO', 'active import lost its history index');
+      this.sql.exec('CREATE INDEX vfs_history_ino ON vfs_inode_history(ino)');
+    }
+  }
+
+  private dropUnusedImportIdentityIndexes(): void {
+    if ([...this.sql.exec("SELECT 1 FROM vfs_jobs WHERE kind = 'import' AND json_extract(args, '$.preserveInos') = 1 LIMIT 1")].length) return;
+    this.sql.exec('DROP INDEX IF EXISTS vfs_inodes_ino');
+    this.sql.exec('DROP INDEX IF EXISTS vfs_history_ino');
   }
 
   private importJob(target: string): (z.infer<typeof ImportJobArgsSchema> & { id: number; cursor: string }) | undefined {
