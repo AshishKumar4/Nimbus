@@ -425,6 +425,8 @@ kernel credential, because Nimbus follows POSIX here:
   Worker Loader cache publication. The next launch can transform again;
   it no longer inherits a cached diagnostic shim from an infrastructure
   failure. Permanent source errors remain lazy errors when required.
+  Eval-only entry rewrites also fail before worker publication; a failed
+  transform cannot fall back to workerd's native `import()`.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry

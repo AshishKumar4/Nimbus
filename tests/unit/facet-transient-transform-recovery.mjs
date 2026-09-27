@@ -25,9 +25,20 @@ native.ensureInit = async () => {};
 native._esbuild = await import('esbuild');
 let attempts = 0;
 let fault = 'outcome';
+const evalProgram = 'import("node:path").then(path => console.log(path.default.basename("/tmp/eval-entry")));';
+const badEval = 'import("node:path").then(() => console.log("must not run after transform rejection"));';
+let evalAttempts = 0;
 const service = new EsbuildService(undefined, {
   transformHost: async requests => {
     attempts++;
+    if (requests.some(request => request.code === evalProgram)) {
+      evalAttempts++;
+      if (fault === 'eval-transient') {
+        fault = 'none';
+        return requests.map(() => ({ error: 'injected eval-only transform loss', transient: true }));
+      }
+    }
+    if (fault === 'eval-permanent' && requests.some(request => request.code === badEval)) return requests.map(() => ({ error: 'precise eval parser rejection' }));
     if (attempts === 1 && fault === 'outcome') return requests.map(() => ({ error: 'injected temporary transform-isolate loss', transient: true }));
     if (attempts === 1 && fault === 'throw') throw new Error('injected transform transport failure');
     return native.transformMany(requests);
@@ -60,8 +71,8 @@ manager.setVfs(rawVfs, processFiles(rawVfs));
 manager.setEsbuildService(service);
 const opts = { cwd: '/' + root, dirname: '/' + root, filename: '/' + root + '/entry.cjs', captureOutput: true };
 const globals = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
-async function launch() {
-  try { return await manager.exec(program, opts); }
+async function launch(code = program, options = opts) {
+  try { return await manager.exec(code, options); }
   finally { Object.assign(globalThis, globals); }
 }
 try {
@@ -83,6 +94,26 @@ try {
   assert.equal((retry.stdout + stdout).trim(), 'recovered after thrown transform failure');
   assert.equal(attempts, 2);
   assert.equal(loaderPublications, 2);
+  // This is an eval-only entry, not a staged .cjs file. Its own rewrite runs
+  // at worker generation, after the module-map build; it must also fail
+  // before LOADER publication rather than leaking native import().
+  fault = 'eval-transient';
+  stdout = '';
+  const evalOpts = { ...opts, filename: '<eval>' };
+  const failedEval = await launch(evalProgram, evalOpts);
+  assert.equal(failedEval.exitCode, 1, 'eval-only transform failure fails the process');
+  assert.match(failedEval.stderr, /injected eval-only transform loss/);
+  assert.equal(loaderPublications, 2, 'transient eval entry publishes no worker');
+  const evalRetry = await launch(evalProgram, evalOpts);
+  assert.equal(evalRetry.exitCode, 0, evalRetry.stderr);
+  assert.equal((evalRetry.stdout + stdout).trim(), 'eval-entry');
+  assert.equal(evalAttempts, 2, 'eval entry is rewritten again after recovery');
+  assert.equal(loaderPublications, 3);
+  fault = 'eval-permanent';
+  const rejectedEval = await launch(badEval, evalOpts);
+  assert.equal(rejectedEval.exitCode, 1);
+  assert.match(rejectedEval.stderr, /precise eval parser rejection/);
+  assert.equal(loaderPublications, 3, 'a permanent entry rejection also cannot escape to native host import');
   // A permanent source error remains lazy: merely staging an optional module
   // must not prevent a program that never requires it from running.
   fault = 'none';

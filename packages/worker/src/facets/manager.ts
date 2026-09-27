@@ -4623,7 +4623,8 @@ export class FacetManager {
    * module-map walk reads the script as written, before this.
    */
   private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string): Promise<string> {
-    if (this.esbuild === null || !mayHaveDynamicImport(code)) return code;
+    if (!mayHaveDynamicImport(code)) return code;
+    if (this.esbuild === null) throw new Error('entry dynamic import requires the transform service');
     const base = cwd.replace(/\/+$/, '') || '/';
     const path = filename === undefined || filename === '<eval>'
       ? `${base}/[eval]`
@@ -4635,8 +4636,11 @@ export class FacetManager {
     const [outcome] = await this.esbuild.transformMany([
       { code, options: { rewriteOnly: true, dynamicImportParent: parentUrl } },
     ]);
-    // A script the parse refuses is compiled as written, and the compile says why.
-    if (outcome === undefined || 'error' in outcome) return code;
+    // A failed entry rewrite must not reach a Worker Loader as native host
+    // import(), or become an immutable cached image. Preserve the reported
+    // reason for permanent source errors as well as transient failures.
+    if (outcome === undefined) throw new Error('entry transform service returned no outcome');
+    if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     __esmTransformCacheSet(key, outcome.code);
     return outcome.code;
   }
