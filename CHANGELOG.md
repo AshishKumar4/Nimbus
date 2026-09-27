@@ -1,10 +1,13 @@
 # Changelog
 
-An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
+
+- Load esbuild's bundled WASM when the service initializes (Kinu N27).
+  Importing service constants or constructing a service no longer evaluates
+  the WASM binding.
 
 ### Test process safety
 
