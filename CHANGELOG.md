@@ -483,7 +483,10 @@ kernel credential, because Nimbus follows POSIX here:
   literal; extracted `import.meta.resolve` retains its module's parent.
   Metadata rewriting visits actual `import.meta` syntax in the transform
   facet, not user object properties with similar names. TypeScript is emitted
-  as JavaScript first; module strictness and local binding names are preserved.
+  as JavaScript first, keeping the module format as written, so a module with
+  `import` syntax that assigns `module.exports` still exports what it assigned
+  (`require()` no longer answers `{ default: ... }` for it); module strictness
+  and local binding names are preserved.
   Dot access, computed access and destructuring share the same per-evaluation
   metadata object; its existing `url` and `resolve` behavior is consistent.
 - The transform facet consumes Acorn trees one completed top-level statement

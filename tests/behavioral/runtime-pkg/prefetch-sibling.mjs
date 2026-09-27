@@ -24,7 +24,7 @@ await sleep(2_000);
 await t.waitForPrompt(15_000).catch(() => {});
 
 await t.run('mkdir -p /home/user/g3-probe/node_modules/.bin', 5_000);
-await t.run('mkdir -p /home/user/g3-probe/node_modules/sibling-cli/lib', 5_000);
+await t.run('mkdir -p /home/user/g3-probe/node_modules/sibling-cli/lib /home/user/g3-probe/node_modules/sibling-cli/bin', 5_000);
 await t.run('cd /home/user/g3-probe', 5_000);
 await t.run('node -e "require(\'fs\').writeFileSync(\'package.json\', JSON.stringify({name:\'p\',version:\'1.0.0\'}))"', 10_000);
 
@@ -46,12 +46,19 @@ const binCode   = "#!/usr/bin/env node\n" + "require('../lib/main');\n";
 const installerShim = "#!/usr/bin/env node\n" +
                       "require('/home/user/g3-probe/node_modules/sibling-cli/bin/sibling-cli');\n";
 
+// fs.writeFileSync does not create missing parents (ENOENT, as in Node), so
+// every directory above is made explicitly. Each write reports the size it
+// left on disk, and a write that did not land stops the probe.
 async function writeFile(path, content) {
   const b64 = Buffer.from(content, 'utf8').toString('base64');
-  await t.run(
-    `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`,
+  const r = await t.run(
+    `node -e "var f=require('fs'); f.writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8')); console.log('WROTE ' + f.statSync('${path}').size)"`,
     10_000,
   );
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (!new RegExp(`^WROTE ${bytes}\\r?$`, 'm').test(stripAnsi(r.output))) {
+    throw new Error(`[G3] setup: writing ${path} did not leave ${bytes} bytes on disk:\n${stripAnsi(r.output).slice(-500)}`);
+  }
 }
 
 await writeFile('node_modules/sibling-cli/lib/inner.js', innerCode);
@@ -59,18 +66,26 @@ await writeFile('node_modules/sibling-cli/lib/main.js',  mainCode);
 await writeFile('node_modules/sibling-cli/bin/sibling-cli', binCode);
 await writeFile('node_modules/.bin/sibling-cli', installerShim);
 
-// Verify all four files are on disk.
+// Verify all four files are on disk, each by its own absolute path.
+const FILES = [
+  '/home/user/g3-probe/node_modules/sibling-cli/lib/inner.js',
+  '/home/user/g3-probe/node_modules/sibling-cli/lib/main.js',
+  '/home/user/g3-probe/node_modules/sibling-cli/bin/sibling-cli',
+  '/home/user/g3-probe/node_modules/.bin/sibling-cli',
+];
 const lsResult = await t.run(
-  'node -e "var f=require(\'fs\'); console.log([\'lib/inner.js\',\'lib/main.js\',\'bin/sibling-cli\',\'../.bin/sibling-cli\'].map(p=>[p,f.existsSync(\'/home/user/g3-probe/node_modules/sibling-cli/\'+p)]).map(([p,e])=>p+\':\'+e).join(\' | \'))"',
+  `node -e "var f=require('fs'); console.log('EXISTS ' + JSON.stringify(${JSON.stringify(FILES).replaceAll('"', "'")}.map(function (p) { return [p, f.statSync(p, { throwIfNoEntry: false })?.isFile() === true]; })))"`,
   30_000,
 );
 const lsOut = stripAnsi(lsResult.output);
-const allExist = /lib\/inner\.js:true.*lib\/main\.js:true.*bin\/sibling-cli:true/.test(lsOut);
+const existsLine = /^EXISTS (\[.*\])\r?$/m.exec(lsOut);
+const exists = existsLine ? new Map(JSON.parse(existsLine[1])) : new Map();
+const allExist = FILES.every((file) => exists.get(file) === true);
 
 // Run via .bin shim.
 const r = await t.run('sibling-cli', 60_000);
 const rOut = stripAnsi(r.output);
-const ok = /SIBLING-OK:INNER-PRESENT/.test(rOut);
+const ok = /^SIBLING-OK:INNER-PRESENT\r?$/m.test(rOut);
 
 await t.close();
 
@@ -78,13 +93,13 @@ const findings = {
   gap: 'G3',
   sid,
   base: BASE,
-  setup: { allFilesPresent: allExist, lsOut: lsOut.slice(-300) },
+  setup: { allFilesPresent: allExist, exists: Object.fromEntries(exists), lsOut: lsOut.slice(-300) },
   binRun: { ok, tail: rOut.slice(-500) },
 };
 console.log(JSON.stringify(findings, null, 2));
 
 const checks = [
-  ['all 4 files materialised on VFS',         allExist],
+  ...FILES.map((file) => [`${file} is a file on the VFS`, exists.get(file) === true]),
   ['bin run produces SIBLING-OK:INNER-PRESENT', ok],
 ];
 let pass = 0;
