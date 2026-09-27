@@ -5,7 +5,7 @@ import type { ITerminal } from '../terminal/ITerminal.js';
  * Used for headless/programmatic Sandbox usage (AI agents, tests, etc.)
  */
 export class HeadlessTerminal implements ITerminal {
-  private dataCallback: ((data: string) => void) | null = null;
+  private dataCallback: ((data: string) => void | Promise<void>) | null = null;
 
   write(_data: string): void {
     // Headless mode: discard visual output
@@ -15,7 +15,7 @@ export class HeadlessTerminal implements ITerminal {
     // Headless mode: discard visual output
   }
 
-  onData(cb: (data: string) => void): void {
+  onData(cb: (data: string) => void | Promise<void>): void {
     this.dataCallback = cb;
   }
 
@@ -32,7 +32,7 @@ export class HeadlessTerminal implements ITerminal {
   clear(): void {}
 
   /** Send data as if typed on keyboard (used internally for stdin) */
-  sendData(data: string): void {
-    this.dataCallback?.(data);
+  sendData(data: string): void | Promise<void> {
+    return this.dataCallback?.(data);
   }
 }
