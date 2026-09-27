@@ -43,6 +43,7 @@ import {
   type ResidentDiskReader,
   type ResidentSupervisorProps,
 } from './process-fabric.js';
+import { supervisorLoaderKey } from './supervisor-props.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -87,12 +88,11 @@ export async function createLoadedWorkerEntrypoint(
   if (!ctxExports.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
   }
-  // The key names the host instance too: the entrypoint's loader outlives it,
-  // and a warm worker keeps the SUPERVISOR binding it was built with.
-  const instance = supervisor.hostIncarnation === undefined ? '' : `:${supervisor.hostIncarnation}`;
   return await ctxExports.NimbusLoadedEntrypoint({
     props: {
-      key: `nimbus-process:${supervisor.doId}:${supervisor.pid}${instance}`,
+      // The entrypoint's loader outlives this instance, and a warm worker keeps
+      // the SUPERVISOR binding it was built with.
+      key: supervisorLoaderKey(`nimbus-process:${supervisor.doId}:${supervisor.pid}`, supervisor),
       name,
       depth: 0,
       supervisor,
@@ -578,12 +578,8 @@ function residentProcessClass(
     );
   }
   // A warm worker keeps the SUPERVISOR binding it was built with, and the
-  // loader outlives this instance: a key without the instance's delivery
-  // incarnation would hand a process spawned here a binding every mutation
-  // of which a later instance refuses.
-  const loaderKey = supervisor.hostIncarnation === undefined
-    ? params.workerKey
-    : `${params.workerKey}:${supervisor.hostIncarnation}`;
+  // loader outlives this instance.
+  const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
   try {
     const worker = loader
       .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))

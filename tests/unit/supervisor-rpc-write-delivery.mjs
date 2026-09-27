@@ -29,6 +29,7 @@ import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/s
 import {
   SupervisorDeliveries,
   openSupervisorDeliveries,
+  supervisorDeliveryAnswer,
   supervisorDeliveryProps,
 } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
@@ -75,6 +76,8 @@ function openSession(harness, { deliveries = true } = {}) {
  *   lost-request — dropped before the session runs it
  *   lost-reply   — the session ran it; the answer never comes back
  *                  (`between` runs first: another writer, or a restart)
+ *   `stall`      — on any fault: the session reaches this call only after
+ *                  that many ms (the clock the test hands Date.now moves)
  */
 function world() {
   const harness = createSqliteVfsTestHarness();
@@ -104,6 +107,7 @@ function world() {
               envelope,
               stub,
             });
+            await fault?.stall?.();
             if (fault?.kind === 'lost-request') throw fault.error ?? dropped();
             const answer = await w.session.host.supervisorOp(envelope);
             if (fault?.kind === 'lost-reply') {
@@ -532,7 +536,9 @@ function assertOneDelivery(arrivals, op, attempts) {
 
 {
   // Retention: a receipt answers for at least the retention after it was
-  // recorded, and is gone by twice that; a process's exit drops its own.
+  // recorded and is dropped by twice that; its id is then a tombstone, and a
+  // repeat is refused as EIO — outcome unknown — never applied again. A
+  // process's exit buries its receipts the same way.
   const R = coreConstants.VFS_DELIVERY_RECEIPT_RETENTION_MS;
   assert.equal(R, 3 * coreConstants.VFS_DELIVERY_RETRY_WINDOW_MS);
   const realNow = Date.now;
@@ -549,19 +555,135 @@ function assertOneDelivery(arrivals, op, attempts) {
       store.deliver(9, id, 'mkdir', apply);
       assert.equal(applied, 1, `a receipt ${at} ms old did not answer`);
     }
-    now = 1_800_000_000_000 + 2 * R;
-    store.deliver(9, id, 'mkdir', apply);
-    assert.equal(applied, 2, 'a receipt twice the retention old was still held');
+    for (const at of [2 * R, coreConstants.VFS_DELIVERY_TOMBSTONE_RETENTION_MS]) {
+      now = 1_800_000_000_000 + at;
+      assert.throws(() => store.deliver(9, id, 'mkdir', apply), (error) => error.code === 'EIO', `a repeat ${at} ms late was not refused`);
+    }
+    assert.equal(applied, 1, 'a repeat whose answer was dropped applied again');
 
     const kept = crypto.randomUUID();
     store.deliver(4, kept, 'mkdir', apply);
     store.forget(4);
-    store.deliver(4, kept, 'mkdir', apply);
-    assert.equal(applied, 4, 'a forgotten process\'s receipt answered');
+    assert.throws(() => store.deliver(4, kept, 'mkdir', apply), (error) => error.code === 'EIO');
+    assert.equal(applied, 2, 'a forgotten process\'s mutation applied again');
   } finally {
     Date.now = realNow;
   }
-  console.log('  ok  receipts answer for their retention, are dropped by twice it, and go with their process');
+  console.log('  ok  receipts answer for their retention; a later repeat, or one after exit, is EIO and applies nothing');
+}
+
+{
+  // Tombstones are bounded: a generation fills for its span or up to its
+  // limit, whichever comes first, and two are held — never more than twice
+  // the limit, and each for at least one whole generation.
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const store = new SupervisorDeliveries({ receiptMs: 10, tombstoneMs: 1_000, tombstoneLimit: 4 });
+    const ids = [];
+    for (let i = 0; i < 12; i++) {
+      ids.push(crypto.randomUUID());
+      store.deliver(1, ids[i], 'mkdir', () => undefined);
+      now += 20; // every receipt is dropped by the next delivery
+      store.deliver(2, crypto.randomUUID(), 'fsSync', () => undefined);
+      assert.ok(store.tombstoneCount <= 8, `${store.tombstoneCount} tombstones held against a limit of 2 × 4`);
+    }
+    let applied = 0;
+    const refused = ids.map((id) => {
+      try { store.deliver(1, id, 'mkdir', () => { applied++; }); return false; } catch (error) { return error.code === 'EIO'; }
+    });
+    // The newest are still refused; the oldest, pushed out by the limit, are not.
+    assert.deepEqual(refused.slice(-2), [true, true]);
+    assert.equal(refused[0], false, 'the limit held no bound');
+
+    // Nothing buried for two whole spans: those tombstones go, and the id is
+    // a stranger again — the bound the guarantee is stated against.
+    const late = crypto.randomUUID();
+    store.deliver(3, late, 'mkdir', () => undefined);
+    now += 20;
+    store.deliver(3, crypto.randomUUID(), 'mkdir', () => undefined);
+    assert.throws(() => store.deliver(3, late, 'mkdir', () => undefined), (error) => error.code === 'EIO');
+    now += 2_000;
+    let again = 0;
+    store.deliver(3, late, 'mkdir', () => { again++; });
+    assert.equal(again, 1, 'a tombstone outlived two idle spans');
+    assert.ok(store.tombstoneCount <= 8);
+  } finally {
+    Date.now = realNow;
+  }
+  console.log('  ok  tombstones are bounded by count and time, two generations deep');
+}
+
+{
+  // The reviewer's stall case, end to end: attempt 1 applies a position-
+  // relative write and its reply is lost; the retry is sent at once but the
+  // session runs it only after a 30 s stall, when the answer has aged out.
+  // It is refused as EIO — the file keeps one copy — where it was applied
+  // twice. A retry that runs inside the retention still gets the answer.
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const w = world();
+    const { pid, rpc } = w.process();
+    const handle = await rpc.fsOpen('/home/user/wheel.py', { write: true, create: true, truncate: true });
+    w.faults.push({ kind: 'lost-reply' }, { stall: () => { skew += 30_000; } });
+    await assert.rejects(rpc.fsWrite(handle.id, null, enc.encode('member.')), (error) => /EIO/.test(error.message) && /outcome is unknown/.test(error.message));
+    assert.equal(w.read('home/user/wheel.py'), 'member.', 'the stalled retry applied the write again');
+    assertOneDelivery(w.of(pid).filter((arrival) => arrival.op === 'fsWrite'), 'fsWrite', 2);
+
+    w.faults.push({ kind: 'lost-reply' }, { stall: () => { skew += coreConstants.VFS_DELIVERY_RECEIPT_RETENTION_MS - 1_000; } });
+    assert.equal(await rpc.fsWrite(handle.id, null, enc.encode('next.')), 5);
+    assert.equal(w.read('home/user/wheel.py'), 'member.next.');
+  } finally {
+    Date.now = realNow;
+  }
+  console.log('  ok  a retry the session runs after a stall past the retention is EIO, never a second write');
+}
+
+{
+  // An answer is plain data or it is refused where it enters the store —
+  // after the mutation applied, so the refusal is what every repeat meets.
+  const store = new SupervisorDeliveries();
+  const id = crypto.randomUUID();
+  let applied = 0;
+  const live = () => { applied++; return supervisorDeliveryAnswer({ id: 3, stream: new Map() }); };
+  assert.throws(() => store.deliver(9, id, 'fsOpen', live), /plain data/);
+  await assert.rejects(async () => store.deliver(9, id, 'fsOpen', live), /plain data/);
+  assert.equal(applied, 1);
+  assert.deepEqual(await supervisorDeliveryAnswer(Promise.resolve({ before: 1, after: 2 })), { before: 1, after: 2 });
+  await assert.rejects(async () => supervisorDeliveryAnswer(Promise.resolve(() => {})), /plain data/);
+  console.log('  ok  only plain answers are recorded; any other is a failure every repeat meets');
+}
+
+{
+  // fsWriteRange is served natively now, and takes the byte shapes the
+  // routed _rpcFsWriteRange took; anything else is EINVAL, not a silent
+  // zero-length write.
+  const w = world();
+  const { pid } = w.process();
+  const { host } = w.session;
+  await host.supervisorOp({ op: 'writeFile', args: ['/home/user/shapes.bin', 'xxxxxxxx'], pid });
+  const bytes = enc.encode('AB');
+  const shapes = [
+    ['Uint8Array', bytes],
+    ['ArrayBuffer', bytes.slice().buffer],
+    ['DataView', new DataView(enc.encode('zAB').buffer, 1, 2)],
+    ['Uint16Array', new Uint16Array(bytes.slice().buffer)],
+    ['number[]', [65, 66]],
+    ['Buffer JSON', { type: 'Buffer', data: [65, 66] }],
+  ];
+  for (const [label, value] of shapes) {
+    await host.supervisorOp({ op: 'writeFile', args: ['/home/user/shapes.bin', 'xxxxxxxx'], pid });
+    await host.supervisorOp({ op: 'fsWriteRange', args: ['/home/user/shapes.bin', 3, value], pid });
+    assert.equal(w.read('home/user/shapes.bin'), 'xxxABxxx', `${label}: not written as the routed op wrote it`);
+  }
+  for (const garbage of ['AB', 42, null, { data: 'AB' }]) {
+    await assert.rejects(host.supervisorOp({ op: 'fsWriteRange', args: ['/home/user/shapes.bin', 3, garbage], pid }), /EINVAL/);
+  }
+  assert.equal(w.read('home/user/shapes.bin'), 'xxxABxxx');
+  console.log('  ok  fsWriteRange takes every byte shape the routed op took, and refuses the rest as EINVAL');
 }
 
 console.log('supervisor-rpc-write-delivery: ok');

@@ -7,6 +7,7 @@ import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
   supervisorDeliveredOp,
+  supervisorDeliveryAnswer,
   SUPERVISOR_DELIVER_OP,
   type SupervisorDeliveries,
   type SupervisorDelivery,
@@ -25,8 +26,8 @@ const OpenOptions = z.object({
 });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
-/** A delivery id as SupervisorRPC mints it (crypto.randomUUID). */
-const DELIVERY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
+const Delivery = z.object({ op: z.string(), id: z.string().uuid(), hostIncarnation: z.string().uuid() });
 
 /**
  * Identity comes from the supervisor binding, never from facet arguments: a
@@ -114,6 +115,22 @@ function bytesArg(envelope: SupervisorOpEnvelope, index: number): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   throw new Error(`supervisor op ${envelope.op}: argument ${index} must be bytes`);
+}
+
+/**
+ * A ranged write's bytes, in every shape the routed `_rpcFsWriteRange` took
+ * before it was served here: bytes, a buffer, any view of one, an array of
+ * byte values, or a serialized Node Buffer's `{ data }`. Anything else is
+ * refused, EINVAL, where the routed op wrote nothing and answered success.
+ */
+function writeRangeBytesArg(envelope: SupervisorOpEnvelope, index: number): Uint8Array {
+  const value = envelope.args?.[index];
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (Array.isArray(value)) return new Uint8Array(value);
+  if (typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data)) return new Uint8Array(value.data);
+  throw Object.assign(new Error(`EINVAL: supervisor op ${envelope.op}: argument ${index} must be bytes`), { code: 'EINVAL' });
 }
 
 function contentArg(envelope: SupervisorOpEnvelope, index: number): string | Uint8Array {
@@ -355,7 +372,7 @@ const NATIVE_OPS = {
   chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
   utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
   fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), bytesArg(e, 2)),
+  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2)),
   writeBatchStream: (e, t) => {
     if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
     return fsFor(e, t).writeStream(e.stream, { mutationOwner: e.mutationOwner });
@@ -432,7 +449,7 @@ export function createSupervisorOpHandler(
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
   };
   const extend = deps.extend ?? {};
-  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope) => {
+  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
     // Priority: the embedder's own handler → the native filesystem op → the
     // canonical route table onto the host's _rpc* methods. An op in none of
     // these is not served by this host.
@@ -467,16 +484,12 @@ export function createSupervisorOpHandler(
     const deliveries = deps.deliveries;
     // Exactly what a host that predates delivery answers: the op is not served.
     if (!deliveries) throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' is not served by this host`);
-    const delivery = envelope.delivery;
-    const op = typeof delivery?.op === 'string' ? supervisorDeliveredOp(delivery.op) : undefined;
-    if (
-      !delivery || op === undefined
-      || typeof delivery.id !== 'string' || !DELIVERY_ID.test(delivery.id)
-      || typeof delivery.hostIncarnation !== 'string'
-    ) {
+    const delivery = Delivery.safeParse(envelope.delivery);
+    const op = delivery.success ? supervisorDeliveredOp(delivery.data.op) : undefined;
+    if (!delivery.success || op === undefined) {
       throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' names no mutation it can deliver once`);
     }
-    if (delivery.hostIncarnation !== deliveries.incarnation) {
+    if (delivery.data.hostIncarnation !== deliveries.incarnation) {
       throw Object.assign(
         new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`),
         { code: 'ESTALE' },
@@ -487,7 +500,7 @@ export function createSupervisorOpHandler(
     // The process's own bridge, which is what refuses a pid that does not
     // exist or has been released (ESTALE), and a cred riding a pid.
     tools.bridge(pid, envelope.cred);
-    return deliveries.deliver(pid, delivery.id, op, () => serve(op, { ...envelope, op, delivery: undefined }));
+    return deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
   };
   return async (envelope) => {
     if (!envelope || typeof envelope.op !== 'string') {

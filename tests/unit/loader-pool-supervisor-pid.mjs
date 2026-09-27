@@ -139,6 +139,20 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
   new IsolatePool(env, before, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
   assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
     'a binding routed to another actor named this instance');
+
+  // A pid-0 pool (esbuild pre-bundle, npm resolve, cp-spawn) can deliver
+  // nothing — SupervisorRPC refuses every filesystem mutation of pid 0 — so
+  // its binding names no instance and its warm isolate survives a restart.
+  loaderIds.length = 0;
+  boundProps.length = 0;
+  for (const ctx of [before, after]) {
+    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { tag: 'esbuild-bundle', concurrency: 1 });
+    await pool.map((v) => v, ['a']);
+    await pool.dispose();
+  }
+  assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route }, { doId: 'loader-pid-test', pid: 0, route }],
+    'a pid-0 binding named its instance');
+  assert.equal(loaderIds[0], loaderIds[1], 'a pid-0 pool lost its warm isolate to a restart');
 }
 
 console.log('loader-pool supervisor pid: ok');

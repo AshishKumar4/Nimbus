@@ -68,7 +68,7 @@ import {
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
-import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import {
   buildFsSnapshot,
@@ -789,9 +789,9 @@ export class CirrusReal {
     });
 
     const ctxExports = getCtxExports();
-    const delivery = supervisorDeliveryProps(ctx);
+    const supervisorProps = supervisorBindingProps(ctx, pid);
     const supervisorBinding = ctxExports?.SupervisorRPC
-      ? ctxExports.SupervisorRPC({ props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined, ...delivery } })
+      ? ctxExports.SupervisorRPC({ props: supervisorProps })
       : undefined;
     // Phase 2: separate HMR binding so we don't need to modify
     // supervisor-rpc.ts (off-limits). The CirrusHmrRPC class lives in
@@ -824,9 +824,9 @@ export class CirrusReal {
     //   DO so eviction is coherent. The same name returns the same
     //   facet on subsequent calls — that's what makes the cookie
     //   persist across supervisor reconnects.
-    // The instance's delivery incarnation rides in the key: the loader outlives
-    // this instance, and a warm worker keeps the SUPERVISOR binding in its env.
-    const stableLoaderId = `${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${delivery.hostIncarnation === undefined ? '' : `:${delivery.hostIncarnation}`}`;
+    // The loader outlives this instance, and a warm worker keeps the
+    // SUPERVISOR binding in its env.
+    const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}`, supervisorProps);
     const facetName = 'cirrus-real-vite';
     try {
       const worker = this.env.LOADER.get(stableLoaderId, async () => ({

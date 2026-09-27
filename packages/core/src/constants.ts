@@ -143,6 +143,18 @@ export const FS_LIST_PAGE_LIMIT = 8192;
 // failedAt), and three attempts back off in under 0.4 s.
 export const VFS_DELIVERY_RETRY_WINDOW_MS = 5_000;
 export const VFS_DELIVERY_RECEIPT_RETENTION_MS = 3 * VFS_DELIVERY_RETRY_WINDOW_MS;
+// A repeat can still arrive later than that: the session may be stalled
+// behind a long synchronous turn (a request may run 300 s of CPU) or behind
+// its own request queue. So when a receipt is dropped its id is kept, as a
+// 53-bit hash, for a TOMBSTONE generation, and a repeat that finds it is
+// refused as EIO, outcome unknown, rather than applied. A generation spans
+// the tombstone retention or the tombstone limit of ids, whichever fills
+// first, and two are held: a dropped id is refused for at least one whole
+// generation — 10 minutes unless more than 65,536 answers are dropped in
+// that time — at a bounded cost of 2 × 65,536 hashes (measured ~40 B each:
+// 5 MiB at the bound).
+export const VFS_DELIVERY_TOMBSTONE_RETENTION_MS = 10 * 60_000;
+export const VFS_DELIVERY_TOMBSTONE_LIMIT = 65_536;
 
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and

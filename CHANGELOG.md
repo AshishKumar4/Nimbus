@@ -24,12 +24,18 @@ published independently in the `@nimbus-sh` npm scope.
   reads. Only failures the platform marks retryable are repeated: three
   attempts, with the existing backoff, none started more than 5 s after the
   first. Overloaded and other failures surface unchanged, and so does the
-  last drop when attempts run out. Answers are kept 15 to 30 s, and dropped
-  when their process exits; bindings minted by hosts that do not open a
-  delivery store send each mutation once, as before. `fsWriteRange` is now
-  served by the shared supervisor-op handler instead of `_rpcFsWriteRange`.
-  `writeBatchStream`, position-relative `fsRead` and non-filesystem calls are
-  still sent once.
+  last drop when attempts run out. Answers are kept 15 to 30 s; after that,
+  or once their process exits, the delivery id is kept as a 53-bit hash for
+  10 to 20 minutes (at most 2 × 65,536 of them, about 5 MiB), and a repeat
+  that arrives that late gets EIO, outcome unknown, and is not applied.
+  Only bindings that act as a real process and route to the session itself
+  name the instance, so pid-0 pools keep their warm isolates across
+  restarts. Bindings minted by hosts that do not open a delivery store send
+  each mutation once, as before. `fsWriteRange` is now served by the shared
+  supervisor-op handler instead of `_rpcFsWriteRange`; it takes the same
+  byte shapes and answers EINVAL for anything else, where the routed op
+  wrote nothing and reported success. `writeBatchStream`, position-relative
+  `fsRead` and non-filesystem calls are still sent once.
 
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and

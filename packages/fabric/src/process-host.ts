@@ -85,8 +85,8 @@ import {
   processes,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
-import { hostRoute, type HostRoute } from './composition.js';
-import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import type { HostRoute } from './composition.js';
+import { supervisorBindingProps } from './supervisor-props.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -139,26 +139,14 @@ class FacetProcessHost implements ProcessHost {
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      {
-        doId: this.coordDoId,
-        pid: params.pid,
-        writerId: params.writerId,
-        route: hostRoute() ?? undefined,
-        ...supervisorDeliveryProps(this.ctx),
-      },
+      { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId },
       params,
       consume,
     );
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
-    const supervisor: ResidentSupervisorProps = {
-      doId: this.coordDoId,
-      pid: params.pid,
-      writerId: params.writerId,
-      route: hostRoute() ?? undefined,
-      ...supervisorDeliveryProps(this.ctx),
-    };
+    const supervisor: ResidentSupervisorProps = { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId };
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
       ...facet,
@@ -368,13 +356,7 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      {
-        doId: this.coordDoId,
-        pid: params.pid,
-        writerId: params.writerId,
-        route: hostRoute() ?? undefined,
-        ...supervisorDeliveryProps(this.ctx),
-      },
+      { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId },
       params,
       consume,
     );
@@ -399,12 +381,15 @@ class PeerProcessHost implements ProcessHost {
     // also what keeps the hosting DO resident. It settles when a `lifetime`
     // runner exits or when a `boot` runner's host is cancelled, and rejects if
     // the peer dies under either.
+    // The peer mints the process's binding from these, for THIS object: the
+    // coordinator's doId, route and delivery instance.
+    const supervisor = supervisorBindingProps(this.ctx, params.pid);
     const hostLeg = placement.stub._rpcHostProcess(params.boot, {
-      coordinatorDoId: this.coordDoId,
-      route: hostRoute() ?? undefined,
-      pid: params.pid,
+      coordinatorDoId: supervisor.doId,
+      route: supervisor.route,
+      pid: supervisor.pid,
       writerId: params.writerId,
-      ...supervisorDeliveryProps(this.ctx),
+      hostIncarnation: supervisor.hostIncarnation,
       workerKey: params.workerKey,
       webSocketCapability,
       startArgs: params.startArgs,
