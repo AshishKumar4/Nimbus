@@ -57,6 +57,37 @@ export interface ResolvablePackageJson {
   module?: string;
 }
 
+/** Whether `value` is an `ExportsField`: string, null, array of them, or object of them. */
+export function isExportsField(value: unknown): value is ExportsField {
+  if (value === null || typeof value === 'string') return true;
+  if (Array.isArray(value)) return value.every(isExportsField);
+  if (typeof value !== 'object') return false;
+  return Object.values(value).every(isExportsField);
+}
+
+/**
+ * The entry-point fields of a parsed package.json, or null when the value is
+ * not an object or declares one of them in a shape the resolver cannot read
+ * (`main: 7`, `exports: true`). A caller that reads package.json off disk
+ * narrows through this rather than annotating `JSON.parse`; a malformed
+ * package then resolves as "no entry" instead of throwing inside the resolver.
+ */
+export function resolvablePackageJson(value: unknown): ResolvablePackageJson | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out: ResolvablePackageJson = {};
+  for (const [key, field] of Object.entries(value)) {
+    if (field === undefined) continue;
+    if (key === 'exports' || key === 'imports') {
+      if (!isExportsField(field)) return null;
+      out[key] = field;
+    } else if (key === 'main' || key === 'module') {
+      if (typeof field !== 'string') return null;
+      out[key] = field;
+    }
+  }
+  return out;
+}
+
 /**
  * Resolve `package.json#exports` (or `#imports`) per Node spec.
  *

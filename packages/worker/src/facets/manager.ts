@@ -79,6 +79,7 @@ import {
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
   resolvePackageEntry,
+  resolvablePackageJson,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
@@ -2199,24 +2200,26 @@ export async function greedyAddMainEntries(
     // A package the closure reached keeps exactly what it reached; only an
     // unreached one gets the guess below.
     if (!mainIsSpeculative(pkgDir)) return;
+    // Malformed JSON, or a package whose entry fields the resolver cannot
+    // read (`main: 7`, `exports: true`), is a package with no declared entry:
+    // only the index probe below, and the next package unaffected.
     let pkg: ResolvablePackageJson | null;
-    try { pkg = JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json'))); }
+    try { pkg = resolvablePackageJson(JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json')))); }
     catch { pkg = null; }
     // The root entry a bare require of this package resolves to, in the
     // order the runtime resolves it (require-resolver.ts resolvePkgSubpathEx):
     // exports under the CJS conditions, then the ESM ones, then legacy main,
-    // then an index probe. A hand-rolled walk of `exports["."]` read nothing
-    // from a root conditional map (on-change@6: `{ types, default }`, no ".",
-    // no main) and guessed `index.js`, which does not exist.
-    // Probed in that order until one lands: exports entry, `main`, `index`;
-    // a denied root (`"." : null`) resolves to nothing and falls through
-    // exactly as the runtime does.
+    // then an index probe, each tried until one lands. A denied root
+    // (`"." : null`) resolves to nothing and falls through the same way. A
+    // hand-rolled walk of `exports["."]` read nothing from a root conditional
+    // map (on-change@6: `{ types, default }`, no ".", no main) and guessed
+    // `index.js`, which does not exist.
     const candidates: string[] = [];
     if (pkg) {
       let entry = resolvePackageEntry(pkg, '.', DEFAULT_CJS_CONDITIONS);
       if (entry === null && pkg.exports != null) entry = resolvePackageEntry(pkg, '.', DEFAULT_ESM_CONDITIONS);
       if (entry !== null) candidates.push(entry);
-      if (typeof pkg.main === 'string') candidates.push(pkg.main);
+      if (pkg.main !== undefined) candidates.push(pkg.main);
     }
     candidates.push('index.js');
     for (const rel of candidates) {

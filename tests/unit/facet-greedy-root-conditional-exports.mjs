@@ -29,8 +29,11 @@ const pkg = (name, meta, files) => {
   return out;
 };
 
+// Order matters: the malformed packages sit between valid ones, so a throw
+// on one would show up as the later packages missing from the bundle.
 const deps = {
-  'root-conditional': '*', 'dot-map': '*', 'nested': '*', 'fallback': '*', 'missing-entry': '*',
+  'root-conditional': '*', 'dot-map': '*', 'bad-main': '*', 'nested': '*', 'bad-exports': '*',
+  'fallback': '*', 'bad-json': '*', 'missing-entry': '*',
   'denied': '*', 'legacy-main': '*', 'legacy-module': '*', 'subpath-only': '*',
 };
 const files = {
@@ -58,6 +61,13 @@ const files = {
   // Reached by the closure through a subpath: the main entry is not a guess.
   ...pkg('subpath-only', { exports: { '.': './big/index.js', './small': './small.js' } },
     { 'big/index.js': 'module.exports = "big";\n', 'small.js': 'module.exports = "small";\n' }),
+  // Malformed metadata: a non-string main, an exports primitive, and JSON
+  // that does not parse. Each is a package with no declared entry (index
+  // probe only) and must not stop the packages after it from being staged.
+  ...pkg('bad-main', { module: 7, main: 'index.js' }, { 'index.js': 'module.exports = "bad-main";\n' }),
+  ...pkg('bad-exports', { exports: true }, { 'index.js': 'module.exports = "bad-exports";\n' }),
+  [`${NM}/bad-json/package.json`]: '{ "name": "bad-json", "main": ',
+  [`${NM}/bad-json/index.js`]: 'module.exports = "bad-json";\n',
 };
 
 const vfs = launchFs(files).fs;
@@ -82,6 +92,14 @@ assert.ok(!has('denied/sub.js') && !has('denied/index.js'), 'a denied root ("." 
 assert.ok(has('legacy-main/lib/main.js'), 'main without exports');
 assert.ok(has('legacy-module/esm/index.js') && !has('legacy-module/cjs/index.js'), 'module before main without exports, as the runtime resolves it');
 assert.ok(!has('subpath-only/big/index.js'), 'a package the closure reached by subpath gets no main-entry guess');
+
+// Malformed metadata: each degrades to the index probe, and the packages
+// declared after it are still staged (the reviewer's poisoning case).
+assert.ok(has('bad-main/index.js'), 'module:7 is not a usable entry; the index probe still lands');
+assert.ok(has('bad-exports/index.js'), 'exports:true is not an exports field; the index probe still lands');
+assert.ok(has('bad-json/index.js'), 'unparseable package.json: the index probe still lands');
+assert.ok(has('nested/lib/node.js') && has('fallback/present.js') && has('missing-entry/real.js'),
+  'packages declared after a malformed one are still staged');
 
 // Every package.json in the speculative set is staged; that is resolution metadata.
 for (const name of Object.keys(deps)) assert.ok(has(`${name}/package.json`), `${name}/package.json staged`);
