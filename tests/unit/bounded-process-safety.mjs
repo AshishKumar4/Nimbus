@@ -26,15 +26,13 @@ try {
   assert.match(timed.reason, /timeout 100ms/);
   console.log('bounded-process-safety: overflow and deadline enforced');
 
-  // A setsid child may escape the census before its parent exits, retaining
-  // the output pipe forever. Cleanup must return even when no pid was seen.
-  // The test explicitly reaps the escapee; production containment is the
-  // outer cgroup, not a guarantee process-group polling can provide.
+  // A setsid child may escape a PID census before its parent exits. Strong
+  // cleanup must empty its cgroup, not merely stop waiting for inherited pipes.
   const pidFile = join(root, 'escaped.pid');
   const grandchild = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, require('node:fs').readFileSync('/proc/self/cgroup')); setInterval(()=>{},1000);`;
   const parent = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{detached:true,stdio:'inherit'}).unref(); process.exit(0);`;
   const escaped = await runBoundedProcess(process.execPath, ['-e', parent], { timeoutMs: 3000 });
-  if (process.env.INVOCATION_ID) {
+  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
     assert.equal(escaped.ok, true, escaped.reason);
     if (existsSync(pidFile)) {
       const group = readFileSync(pidFile, 'utf8').trim().split('::')[1];
@@ -88,7 +86,7 @@ try {
   assert.equal(result.code, 143);
   assert.equal(readFileSync(cleaned, 'utf8'), 'clean', 'caller finally runs before signal-derived exit');
   console.log('bounded-process-safety: cancellation unwound caller');
-  if (process.env.INVOCATION_ID) {
+  if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
     let sentinel;
     do {
       sentinel = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });

@@ -113,10 +113,12 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     let cleanupTimer;
     let exitCode = null;
     let exitSignal = null;
-    // run-bounded supplies INVOCATION_ID. Every case then gets its own
+    // run-bounded explicitly requests PID isolation. Every case gets its own
     // cgroup: detached descendants cannot escape, even before the first read.
     // Outside that wrapper, retain the explicitly weaker portable fallback.
     const strong = process.env.NIMBUS_TEST_PID_ISOLATION === '1';
+    // Direct private-bus access fails from the user/PID namespace; .host
+    // transport reaches the owning user manager for teardown and status.
     const hostMachine = `${userInfo().username}@.host`;
     if (strong && process.platform !== 'linux') throw new Error('PID/cgroup isolation requires Linux systemd and bwrap; use /mnt/scratch/nimbus/run-bounded');
     if (!strong && !warnedPortable) {

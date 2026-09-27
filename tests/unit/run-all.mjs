@@ -130,6 +130,9 @@ console.log(
   `unit/run-all — ${targets.length} file${targets.length === 1 ? '' : 's'} discovered`
   + ` (jobs ${JOBS}${serialFiles.length > 0 ? `, ${serialFiles.length} marked @serial` : ''})`,
 );
+console.log(process.env.NIMBUS_TEST_PID_ISOLATION === '1'
+  ? 'unit/run-all — isolation: per-case cgroup + PID namespace'
+  : 'unit/run-all — isolation: portable cleanup only; use /mnt/scratch/nimbus/run-bounded for local verification');
 
 // ── Execution ────────────────────────────────────────────────────────
 
