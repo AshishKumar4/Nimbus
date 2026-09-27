@@ -63,6 +63,19 @@ assert.deepEqual(refs(`require.resolve('other/lib/x')`, FILE).resolves, [{ from:
 // A relative path at a read site is relative to the working directory.
 assert.deepEqual(refs(`fs.readFileSync('config/app.json', 'utf8')`, FILE).cwdRelative, ['config/app.json']);
 
+// A synchronous content read names its path as one; a stat, an async read or
+// a bare join does not.
+assert.deepEqual(
+  refs(`const fs = require('fs'); const path = require('path');
+    fs.readFileSync('/opt/data/big.dat', 'utf8');
+    fs.openSync(path.join(__dirname, 'blob.bin'), 'r');
+    fs.readFileSync('rel/sync.txt');
+    fs.existsSync('/opt/data/stat-only.bin');
+    fs.readFile('/opt/data/async.dat', () => {});
+    const bin = path.join(__dirname, '..', 'bin', 'tool');`, FILE).syncReads,
+  ['/opt/data/big.dat', '/p/node_modules/pkg/lib/blob.bin', 'rel/sync.txt'],
+);
+
 // What folding cannot reach: parameters, run-time data, reassigned bindings.
 for (const [label, source] of [
   ['a parameter', `const path = require('path'); function load(name) { return fs.readFileSync(path.join(name, 'x.json')); }`],
@@ -85,11 +98,13 @@ assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
     fs.readFileSync(path.join(__dirname, '..', 'data', 'x.json'));
     const u = new URL('../runtime/entry.js', import.meta.url);
     fs.readdirSync('/etc/app/templates');
+    fs.readFileSync('/opt/data/big.dat');
     x = ['astro/runtime/client/entry.js'];` + pad, FILE);
   assert.ok(big.exact.includes('/p/node_modules/pkg/data/x.json'), JSON.stringify(big.exact));
   assert.ok(big.exact.includes('/p/node_modules/pkg/runtime/entry.js'), JSON.stringify(big.exact));
   assert.deepEqual(big.listed, ['/etc/app/templates']);
   assert.deepEqual(big.resolves.map((r) => r.spec), ['astro/runtime/client/entry.js']);
+  assert.deepEqual(big.syncReads, ['/opt/data/big.dat']);
 }
 
 console.log('static-fs-refs: ok');

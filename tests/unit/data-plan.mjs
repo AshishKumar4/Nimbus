@@ -108,4 +108,40 @@ assert.equal(plan.paths.length, new Set(plan.paths).size, 'no path twice');
 const noTs = await planFacetData(source, { cwd: '/home/user/app', home: '/home/user', closure: closure.slice(0, 1), refs: [] });
 assert.equal(noTs.rules.typescript.files, 0);
 
+// A file the code reads synchronously by an exact path is held at any size:
+// that read cannot wait for its bytes. A large file the code only names (a
+// binary it stats or spawns) is still left out.
+{
+  const huge = 25 * 1024 * 1024;
+  const ns = namespace({
+    'home/user/app/reader.js': 'x',
+    'opt/appdata/locale/deep/never-required.dat': big(huge),
+    'home/user/shared/table.bin': big(PACKAGE_DATA_MAX_BYTES),
+    'opt/appdata/locale/deep/async-only.dat': big(huge),
+    'home/user/app/node_modules/tool/package.json': '{"name":"tool"}',
+    'home/user/app/node_modules/tool/index.js': 'x',
+    'home/user/app/node_modules/tool/bin/tool': big(huge),
+  });
+  const syncRefs = [
+    findStaticFsReferences(`const fs = require('fs');
+      fs.readFileSync('/opt/appdata/locale/deep/never-required.dat', 'utf8');
+      fs.openSync('../shared/table.bin', 'r');
+      fs.promises.readFile('/opt/appdata/locale/deep/async-only.dat');`, '/home/user/app/reader.js'),
+    findStaticFsReferences(`const fs = require('fs'); const path = require('path');
+      const bin = path.join(__dirname, 'bin', 'tool'); if (!fs.existsSync(bin)) throw new Error('missing');`,
+    '/home/user/app/node_modules/tool/index.js'),
+  ];
+  const syncPlan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user',
+    closure: ['home/user/app/reader.js', 'home/user/app/node_modules/tool/index.js'], refs: syncRefs,
+  });
+  const syncHeld = new Set(syncPlan.paths);
+  assert.ok(syncHeld.has('opt/appdata/locale/deep/never-required.dat'), 'an exact synchronous read is held past the data size');
+  assert.ok(syncHeld.has('home/user/shared/table.bin'), 'so is a cwd-relative one');
+  assert.ok(!syncHeld.has('opt/appdata/locale/deep/async-only.dat'), 'an async read can fetch its bytes: not held');
+  assert.ok(!syncHeld.has('home/user/app/node_modules/tool/bin/tool'), 'a large file only stat-ed or joined: not held');
+  assert.equal(syncPlan.rules.static.files, 2);
+  assert.equal(syncPlan.rules.static.bytes, huge + PACKAGE_DATA_MAX_BYTES, 'the held bytes are counted toward the plan');
+}
+
 console.log('data-plan: ok');

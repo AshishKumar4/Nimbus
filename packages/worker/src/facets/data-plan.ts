@@ -16,7 +16,9 @@
  *   typescript     when the closure has typescript: its lib .d.ts, @types/**,
  *                  and the declaration files of the packages @types depends on
  *   static         what the closure's own code names by a foldable path
- *                  (static-fs-refs.ts), resolved against the namespace
+ *                  (static-fs-refs.ts), resolved against the namespace:
+ *                  under 256 KiB, or any size when the code reads it with
+ *                  readFileSync/openSync by that path
  *   learned        paths earlier launches of the same package versions missed
  *
  * Code the closure loads is in the module map already; the store adopts it,
@@ -203,6 +205,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   // Static references, as keys.
   const exact = new Set<string>();
   const listed = new Set<string>();
+  const syncReads = new Set<string>();
   const patterns: { dir: string; prefix: string; suffix: string }[] = [];
   const manifests = new Map<string, Record<string, unknown> | null>();
   for (const refs of input.refs) {
@@ -210,6 +213,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     for (const p of refs.listed) listed.add(key(p));
     for (const p of refs.patterns) patterns.push({ dir: key(p.dir), prefix: p.prefix, suffix: p.suffix });
     for (const p of refs.cwdRelative) exact.add(joinKey(cwd, p));
+    for (const p of refs.syncReads) syncReads.add(p.startsWith('/') ? key(p) : joinKey(cwd, p));
   }
   const learned = new Set<string>();
   for (const p of input.learned ?? []) learned.add(key(p));
@@ -257,8 +261,14 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   // Directories a home or project symlink points at, whose files the rule
   // that took the link would have taken had they been in place.
   const linkedDirs: { target: string; rule: DataPlanRule }[] = [];
-  /** A statically named file is worth holding when the module map does not already and it is data-sized. */
-  const staticWorthy = (entry: DataPlanEntry) => !closure.has(entry.path) && entry.size < PACKAGE_DATA_MAX_BYTES;
+  /**
+   * A statically named file is worth holding when the module map does not
+   * already hold it, and it is data-sized or the code reads it synchronously
+   * by that name: such a read cannot wait for bytes of any size. Its bytes
+   * count toward the plan's storage, which the launch admits or refuses.
+   */
+  const staticWorthy = (entry: DataPlanEntry) => !closure.has(entry.path)
+    && (entry.size < PACKAGE_DATA_MAX_BYTES || syncReads.has(entry.path));
 
   let after: string | null = null;
   for (;;) {

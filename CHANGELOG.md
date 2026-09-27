@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A resident Node process now holds, from launch, a file its code reads with
+  `readFileSync` or `openSync` by a statically known path, whatever the file's
+  size. The data plan used to drop every static reference of 256 KiB or more,
+  so the first synchronous read of such a file raised EAGAIN. Its bytes are
+  counted in the storage the launch asks the session ledger to admit. Large
+  files the code only stats, joins or reads asynchronously are still left out.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged

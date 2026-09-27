@@ -41,6 +41,13 @@ export interface StaticFsRefs {
   cwdRelative: string[];
   /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`. */
   resolves: { from: string; spec: string }[];
+  /**
+   * Paths handed straight to a synchronous content read (`readFileSync`,
+   * `openSync`): absolute, or relative to the working directory. Also in
+   * `exact` or `cwdRelative`. The call cannot wait for their bytes, so their
+   * size says nothing about whether the process needs them held.
+   */
+  syncReads: string[];
 }
 
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
@@ -51,6 +58,8 @@ const FS_SINKS = new Set([
   'realpathSync', 'realpath', 'opendirSync', 'opendir', 'readlinkSync', 'readlink',
 ]);
 const LIST_SINKS = new Set(['readdirSync', 'readdir', 'opendirSync', 'opendir']);
+/** Sinks that read a file's content synchronously. */
+const SYNC_READ_SINKS = new Set(['readFileSync', 'openSync']);
 /** `pkg/sub/file.ext` or `@scope/pkg/sub/file.ext`: a bare specifier naming a file. */
 const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
 
@@ -94,7 +103,7 @@ function isNode(value: unknown): value is AstNode {
  */
 export function findStaticFsReferences(source: string, filename: string): StaticFsRefs {
   if (source.length > STATIC_AST_MAX_SOURCE) return scanStaticFsTokens(source, filename);
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], syncReads: [] };
   const ast = parseAny(source);
   if (ast === null) return refs;
   const file = normalize(filename);
@@ -285,11 +294,15 @@ export function findStaticFsReferences(source: string, filename: string): Static
     if (!target) return;
     const path = 'exact' in target && target.exact.startsWith('file:') ? urlToPath(target) : target;
     if (path && 'exact' in path && !path.exact.startsWith('/')) {
-      if (path.exact) refs.cwdRelative.push(path.exact);
+      if (path.exact) {
+        refs.cwdRelative.push(path.exact);
+        if (SYNC_READ_SINKS.has(name)) refs.syncReads.push(path.exact);
+      }
       return;
     }
     record(path);
     if (path && 'exact' in path && LIST_SINKS.has(name)) refs.listed.push(normalize(path.exact));
+    if (path && 'exact' in path && SYNC_READ_SINKS.has(name)) refs.syncReads.push(normalize(path.exact));
   });
 
   function isResolver(callee: AstNode): boolean {
@@ -326,6 +339,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
   refs.exact = [...new Set(refs.exact)];
   refs.listed = [...new Set(refs.listed)];
   refs.cwdRelative = [...new Set(refs.cwdRelative)];
+  refs.syncReads = [...new Set(refs.syncReads)];
   return refs;
 }
 
@@ -347,7 +361,7 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
  * bindings would add is not found here.
  */
 export function scanStaticFsTokens(source: string, filename: string): StaticFsRefs {
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], syncReads: [] };
   const file = normalize(filename);
   const dir = dirnameOf(file);
   const recent: { type: string; value: unknown }[] = [];
@@ -388,6 +402,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
           if (lit.startsWith('/')) {
             refs.exact.push(normalize(lit));
             if (LIST_SINKS.has(String(at(3)!.value))) refs.listed.push(normalize(lit));
+            if (SYNC_READ_SINKS.has(String(at(3)!.value))) refs.syncReads.push(normalize(lit));
           }
         }
         continue;
@@ -405,6 +420,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
   }
   refs.exact = [...new Set(refs.exact)];
   refs.listed = [...new Set(refs.listed)];
+  refs.syncReads = [...new Set(refs.syncReads)];
   return refs;
 }
 
