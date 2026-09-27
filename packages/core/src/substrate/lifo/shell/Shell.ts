@@ -32,7 +32,7 @@ import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 import { exists, statOrThrow } from '../../../vfs/vfs.js';
-import { runKill } from '../commands/system/kill.js';
+import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
 
 function shellPromptParts(env: Record<string, string>, cwd: string): {
   displayPath: string;
@@ -135,6 +135,8 @@ export class Shell {
   private historyManager: HistoryManager;
   private jobTable: JobTable;
   private processRegistry: ProcessRegistry;
+  /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
+  private hostProcessSignals: HostProcessSignals | undefined;
   private builtins: Map<string, BuiltinFn>;
   /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
   private ownBuiltins = new Map<string, BuiltinFn>();
@@ -280,7 +282,7 @@ export class Shell {
     this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
     this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
     this.ownBuiltins.set('kill', async (args, stdout, stderr) =>
-      (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list())));
+      (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list(), this.hostProcessSignals)));
     this.ownBuiltins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
     this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) =>
       (await this.builtinDeclare('local', args, stderr, context)));
@@ -304,6 +306,20 @@ export class Shell {
 
   getJobTable(): JobTable {
     return this.jobTable;
+  }
+
+  /**
+   * Let `kill` signal the host's processes: a numeric pid this shell's own
+   * registry does not hold is handed to `host`. Child-shell views read the
+   * shell they were forked from.
+   */
+  setHostProcessSignals(host: HostProcessSignals): void {
+    this.hostProcessSignals = host;
+  }
+
+  /** The host processes `kill` reaches, for a shell built alongside this one. */
+  getHostProcessSignals(): HostProcessSignals | undefined {
+    return this.hostProcessSignals;
   }
 
   getProcessRegistry(): ProcessRegistry {

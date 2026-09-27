@@ -107,7 +107,8 @@ try {
   a.check('the shared link answers the app', publicWarm.ok, `status=${publicWarm.last.status} body=${publicWarm.last.body?.slice(0, 100)}`);
 
   // ── 2. stop the app; an unrelated server takes the port ───────────────
-  await t.run(`kill ${pid}`, 15_000);
+  const killed = await t.run(`kill ${pid}; echo "KILL_EXIT=$?"`, 15_000);
+  a.check('kill ends the app', /KILL_EXIT=0\b/.test(killed.output), killed.output.slice(-200));
   const other = await t.run('node other.js', 30_000);
   const otherPid = Number(other.output.match(/pid=(\d+)/)?.[1] || 0);
   a.check('an unrelated server is running on the same port', otherPid > 0 && otherPid !== pid, other.output.slice(-200));
@@ -154,7 +155,8 @@ try {
   }
 
   // ── 3. the original identity is re-exposable ──────────────────────────
-  await t.run(`kill ${otherPid}`, 15_000);
+  const killedOther = await t.run(`kill ${otherPid}; echo "KILL_EXIT=$?"`, 15_000);
+  a.check('kill ends the unrelated server', /KILL_EXIT=0\b/.test(killedOther.output), killedOther.output.slice(-200));
   const again = await t.run('node server.js', 30_000);
   const againPid = Number(again.output.match(/pid=(\d+)/)?.[1] || 0);
   a.check('the app is running again', againPid > 0, again.output.slice(-200));

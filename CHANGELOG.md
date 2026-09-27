@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `kill <pid>` in a hosted session ends the session's resident processes
+  again. The shell's `kill` builtin only looked in its own process registry,
+  so a resident pid (1000002, …) answered "No such process" and stayed up;
+  a numeric pid the shell does not hold now goes to the session's own
+  teardown, which releases the port and retires the capability. This also
+  covers `kill -9`/`-s` forms, child shells and named programmatic shells.
+  `kill -0` only checks that the process is alive; stop, continue and
+  ignored signals are refused for a resident, since its teardown can only
+  end it. A successful kill prints nothing, as in bash.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged
