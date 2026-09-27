@@ -15,21 +15,24 @@ mkdirSync(unit, { recursive: true });
 mkdirSync(helper, { recursive: true });
 copyFileSync(join(repo, 'tests/unit/run-all.mjs'), join(unit, 'run-all.mjs'));
 copyFileSync(join(repo, 'scripts/lib/bounded-process.mjs'), join(helper, 'bounded-process.mjs'));
-const pids = [];
+copyFileSync(join(repo, 'scripts/lib/subprocess-entry.mjs'), join(helper, 'subprocess-entry.mjs'));
 const delay = () => new Promise((resolve) => setTimeout(resolve, 10));
-async function until(predicate) {
+async function until(predicate, label) {
   for (let i = 0; i < 500; i++) { if (predicate()) return; await delay(); }
-  assert.fail('safety handshake never completed');
+  assert.fail(`safety handshake never completed: ${label}`);
 }
-function alive(pid) {
+function populated(group) {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2)[0] !== 'Z';
+    return /populated 1/.test(readFileSync(`/sys/fs/cgroup${group}/cgroup.events`, 'utf8'));
   } catch { return false; }
 }
 function fixture(name, source) { writeFileSync(join(unit, name + '.mjs'), source); }
 // Omit the wrapper's override: this exercises the runner's own serial default.
-const env = (name) => ({ ...process.env, NIMBUS_UNIT_ONLY: name, NIMBUS_UNIT_JOBS: undefined });
+const env = (name) => {
+  const result = { ...process.env, NIMBUS_UNIT_ONLY: name };
+  delete result.NIMBUS_UNIT_JOBS;
+  return result;
+};
 const run = (name, extra = []) => runBoundedProcess(process.execPath, [join(unit, 'run-all.mjs'), ...extra], {
   cwd: root, env: env(name), timeoutMs: 15_000, name: `runner safety ${name}`,
 });
@@ -54,7 +57,7 @@ try {
   for (const mode of ['failure', 'timeout', 'signal']) {
     const pidFile = join(root, `${mode}.pid`);
     const ready = join(root, `${mode}.ready`);
-    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
+    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, require('node:fs').readFileSync('/proc/self/cgroup')); setInterval(() => {}, 1000);`;
     fixture('tree', `
       const { spawn } = require('node:child_process');
       const fs = require('node:fs');
@@ -70,8 +73,8 @@ try {
       const runner = spawn(process.execPath, [join(unit, 'run-all.mjs')], { env: env('tree'), cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
       let diagnostics = '';
       runner.stdout.on('data', () => {});
-      runner.stderr.on('data', (d) => { diagnostics += d; });
-      await until(() => existsSync(ready));
+      runner.stderr.on('data', (d) => { diagnostics += d; process.stderr.write(d); });
+      await until(() => existsSync(ready), 'signal child ready');
       const closed = new Promise((resolve) => runner.once('close', resolve));
       runner.kill('SIGTERM');
       assert.equal(await closed, 143);
@@ -81,10 +84,9 @@ try {
       assert.equal(result.code, 1);
       assert.match(result.stdout, mode === 'timeout' ? /exceeded --timeout 500ms/ : /exit code=17/);
     }
-    const pid = Number(readFileSync(pidFile, 'utf8'));
-    pids.push(pid);
-    await until(() => !alive(pid));
-    assert.equal(alive(pid), false, `${mode}: descendant survived`);
+    const group = readFileSync(pidFile, 'utf8').trim().split('::')[1];
+    await until(() => !populated(group), `${mode}: ${group}`);
+    assert.equal(populated(group), false, `${mode}: descendant cgroup remained populated`);
   }
   const binary = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0,255,128])); process.exit(7)'], { encoding: null });
   assert.equal(binary.reason, '', 'normal nonzero is not infrastructure failure');
@@ -92,6 +94,5 @@ try {
   assert.deepEqual([...binary.stdout], [0, 255, 128]);
   console.log('unit-runner-safety: bounded diagnostics, timeout, failure and signal tree cleanup');
 } finally {
-  for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch {} }
   rmSync(root, { recursive: true, force: true });
 }
