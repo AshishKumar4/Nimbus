@@ -12,6 +12,10 @@ try {
   assert.equal(binary.code, 7);
   assert.equal(binary.reason, '');
   assert.deepEqual(binary.stdout, Buffer.alloc(90000, 255));
+  const argv = ['$$', '$HOME', '${LANG}', '%n', '', 'a b', '"quoted"', '\\escape'];
+  const exactArgs = await runBoundedProcess(process.execPath, ['-e', 'console.log(JSON.stringify(process.argv.slice(1)))', ...argv]);
+  assert.equal(exactArgs.ok, true, exactArgs.reason);
+  assert.deepEqual(JSON.parse(exactArgs.stdout), argv, 'systemd must not expand argument bytes');
   const flood = await runBoundedProcess(process.execPath, ['-e', `for (;;) process.stderr.write('z'.repeat(16384))`], { maxOutputBytes: 8192 });
   assert.match(flood.reason, /output exceeded 8192 bytes/);
   assert.equal(flood.outputTruncated, true);
