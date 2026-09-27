@@ -160,6 +160,31 @@ must support nested savepoints for individual VFS writes. If reading those
 inodes back also fails, Nimbus throws an `AggregateError` carrying both
 failures; discard that VFS instance and reopen it after storage recovers.
 
+## Publishing changed rows
+
+For cross-database sync, export changed rows from a source snapshot and send
+only the chunk hashes `wantChunks` reports missing. Import into an empty
+staging root before taking a publication lease; unchanged files need no byte
+transfer.
+
+Acquire `vfs.acquireGlobalExclusiveMutation()`, then bind
+`vfs.as(cred, { mutationOwner: lease.owner })`. Recheck the destination revision
+and expected content keys before publishing through that view's rename,
+deletion and metadata methods. A subtree lease authorizes only mutations
+inside its root; moving from a separate staging root needs the global lease.
+The capability does not change the credential's permissions.
+
+Release the lease in `finally`. Mutations through the bound view then fail
+with `ESTALE`. `copyTreeAsync` and `writeStream` carry the bound owner through
+their slices without leaving an ambient owner across awaits. A quiesced
+snapshot waits for the lease to end.
+
+This is not an all-files atomic apply: readers can observe committed prefixes.
+The caller owns the saved publication plan, conflict checks and replay after
+interruption. The staged-apply test reopens the database and replays a prefix
+of nested replacements/deletions, preserving untouched inode identities and
+content keys.
+
 ## Mounts in df, mount and /proc/mounts
 
 The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,

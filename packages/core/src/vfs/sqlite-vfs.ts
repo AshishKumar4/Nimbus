@@ -2154,8 +2154,10 @@ export class SqliteVFS {
   }
 
 
-  as(cred: VfsCred): CredentialedVfs {
+  /** Bind credentials and, optionally, the capability of a live mutation lease. */
+  as(cred: VfsCred, options: { mutationOwner?: string } = {}): CredentialedVfs {
     const engine = this;
+    const mutationOwner = options.mutationOwner;
     const bound = Object.freeze({
       uid: cred.uid,
       gid: cred.gid,
@@ -2216,12 +2218,13 @@ export class SqliteVFS {
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
       copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
       copyTreeAsync: (src, dest, options) => {
-        const owner = options?.mutationOwner;
+        const owner = mutationOwner ?? options?.mutationOwner;
         const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
         return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
-      writeStream: (stream, options) => this.writeStream(stream, options, bound),
+      writeStream: (stream, options) => this.writeStream(stream,
+        mutationOwner === undefined ? options : { ...options, mutationOwner }, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
       revision: (path) => this.revision(path, bound),
       contentKey: (path) => this.contentKey(path, bound),
@@ -2231,6 +2234,36 @@ export class SqliteVFS {
       // Live: a view outlives rotateIncarnation.
       get epoch() { return engine._epoch; },
     };
+    if (mutationOwner !== undefined) {
+      // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
+      const mutations: Partial<CredentialedVfs> = {
+        mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
+        writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
+        symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
+        writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
+        appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner,
+          () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
+        acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner,
+          () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
+        truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
+        utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner,
+          () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
+        chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
+        setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
+        chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner,
+          () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
+        unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
+        rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
+        removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
+        rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
+        copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
+        copyTree: (from, to, options) => this.withMutationOwner(mutationOwner,
+          () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
+        writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
+        mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
+      };
+      Object.assign(view, mutations);
+    }
     return bound.uid === 0 ? this.privilegedView(view) : view;
   }
 
@@ -2818,10 +2851,8 @@ export class SqliteVFS {
   }
 
   private withMutationOwner<T>(owner: string | undefined, callback: () => T): T {
-    if (!owner || !this.exclusiveMutationLeases.has(owner)) {
-      if (owner) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
-      return callback();
-    }
+    if (owner === undefined) return callback();
+    if (!this.exclusiveMutationLeases.has(owner)) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
     if (this.activeMutationOwner !== null) {
       throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
     }
@@ -2853,7 +2884,7 @@ export class SqliteVFS {
       }
       if (this.activeMutationOwner !== null) {
         const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
-        if (!ownedRoot || (normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
+        if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
           throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
         }
       }
