@@ -28,6 +28,12 @@ function namespace(files) {
       : { entries: entries.slice(40), next: null },
     readText: async (p) => all.get(p.replace(/^\/+/, ''))?.text ?? null,
     stat: async (p) => { const e = all.get(p.replace(/^\/+/, '')); return e ? { kind: e.kind, size: e.size } : null; },
+    readlinks: 0,
+    async readlink(p) {
+      this.readlinks++;
+      const e = all.get(p.replace(/^\/+/, ''));
+      return e?.kind === 'symlink' ? e.target : null;
+    },
   };
 }
 
@@ -103,9 +109,144 @@ for (const path of expectLeft) assert.ok(!held.has(path), `left out: ${path}`);
 assert.equal(plan.rules.static.files, 1, 'the subpath literal resolved through exports');
 assert.equal(plan.rules.home.files, 2);
 assert.equal(plan.paths.length, new Set(plan.paths).size, 'no path twice');
+assert.equal(source.readlinks, 0, 'a plan with no synchronous reads resolves no links');
 
 // Without typescript in the closure, its role adds nothing.
 const noTs = await planFacetData(source, { cwd: '/home/user/app', home: '/home/user', closure: closure.slice(0, 1), refs: [] });
 assert.equal(noTs.rules.typescript.files, 0);
+
+// A file the code reads synchronously by an exact path is held at any size:
+// that read cannot wait for its bytes. A large file the code only names (a
+// binary it stats or spawns) is still left out.
+{
+  const huge = 25 * 1024 * 1024;
+  const ns = namespace({
+    'home/user/app/reader.js': 'x',
+    'opt/appdata/locale/deep/never-required.dat': big(huge),
+    'home/user/shared/table.bin': big(PACKAGE_DATA_MAX_BYTES),
+    'opt/appdata/locale/deep/async-only.dat': big(huge),
+    'home/user/app/node_modules/tool/package.json': '{"name":"tool"}',
+    'home/user/app/node_modules/tool/index.js': 'x',
+    'home/user/app/node_modules/tool/bin/tool': big(huge),
+  });
+  const syncRefs = [
+    findStaticFsReferences(`const fs = require('fs');
+      fs.readFileSync('/opt/appdata/locale/deep/never-required.dat', 'utf8');
+      fs.openSync('../shared/table.bin', 'r');
+      fs.promises.readFile('/opt/appdata/locale/deep/async-only.dat');`, '/home/user/app/reader.js'),
+    findStaticFsReferences(`const fs = require('fs'); const path = require('path');
+      const bin = path.join(__dirname, 'bin', 'tool'); if (!fs.existsSync(bin)) throw new Error('missing');`,
+    '/home/user/app/node_modules/tool/index.js'),
+  ];
+  const syncPlan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user',
+    closure: ['home/user/app/reader.js', 'home/user/app/node_modules/tool/index.js'], refs: syncRefs,
+  });
+  const syncHeld = new Set(syncPlan.paths);
+  assert.ok(syncHeld.has('opt/appdata/locale/deep/never-required.dat'), 'an exact synchronous read is held past the data size');
+  assert.ok(syncHeld.has('home/user/shared/table.bin'), 'so is a cwd-relative one');
+  assert.ok(!syncHeld.has('opt/appdata/locale/deep/async-only.dat'), 'an async read can fetch its bytes: not held');
+  assert.ok(!syncHeld.has('home/user/app/node_modules/tool/bin/tool'), 'a large file only stat-ed or joined: not held');
+  assert.equal(syncPlan.rules.static.files, 2);
+  assert.equal(syncPlan.rules.static.bytes, huge + PACKAGE_DATA_MAX_BYTES, 'the held bytes are counted toward the plan');
+}
+
+// An openSync that appends, writes or truncates reads nothing it needs held,
+// however large the file.
+{
+  const GiB3 = 3 * 1024 * 1024 * 1024;
+  const ns = namespace({ 'var/log/app.log': big(GiB3), 'var/db/store.bin': big(GiB3), 'var/db/ro.bin': big(GiB3) });
+  const plan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(`const fs = require('fs');
+      fs.openSync('/var/log/app.log', 'a'); fs.openSync('/var/db/store.bin', 'w'); fs.openSync('/var/db/ro.bin', 'r');`,
+    '/home/user/app/reader.js')],
+  });
+  assert.deepEqual(plan.paths, ['var/db/ro.bin'], `only the read-only open is held: ${JSON.stringify(plan.paths)}`);
+}
+
+// A synchronous read through a symlink holds the file the link leads to:
+// a linked file, a file under a linked directory, a chain of links. A loop
+// holds nothing.
+{
+  const huge = 25 * 1024 * 1024;
+  const ns = namespace({
+    'opt/releases/v2/data.bin': big(huge),
+    'opt/releases/v2/data2.bin': big(huge),
+    'opt/releases/v2/conf.bin': big(PACKAGE_DATA_MAX_BYTES),
+    'opt/releases/v2/unread.bin': big(huge),
+    'opt/current': { kind: 'symlink', size: 0, target: '/opt/releases/v2' },
+    'opt/latest': { kind: 'symlink', size: 0, target: 'current' },
+    'opt/loop': { kind: 'symlink', size: 0, target: 'loop' },
+    'etc/app.conf': { kind: 'symlink', size: 0, target: '../opt/releases/v2/conf.bin' },
+  });
+  const plan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(`const fs = require('fs');
+      fs.readFileSync('/opt/current/data.bin'); fs.readFileSync('/etc/app.conf');
+      fs.readFileSync('/opt/latest/data2.bin'); fs.readFileSync('/opt/loop/x');
+      fs.existsSync('/opt/current/unread.bin');`, '/home/user/app/reader.js')],
+  });
+  assert.deepEqual(plan.paths.sort(), ['opt/releases/v2/conf.bin', 'opt/releases/v2/data.bin', 'opt/releases/v2/data2.bin'],
+    `the link targets are held: ${JSON.stringify(plan.paths)}`);
+  assert.equal(plan.bytes, 2 * huge + PACKAGE_DATA_MAX_BYTES);
+  assert.ok(ns.readlinks > 0 && ns.readlinks < 40 * 5, `only the sync reads' own components are asked: ${ns.readlinks}`);
+}
+
+// A path folded to `'/' + <unknown>` names anything in the filesystem: it
+// stages nothing (the read is a run-time one). A hole under a named
+// directory still stages what it can match there.
+{
+  const ns = namespace({
+    'opt/data/a.json': '{}',
+    'opt/data/nested/b.json': '{}',
+    'opt/other/c.json': '{}',
+    'srv/x.txt': 'x',
+    'etc/y.conf': 'y',
+  });
+  const plan = async (source) => planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(source, '/home/user/app/reader.js')],
+  });
+  const unbounded = await plan(`const fs = require('fs'); fs.readFileSync('/' + process.argv[2].split(',').join('/'));`);
+  assert.deepEqual(unbounded.paths, [], `an unbounded root pattern stages nothing: ${JSON.stringify(unbounded.paths)}`);
+  const bounded = await plan(`const fs = require('fs'); fs.readFileSync('/opt/data/' + process.argv[2]);`);
+  assert.deepEqual(bounded.paths.sort(), ['opt/data/a.json', 'opt/data/nested/b.json'], 'a bounded pattern stages its match');
+  const suffixed = await plan(`const fs = require('fs'); fs.readFileSync('/' + process.argv[2] + '.txt');`);
+  assert.deepEqual(suffixed.paths, [], 'a root pattern with a known suffix stages only top-level names ending in it (none here)');
+}
+
+// A hole with a known prefix or suffix names siblings in its directory, not
+// their subtrees; a bare hole under a named directory names its files but not
+// what sits in dependency, VCS or cache directories, in any user's home.
+{
+  const ns = namespace({
+    'hfile': 'h',
+    'other': 'o',
+    'home/user/notes.txt': 'n',
+    'home/user/.git/objects/ab/cdef': 'blob',
+    'home/user/.cache/tool/blob': 'cache',
+    'home/bob/.config/app.json': '{}',
+    'home/bob/.npm/_cacache/index': 'cache',
+    'home/bob/proj/node_modules/p/data.json': '{}',
+    'home/bob/proj/.next/cache/x': 'cache',
+    'srv/app/locale-en/a.json': '{}',
+    'srv/app/locale-en/deep/b.json': '{}',
+    'srv/app/locale-en/huge.bin': big(PACKAGE_DATA_MAX_BYTES),
+    'srv/app/locale-fr/node_modules/c.json': '{}',
+    'srv/app/other/d.json': '{}',
+  });
+  const plan = async (source) => (await planFacetData(ns, {
+    cwd: '/work', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(source, '/work/reader.js')],
+  })).paths.sort();
+  assert.deepEqual(await plan(`require('fs').readFileSync('/h' + process.argv[2]);`), ['hfile'],
+    'a root prefix names only matching names in /');
+  assert.equal(ns.readlinks, 0, 'no synchronous exact read: no link is resolved');
+  assert.deepEqual(await plan(`require('fs').readFileSync('/home/' + process.argv[2]);`),
+    ['home/bob/.config/app.json', 'home/user/notes.txt'], 'a bare hole under /home skips VCS, caches and dependencies');
+  assert.deepEqual(await plan(`require('fs').readdirSync('/srv/app/locale-' + process.argv[2]);`), ['srv/app/locale-en/a.json'],
+    'a matched directory adds its own data-sized files, one level');
+}
 
 console.log('data-plan: ok');

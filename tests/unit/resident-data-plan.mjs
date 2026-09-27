@@ -12,7 +12,11 @@
 //     `readFileSync(path.join(__dirname, ...))` — a code file no rule holds,
 //     found only by static analysis of the closure (static-fs-refs.ts);
 //   - a file outside every rule is not held: its synchronous read is the
-//     honest EAGAIN naming it, while stat and readdir still answer exactly.
+//     honest EAGAIN naming it, while stat and readdir still answer exactly;
+//   - a file outside every rule, past the module map's byte cap, that the
+//     program reads with `readFileSync` by its exact literal path is held
+//     whole: static analysis names it as a synchronous read, which no size can
+//     make optional (sync-fs/first-sync-read-untouched on real infrastructure).
 //
 // The control arm disables the fill (the namespace is still listed): the
 // planned reads the module map does not carry must then fail, so they cannot
@@ -24,6 +28,7 @@ import assert from 'node:assert/strict';
 const say = process.stdout.write.bind(process.stdout);
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -45,11 +50,26 @@ const BIG_BODY = 'N'.repeat(25 * 1024 * 1024);
 /** Outside every rule: not the project, not a package, not $HOME's dot entries. */
 const OUTSIDE = '/opt/appdata/locale/deep/never-required.json';
 const OUTSIDE_BODY = JSON.stringify({ never: 'required' });
+/**
+ * Outside every rule, read synchronously by this exact literal path, and past
+ * the module map's byte cap, so the module map cannot be what holds it.
+ */
+const EXACT = '/opt/appdata/exact/named.dat';
+const EXACT_BODY = 'E'.repeat(VFS_BUNDLE_MAX_BYTES + 5);
+/** Past the package-data size, so only its synchronous read can hold it. */
+const PACKAGE_DATA_BYTES_OVER = 300 * 1024;
 
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
 
 const kfs = sessionVfs.as(CRED_KERNEL);
+kfs.mkdir('opt/appdata/exact', { recursive: true, mode: 0o755 });
+kfs.writeFile(EXACT.slice(1), EXACT_BODY, { mode: 0o644 });
+/** Read by a literal path through a symlinked directory: the link's target file is held. */
+const LINKED = '/opt/applink/linked.dat';
+const LINKED_BODY = 'L'.repeat(PACKAGE_DATA_BYTES_OVER);
+kfs.writeFile('opt/appdata/exact/linked.dat', LINKED_BODY, { mode: 0o644 });
+kfs.symlink('/opt/appdata/exact', 'opt/applink');
 kfs.mkdir('home/user/proj/many', { recursive: true, mode: 0o755 });
 kfs.writeFile(BIG.slice(1), BIG_BODY, { mode: 0o644 });
 kfs.mkdir('opt/appdata/locale/deep', { recursive: true, mode: 0o755 });
@@ -212,6 +232,8 @@ t('static', () => require('tablepkg')().trim());
   t('late', () => fs.readFileSync('/' + ['home', 'user', 'proj', 'node_modules', 'tablepkg', 'private', 'late.js'].join('/'), 'utf8'));
 if (${readOutside}) {
     t('outside', () => fs.readFileSync(outside, 'utf8'));
+    t('exact', () => { const b = fs.readFileSync(${JSON.stringify(EXACT)}, 'utf8'); return b.length + ':' + b.slice(0, 4); });
+    t('linked', () => { const b = fs.readFileSync(${JSON.stringify(LINKED)}, 'utf8'); return b.length + ':' + b.slice(0, 4); });
     t('outsideStat', () => fs.statSync(outside).size);
     t('outsideList', () => fs.readdirSync(outside.slice(0, outside.lastIndexOf('/'))).join(','));
     // The remedy the miss names: the async form reads the live filesystem.
@@ -230,12 +252,16 @@ if (${readOutside}) {
 let spawnSeq = 0;
 async function run(readOutside) {
   stdoutChunks.length = 0;
+  // The program is a file in the session, as `node reader.js` runs one.
+  const code = program(readOutside);
+  const filename = `${PROJECT}/reader${++spawnSeq}.js`;
+  kfs.writeFile(filename.slice(1), code, { mode: 0o644 });
   // A launch that never settles must fail here, not let the event loop drain.
   let timer;
   const spawned = await Promise.race([
-    manager.spawnNode(program(readOutside), {
-      command: `node reader${++spawnSeq}.js`,
-      filename: `${PROJECT}/reader${spawnSeq}.js`,
+    manager.spawnNode(code, {
+      command: `node reader${spawnSeq}.js`,
+      filename,
       cwd: PROJECT,
     }),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the launch never settled')), 60_000); }),
@@ -263,6 +289,8 @@ assert.equal(filled.big, `${BIG_BODY.length}:NNNN`, `a planned project file is h
 assert.equal(filled.small, 'small-287', `the fill packs under the path bound: ${JSON.stringify(filled)}`);
 assert.equal(filled.static, 'export const TEMPLATE = 1;', `static analysis holds a code file read as text: ${JSON.stringify(filled)}`);
 assert.equal(filled.outside, 'ERR:EAGAIN:named', `an unplanned file is the honest miss, by name: ${JSON.stringify(filled)}`);
+assert.equal(filled.exact, `${EXACT_BODY.length}:EEEE`, `an exact synchronous read past the package-data size is held whole: ${JSON.stringify(filled)}`);
+assert.equal(filled.linked, `${LINKED_BODY.length}:LLLL`, `a synchronous read through a symlinked directory holds its target: ${JSON.stringify(filled)}`);
 assert.equal(filled.outsideStat, String(OUTSIDE_BODY.length), 'the namespace still stats it exactly');
 assert.equal(filled.outsideList, 'never-required.json', 'and lists it');
 assert.equal(filled.outsideAsync, String(OUTSIDE_BODY.length), 'and the async read the miss names returns it');

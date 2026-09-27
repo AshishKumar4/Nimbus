@@ -29,6 +29,32 @@ published independently in the `@nimbus-sh` npm scope.
   with the signal's status (TERM 143, INT 130, HUP 129, KILL 137) and its
   exit record names the signal, instead of 137 for every signal.
 
+- `mkdir -p /abs/path` works again for a non-root user under bash and for any
+  process `mkdir` of `/`: creating `/` answers EEXIST, as mkdir(2) does, instead
+  of EACCES from the root-directory write check. BusyBox's `mkdir -p` creates
+  every prefix starting at `/`, so every absolute `mkdir -p` by a user failed
+  with "can't create directory '/': Permission denied".
+
+- In the workspace shell, `cat /dev/zero > file` (or into the terminal or
+  /dev/null) fails at once with the device's "produces bytes without end"
+  error again, instead of writing zeros until the session's storage is full.
+  `cat` streams an endless device only into a pipe, whose reader ends it;
+  `head -c N` and `head -n N` still read a slice of one. Commands that need
+  the whole input (`wc`, `sort`, `tail`, `head -c -N`, checksums) get the same
+  error for an endless device operand.
+
+- A resident Node process now holds, from launch, a file its code reads with
+  `readFileSync` or a read-only `openSync` (no flags, `'r'` or `'rs'`) by a
+  statically known path, whatever the file's size, following any symlinks on
+  that path to the file they lead to. The data plan used to drop every static reference of 256 KiB or more,
+  so the first synchronous read of such a file raised EAGAIN. Its bytes are
+  counted in the storage the launch asks the session ledger to admit. Large
+  files the code only stats, joins or reads asynchronously are still left out. A path the code
+  builds as `'/' + <unknown>` no longer stages every small file in the
+  filesystem. A hole with a known prefix or suffix stages matching names in
+  its directory, and the direct files of a matching directory (one level); a bare hole under a named directory stages that
+  directory's files, minus dependency, VCS and cache directories.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged

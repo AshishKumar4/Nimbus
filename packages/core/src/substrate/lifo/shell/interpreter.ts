@@ -34,7 +34,7 @@ import {
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
-import { PipeChannel } from './pipe.js';
+import { isPipeEnd, PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal } from './signals.js';
@@ -1081,6 +1081,7 @@ export class Interpreter {
                   ? () => terminalStdin.rawMode
                   : undefined,
                 isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
+                isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
                 setUmask: identity.setUmask,
                 runAs: async (cred, argv) => io.runAs
                   ? (await io.runAs(ctx, cred, argv))

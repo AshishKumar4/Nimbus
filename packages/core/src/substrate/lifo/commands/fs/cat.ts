@@ -91,10 +91,13 @@ const command: Command = async (ctx) => {
     return Uint8Array.from(out);
   };
 
+  // Into a pipe, the reader ends the copy by closing it (SIGPIPE), so an
+  // endless device streams; into anything else nothing could end it.
+  const slice = ctx.isFdPipe?.(1) === true;
   let status = 0;
   for (const file of files.length > 0 ? files : ['-']) {
     try {
-      for await (const chunk of inputChunks(ctx, file)) await writeBytes(ctx.stdout, plain ? chunk : render(chunk));
+      for await (const chunk of inputChunks(ctx, file, { slice })) await writeBytes(ctx.stdout, plain ? chunk : render(chunk));
     } catch (error) {
       if (isBrokenPipe(error)) throw error;
       await ctx.stderr.write(`cat: ${file}: ${fsErrorText(error)}\n`);
