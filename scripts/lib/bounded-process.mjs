@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TEST_TIMEOUT_MS = 300_000;
@@ -80,6 +80,7 @@ function killTree(child, rootStart, known) {
 
 let installed = false;
 let interrupted = null;
+let warnedPortable = false;
 function installCleanup() {
   if (installed) return;
   installed = true;
@@ -115,7 +116,14 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     // run-bounded supplies INVOCATION_ID. Every case then gets its own
     // cgroup: detached descendants cannot escape, even before the first read.
     // Outside that wrapper, retain the explicitly weaker portable fallback.
-    const unit = process.platform === 'linux' && process.env.INVOCATION_ID
+    const strong = process.env.NIMBUS_TEST_PID_ISOLATION === '1';
+    const hostMachine = `${userInfo().username}@.host`;
+    if (strong && process.platform !== 'linux') throw new Error('PID/cgroup isolation requires Linux systemd and bwrap; use /mnt/scratch/nimbus/run-bounded');
+    if (!strong && !warnedPortable) {
+      warnedPortable = true;
+      console.error('bounded-process: portable cleanup only (no memory/PID isolation); local verification requires /mnt/scratch/nimbus/run-bounded');
+    }
+    const unit = strong
       ? `nimbus-case-${randomUUID()}.service` : null;
     let executable = command;
     if (unit && !command.includes('/')) {
@@ -146,7 +154,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     }
     const launchArgs = unit ? [
       // oneshot treats SIGTERM as a signal failure, not a clean service stop.
-      '--user', '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
+      '--user', `--machine=${hostMachine}`, '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
       `--unit=${unit}`, '--slice=nimbus-tests.slice',
       `--working-directory=${cwd ?? process.cwd()}`,
       `--property=MemoryMax=${process.env.NIMBUS_TEST_MEMORY_MAX || '4G'}`,
@@ -168,7 +176,8 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       name,
       kill() {
         if (unit) {
-          spawnSync('/usr/bin/systemctl', ['--user', 'kill', '--kill-whom=all', '--signal=KILL', unit], { stdio: 'ignore', timeout: 3000 });
+          const killed = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'kill', '--kill-whom=all', '--signal=KILL', unit], { encoding: 'utf8', timeout: 3000 });
+          if (killed.status !== 0 && reason && child.exitCode === null && child.signalCode === null) console.error(`cgroup cleanup ${unit}: ${killed.error?.message ?? killed.stderr}`);
           // The systemd-run client can retain its bus/stdio handles after the
           // service is killed. It is our direct child, not a namespace PID.
           if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -227,7 +236,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       if (unit) {
         // Failed units remain queryable until reset. systemd-run's own exit
         // status alone cannot distinguish an oracle exit from exec/OOM failure.
-        const info = spawnSync('/usr/bin/systemctl', ['--user', 'show', unit, '--property=Result,ExecMainCode,ExecMainStatus'], { encoding: 'utf8', timeout: 3000 });
+        const info = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'show', unit, '--property=Result,ExecMainCode,ExecMainStatus'], { encoding: 'utf8', timeout: 3000 });
         const props = Object.fromEntries((info.stdout ?? '').trim().split('\n').map((line) => line.split('=')));
 
         if (props.Result && !['success', 'exit-code'].includes(props.Result)) reason ||= `cgroup result=${props.Result} ExecMainCode=${props.ExecMainCode} ExecMainStatus=${props.ExecMainStatus}`;
@@ -238,7 +247,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
           code = null;
           reason ||= `process terminated by ${signal}`;
         }
-        spawnSync('/usr/bin/systemctl', ['--user', 'reset-failed', unit], { stdio: 'ignore', timeout: 3000 });
+        spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'reset-failed', unit], { stdio: 'ignore', timeout: 3000 });
         try {
           if (statSync(statusFile).size > 1024) throw new Error('oversized wait status');
           const status = JSON.parse(readFileSync(statusFile, 'utf8'));
