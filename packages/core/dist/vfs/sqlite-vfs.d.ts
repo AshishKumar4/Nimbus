@@ -568,6 +568,13 @@ export declare class SqliteVFS {
      * unregistered credential, so the ordinary session user is untouched.
      */
     private confinedTmpRoots;
+    private readonly sharedDirectories;
+    /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
+    registerSharedDirectory(path: string): () => void;
+    private sharedDirectory;
+    private revokeSharedDirectories;
+    private sharedMode;
+    private normalizeSharedEntry;
     /**
      * Confine a principal. `tmpRoot` is a storage key, not a logical path — the
      * caller owns creating and chowning it, because a per-principal `chown` is
@@ -985,6 +992,7 @@ export declare class SqliteVFS {
      * rows upgrade the first time they are chmod'ed.
      */
     private chmod;
+    private chmodInode;
     private setDefaultAcl;
     private getDefaultAcl;
     private chown;

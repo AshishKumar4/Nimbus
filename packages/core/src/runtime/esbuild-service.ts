@@ -1221,11 +1221,16 @@ async function runTransformRequest(
   }
   if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
     // CJS emit replaces import.meta with an empty object even when syntax
-    // support is enabled. First emit JavaScript as ESM (including TS type
-    // erasure), rewrite real MetaProperty nodes, then lower declarations.
+    // support is enabled. First erase TypeScript/JSX with the module format
+    // preserved, rewrite real MetaProperty nodes, then lower declarations.
     // Both passes and the sole AST parse stay in the transform facet.
+    // No ESM emit in between: it wraps a cell that assigns module.exports
+    // in __commonJS and exports that as `default`, so the lowered cell's
+    // module.exports would stop being the one the source assigned. The
+    // single CommonJS pass below is what binds such a cell, as it does for
+    // every cell that takes no metadata pass.
     const javascript = await esbuildApi.transform(code, {
-      loader: options.loader ?? 'js', format: 'esm', target: 'esnext',
+      loader: options.loader ?? 'js', target: 'esnext',
       jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
       tsconfigRaw: options.tsconfigRaw, define: options.define,
       supported: { 'dynamic-import': true, 'import-meta': true },
