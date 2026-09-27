@@ -5506,9 +5506,13 @@ export class SqliteVFS {
   /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
   private static comparePaths(a: string, b: string): number {
     const x = enc.encode(a), y = enc.encode(b);
-    const n = Math.min(x.length, y.length);
-    for (let i = 0; i < n; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
-    return x.length - y.length;
+    let i = 0;
+    for (const byte of x) {
+      const other = y[i++];
+      if (other === undefined) return 1;
+      if (byte !== other) return byte - other;
+    }
+    return i === y.length ? 0 : -1;
   }
 
   /**
@@ -6170,21 +6174,25 @@ export class SqliteVFS {
   }
 
   /**
-   * The bytes of chunks by hash, up to `maxBytes` (at least one chunk);
-   * `rest` is what did not fit. ENOENT for a hash this database lacks.
+   * The bytes of chunks by hash, up to `maxBytes` (at least one chunk) and at
+   * most EXPORT_PAGE_PIECES chunks (a page names no more, so tiny chunks cannot
+   * make an object frame past the reference budget); `rest` is what did not
+   * fit. ENOENT for a hash this database lacks.
    */
   exportChunks(hashes: readonly string[], maxBytes = EXPORT_FRAME_BYTES): { chunks: VfsExportChunk[]; rest: string[] } {
     const chunks: VfsExportChunk[] = [];
     let bytes = 0;
     let index = 0;
-    for (; index < hashes.length; index++) {
-      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hashes[index]!))][0];
-      if (!row) throw vfsError('ENOENT', `chunk ${hashes[index]}`);
-      if (Number(row.state) !== CHUNK_LOCAL) throw coldChunkError(`chunk ${hashes[index]}`);
+    for (const hash of hashes) {
+      if (chunks.length === EXPORT_PAGE_PIECES) break;
+      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
+      if (!row) throw vfsError('ENOENT', `chunk ${hash}`);
+      if (Number(row.state) !== CHUNK_LOCAL) throw coldChunkError(`chunk ${hash}`);
       if (chunks.length > 0 && bytes + Number(row.size) > maxBytes) break;
       const data = this.blobToUint8Array(row.data);
-      chunks.push({ hash: hashes[index]!, data });
+      chunks.push({ hash, data });
       bytes += data.byteLength;
+      index++;
     }
     return { chunks, rest: hashes.slice(index) };
   }
@@ -6230,16 +6238,21 @@ export class SqliteVFS {
   ): { imported: number; want: string[]; done: boolean; pending: string[] } {
     // N18: the page's rows and the bytes it brings are admitted and reserved
     // before its first transaction, which then draw from the reservation.
-    // Collected under the frame bound as it is pulled: an iterable larger than a
-    // frame, or one that never ends, stops at the first chunk past the budget.
+    // Collected under the frame bound as it is pulled: bytes against the frame,
+    // objects against the page's own reference budget (a page names at most
+    // EXPORT_PAGE_PIECES chunks, so a valid frame never carries more), and an
+    // empty chunk is not a chunk. An iterable larger than that, or one that
+    // never ends, stops at the first chunk past the budget.
+    const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
+    if (pieces > EXPORT_PAGE_PIECES) throw vfsError('E2BIG', 'import metadata frame exceeds its budget');
     const given: VfsExportChunk[] = [];
     let bytes = 0;
     for (const chunk of chunks) {
+      if (chunk.data.byteLength === 0) throw vfsError('EINVAL', `chunk ${chunk.hash} is empty`);
       bytes += chunk.data.byteLength;
-      if (bytes > EXPORT_FRAME_BYTES) throw vfsError('E2BIG', 'import chunk frame exceeds its budget');
+      if (bytes > EXPORT_FRAME_BYTES || given.length === pieces) throw vfsError('E2BIG', 'import chunk frame exceeds its budget');
       given.push(chunk);
     }
-    const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
     const rows = (Array.isArray(page?.rows) ? page.rows.length : 0) + pieces + 2;
     const reservation = crypto.randomUUID();
     this.ledger.reserve(reservation, bytes + rows * LEDGER_ROW_BYTES);
@@ -6291,9 +6304,10 @@ export class SqliteVFS {
       }
       let end = row.pieceOffset;
       for (const [hash, length] of row.pieces) {
+        const known = lengths.get(hash), supplied = given.get(hash);
         if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isSafeInteger(length) || length <= 0
-            || (lengths.has(hash) && lengths.get(hash) !== length)) throw vfsError('EINVAL', `${row.path}: invalid chunk reference`);
-        if (given.has(hash) && given.get(hash)!.byteLength !== length) throw vfsError('EINVAL', `${row.path}: chunk size differs`);
+            || (known !== undefined && known !== length)) throw vfsError('EINVAL', `${row.path}: invalid chunk reference`);
+        if (supplied !== undefined && supplied.byteLength !== length) throw vfsError('EINVAL', `${row.path}: chunk size differs`);
         lengths.set(hash, length);
         end += length;
       }

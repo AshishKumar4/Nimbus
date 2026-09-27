@@ -146,12 +146,43 @@ try {
   assert.ok(widest <= FRAME);
   assert.throws(() => oracle.raw.importPage('', { ...template, rows: [rowAt(0, PIECES + 1)], next: null }), (e) => e.code === 'E2BIG');
   // The chunk iterable is collected under the frame bound as it is pulled, not materialized first,
-  // and the iterator is closed on the way out.
-  let pulls = 0, returned = false;
-  const endless = { [Symbol.iterator]() { return { next() { pulls++; if (pulls === 130) throw new Error('pulled past the budget'); return { value: { hash, data: chunk }, done: false }; }, return() { returned = true; return { done: true }; } }; } };
-  assert.throws(() => oracle.raw.importPage('', template, endless), (e) => e.code === 'E2BIG');
-  assert.equal(pulls, 129, 'E2BIG fires on the first chunk past 8 MiB, before the iterable is exhausted');
-  assert.equal(returned, true, 'the iterator is returned when collection stops');
+  // and the iterator is closed on the way out. Bytes count against the frame; objects against the
+  // page's own reference budget (a valid frame carries no more chunks than the page names).
+  const pulled = (page, size) => {
+    let pulls = 0, returned = false;
+    const data = new Uint8Array(size).fill(9), h = hex(chunkHash(data));
+    const endless = { [Symbol.iterator]() { return { next() { pulls++; if (pulls > 9000) throw new Error('pulled past every budget'); return { value: { hash: h, data }, done: false }; }, return() { returned = true; return { done: true }; } }; } };
+    assert.throws(() => oracle.raw.importPage('', page, endless), (e) => e.code === 'E2BIG');
+    assert.equal(returned, true, 'the iterator is returned when collection stops');
+    return pulls;
+  };
+  assert.equal(pulled({ ...template, rows: [rowAt(0, 200)], next: null }, 65536), 129, 'byte bound: E2BIG on the first 64 KiB chunk past 8 MiB');
+  assert.equal(pulled({ ...template, rows: [rowAt(0, 200)], next: null }, 1), 201, 'reference bound: one-byte chunks stop at the page\'s 200 references');
+  assert.equal(pulled(template, 1), template.rows.reduce((n, row) => n + row.pieces.length, 0) + 1, 'a small page admits no more chunks than it names');
+  assert.throws(() => oracle.raw.importPage('', template, [{ hash: hex(chunkHash(new Uint8Array(0))), data: new Uint8Array(0) }]), (e) => e.code === 'EINVAL', 'an empty chunk is not a chunk');
+
+  // exportChunks caps its output at the reference budget as well as the byte budget: tiny chunks
+  // come back in bounded frames with the rest named, and the importer still lands them all.
+  const tiny = open();
+  const tinyCount = PIECES + 500;
+  const tinyHashes = [];
+  for (let i = 0; i < tinyCount; i++) { const data = new Uint8Array([i & 255, (i >> 8) & 255, 1]); tiny.fs.writeFile(`t${String(i).padStart(5, '0')}`, data); tinyHashes.push(hex(chunkHash(data))); }
+  tiny.raw.snapshot('tiny');
+  const firstFrame = tiny.raw.exportChunks(tinyHashes);
+  assert.equal(firstFrame.chunks.length, PIECES, 'the first frame stops at the reference budget');
+  assert.equal(firstFrame.rest.length, tinyCount - PIECES, 'the rest is named, in order');
+  assert.deepEqual(firstFrame.rest, tinyHashes.slice(PIECES));
+  const tinyCopy = open();
+  let tc = null, tinyRows = 0;
+  do {
+    const page = tiny.raw.exportPage({ at: 'tiny', after: tc });
+    let want = tinyCopy.raw.wantChunks(page);
+    while (want.length) { const frame = tiny.raw.exportChunks(want); assert.ok(frame.chunks.length <= PIECES); tinyCopy.raw.importChunks('', frame.chunks); want = frame.rest; }
+    assert.deepEqual(tinyCopy.raw.importPage('', page).want, []);
+    tinyRows += page.rows.length; tc = page.next;
+  } while (tc !== null);
+  assert.equal(tinyRows, tinyCount);
+  assert.deepEqual([...tinyCopy.fs.readFile('t00007')], [7, 0, 1]);
 
   // Page boundaries and cursors follow SQLite's UTF-8 byte order, not UTF-16 code units:
   // U+E000 (3 bytes) sorts before U+10000 (4 bytes) in SQL but after it in JS.
