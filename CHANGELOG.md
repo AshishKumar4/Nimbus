@@ -20,13 +20,16 @@ published independently in the `@nimbus-sh` npm scope.
   error for an endless device operand.
 
 - A resident Node process now holds, from launch, a file its code reads with
-  `readFileSync` or `openSync` by a statically known path, whatever the file's
-  size. The data plan used to drop every static reference of 256 KiB or more,
+  `readFileSync` or a read-only `openSync` (no flags, `'r'` or `'rs'`) by a
+  statically known path, whatever the file's size, following any symlinks on
+  that path to the file they lead to. The data plan used to drop every static reference of 256 KiB or more,
   so the first synchronous read of such a file raised EAGAIN. Its bytes are
   counted in the storage the launch asks the session ledger to admit. Large
   files the code only stats, joins or reads asynchronously are still left out. A path the code
   builds as `'/' + <unknown>` no longer stages every small file in the
-  filesystem; a hole under a named directory still stages what it matches.
+  filesystem. A hole with a known prefix or suffix stages matching names in
+  its directory only; a bare hole under a named directory stages that
+  directory's files, minus dependency, VCS and cache directories.
 
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and

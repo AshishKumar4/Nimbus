@@ -144,6 +144,47 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.equal(syncPlan.rules.static.bytes, huge + PACKAGE_DATA_MAX_BYTES, 'the held bytes are counted toward the plan');
 }
 
+// An openSync that appends, writes or truncates reads nothing it needs held,
+// however large the file.
+{
+  const GiB3 = 3 * 1024 * 1024 * 1024;
+  const ns = namespace({ 'var/log/app.log': big(GiB3), 'var/db/store.bin': big(GiB3), 'var/db/ro.bin': big(GiB3) });
+  const plan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(`const fs = require('fs');
+      fs.openSync('/var/log/app.log', 'a'); fs.openSync('/var/db/store.bin', 'w'); fs.openSync('/var/db/ro.bin', 'r');`,
+    '/home/user/app/reader.js')],
+  });
+  assert.deepEqual(plan.paths, ['var/db/ro.bin'], `only the read-only open is held: ${JSON.stringify(plan.paths)}`);
+}
+
+// A synchronous read through a symlink holds the file the link leads to:
+// a linked file, a file under a linked directory, a chain of links. A loop
+// holds nothing.
+{
+  const huge = 25 * 1024 * 1024;
+  const ns = namespace({
+    'opt/releases/v2/data.bin': big(huge),
+    'opt/releases/v2/data2.bin': big(huge),
+    'opt/releases/v2/conf.bin': big(PACKAGE_DATA_MAX_BYTES),
+    'opt/releases/v2/unread.bin': big(huge),
+    'opt/current': { kind: 'symlink', size: 0, target: '/opt/releases/v2' },
+    'opt/latest': { kind: 'symlink', size: 0, target: 'current' },
+    'opt/loop': { kind: 'symlink', size: 0, target: 'loop' },
+    'etc/app.conf': { kind: 'symlink', size: 0, target: '../opt/releases/v2/conf.bin' },
+  });
+  const plan = await planFacetData(ns, {
+    cwd: '/home/user/app', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(`const fs = require('fs');
+      fs.readFileSync('/opt/current/data.bin'); fs.readFileSync('/etc/app.conf');
+      fs.readFileSync('/opt/latest/data2.bin'); fs.readFileSync('/opt/loop/x');
+      fs.existsSync('/opt/current/unread.bin');`, '/home/user/app/reader.js')],
+  });
+  assert.deepEqual(plan.paths.sort(), ['opt/releases/v2/conf.bin', 'opt/releases/v2/data.bin', 'opt/releases/v2/data2.bin'],
+    `the link targets are held: ${JSON.stringify(plan.paths)}`);
+  assert.equal(plan.bytes, 2 * huge + PACKAGE_DATA_MAX_BYTES);
+}
+
 // A path folded to `'/' + <unknown>` names anything in the filesystem: it
 // stages nothing (the read is a run-time one). A hole under a named
 // directory still stages what it can match there.
@@ -165,6 +206,31 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.deepEqual(bounded.paths.sort(), ['opt/data/a.json', 'opt/data/nested/b.json'], 'a bounded pattern stages its match');
   const suffixed = await plan(`const fs = require('fs'); fs.readFileSync('/' + process.argv[2] + '.txt');`);
   assert.deepEqual(suffixed.paths, [], 'a root pattern with a known suffix stages only top-level names ending in it (none here)');
+}
+
+// A hole with a known prefix or suffix names siblings in its directory, not
+// their subtrees; a bare hole under a named directory names its files but not
+// what sits in dependency, VCS or cache directories, in any user's home.
+{
+  const ns = namespace({
+    'hfile': 'h',
+    'other': 'o',
+    'home/user/notes.txt': 'n',
+    'home/user/.git/objects/ab/cdef': 'blob',
+    'home/user/.cache/tool/blob': 'cache',
+    'home/bob/.config/app.json': '{}',
+    'home/bob/.npm/_cacache/index': 'cache',
+    'home/bob/proj/node_modules/p/data.json': '{}',
+    'home/bob/proj/.next/cache/x': 'cache',
+  });
+  const plan = async (source) => (await planFacetData(ns, {
+    cwd: '/work', home: '/home/user', closure: [],
+    refs: [findStaticFsReferences(source, '/work/reader.js')],
+  })).paths.sort();
+  assert.deepEqual(await plan(`require('fs').readFileSync('/h' + process.argv[2]);`), ['hfile'],
+    'a root prefix names only matching names in /');
+  assert.deepEqual(await plan(`require('fs').readFileSync('/home/' + process.argv[2]);`),
+    ['home/bob/.config/app.json', 'home/user/notes.txt'], 'a bare hole under /home skips VCS, caches and dependencies');
 }
 
 console.log('data-plan: ok');

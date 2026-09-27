@@ -30,24 +30,25 @@ import type { AstNode } from './javascript-ast.js';
 interface Partial { prefix: string; suffix: string }
 type Value = { exact: string } | { partial: Partial };
 
+/**
+ * A path a module names. `sync` marks a synchronous content read of it
+ * (`readFileSync`, or `openSync` with no flags or a read-only literal flag):
+ * the call cannot wait for the bytes, so their size says nothing about
+ * whether the process needs them held.
+ */
+export interface PathRef { path: string; sync: boolean }
+
 export interface StaticFsRefs {
   /** Absolute paths named exactly (files or directories). */
-  exact: string[];
+  exact: PathRef[];
   /** Directories a module lists (readdir), whose files it then reads. */
   listed: string[];
   /** `dir/prefix*suffix`: names with one unknown part in the last segment. */
   patterns: { dir: string; prefix: string; suffix: string }[];
   /** Paths relative to the process's working directory, read at a call site. */
-  cwdRelative: string[];
+  cwdRelative: PathRef[];
   /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`. */
   resolves: { from: string; spec: string }[];
-  /**
-   * Paths handed straight to a synchronous content read (`readFileSync`,
-   * `openSync`): absolute, or relative to the working directory. Also in
-   * `exact` or `cwdRelative`. The call cannot wait for their bytes, so their
-   * size says nothing about whether the process needs them held.
-   */
-  syncReads: string[];
 }
 
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
@@ -58,8 +59,22 @@ const FS_SINKS = new Set([
   'realpathSync', 'realpath', 'opendirSync', 'opendir', 'readlinkSync', 'readlink',
 ]);
 const LIST_SINKS = new Set(['readdirSync', 'readdir', 'opendirSync', 'opendir']);
-/** Sinks that read a file's content synchronously. */
-const SYNC_READ_SINKS = new Set(['readFileSync', 'openSync']);
+/** `openSync` flags that open for reading only. */
+const READ_ONLY_FLAGS = new Set(['r', 'rs']);
+
+/** Whether a sink call with this flags argument reads the file's content synchronously. */
+function syncRead(sink: string, flags: string | null | undefined): boolean {
+  if (sink === 'readFileSync') return true;
+  // Absent flags are 'r'; a flag that cannot be folded may write.
+  return sink === 'openSync' && (flags === undefined || (flags !== null && READ_ONLY_FLAGS.has(flags)));
+}
+
+/** One entry per path; a path any site reads synchronously is a synchronous read. */
+function mergeRefs(list: readonly PathRef[]): PathRef[] {
+  const merged = new Map<string, boolean>();
+  for (const r of list) merged.set(r.path, merged.get(r.path) === true || r.sync);
+  return [...merged].map(([path, sync]) => ({ path, sync }));
+}
 /** `pkg/sub/file.ext` or `@scope/pkg/sub/file.ext`: a bare specifier naming a file. */
 const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
 
@@ -103,7 +118,7 @@ function isNode(value: unknown): value is AstNode {
  */
 export function findStaticFsReferences(source: string, filename: string): StaticFsRefs {
   if (source.length > STATIC_AST_MAX_SOURCE) return scanStaticFsTokens(source, filename);
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], syncReads: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
   const ast = parseAny(source);
   if (ast === null) return refs;
   const file = normalize(filename);
@@ -293,16 +308,18 @@ export function findStaticFsReferences(source: string, filename: string): Static
     const target = evaluate(args[0]);
     if (!target) return;
     const path = 'exact' in target && target.exact.startsWith('file:') ? urlToPath(target) : target;
+    let flags: string | null | undefined;
+    if (args.length > 1) {
+      const folded = evaluate(args[1]);
+      flags = folded && 'exact' in folded ? folded.exact : null;
+    }
+    const sync = syncRead(name, flags);
     if (path && 'exact' in path && !path.exact.startsWith('/')) {
-      if (path.exact) {
-        refs.cwdRelative.push(path.exact);
-        if (SYNC_READ_SINKS.has(name)) refs.syncReads.push(path.exact);
-      }
+      if (path.exact) refs.cwdRelative.push({ path: path.exact, sync });
       return;
     }
-    record(path);
+    record(path, sync);
     if (path && 'exact' in path && LIST_SINKS.has(name)) refs.listed.push(normalize(path.exact));
-    if (path && 'exact' in path && SYNC_READ_SINKS.has(name)) refs.syncReads.push(normalize(path.exact));
   });
 
   function isResolver(callee: AstNode): boolean {
@@ -314,10 +331,10 @@ export function findStaticFsReferences(source: string, filename: string): Static
     return obj.type === 'CallExpression' && calleeName(obj) === 'createRequire';
   }
 
-  function record(value: Value | undefined) {
+  function record(value: Value | undefined, sync = false) {
     if (!value) return;
     if ('exact' in value) {
-      if (value.exact.startsWith('/')) refs.exact.push(normalize(value.exact));
+      if (value.exact.startsWith('/')) refs.exact.push({ path: normalize(value.exact), sync });
       return;
     }
     const { prefix, suffix } = value.partial;
@@ -336,10 +353,9 @@ export function findStaticFsReferences(source: string, filename: string): Static
     const key = q.dir + '\0' + q.prefix + '\0' + q.suffix;
     return !patternKeys.has(key) && patternKeys.add(key) !== undefined;
   });
-  refs.exact = [...new Set(refs.exact)];
+  refs.exact = mergeRefs(refs.exact);
   refs.listed = [...new Set(refs.listed)];
-  refs.cwdRelative = [...new Set(refs.cwdRelative)];
-  refs.syncReads = [...new Set(refs.syncReads)];
+  refs.cwdRelative = mergeRefs(refs.cwdRelative);
   return refs;
 }
 
@@ -361,7 +377,7 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
  * bindings would add is not found here.
  */
 export function scanStaticFsTokens(source: string, filename: string): StaticFsRefs {
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], syncReads: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
   const file = normalize(filename);
   const dir = dirnameOf(file);
   const recent: { type: string; value: unknown }[] = [];
@@ -388,39 +404,40 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       if (at(1)?.value === 'url' && isPunct(at(2), '.') && at(3)?.value === 'meta' && isPunct(at(4), '.')
         && at(5)?.type === 'import' && isPunct(at(6), ',') && at(7)?.type === 'string' && isPunct(at(8), '(')
         && at(9)?.value === 'URL' && at(10)?.type === 'new') {
-        try { refs.exact.push(decodeURIComponent(new URL(String(at(7)!.value), 'file://' + file).pathname)); } catch { /* not a URL */ }
+        try { refs.exact.push({ path: decodeURIComponent(new URL(String(at(7)!.value), 'file://' + file).pathname), sync: false }); } catch { /* not a URL */ }
         continue;
       }
       // Walk back over `'a', 'b', ...` to what precedes the literal run.
       const lits: string[] = [];
       let i = 1;
       while (at(i)?.type === 'string' && isPunct(at(i + 1), ',')) { lits.unshift(String(at(i)!.value)); i += 2; }
-      if (lits.length === 0) {
-        // readFileSync('/abs') and friends.
-        if (at(1)?.type === 'string' && isPunct(at(2), '(') && at(3)?.type === 'name' && FS_SINKS.has(String(at(3)!.value))) {
-          const lit = String(at(1)!.value);
-          if (lit.startsWith('/')) {
-            refs.exact.push(normalize(lit));
-            if (LIST_SINKS.has(String(at(3)!.value))) refs.listed.push(normalize(lit));
-            if (SYNC_READ_SINKS.has(String(at(3)!.value))) refs.syncReads.push(normalize(lit));
-          }
+      // readFileSync('/abs') and friends, with at most one more literal
+      // argument (an encoding, or openSync's flags).
+      const sinkAt = lits.length === 0 ? 1 : lits.length === 1 ? i : -1;
+      if (sinkAt > 0 && at(sinkAt)?.type === 'string' && isPunct(at(sinkAt + 1), '(')
+        && at(sinkAt + 2)?.type === 'name' && FS_SINKS.has(String(at(sinkAt + 2)!.value))) {
+        const lit = String(at(sinkAt)!.value);
+        const sink = String(at(sinkAt + 2)!.value);
+        if (lit.startsWith('/')) {
+          refs.exact.push({ path: normalize(lit), sync: syncRead(sink, lits[0]) });
+          if (LIST_SINKS.has(sink)) refs.listed.push(normalize(lit));
         }
         continue;
       }
+      if (lits.length === 0) continue;
       // join|resolve(__dirname, ...) and (import.meta.dirname, ...)
       const dirnameArg = at(i)?.type === 'name' && at(i)!.value === '__dirname' ? i
         : at(i)?.value === 'dirname' && isPunct(at(i + 1), '.') && at(i + 2)?.value === 'meta'
           && isPunct(at(i + 3), '.') && at(i + 4)?.type === 'import' ? i + 4 : -1;
-      if (dirnameArg >= 0 && isPunct(at(dirnameArg + 1), '(')) refs.exact.push(normalize(dir + '/' + lits.join('/')));
+      if (dirnameArg >= 0 && isPunct(at(dirnameArg + 1), '(')) refs.exact.push({ path: normalize(dir + '/' + lits.join('/')), sync: false });
     }
   };
   try { scan('module'); } catch {
     recent.length = 0;
     try { scan('script'); } catch { /* names nothing more */ }
   }
-  refs.exact = [...new Set(refs.exact)];
+  refs.exact = mergeRefs(refs.exact);
   refs.listed = [...new Set(refs.listed)];
-  refs.syncReads = [...new Set(refs.syncReads)];
   return refs;
 }
 

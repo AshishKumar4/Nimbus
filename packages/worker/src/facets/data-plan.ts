@@ -18,7 +18,8 @@
  *   static         what the closure's own code names by a foldable path
  *                  (static-fs-refs.ts), resolved against the namespace:
  *                  under 256 KiB, or any size when the code reads it with
- *                  readFileSync/openSync by that path
+ *                  readFileSync (or a read-only openSync) by that path,
+ *                  through any symlinks on it
  *   learned        paths earlier launches of the same package versions missed
  *
  * Code the closure loads is in the module map already; the store adopts it,
@@ -180,6 +181,30 @@ async function resolveSpecifier(
   }
 }
 
+/** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * A key with every symlink along it replaced by its target, as a lookup
+ * resolves it; null past MAX_LINK_HOPS (ELOOP).
+ */
+function throughLinks(links: ReadonlyMap<string, string>, k: string): string | null {
+  let path = k;
+  for (let hops = 0; hops <= MAX_LINK_HOPS; hops++) {
+    const segs = path.split('/');
+    let followed = false;
+    for (let i = 1; i <= segs.length; i++) {
+      const target = links.get(segs.slice(0, i).join('/'));
+      if (target === undefined) continue;
+      path = joinKey(target, segs.slice(i).join('/'));
+      followed = true;
+      break;
+    }
+    if (!followed) return path;
+  }
+  return null;
+}
+
 /**
  * The plan for one launch. Walks the namespace once, in pages.
  */
@@ -202,25 +227,18 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   const closure = new Set<string>();
   for (const path of input.closure) closure.add(key(path));
 
-  // Static references, as keys.
-  const exact = new Set<string>();
+  // Static references, as keys: each exact path, and whether any site reads
+  // it synchronously.
+  const exact = new Map<string, boolean>();
+  const note = (k: string, sync: boolean) => exact.set(k, exact.get(k) === true || sync);
   const listed = new Set<string>();
-  const syncReads = new Set<string>();
   const patterns: { dir: string; prefix: string; suffix: string }[] = [];
   const manifests = new Map<string, Record<string, unknown> | null>();
   for (const refs of input.refs) {
-    for (const p of refs.exact) exact.add(key(p));
+    for (const r of refs.exact) note(key(r.path), r.sync);
+    for (const r of refs.cwdRelative) note(joinKey(cwd, r.path), r.sync);
     for (const p of refs.listed) listed.add(key(p));
-    for (const p of refs.patterns) {
-      const dir = key(p.dir);
-      // `'/' + x`: a hole with nothing known around it at the root names every
-      // path there is. Nothing static bounds it, so it is a run-time read like
-      // any other, not an instruction to hold the filesystem.
-      if (dir === '' && p.prefix === '' && p.suffix === '') continue;
-      patterns.push({ dir, prefix: p.prefix, suffix: p.suffix });
-    }
-    for (const p of refs.cwdRelative) exact.add(joinKey(cwd, p));
-    for (const p of refs.syncReads) syncReads.add(p.startsWith('/') ? key(p) : joinKey(cwd, p));
+    for (const p of refs.patterns) patterns.push({ dir: key(p.dir), prefix: p.prefix, suffix: p.suffix });
   }
   const learned = new Set<string>();
   for (const p of input.learned ?? []) learned.add(key(p));
@@ -241,7 +259,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     rules[rule].bytes += entry.size;
   };
 
-  // Directories a reference expands to: a listed directory, or one a pattern names.
+  // Directories a reference expands to: a listed directory.
   const expanded = new Set<string>();
   const underExpanded = (k: string): boolean => {
     for (let d = parentOf(k); d !== ''; d = parentOf(d)) {
@@ -250,18 +268,44 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
     return false;
   };
+  const homeKept = (k: string) => {
+    const rel = k.slice(home ? home.length + 1 : 0) + '/';
+    return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
+  };
+  /**
+   * Whether a file lies in a dependency, VCS or cache directory below `dir`,
+   * or in a cache of the home directory it is in ($HOME, or /home/<user>).
+   */
+  const excludedBelow = (dir: string, k: string): boolean => {
+    const rel = k.slice(dir === '' ? 0 : dir.length + 1).split('/');
+    if (rel.slice(0, -1).some((seg) => PROJECT_EXCLUDED.has(seg))) return true;
+    const segs = k.split('/');
+    const userHome = home !== '' && k.startsWith(home + '/') ? home
+      : segs[0] === 'home' && segs.length > 2 ? 'home/' + segs[1] : null;
+    if (userHome === null) return false;
+    const inHome = k.slice(userHome.length + 1) + '/';
+    return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
+  };
+  /**
+   * Whether a file is one a pattern `dir/prefix*suffix` can name. A hole with
+   * a known prefix or suffix fills one name in `dir`. A bare hole under a
+   * named directory (`join(dir, x)`) may be a relative path of any depth: the
+   * directory's files, minus dependency, VCS and cache directories. A bare
+   * hole at the root (`'/' + x`) names the whole filesystem, which nothing
+   * static bounds: it matches nothing and the read is a run-time one.
+   */
   const patternMatch = (k: string): boolean => {
     const dir = parentOf(k);
     const name = baseOf(k);
     for (const p of patterns) {
+      if (p.prefix === '' && p.suffix === '') {
+        if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(p.dir, k)) return true;
+        continue;
+      }
       if (p.dir === dir && name.startsWith(p.prefix) && name.endsWith(p.suffix)
         && name.length >= p.prefix.length + p.suffix.length) return true;
     }
     return false;
-  };
-  const homeKept = (k: string) => {
-    const rel = k.slice(home ? home.length + 1 : 0) + '/';
-    return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
   };
   const declarations: DataPlanEntry[] = [];
   const packageRoots = new Set<string>();
@@ -275,7 +319,9 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
    * count toward the plan's storage, which the launch admits or refuses.
    */
   const staticWorthy = (entry: DataPlanEntry) => !closure.has(entry.path)
-    && (entry.size < PACKAGE_DATA_MAX_BYTES || syncReads.has(entry.path));
+    && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
+  /** Every symlink in the namespace, by key, as the key its target names. */
+  const links = new Map<string, string>();
 
   let after: string | null = null;
   for (;;) {
@@ -285,18 +331,19 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       const k = key(raw.path);
       const entry = { path: k, kind: raw.kind, size: raw.size };
       if (entry.kind === 'directory') {
-        if (listed.has(k) || patternMatch(k)) expanded.add(k);
+        if (listed.has(k)) expanded.add(k);
         if (packageRootOf(k + '/x') === k) packageRoots.add(k);
         continue;
       }
       const segs = k.split('/');
       if (entry.kind === 'symlink') {
         if (raw.linkTarget === undefined) continue;
+        const target = raw.linkTarget.startsWith('/') ? key(raw.linkTarget) : joinKey(parentOf(k), raw.linkTarget);
+        links.set(k, target);
         const inProject = (cwdPrefix === '' || k.startsWith(cwdPrefix))
           && !(cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/')).slice(0, -1).some((x) => PROJECT_EXCLUDED.has(x));
         const inHome = k.startsWith(homeDot) && homeKept(k) && !segs.includes('node_modules');
         if (inProject || inHome) {
-          const target = raw.linkTarget.startsWith('/') ? key(raw.linkTarget) : joinKey(parentOf(k), raw.linkTarget);
           linkedDirs.push({ target, rule: inProject ? 'project' : 'home' });
         }
         continue;
@@ -354,6 +401,20 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       const root = packageRootOf(entry.path)!;
       const name = root.slice(root.lastIndexOf('node_modules/') + 'node_modules/'.length);
       if (typeDeps.has(name)) take(entry, 'typescript');
+    }
+  }
+
+  // A synchronous read of a path through a symlink reads the file the link
+  // leads to, which the walk saw under its own name: hold that file.
+  if (links.size > 0) {
+    for (const [k, sync] of exact) {
+      if (!sync || planned.has(k)) continue;
+      const target = throughLinks(links, k);
+      if (target === null || target === k || planned.has(target)) continue;
+      const found = await source.stat(target);
+      if (found === null || found.kind !== 'file') continue;
+      const entry = { path: target, kind: 'file', size: found.size };
+      if (!closure.has(target)) take(entry, 'static');
     }
   }
 

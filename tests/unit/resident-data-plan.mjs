@@ -56,6 +56,8 @@ const OUTSIDE_BODY = JSON.stringify({ never: 'required' });
  */
 const EXACT = '/opt/appdata/exact/named.dat';
 const EXACT_BODY = 'E'.repeat(VFS_BUNDLE_MAX_BYTES + 5);
+/** Past the package-data size, so only its synchronous read can hold it. */
+const PACKAGE_DATA_BYTES_OVER = 300 * 1024;
 
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -63,6 +65,11 @@ const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kfs = sessionVfs.as(CRED_KERNEL);
 kfs.mkdir('opt/appdata/exact', { recursive: true, mode: 0o755 });
 kfs.writeFile(EXACT.slice(1), EXACT_BODY, { mode: 0o644 });
+/** Read by a literal path through a symlinked directory: the link's target file is held. */
+const LINKED = '/opt/applink/linked.dat';
+const LINKED_BODY = 'L'.repeat(PACKAGE_DATA_BYTES_OVER);
+kfs.writeFile('opt/appdata/exact/linked.dat', LINKED_BODY, { mode: 0o644 });
+kfs.symlink('/opt/appdata/exact', 'opt/applink');
 kfs.mkdir('home/user/proj/many', { recursive: true, mode: 0o755 });
 kfs.writeFile(BIG.slice(1), BIG_BODY, { mode: 0o644 });
 kfs.mkdir('opt/appdata/locale/deep', { recursive: true, mode: 0o755 });
@@ -226,6 +233,7 @@ t('static', () => require('tablepkg')().trim());
 if (${readOutside}) {
     t('outside', () => fs.readFileSync(outside, 'utf8'));
     t('exact', () => { const b = fs.readFileSync(${JSON.stringify(EXACT)}, 'utf8'); return b.length + ':' + b.slice(0, 4); });
+    t('linked', () => { const b = fs.readFileSync(${JSON.stringify(LINKED)}, 'utf8'); return b.length + ':' + b.slice(0, 4); });
     t('outsideStat', () => fs.statSync(outside).size);
     t('outsideList', () => fs.readdirSync(outside.slice(0, outside.lastIndexOf('/'))).join(','));
     // The remedy the miss names: the async form reads the live filesystem.
@@ -282,6 +290,7 @@ assert.equal(filled.small, 'small-287', `the fill packs under the path bound: ${
 assert.equal(filled.static, 'export const TEMPLATE = 1;', `static analysis holds a code file read as text: ${JSON.stringify(filled)}`);
 assert.equal(filled.outside, 'ERR:EAGAIN:named', `an unplanned file is the honest miss, by name: ${JSON.stringify(filled)}`);
 assert.equal(filled.exact, `${EXACT_BODY.length}:EEEE`, `an exact synchronous read past the package-data size is held whole: ${JSON.stringify(filled)}`);
+assert.equal(filled.linked, `${LINKED_BODY.length}:LLLL`, `a synchronous read through a symlinked directory holds its target: ${JSON.stringify(filled)}`);
 assert.equal(filled.outsideStat, String(OUTSIDE_BODY.length), 'the namespace still stats it exactly');
 assert.equal(filled.outsideList, 'never-required.json', 'and lists it');
 assert.equal(filled.outsideAsync, String(OUTSIDE_BODY.length), 'and the async read the miss names returns it');
