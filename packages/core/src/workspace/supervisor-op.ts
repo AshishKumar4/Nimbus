@@ -35,6 +35,12 @@ export interface SupervisorOpEnvelope {
   readonly writerId?: string;
   readonly mutationOwner?: string;
   readonly stream?: ReadableStream<Uint8Array>;
+  /**
+   * The id a {@link SUPERVISOR_DELIVERED_OPS} mutation is sent, and re-sent,
+   * under: the host applies it at most once (`SqliteVFS.deliverOnce`) and
+   * answers a repeat from its receipt. Refused on any other op.
+   */
+  readonly delivery?: string;
 }
 
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
@@ -175,6 +181,30 @@ export const SUPERVISOR_OPS = [
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
+
+/**
+ * The filesystem mutations a process's supervisor delivers exactly once: sent
+ * with a `delivery` id, re-sent under it when the platform drops the call,
+ * applied at most once by the host (`SqliteVFS.deliverOnce`). Each answers
+ * plain data a receipt can hold.
+ *
+ * Not here, so never re-sent: `writeBatchStream` (a stream is consumed by
+ * its first delivery), the descriptor reads (`fsRead`, `fsReaddirHandle`,
+ * `fsFstat`), `fsAppend`/`fsAppendAck` (the append ledger's own
+ * writer/module/operation identity already makes them repeatable), and the
+ * process, socket and storage-grant ops.
+ */
+export const SUPERVISOR_DELIVERED_OPS = {
+  writeFile: true, fsWrite: true, fsWriteRange: true, fsTruncate: true, writeBatch: true,
+  mkdir: true, rmdir: true, unlink: true, rename: true, symlink: true,
+  utimes: true, chmod: true, chown: true,
+  fsOpen: true, fsClose: true, fsDup: true, fsSeek: true, fsSetStatus: true, fsSync: true,
+  fsFtruncate: true, fsFchmod: true, fsFchown: true, fsFutimes: true,
+  fsRemove: true, fsCopyFile: true, fsCopyTree: true,
+  fsAcquireExclusiveMutation: true, fsReleaseExclusiveMutation: true,
+} as const satisfies Partial<Record<SupervisorOpName, true>>;
+
+export type SupervisorDeliveredOpName = keyof typeof SUPERVISOR_DELIVERED_OPS;
 
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -407,10 +437,7 @@ export function createSupervisorOpHandler(
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
   };
   const extend = deps.extend ?? {};
-  return async (envelope) => {
-    if (!envelope || typeof envelope.op !== 'string') {
-      throw new Error('supervisor op: envelope names no operation');
-    }
+  const serve = (envelope: SupervisorOpEnvelope) => {
     // Priority: the embedder's own handler → the native filesystem op → the
     // canonical route table onto the host's _rpc* methods. An op in none of
     // these is not served by this host.
@@ -432,5 +459,17 @@ export function createSupervisorOpHandler(
     if (typeof method !== 'function') throw new Error(`supervisor op: missing host method ${route.method}`);
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
     return Reflect.apply(method, host, args);
+  };
+  return async (envelope) => {
+    if (!envelope || typeof envelope.op !== 'string') {
+      throw new Error('supervisor op: envelope names no operation');
+    }
+    const { delivery } = envelope;
+    if (delivery === undefined) return serve(envelope);
+    // A repeat of any other op would apply it again.
+    if (!Object.hasOwn(SUPERVISOR_DELIVERED_OPS, envelope.op)) {
+      throw new Error(`supervisor op: '${envelope.op}' is not delivered once, so it cannot carry a delivery id`);
+    }
+    return deps.vfs.deliverOnce(envelope.pid ?? 0, delivery, envelope.op, () => serve(envelope));
   };
 }
