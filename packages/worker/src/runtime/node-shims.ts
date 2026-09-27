@@ -6513,7 +6513,7 @@ const __childProcessMod = (() => {
    *      stdout/stderr/exit events fire. Callers like cross-spawn.sync
    *      that read result.status get null until the spawn settles.
    *   3. When the parent facet's main drain settles __pendingIO before
-   *      reportExit (facet-manager.ts), the result object's fields are
+   *      reportExit (facets/manager.ts), the result object's fields are
    *      filled in by the time the supervisor sees the parent exit.
    *
    * Cross-spawn.sync's typical pattern is "const r = spawnSync(...);
@@ -8475,7 +8475,7 @@ function __resolveFile(base) {
 }
 
 // __compiledModules is defined at MODULE TOP LEVEL in the generator code
-// (facet-manager.ts) so new Function() runs during module evaluation.
+// (facets/manager.ts) so new Function() runs during module evaluation.
 
 // ── Single-source-of-truth exports/imports resolver (W2) ───────────────
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
@@ -8519,7 +8519,7 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
   // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
   // dist/.mjs files were transformed to CJS by transformEsmInBundle
-  // at install time (facet-manager.ts:842, W3.5 Fix B). Without this,
+  // by transformEsmInBundle (facets/manager.ts). Without this,
   // packages like nuxt — whose exports map only contains
   // {types, import} for the root subpath — return null from the CJS
   // walk and dead-end with "Cannot find module 'nuxt'" even though
