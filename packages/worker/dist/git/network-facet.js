@@ -24,10 +24,11 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
+import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -407,7 +408,7 @@ export async function execGitNetwork(ctx, env, opts) {
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({
-                props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner, route: hostRoute() ?? undefined },
+                props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner },
             })
             : undefined;
         if (!supervisorBinding) {
@@ -424,6 +425,7 @@ export async function execGitNetwork(ctx, env, opts) {
         let worker;
         let entrypoint;
         try {
+            const gitBundleSource = await fetchGitBundleSource(env);
             const loadedWorker = env.LOADER.load({
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: ['nodejs_compat'],
@@ -436,10 +438,11 @@ export async function execGitNetwork(ctx, env, opts) {
                 //     `preamble` option provides for npm install. This is the
                 //     W7 v3 emits one bounded record per pull; the receiver owns
                 //     the aggregate 8 MiB payload-credit and transaction limits.
-                //   - the pre-bundled isomorphic-git (git-bundle.js)
+                //   - the pre-bundled isomorphic-git (git-bundle.js), the staged
+                //     copy of vendor/git.generated.mjs (runtime/git-bundle-artifact.ts)
                 modules: {
                     'git-network-worker.js': assembleGitNetworkFacetSource(),
-                    'git-bundle.js': GIT_BUNDLE_CODE,
+                    'git-bundle.js': gitBundleSource,
                 },
                 env: { SUPERVISOR: supervisorBinding },
             });
@@ -2236,7 +2239,7 @@ export default {
 
     // Import the pre-bundled isomorphic-git + http/web.
     // The bundle is provided via LOADER.load()'s modules record;
-    // see scripts/bundle-git.mjs and src/git-bundle.generated.ts.
+    // see scripts/bundle-git.mjs and src/runtime/git-bundle-artifact.ts.
     let git, http;
     try {
       const bundle = await import('./git-bundle.js');

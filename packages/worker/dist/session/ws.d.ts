@@ -73,6 +73,8 @@ export interface WsHost {
     initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
     _w5PersistRing(): Promise<void> | null;
     _w9FlushOnClose(): void;
+    /** Boot the esbuild facet in the background for an attaching terminal (once per activation). */
+    prewarmEsbuildFacet(): void;
 }
 /**
  * Give the shell socket a frame arrived on a live session to land in.

@@ -11,6 +11,27 @@ export declare const ESBUILD_FACET_WORKER_ID: string;
  * runner of the `esbuild` command (fetchEsbuildCliRunner).
  */
 export declare function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string, cliRunner: string): WorkerCode;
+/** What became of a Durable Object's esbuild facet pre-warm. */
+export interface EsbuildPrewarmStatus {
+    state: 'pending' | 'ok' | 'failed';
+    /** Wall time from the start of the pre-warm to its outcome. */
+    wallMs?: number;
+    error?: string;
+}
+/**
+ * Load a Durable Object's esbuild facet and initialize its esbuild in the
+ * background, so the session's first transform (`vite` reading a
+ * vite.config.ts, a node launch of a TS entry) does not pay the facet's cold
+ * start: fetching the esbuild wasm, loading the worker and esbuild's own
+ * initialization, about a second on a fresh session. Once per Durable Object
+ * activation: later calls return the first one's outcome. It shares the
+ * transforms' facet stub and the facet's one initialization. A failure is
+ * recorded and logged once and leaves the lazy path as it was; nothing
+ * retries it.
+ */
+export declare function prewarmEsbuildFacet(ctx: DurableObjectState, env: unknown): Promise<EsbuildPrewarmStatus>;
+/** The pre-warm's outcome so far, or null before one started. */
+export declare function esbuildPrewarmStatus(ctx: DurableObjectState): EsbuildPrewarmStatus | null;
 /**
  * The transform host a Durable Object's esbuild runs its transforms on: its
  * esbuild facet, a slice per call. Transforms are pure, so a slice whose call

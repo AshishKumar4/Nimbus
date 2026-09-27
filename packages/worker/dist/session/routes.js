@@ -38,7 +38,7 @@ import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback }
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
-import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
+import { esbuildPrewarmStatus, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -400,6 +400,9 @@ export async function handleFetch(self, request) {
             // swap the WebSocketTerminal's ws ref + replay scrollback.
             try {
                 joinExistingSession(self, server, shellTerminalTee(self), loadScrollback);
+                // An activation the SDK built (initSession(null)) did not
+                // pre-warm; this terminal is its first. Once per activation.
+                self.prewarmEsbuildFacet();
             }
             catch (err) {
                 console.error('warm-rejoin error:', err?.message, err?.stack);
@@ -769,6 +772,9 @@ export async function handleFetch(self, request) {
             // path (Phase B skipped). Probes assert ≥1 after a forced
             // close + reconnect on the same isolate.
             warmJoinCount: self._b4WarmJoinCount ?? 0,
+            // The esbuild facet pre-warm initSession starts once the prompt is
+            // up: pending / ok / failed, with its wall time. Null before it starts.
+            esbuildPrewarm: esbuildPrewarmStatus(self.ctx),
             // Live shell state — useful for confirming the in-memory
             // shell agrees with SQL. Null when no shell is currently
             // attached (between wsClose and next /ws upgrade).

@@ -4,12 +4,15 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
+ *   hostIncarnation — the host instance that minted the binding, present
+ *           when that host applies delivered mutations once
+ *           (@nimbus-sh/core/workspace/supervisor-delivery.js)
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -29,10 +32,20 @@
  *   stderr(data) → void
  *   reportExit(code, tail?) → void  (called from facet's finally block)
  *   prefetch(cwd, entryCode) → Record<string, string>
+ *
+ * Delivery: every call reaches the session over a Durable Object stub the
+ * platform can drop ("Network connection lost.", `retryable`). Reads are
+ * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * host's incarnation, are re-sent under one delivery id that host applies at
+ * most once (`_fsMutation`); on any other binding they are sent once.
+ * Appends are re-sent under the append ledger's identity. Everything else is
+ * sent once and a drop surfaces.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
+import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -112,8 +125,46 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * what failed CPython's start in about one fresh session in twenty.
      */
     _fsRead(op, args = []) {
-        const envelope = { op, args, pid: this._pid() };
-        return idempotent(op, () => this._host(), (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope));
+        return this._resent({ op, args, pid: this._pid() });
+    }
+    /**
+     * A filesystem mutation, delivered exactly once. The platform drops this
+     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
+     * write loop, each failing "Network connection lost." (`retryable`) as
+     * EIO — and a dropped mutation may or may not have run.
+     *
+     * So on a binding whose host names its incarnation, every attempt carries
+     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+     * host instance applies the id at most once: a repeat of a mutation that
+     * ran is answered from its receipt and never applied again, even over
+     * another writer's newer write; one that never arrived applies on the
+     * repeat. Any other instance, and any host that predates delivery, refuses
+     * the envelope outright, and that refusal is never repeated. Repeats stop
+     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+     * receipt retention.
+     *
+     * A binding minted by a host that dedupes nothing names no incarnation,
+     * and its mutations are sent once.
+     *
+     * The id is random because this entrypoint keeps nothing between calls and
+     * may answer from any isolate; the pid still comes from the binding.
+     */
+    _fsMutation(op, args) {
+        const hostIncarnation = this._hostIncarnation();
+        if (hostIncarnation === undefined)
+            return this._fsOp(op, args);
+        return this._resent({ op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id: crypto.randomUUID(), hostIncarnation } }, { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS });
+    }
+    /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
+    _resent(envelope, policy) {
+        return idempotent(envelope.delivery?.op ?? envelope.op, () => this._host(), (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope), policy);
+    }
+    _hostIncarnation() {
+        const props = this.ctx.props;
+        if (typeof props !== 'object' || props === null || !('hostIncarnation' in props))
+            return undefined;
+        const incarnation = props.hostIncarnation;
+        return typeof incarnation === 'string' && incarnation.length > 0 ? incarnation : undefined;
     }
     _reportingPid() {
         const pid = this.ctx.props?.pid;
@@ -153,7 +204,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
         // and corrupting binary content. RPC structured-clone handles
         // Uint8Array transparently; downstream _rpcWriteFile also accepts
-        return this._call(this._fsOp('writeFile', [path, content]));
+        return this._call(this._fsMutation('writeFile', [path, content]));
     }
     async stat(path, options) {
         return this._call(this._fsRead('stat', [path, options]));
@@ -165,16 +216,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsRead('hasLegacySymlinkUnder', [path]));
     }
     async utimes(path, atimeMs, mtimeMs) {
-        return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
+        return this._call(this._fsMutation('utimes', [path, atimeMs, mtimeMs]));
     }
     async chmod(path, mode) {
-        return this._call(this._fsOp('chmod', [path, mode]));
+        return this._call(this._fsMutation('chmod', [path, mode]));
     }
     async access(path, mode) {
         return this._call(this._fsRead('access', [path, mode]));
     }
     async chown(path, uid, gid, options) {
-        return this._call(this._fsOp('chown', [path, uid, gid, options]));
+        return this._call(this._fsMutation('chown', [path, uid, gid, options]));
     }
     async setUmask(mask) {
         return this._call(this._fsOp('setUmask', [mask]));
@@ -186,22 +237,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsRead('exists', [path]));
     }
     async mkdir(path, options) {
-        return this._call(this._fsOp('mkdir', [path, options]));
+        return this._call(this._fsMutation('mkdir', [path, options]));
     }
     async rmdir(path) {
-        return this._call(this._fsOp('rmdir', [path]));
+        return this._call(this._fsMutation('rmdir', [path]));
     }
     async rename(from, to) {
-        return this._call(this._fsOp('rename', [from, to]));
+        return this._call(this._fsMutation('rename', [from, to]));
     }
     async unlink(path) {
-        return this._call(this._fsOp('unlink', [path]));
+        return this._call(this._fsMutation('unlink', [path]));
     }
     async readlink(path) {
         return this._call(this._fsRead('readlink', [path]));
     }
     async symlink(target, path) {
-        return this._call(this._fsOp('symlink', [target, path]));
+        return this._call(this._fsMutation('symlink', [target, path]));
     }
     /**
      * ACQUIRE: the paths mutated since the facet's cursor, plus a fresh
@@ -266,64 +317,65 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._fsOp('wsClose', [id, code, reason]));
     }
     async fsOpen(path, flags) {
-        return this._call(this._fsOp('fsOpen', [path, flags]));
+        return this._call(this._fsMutation('fsOpen', [path, flags]));
     }
     async fsRead(handleId, offset, length) {
         return this._call(this._fsOp('fsRead', [handleId, offset, length]));
     }
     async fsWrite(handleId, offset, bytes) {
-        return this._call(this._fsOp('fsWrite', [handleId, offset, bytes]));
+        return this._call(this._fsMutation('fsWrite', [handleId, offset, bytes]));
     }
+    /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
     async fsFstat(...args) {
-        return this._call(this._fsOp('fsFstat', args));
+        return this._call(this._fsRead('fsFstat', args));
     }
     async fsDup(...args) {
-        return this._call(this._fsOp('fsDup', args));
+        return this._call(this._fsMutation('fsDup', args));
     }
     async fsSeek(...args) {
-        return this._call(this._fsOp('fsSeek', args));
+        return this._call(this._fsMutation('fsSeek', args));
     }
     async fsSetStatus(...args) {
-        return this._call(this._fsOp('fsSetStatus', args));
+        return this._call(this._fsMutation('fsSetStatus', args));
     }
     async fsReaddirHandle(...args) {
-        return this._call(this._fsOp('fsReaddirHandle', args));
+        return this._call(this._fsRead('fsReaddirHandle', args));
     }
     async fsFtruncate(...args) {
-        return this._call(this._fsOp('fsFtruncate', args));
+        return this._call(this._fsMutation('fsFtruncate', args));
     }
     async fsFchmod(...args) {
-        return this._call(this._fsOp('fsFchmod', args));
+        return this._call(this._fsMutation('fsFchmod', args));
     }
     async fsFchown(...args) {
-        return this._call(this._fsOp('fsFchown', args));
+        return this._call(this._fsMutation('fsFchown', args));
     }
     async fsFutimes(...args) {
-        return this._call(this._fsOp('fsFutimes', args));
+        return this._call(this._fsMutation('fsFutimes', args));
     }
     async fsSync(...args) {
-        return this._call(this._fsOp('fsSync', args));
+        return this._call(this._fsMutation('fsSync', args));
     }
     async fsRealpath(...args) {
         return this._call(this._fsRead('fsRealpath', args));
     }
     async fsRemove(...args) {
-        return this._call(this._fsOp('fsRemove', args));
+        return this._call(this._fsMutation('fsRemove', args));
     }
     async fsCopyFile(...args) {
-        return this._call(this._fsOp('fsCopyFile', args));
+        return this._call(this._fsMutation('fsCopyFile', args));
     }
     async fsCopyTree(...args) {
-        return this._call(this._fsOp('fsCopyTree', args));
+        return this._call(this._fsMutation('fsCopyTree', args));
     }
     async fsAcquireExclusiveMutation(...args) {
-        return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
+        return this._call(this._fsMutation('fsAcquireExclusiveMutation', args));
     }
     async fsReleaseExclusiveMutation(...args) {
-        return this._call(this._fsOp('fsReleaseExclusiveMutation', args));
+        return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
     }
     async fsClose(handleId) {
-        return this._call(this._fsOp('fsClose', [handleId]));
+        return this._call(this._fsMutation('fsClose', [handleId]));
     }
     /**
      * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no
@@ -371,16 +423,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
         }
     }
     async fsWriteRange(path, offset, bytes) {
-        return this._call(this._fsOp('fsWriteRange', [path, offset, bytes]));
+        return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
     }
+    /**
+     * An append and its acknowledgement carry the append ledger's own identity
+     * (writer, module incarnation, operation sequence), whose receipt the host
+     * keeps until the acknowledgement: a repeat of either applies nothing twice,
+     * so a dropped one is simply re-sent.
+     */
     async fsAppend(path, moduleId, operationId, bytes) {
-        return this._call(this._op('fsAppend', [path, moduleId, operationId, bytes], { pid: this._pid(), writerId: this._writerId() }));
+        return this._call(this._resent({ op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() }));
     }
     async fsAppendAck(moduleId, operationId) {
-        return this._call(this._op('fsAppendAck', [moduleId, operationId], { pid: this._pid(), writerId: this._writerId() }));
+        return this._call(this._resent({ op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() }));
     }
     async fsTruncate(path, size) {
-        return this._call(this._fsOp('fsTruncate', [path, size]));
+        return this._call(this._fsMutation('fsTruncate', [path, size]));
     }
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
@@ -403,7 +461,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         setLastRpcFrame('writeBatch', payloadBytes);
         rpcPayloadStart(payloadBytes);
         try {
-            return await this._call(this._fsOp('writeBatch', [payload]));
+            return await this._call(this._fsMutation('writeBatch', [payload]));
         }
         finally {
             rpcPayloadEnd(payloadBytes);

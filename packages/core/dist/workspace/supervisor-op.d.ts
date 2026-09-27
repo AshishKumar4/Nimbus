@@ -2,6 +2,7 @@ import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { SUPERVISOR_DELIVER_OP, type SupervisorDeliveries, type SupervisorDelivery } from './supervisor-delivery.js';
 /**
  * Identity comes from the supervisor binding, never from facet arguments: a
  * process's `pid` is stamped by SupervisorRPC from its own props. A HOST call
@@ -11,7 +12,11 @@ import type { SessionProcessSupervisor } from '../runtime/session-process-superv
  * together are refused, so a process can never widen its own identity.
  */
 export interface SupervisorOpEnvelope {
-    readonly op: SupervisorOpName;
+    /**
+     * The op, or {@link SUPERVISOR_DELIVER_OP} for a mutation delivered exactly
+     * once — whose own op then rides in `delivery`, and whose args are these.
+     */
+    readonly op: SupervisorOpName | typeof SUPERVISOR_DELIVER_OP;
     readonly args?: readonly unknown[];
     readonly pid?: number;
     /** A host call's credential. Meaningless — and refused — with a pid. */
@@ -19,6 +24,8 @@ export interface SupervisorOpEnvelope {
     readonly writerId?: string;
     readonly mutationOwner?: string;
     readonly stream?: ReadableStream<Uint8Array>;
+    /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
+    readonly delivery?: SupervisorDelivery;
 }
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
 export interface SupervisorOpDeps {
@@ -46,6 +53,13 @@ export interface SupervisorOpDeps {
      */
     readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
     readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
+    /**
+     * The instance's receipts for mutations delivered exactly once
+     * (`openSupervisorDeliveries`). Absent, this host applies nothing once:
+     * it serves no {@link SUPERVISOR_DELIVER_OP}, exactly as a host that
+     * predates delivery does not, and mints no binding that would send one.
+     */
+    readonly deliveries?: SupervisorDeliveries;
 }
 /**
  * One slot in an op's argument plan: a number takes `envelope.args[n]`, a
@@ -84,7 +98,9 @@ export interface SupervisorOpHost {
  *     against the real filesystem for a native op and against a captured
  *     delegate for a routed one.
  *
- * An op absent here is not served, on any host.
+ * An op absent here is not served, on any host. The one other name an
+ * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
+ * wrapper around one of these, which the handler unwraps.
  */
 export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "symlink", "fsAcquire", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpDispatchInline", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -168,6 +184,7 @@ declare const NATIVE_OPS: {
     chmod: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     utimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
+    fsWriteRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
     stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
     stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;

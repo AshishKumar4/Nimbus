@@ -38,6 +38,7 @@ import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/rou
 import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
@@ -304,6 +305,12 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      */
     private _supervisorOps;
     private processFiles;
+    /**
+     * This instance's receipts for its processes' mutations delivered exactly
+     * once. Opened in the constructor, before anything is spawned, so every
+     * SUPERVISOR binding minted from this ctx names this instance.
+     */
+    readonly supervisorDeliveries: SupervisorDeliveries;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority(): ProcessFiles;
     private supervisorOps;
@@ -669,6 +676,12 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild: Promise<void> | null;
+    /**
+     * Boot this activation's esbuild facet in the background, for a terminal
+     * that attached (facets/esbuild-transform.ts prewarmEsbuildFacet; once per
+     * activation, so an activation already pre-warmed is a no-op).
+     */
+    prewarmEsbuildFacet(): void;
     ensureGlobalPrefixDirs(prefix: string): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the

@@ -1,6 +1,7 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armResidentKeepalive, installLogPersistence, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
@@ -57,9 +58,12 @@ class RuntimeOwner {
     services;
     /** The workspace's namespace and process bindings. */
     getFilesystemAuthority() { return this.options.workspace.filesystem; }
+    /** This instance's receipts for its processes' mutations delivered exactly once (see NimbusSession). */
+    supervisorDeliveries;
     constructor(options) {
         this.options = options;
         hostNamespaceBinding(options.env, 'HostedRuntime');
+        this.supervisorDeliveries = openSupervisorDeliveries(options.ctx);
         const exports = Reflect.get(options.ctx, 'exports');
         if (!supervisorEntrypoint(exports)) {
             throw new Error('Export the configured supervisor entrypoint and call composeFabric before composing a hosted runtime');

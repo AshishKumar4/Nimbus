@@ -77,8 +77,8 @@ export declare class ProcessTable {
      * "[process killed: killed]".
      */
     exit(pid: number, exitCode: number): void;
-    /** Mark a process as killed. */
-    kill(pid: number): boolean;
+    /** Mark a process as killed, by SIGKILL (137) unless the signal's status is given. */
+    kill(pid: number, exitCode?: number): boolean;
     get(pid: number): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];

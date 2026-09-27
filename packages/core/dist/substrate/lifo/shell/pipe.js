@@ -1,5 +1,11 @@
 import { encode } from '../utils/encoding.js';
 import { decideWrite, PIPE_CAPACITY } from '../../../runtime/bash/pipe-rules.js';
+/** Both ends of every pipe: what `isFdPipe` answers for, whichever interpreter holds them. */
+const pipeEnds = new WeakSet();
+/** Whether a stream is an end of a shell pipe (S_ISFIFO). */
+export function isPipeEnd(stream) {
+    return stream !== undefined && pipeEnds.has(stream);
+}
 /**
  * A shell pipe that carries the producer's exact bytes. Text writes are
  * encoded once at the write side, `writeBytes` stores bytes verbatim, and
@@ -18,6 +24,7 @@ export class PipeChannel {
     readerClosed = false;
     unlinkSignal;
     constructor(signal) {
+        pipeEnds.add(this.writer).add(this.reader);
         if (signal?.aborted)
             this.cancel();
         else if (signal) {

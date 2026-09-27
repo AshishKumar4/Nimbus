@@ -4,12 +4,15 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
+ *   hostIncarnation — the host instance that minted the binding, present
+ *           when that host applies delivered mutations once
+ *           (@nimbus-sh/core/workspace/supervisor-delivery.js)
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -29,6 +32,14 @@
  *   stderr(data) → void
  *   reportExit(code, tail?) → void  (called from facet's finally block)
  *   prefetch(cwd, entryCode) → Record<string, string>
+ *
+ * Delivery: every call reaches the session over a Durable Object stub the
+ * platform can drop ("Network connection lost.", `retryable`). Reads are
+ * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * host's incarnation, are re-sent under one delivery id that host applies at
+ * most once (`_fsMutation`); on any other binding they are sent once.
+ * Appends are re-sent under the append ledger's identity. Everything else is
+ * sent once and a drop surfaces.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
@@ -72,6 +83,32 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * what failed CPython's start in about one fresh session in twenty.
      */
     private _fsRead;
+    /**
+     * A filesystem mutation, delivered exactly once. The platform drops this
+     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
+     * write loop, each failing "Network connection lost." (`retryable`) as
+     * EIO — and a dropped mutation may or may not have run.
+     *
+     * So on a binding whose host names its incarnation, every attempt carries
+     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+     * host instance applies the id at most once: a repeat of a mutation that
+     * ran is answered from its receipt and never applied again, even over
+     * another writer's newer write; one that never arrived applies on the
+     * repeat. Any other instance, and any host that predates delivery, refuses
+     * the envelope outright, and that refusal is never repeated. Repeats stop
+     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+     * receipt retention.
+     *
+     * A binding minted by a host that dedupes nothing names no incarnation,
+     * and its mutations are sent once.
+     *
+     * The id is random because this entrypoint keeps nothing between calls and
+     * may answer from any isolate; the pid still comes from the binding.
+     */
+    private _fsMutation;
+    /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
+    private _resent;
+    private _hostIncarnation;
     private _reportingPid;
     private _call;
     private _pid;
@@ -160,6 +197,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
+    /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
     fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>>;
     fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>>;
     fsSeek(...args: Parameters<RuntimeFsBridge['seek']>): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>>;
@@ -205,6 +243,12 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
     fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt>;
+    /**
+     * An append and its acknowledgement carry the append ledger's own identity
+     * (writer, module incarnation, operation sequence), whose receipt the host
+     * keeps until the acknowledgement: a repeat of either applies nothing twice,
+     * so a dropped one is simply re-sent.
+     */
     fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
     fsAppendAck(moduleId: string, operationId: string): Promise<void>;
     fsTruncate(path: string, size: number): Promise<VfsMutationReceipt>;

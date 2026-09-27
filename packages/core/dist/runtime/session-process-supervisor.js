@@ -137,11 +137,12 @@ export class SessionProcessSupervisor {
     }
     /**
      * Mark a process as killed and tear down its input channel so queued
-     * stdin can't outlive the process.
+     * stdin can't outlive the process. `exitCode` is the ending signal's
+     * status; SIGKILL's 137 when absent.
      */
-    kill(pid) {
+    kill(pid, exitCode) {
         const wasRunning = this.table.get(pid)?.state === 'running';
-        const killed = this.table.kill(pid);
+        const killed = this.table.kill(pid, exitCode);
         this.terminate(pid);
         this.input.close(pid);
         this.fireTerminal(pid, wasRunning);

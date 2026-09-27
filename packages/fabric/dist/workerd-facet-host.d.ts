@@ -24,11 +24,7 @@ export interface NimbusCtxExports {
             key: string;
             name: string | null;
             depth: number;
-            supervisor: {
-                doId: string;
-                pid: number;
-                writerId: string;
-            };
+            supervisor: ResidentSupervisorProps;
             stage?: unknown;
         };
     }) => LoadedWorkerEntrypointStub;
@@ -40,11 +36,7 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
  * request rather than leaving it resident: their module map is assembled in
  * that stateless entrypoint's own isolate, never in a session DO.
  */
-export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: {
-    doId: string;
-    pid: number;
-    writerId: string;
-}, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
+export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: ResidentSupervisorProps, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
     getEntrypoint(): LoadedWorkerEntrypointStub;

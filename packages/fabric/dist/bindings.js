@@ -255,6 +255,8 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
         pid: z.number().int().nonnegative(),
         writerId: z.string().uuid(),
         route: HostRouteSchema.optional(),
+        /** The host instance's delivery incarnation (ResidentSupervisorProps). */
+        hostIncarnation: z.string().uuid().optional(),
     }).optional(),
     /**
      * Staged-artifact spec, for a ONE-SHOT run. The module map — ~23 MB for

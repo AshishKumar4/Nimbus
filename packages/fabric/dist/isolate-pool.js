@@ -24,7 +24,8 @@
  * and binding types used by this implementation.
  */
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { hostRoute, supervisorEntrypoint } from './composition.js';
+import { supervisorEntrypoint } from './composition.js';
+import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
@@ -240,11 +241,11 @@ export class IsolatePool {
                 // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
                 // to the user's session DO, not the peer DO. Default to the
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-                const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
-                const supPid = opts?.supervisorPid ?? 0;
-                bindings.SUPERVISOR = supervisorRpc({
-                    props: { doId: supDoId, pid: supPid, route: opts?.supervisorRoute ?? hostRoute() ?? undefined },
+                const supervisor = supervisorBindingProps(ctx, opts?.supervisorPid ?? 0, {
+                    doId: opts?.supervisorDoIdOverride,
+                    route: opts?.supervisorRoute,
                 });
+                bindings.SUPERVISOR = supervisorRpc({ props: supervisor });
                 // Whatever the minted worker's env carries must be in its loader
                 // cache key — workerd's loader cache survives a DO hibernation
                 // wake while generation-strided pids (1000001 → 2000001) do not:
@@ -252,8 +253,9 @@ export class IsolatePool {
                 // the new generation still credentialed to the dead pid, and
                 // every pid-authorized RPC from it fails "process pid … does
                 // not exist". doIdShort alone cannot cover this — it changes
-                // across sessions, not across wakes of the same session.
-                this.supervisorKey = `s${supDoId.slice(0, 12)}-${supPid}`;
+                // across sessions, not across wakes of the same session. So does
+                // the instance a binding delivers mutations to, when it names one.
+                this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}`, supervisor);
             }
             else {
                 // Supervisor entrypoint unavailable — running without ctx.exports

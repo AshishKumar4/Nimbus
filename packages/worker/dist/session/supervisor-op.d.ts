@@ -17,6 +17,7 @@
  */
 import { type SupervisorOpBridgeStore, type SupervisorOpEnvelope, type SupervisorOpHost } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 /**
@@ -33,6 +34,12 @@ export interface SessionSupervisorHost {
         filesystem: NimbusFilesystemAuthority;
     } | null;
     getFilesystemAuthority?(): NimbusFilesystemAuthority;
+    /**
+     * This instance's receipts for mutations its processes deliver exactly
+     * once, opened with `openSupervisorDeliveries(ctx)` before anything is
+     * spawned. Absent, the session serves no delivered mutation.
+     */
+    readonly supervisorDeliveries?: SupervisorDeliveries;
     _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
 }

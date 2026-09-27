@@ -54,8 +54,7 @@
  */
 import { ESBUILD_JS_ASSET_PATH, ESBUILD_JS_SHA256, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256, } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_ASSET_PATH, ESBUILD_CLI_SHA256 } from '../esbuild-cli-artifact.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { fetchStagedBytes, fetchStagedText } from './staged-source.js';
 /**
  * Synthetic L2 cache keys for the esbuild-wasm assets, staged at
  * public/_assets/esbuild-<version>.{wasm,js} by scripts/bundle-esbuild-wasm.mjs
@@ -71,30 +70,26 @@ export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_WASM_A
 export const ESBUILD_JS_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_JS_ASSET_PATH}`;
 /** The CLI runner's key names its build id, so each rebuild lands a fresh entry. */
 export const ESBUILD_CLI_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_CLI_ASSET_PATH}`;
-const ESBUILD_WASM_ASSET = {
-    label: 'esbuild-wasm',
-    path: ESBUILD_WASM_ASSET_PATH,
-    l2Key: ESBUILD_WASM_L2_KEY,
-    sha256: ESBUILD_WASM_SHA256,
-    contentType: 'application/wasm',
-    stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
-};
-const ESBUILD_JS_ASSET = {
-    label: 'esbuild-wasm JS adapter',
-    path: ESBUILD_JS_ASSET_PATH,
-    l2Key: ESBUILD_JS_L2_KEY,
-    sha256: ESBUILD_JS_SHA256,
-    contentType: 'text/javascript; charset=utf-8',
-    stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
-};
-const ESBUILD_CLI_ASSET = {
-    label: 'esbuild CLI runner',
-    path: ESBUILD_CLI_ASSET_PATH,
-    l2Key: ESBUILD_CLI_L2_KEY,
-    sha256: ESBUILD_CLI_SHA256,
-    contentType: 'text/javascript; charset=utf-8',
-    stagedBy: 'scripts/bundle-facet-workers.mjs',
-};
+/** One esbuild artifact, verified against its pin (runtime/staged-source.ts). */
+function esbuildAsset(label, path, l2Key, sha256, contentType, stagedBy) {
+    return {
+        path,
+        l2Key,
+        sha256,
+        contentType,
+        poisonedCache: 'reject',
+        missingBinding: `Nimbus: the esbuild facet requires an env.ASSETS binding (serves ${path})`,
+        fetchFailed: (res) => `${label} asset fetch failed: ${res.status} ${res.statusText} ` +
+            `for ${path} — deploy is missing the asset`,
+        integrityFailed: (digest, from) => `${label} integrity check failed: expected ${sha256}, got ` +
+            `${digest} (${from}) for ${path} — ` +
+            'the staged asset is corrupt or out of sync; rerun ' +
+            `${stagedBy} and redeploy`,
+    };
+}
+const ESBUILD_WASM_ASSET = esbuildAsset('esbuild-wasm', ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_L2_KEY, ESBUILD_WASM_SHA256, 'application/wasm', 'scripts/bundle-esbuild-wasm.mjs');
+const ESBUILD_JS_ASSET = esbuildAsset('esbuild-wasm JS adapter', ESBUILD_JS_ASSET_PATH, ESBUILD_JS_L2_KEY, ESBUILD_JS_SHA256, 'text/javascript; charset=utf-8', 'scripts/bundle-esbuild-wasm.mjs');
+const ESBUILD_CLI_ASSET = esbuildAsset('esbuild CLI runner', ESBUILD_CLI_ASSET_PATH, ESBUILD_CLI_L2_KEY, ESBUILD_CLI_SHA256, 'text/javascript; charset=utf-8', 'scripts/bundle-facet-workers.mjs');
 /**
  * Fetch the esbuild-wasm bytes from the static-assets layer.
  *
@@ -109,92 +104,21 @@ const ESBUILD_CLI_ASSET = {
  * always the correct source of truth.
  */
 export function fetchEsbuildWasmBytes(env) {
-    return fetchVerifiedAsset(env, ESBUILD_WASM_ASSET);
+    return fetchStagedBytes(env, ESBUILD_WASM_ASSET);
 }
 /**
  * Fetch the esbuild-wasm JS adapter: the function body that, wrapped in
  * `new Function(...)()`, returns the esbuild namespace. Facet sources
  * splice it in verbatim, so it is verified like the wasm it drives.
  */
-export async function fetchEsbuildJsFnBody(env) {
-    return new TextDecoder().decode(await fetchVerifiedAsset(env, ESBUILD_JS_ASSET));
+export function fetchEsbuildJsFnBody(env) {
+    return fetchStagedText(env, ESBUILD_JS_ASSET);
 }
 /**
  * Fetch the `esbuild` command's runner: Go's wasm_exec.js and the typed fs
  * shim, a script that installs `globalThis.__esbuildCliRun` when the esbuild
  * facet evaluates it. Verified like the adapter it sits beside.
  */
-export async function fetchEsbuildCliRunner(env) {
-    return new TextDecoder().decode(await fetchVerifiedAsset(env, ESBUILD_CLI_ASSET));
-}
-async function fetchVerifiedAsset(env, asset) {
-    const caches = globalThis.caches;
-    // ── L2 fast path ────────────────────────────────────────────────
-    let ab = null;
-    try {
-        if (caches?.default) {
-            const hit = await caches.default.match(new Request(asset.l2Key));
-            if (hit && hit.ok)
-                ab = await hit.arrayBuffer();
-        }
-    }
-    catch { /* fall through to ASSETS */ }
-    const fromCache = ab !== null;
-    if (!ab) {
-        // ── L4 path (env.ASSETS) ──────────────────────────────────────
-        // Construct a synthetic request — env.ASSETS routes by pathname only;
-        // the host is ignored. Using `.invalid` per RFC-2606 makes it
-        // unambiguous that this URL is internal-binding-only.
-        const url = `https://nimbus-internal.invalid${asset.path}`;
-        const res = await env.ASSETS.fetch(new Request(url));
-        try {
-            if (!res.ok) {
-                throw new Error(`${asset.label} asset fetch failed: ${res.status} ${res.statusText} ` +
-                    `for ${asset.path} — deploy is missing the asset`);
-            }
-            // Read the bytes once (Response body is a one-shot stream). The
-            // caller needs the ArrayBuffer to hand to workerd's LOADER; we
-            // also use it to write through to L2.
-            ab = await res.arrayBuffer();
-        }
-        finally {
-            disposeRpcResource(res);
-        }
-    }
-    const digest = await sha256Hex(ab);
-    if (digest !== asset.sha256) {
-        throw new Error(`${asset.label} integrity check failed: expected ${asset.sha256}, got ` +
-            `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${asset.path} — ` +
-            'the staged asset is corrupt or out of sync; rerun ' +
-            `${asset.stagedBy} and redeploy`);
-    }
-    if (!fromCache) {
-        // ── L2 write-back ────────────────────────────────────────────
-        // Eternal immutable TTL: the URL is version-pinned so a new
-        // ESBUILD_VERSION lands a fresh cache entry; the old one naturally
-        // evicts on TTL. The cache layer holds its own copy (workerd
-        // structured-clones the body during put), so the supervisor's
-        // reference to `ab` is unaffected.
-        // Best-effort: a write failure does NOT block the caller.
-        try {
-            if (caches?.default) {
-                // We pass a fresh Uint8Array view over the same buffer; the
-                // cache stores a copy at put time. Returning `ab` to the
-                // caller stays valid because Response constructor doesn't
-                // detach the buffer (only ReadableStream consumption would).
-                const writeBack = new Response(new Uint8Array(ab), {
-                    headers: {
-                        'Content-Type': asset.contentType,
-                        'Cache-Control': 'public, max-age=31536000, immutable',
-                    },
-                });
-                // Awaited so subsequent reads strictly hit L2 (no
-                // double-fetch race). The wasm payload is 12 MiB; workerd
-                // structured-clones it into the cache, ~1-5 ms locally.
-                await caches.default.put(new Request(asset.l2Key), writeBack);
-            }
-        }
-        catch { /* silent */ }
-    }
-    return ab;
+export function fetchEsbuildCliRunner(env) {
+    return fetchStagedText(env, ESBUILD_CLI_ASSET);
 }

@@ -3,7 +3,7 @@ import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
-import { PipeChannel } from './pipe.js';
+import { isPipeEnd, PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
@@ -835,6 +835,7 @@ export class Interpreter {
                                     ? () => terminalStdin.rawMode
                                     : undefined,
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                                isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
                                 setUmask: identity.setUmask,
                                 runAs: async (cred, argv) => io.runAs
                                     ? (await io.runAs(ctx, cred, argv))

@@ -36,7 +36,7 @@ import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHo
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
 import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
-import { handleNimbusRemoteApi, } from './remote-api.js';
+import { handleNimbusRemoteApi, remoteApiEnabled, } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
 import { publicDirectoryStub } from './public-directory.js';
 /**
@@ -346,7 +346,18 @@ export function createNimbusHandler(options = {}) {
                 return Response.json({ url: previewUrl }, { headers: { 'Cache-Control': 'no-store' } });
             }
             // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
+            // Only to GET and HEAD: a root DELETE is the SDK's destroy, answered by
+            // handleNimbusRemoteApi above when the remote API is enabled.
             if (route.innerPath === '/' || route.innerPath === '') {
+                if (request.method !== 'GET' && request.method !== 'HEAD') {
+                    return new Response('Method not allowed', {
+                        status: 405,
+                        headers: {
+                            Allow: remoteApiEnabled(options.sdk) ? 'GET, HEAD, DELETE' : 'GET, HEAD',
+                            'Cache-Control': 'no-store',
+                        },
+                    });
+                }
                 if (env.ASSETS) {
                     const shellUrl = new URL('/s/index.html', url.origin);
                     return env.ASSETS.fetch(new Request(shellUrl.toString(), {

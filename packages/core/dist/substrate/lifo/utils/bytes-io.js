@@ -1,12 +1,8 @@
 import { resolve } from './path.js';
 const enc = new TextEncoder();
 const CHUNK = 65536;
-/**
- * An operand's bytes in bounded chunks; `-` or undefined is standard input.
- * `readSize` is how much one read asks of a pipe: a reader that stops early
- * leaves the rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
- */
-export async function* inputChunks(ctx, operand, readSize = CHUNK) {
+/** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
+export async function* inputChunks(ctx, operand, { readSize = CHUNK, slice = false } = {}) {
     if (operand === undefined || operand === '-') {
         const stdin = ctx.stdin;
         if (stdin === undefined)
@@ -33,15 +29,16 @@ export async function* inputChunks(ctx, operand, readSize = CHUNK) {
     if (stat.type === 'directory')
         throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
     const characterDevice = ((stat.mode ?? 0) & 0o170000) === 0o020000;
-    if (stat.size === 0 && !characterDevice) {
-        // Empty, or a file whose size says nothing (a synthesized /proc entry): read whole.
+    if (stat.size === 0 && (!characterDevice || !slice)) {
+        // Empty, a file whose size says nothing (a synthesized /proc entry), or a
+        // device read to its end: read whole.
         const bytes = await ctx.vfs.readFile(path);
         if (bytes.length > 0)
             yield bytes;
         return;
     }
     // A regular file to its end; a character device (/dev/zero) for as long
-    // as its reader keeps asking, which is why this is a generator.
+    // as its slice reader keeps asking, which is why this is a generator.
     for (let offset = 0;;) {
         const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
         if (chunk.length === 0)

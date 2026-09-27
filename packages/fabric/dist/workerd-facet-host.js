@@ -17,6 +17,7 @@ import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/stora
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, recordLoaderId, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
+import { supervisorLoaderKey } from './supervisor-props.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -36,7 +37,9 @@ export async function createLoadedWorkerEntrypoint(ctxExports, supervisor, stage
     }
     return await ctxExports.NimbusLoadedEntrypoint({
         props: {
-            key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+            // The entrypoint's loader outlives this instance, and a warm worker keeps
+            // the SUPERVISOR binding it was built with.
+            key: supervisorLoaderKey(`nimbus-process:${supervisor.doId}:${supervisor.pid}`, supervisor),
             name,
             depth: 0,
             supervisor,
@@ -399,11 +402,14 @@ function residentProcessClass(ctx, env, disk, supervisor, params) {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Resident processes require '
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
+    // A warm worker keeps the SUPERVISOR binding it was built with, and the
+    // loader outlives this instance.
+    const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
     try {
         const worker = loader
-            .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+            .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
             .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-        recordLoaderId(ctx, params.workerKey);
+        recordLoaderId(ctx, loaderKey);
         return worker;
     }
     catch (error) {

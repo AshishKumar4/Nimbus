@@ -16,7 +16,10 @@
  *   typescript     when the closure has typescript: its lib .d.ts, @types/**,
  *                  and the declaration files of the packages @types depends on
  *   static         what the closure's own code names by a foldable path
- *                  (static-fs-refs.ts), resolved against the namespace
+ *                  (static-fs-refs.ts), resolved against the namespace:
+ *                  under 256 KiB, or any size when the code reads it with
+ *                  readFileSync (or a read-only openSync) by that path,
+ *                  through any symlinks on it
  *   learned        paths earlier launches of the same package versions missed
  *
  * Code the closure loads is in the module map already; the store adopts it,
@@ -37,6 +40,8 @@ export interface DataPlanSource {
     }>;
     /** A file's text, or null when it cannot be read. */
     readText(path: string): Promise<string | null>;
+    /** A symlink's target as stored, or null when the path is not a symlink. */
+    readlink(path: string): Promise<string | null>;
     /** What is at a path, following symlinks, or null. */
     stat(path: string): Promise<{
         kind: string;

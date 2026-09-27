@@ -51,6 +51,9 @@ export function createProgrammaticShell(self, pid, state) {
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: parent.getRunAsHost(),
     });
+    const hostSignals = parent.getHostProcessSignals();
+    if (hostSignals)
+        shell.setHostProcessSignals(hostSignals);
     shell.setCwd(state.cwd);
     return shell;
 }

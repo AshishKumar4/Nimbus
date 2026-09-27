@@ -2,7 +2,8 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { hostRoute, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
@@ -24,11 +25,19 @@ const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
     'let initialized;',
+    // One initialization per facet, shared by warm() and every transform. A
+    // failed one is forgotten, as esbuild forgets it, so the next call retries.
     'function ensureInitialized() {',
-    '  initialized ||= esbuild.initialize({ wasmModule, worker: false });',
+    '  initialized ||= esbuild.initialize({ wasmModule, worker: false }).catch((e) => {',
+    '    initialized = undefined;',
+    '    throw e;',
+    '  });',
     '  return initialized;',
     '}',
     'export class EsbuildFacet extends DurableObject {',
+    '  async warm() {',
+    '    await ensureInitialized();',
+    '  }',
     '  async transformMany(requests) {',
     '    if (requests.some(({ options }) => !options?.rewriteOnly)) await ensureInitialized();',
     '    const outcomes = [];',
@@ -112,6 +121,75 @@ async function esbuildFacet(ctx, env) {
     const facetClass = worker.getDurableObjectClass('EsbuildFacet');
     return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
 }
+/**
+ * The one way to a Durable Object's esbuild facet: its transforms, builds,
+ * `esbuild` commands and pre-warm share one stub, so a caller that starts
+ * while another is still loading the facet (fetching and verifying the 12 MiB
+ * wasm) waits on that load instead of starting a second one. A load or call
+ * that failed drops the entry; the next caller mints a fresh stub.
+ */
+const sharedFacets = new WeakMap();
+function sharedEsbuildFacet(ctx, env) {
+    const current = sharedFacets.get(ctx);
+    if (current)
+        return current;
+    const minted = esbuildFacet(ctx, env);
+    sharedFacets.set(ctx, minted);
+    minted.catch(() => forgetEsbuildFacet(ctx, minted));
+    return minted;
+}
+function forgetEsbuildFacet(ctx, stub) {
+    if (sharedFacets.get(ctx) === stub)
+        sharedFacets.delete(ctx);
+}
+/** One call on the shared facet; a call that throws drops the stub it used. */
+async function onEsbuildFacet(ctx, env, call) {
+    const stub = sharedEsbuildFacet(ctx, env);
+    try {
+        return await call(await stub);
+    }
+    catch (error) {
+        forgetEsbuildFacet(ctx, stub);
+        throw error;
+    }
+}
+/** A Durable Object activation's one pre-warm: its status as it goes, and its outcome. */
+const prewarms = new WeakMap();
+/**
+ * Load a Durable Object's esbuild facet and initialize its esbuild in the
+ * background, so the session's first transform (`vite` reading a
+ * vite.config.ts, a node launch of a TS entry) does not pay the facet's cold
+ * start: fetching the esbuild wasm, loading the worker and esbuild's own
+ * initialization, about a second on a fresh session. Once per Durable Object
+ * activation: later calls return the first one's outcome. It shares the
+ * transforms' facet stub and the facet's one initialization. A failure is
+ * recorded and logged once and leaves the lazy path as it was; nothing
+ * retries it.
+ */
+export function prewarmEsbuildFacet(ctx, env) {
+    const existing = prewarms.get(ctx);
+    if (existing)
+        return existing.done;
+    const status = { state: 'pending' };
+    const started = Date.now();
+    const done = onEsbuildFacet(ctx, env, (facet) => facet.warm()).then(() => {
+        status.state = 'ok';
+        status.wallMs = Date.now() - started;
+        return status;
+    }, (error) => {
+        status.state = 'failed';
+        status.wallMs = Date.now() - started;
+        status.error = errorText(error);
+        console.warn('[nimbus] esbuild facet pre-warm failed; the first transform starts it instead:', status.error);
+        return status;
+    });
+    prewarms.set(ctx, { status, done });
+    return done;
+}
+/** The pre-warm's outcome so far, or null before one started. */
+export function esbuildPrewarmStatus(ctx) {
+    return prewarms.get(ctx)?.status ?? null;
+}
 /** Calls per slice: a slice whose call failed is sent once more. */
 const SLICE_ATTEMPTS = 2;
 /**
@@ -138,11 +216,13 @@ export function esbuildTransformHost(ctx, env) {
             let failure = null;
             for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
                 try {
-                    facet ??= await esbuildFacet(ctx, env);
-                    answered = await facet.transformMany(slice);
+                    facet ??= sharedEsbuildFacet(ctx, env);
+                    answered = await (await facet).transformMany(slice);
                 }
                 catch (error) {
                     // A stub that threw may be broken for good; the next call mints its own.
+                    if (facet)
+                        forgetEsbuildFacet(ctx, facet);
                     facet = null;
                     failure = error;
                     if (classifyDoCall(error) === 'overloaded')
@@ -166,8 +246,7 @@ export function esbuildTransformHost(ctx, env) {
  */
 export function esbuildBuildHost(ctx, env) {
     return async (options, plugin) => {
-        const facet = await esbuildFacet(ctx, env);
-        return await facet.build(options, plugin);
+        return onEsbuildFacet(ctx, env, (facet) => facet.build(options, plugin));
     };
 }
 /**
@@ -181,10 +260,9 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
     if (!mint)
         throw new Error('Nimbus: no supervisor entrypoint is composed, so the esbuild facet cannot reach the files');
     const supervisor = mint({
-        props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined },
+        props: supervisorBindingProps(ctx, pid),
     });
-    const facet = await esbuildFacet(ctx, env);
-    return await facet.cli(args, supervisor, output);
+    return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
 }
 /**
  * The esbuild a Durable Object's supervisor shares: its transforms and its

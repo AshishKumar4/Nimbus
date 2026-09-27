@@ -47,6 +47,7 @@ import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
+import { prewarmEsbuildFacet } from '../facets/esbuild-transform.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -56,6 +57,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps } from './supervisor-op.js';
+import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
@@ -402,6 +404,7 @@ export class NimbusSession extends CloudflareDurableObject {
     wranglerAliasBannerShown = false;
     constructor(ctx, env) {
         super(ctx, env);
+        this.supervisorDeliveries = openSupervisorDeliveries(ctx);
         this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
             ctx,
             env,
@@ -646,6 +649,12 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _supervisorOps = null;
     processFiles = null;
+    /**
+     * This instance's receipts for its processes' mutations delivered exactly
+     * once. Opened in the constructor, before anything is spawned, so every
+     * SUPERVISOR binding minted from this ctx names this instance.
+     */
+    supervisorDeliveries;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority() {
         this.ensureSqliteFs();
@@ -1056,6 +1065,14 @@ export class NimbusSession extends CloudflareDurableObject {
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild = null;
+    /**
+     * Boot this activation's esbuild facet in the background, for a terminal
+     * that attached (facets/esbuild-transform.ts prewarmEsbuildFacet; once per
+     * activation, so an activation already pre-warmed is a no-op).
+     */
+    prewarmEsbuildFacet() {
+        void prewarmEsbuildFacet(this.ctx, this.env);
+    }
     // ── Filesystem seeding ────────────────────────────────────────────────
     ensureGlobalPrefixDirs(prefix) { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix); }
     /**

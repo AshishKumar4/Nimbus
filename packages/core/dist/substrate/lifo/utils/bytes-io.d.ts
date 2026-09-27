@@ -14,12 +14,23 @@ export interface ByteOutput {
     write(text: string): unknown;
     writeBytes?(bytes: Uint8Array): unknown;
 }
-/**
- * An operand's bytes in bounded chunks; `-` or undefined is standard input.
- * `readSize` is how much one read asks of a pipe: a reader that stops early
- * leaves the rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
- */
-export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, readSize?: number): AsyncGenerator<Uint8Array>;
+export interface InputChunkOptions {
+    /**
+     * How much one read asks of a pipe: a reader that stops early leaves the
+     * rest unread, as the GNU tool it mirrors would (head reads 8 KiB).
+     */
+    readSize?: number;
+    /**
+     * The reader takes a leading slice and stops on its own (head with a
+     * count), or writes to a pipe whose reader can stop it (cat). Only then is
+     * a character device streamed for as long as it is asked. Any other reader
+     * wants the operand to its end, which the device itself answers: /dev/null
+     * is empty, and an endless device (/dev/zero) refuses a whole read.
+     */
+    slice?: boolean;
+}
+/** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
+export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, { readSize, slice }?: InputChunkOptions): AsyncGenerator<Uint8Array>;
 /** All of an operand's bytes. */
 export declare function readAllInput(ctx: ByteInputContext, operand: string | undefined): Promise<Uint8Array>;
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;

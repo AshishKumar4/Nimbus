@@ -113,6 +113,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
             hostNamespace: z.ZodString;
             hostDispatchMethod: z.ZodString;
         }, z.core.$strip>>;
+        hostIncarnation: z.ZodOptional<z.ZodString>;
     }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$loose>;

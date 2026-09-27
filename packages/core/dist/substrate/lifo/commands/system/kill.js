@@ -1,7 +1,7 @@
 import { resolveJobSpec } from '../../shell/jobs.js';
 import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
 const USAGE = 'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]\n';
-export async function runKill(ctx, processes, jobs) {
+export async function runKill(ctx, processes, jobs, host) {
     const args = ctx.args;
     if (args[0] === '-l' || args[0] === '-L' || args[0] === '--list') {
         if (args.length === 1) {
@@ -70,6 +70,18 @@ export async function runKill(ctx, processes, jobs) {
         }
         const proc = pid === undefined ? undefined : processes.get(pid);
         if (!proc || !byJob && proc.status === 'zombie') {
+            if (!byJob && pid !== undefined && host?.isLive(pid) === true) {
+                if (signal === '0')
+                    continue;
+                const result = await host.signal(pid, signal, ctx.stderr);
+                if (result === 'delivered')
+                    continue;
+                await ctx.stderr.write(result === 'unsupported'
+                    ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
+                    : `kill: (${pid}) - No such process\n`);
+                status = 1;
+                continue;
+            }
             await ctx.stderr.write(`kill: (${pid ?? target}) - No such process\n`);
             status = 1;
             continue;
@@ -83,13 +95,13 @@ export async function runKill(ctx, processes, jobs) {
     }
     return status;
 }
-export function createKillCommand(processes) {
+export function createKillCommand(processes, host) {
     return async (ctx) => {
         const jobs = new Map();
         for (const proc of processes.getBackgroundJobs()) {
             if (proc.jobId !== undefined)
                 jobs.set(proc.jobId, { id: proc.jobId, command: proc.args.join(' '), pid: proc.pid });
         }
-        return await runKill(ctx, processes, [...jobs.values()]);
+        return await runKill(ctx, processes, [...jobs.values()], host);
     };
 }

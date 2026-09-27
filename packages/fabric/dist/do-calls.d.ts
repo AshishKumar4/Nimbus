@@ -9,6 +9,8 @@
  * wearing resilience as a costume." agent-core has no retry machinery at all
  * and its backlog calls the gap "the most production-proven gap in the
  * corpus". Here the rule is a type: `idempotent` retries, `mutating` cannot.
+ * A mutation earns a retry only by carrying an identity its callee applies
+ * at most once; it is then `idempotent` by construction (see `mutating`).
  *
  * What the platform contract requires, and this keeps:
  *   - a FRESH stub per attempt. Cloudflare documents that many exceptions
@@ -36,6 +38,14 @@ import { type DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 export interface DoCallRetryPolicy {
     maxAttempts?: number;
     baseDelayMs?: number;
+    /**
+     * No retry starts once this long has passed since the first attempt did;
+     * the failure in hand surfaces instead. A mutation made repeatable by an
+     * identity its callee dedupes needs it: the callee keeps what answers a
+     * repeat for a bounded time, so the caller's repeats must stop well inside
+     * it. Unbounded when absent.
+     */
+    retryWindowMs?: number;
     /**
      * Called once per retry, before its backoff delay, with the failure the
      * retry is answering. The consumer's logging seam: Proteus's hand-rolled
@@ -79,9 +89,11 @@ export declare class DoCallError extends Error {
 }
 /**
  * Call another Durable Object with an operation that is safe to repeat: a
- * read, or a converge-to-a-value write. Transient failures retry on a fresh
- * stub with full-jitter backoff; overloaded and permanent failures surface
- * unchanged, as does the last error at exhaustion.
+ * read, a converge-to-a-value write, or a mutation carrying an identity its
+ * callee applies at most once (see {@link mutating}). Transient failures
+ * retry on a fresh stub with full-jitter backoff; overloaded and permanent
+ * failures surface unchanged, as does the last error at exhaustion or once
+ * the policy's retry window has closed.
  */
 export declare function idempotent<S, T>(operation: string, stub: DoStubResolver<S>, call: (stub: S) => Promise<T>, policy?: DoCallRetryPolicy): Promise<T>;
 /**
@@ -89,6 +101,21 @@ export declare function idempotent<S, T>(operation: string, stub: DoStubResolver
  * or mints. NEVER retried — a dropped call may already have run. Failure
  * surfaces as a {@link DoCallError} carrying the classification, so the
  * caller can tell a refusal from an indeterminate drop.
+ *
+ * The rule is about the call as sent, not the operation's kind. A mutation
+ * the callee applies at most once per identity the call carries is
+ * repeatable by construction: a repeat of one that already ran is answered
+ * from the callee's record and applies nothing. Nimbus has two:
+ *   - delivered filesystem mutations (@nimbus-sh/core supervisor-delivery):
+ *     a delivery id plus the callee INSTANCE's incarnation. The record lives
+ *     in that instance's memory, and any other instance — or a callee that
+ *     predates delivery — refuses the call permanently rather than apply it
+ *     without one;
+ *   - appends: writer, module incarnation and operation sequence, recorded
+ *     durably until acknowledged.
+ * Such a call goes through {@link idempotent}, re-sending the same identity
+ * on every attempt, with a `retryWindowMs` inside the callee's retention of
+ * that record. Without such an identity, a mutation stays here.
  */
 export declare function mutating<S, T>(operation: string, stub: DoStubResolver<S>, call: (stub: S) => Promise<T>): Promise<T>;
 //# sourceMappingURL=do-calls.d.ts.map

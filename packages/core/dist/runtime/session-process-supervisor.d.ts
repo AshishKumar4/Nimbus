@@ -104,9 +104,10 @@ export declare class SessionProcessSupervisor {
     exit(pid: number, exitCode: number): void;
     /**
      * Mark a process as killed and tear down its input channel so queued
-     * stdin can't outlive the process.
+     * stdin can't outlive the process. `exitCode` is the ending signal's
+     * status; SIGKILL's 137 when absent.
      */
-    kill(pid: number): boolean;
+    kill(pid: number, exitCode?: number): boolean;
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge?: number): number;
     get stats(): ProcessTable['stats'];

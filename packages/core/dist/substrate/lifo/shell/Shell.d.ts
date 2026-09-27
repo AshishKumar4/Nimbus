@@ -7,6 +7,7 @@ import type { TerminalInputStream } from '../commands/types.js';
 import { type ShellOptions, type TerminalFdState } from './interpreter.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
+import { type HostProcessSignals } from '../commands/system/kill.js';
 export declare function formatShellPrompt(env: Record<string, string>, cwd: string): string;
 export interface ExecuteOptions {
     cwd?: string;
@@ -69,6 +70,8 @@ export declare class Shell {
     private historyManager;
     private jobTable;
     private processRegistry;
+    /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
+    private hostProcessSignals;
     private builtins;
     /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
     private ownBuiltins;
@@ -106,6 +109,14 @@ export declare class Shell {
     private forContext;
     private registerBuiltins;
     getJobTable(): JobTable;
+    /**
+     * Let `kill` signal the host's processes: a numeric pid this shell's own
+     * registry does not hold is handed to `host`. Child-shell views read the
+     * shell they were forked from.
+     */
+    setHostProcessSignals(host: HostProcessSignals): void;
+    /** The host processes `kill` reaches, for a shell built alongside this one. */
+    getHostProcessSignals(): HostProcessSignals | undefined;
     getProcessRegistry(): ProcessRegistry;
     getCwd(): string;
     setCwd(cwd: string): void;

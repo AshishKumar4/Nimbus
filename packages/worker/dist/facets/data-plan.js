@@ -135,6 +135,33 @@ async function resolveSpecifier(source, fromDir, spec, manifests) {
             return null;
     }
 }
+/** Symlinks a lookup follows before it gives up (Linux's MAXSYMLINKS). */
+const MAX_LINK_HOPS = 40;
+/**
+ * A key with every symlink along it replaced by its target, as a lookup
+ * resolves it, asking the source one component at a time; null past
+ * MAX_LINK_HOPS (ELOOP).
+ */
+async function throughLinks(source, k) {
+    let path = k;
+    for (let hops = 0; hops <= MAX_LINK_HOPS; hops++) {
+        const segs = path.split('/');
+        let followed = false;
+        for (let i = 1; i <= segs.length; i++) {
+            const at = segs.slice(0, i).join('/');
+            const target = await source.readlink('/' + at);
+            if (target === null)
+                continue;
+            const base = target.startsWith('/') ? key(target) : joinKey(parentOf(at), target);
+            path = joinKey(base, segs.slice(i).join('/'));
+            followed = true;
+            break;
+        }
+        if (!followed)
+            return path;
+    }
+    return null;
+}
 /**
  * The plan for one launch. Walks the namespace once, in pages.
  */
@@ -162,20 +189,22 @@ export async function planFacetData(source, input) {
     const closure = new Set();
     for (const path of input.closure)
         closure.add(key(path));
-    // Static references, as keys.
-    const exact = new Set();
+    // Static references, as keys: each exact path, and whether any site reads
+    // it synchronously.
+    const exact = new Map();
+    const note = (k, sync) => exact.set(k, exact.get(k) === true || sync);
     const listed = new Set();
     const patterns = [];
     const manifests = new Map();
     for (const refs of input.refs) {
-        for (const p of refs.exact)
-            exact.add(key(p));
+        for (const r of refs.exact)
+            note(key(r.path), r.sync);
+        for (const r of refs.cwdRelative)
+            note(joinKey(cwd, r.path), r.sync);
         for (const p of refs.listed)
             listed.add(key(p));
         for (const p of refs.patterns)
             patterns.push({ dir: key(p.dir), prefix: p.prefix, suffix: p.suffix });
-        for (const p of refs.cwdRelative)
-            exact.add(joinKey(cwd, p));
     }
     const learned = new Set();
     for (const p of input.learned ?? [])
@@ -194,7 +223,7 @@ export async function planFacetData(source, input) {
         rules[rule].files++;
         rules[rule].bytes += entry.size;
     };
-    // Directories a reference expands to: a listed directory, or one a pattern names.
+    // Directories a reference expands to: a listed directory.
     const expanded = new Set();
     const underExpanded = (k) => {
         for (let d = parentOf(k); d !== ''; d = parentOf(d)) {
@@ -205,27 +234,68 @@ export async function planFacetData(source, input) {
         }
         return false;
     };
+    const homeKept = (k) => {
+        const rel = k.slice(home ? home.length + 1 : 0) + '/';
+        return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
+    };
+    /**
+     * Whether a file lies in a dependency, VCS or cache directory below `dir`,
+     * or in a cache of the home directory it is in ($HOME, or /home/<user>).
+     */
+    const excludedBelow = (dir, k) => {
+        const rel = k.slice(dir === '' ? 0 : dir.length + 1).split('/');
+        if (rel.slice(0, -1).some((seg) => PROJECT_EXCLUDED.has(seg)))
+            return true;
+        const segs = k.split('/');
+        const userHome = home !== '' && k.startsWith(home + '/') ? home
+            : segs[0] === 'home' && segs.length > 2 ? 'home/' + segs[1] : null;
+        if (userHome === null)
+            return false;
+        const inHome = k.slice(userHome.length + 1) + '/';
+        return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
+    };
+    /**
+     * Whether a file is one a pattern `dir/prefix*suffix` can name. A hole with
+     * a known prefix or suffix fills one name in `dir`: a file there, or the
+     * files directly in a directory there. A bare hole under a
+     * named directory (`join(dir, x)`) may be a relative path of any depth: the
+     * directory's files, minus dependency, VCS and cache directories. A bare
+     * hole at the root (`'/' + x`) names the whole filesystem, which nothing
+     * static bounds: it matches nothing and the read is a run-time one.
+     */
     const patternMatch = (k) => {
         const dir = parentOf(k);
         const name = baseOf(k);
         for (const p of patterns) {
-            if (p.dir === dir && name.startsWith(p.prefix) && name.endsWith(p.suffix)
-                && name.length >= p.prefix.length + p.suffix.length)
+            if (p.prefix === '' && p.suffix === '') {
+                if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(p.dir, k))
+                    return true;
+                continue;
+            }
+            const named = (n) => n.startsWith(p.prefix) && n.endsWith(p.suffix) && n.length >= p.prefix.length + p.suffix.length;
+            if (p.dir === dir && named(name))
+                return true;
+            // A matched name may be a directory the code lists: its own files, one level.
+            if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(p.dir, k))
                 return true;
         }
         return false;
-    };
-    const homeKept = (k) => {
-        const rel = k.slice(home ? home.length + 1 : 0) + '/';
-        return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
     };
     const declarations = [];
     const packageRoots = new Set();
     // Directories a home or project symlink points at, whose files the rule
     // that took the link would have taken had they been in place.
     const linkedDirs = [];
-    /** A statically named file is worth holding when the module map does not already and it is data-sized. */
-    const staticWorthy = (entry) => !closure.has(entry.path) && entry.size < PACKAGE_DATA_MAX_BYTES;
+    /**
+     * A statically named file is worth holding when the module map does not
+     * already hold it, and it is data-sized or the code reads it synchronously
+     * by that name: such a read cannot wait for bytes of any size. Its bytes
+     * count toward the plan's storage, which the launch admits or refuses.
+     */
+    /** Sync-read paths the walk found as files under their own name. */
+    const seenFiles = new Set();
+    const staticWorthy = (entry) => !closure.has(entry.path)
+        && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
     let after = null;
     for (;;) {
         const page = await source.list(after);
@@ -235,7 +305,7 @@ export async function planFacetData(source, input) {
             const k = key(raw.path);
             const entry = { path: k, kind: raw.kind, size: raw.size };
             if (entry.kind === 'directory') {
-                if (listed.has(k) || patternMatch(k))
+                if (listed.has(k))
                     expanded.add(k);
                 if (packageRootOf(k + '/x') === k)
                     packageRoots.add(k);
@@ -256,6 +326,8 @@ export async function planFacetData(source, input) {
             }
             if (entry.kind !== 'file')
                 continue;
+            if (exact.get(k) === true)
+                seenFiles.add(k);
             const name = baseOf(k);
             if (name === 'package.json' && !segs.includes('.git')) {
                 take(entry, 'package-json');
@@ -333,6 +405,23 @@ export async function planFacetData(source, input) {
             if (typeDeps.has(name))
                 take(entry, 'typescript');
         }
+    }
+    // A synchronous read of a path through a symlink reads the file the link
+    // leads to, which the walk saw under its own name: hold that file. Only
+    // such a read's own path is resolved, one component at a time; the
+    // namespace's links are never collected.
+    for (const [k, sync] of exact) {
+        if (!sync || planned.has(k) || seenFiles.has(k))
+            continue;
+        const target = await throughLinks(source, k);
+        if (target === null || target === k || planned.has(target))
+            continue;
+        const found = await source.stat(target);
+        if (found === null || found.kind !== 'file')
+            continue;
+        const entry = { path: target, kind: 'file', size: found.size };
+        if (!closure.has(target))
+            take(entry, 'static');
     }
     // Specifiers resolve through package.json files, so only those whose
     // package exists are looked up.

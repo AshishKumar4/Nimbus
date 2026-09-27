@@ -70,6 +70,11 @@ export function buildSessionSupervisorOps(host, store, methods) {
         // Every native read holds a lease for the payload it can answer with.
         readLease: withReadAllocation,
         extend,
+        deliveries: host.supervisorDeliveries,
     });
-    return { dispatch, bridge: store.bridge, forget: store.forget, dispose: store.dispose };
+    const forget = (pid) => {
+        host.supervisorDeliveries?.forget(pid);
+        return store.forget(pid);
+    };
+    return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
 }

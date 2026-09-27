@@ -1,4 +1,6 @@
 import type { CommandOutputStream, CommandInputStream } from '../commands/types.js';
+/** Whether a stream is an end of a shell pipe (S_ISFIFO). */
+export declare function isPipeEnd(stream: CommandOutputStream | CommandInputStream | undefined): boolean;
 /**
  * A shell pipe that carries the producer's exact bytes. Text writes are
  * encoded once at the write side, `writeBytes` stores bytes verbatim, and

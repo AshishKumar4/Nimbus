@@ -58,6 +58,7 @@ import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cir
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
@@ -726,8 +727,9 @@ export class CirrusReal {
             viteEnvMjs: VITE_ENV_MJS,
         });
         const ctxExports = getCtxExports();
+        const supervisorProps = supervisorBindingProps(ctx, pid);
         const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined } })
+            ? ctxExports.SupervisorRPC({ props: supervisorProps })
             : undefined;
         // Phase 2: separate HMR binding so we don't need to modify
         // supervisor-rpc.ts (off-limits). The CirrusHmrRPC class lives in
@@ -758,7 +760,9 @@ export class CirrusReal {
         //   DO so eviction is coherent. The same name returns the same
         //   facet on subsequent calls — that's what makes the cookie
         //   persist across supervisor reconnects.
-        const stableLoaderId = `${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}`;
+        // The loader outlives this instance, and a warm worker keeps the
+        // SUPERVISOR binding in its env.
+        const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}`, supervisorProps);
         const facetName = 'cirrus-real-vite';
         try {
             const worker = this.env.LOADER.get(stableLoaderId, async () => ({

@@ -20,19 +20,9 @@
  * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
 import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_DIGESTS, OPENCODE_ARTIFACT_PRESENT, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { fetchStagedBytes } from './staged-source.js';
 /** Base asset path of the staged opencode bundle directory. */
 const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
-// The build id (content hash of the staged dist) is part of the L2 key so a
-// same-version rebuild with different bytes never serves stale content from a
-// warm colo cache.
-function l2Key(file) {
-    return `https://nimbus-cache.invalid${OPENCODE_ASSET_BASE}/${OPENCODE_ARTIFACT_BUILD_ID}/${file}`;
-}
-function assetUrl(file) {
-    return `https://nimbus-internal.invalid${OPENCODE_ASSET_BASE}/${file}`;
-}
 /**
  * The pinned digest for a staged file. Unstaged builds carry an empty map, so
  * the two conditions are reported apart: "this build has no artifact at all"
@@ -54,48 +44,22 @@ function pinnedDigest(file) {
 }
 async function fetchAsset(env, file) {
     const expected = pinnedDigest(file);
-    const caches = globalThis.caches;
-    let ab = null;
-    try {
-        if (caches?.default) {
-            const hit = await caches.default.match(new Request(l2Key(file)));
-            if (hit && hit.ok)
-                ab = await hit.arrayBuffer();
-        }
-    }
-    catch { /* fall through to ASSETS */ }
-    const fromCache = ab !== null;
-    if (!ab) {
-        const res = await env.ASSETS.fetch(new Request(assetUrl(file)));
-        try {
-            if (!res.ok) {
-                throw new Error(`opencode asset fetch failed: ${res.status} ${res.statusText} for ` +
-                    `${OPENCODE_ASSET_BASE}/${file} — deploy is missing the staged opencode artifact`);
-            }
-            ab = await res.arrayBuffer();
-        }
-        finally {
-            disposeRpcResource(res);
-        }
-    }
-    const digest = await sha256Hex(ab);
-    if (digest !== expected) {
-        throw new Error(`opencode asset integrity check failed for ${OPENCODE_ASSET_BASE}/${file}: expected ` +
-            `${expected}, got ${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) — the staged ` +
-            'artifact is corrupt or out of sync; rerun scripts/bundle-opencode.mjs and redeploy');
-    }
-    if (!fromCache) {
-        try {
-            if (caches?.default) {
-                const writeBack = new Response(new Uint8Array(ab), {
-                    headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
-                });
-                await caches.default.put(new Request(l2Key(file)), writeBack);
-            }
-        }
-        catch { /* silent */ }
-    }
-    return ab;
+    const path = `${OPENCODE_ASSET_BASE}/${file}`;
+    return fetchStagedBytes(env, {
+        path,
+        // The build id (content hash of the staged dist) is part of the key so a
+        // same-version rebuild with different bytes never serves stale content
+        // from a warm colo cache.
+        l2Key: `https://nimbus-cache.invalid${OPENCODE_ASSET_BASE}/${OPENCODE_ARTIFACT_BUILD_ID}/${file}`,
+        sha256: expected,
+        poisonedCache: 'reject',
+        missingBinding: `Nimbus: opencode requires an env.ASSETS binding (serves ${path})`,
+        fetchFailed: (res) => `opencode asset fetch failed: ${res.status} ${res.statusText} for ` +
+            `${path} — deploy is missing the staged opencode artifact`,
+        integrityFailed: (digest, from) => `opencode asset integrity check failed for ${path}: expected ` +
+            `${expected}, got ${digest} (${from}) — the staged ` +
+            'artifact is corrupt or out of sync; rerun scripts/bundle-opencode.mjs and redeploy',
+    });
 }
 /** Fetch the opencode CLI bundle source as text. */
 /**

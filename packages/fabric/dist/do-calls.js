@@ -9,6 +9,8 @@
  * wearing resilience as a costume." agent-core has no retry machinery at all
  * and its backlog calls the gap "the most production-proven gap in the
  * corpus". Here the rule is a type: `idempotent` retries, `mutating` cannot.
+ * A mutation earns a retry only by carrying an identity its callee applies
+ * at most once; it is then `idempotent` by construction (see `mutating`).
  *
  * What the platform contract requires, and this keeps:
  *   - a FRESH stub per attempt. Cloudflare documents that many exceptions
@@ -64,13 +66,16 @@ export class DoCallError extends Error {
 }
 /**
  * Call another Durable Object with an operation that is safe to repeat: a
- * read, or a converge-to-a-value write. Transient failures retry on a fresh
- * stub with full-jitter backoff; overloaded and permanent failures surface
- * unchanged, as does the last error at exhaustion.
+ * read, a converge-to-a-value write, or a mutation carrying an identity its
+ * callee applies at most once (see {@link mutating}). Transient failures
+ * retry on a fresh stub with full-jitter backoff; overloaded and permanent
+ * failures surface unchanged, as does the last error at exhaustion or once
+ * the policy's retry window has closed.
  */
 export async function idempotent(operation, stub, call, policy = {}) {
     const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
     const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
+    const startedAt = Date.now();
     for (let attempt = 1;; attempt++) {
         const minted = await stub();
         try {
@@ -84,9 +89,12 @@ export async function idempotent(operation, stub, call, policy = {}) {
             const classification = classifyDoCall(error);
             if (!isRetryableDoCall(classification) || attempt >= maxAttempts)
                 throw error;
+            const delayMs = Math.floor(Math.random() * 2 ** attempt * baseDelayMs);
+            if (policy.retryWindowMs !== undefined && Date.now() + delayMs - startedAt > policy.retryWindowMs)
+                throw error;
             policy.onRetry?.({ operation, classification, attempt, maxAttempts, error });
             await new Promise((resolve) => {
-                setTimeout(resolve, Math.floor(Math.random() * 2 ** attempt * baseDelayMs));
+                setTimeout(resolve, delayMs);
             });
         }
     }
@@ -96,6 +104,21 @@ export async function idempotent(operation, stub, call, policy = {}) {
  * or mints. NEVER retried — a dropped call may already have run. Failure
  * surfaces as a {@link DoCallError} carrying the classification, so the
  * caller can tell a refusal from an indeterminate drop.
+ *
+ * The rule is about the call as sent, not the operation's kind. A mutation
+ * the callee applies at most once per identity the call carries is
+ * repeatable by construction: a repeat of one that already ran is answered
+ * from the callee's record and applies nothing. Nimbus has two:
+ *   - delivered filesystem mutations (@nimbus-sh/core supervisor-delivery):
+ *     a delivery id plus the callee INSTANCE's incarnation. The record lives
+ *     in that instance's memory, and any other instance — or a callee that
+ *     predates delivery — refuses the call permanently rather than apply it
+ *     without one;
+ *   - appends: writer, module incarnation and operation sequence, recorded
+ *     durably until acknowledged.
+ * Such a call goes through {@link idempotent}, re-sending the same identity
+ * on every attempt, with a `retryWindowMs` inside the callee's retention of
+ * that record. Without such an identity, a mutation stays here.
  */
 export async function mutating(operation, stub, call) {
     const minted = await stub();

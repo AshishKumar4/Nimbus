@@ -1,5 +1,6 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
+import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -46,6 +47,48 @@ export async function registerHostedCommands(self, workspace) {
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
     });
+    // `kill` is the shell's builtin; the session's own processes (resident
+    // servers, the vite shim), numbered in this table's pid space, are reached
+    // through here, and their teardown releases what they hold.
+    const hostSignals = {
+        isLive: (pid) => self._viteShimPid === pid || self.processes.get(pid)?.state === 'running',
+        async signal(pid, signal, stderr) {
+            // Ending one is the only thing a resident's teardown can do: it has no
+            // stop, continue or handler delivery behind it.
+            if (signalDisposition(signal) !== 'terminate')
+                return 'unsupported';
+            // runtime primitive support (P11): the vite shim PID (registered by
+            // P5's long-running spawn) also tears down the in-process
+            // viteDevServer / cirrusReal — facetManager.kill only handles real
+            // Worker-Loader facets, and would leave the shim running with its port
+            // registered against a dead PID.
+            if (self._viteShimPid === pid) {
+                try {
+                    if (self.cirrusReal?.isRunning) {
+                        self.cirrusReal.stop(self.ctx);
+                        self.cirrusReal = null;
+                    }
+                    if (self.viteDevServer?.isRunning) {
+                        self.viteDevServer.stop();
+                        self.viteDevServer = null;
+                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
+                    }
+                }
+                catch (error) {
+                    await stderr.write(`kill: while stopping vite shim: ${error instanceof Error ? error.message : String(error)}\n`);
+                }
+                const code = exitCodeForSignal(signal);
+                self.portRegistry.unregisterByPid(pid);
+                self.processes.kill(pid, code);
+                notifyTerminalEvent(terminal, { type: 'exit', pid, code, reason: `SIG${signal}`, command: 'vite' });
+                self._viteShimPid = null;
+                self._viteShimPort = null;
+                return 'delivered';
+            }
+            return facetMgr.kill(pid, signal) ? 'delivered' : 'no-such-process';
+        },
+    };
+    shell.setHostProcessSignals(hostSignals);
     self._setCpRegistry(registry);
     registry.register('chsh', makeChshCommand({
         isBashInstalled: async (home) => (await listInstalledRuntimes(sqliteFs, home)).some((runtime) => runtime.name === 'bash'),
@@ -729,6 +772,7 @@ export async function registerHostedCommands(self, workspace) {
                 const identity = commandIdentityFor(childProcess.pid);
                 const terminal = new HeadlessTerminal();
                 const childShell = new Shell(terminal, workspace.filesystem, registry, { ...env, ...(options?.env || {}) }, processRegistry, identity);
+                childShell.setHostProcessSignals(hostSignals);
                 HeredocHandler.install(childShell, terminal);
                 if (options?.cwd)
                     childShell.setCwd(options.cwd);
@@ -1415,70 +1459,7 @@ export async function registerHostedCommands(self, workspace) {
         }
         return 0;
     });
-    const shellKillCommand = createKillCommand(processRegistry);
-    registry.register('kill', async (ctx) => {
-        const pidArg = ctx.args[0];
-        if (!pidArg) {
-            ctx.stderr.write('Usage: kill <pid>\n');
-            return 1;
-        }
-        if (pidArg.startsWith('-') || pidArg.startsWith('%')) {
-            return shellKillCommand(ctx);
-        }
-        const pid = parseInt(pidArg);
-        if (isNaN(pid)) {
-            ctx.stderr.write('kill: invalid pid\n');
-            return 1;
-        }
-        if (processRegistry.get(pid)) {
-            return shellKillCommand(ctx);
-        }
-        // runtime primitive support (P11): if the target is the vite shim PID
-        // (registered by P5's long-running spawn), tear down the
-        // in-process viteDevServer / cirrusReal too — facetManager.kill
-        // only handles real Worker-Loader facets, and would leave the
-        // shim running with its port registered against a dead PID.
-        if (self._viteShimPid === pid) {
-            try {
-                if (self.cirrusReal?.isRunning) {
-                    self.cirrusReal.stop(self.ctx);
-                    self.cirrusReal = null;
-                }
-                if (self.viteDevServer?.isRunning) {
-                    self.viteDevServer.stop();
-                    self.viteDevServer = null;
-                    try {
-                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                    }
-                    catch { }
-                }
-            }
-            catch (e) {
-                ctx.stderr.write('kill: while stopping vite shim: ' + (e?.message || e) + '\n');
-            }
-            try {
-                self.portRegistry.unregisterByPid(pid);
-            }
-            catch { }
-            try {
-                self.processes.kill(pid);
-            }
-            catch { }
-            notifyTerminalEvent(terminal, {
-                type: 'exit', pid, code: 137, command: 'vite',
-            });
-            self._viteShimPid = null;
-            self._viteShimPort = null;
-            ctx.stdout.write(`Process ${pid} killed.\n`);
-            return 0;
-        }
-        if (facetMgr?.kill(pid)) {
-            ctx.stdout.write(`Process ${pid} killed.\n`);
-            return 0;
-        }
-        ctx.stderr.write(`kill: no such process: ${pid}\n`);
-        return 1;
-    });
+    registry.register('kill', createKillCommand(processRegistry, hostSignals));
     registry.register('top', createTopCommand(processRegistry));
     registry.register('watch', createWatchCommand(registry));
     registry.register('help', createHelpCommand(registry));

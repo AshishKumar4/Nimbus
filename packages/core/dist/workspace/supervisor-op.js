@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { supervisorDeliveredOp, supervisorDeliveryAnswer, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
 const FsPath = z.union([
     z.string(),
     z.object({ directory: z.number().int().nonnegative(), path: z.string(), beneath: z.boolean().optional() }),
@@ -14,6 +15,10 @@ const OpenOptions = z.object({
     truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
     mode: z.number().int().nonnegative().max(0o7777).optional(),
 });
+/** A byte offset into a file: what a ranged write may start at. */
+const RangeOffset = z.number().int().nonnegative();
+/** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
+const Delivery = z.object({ op: z.string(), id: z.string().uuid(), hostIncarnation: z.string().uuid() });
 function stringArg(envelope, index) {
     const value = envelope.args?.[index];
     if (typeof value !== 'string') {
@@ -38,6 +43,26 @@ function bytesArg(envelope, index) {
     if (value instanceof ArrayBuffer)
         return new Uint8Array(value);
     throw new Error(`supervisor op ${envelope.op}: argument ${index} must be bytes`);
+}
+/**
+ * A ranged write's bytes, in every shape the routed `_rpcFsWriteRange` took
+ * before it was served here: bytes, a buffer, any view of one, an array of
+ * byte values, or a serialized Node Buffer's `{ data }`. Anything else is
+ * refused, EINVAL, where the routed op wrote nothing and answered success.
+ */
+function writeRangeBytesArg(envelope, index) {
+    const value = envelope.args?.[index];
+    if (value instanceof Uint8Array)
+        return value;
+    if (value instanceof ArrayBuffer)
+        return new Uint8Array(value);
+    if (ArrayBuffer.isView(value))
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (Array.isArray(value))
+        return new Uint8Array(value);
+    if (typeof value === 'object' && value !== null && 'data' in value && Array.isArray(value.data))
+        return new Uint8Array(value.data);
+    throw Object.assign(new Error(`EINVAL: supervisor op ${envelope.op}: argument ${index} must be bytes`), { code: 'EINVAL' });
 }
 function contentArg(envelope, index) {
     const value = envelope.args?.[index];
@@ -77,7 +102,9 @@ function credFor(deps, pid, cred) {
  *     against the real filesystem for a native op and against a captured
  *     delegate for a routed one.
  *
- * An op absent here is not served, on any host.
+ * An op absent here is not served, on any host. The one other name an
+ * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
+ * wrapper around one of these, which the handler unwraps.
  */
 export const SUPERVISOR_OPS = [
     'readFile', 'readFileBytes', 'writeFile', 'stat', 'lstat',
@@ -127,7 +154,6 @@ export const SUPERVISOR_OP_ROUTES = {
     wsSend: { method: '_rpcWsSend', args: [0, 1, 2, 'pid'] },
     wsClose: { method: '_rpcWsClose', args: [0, 1, 2, 'pid'] },
     fsReadBatch: { method: '_rpcFsReadBatch', args: [0, 'pid'] },
-    fsWriteRange: { method: '_rpcFsWriteRange', args: [0, 1, 2, 'pid'] },
     fsAppend: { method: '_rpcFsAppend', args: [0, 'writerId', 1, 2, 3, 'pid'] },
     fsAppendAck: { method: '_rpcFsAppendAck', args: ['writerId', 0, 1, 'pid'] },
     writeBatch: { method: '_rpcWriteBatch', args: [0, 'pid'] },
@@ -232,6 +258,7 @@ const NATIVE_OPS = {
     chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
     utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
     fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
+    fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2)),
     writeBatchStream: (e, t) => {
         if (!e.stream)
             throw new Error('supervisor op writeBatchStream: no stream');
@@ -283,23 +310,20 @@ export function createSupervisorOpHandler(deps) {
         hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
     };
     const extend = deps.extend ?? {};
-    return async (envelope) => {
-        if (!envelope || typeof envelope.op !== 'string') {
-            throw new Error('supervisor op: envelope names no operation');
-        }
+    const serve = (op, envelope) => {
         // Priority: the embedder's own handler → the native filesystem op → the
         // canonical route table onto the host's _rpc* methods. An op in none of
         // these is not served by this host.
-        const handler = Object.hasOwn(extend, envelope.op) ? extend[envelope.op]
-            : Object.hasOwn(NATIVE_BY_OP, envelope.op) ? NATIVE_BY_OP[envelope.op] : undefined;
+        const handler = Object.hasOwn(extend, op) ? extend[op]
+            : Object.hasOwn(NATIVE_BY_OP, op) ? NATIVE_BY_OP[op] : undefined;
         if (handler)
             return handler(envelope, tools);
-        const route = Object.hasOwn(ROUTE_BY_OP, envelope.op) ? ROUTE_BY_OP[envelope.op] : undefined;
+        const route = Object.hasOwn(ROUTE_BY_OP, op) ? ROUTE_BY_OP[op] : undefined;
         if (!route)
-            throw new Error(`supervisor op: '${envelope.op}' is not served by this host`);
+            throw new Error(`supervisor op: '${op}' is not served by this host`);
         const host = deps.host;
         if (!host) {
-            throw new Error(`supervisor op: '${envelope.op}' is a host op, and this handler is a bare workspace's. `
+            throw new Error(`supervisor op: '${op}' is a host op, and this handler is a bare workspace's. `
                 + 'Forward supervisorOp(envelope) to composeHostedRuntime(...).supervisorOp on every '
                 + 'instance of the host namespace, the siblings Nimbus opens by name included '
                 + '(fanout peers, process hosts).');
@@ -309,5 +333,46 @@ export function createSupervisorOpHandler(deps) {
             throw new Error(`supervisor op: missing host method ${route.method}`);
         const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
         return Reflect.apply(method, host, args);
+    };
+    /**
+     * A mutation delivered exactly once (supervisor-delivery.ts), checked in
+     * the order that makes a repeat safe: the delivery was minted for THIS
+     * instance — a restarted one refuses its predecessor's, permanently, since
+     * it holds none of its receipts or descriptors — then the process is live
+     * and is who it says, before any receipt answers for it, and only then the
+     * receipt, or the mutation.
+     */
+    const deliver = (envelope) => {
+        const deliveries = deps.deliveries;
+        // Exactly what a host that predates delivery answers: the op is not served.
+        if (!deliveries)
+            throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' is not served by this host`);
+        const delivery = Delivery.safeParse(envelope.delivery);
+        const op = delivery.success ? supervisorDeliveredOp(delivery.data.op) : undefined;
+        if (!delivery.success || op === undefined) {
+            throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' names no mutation it can deliver once`);
+        }
+        if (delivery.data.hostIncarnation !== deliveries.incarnation) {
+            throw Object.assign(new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`), { code: 'ESTALE' });
+        }
+        const pid = envelope.pid;
+        if (pid === undefined)
+            throw new Error(`supervisor op: a delivered ${op} names no process`);
+        // The process's own bridge, which is what refuses a pid that does not
+        // exist or has been released (ESTALE), and a cred riding a pid.
+        tools.bridge(pid, envelope.cred);
+        return deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
+    };
+    return async (envelope) => {
+        if (!envelope || typeof envelope.op !== 'string') {
+            throw new Error('supervisor op: envelope names no operation');
+        }
+        const op = envelope.op;
+        if (op === SUPERVISOR_DELIVER_OP)
+            return deliver(envelope);
+        // Only the delivering op dedupes; anywhere else a delivery would be a promise nobody keeps.
+        if (envelope.delivery !== undefined)
+            throw new Error(`supervisor op: '${op}' cannot carry a delivery`);
+        return serve(op, envelope);
     };
 }

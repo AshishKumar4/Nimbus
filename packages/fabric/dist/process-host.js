@@ -71,7 +71,7 @@ import { z } from 'zod/v4';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
-import { hostRoute } from './composition.js';
+import { supervisorBindingProps } from './supervisor-props.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
  * decided — the embedder owns the config var that picks it, and refuses an
@@ -109,15 +109,10 @@ class FacetProcessHost {
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run({ doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined }, params, consume);
+        return processes(this.ctx, this.env).run({ ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId }, params, consume);
     }
     async open(params) {
-        const supervisor = {
-            doId: this.coordDoId,
-            pid: params.pid,
-            writerId: params.writerId,
-            route: hostRoute() ?? undefined,
-        };
+        const supervisor = { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId };
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         return {
             ...facet,
@@ -261,7 +256,7 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run({ doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined }, params, consume);
+        return processes(this.ctx, this.env).run({ ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId }, params, consume);
     }
     async open(params) {
         if (params.facet) {
@@ -280,11 +275,15 @@ class PeerProcessHost {
         // also what keeps the hosting DO resident. It settles when a `lifetime`
         // runner exits or when a `boot` runner's host is cancelled, and rejects if
         // the peer dies under either.
+        // The peer mints the process's binding from these, for THIS object: the
+        // coordinator's doId, route and delivery instance.
+        const supervisor = supervisorBindingProps(this.ctx, params.pid);
         const hostLeg = placement.stub._rpcHostProcess(params.boot, {
-            coordinatorDoId: this.coordDoId,
-            route: hostRoute() ?? undefined,
-            pid: params.pid,
+            coordinatorDoId: supervisor.doId,
+            route: supervisor.route,
+            pid: supervisor.pid,
             writerId: params.writerId,
+            hostIncarnation: supervisor.hostIncarnation,
             workerKey: params.workerKey,
             webSocketCapability,
             startArgs: params.startArgs,

@@ -10,10 +10,10 @@
  * via its `instantiateWasm` hook with that pre-compiled module —
  * request-time WebAssembly.compile(bytes) is blocked inside facets.
  *
- * Mirrors esbuild-wasm-bytes.ts: NO module-scope cache (no supervisor
- * residency), L2 colo cache via caches.default keyed by the version-pinned
- * asset URL, ASSETS as the source of truth, and a sha-256 integrity check on
- * both tiers so a stale or tampered asset never gets compiled.
+ * NO module-scope cache (no supervisor residency). The read itself is
+ * runtime/staged-source.ts: L2 keyed by the version-pinned asset URL, ASSETS
+ * as the source of truth, and a sha-256 check on both tiers so a stale or
+ * tampered asset never gets compiled.
  */
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so

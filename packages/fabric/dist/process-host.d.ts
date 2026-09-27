@@ -64,7 +64,7 @@
  * that pair unforgeable by anything that did not open the process.
  */
 import { type ProcessHost, type ResidentDiskReader } from './process-fabric.js';
-import { type HostRoute } from './composition.js';
+import type { HostRoute } from './composition.js';
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
 /**
@@ -84,6 +84,8 @@ export interface HostProcessOpts {
     route?: HostRoute;
     pid: number;
     writerId: string;
+    /** The coordinator instance's delivery incarnation, minted into the SUPERVISOR binding (ResidentSupervisorProps). */
+    hostIncarnation?: string;
     workerKey: string;
     /** Unforgeable capability for the fetch-semantic WebSocket hop. */
     webSocketCapability: string;

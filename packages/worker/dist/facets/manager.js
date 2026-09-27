@@ -16,6 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
+import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
@@ -59,10 +60,11 @@ import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runti
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, ESM_TRANSFORM_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-store.js';
+import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, setTransformCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -4200,6 +4202,15 @@ export class FacetManager {
                     return null;
                 }
             },
+            // A missing or unreadable component is not a link: the lookup ends there.
+            readlink: async (path) => {
+                try {
+                    return await vfs.readlink(path);
+                }
+                catch {
+                    return null;
+                }
+            },
             stat: async (path) => {
                 const st = await filesOf(vfs).stat(path).catch(() => null);
                 return st && { kind: st.type, size: st.size };
@@ -4914,7 +4925,7 @@ export class FacetManager {
         // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
         // context, which stays open for the whole run), never in this DO.
         const writerId = crypto.randomUUID();
-        const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid, writerId };
+        const supervisor = { ...supervisorBindingProps(this.ctx, staged.pid), writerId };
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
         let writerActivated = false;
@@ -6396,18 +6407,23 @@ export class FacetManager {
             catch { }
         }
     }
-    /** Kill a running process by PID. */
-    kill(pid) {
+    /**
+     * Kill a running process by PID. Given the signal that ends it (a name
+     * without `SIG`), it exits with that signal's status, 128+signo, and its
+     * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+     */
+    kill(pid, signal) {
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running')
             return false;
+        const code = signal === undefined ? 137 : exitCodeForSignal(signal);
         this.portRegistry.unregisterByPid(pid);
         this.releaseProcessRpcResources(pid);
         this.revokeProcessVfsWriters(pid);
-        const result = this.processes.kill(pid);
+        const result = this.processes.kill(pid, code);
         if (result) {
             try {
-                this.hooks.onExternalExit?.(pid, 137, 'killed');
+                this.hooks.onExternalExit?.(pid, code, signal === undefined ? 'killed' : `SIG${signal}`);
             }
             catch { }
         }

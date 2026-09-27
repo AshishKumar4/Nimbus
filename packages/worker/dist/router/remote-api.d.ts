@@ -119,5 +119,7 @@ interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
     NIMBUS_SESSION?: NimbusSessionNamespace;
 }
 export declare function handleNimbusRemoteApi(request: Request, env: NimbusRemoteEnv, sdk: NimbusSdkRouterConfig | undefined): Promise<Response | null>;
+/** Whether the remote API (and with it `DELETE /s/<id>/`) is served. */
+export declare function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolean;
 export {};
 //# sourceMappingURL=remote-api.d.ts.map

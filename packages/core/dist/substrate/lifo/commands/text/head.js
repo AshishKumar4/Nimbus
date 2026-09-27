@@ -121,7 +121,8 @@ const command = async (ctx) => {
     for (const file of files) {
         try {
             // GNU head reads BUFSIZ (8 KiB) at a time: what it leaves unread decides a writer's SIGPIPE.
-            const chunks = inputChunks(ctx, file, 8192);
+            // A leading count is a slice head stops on by itself; "all but the last N" needs the end.
+            const chunks = inputChunks(ctx, file, { readSize: 8192, slice: !mode.allBut });
             // Open (and fail) before the header, as GNU does.
             const firstChunk = await chunks.next();
             if (label)

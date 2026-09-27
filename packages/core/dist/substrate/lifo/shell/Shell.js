@@ -68,6 +68,8 @@ export class Shell {
     historyManager;
     jobTable;
     processRegistry;
+    /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
+    hostProcessSignals;
     builtins;
     /** This shell's builtins, closed over `this`; `builtins` dispatches each call to the calling shell's. */
     ownBuiltins = new Map();
@@ -197,7 +199,7 @@ export class Shell {
         this.ownBuiltins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
         this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
         this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
-        this.ownBuiltins.set('kill', async (args, stdout, stderr) => (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list())));
+        this.ownBuiltins.set('kill', async (args, stdout, stderr) => (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list(), this.hostProcessSignals)));
         this.ownBuiltins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
         this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
         this.ownBuiltins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
@@ -215,6 +217,18 @@ export class Shell {
     }
     getJobTable() {
         return this.jobTable;
+    }
+    /**
+     * Let `kill` signal the host's processes: a numeric pid this shell's own
+     * registry does not hold is handed to `host`. Child-shell views read the
+     * shell they were forked from.
+     */
+    setHostProcessSignals(host) {
+        this.hostProcessSignals = host;
+    }
+    /** The host processes `kill` reaches, for a shell built alongside this one. */
+    getHostProcessSignals() {
+        return this.hostProcessSignals;
     }
     getProcessRegistry() {
         return this.processRegistry;

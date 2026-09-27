@@ -1505,8 +1505,12 @@ export declare class FacetManager {
     registerPort(pid: number, port: number): Promise<void>;
     waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
-    /** Kill a running process by PID. */
-    kill(pid: number): boolean;
+    /**
+     * Kill a running process by PID. Given the signal that ends it (a name
+     * without `SIG`), it exits with that signal's status, 128+signo, and its
+     * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+     */
+    kill(pid: number, signal?: string): boolean;
     /**
      * Remove a durable application: the ONLY path that deletes durable facet
      * storage. Owner-checked by construction — `freeDurableFacetSlot` answers

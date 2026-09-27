@@ -1355,6 +1355,8 @@ const HostProcessOptsSchema = z.object({
     pid: z.number().int().positive(),
     /** Trusted identity of this concrete resident-host incarnation. */
     writerId: z.string().uuid(),
+    /** The coordinator instance's delivery incarnation, for the process's SUPERVISOR binding. */
+    hostIncarnation: z.string().uuid().optional(),
     /** Keyed dynamic-worker identity on THIS peer's loader. */
     workerKey: z.string().min(1),
     /** Unforgeable capability for the fetch-semantic WebSocket hop. */
@@ -1494,6 +1496,7 @@ export async function _rpcHostProcess(self, boot, opts) {
         pid: hostOpts.pid,
         writerId: hostOpts.writerId,
         route: hostOpts.route,
+        ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
     };
     let cancel = () => { };
     const cancelled = new Promise((resolve) => { cancel = resolve; });

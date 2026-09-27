@@ -44,6 +44,8 @@ export interface CommandContext {
     setRawMode?: (enabled: boolean) => void;
     getRawMode?: () => boolean;
     isFdTerminal?: (fd: number) => boolean;
+    /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
+    isFdPipe?: (fd: number) => boolean;
     setUmask(mask: number): void;
     runAs(cred: VfsCred, argv: string[]): Promise<number>;
     execInterpreterDepth?: number;
