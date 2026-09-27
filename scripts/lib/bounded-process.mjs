@@ -1,5 +1,7 @@
-import { spawn } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync, accessSync, constants } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
 export const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const active = new Set();
@@ -75,16 +77,19 @@ function killTree(child, rootStart, known) {
 }
 
 let installed = false;
+let interrupted = null;
 function installCleanup() {
   if (installed) return;
   installed = true;
   for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
     process.on(signal, () => {
+      interrupted = signal;
+      process.exitCode = code;
       for (const job of active) {
         console.error(`FAIL ${job.name}: runner received ${signal}; killing test descendants`);
-        job.kill();
+        job.cancel(signal);
       }
-      process.exit(code);
+      // Let pending calls settle, so callers' finally blocks run before exit.
     });
   }
   process.on('exit', () => { for (const job of active) job.kill(); });
@@ -93,6 +98,7 @@ function installCleanup() {
 export function runBoundedProcess(command, args = [], { env = process.env, timeoutMs = DEFAULT_TEST_TIMEOUT_MS, maxOutputBytes = 1024 * 1024, name = command, cwd, encoding = 'utf8' } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) throw new Error('timeoutMs and maxOutputBytes must be positive finite integers');
   installCleanup();
+  if (interrupted) return Promise.resolve({ ok: false, stdout: encoding === null ? Buffer.alloc(0) : '', stderr: encoding === null ? Buffer.alloc(0) : '', reason: `runner received ${interrupted}`, code: null, signal: interrupted, outputTruncated: false });
   return new Promise((resolve) => {
     const stdout = tail(maxOutputBytes, encoding);
     const stderr = tail(maxOutputBytes, encoding);
@@ -104,11 +110,49 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     let cleanupTimer;
     let exitCode = null;
     let exitSignal = null;
-    const child = spawn(command, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env, cwd });
+    // run-bounded supplies INVOCATION_ID. Every case then gets its own
+    // cgroup: detached descendants cannot escape, even before the first read.
+    // Outside that wrapper, retain the explicitly weaker portable fallback.
+    const unit = process.platform === 'linux' && process.env.INVOCATION_ID
+      ? `nimbus-case-${randomUUID()}.service` : null;
+    let executable = command;
+    if (unit && !command.includes('/')) {
+      executable = (env.PATH ?? '/usr/bin:/bin').split(':').map((dir) => resolvePath(cwd ?? process.cwd(), dir, command)).find((path) => {
+        try { accessSync(path, constants.X_OK); return true; } catch { return false; }
+      });
+      if (!executable) {
+        resolveResultMissing();
+        return;
+      }
+    }
+    function resolveResultMissing() {
+      resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
+    }
+    const launchArgs = unit ? [
+      // oneshot treats SIGTERM as a signal failure, not a clean service stop.
+      '--user', '--quiet', '--wait', '--pipe', '--service-type=oneshot',
+      `--unit=${unit}`, '--slice=nimbus-tests.slice',
+      `--working-directory=${cwd ?? process.cwd()}`,
+      `--property=MemoryMax=${process.env.NIMBUS_TEST_MEMORY_MAX || '4G'}`,
+      `--property=MemoryHigh=${process.env.NIMBUS_TEST_MEMORY_HIGH || '3G'}`, '--property=MemorySwapMax=0',
+      '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TasksMax=256',
+      '--property=TimeoutStopSec=1s', `--property=TimeoutStartSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}s`,
+      ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `--setenv=${key}=${value}`),
+      '--', executable, ...args,
+    ] : args;
+    const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;
-    const job = { name, kill: () => killTree(child, rootStart, known) };
+    const job = {
+      name,
+      kill() {
+        if (unit) {
+          spawnSync('/usr/bin/systemctl', ['--user', 'kill', '--kill-whom=all', '--signal=KILL', unit], { stdio: 'ignore', timeout: 3000 });
+        } else killTree(child, rootStart, known);
+      },
+      cancel(signal) { reason = `runner received ${signal}`; cleanup(); },
+    };
     active.add(job);
-    const census = setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known); }, 25);
+    const census = unit ? null : setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known); }, 25);
     // A setsid descendant may be reparented before the first census. Never
     // wait forever on its inherited pipes. The outer run-bounded cgroup is
     // REQUIRED: polling/process groups cannot close this race or bound RSS.
@@ -152,6 +196,23 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       clearInterval(census);
       job.kill();
       active.delete(job);
+      if (unit) {
+        // Failed units remain queryable until reset. systemd-run's own exit
+        // status alone cannot distinguish an oracle exit from exec/OOM failure.
+        const info = spawnSync('/usr/bin/systemctl', ['--user', 'show', unit, '--property=Result,ExecMainCode,ExecMainStatus'], { encoding: 'utf8', timeout: 3000 });
+        const props = Object.fromEntries((info.stdout ?? '').trim().split('\n').map((line) => line.split('=')));
+        if ((!props.Result || props.ExecMainCode === '0') && code !== 0) reason ||= `spawn failed: systemd-run exited ${code} before recording a process status`;
+        if (props.Result && !['success', 'exit-code'].includes(props.Result)) reason ||= `cgroup result=${props.Result} ExecMainCode=${props.ExecMainCode} ExecMainStatus=${props.ExecMainStatus}`;
+        if (props.ExecMainCode === '1') {
+          code = Number(props.ExecMainStatus);
+          if (code === 203) reason ||= 'spawn failed: systemd EXEC status 203';
+        } else if (props.ExecMainCode === '2' || props.ExecMainCode === '3') {
+          signal = `signal ${props.ExecMainStatus}`;
+          code = null;
+          reason ||= `process terminated by ${signal}`;
+        }
+        spawnSync('/usr/bin/systemctl', ['--user', 'reset-failed', unit], { stdio: 'ignore', timeout: 3000 });
+      }
       resolve({ ok: code === 0 && !reason, stdout: stdout.text(), stderr: stderr.text(), reason, code, signal, outputTruncated });
     };
     child.on('error', (error) => { reason = `spawn failed: ${error.message}`; finish(null); });
