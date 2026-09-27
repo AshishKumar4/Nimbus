@@ -19,7 +19,9 @@ published independently in the `@nimbus-sh` npm scope.
   bounded output diagnostics. Explicit worker-count overrides remain.
 - Under the bounded test wrapper, each case runs in its own systemd cgroup
   with inherited memory limits, no swap, and group teardown, including
-  detached descendants. Signal cancellation settles pending calls so caller
+  detached descendants. A bubblewrap PID namespace prevents signals from
+  addressing host processes; filesystem and network access remain unchanged.
+  Signal cancellation settles pending calls so caller
   cleanup runs. Outside systemd, process groups and PID-start-time-checked
   polling provide weaker cleanup with a finite output-pipe drain deadline;
   that fallback is not a memory or detached-descendant containment boundary.
