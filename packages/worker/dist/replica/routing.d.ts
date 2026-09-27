@@ -1,5 +1,5 @@
 /**
- * replica-routing.ts — W12 — DO read replica routing primitives.
+ * replica/routing.ts — W12 — DO read replica routing primitives.
  *
  * Pure module (no `cloudflare:workers` import) so it can be unit-tested
  * under Bun. NimbusSession wraps these helpers in its constructor and
@@ -28,10 +28,7 @@
  *     pins it near the DO; RPC into the DO is unaffected. DOs themselves
  *     don't move.
  *
- *   - ~lambros/Feedback for DO read replication API: replicas error with
- *     "Network connection lost" during high-volume writes. Mitigation:
- *     suspend replicas during npm install / git clone bursts (the
- *     suspension state lives in `replica-suspension.ts`).
+
  */
 /** Result of `classifyReplicaPolicy(pathname, method)`. */
 export type ReplicaPolicy = 
@@ -45,34 +42,12 @@ export type ReplicaPolicy =
  *  not subscribe its own hibernation handler to a stream the primary
  *  appends to. */
  | 'primary-only-ws';
-/** Eventual-consistency tolerance in ms (replica-eligible routes only). */
-export interface RoutePolicy {
-    policy: ReplicaPolicy;
-    /** Max acceptable replication lag for this route, in ms. `null` for
-     *  primary-only routes (not replicable). */
-    toleranceMs: number | null;
-}
 /**
  * Pure routing decision. Mirrors the route table in W12-plan §2.
  * Methods other than GET/HEAD on a replica-eligible route escape to
  * primary-only — read replicas only make sense for reads.
  */
 export declare function classifyReplicaPolicy(pathname: string, method: string): ReplicaPolicy;
-/**
- * Eventual-consistency tolerance per route (in ms).
- *
- * Returns `null` for primary-only routes (not replicable) and a numeric
- * tolerance for replica-eligible routes. The probe
- * `eventual-consistency-window-ms.mjs` enforces that every eligible route
- * has a tolerance ≤ 2000ms.
- *
- * The 2-second budget aligns with D1 read-replication best practice
- * (D1 docs § "Replica lag and consistency model"); DO replicas are
- * the same architectural pattern.
- */
-export declare function getEventualConsistencyToleranceMs(pathname: string): number | null;
-/** Tolerance lookup table (for diagnostics / observability surfaces). */
-export declare const REPLICA_POLICIES: Record<string, RoutePolicy>;
 export type ReplicasState = 'enabled' | 'enabled-via-configure' | 'unsupported' | 'error';
 export interface TryEnableReplicasResult {
     state: ReplicasState;
@@ -103,17 +78,6 @@ export interface ReplicaStateInspect {
  *     when the SPEC's `waitForBookmark` lands.
  */
 export declare function inspectReplicaState(ctx: any): ReplicaStateInspect;
-/**
- * Capture the current bookmark immediately after a write completes on
- * the primary. The caller (e.g. /api/write-file) can stash the result in
- * a response header / cookie so the next read-your-writes call from the
- * same client can wait for the replica to catch up before responding.
- *
- * Phase 1 of W12 surfaces this as observability only (visible via
- * /api/_diag/memory.replica.bookmark). Phase 2 (W12.5 if measured demand)
- * wires the wait-for-bookmark contract end-to-end.
- */
-export declare function captureBookmarkAfterWrite(ctx: any): string | null;
 export interface DelegationInputs {
     isReplica: boolean;
     policy: ReplicaPolicy;

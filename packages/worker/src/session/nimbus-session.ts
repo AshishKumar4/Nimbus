@@ -25,12 +25,6 @@ import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
-// S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
-// the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
-// re-imported below from the same place (re-exported by -hib.ts).
-// S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
-// the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
-// re-imported below from the same place (re-exported by -hib.ts).
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -77,7 +71,7 @@ import { appendScrollback } from './state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
 //
-// `replica-routing.ts` is a pure module (no `cloudflare:workers` import) so it
+// `replica/routing.ts` is a pure module (no `cloudflare:workers` import) so it
 // can be unit-tested under bun. The DO uses two integration points:
 //   - constructor: `tryEnableReplicas(this.ctx)` opts in via the wiki SPEC
 //     API (`enableReplicas`) or the alternate API name observed in CF
@@ -94,7 +88,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // the replication-bookmark stream.
 // ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
 //
-// `replica-routing.ts` is a pure module (no `cloudflare:workers` import) so it
+// `replica/routing.ts` is a pure module (no `cloudflare:workers` import) so it
 // can be unit-tested under bun. The DO uses two integration points:
 //   - constructor: `tryEnableReplicas(this.ctx)` opts in via the wiki SPEC
 //     API (`enableReplicas`) or the alternate API name observed in CF
@@ -110,17 +104,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // CT1 daily drift detector) can confirm replicas landed and observe
 // the replication-bookmark stream.
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
-// S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
-// S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
-// S5: storage-key constants moved to ./nimbus-session-keys.ts; consumed by
-// sibling modules (-hib, -diag, -ws). The class file itself no longer
-// references any storage key directly.
-// S4: W9 hibernation surface extracted.
-// S5: storage-key constants moved to ./nimbus-session-keys.ts; consumed by
-// sibling modules (-hib, -diag, -ws). The class file itself no longer
-// references any storage key directly.
-// S4: W9 hibernation surface extracted.
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
@@ -423,7 +407,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * (which it does unconditionally — left null only on a defensive
    * catch-all).
    */
-  // S4: visibility relaxed (was `private`) so ./nimbus-session-hib.ts's
+  // S4: visibility relaxed (was `private`) so ./hibernation.ts's
   // free functions can read/write via the HibHost interface. Per plan
   // §IX.1 (refined option b'). Sigil `_w9*` flags it as internal.
   _w9WsConfig: WsHibernationConfigResult | null = null;
@@ -439,7 +423,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * also flush eagerly when `dirtyChunks * pidCount` crosses a threshold
    * — but the debounce handles the steady-state case.
    *
-   * S5: storage keys + the debounce constant moved to ./nimbus-session-keys.ts.
+   * S5: storage keys + the debounce constant moved to ./keys.ts.
    */
   _w9FlushTimer: any = null;
 
@@ -482,7 +466,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * runtime accepted the SPEC API. Stays `null` if the constructor's
    * call ran before this assignment (defensive — should never happen).
    */
-  // S3: visibility relaxed (was `private`) so ./nimbus-session-replica.ts's
+  // S3: visibility relaxed (was `private`) so ./replica-routes.ts's
   // free functions can read/write via the ReplicaHost interface. Per plan
   // §IX.1 (refined option b'). Sigil `_w12*` still flags it as internal.
   _w12EnableResult: _W12EnableResult | null = null;
@@ -572,7 +556,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     //
     // Failures are non-fatal — older workerd builds may lack the APIs.
     // The result lands in /api/_diag/memory.hib for verification.
-    // S4: extracted to ./nimbus-session-hib.ts.
+    // S4: extracted to ./hibernation.ts.
     this._w9WsConfig = _w9WireHibernationOnConstruct(this.ctx);
 
     // Wire the ProcessLogStore to its persist adapter (CF research §C.2,
@@ -596,13 +580,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     // lacking the API surface get `state: 'unsupported'` and the DO behaves
     // exactly as pre-W12 (single-primary). Result is captured for the
     // `/api/_diag/memory.replica` block.
-    // S3: extracted to ./nimbus-session-replica.ts. Passes ctx
+    // S3: extracted to ./replica-routes.ts. Passes ctx
     // explicitly because `protected ctx` can't be put on a public
-    // interface (per nimbus-session-replica.ts ReplicaHost docs).
+    // interface (per session/replica-routes.ts ReplicaHost docs).
     this._w12EnableResult = _w12WireReplicasOnConstruct(this.ctx);
   }
 
-  // ── W9 hibernation methods extracted to ./nimbus-session-hib.ts (S4) ──
+  // ── W9 hibernation methods extracted to ./hibernation.ts (S4) ──
   //
   // The class retains the public method NAMES (delegator pattern per plan
   // §IX.4 R1: delegators are immortal until S13). Bodies live in -hib.ts.
@@ -746,7 +730,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   // ── Supervisor RPC + W8 cp* + legacy VFS extracted to
-  // ── ./nimbus-session-rpc.ts (S8). See plan §B.3.4.
+  // ── ./rpc.ts (S8). See plan §B.3.4.
   //
   // The class retains every method NAME so the DO RPC fabric (which
   // dispatches by name from the stub) keeps working. Method bodies are
@@ -1046,7 +1030,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     }
   }
 
-  // ── HTTP fetch routing extracted to ./nimbus-session-routes.ts (S9).
+  // ── HTTP fetch routing extracted to ./routes.ts (S9).
   // The class retains the DO-contract `fetch` method + `_handleFetch`
   // delegator (per plan §IX.4 R1).
 
@@ -1064,7 +1048,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    */
   // ── W12 — getReplicaState() — exposed via /api/_diag/memory.replica.
   //
-  // Delegator. Impl extracted to ./nimbus-session-replica.ts (S3).
+  // Delegator. Impl extracted to ./replica-routes.ts (S3).
   // Stays public-by-name so the diag handler at /api/_diag/memory keeps
   // working unchanged. The CT1 drift detector reads the result.
   getReplicaState(): {
@@ -1077,7 +1061,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _w12GetReplicaState(this, this.ctx);
   }
 
-  // Heap probe + W5 ring helpers extracted to ./nimbus-session-diag.ts (S10).
+  // Heap probe + W5 ring helpers extracted to ./diag.ts (S10).
   // The class retains delegator methods because the diag handler at
   // /api/_diag/memory + the ws lifecycle + ensureSqliteFs all call them.
 
@@ -1128,7 +1112,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
-  // Storage key W5_RING_STORAGE_KEY lives in ./nimbus-session-keys.ts (S5).
+  // Storage key W5_RING_STORAGE_KEY lives in ./keys.ts (S5).
   // Bounded ≤20 KB by oom-discriminator.ts; one async put per
   // webSocketClose where the ring is non-empty.
   /** Track when we last persisted to avoid redundant writes. */
@@ -1149,7 +1133,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _diag.rehydrateRingFromStorage(this, this.ctx);
   }
 
-  /** Snapshot + persist OOM ring. Delegator → ./nimbus-session-diag.ts (S10). */
+  /** Snapshot + persist OOM ring. Delegator → ./session/diag.ts (S10). */
   _w5PersistRing(): Promise<void> | null {
     return _diag.persistRing(this, this.ctx);
   }
@@ -1217,7 +1201,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   // ── Session initialization ────────────────────────────────────────────
   //
-  // S6: body extracted to ./nimbus-session-init.ts (1875 LOC of registry
+  // S6: body extracted to ./init.ts (1875 LOC of registry
   // command registrations + boot wiring). The class retains `initSession`
   // as a delegator per plan §IX.4 R1. Visibility relaxed (was `private`)
   // so the SessionInternal interface declares it.
@@ -1316,7 +1300,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   // ── WebSocket lifecycle ───────────────────────────────────────────────
   //
-  // S7: bodies extracted to ./nimbus-session-ws.ts. Class retains the
+  // S7: bodies extracted to ./ws.ts. Class retains the
   // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
   // relaxed for the methods (default-public; was async/private).
 
@@ -1332,12 +1316,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _wsDoError(this, ws, error);
   }
 
-  /** W9: synchronous flush on close. Delegator → ./nimbus-session-hib.ts (S4). */
+  /** W9: synchronous flush on close. Delegator → ./session/hibernation.ts (S4). */
   _w9FlushOnClose(): void {
     return _w9DoFlushOnClose(this);
   }
 
-  /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./nimbus-session-ws.ts (S7). */
+  /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./session/ws.ts (S7). */
   _w5SafePersistRing(): void {
     return _wsDoSafePersistRing(this);
   }

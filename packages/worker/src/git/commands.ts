@@ -1,5 +1,5 @@
 /**
- * git-commands.ts — Nimbus v2.0 Git integration via isomorphic-git.
+ * git/commands.ts — Nimbus v2.0 Git integration via isomorphic-git.
  *
  * Provides a full `git` command with subcommands:
  * init, clone, status, add, commit, log, branch, checkout, diff,
@@ -80,7 +80,7 @@ function wantsUtf8(options: unknown): boolean {
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
 function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
-  // Path normalization is shared with esbuild-service via ./vfs-path.ts.
+  // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
   // collapsed before VFS lookup. The bounded `..` pop won't escape root.

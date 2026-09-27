@@ -1,5 +1,5 @@
 /**
- * replica-routing.ts — W12 — DO read replica routing primitives.
+ * replica/routing.ts — W12 — DO read replica routing primitives.
  *
  * Pure module (no `cloudflare:workers` import) so it can be unit-tested
  * under Bun. NimbusSession wraps these helpers in its constructor and
@@ -28,14 +28,11 @@
  *     pins it near the DO; RPC into the DO is unaffected. DOs themselves
  *     don't move.
  *
- *   - ~lambros/Feedback for DO read replication API: replicas error with
- *     "Network connection lost" during high-volume writes. Mitigation:
- *     suspend replicas during npm install / git clone bursts (the
- *     suspension state lives in `replica-suspension.ts`).
+
  */
+/** Eventual-consistency tolerance in ms (replica-eligible routes only). */
 const PROCESSES_LOGS_RE = /^\/api\/processes\/\d+\/logs$/;
 const PORT_RE = /^\/port\/\d+(\/.*)?$/;
-const TWO_SECONDS = 2000;
 /**
  * Pure routing decision. Mirrors the route table in W12-plan §2.
  * Methods other than GET/HEAD on a replica-eligible route escape to
@@ -106,42 +103,6 @@ function isReadMethod(method) {
     return method === 'GET' || method === 'HEAD';
 }
 /**
- * Eventual-consistency tolerance per route (in ms).
- *
- * Returns `null` for primary-only routes (not replicable) and a numeric
- * tolerance for replica-eligible routes. The probe
- * `eventual-consistency-window-ms.mjs` enforces that every eligible route
- * has a tolerance ≤ 2000ms.
- *
- * The 2-second budget aligns with D1 read-replication best practice
- * (D1 docs § "Replica lag and consistency model"); DO replicas are
- * the same architectural pattern.
- */
-export function getEventualConsistencyToleranceMs(pathname) {
-    // Re-classify with a synthetic GET to figure out replica eligibility.
-    const policy = classifyReplicaPolicy(pathname, 'GET');
-    if (policy === 'replica-ok')
-        return TWO_SECONDS;
-    if (policy === 'replica-warm-only')
-        return TWO_SECONDS;
-    return null;
-}
-/** Tolerance lookup table (for diagnostics / observability surfaces). */
-export const REPLICA_POLICIES = {
-    '/api/memory': { policy: 'replica-ok', toleranceMs: TWO_SECONDS },
-    '/api/_diag/memory': { policy: 'replica-ok', toleranceMs: TWO_SECONDS },
-    '/api/processes': { policy: 'replica-ok', toleranceMs: TWO_SECONDS },
-    '/api/stats': { policy: 'replica-ok', toleranceMs: TWO_SECONDS },
-    '/preview/': { policy: 'replica-warm-only', toleranceMs: TWO_SECONDS },
-    '/ws': { policy: 'primary-only-ws', toleranceMs: null },
-    '/api/write-file': { policy: 'primary-only', toleranceMs: null },
-    '/api/mkdir': { policy: 'primary-only', toleranceMs: null },
-    '/api/start-vite': { policy: 'primary-only', toleranceMs: null },
-    '/api/supervisor-rpc': { policy: 'primary-only', toleranceMs: null },
-    '/worker/': { policy: 'primary-only', toleranceMs: null },
-    '/__nimbus/worker/': { policy: 'primary-only', toleranceMs: null },
-};
-/**
  * Best-effort: enable read replicas on this DO instance. Safe to call from
  * the constructor — pre-GA runtimes that lack the API surface no-op.
  *
@@ -197,19 +158,6 @@ export function inspectReplicaState(ctx) {
     }
     catch { /* best-effort */ }
     return { isReplica, primary: isReplica ? s.primary : null, bookmark };
-}
-/**
- * Capture the current bookmark immediately after a write completes on
- * the primary. The caller (e.g. /api/write-file) can stash the result in
- * a response header / cookie so the next read-your-writes call from the
- * same client can wait for the replica to catch up before responding.
- *
- * Phase 1 of W12 surfaces this as observability only (visible via
- * /api/_diag/memory.replica.bookmark). Phase 2 (W12.5 if measured demand)
- * wires the wait-for-bookmark contract end-to-end.
- */
-export function captureBookmarkAfterWrite(ctx) {
-    return inspectReplicaState(ctx).bookmark;
 }
 /**
  * Pure decision: should this isolate forward the Request to the primary

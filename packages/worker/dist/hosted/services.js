@@ -11,7 +11,7 @@ import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from "../session/ws-relay.js";
-// ── Pure helpers extracted to ./nimbus-session-helpers.ts (S1) ────────
+// ── Pure helpers in ../session/helpers.ts ────────
 //
 // renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS,
 // WRANGLER_IGNORED_FLAGS{,_WITH_VALUE}, WRANGLER_UNSUPPORTED_CONFIG_FIELDS,

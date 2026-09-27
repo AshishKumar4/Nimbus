@@ -397,10 +397,8 @@ export async function clearSessionAiCredential(self: SessionAiHost): Promise<voi
   await self.ctx.storage.delete(SESSION_AI_CREDENTIAL_KEY);
 }
 
-/** The stored credential, for surfaces that report connection state. */
-export async function readSessionAiCredential(self: SessionAiHost): Promise<StoredCredential | null> {
-  return readStoredCredential(self);
-}
+
+
 
 // ── The OpenAI-compatible endpoint ────────────────────────────────────────
 

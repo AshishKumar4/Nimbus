@@ -26,8 +26,6 @@
  *      also what makes each `python -c` a pristine interpreter rather than one
  *      carrying the last caller's __main__.
  */
-/** Marker the runner writes around the interpreter's exit status. */
-export const CPYTHON_EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 export const CPYTHON_PREAMBLE_TAIL = String.raw `
 // ── CPython guest runtime ──────────────────────────────────────────────────
 globalThis.__nimbusPyStdout = globalThis.__nimbusPyStdout || [];

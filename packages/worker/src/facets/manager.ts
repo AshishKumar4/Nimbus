@@ -3500,11 +3500,14 @@ async function transformEsmInBundle(
   interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
   const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
     if ('error' in outcome) {
+      // Infrastructure failure is not source code. Abort before the bundle
+      // or immutable loader image can cache a throw-on-require diagnostic.
+      if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
       // esbuild's verdict on this source is cached with it; a host that could
       // not run the transform this time has no verdict to cache.
       const shim = esbuildDiagnosticShim(cell.path, outcome.error);
       bundle[cell.target] = shim;
-      if (!outcome.transient) __esmTransformCacheSet(cell.key, shim);
+      __esmTransformCacheSet(cell.key, shim);
       failed++;
       return;
     }
@@ -3518,13 +3521,9 @@ async function transformEsmInBundle(
     try {
       outcomes = await esbuild.transformMany(cells.map((cell) => cell.request));
     } catch (e) {
-      // The service failing is no verdict on any module: shim this launch, cache nothing.
-      const reason = errorText(e);
-      for (const cell of cells) {
-        bundle[cell.target] = esbuildDiagnosticShim(cell.path, reason);
-        failed++;
-      }
-      return;
+      // Publishing a whole-bundle diagnostic would poison the next launch
+      // even when the per-cell transform cache correctly rejected it.
+      throw new Error(`esbuild transform service unavailable: ${errorText(e)}`, { cause: e });
     }
     cells.forEach((cell, i) => settle(cell, outcomes[i]));
   };
@@ -3535,20 +3534,10 @@ async function transformEsmInBundle(
     const loader = bundleTypescriptLoader(path);
     // A TypeScript source keeps its bytes; its emit lands beside it.
     const target = loader === null ? path : compiledCellKey(path);
-    // `import.meta.url` substitution mirrors the sibling fix at
-    // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
-    // Without `define`, esbuild's CJS transform reduces `import.meta.url`
-    // to undefined (single-pass) or preserves it literally — only to
-    // SyntaxError at `new Function(...)` parse time (two-pass via
-    // EsbuildService.transform's async-IIFE wrap → "Cannot use
-    // 'import.meta' outside a module"). The substitution value is the
-    // real `file:///<absolute-path>` URL — exactly what real Node returns
-    // for an ESM module at that path.
-    //
-    // Note: cache key now incorporates the path because the transformed
-    // output is path-specific (the URL literal is baked in). Two files
-    // with identical source but different paths would otherwise share a
-    // cache entry and the second file would get the first file's URL.
+    // Source is transformed once per path; import.meta reads metadata from
+    // each evaluation's module object, including its query and fragment.
+    // The source URL still keys transforms and supplies the static parent
+    // for rewritten dynamic imports and diagnostics.
     const absUrl = 'file:///' + path.replace(/^\/+/, '');
     // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
     const key = __cacheKey(original + '\0' + absUrl);
@@ -3560,6 +3549,7 @@ async function transformEsmInBundle(
     }
     // Every cell's dynamic import() is the process's: the transform keeps
     // them, and the facet rewrites each to the process's ESM loader.
+    const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
     const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
       path,
       target,
@@ -3568,8 +3558,8 @@ async function transformEsmInBundle(
       request: {
         code,
         options: rewriteOnly
-          ? { rewriteOnly: true, dynamicImportParent: absUrl }
-          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl), dynamicImportParent: absUrl },
+          ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
+          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl, true), dynamicImportParent: absUrl, moduleMetadata },
       },
     });
     let src: string;
@@ -3587,7 +3577,7 @@ async function transformEsmInBundle(
       if (pacer) await pacer.spend(src.length);
       let rewritten: EsbuildTransformOutcome | null;
       try {
-        rewritten = rewriteBundledEsmToCjs(src, absUrl);
+        rewritten = rewriteBundledEsmToCjs(src, absUrl, true);
       } catch (e) {
         rewritten = { error: errorText(e) };
       }
@@ -3598,7 +3588,7 @@ async function transformEsmInBundle(
       if (rewritten) {
         // Its declarations are CommonJS now; what import() calls remain go to
         // the facet like any cell's.
-        if (!mayHaveDynamicImport(rewritten.code)) {
+        if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('import.meta')) {
           settle(cell, rewritten);
           continue;
         }
@@ -3826,22 +3816,10 @@ async function _buildPrefetchBundle(
   //     `new Function` at facet startup and surface as the misleading
   //     "not in this launch's module map" at request time.
   if (esbuild) {
-    try {
-      await transformEsmInBundle(bundle, esbuild, pacer);
-      // Recount bytes after the transform — CJS rebuilds can be larger
-      // OR smaller than the ESM source. We don't try to thread totalBytes
-      // through the transform because the eviction loop below recomputes
-      // the encoded size from scratch anyway.
-    } catch (e: any) {
-      // framework-fixes-F4 (2026-05-12): the prior catch was silent.
-      // Replace every detected-ESM source with the SAME diagnostic
-      // shim transformEsmInBundle's per-file catch installs, so the
-      // user sees "esbuild transform failed (service-level): <reason>"
-      // instead of a bare "Cannot use import statement..." parse
-      // error with no context.
-      const reason = (e && e.message) ? String(e.message).replace(/\n/g, ' ') : String(e);
-      _markBundleEsmAsFailed(bundle, `esbuild service unavailable: ${reason}`);
-    }
+    // Transient failures propagate through the launch failure path before
+    // serialization/cache/LOADER publication. Per-source verdicts still use
+    // the lazy diagnostic cells installed by transformEsmInBundle.
+    await transformEsmInBundle(bundle, esbuild, pacer);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source `new Function` rejects without a reason.
@@ -4645,7 +4623,8 @@ export class FacetManager {
    * module-map walk reads the script as written, before this.
    */
   private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string): Promise<string> {
-    if (this.esbuild === null || !mayHaveDynamicImport(code)) return code;
+    if (!mayHaveDynamicImport(code)) return code;
+    if (this.esbuild === null) throw new Error('entry dynamic import requires the transform service');
     const base = cwd.replace(/\/+$/, '') || '/';
     const path = filename === undefined || filename === '<eval>'
       ? `${base}/[eval]`
@@ -4657,8 +4636,11 @@ export class FacetManager {
     const [outcome] = await this.esbuild.transformMany([
       { code, options: { rewriteOnly: true, dynamicImportParent: parentUrl } },
     ]);
-    // A script the parse refuses is compiled as written, and the compile says why.
-    if (outcome === undefined || 'error' in outcome) return code;
+    // A failed entry rewrite must not reach a Worker Loader as native host
+    // import(), or become an immutable cached image. Preserve the reported
+    // reason for permanent source errors as well as transient failures.
+    if (outcome === undefined) throw new Error('entry transform service returned no outcome');
+    if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     __esmTransformCacheSet(key, outcome.code);
     return outcome.code;
   }

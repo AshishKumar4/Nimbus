@@ -29,6 +29,7 @@
 
 import { VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
 import { normalizeVfsPath } from './path.js';
+import { z } from 'zod/v4';
 import {
   LRU_MAX_ENTRIES,
   BATCH_SIZE,
@@ -899,11 +900,14 @@ export const VFS_EXPORT_SCHEMA = 2;
 /** One entry of an exported tree, relative to the export's root ('' is the root). */
 export interface VfsExportRow {
   path: string;
+  /** Preserved only by a whole-root import into a fresh identity domain. */
+  ino: number;
   kind: VfsInodeKind;
   size: number;
   mode: number;
   uid: number;
   gid: number;
+  defaultAcl: number | null;
   atime: number;
   mtime: number;
   /** False for content in one chunk (<= CHUNK_SIZE bytes). */
@@ -915,6 +919,8 @@ export interface VfsExportRow {
 export interface VfsExportPage {
   schema: number;
   root: string;
+  /** Exclusive source inode high-water; also covers every pinned snapshot. */
+  nextIno: number;
   /** The cursor this page follows (null: the first page). */
   after: string | null;
   rows: VfsExportRow[];
@@ -925,6 +931,13 @@ export interface VfsExportChunk {
   hash: string;
   data: Uint8Array;
 }
+
+const ImportJobArgsSchema = z.object({
+  dst: z.string(),
+  sourceRoot: z.string().optional(),
+  sourceNextIno: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER).optional(),
+  preserveInos: z.boolean().optional(),
+});
 
 export interface SnapshotInfo {
   name: string;
@@ -1570,6 +1583,7 @@ export class SqliteVFS {
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_parent ON vfs_inodes(parent_path, kind)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_gen ON vfs_inodes(gen)');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_ino ON vfs_inodes(ino)');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_chunk ON vfs_inodes(chunk_id) WHERE chunk_id IS NOT NULL');
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_inodes_content ON vfs_inodes(content_id) WHERE content_id IS NOT NULL');
       // A 64 KiB row is far past WITHOUT ROWID's row-size guidance, so chunks
@@ -1620,6 +1634,7 @@ export class SqliteVFS {
         PRIMARY KEY (path, gen_to)
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_ino ON vfs_inode_history(ino)');
       // (gen_to, path): drop's keyset walk seeks it; gen_to alone made each page a scan.
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen_path ON vfs_inode_history(gen_to, path)');
       // One row per deleted path, written with the delete: what lets
@@ -1644,6 +1659,7 @@ export class SqliteVFS {
         gen INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       )`);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_snapshots_gen ON vfs_snapshots(gen)');
       // Operations of many transactions whose prefix is not a state a crash
       // may leave: the row records how to finish them.
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_jobs (
@@ -2154,8 +2170,10 @@ export class SqliteVFS {
   }
 
 
-  as(cred: VfsCred): CredentialedVfs {
+  /** Bind credentials and, optionally, the capability of a live mutation lease. */
+  as(cred: VfsCred, options?: { mutationOwner?: string }): CredentialedVfs {
     const engine = this;
+    const mutationOwner = options?.mutationOwner;
     const bound = Object.freeze({
       uid: cred.uid,
       gid: cred.gid,
@@ -2216,12 +2234,13 @@ export class SqliteVFS {
       copyFile: (src, dest) => this.copyFile(src, dest, bound),
       copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
       copyTreeAsync: (src, dest, options) => {
-        const owner = options?.mutationOwner;
+        const owner = mutationOwner ?? options?.mutationOwner;
         const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
         return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
-      writeStream: (stream, options) => this.writeStream(stream, options, bound),
+      writeStream: (stream, options) => this.writeStream(stream,
+        mutationOwner === undefined ? options : { ...options, mutationOwner }, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
       revision: (path) => this.revision(path, bound),
       contentKey: (path) => this.contentKey(path, bound),
@@ -2231,6 +2250,36 @@ export class SqliteVFS {
       // Live: a view outlives rotateIncarnation.
       get epoch() { return engine._epoch; },
     };
+    if (mutationOwner !== undefined) {
+      // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
+      const mutations: Partial<CredentialedVfs> = {
+        mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
+        writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
+        symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
+        writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
+        appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner,
+          () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
+        acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner,
+          () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
+        truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
+        utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner,
+          () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
+        chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
+        setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
+        chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner,
+          () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
+        unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
+        rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
+        removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
+        rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
+        copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
+        copyTree: (from, to, options) => this.withMutationOwner(mutationOwner,
+          () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
+        writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
+        mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
+      };
+      Object.assign(view, mutations);
+    }
     return bound.uid === 0 ? this.privilegedView(view) : view;
   }
 
@@ -2818,10 +2867,8 @@ export class SqliteVFS {
   }
 
   private withMutationOwner<T>(owner: string | undefined, callback: () => T): T {
-    if (!owner || !this.exclusiveMutationLeases.has(owner)) {
-      if (owner) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
-      return callback();
-    }
+    if (owner === undefined) return callback();
+    if (!this.exclusiveMutationLeases.has(owner)) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
     if (this.activeMutationOwner !== null) {
       throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
     }
@@ -2853,7 +2900,7 @@ export class SqliteVFS {
       }
       if (this.activeMutationOwner !== null) {
         const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
-        if (!ownedRoot || (normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
+        if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
           throw vfsError('EPERM', `${normalized} is outside exclusive mutation root ${ownedRoot ?? ''}`);
         }
       }
@@ -5110,6 +5157,7 @@ export class SqliteVFS {
           )][0]!;
           gen = Number(state.gen);
           const firstIno = Number(state.next_ino);
+          if (!Number.isSafeInteger(firstIno + page.length)) throw vfsError('ENOSPC', 'inode identity space exhausted');
           if (page.length > 0) {
             const lower = cursor === null ? job.src : cursor;
             const tail = job.src.length + 1;
@@ -5894,7 +5942,8 @@ export class SqliteVFS {
       if (a === undefined && b === undefined) continue;
       if (a === undefined) { entries.push({ path, change: 'added', type: b!.kind }); continue; }
       if (b === undefined) { entries.push({ path, change: 'removed', type: a.kind }); continue; }
-      const sameMeta = a.kind === b.kind && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid && a.size === b.size;
+      const sameMeta = a.kind === b.kind && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid && a.size === b.size
+        && (a.defaultAcl ?? null) === (b.defaultAcl ?? null);
       const sameRef = a.chunkId === b.chunkId && a.contentId === b.contentId;
       if (sameMeta && (sameRef || a.kind === 'directory' || this.contentKeyOf(a) === this.contentKeyOf(b))) continue;
       entries.push({ path, change: 'modified', type: b.kind });
@@ -5961,6 +6010,7 @@ export class SqliteVFS {
    */
   exportPage(options: { at: string; root?: string; after?: string | null; limit?: number }): VfsExportPage {
     const g = this.requireSnapshot(options.at);
+    const nextIno = Number([...this.sql.exec('SELECT next_ino FROM vfs_state WHERE slot = 1')][0]!.next_ino);
     const root = normalizeVfsPath(options.root ?? '');
     const after = options.after ?? null;
     const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? EXPORT_PAGE_ROWS)), EXPORT_PAGE_ROWS);
@@ -5981,7 +6031,7 @@ export class SqliteVFS {
       const top = this.inodeAt(root, g);
       if (top === undefined) throw vfsError('ENOENT', `${root} in snapshot ${options.at}`);
       more = take(top) && top.isDir;
-      if (!top.isDir) return { schema: VFS_EXPORT_SCHEMA, root, after, rows, next: null };
+      if (!top.isDir) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null };
     }
     let cursor = after === null ? range.lower : full(after);
     let exhausted = false;
@@ -5997,7 +6047,7 @@ export class SqliteVFS {
     if (!exhausted) {
       exhausted = this.pageAt(g, full(rows[rows.length - 1]!.path), 1, range.upper).length === 0;
     }
-    return { schema: VFS_EXPORT_SCHEMA, root, after, rows, next: exhausted ? null : rows[rows.length - 1]!.path };
+    return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: exhausted ? null : rows[rows.length - 1]!.path };
   }
 
   private exportRow(inode: INode, path: string): VfsExportRow {
@@ -6017,6 +6067,7 @@ export class SqliteVFS {
     }
     return {
       path,
+      ino: inode.ino,
       kind: inode.kind,
       size: inode.size,
       mode: inode.mode,
@@ -6025,6 +6076,7 @@ export class SqliteVFS {
       atime: inode.atime,
       mtime: inode.mtime,
       manifest,
+      defaultAcl: inode.defaultAcl ?? null,
       pieces,
     };
   }
@@ -6043,7 +6095,7 @@ export class SqliteVFS {
     const page = this.exportPage(options);
     const hash = createHash('sha256');
     for (const row of page.rows) {
-      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.pieces])}\n`));
+      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.defaultAcl, row.pieces])}\n`));
     }
     const result = { digest: hex(new Uint8Array(hash.digest())), next: page.next };
     if (this.pageDigests.size >= PAGE_DIGEST_MEMO_ENTRIES) this.pageDigests.clear();
@@ -6098,6 +6150,11 @@ export class SqliteVFS {
    */
   importCursor(dst: string): string | null {
     const target = normalizeVfsPath(dst);
+    const job = this.importJob(target);
+    if (job !== undefined) {
+      if (job.cursor === '') return null;
+      return target === '' ? job.cursor : job.cursor.slice(target.length + 1);
+    }
     const range = subtreeRange(target);
     const last = range.upper === null
       ? [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes')][0]
@@ -6151,6 +6208,9 @@ export class SqliteVFS {
     }
     const target = normalizeVfsPath(dst);
     this.assertMutationsAllowed([target]);
+    if (!Number.isSafeInteger(page.nextIno) || page.nextIno < 2 || typeof page.root !== 'string') {
+      throw vfsError('EINVAL', 'invalid import inode high-water or source root');
+    }
     const given = new Map<string, Uint8Array>();
     for (const chunk of chunks) {
       if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
@@ -6177,6 +6237,56 @@ export class SqliteVFS {
       }
     }
     const rows = page.rows.filter((row) => cursor === null || full(row.path) > full(cursor));
+    const sourceRoot = normalizeVfsPath(page.root);
+    const sourceNextIno = job?.sourceNextIno ?? page.nextIno;
+    if (page.nextIno < sourceNextIno || (job?.sourceRoot !== undefined && sourceRoot !== job.sourceRoot)) {
+      throw vfsError('EINVAL', 'import source identity changed');
+    }
+    const stateNextIno = Number([...this.sql.exec('SELECT next_ino FROM vfs_state WHERE slot = 1')][0]!.next_ino);
+    const preserveInos = job?.preserveInos ?? (target === '' && sourceRoot === '' && stateNextIno === 2
+      && this.openNodes.size === 0
+      && [...this.sql.exec('SELECT 1 FROM vfs_inodes LIMIT 1')].length === 0
+      && [...this.sql.exec('SELECT 1 FROM vfs_inode_history LIMIT 1')].length === 0
+      && [...this.sql.exec('SELECT 1 FROM vfs_snapshots LIMIT 1')].length === 0
+      && [...this.sql.exec('SELECT 1 FROM vfs_jobs WHERE id != ? LIMIT 1', job?.id ?? -1)].length === 0);
+    const ids = new Set<number>();
+    for (const row of page.rows) {
+      if (row.defaultAcl !== null && (row.kind !== 'directory' || !Number.isSafeInteger(row.defaultAcl) || row.defaultAcl < 0 || row.defaultAcl > 0o777)) {
+        throw vfsError('EINVAL', `${row.path}: invalid default ACL`);
+      }
+      if (!Number.isSafeInteger(row.ino) || row.ino <= ROOT_INODE || row.ino >= sourceNextIno || ids.has(row.ino)
+          || (preserveInos && row.path === '')) throw vfsError('EINVAL', `${row.path}: invalid or duplicate import inode`);
+      ids.add(row.ino);
+    }
+    if (preserveInos) {
+      const byId = new Map(rows.map((row) => [row.ino, full(row.path)]));
+      for (const opened of this.openNodes) {
+        const path = byId.get(opened.inode.ino);
+        if (path !== undefined && opened.path !== path) throw vfsError('EEXIST', `import inode ${opened.inode.ino} is held by another open description`);
+      }
+      const entries = [...byId];
+      const perBatch = Math.floor(KEYS_PER_SQL_EXEC / 2);
+      for (let offset = 0; offset < entries.length; offset += perBatch) {
+        const batch = entries.slice(offset, offset + perBatch);
+        const values: (number | string)[] = [];
+        for (const [ino, path] of batch) values.push(ino, path);
+        const supplied = `WITH incoming(ino, path) AS (VALUES ${batch.map(() => '(?, ?)').join(',')})`;
+        for (const existing of this.sql.exec(
+          `${supplied} SELECT v.ino FROM incoming i JOIN vfs_inodes v ON v.ino = i.ino WHERE v.path != i.path LIMIT 1`, ...values,
+        )) throw vfsError('EEXIST', `import inode ${String(existing.ino)} already names another path`);
+        for (const pinned of this.sql.exec(
+          `${supplied} SELECT h.ino FROM incoming i JOIN vfs_inode_history h ON h.ino = i.ino WHERE h.path != i.path
+           AND EXISTS (SELECT 1 FROM vfs_snapshots s WHERE s.gen >= h.gen_from AND s.gen < h.gen_to) LIMIT 1`, ...values,
+        )) throw vfsError('EEXIST', `import inode ${String(pinned.ino)} is pinned at another path`);
+      }
+      for (const row of rows) {
+        const existing = this.inodes.get(full(row.path));
+        if (existing !== undefined && existing.ino !== row.ino) throw vfsError('EEXIST', `${row.path}: another inode occupies the import path`);
+      }
+    }
+    if (!Number.isSafeInteger(Math.max(stateNextIno, preserveInos ? sourceNextIno : 2) + rows.length + 1)) {
+      throw vfsError('EINVAL', 'import inode high-water leaves no safe allocator range');
+    }
     for (const row of rows) {
       if (row.pieces.reduce((sum, [, size]) => sum + size, 0) !== row.size) {
         throw vfsError('EINVAL', `${row.path}: chunks do not add up to ${row.size} bytes`);
@@ -6198,6 +6308,12 @@ export class SqliteVFS {
     }
 
     const jobId = job?.id ?? this.beginImport(target);
+    if (job?.sourceNextIno === undefined) {
+      this.transactionSync(() => {
+        if (preserveInos) this.sql.exec('UPDATE vfs_state SET next_ino = MAX(next_ino, ?) WHERE slot = 1', sourceNextIno);
+        this.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify({ dst: target, sourceRoot, sourceNextIno, preserveInos }), jobId);
+      });
+    }
     let builder = this.newPlan();
     let imported = 0;
     const flush = (): void => {
@@ -6206,9 +6322,12 @@ export class SqliteVFS {
       builder = this.newPlan();
       this.assertTransactionFits(plan.metrics);
       this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' });
+      const last = plan.inodes[plan.inodes.length - 1]?.path;
+      // A reset before this cursor update replays same-path rows; ordinary writes never advance it.
+      if (last !== undefined) this.transactionSync(() => { this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', last, jobId); });
     };
     if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
-      builder.addInode(this.importedEntry(target, { path: '', kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0, atime: this.now(), mtime: this.now(), manifest: false, pieces: [] }, { type: 'none' }));
+      builder.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0, defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, pieces: [] }, { type: 'none' }));
     }
     for (const row of rows) {
       const path = full(row.path);
@@ -6216,7 +6335,7 @@ export class SqliteVFS {
       const blob = pieces.reduce((sum, piece) => sum + (piece.data?.byteLength ?? 0), 0);
       if (pieces.length === 0) {
         if (builder.wouldExceedInode() !== null) flush();
-        builder.addInode(this.importedEntry(path, row, { type: 'none' }));
+        builder.addInode(this.importedEntry(path, row, { type: 'none' }, preserveInos ? row.ino : undefined));
       } else if (pieces.length <= IMPORT_INLINE_PIECES && blob <= MAX_TX_BLOB_BYTES / 2) {
         if (builder.wouldExceedPieces(blob, pieces.length) !== null || builder.wouldExceedInode() !== null) flush();
         let digest: Uint8Array | null = null;
@@ -6225,7 +6344,7 @@ export class SqliteVFS {
           for (const piece of pieces) running.add(piece.hash);
           digest = running.digest(row.size);
         }
-        builder.addInode(this.importedEntry(path, row, { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest }));
+        builder.addInode(this.importedEntry(path, row, { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest }, preserveInos ? row.ino : undefined));
       } else {
         // Too large for one transaction: stage it, then publish with the group.
         flush();
@@ -6241,7 +6360,7 @@ export class SqliteVFS {
             builder.addStagedImport(staging, piece, path);
           }
           flush();
-          builder.addInode(this.importedEntry(path, row, { type: 'staged', content: staging }));
+          builder.addInode(this.importedEntry(path, row, { type: 'staged', content: staging }, preserveInos ? row.ino : undefined));
           flush();
         } catch (error) {
           if (staging.id !== 0) this.abandonStaging(staging);
@@ -6402,9 +6521,10 @@ export class SqliteVFS {
     return { stored };
   }
 
-  private importJob(target: string): { id: number } | undefined {
-    for (const row of this.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'import'")) {
-      if ((JSON.parse(String(row.args)) as { dst: string }).dst === target) return { id: Number(row.id) };
+  private importJob(target: string): (z.infer<typeof ImportJobArgsSchema> & { id: number; cursor: string }) | undefined {
+    for (const row of this.sql.exec("SELECT id, args, cursor FROM vfs_jobs WHERE kind = 'import'")) {
+      const args = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
+      if (args.dst === target) return { ...args, id: Number(row.id), cursor: String(row.cursor) };
     }
     return undefined;
   }
@@ -6436,7 +6556,7 @@ export class SqliteVFS {
     return [...this.sql.exec('SELECT 1 FROM vfs_inodes WHERE parent_path = ? LIMIT 1', dir)].length > 0;
   }
 
-  private importedEntry(path: string, row: VfsExportRow, content: InodeContent): StoredInodeEntry {
+  private importedEntry(path: string, row: VfsExportRow, content: InodeContent, ino?: number): StoredInodeEntry {
     const kind = row.kind;
     if (kind !== 'file' && kind !== 'directory' && kind !== 'symlink') throw vfsError('EINVAL', `${row.path}: kind ${String(kind)}`);
     if (kind === 'directory' && (content.type !== 'none' || row.size !== 0)) {
@@ -6447,12 +6567,14 @@ export class SqliteVFS {
       parentPath: this.parentPath(path),
       kind,
       isDir: kind === 'directory',
+      ino,
       size: row.size,
       atime: row.atime,
       mtime: row.mtime,
       mode: row.mode,
       uid: row.uid,
       gid: row.gid,
+      defaultAcl: row.defaultAcl,
       content,
     };
   }
@@ -7463,7 +7585,7 @@ export class SqliteVFS {
     if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
     this.deliverEvents(publication.removedDirectories, () => {
       for (const event of publication.events) {
-        this.events.emit(event.type, event.path, event.oldPath);
+        this.emitMutation(event.type, event.path, event.oldPath);
       }
     });
     this.runContentMaintenanceSafely(1);
@@ -7495,7 +7617,11 @@ export class SqliteVFS {
     if (this.transactionPublication) {
       this.transactionPublication.events.push({ type, path, oldPath });
     } else {
-      this.events.emit(type, path, oldPath);
+      // Synchronous path listeners are callers, not part of the lease holder's mutation.
+      const owner = this.activeMutationOwner;
+      this.activeMutationOwner = null;
+      try { this.events.emit(type, path, oldPath); }
+      finally { this.activeMutationOwner = owner; }
     }
   }
 
@@ -7556,7 +7682,9 @@ export class SqliteVFS {
         )][0]!;
         gen = Number(state.gen);
         pinGen = Number(state.pin_gen);
-        let nextIno = Number(state.next_ino) - reserve.inos;
+        const inodeLimit = Number(state.next_ino);
+        if (!Number.isSafeInteger(inodeLimit)) throw vfsError('ENOSPC', 'inode identity space exhausted');
+        let nextIno = inodeLimit - reserve.inos;
         let nextChunk = Number(state.next_chunk) - reserve.chunks;
         let nextContent = Number(state.next_content) - reserve.contents;
         const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };

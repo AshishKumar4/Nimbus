@@ -1,5 +1,5 @@
 /**
- * Dynamic `import()` in a module cell.
+ * Dynamic `import()` and evaluation metadata in a module cell.
  *
  * A cell is compiled with `new Function`, so an `import()` that survives into
  * it is the runtime's own: workerd resolves it against its module registry,
@@ -14,9 +14,13 @@
  * parse runs where the ESM→CJS transform runs, in the esbuild facet (its
  * staged runner installs `__nimbusRewriteDynamicImports`), never in the
  * session's isolate, and the session caches the result by content.
+ * The same parse binds actual import.meta references to the wrapper
+ * module, using an identifier absent from every parsed scope. User bindings
+ * named `module` cannot capture them; directives and five-argument CommonJS
+ * wrappers are preserved.
  */
-import { parse } from 'acorn';
-import { simple } from 'acorn-walk';
+import { Parser } from 'acorn';
+import { full } from 'acorn-walk';
 /** The loader a rewritten `import()` calls (node-shims.ts). */
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
 /**
@@ -29,14 +33,39 @@ export function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
 }
 /**
- * A cell's syntax tree. Sloppy script first, as the cell is compiled; then
- * module syntax, for what a transform left in (`import.meta`), which a
- * script may not contain.
+ * Parse with acorn's grammar and scope/export checks, visiting each complete
+ * top-level statement before dropping its tree. A bundled 4 MiB module can
+ * otherwise retain hundreds of thousands of AST nodes alongside esbuild's
+ * wasm heap. Nested statements remain intact until their enclosing root has
+ * parsed; only acorn's Program body is reduced to positions and directives.
  */
-function parseCell(code) {
-    for (const sourceType of ['script', 'module']) {
+function parseCell(code, moduleFirst, visit, reset) {
+    const StreamingParser = Parser.extend(Base => {
+        const parseStatement = Reflect.get(Base.prototype, 'parseStatement');
+        if (typeof parseStatement !== 'function')
+            throw new Error('Acorn statement parser unavailable');
+        return class extends Base {
+            parseStatement(context, topLevel, exports) {
+                const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+                if (!topLevel)
+                    return node;
+                full(node, visit);
+                // adaptDirectivePrologue still sees literal expression statements.
+                // Keeping these small nodes preserves insertion after "use strict".
+                if (node.type === 'ExpressionStatement') {
+                    const expression = Reflect.get(node, 'expression');
+                    if (expression?.type === 'Literal' && typeof expression.value === 'string')
+                        return node;
+                }
+                return { type: 'EmptyStatement', start: node.start, end: node.end };
+            }
+        };
+    });
+    const grammars = moduleFirst ? ['module', 'script'] : ['script', 'module'];
+    for (const sourceType of grammars) {
+        reset();
         try {
-            return parse(code, {
+            return StreamingParser.parse(code, {
                 ecmaVersion: 'latest',
                 sourceType,
                 allowReturnOutsideFunction: true,
@@ -58,27 +87,65 @@ function parseCell(code) {
  * A cell is a function body (it may `return` or `await` at its top level);
  * one acorn cannot parse is returned unchanged, for the compile to report.
  */
-export function rewriteDynamicImports(code, parentUrl) {
-    if (!mayHaveDynamicImport(code))
-        return code;
-    const ast = parseCell(code);
-    if (ast === null)
+export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
+    const metadata = moduleMetadata && code.includes('import');
+    if (!mayHaveDynamicImport(code) && !metadata)
         return code;
     const spans = [];
-    simple(ast, {
-        ImportExpression(node) {
+    const metadataSpans = metadata ? [] : null;
+    const identifiers = metadata ? new Set() : null;
+    const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
+    const ast = parseCell(code, metadata, (node) => {
+        // These tags identify acorn's concrete node types, including escaped
+        // identifiers and bindings in nested scopes.
+        if (identifiers && node.type === 'Identifier') {
+            const identifier = node;
+            identifiers.add(identifier.name);
+        }
+        if (node.type === 'ImportExpression') {
             const expression = node;
-            spans.push({ start: expression.start, end: expression.source.start });
-        },
+            spans.push({ start: expression.start, end: expression.source.start, text: call });
+        }
+        if (metadataSpans && node.type === 'MetaProperty') {
+            const meta = node;
+            if (meta.meta.name === 'import' && meta.property.name === 'meta')
+                metadataSpans.push({ start: meta.start, end: meta.end });
+        }
+    }, () => {
+        spans.length = 0;
+        if (metadataSpans)
+            metadataSpans.length = 0;
+        identifiers?.clear();
     });
+    if (ast === null)
+        return code;
+    if (metadataSpans?.length) {
+        // `module` can be a user binding (or a nested function parameter).
+        // Capture the actual wrapper module by position once, using a name no
+        // parsed scope binds. No additional CommonJS argument or wrapper parse.
+        let binding = '__nimbusMetadataModule';
+        while (identifiers.has(binding))
+            binding += '_';
+        for (const meta of metadataSpans) {
+            spans.push({ start: meta.start, end: meta.end, text: `${binding}.__nimbusImportMeta` });
+        }
+        let insertion = ast.body[0]?.start ?? 0;
+        for (const statement of ast.body) {
+            if (!('directive' in statement) || typeof statement.directive !== 'string')
+                break;
+            insertion = statement.end;
+        }
+        // ESM is strict even when the intermediate ESM printer removed an
+        // explicit directive as redundant. Carry it into the CJS function body.
+        spans.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+    }
     if (spans.length === 0)
         return code;
-    spans.sort((a, b) => a.start - b.start);
-    const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
+    spans.sort((a, b) => a.start - b.start || a.end - b.end);
     let out = '';
     let at = 0;
-    for (const { start, end } of spans) {
-        out += code.slice(at, start) + call;
+    for (const { start, end, text } of spans) {
+        out += code.slice(at, start) + text;
         at = end;
     }
     return out + code.slice(at);

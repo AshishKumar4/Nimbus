@@ -814,7 +814,7 @@ export class CirrusReal {
     //   exist". Two restarts on the same pid hit the warm cache.
     // Step B: worker.getDurableObjectClass('CirrusRealVite') → the
     //   class constructor from the dynamic worker's exports. Same
-    //   pattern facet-manager.ts uses for NodeProcess.
+    //   pattern facets/manager.ts uses for NodeProcess.
     //
     // Step C: ctx.facets.get('cirrus-real-vite', { class }) → DO Facet
     //   stub. The facet has its own SQLite (used by the cookie row),

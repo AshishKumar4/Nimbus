@@ -8,7 +8,7 @@ const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // main / 256 KiB slots carry 300×/10× margin while keeping a full
 // instance ~17 MiB — several forks fit the ~180-200 MiB facet ceiling.
 const MAIN_SIZE = 8 << 20, SLOT_SIZE = 256 << 10, NSLOT = 32;
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 };
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70, SRCH: 71 };
 // WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
 // monotonic source; an id outside this set is EINVAL, never a silent realtime
 // reading — a guest that asks for monotonic and receives wall time computes
@@ -559,6 +559,8 @@ function waitForDeadline(s, proc, subs) {
     const startedNs = realtimeNs();
     let spins = 0;
     while (!clocks.some(clockExpired)) {
+        if (proc.killedBy)
+            throw new Signalled(proc.killedBy);
         if (s.rootExit !== null)
             return;
         if (subs.some((x) => x.tag === 1 && (fdReadReady(s, proc, x.fd) || { ready: true }).ready))
@@ -906,7 +908,8 @@ function makeProc(s, pid, ppid, fds) {
                 return -filesystemErrno(error);
             }
         }),
-        kill: () => 0, setpgid: () => 0, getpgid: () => proc.pid, getppid: () => proc.ppid,
+        kill: (pid, signal) => signalProc(s, proc, pid, signal),
+        setpgid: () => 0, getpgid: () => proc.pid, getppid: () => proc.ppid,
         tcsetpgrp: () => 0, tcgetpgrp: () => proc.pid, tcgetattr: () => -1, tcsetattr: () => 0,
     };
     const envImports = {
@@ -960,6 +963,9 @@ function makeProc(s, pid, ppid, fds) {
         sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
     };
     proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, env: envImports });
+    if (typeof proc.inst.exports.__nimbus_signal_disposition !== 'function') {
+        throw new Error('bash-runner@3 requires the signal disposition export; install bash 5.2.37-3');
+    }
     s.stats.instances++;
     s.procs.set(pid, proc);
     return proc;
@@ -973,6 +979,8 @@ function setupArena(proc) {
 }
 // ── scheduler ─────────────────────────────────────────────────────────
 function resumeProc(proc) {
+    if (!proc.__s.procs.has(proc.pid))
+        return;
     proc.ctx.rewinding = true;
     proc.inst.exports.asyncify_start_rewind(proc.MAIN_BUF);
     proc.__s.runnable.push(proc);
@@ -1001,6 +1009,8 @@ function trackArena(s, proc, bufAddr, size, isSlot) {
         s.stats.mainHi = used;
 }
 function step(s, proc) {
+    if (!s.procs.has(proc.pid))
+        return;
     const c = proc.ctx, ex = proc.inst.exports;
     try {
         ex._start();
@@ -1117,6 +1127,8 @@ function startDeferred(s) {
 // bound to the process fd table (M2 exec-into-runner, in-facet). The
 // tool's blocking pipe reads synchronously pump the writer procs.
 async function doExec(s, proc) {
+    if (!s.procs.has(proc.pid))
+        return;
     const path = proc.ctx.execPath.startsWith('/') ? proc.ctx.execPath : proc.cwd + '/' + proc.ctx.execPath;
     const key = norm(path);
     const name = key.split('/').pop() ?? '';
@@ -1135,6 +1147,12 @@ async function doExec(s, proc) {
     const canPark = s.parking === 'jspi';
     if (!canPark && !s.fs.synchronous)
         throw new Error('Plain WASI child requires JSPI for an asynchronous filesystem');
+    let ignored = 0n;
+    for (let signal = 1; signal < 65; signal++) {
+        if (proc.inst.exports.__nimbus_signal_disposition(signal) === 1)
+            ignored |= 1n << BigInt(signal);
+    }
+    proc.execIgnoredSignals = ignored;
     let instance;
     function memory() {
         const value = instance?.exports.memory;
@@ -1149,6 +1167,8 @@ async function doExec(s, proc) {
     // ever arrive, and POSIX spells that a zero-byte read, not an error.
     const waitInput = async (fd, iov, out) => {
         for (;;) {
+            if (proc.killedBy)
+                throw new Signalled(proc.killedBy);
             const ready = tryReadFd(s, proc, fd, DV(), U8(), iov, out);
             if (ready)
                 return ready.errno;
@@ -1161,12 +1181,14 @@ async function doExec(s, proc) {
             const target = blockTarget(s, proc, fd);
             if (!target)
                 return E.BADF;
-            await new Promise(complete => { target.list.push({ complete }); target.wake(); });
+            await waitChild(proc, complete => { target.list.push({ proc, complete }); target.wake(); });
         }
     };
     const io = {
         read: (fd, iov, out) => {
             for (;;) {
+                if (proc.killedBy)
+                    throw new Signalled(proc.killedBy);
                 const ready = tryReadFd(s, proc, fd, DV(), U8(), iov, out);
                 if (ready)
                     return ready.errno;
@@ -1188,7 +1210,11 @@ async function doExec(s, proc) {
                 return 0;
             }
         },
-        write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
+        write: (fd, bytes) => {
+            if (proc.killedBy)
+                throw new Signalled(proc.killedBy);
+            return writeThroughFd(s, proc, fd, bytes);
+        },
         writeGate: (fd) => {
             if (!canPark)
                 return undefined;
@@ -1197,7 +1223,7 @@ async function doExec(s, proc) {
                 return undefined;
             // Parks until the pipe drains below its capacity or its readers leave;
             // the write is then checked again from the top (SIGPIPE included).
-            return new Promise((complete) => { pp.writeW.push({ complete }); });
+            return waitChild(proc, complete => { pp.writeW.push({ proc, complete }); });
         },
         poll: (input, output, count, used) => {
             const subscriptions = readSubs(DV(), input, count);
@@ -1214,6 +1240,8 @@ async function doExec(s, proc) {
             return (async () => {
                 for (;;) {
                     await new Promise(resolve => setTimeout(resolve, 1));
+                    if (proc.killedBy)
+                        throw new Signalled(proc.killedBy);
                     const count = emitReady(s, proc, DV(), output, subscriptions);
                     if (count) {
                         DV().setUint32(used, count, true);
@@ -1434,7 +1462,73 @@ function doWait(s, proc) {
         s.waiters.push({ proc, targetPid: t });
     }
 }
+/** A child parked on a pipe is also woken when its virtual process dies. */
+function waitChild(proc, register) {
+    if (proc.killedBy)
+        throw new Signalled(proc.killedBy);
+    return new Promise(resolve => {
+        const complete = () => { proc.cancelWaits?.delete(complete); resolve(); };
+        (proc.cancelWaits ??= new Set()).add(complete);
+        register(complete);
+    });
+}
+/** Default terminating signals for virtual children, never host OS pids. */
+function signalProc(s, caller, pid, signal) {
+    if (!Number.isInteger(signal) || signal < 0 || signal >= 65)
+        return -E.INVAL;
+    if (pid <= 0)
+        return -E.NOSYS;
+    const victim = s.procs.get(pid);
+    // POSIX permits probing a zombie until its parent reaps it.
+    if (!victim)
+        return s.exitStatus.has(pid) ? 0 : -E.SRCH;
+    if (signal === 0)
+        return 0;
+    // Every virtual Bash process owns its instance/memory. Query the VICTIM,
+    // not the caller currently executing kill. An exec'd child has reset its
+    // caught handlers; consulting its old shell image would be incorrect.
+    const disposition = signal === 9 ? 0
+        : victim.execIgnoredSignals === undefined
+            ? victim.inst.exports.__nimbus_signal_disposition(signal)
+            : (victim.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+    if (disposition === 1)
+        return 0;
+    if (disposition !== 0)
+        return -E.NOSYS;
+    switch (signal) {
+        case 1:
+        case 2:
+        case 3:
+        case 6:
+        case 9:
+        case 13:
+        case 14:
+        case 15: break;
+        default: return -E.NOSYS;
+    }
+    if (victim === caller)
+        throw new Signalled(signal);
+    victim.killedBy = signal;
+    s.runnable = s.runnable.filter(proc => proc !== victim);
+    s.deferred = s.deferred.filter(proc => proc !== victim);
+    s.waiters = s.waiters.filter(waiter => waiter.proc !== victim);
+    s.suspended.delete(pid);
+    for (const pipe of s.pipes.values()) {
+        pipe.readW = pipe.readW.filter(waiter => !('proc' in waiter) || waiter.proc !== victim);
+        pipe.writeW = pipe.writeW.filter(waiter => !('proc' in waiter) || waiter.proc !== victim);
+    }
+    s.stdin.waiters = s.stdin.waiters.filter(waiter => !('proc' in waiter) || waiter.proc !== victim);
+    finishProc(s, victim, 0, signal);
+    for (const complete of victim.cancelWaits ?? [])
+        complete();
+    wakeScheduler(s);
+    return 0;
+}
 function finishProc(s, proc, code, signal = 0) {
+    // A terminated JSPI child may unwind after its signal exit was published.
+    // Never overwrite that status or wake a later wait with a second exit.
+    if (!s.procs.has(proc.pid))
+        return;
     // A wait status: the exit code in the second byte, or the killing signal in
     // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
     const st = signal ? signal & 0x7f : (code & 0xff) << 8;

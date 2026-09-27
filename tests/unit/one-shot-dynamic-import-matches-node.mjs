@@ -36,7 +36,17 @@ const files = {
   'app/esm.mjs': 'export const kind = "esm";\nexport default "esm-default";\n',
   'app/c.cjs': 'exports.a = 1;\nexports.b = 2;\n',
   'app/load.cjs': 'exports.load = () => import("./esm.mjs");\n',
-  'app/counted.mjs': 'globalThis.__nimbusCountedImport = (globalThis.__nimbusCountedImport || 0) + 1; export const count = globalThis.__nimbusCountedImport;\n',
+  'app/counted.mjs': '"use strict"; globalThis.__nimbusCountedImport = (globalThis.__nimbusCountedImport || 0) + 1; export const count = globalThis.__nimbusCountedImport; export const url = import.meta.url; export const resolve = import.meta.resolve; export function readUrl(__nimbusMetadataModule) { if ((function () { return this; })() !== undefined) throw new Error("strictness lost"); return import.meta.url; }\n',
+  'app/arity.cjs': '"use strict"; module.exports = [arguments.length, (function () { return this; })() === undefined];\n',
+  'app/user-metadata.mjs': 'const user = { __nimbusModuleUrl: 123, __nimbusImportMetaResolve: 456 }; globalThis.__nimbusModuleUrl = 789; globalThis.__nimbusImportMetaResolveUser = 987; export const value = [user.__nimbusModuleUrl, user.__nimbusImportMetaResolve, globalThis.__nimbusModuleUrl]; export function shadow(module) { return [module.__nimbusModuleUrl, module.__nimbusImportMetaResolve]; }\n',
+  'app/typed/package.json': '{"type":"module"}',
+  'app/meta-forms.mjs': 'const {url, resolve} = import.meta; export const values = [import.meta["url"],url,import.meta["resolve"]("./c.cjs"),resolve("./c.cjs"),import.meta===import.meta,Object.getPrototypeOf(import.meta)===null]; import.meta.extra=123; export const mutation=import.meta.extra;\n',
+  'app/typed/user-metadata-with-meta.ts': 'const user: { __nimbusModuleUrl: number } = { __nimbusModuleUrl: 123 }; export const value = user.__nimbusModuleUrl; export const url = import.meta.url;\n',
+  'app/static-counted.mjs': 'export { count } from "./counted.mjs";\n',
+  // Bundler-shaped ESM beyond the large-cell rewrite threshold: its metadata
+  // must also come from the evaluation, not from source transformation.
+  'app/large-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst url = import.meta.url; export { url };\n',
+  'app/large-shadow-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nimport { kind } from "./esm.mjs"; const module = "local-module"; const require = "local-require"; const exports = "local-exports"; const nested = (function(module, require, exports) { return [module, require, exports]; })(1,2,3); const value = [module,require,exports,kind,nested]; const url = import.meta.url; export { url, value };\n',
   'app/data.json': '{"k":1}\n',
   'app/dir/index.js': 'module.exports = "idx";\n',
   'app/rel.js': 'module.exports = "rel";\n',
@@ -91,6 +101,22 @@ const attempt = async (label, load) => {
   const two = await import('./counted.mjs?v=two');
   const fragment = await import('./counted.mjs#fragment');
   out.push(['ESM evaluation uses complete URL', [one.count, repeated.count, two.count, fragment.count]]);
+  const required = require('./counted.mjs');
+  const canonical = await import('./counted.mjs');
+  const reexported = await import('./static-counted.mjs');
+  out.push(['canonical ESM shares require and static evaluation', [required.count, canonical.count, reexported.count]]);
+  out.push(['import.meta.url follows evaluation', [one.url, two.url, fragment.url, one.readUrl(), canonical.url]]);
+  out.push(['extracted import.meta.resolve retains parent', one.resolve('./c.cjs')]);
+  out.push(['large-cell import.meta.url follows evaluation', (await import('./large-meta.mjs?large#fragment')).url]);
+  const shadowed = await import('./large-shadow-meta.mjs?shadow');
+  out.push(['wrapper binding names remain user values', [shadowed.value, shadowed.url]]);
+  out.push(['CommonJS wrapper arguments and strictness unchanged', require('./arity.cjs')]);
+  const userMetadata = await import('./user-metadata.mjs');
+  out.push(['user metadata spellings preserved', [userMetadata.value, userMetadata.shadow({__nimbusModuleUrl: 12,__nimbusImportMetaResolve: 34})]]);
+  const typedMetadata = await import('./typed/user-metadata-with-meta.ts?typed');
+  out.push(['typed actual metadata and user property remain distinct', [typedMetadata.value, typedMetadata.url]]);
+  const forms = await import('./meta-forms.mjs?forms#fragment');
+  out.push(['metadata computed destructured identity mutation', [forms.values, forms.mutation]]);
   console.log(JSON.stringify(out));
 })();
 `;

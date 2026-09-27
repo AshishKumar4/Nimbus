@@ -7,7 +7,7 @@
  *   node scripts/bundle-runtime.mjs clang binji-2020 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs python 0.29.4 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs --pin-catalog        (read-only; publishes nothing)
- *   node scripts/bundle-runtime.mjs bash 5.2.37-2 --npm-package <dir>   (local; no R2)
+ *   node scripts/bundle-runtime.mjs bash 5.2.37-3 --npm-package <dir>   (local; no R2)
  *
  * `--npm-package` is the SECOND publisher for the same artifacts: it stages
  * exactly what the R2 path stages, composes the same manifest bytes, and lays

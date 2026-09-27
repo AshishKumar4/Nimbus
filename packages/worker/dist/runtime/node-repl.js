@@ -21,7 +21,7 @@
  *   - Tab-completion
  *   - History pickling
  */
-import { ReplSession } from './repl-session.js';
+import { ReplSession, replPushResult } from './repl-session.js';
 import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 class NodeReplAdapter {
     pool = null;
@@ -84,18 +84,7 @@ class NodeReplAdapter {
         catch (e) {
             return { kind: 'error', stderr: `[node-repl] push dispatch failed: ${e?.message || e}\n` };
         }
-        if (result.exit) {
-            return {
-                kind: 'exit',
-                exitCode: result.exitCode || 0,
-                stdout: result.stdout,
-                stderr: result.stderr,
-            };
-        }
-        if (result.incomplete) {
-            return { kind: 'incomplete' };
-        }
-        return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+        return replPushResult(result);
     }
     async close() {
         if (this.pool) {

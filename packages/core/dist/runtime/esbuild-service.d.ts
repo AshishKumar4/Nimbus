@@ -70,7 +70,7 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
  */
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export declare function rewriteProvidedCommonJsModules(source: string): string;
-export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string): TransformResult | null;
+export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string, moduleFactory?: boolean): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /**
  * Load the esbuild-wasm namespace. Safe to call many times; concurrent
@@ -106,6 +106,8 @@ export interface EsbuildTransformOptions {
     dynamicImportParent?: string;
     /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
     rewriteOnly?: boolean;
+    /** Bind compiler-produced import.meta references to the wrapper module. */
+    moduleMetadata?: boolean;
 }
 export interface TransformResult {
     code: string;

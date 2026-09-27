@@ -10,9 +10,12 @@ import { buildSessionSupervisorOps } from '../../packages/worker/src/session/sup
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-for (const name of ['_rpcAccess', '_rpcChown', '_rpcSetUmask']) {
-  assert.equal(typeof rpc[name], 'function', `session RPC exports ${name}`);
-}
+mock.module('cloudflare:workers', () => ({
+  WorkerEntrypoint: class {
+    constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  },
+}));
+const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -32,37 +35,44 @@ const host = {
   sqliteFs: rawVfs,
   processes,
   ensureSqliteFs() {},
+  _rpcSetUmask: (mask, pid) => rpc._rpcSetUmask(host, mask, pid),
 };
 
-// _rpcAccess/_rpcChown reach the filesystem through the session's shared
-// supervisor bridge store; the rest of the host's _rpc* surface is unused here.
 const ops = buildSessionSupervisorOps(host);
 host.supervisorBridge = (p) => ops.bridge(p);
+function bound(pid) {
+  const namespace = {
+    idFromName: (id) => ({ toString: () => id }),
+    idFromString: (id) => ({ toString: () => id }),
+    get: () => ({ supervisorOp: (envelope) => ops.dispatch(envelope) }),
+  };
+  return new SupervisorRPC({ props: { doId: 'session', pid } }, { NIMBUS_SESSION: namespace });
+}
 
-await rpc._rpcAccess(host, '/user.txt', 0o4, user.pid);
+await bound(user.pid).access('/user.txt', 0o4);
 await assert.rejects(
-  rpc._rpcAccess(host, '/private/root.txt', 0o4, user.pid),
+  bound(user.pid).access('/private/root.txt', 0o4),
   (error) => error?.code === 'EACCES' && /^EACCES:/.test(error.message),
   'access preserves the VFS EACCES code and message prefix',
 );
 await assert.rejects(
-  rpc._rpcAccess(host, '/missing.txt', 0o4, user.pid),
+  bound(user.pid).access('/missing.txt', 0o4),
   (error) => error?.code === 'ENOENT' && /^ENOENT:/.test(error.message),
   'a missing path stays ENOENT rather than becoming a permission denial',
 );
 
-await rpc._rpcChown(host, '/user.txt', 1000, 1000, user.pid);
+await bound(user.pid).chown('/user.txt', 1000, 1000);
 assert.deepEqual(
   { uid: kernel.stat('user.txt').uid, gid: kernel.stat('user.txt').gid },
   { uid: 1000, gid: 1000 },
   'the Linux owner-to-current-owner no-op allowance succeeds',
 );
 await assert.rejects(
-  rpc._rpcChown(host, '/user.txt', 0, 0, user.pid),
+  bound(user.pid).chown('/user.txt', 0, 0),
   (error) => error?.code === 'EPERM' && /^EPERM:/.test(error.message),
   'a non-root ownership change fails with EPERM, not EACCES',
 );
-await rpc._rpcChown(host, '/user.txt', 0, 0, root.pid);
+await bound(root.pid).chown('/user.txt', 0, 0);
 assert.deepEqual(
   { uid: kernel.stat('user.txt').uid, gid: kernel.stat('user.txt').gid },
   { uid: 0, gid: 0 },
@@ -76,8 +86,8 @@ assert.equal(processes.cred(user.pid).umask, 0o077);
 assert.equal(processes.cred(other.pid).umask, 0o022, 'umask changes are process-local');
 
 for (const call of [
-  () => rpc._rpcAccess(host, '/user.txt', 0, 0),
-  () => rpc._rpcChown(host, '/user.txt', 0, 0, 0),
+  () => bound(0).access('/user.txt', 0),
+  () => bound(0).chown('/user.txt', 0, 0),
   () => rpc._rpcSetUmask(host, 0o022, 0),
   // umask is process state: a caller with no process has none to set.
   () => rpc._rpcSetUmask(host, 0o022),
@@ -85,38 +95,22 @@ for (const call of [
   await assert.rejects(call, /process|pid/i, 'an invalid pid cannot infer kernel credentials');
 }
 
-// A pid-less host caller (the SDK, the remote /rpc dispatcher) acts as the
-// unprivileged session user, so privileged operations stay denied.
+// A facet without a bound process cannot infer kernel credentials.
 await assert.rejects(
-  rpc._rpcChown(host, '/user.txt', 0, 0),
-  (error) => error?.code === 'EPERM',
-  'a pid-less host caller cannot take ownership as root',
+  bound(undefined).chown('/user.txt', 0, 0),
+  /process|pid/i,
+  'a pid-less facet cannot take ownership as root',
 );
 
-// SupervisorRPC forwards the pid its binding was minted with, never one a
-// facet supplies: whatever the arguments, the host sees the bound process.
-mock.module('cloudflare:workers', () => ({
-  WorkerEntrypoint: class {
-    constructor(ctx, env) { this.ctx = ctx; this.env = env; }
-  },
-}));
-const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+// A supplied pid cannot elevate the binding's principal or mutate another process.
 {
-  const envelopes = [];
-  const namespace = {
-    idFromName: (id) => ({ toString: () => id }),
-    idFromString: (id) => ({ toString: () => id }),
-    get: () => ({ async supervisorOp(envelope) { envelopes.push(envelope); return 0; } }),
-  };
-  const bound = new SupervisorRPC({ props: { doId: 'session', pid: user.pid } }, { NIMBUS_SESSION: namespace });
-  await bound.access('/user.txt', 0o4, root.pid);
-  await bound.chown('/user.txt', 0, 0, { followSymlinks: true, pid: root.pid });
-  await bound.setUmask(0o022, root.pid);
-  assert.deepEqual(
-    envelopes.map((envelope) => [envelope.op, envelope.pid]),
-    [['access', user.pid], ['chown', user.pid], ['setUmask', user.pid]],
-    'SupervisorRPC forwards only its bound process pid',
-  );
+  const facet = bound(user.pid);
+  await assert.rejects(facet.access('/private/root.txt', 0o4, root.pid), (error) => error.code === 'EACCES');
+  await assert.rejects(facet.chown('/user.txt', 0, 0, { followSymlinks: true, pid: root.pid }), (error) => error.code === 'EPERM');
+  const rootMask = processes.cred(root.pid).umask;
+  await facet.setUmask(0o027, root.pid);
+  assert.equal(processes.cred(user.pid).umask, 0o027);
+  assert.equal(processes.cred(root.pid).umask, rootMask);
 }
 
 console.log('supervisor permission RPC contracts: ok');

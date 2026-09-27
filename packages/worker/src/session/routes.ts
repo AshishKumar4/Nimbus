@@ -25,7 +25,6 @@
  */
 
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
-import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspension.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
@@ -393,7 +392,6 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     try {
       const w12Pre = await _w12HandleReplicaPreflight(self.ctx, request, {
         isWarm: !!(self.viteDevServer?.isRunning || self.cirrusReal?.isRunning),
-        suspended: _w12ReplicasSuspended(),
       });
       if (w12Pre.delegated && w12Pre.response) {
         return w12Pre.response;

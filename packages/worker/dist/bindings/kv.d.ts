@@ -70,8 +70,6 @@ export declare class KvEmulator {
     put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Uint8Array | null, options?: KvPutOptions): Promise<void>;
     delete(key: string): Promise<void>;
     list(options?: KvListOptions): Promise<KvListResult>;
-    private _ensureDir;
-    private _coerceBody;
     private _project;
     private _readResolved;
     private _readMeta;

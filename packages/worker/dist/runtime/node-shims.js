@@ -6499,7 +6499,7 @@ const __childProcessMod = (() => {
    *      stdout/stderr/exit events fire. Callers like cross-spawn.sync
    *      that read result.status get null until the spawn settles.
    *   3. When the parent facet's main drain settles __pendingIO before
-   *      reportExit (facet-manager.ts), the result object's fields are
+   *      reportExit (facets/manager.ts), the result object's fields are
    *      filled in by the time the supervisor sees the parent exit.
    *
    * Cross-spawn.sync's typical pattern is "const r = spawnSync(...);
@@ -8461,7 +8461,7 @@ function __resolveFile(base) {
 }
 
 // __compiledModules is defined at MODULE TOP LEVEL in the generator code
-// (facet-manager.ts) so new Function() runs during module evaluation.
+// (facets/manager.ts) so new Function() runs during module evaluation.
 
 // ── Single-source-of-truth exports/imports resolver (W2) ───────────────
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
@@ -8504,8 +8504,8 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   }
   let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
   // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
-  // dist/.mjs files were transformed to CJS by transformEsmInBundle
-  // at install time (facet-manager.ts:842, W3.5 Fix B). Without this,
+  // dist/.mjs files were transformed to CJS
+  // by transformEsmInBundle (facets/manager.ts). Without this,
   // packages like nuxt — whose exports map only contains
   // {types, import} for the root subpath — return null from the CJS
   // walk and dead-end with "Cannot find module 'nuxt'" even though
@@ -8769,6 +8769,16 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   // const import_meta = {}. Save+restore for recursive __loadModule.
   const __prevModulePath = globalThis.__currentModulePath;
   globalThis.__currentModulePath = resolvedPath;
+  const moduleUrl = evaluationKey.startsWith("file:")
+    ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
+  // Evaluation metadata lives on the module, not in source text. Keeping
+  // it here preserves the five CommonJS arguments and captures the parent
+  // even when import.meta.resolve is extracted and called later.
+  const importMeta = Object.assign(Object.create(null), {
+    url: moduleUrl,
+    resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),
+  });
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
   try {
     // Use pre-compiled function from startup (new Function allowed at module eval time)
     // Normalize path to match VFS bundle key format (no leading /)
@@ -8971,9 +8981,10 @@ function __esmLoad(resolution) {
     const key = resolution.path.replace(/^\\/+/, "");
     const esm = resolution.format === "module"
       || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
-    // Source/precompiled code is shared by pathname. ESM evaluation is not:
-    // each resolved URL (query and fragment included) is a separate module.
-    const exports = __loadModule(key, esm ? resolution.url : key);
+    // Canonical queryless ESM shares evaluation with require() and static
+    // imports lowered to require(). Queries/fragments are distinct jobs.
+    const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
+    const exports = __loadModule(key, variant ? resolution.url : key);
     if (resolution.format === "json") {
       ns = __esmNamespaceOf(["default"], () => exports);
     } else if (esm) {

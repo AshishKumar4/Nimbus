@@ -253,28 +253,5 @@ export function cleanupFsWatchOnClose(host: FsWatchHost, ws: WebSocket): void {
   map.delete(ws);
 }
 
-/**
- * Diagnostic: total subscriber + pending-event counts across the host.
- * Useful for /api/_diag/* surfaces and leak-detection probes (the
- * cleanup-on-disconnect probe asserts counts return to 0 after WS close).
- */
-export function getFsWatchStats(host: FsWatchHost): {
-  wsCount: number;
-  subCount: number;
-  pendingTotal: number;
-  droppedTotal: number;
-} {
-  const map = host._fsWatchSubs;
-  if (!map) return { wsCount: 0, subCount: 0, pendingTotal: 0, droppedTotal: 0 };
-  let subCount = 0;
-  let pendingTotal = 0;
-  let droppedTotal = 0;
-  for (const list of map.values()) {
-    subCount += list.length;
-    for (const sub of list) {
-      pendingTotal += sub.pending.length;
-      droppedTotal += sub.dropped;
-    }
-  }
-  return { wsCount: map.size, subCount, pendingTotal, droppedTotal };
-}
+
+

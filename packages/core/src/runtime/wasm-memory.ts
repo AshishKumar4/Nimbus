@@ -67,7 +67,7 @@ export interface WasmMemoryLimits {
 // whether the memory is supplied by the host, and the memory section (id 5),
 // which declares it. Everything else is copied through byte-for-byte.
 
-const SECTION_IMPORT = 2;
+
 const SECTION_MEMORY = 5;
 
 class Cursor {
@@ -140,58 +140,8 @@ function* sections(bytes: Uint8Array): Generator<Section> {
   }
 }
 
-/** Skip one import entry's descriptor, returning its memory limits if it is one. */
-function readImportDescriptor(cursor: Cursor): WasmMemoryLimits | null {
-  const kind = cursor.u8();
-  switch (kind) {
-    case 0x00: // function: type index
-      cursor.varuint();
-      return null;
-    case 0x01: // table: reftype + limits
-      cursor.u8();
-      readLimits(cursor);
-      return null;
-    case 0x02: // memory: limits
-      return readLimits(cursor);
-    case 0x03: // global: valtype + mutability
-      cursor.u8();
-      cursor.u8();
-      return null;
-    default:
-      throw new Error(`wasm: unknown import kind ${kind}`);
-  }
-}
 
-/**
- * Read the module's linear-memory declaration.
- *
- * Returns `null` for a module that neither defines nor imports a memory.
- * `imported` distinguishes the two cases that matter: an imported memory is
- * created by the host, so its limits are ours to choose at instantiation and
- * no binary rewrite is needed.
- */
-export function readMemoryLimits(
-  bytes: Uint8Array,
-): (WasmMemoryLimits & { imported: boolean }) | null {
-  for (const section of sections(bytes)) {
-    if (section.id === SECTION_IMPORT) {
-      const cursor = new Cursor(bytes, section.payload);
-      const count = cursor.varuint();
-      for (let i = 0; i < count; i++) {
-        cursor.skip(cursor.varuint()); // module name
-        cursor.skip(cursor.varuint()); // field name
-        const limits = readImportDescriptor(cursor);
-        if (limits) return { ...limits, imported: true };
-      }
-    } else if (section.id === SECTION_MEMORY) {
-      const cursor = new Cursor(bytes, section.payload);
-      const count = cursor.varuint();
-      if (count === 0) continue;
-      return { ...readLimits(cursor), imported: false };
-    }
-  }
-  return null;
-}
+
 
 /**
  * Return a copy of `bytes` whose defined memory carries an explicit maximum of

@@ -10,6 +10,17 @@
 // version of a name); `shardsSeen` records package names the write shard
 // was asked to install. Each package is written to the placement the
 // supervisor chose (`pkgDir`), root or nested.
+// Synthetic packument cache rows used by the installer fixtures below the RPC seam.
+export function cacheRowForPackage(pkg) {
+  return {
+    name: pkg.name, version: pkg.version, tarballUrl: pkg.tarballUrl, integrity: pkg.integrity,
+    depsJson: JSON.stringify(pkg.dependencies), peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
+    exportsJson: JSON.stringify(pkg.exports ?? {}), main: pkg.main, moduleField: pkg.module,
+    binJson: JSON.stringify(pkg.bin), platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
+    optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}), fetchedAt: Date.now(),
+  };
+}
+
 export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [] }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {

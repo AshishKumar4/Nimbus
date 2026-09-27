@@ -4,8 +4,8 @@
  *
  * Used in three contexts:
  *
- *   1. Install-time supervisor (TS) — `src/npm-resolver.ts` re-exports the
- *      typed functions for tree resolution.
+ *   1. Supervisor (TS) — package and require resolution import the typed
+ *      functions directly.
  *
  *   2. IsolatePool isolates (JS string) — `src/loaders/pre-bundle-preamble.ts`
  *      embeds `getExportsResolverJS()` as part of the pool preamble so the

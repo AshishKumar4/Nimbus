@@ -4,7 +4,6 @@
  * Registry resolution runs in fanout facets; this module contains only the
  * supervisor-side contracts and computations consumed after resolution.
  */
-import type { RegistryCacheEntry } from './cache.js';
 /**
  * Injectable fetch function used by the installer's facet-backed registry
  * transport.
@@ -41,12 +40,6 @@ export interface PackagePlacement {
     placement: string;
     pkg: ResolvedPackage;
 }
-/**
- * Serialize a resolved package into the registry-cache row shape. Facet task
- * bodies keep inline literals of this shape because `fn.toString()` isolates
- * cannot import supervisor modules.
- */
-export declare function registryEntryFromResolved(pkg: ResolvedPackage): RegistryCacheEntry;
 /** The walk's placement decisions carried forward: first version per name at root, the rest nested. */
 export declare function computeHoistPlan(resolved: Map<string, ResolvedPackage>, nested?: Map<string, ResolvedPackage>): HoistPlan;
 /** Every placement in the plan, root first. */

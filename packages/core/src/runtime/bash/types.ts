@@ -203,6 +203,7 @@ export interface BashProcCtx {
 export interface BashWasmExports {
   memory: WebAssembly.Memory;
   _start(): void;
+  __nimbus_signal_disposition(signal: number): number;
   asyncify_start_unwind(buf: number): void;
   asyncify_stop_unwind(): void;
   asyncify_start_rewind(buf: number): void;
@@ -218,6 +219,12 @@ export interface BashInstance {
 export interface BashProc {
   pid: number;
   ppid: number;
+  /** Default-action signal delivered by the virtual kill syscall. */
+  killedBy?: number;
+  /** After exec, caught handlers reset; only inherited SIG_IGN survives. */
+  execIgnoredSignals?: bigint;
+  /** Wake a JSPI child parked on input/output when it is terminated. */
+  cancelWaits?: Set<() => void>;
   fds: Map<number, BashFdEntry>;
   /**
    * Descriptor a preopen was cached under by wasi-libc → where it lives now,
@@ -481,7 +488,7 @@ export type BashProcImports = {
   pipe(fdsPtr: number): number;
   dup(o: number): number;
   dup2(o: number, n: number): number;
-  kill(): number;
+  kill(pid: number, signal: number): number;
   setpgid(): number;
   getpgid(): number;
   getppid(): number;

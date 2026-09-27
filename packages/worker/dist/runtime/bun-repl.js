@@ -31,7 +31,7 @@
  * thrown by vm bubble up; we surface them as stderr via the runtime
  * stderr capture.
  */
-import { ReplSession } from './repl-session.js';
+import { ReplSession, replPushResult } from './repl-session.js';
 import { BUN_SHIM_PREAMBLE, BUN_VERSION } from './bun-runner.js';
 class BunReplAdapter {
     pool = null;
@@ -93,18 +93,7 @@ class BunReplAdapter {
         catch (e) {
             return { kind: 'error', stderr: `[bun-repl] push dispatch failed: ${e?.message || e}\n` };
         }
-        if (result.exit) {
-            return {
-                kind: 'exit',
-                exitCode: result.exitCode || 0,
-                stdout: result.stdout,
-                stderr: result.stderr,
-            };
-        }
-        if (result.incomplete) {
-            return { kind: 'incomplete' };
-        }
-        return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+        return replPushResult(result);
     }
     async close() {
         if (this.pool) {

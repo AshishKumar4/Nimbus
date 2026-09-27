@@ -104,7 +104,7 @@ export async function retryableFetch(url, init, opts) {
             lastError = undefined;
             if (attempt === totalRetries) {
                 // Out of retries — return the 5xx Response so the caller can
-                // surface the final status. Caller (e.g. npm-resolver.ts) is
+                // surface the final status. The caller is
                 // responsible for disposing the stub via Symbol.dispose after
                 // reading status. (Matches the previous !resp.ok throw shape if
                 // the caller checks .ok next.)
@@ -120,13 +120,11 @@ export async function retryableFetch(url, init, opts) {
             // Cancelling `resp.body` (above) releases the underlying stream
             // but does NOT release the stub itself. Across an install with N
             // retries fired, that's N leaked stubs accumulating alongside the
-            // resolver's own per-packument stubs (already disposed in
-            // npm-resolver.ts:307-317). Each leaked stub keeps its server-side
+            // resolver's own per-packument stubs. Each leaked stub keeps its server-side
             // counterpart pinned until the deferred-destruction queue runs at
             // request end, contributing to the queueState != ACTIVE fatal
             // documented in WORKERD-CRASH.md.
             //
-            // Same disposer pattern as src/npm-resolver.ts:312-316.
             disposeRpcResource(resp);
             const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
             opts?.onRetry?.(attempt + 1, totalRetries, delayMs, `HTTP ${resp.status}`);

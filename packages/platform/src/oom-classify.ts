@@ -224,7 +224,7 @@ export function isDoOverloaded(input: unknown): boolean {
 
 /**
  * How one failed Durable Object call relates to a retry. The taxonomy
- * Proteus hand-wrote in `cf-backend/src/lib/do-rpc.ts:71-79` because the
+ * Proteus originally hand-wrote in `cf-backend/src/lib/do-rpc.ts` because the
  * Agents SDK does not export its own, plus the `overloaded` class both
  * consumers need: Cloudflare documents that errors carry `.retryable` and
  * `.overloaded`, that a retryable error should be retried with backoff on a

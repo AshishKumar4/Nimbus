@@ -27,6 +27,7 @@
  * every call (the body is one-shot per real-R2 contract), plus convenience
  * helpers text() / arrayBuffer() / json() / blob().
  */
+import { coerceBindingBody, ensureBindingDir } from './body.js';
 // ── Path helpers ────────────────────────────────────────────────────────
 function encKey(key) {
     return encodeURIComponent(key);
@@ -136,7 +137,8 @@ export class R2Emulator {
                 return null;
             }
         }
-        const body = await this._coerceBody(value);
+        const body = typeof Blob !== 'undefined' && value instanceof Blob
+            ? new Uint8Array(await value.arrayBuffer()) : await coerceBindingBody(value);
         const etag = await this._sha256Hex(body);
         // Verify integrity hashes if supplied
         if (options?.md5 || options?.sha1 || options?.sha256 || options?.sha512) {
@@ -160,7 +162,7 @@ export class R2Emulator {
             side.httpMetadata = options.httpMetadata;
         if (options?.customMetadata)
             side.customMetadata = options.customMetadata;
-        this._ensureDir();
+        ensureBindingDir(this.vfs, this.dir);
         const enc = encKey(key);
         this.vfs.writeFile(this.dir + '/' + enc, body);
         this.vfs.writeFile(this.dir + '/' + enc + '.meta', JSON.stringify(side));
@@ -248,48 +250,6 @@ export class R2Emulator {
         throw new Error('R2 multipart uploads not supported in nimbus-wrangler dev (W10.5 candidate)');
     }
     // ── internals ─────────────────────────────────────────────────────────
-    _ensureDir() {
-        if (!this.vfs.exists(this.dir)) {
-            this.vfs.mkdir(this.dir, { recursive: true });
-        }
-    }
-    async _coerceBody(value) {
-        if (value == null)
-            return new Uint8Array(0);
-        if (typeof value === 'string')
-            return new TextEncoder().encode(value);
-        if (value instanceof Uint8Array)
-            return value;
-        if (value instanceof ArrayBuffer)
-            return new Uint8Array(value);
-        if (ArrayBuffer.isView(value))
-            return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-        if (typeof value === 'object' && typeof value.getReader === 'function') {
-            const chunks = [];
-            let total = 0;
-            const reader = value.getReader();
-            while (true) {
-                const { value: chunk, done } = await reader.read();
-                if (done)
-                    break;
-                const u = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-                chunks.push(u);
-                total += u.length;
-            }
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) {
-                out.set(c, off);
-                off += c.length;
-            }
-            return out;
-        }
-        if (typeof Blob !== 'undefined' && value instanceof Blob) {
-            const ab = await value.arrayBuffer();
-            return new Uint8Array(ab);
-        }
-        return new TextEncoder().encode(String(value));
-    }
     _readSide(key) {
         return this._readSideEnc(encKey(key));
     }

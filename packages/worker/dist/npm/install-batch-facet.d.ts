@@ -7,7 +7,7 @@
  * ONE dynamic worker per pool slot. With concurrency=4, that's 4 permanent
  * loader entries in workerd's loader cache (each `loader.get(id, …)` call
  * is cached by id and the cache is never released — confirmed in
- * src/loaders/loader-pool.ts). Combine with:
+ * packages/fabric/src/isolate-pool.ts). Combine with:
  *   - resolver-facet pool: 1 loader entry
  *   - fetch-proxy: 1 loader entry
  *   - pre-bundle pool: 1 effective entry
@@ -19,7 +19,7 @@
  * The fix: ONE facet for the whole install batch. The facet receives
  * the full FacetPackageSpec[] and loops internally with pLimit(3),
  * producing 1 loader entry instead of 4. Same architectural shape as
- * src/npm-resolve-facet.ts — proven to work in production (commit 9194998).
+ * src/npm/resolve-facet.ts — proven to work in production (commit 9194998).
  *
  * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
  * oversize file may occupy a wave by itself; the supervisor's weighted

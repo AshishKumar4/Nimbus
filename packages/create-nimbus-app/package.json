@@ -1,6 +1,6 @@
 {
   "name": "create-nimbus-app",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Create a Nimbus-powered Cloudflare Workers app.",
   "keywords": [
     "create",
@@ -28,10 +28,10 @@
     "NOTICE.md"
   ],
   "dependencies": {
-    "@nimbus-sh/cli": "^0.1.7"
+    "@nimbus-sh/cli": "^0.2.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.10.0"
   },
   "publishConfig": {
     "access": "public"

@@ -39,7 +39,6 @@
  * session; `captureSessionAiCredential` is the one place it is read.
  */
 import type { LanguageModel } from 'ai';
-import { z } from 'zod/v4';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type NimbusCloudflareAccount } from './agent-oauth.js';
 export interface SessionAiHost {
@@ -82,13 +81,6 @@ export type SessionAiResolution = {
     ok: false;
     reason: SessionAiUnavailable;
 };
-declare const StoredCredentialSchema: z.ZodObject<{
-    accessToken: z.ZodString;
-    refreshToken: z.ZodOptional<z.ZodString>;
-    accountId: z.ZodNullable<z.ZodString>;
-    expiresAt: z.ZodNullable<z.ZodNumber>;
-}, z.core.$strip>;
-type StoredCredential = z.infer<typeof StoredCredentialSchema>;
 /** Base URL of the in-session endpoint. The one true address of this gateway. */
 export declare function sessionAiBaseUrl(): string;
 /**
@@ -183,13 +175,10 @@ export declare function createSessionAiModel(self: SessionAiHost): LanguageModel
 export declare function setSessionAiAccount(self: SessionAiHost, accountId: string): Promise<boolean>;
 /** Forget this session's credential (agent logout). */
 export declare function clearSessionAiCredential(self: SessionAiHost): Promise<void>;
-/** The stored credential, for surfaces that report connection state. */
-export declare function readSessionAiCredential(self: SessionAiHost): Promise<StoredCredential | null>;
 /**
  * Serve one OpenAI-compatible request. This is the whole gateway: the loopback
  * router calls it for the session's tools, and agent.ts calls it directly for
  * the Nimbus agent.
  */
 export declare function handleSessionAiRequest(self: SessionAiHost, request: Request): Promise<Response>;
-export {};
 //# sourceMappingURL=ai.d.ts.map

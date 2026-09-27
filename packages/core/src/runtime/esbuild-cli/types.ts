@@ -53,5 +53,5 @@ declare global {
     module: WebAssembly.Module,
   ) => Promise<number>;
   /** dynamic-import-rewrite.ts's rewrite, for the facet's transforms. */
-  var __nimbusRewriteDynamicImports: (code: string, parentUrl: string) => string;
+  var __nimbusRewriteDynamicImports: (code: string, parentUrl: string, moduleMetadata?: boolean) => string;
 }

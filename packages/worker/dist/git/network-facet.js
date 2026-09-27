@@ -1,5 +1,5 @@
 /**
- * git-network-facet.ts — Facet-based git clone/fetch/pull.
+ * git/network-facet.ts — Facet-based git clone/fetch/pull.
  *
  * Runs isomorphic-git's network operations (clone/fetch/pull) inside a
  * dynamic worker (LOADER.load) to escape the supervisor DO's CPU budget

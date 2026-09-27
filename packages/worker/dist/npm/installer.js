@@ -1,5 +1,5 @@
 /**
- * npm-installer.ts — Unified npm installer for Nimbus.
+ * npm/installer.ts — Unified npm installer for Nimbus.
  *
  * Designed for bun/pnpm-level performance on Cloudflare DO + SQLite.
  *

@@ -53,6 +53,16 @@ export type ReplPushResult = {
     kind: 'error';
     stderr: string;
 };
+/** The result of one Node/Bun facet evaluation. */
+export interface ReplFacetResult {
+    stdout: string;
+    stderr: string;
+    incomplete?: boolean;
+    exit?: boolean;
+    exitCode?: number;
+    error?: string;
+}
+export declare function replPushResult(result: ReplFacetResult): ReplPushResult;
 export declare class ReplSession {
     private adapter;
     private detachRepl;

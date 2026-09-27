@@ -9,7 +9,7 @@
  *
  *   getReplicaState(self) — composes `_w12EnableResult` (constructor-time
  *     enable result) + live `inspectReplicaState(ctx)` (per-fetch isReplica
- *     + bookmark) + `replicasSuspended()` (write-burst guard). Surfaced
+ *     + bookmark). Surfaced
  *     via `/api/_diag/memory.replica` so operators (and the CT1 drift
  *     detector) can confirm replicas landed and observe replication lag.
  *
@@ -50,8 +50,7 @@ export declare function wireReplicasOnConstruct(ctx: any): W12EnableResult;
  *
  * - `state` / `error` come from the ctor-time enable result on `host`.
  * - `isReplica` / `bookmark` come from per-fetch `inspectReplicaState(ctx)`.
- * - `suspended` reflects the global write-burst guard
- *   (npm install / git clone in flight) per CF research §G.4.
+ * - `suspended` is false: no production path suspends replicas.
  *
  * Never throws. Callers can rely on the shape always being filled.
  *

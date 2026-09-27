@@ -15,5 +15,5 @@ export declare function mayHaveDynamicImport(code: string): boolean;
  * A cell is a function body (it may `return` or `await` at its top level);
  * one acorn cannot parse is returned unchanged, for the compile to report.
  */
-export declare function rewriteDynamicImports(code: string, parentUrl: string): string;
+export declare function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata?: boolean): string;
 //# sourceMappingURL=dynamic-import-rewrite.d.ts.map

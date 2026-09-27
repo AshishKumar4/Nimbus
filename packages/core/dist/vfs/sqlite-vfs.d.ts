@@ -270,11 +270,14 @@ export declare const VFS_EXPORT_SCHEMA = 2;
 /** One entry of an exported tree, relative to the export's root ('' is the root). */
 export interface VfsExportRow {
     path: string;
+    /** Preserved only by a whole-root import into a fresh identity domain. */
+    ino: number;
     kind: VfsInodeKind;
     size: number;
     mode: number;
     uid: number;
     gid: number;
+    defaultAcl: number | null;
     atime: number;
     mtime: number;
     /** False for content in one chunk (<= CHUNK_SIZE bytes). */
@@ -285,6 +288,8 @@ export interface VfsExportRow {
 export interface VfsExportPage {
     schema: number;
     root: string;
+    /** Exclusive source inode high-water; also covers every pinned snapshot. */
+    nextIno: number;
     /** The cursor this page follows (null: the first page). */
     after: string | null;
     rows: VfsExportRow[];
@@ -638,7 +643,10 @@ export declare class SqliteVFS {
      * Covers each call's synchronous part; the kernel's bookkeeping is that.
      */
     private privilegedView;
-    as(cred: VfsCred): CredentialedVfs;
+    /** Bind credentials and, optionally, the capability of a live mutation lease. */
+    as(cred: VfsCred, options?: {
+        mutationOwner?: string;
+    }): CredentialedVfs;
     private accessInode;
     private accessMode;
     /**

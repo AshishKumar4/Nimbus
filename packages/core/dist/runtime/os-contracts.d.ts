@@ -533,12 +533,12 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
 /**
  * The runner key a bash manifest entrypoint names. Its number is the contract
  * between the bash preamble and the wasm build in `packages/worker/wasm/bash`:
- * the `nimbus_proc` import table and the Asyncify allowlist. A rebuild that
- * changes either takes the next number and a new catalog version, because the
+ * the `nimbus_proc` imports, required guest exports and Asyncify allowlist.
+ * A rebuild changing them takes the next number and a new catalog version, because the
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export declare const BASH_RUNNER = "bash-runner@2";
+export declare const BASH_RUNNER = "bash-runner@3";
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {
     /** Original package name the user (or a transitive dep) asked for. */

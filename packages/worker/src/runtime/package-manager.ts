@@ -22,7 +22,7 @@ import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.j
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
-import type { RuntimeAvailability } from '@nimbus-sh/core/runtime/runtime-package.js';
+
 import {
   runNimbusInstall,
   type NimbusShellCtx,
@@ -104,9 +104,7 @@ export async function ensureRuntimesProgrammatic(deps: {
   return results;
 }
 
-export async function listAvailableRuntimes(env: RuntimeCatalogEnv): Promise<RuntimeAvailability[]> {
-  return runtimeCatalogSource(env).list();
-}
+
 
 /**
  * Command-not-found hints, catalog-driven: a bare name the shell could not

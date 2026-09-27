@@ -23,6 +23,7 @@
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */
+import { coerceBindingBody, ensureBindingDir } from './body.js';
 // ── Test seam: clock ────────────────────────────────────────────────────
 let _kvNow = () => Math.floor(Date.now() / 1000);
 export function _setKvNow(fn) { _kvNow = fn; }
@@ -70,8 +71,8 @@ export class KvEmulator {
     }
     async put(key, value, options) {
         const enc = encKey(key);
-        const bodyBlob = await this._coerceBody(value);
-        this._ensureDir();
+        const bodyBlob = await coerceBindingBody(value);
+        ensureBindingDir(this.vfs, this.dir);
         this.vfs.writeFile(this.dir + '/' + enc, bodyBlob);
         // Build sidecar
         const meta = { v: 1 };
@@ -160,46 +161,6 @@ export class KvEmulator {
         return out;
     }
     // ── internals ─────────────────────────────────────────────────────────
-    _ensureDir() {
-        if (!this.vfs.exists(this.dir)) {
-            this.vfs.mkdir(this.dir, { recursive: true });
-        }
-    }
-    async _coerceBody(value) {
-        if (value == null)
-            return new Uint8Array(0);
-        if (typeof value === 'string')
-            return new TextEncoder().encode(value);
-        if (value instanceof Uint8Array)
-            return value;
-        if (value instanceof ArrayBuffer)
-            return new Uint8Array(value);
-        if (ArrayBuffer.isView(value))
-            return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-        if (typeof value === 'object' && typeof value.getReader === 'function') {
-            // ReadableStream — drain
-            const chunks = [];
-            let total = 0;
-            const reader = value.getReader();
-            while (true) {
-                const { value: chunk, done } = await reader.read();
-                if (done)
-                    break;
-                const u = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-                chunks.push(u);
-                total += u.length;
-            }
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) {
-                out.set(c, off);
-                off += c.length;
-            }
-            return out;
-        }
-        // Fallback — try toString
-        return new TextEncoder().encode(String(value));
-    }
     _project(body, type) {
         const t = type || 'text';
         if (t === 'text')

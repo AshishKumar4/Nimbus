@@ -117,16 +117,6 @@ export declare function findRejects(specs: Record<string, string>, ctx: 'top' | 
  */
 export declare function formatSwapNotice(s: PackageSwapEntry): string;
 /**
- * Single-line yellow notice emitted for a `[skip]`.
- *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
- *
- * When the entry carries an actionable suggestion it is appended inline
- * (`… try: <hint>`) — the same line shape for optional-shard skips and
- * required-package skips, so one grep explains every package the install
- * left out.
- */
-export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
-/**
  * The discriminated-union event emitted by the supervisor whenever the
  * registry takes a decision.
  *
@@ -173,7 +163,6 @@ export type RegistryEventSink = (e: RegistryEvent) => void;
  * after the facet returns.
  */
 export declare function setRegistryEventSink(s: RegistryEventSink | null): void;
-export declare function getRegistryEventSink(): RegistryEventSink | null;
 /**
  * Forward an event to the sink. Sink throws are caught (telemetry must
  * never break install) and counted.
@@ -270,9 +259,7 @@ export declare function policyNativePlatformReject(policy: PackageAbiPolicy, pkg
  * skip classifier, which treats either native shape as skippable from
  * an optional edge.
  */
-export declare function policyNativeArtifactReject(policy: PackageAbiPolicy, pkg: PackageBinManifest): PackageRejectEntry | undefined;
 export declare function isOptionalNativeBinding(p: MinimalPackument): boolean;
-export declare function nativeExecutableReject(pkg: PackageBinManifest): PackageRejectEntry | undefined;
 /**
  * Select which entries in `peerDependencies` should be auto-installed.
  *

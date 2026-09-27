@@ -4,7 +4,7 @@
  * Why this exists
  * ───────────────
  * Pre-bundling npm packages (the `Pre-bundling N modules…` step in
- * src/npm-installer.ts:704) used to call `EsbuildService.build(...)`
+ * src/npm/installer.ts) used to call `EsbuildService.build(...)`
  * inside the supervisor DO isolate. Each `esbuild.build` allocates
  * 30–80 MiB of WASM linear memory plus the input/output graph; against
  * the 128 MB DO heap cap this OOM-killed the supervisor on installs
@@ -104,35 +104,6 @@ export interface PrebundleResult {
     /** Non-fatal warnings the supervisor should surface. */
     warnings: string[];
 }
-/**
- * Walk node_modules to collect every file the pre-bundle of `specifier`
- * may read. Runs in the supervisor (cheap — direct VFS access).
- *
- * Algorithm:
- *   1. Compute the externals via getSharedRuntimeExternals(specifier).
- *      These are the bare specifiers esbuild will leave external; their
- *      files do NOT need to be in the slice.
- *   2. Resolve the spec's package directory and add every file beneath
- *      it to the slice.
- *   3. Read its package.json `dependencies` and recurse into each one
- *      that is NOT in the externals set. Deps that walked up are
- *      visited at most once (visited set).
- *
- * Lives here (alongside the facet function) so changes to the slice
- * shape touch one file — the supervisor caller in npm-installer.ts is
- * a thin orchestrator.
- */
-export interface BuildSliceOptions {
-    /** Cap on total bytes shipped to the facet. 24 MiB leaves headroom under
-     *  the 32 MiB workerd RPC cap. Returns `null` if the cap is exceeded so
-     *  the caller can decide whether to bail or split (bf41d1c precedent).
-     */
-    maxBytes?: number;
-}
-export declare function buildSliceForSpecifier(vfs: CredentialedVfs, specifier: string, nmDir: string): {
-    slice: SliceEntry[];
-    totalBytes: number;
-} | null;
 export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): {
     slice: SliceEntry[];
     totalBytes: number;

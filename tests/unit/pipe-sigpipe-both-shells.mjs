@@ -72,11 +72,9 @@ const failures = [];
 // In-process (no JSPI) the wasm bash's held status settles 0 for seq here
 // (cat drains the pipe in one read); sent to GitParityLane, whose rules those are.
 const IN_PROCESS_PENDING = new Set(['seq 100000 | cat | head -1; echo ${PIPESTATUS[*]}']);
-// The wasm bash's `wait` after `kill` answers 0, not SIGTERM's 143; sent to GitParityLane.
-const WASM_PENDING = new Set([CASES.find(([script]) => script.startsWith('sleep 1 & wait %1'))[0]]);
 for (const remote of [true, false]) {
   for (const [script, want] of CASES) {
-    if ((!remote && IN_PROCESS_PENDING.has(script)) || WASM_PENDING.has(script)) continue;
+    if (!remote && IN_PROCESS_PENDING.has(script)) continue;
     const r = await runScript(script, { remote, files: { 'tmp/big': big } });
     if (r.stdout !== want || (r.stderr ?? '') !== '') failures.push(`wasm bash (${remote ? 'RPC' : 'in-process'}): ${script}\n    want ${JSON.stringify(want)}\n    got  ${JSON.stringify(r.stdout)} ${JSON.stringify(r.stderr ?? '').slice(0, 160)}`);
   }

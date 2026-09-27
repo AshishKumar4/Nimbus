@@ -3,7 +3,7 @@
  * the one property that decides whether a retry is safe.
  *
  * Both consumers asked for this. Proteus hand-wrote the retry
- * (`cf-backend/src/lib/do-rpc.ts`) with the rule its header states:
+ * (originally `cf-backend/src/lib/do-rpc.ts`) with the rule its header states:
  * "An operation that appends, sends, charges or mints is never wrapped: a
  * dropped call there may already have run, so a retry is a correctness bug
  * wearing resilience as a costume." agent-core has no retry machinery at all

@@ -225,6 +225,18 @@ pid_t tcgetsid(int fd) { (void)fd; return getpgrp(); }
 #endif
 static void (*__np_handlers[NSIG])(int);
 
+/* Runner contract @3: query this instance's disposition, without exposing
+ * guest addresses or invoking a handler. The host must refuse custom
+ * delivery it does not implement, rather than converting it to SIG_DFL. */
+__attribute__((export_name("__nimbus_signal_disposition")))
+int __nimbus_signal_disposition(int sig) {
+  if (sig < 1 || sig >= NSIG) return -1;
+  if (sig == SIGKILL) return 0;
+  if (__np_handlers[sig] == SIG_IGN) return 1;
+  if (__np_handlers[sig] == SIG_DFL) return 0;
+  return 2;
+}
+
 static unsigned long *__ss_words(sigset_t *s) { return (unsigned long *)s; }
 int sigemptyset(sigset_t *s) { memset(s, 0, sizeof *s); return 0; }
 int sigfillset(sigset_t *s) { memset(s, 0xff, sizeof *s); return 0; }
