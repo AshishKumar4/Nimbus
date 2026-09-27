@@ -438,6 +438,13 @@ kernel credential, because Nimbus follows POSIX here:
   child work cannot publish a second exit after signal termination. These
   operations never target host process IDs. Process-group signal delivery
   and stop/continue/trap handling are not added by this change.
+- Bash build `5.2.37-3` and runner `bash-runner@3` expose the guest's signal
+  disposition: ignored signals stay ignored, default terminating signals
+  terminate, and unsupported custom-handler delivery returns an error.
+  Exec preserves ignored dispositions and resets caught handlers; SIGKILL
+  remains uncatchable. The runtime package requires core `>=0.13.0` and must
+  be published before that core release. Existing runtime-2 catalog objects
+  are not overwritten.
 
 ## 2026-09-24
 

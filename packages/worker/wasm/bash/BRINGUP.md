@@ -98,7 +98,7 @@ stack silently: measured on the build-1 binary against the build-2 preamble,
 same open and close. `nimbus-proc.c` also gained `startup_cwd`/`capture_cwd`
 and a real `F_GETFD`.
 
-The committed `bash.async.wasm` is this build. It is published as catalog
+This build was published as catalog
 version `5.2.37-2`, and its manifest names the runner key `BASH_RUNNER`
 (`bash-runner@2`, `packages/core/src/runtime/os-contracts.ts`). A deployment
 whose preamble predates the build registers `bash-runner` and never binds it;
@@ -107,3 +107,18 @@ catalog's default still points at `5.2.37`. The next rebuild that changes
 the import table or the Asyncify allowlist takes `bash-runner@3` and a
 `5.2.37-3` publish, made with `--keep-default` until every deployment reading
 the catalog can bind it.
+
+## Build 3: signal-disposition queries
+
+`nimbus-proc.c` exports `__nimbus_signal_disposition(sig)`: 0 for default,
+1 for ignored, 2 for a custom handler, and -1 for an invalid signal.
+The runner queries the victim's own instance, not the caller's memory.
+After exec, only ignored dispositions survive; caught handlers reset.
+The runner does not invoke custom handlers and refuses unsupported delivery.
+
+This required export changes the contract to `bash-runner@3` and runtime
+`5.2.37-3`, with npm peer core `>=0.13.0`. Build from the same GNU 5.2.37
+source using `build-bash.sh`; `NIMBUS_BUILD_JOBS` defaults to 1. Do not edit
+the wasm binary. Publish the runtime before the matching core; preserve
+existing runtime-2 catalog objects and do not change the catalog default
+until all consuming deployments bind the new contract.

@@ -54,7 +54,7 @@ fi
 
 TARGET_CFLAGS="$TARGET_CFLAGS $INC"
 # Build tools NATIVE (gcc -std=gnu17 for bash's K&R). Target with the Nimbus flags.
-make -j"$(nproc)" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_CFLAGS" LOCAL_LIBS="" \
+make -j"${NIMBUS_BUILD_JOBS:-1}" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_CFLAGS" LOCAL_LIBS="" \
   || echo "make compiles all objects; final link is done explicitly below"
 
 # nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash.
