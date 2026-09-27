@@ -136,7 +136,7 @@ try {
     let settled = false;
     const completion = Promise.all(owned.slice(beforeInput)).then(() => { settled = true; });
     await Promise.resolve();
-    assert.equal(settled, false, 'command remains owned after terminalFrame returns');
+    assert.equal(settled, false, 'the command completion is still pending after terminalFrame returns');
     release.resolve();
     await completion;
     assert.equal(settled, true);

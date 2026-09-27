@@ -371,7 +371,10 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
           terminal.writeln(`terminal input failed: ${errorText(error)}`);
         }).finally(() => snapshotShellState(self));
         const ctx = (self as unknown as { ctx?: { waitUntil?: (promise: Promise<void>) => void } }).ctx;
-        // Retain the command without holding the WebSocket event open or serializing later input.
+        // Hand the command's completion to waitUntil so its failure is observed and
+        // the final snapshot runs, without holding the WebSocket event open or
+        // serializing later input. DurableObjectState.waitUntil does not extend the
+        // object's lifetime (Cloudflare docs, api/state/#waituntil).
         if (ctx?.waitUntil) ctx.waitUntil(task);
         else await task;
       }

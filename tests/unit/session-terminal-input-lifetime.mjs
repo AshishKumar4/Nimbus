@@ -31,7 +31,7 @@ try {
     let completed=false;
     const completion=Promise.all(tasks.slice(before)).then(()=>{completed=true;});
     await Promise.resolve();
-    assert.equal(completed,false,'owned lifetime remains pending while command is held');
+    assert.equal(completed,false,'the handed-off completion is still pending while the command is held');
     if(stop==='interrupt') await input('\x03');
     else release.resolve('finish');
     await completion;
@@ -54,7 +54,7 @@ try {
   let replCompleted=false;
   const replCompletion=Promise.all(tasks.slice(before)).then(()=>{replCompleted=true;});
   await Promise.resolve();
-  assert.equal(replCompleted,false,'REPL input remains owned while its work is pending');
+  assert.equal(replCompleted,false,'REPL input completion is still pending while its work is held');
   gates[1].resolve();gates[0].resolve();
   await replCompletion;
   detach();
@@ -73,7 +73,7 @@ try {
     assert.ok(reported.some(args=>args.some(x=>String(x).includes(error.message))));
     assert.ok(frames.some(frame=>frame.data?.includes(error.message)),'failed input is visible to the client');
   } finally {console.error=oldError;}
-  console.log('session-terminal-input-lifetime: real command ownership, Ctrl-C, concurrent REPL input and rejection');
+  console.log('session-terminal-input-lifetime: command completion handed to waitUntil, Ctrl-C, concurrent REPL input and rejection');
 } finally {
   release?.resolve('finish');
   terminal.close();
