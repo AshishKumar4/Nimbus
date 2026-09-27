@@ -36,7 +36,7 @@ const pkg = (name, meta, files) => {
 // on one would show up as the later packages missing from the bundle.
 const deps = {
   'root-conditional': '*', 'dot-map': '*', 'bad-module': '*', 'nested': '*', 'bad-exports': '*',
-  'fallback': '*', 'bad-json': '*', 'missing-entry': '*',
+  'fallback': '*', 'bad-leaf': '*', 'bad-json': '*', 'missing-entry': '*',
   'denied': '*', 'legacy-main': '*', 'legacy-module': '*', 'subpath-only': '*',
 };
 const files = {
@@ -71,6 +71,10 @@ const files = {
   // may stop the packages declared after it from being staged.
   ...pkg('bad-module', { module: 7, main: 'lib/main.js' }, { 'lib/main.js': 'module.exports = "bad-module";\n' }),
   ...pkg('bad-exports', { exports: true, main: 'lib/main.js' }, { 'lib/main.js': 'module.exports = "bad-exports";\n' }),
+  // An invalid leaf inside an otherwise valid exports map (`require: 7`): the
+  // leaf is no target, the valid `default` sibling still resolves. No main,
+  // no index.js, so dropping the whole exports field would lose the entry.
+  ...pkg('bad-leaf', { exports: { '.': { require: 7, default: './ok.js' } } }, { 'ok.js': 'module.exports = "bad-leaf";\n' }),
   [`${NM}/bad-json/package.json`]: '{ "name": "bad-json", "main": ',
   [`${NM}/bad-json/index.js`]: 'module.exports = "bad-json";\n',
 };
@@ -102,6 +106,7 @@ assert.ok(!has('subpath-only/big/index.js'), 'a package the closure reached by s
 // the index probe, and the packages declared after each are still staged.
 assert.ok(has('bad-module/lib/main.js'), 'module:7 is dropped and the valid main beside it is kept');
 assert.ok(has('bad-exports/lib/main.js'), 'exports:true is dropped and the valid main beside it is kept');
+assert.ok(has('bad-leaf/ok.js'), 'an invalid leaf is no target; the valid default sibling still resolves');
 assert.ok(has('bad-json/index.js'), 'unparseable package.json: the index probe still lands');
 assert.ok(has('nested/lib/node.js') && has('fallback/present.js') && has('missing-entry/real.js'),
   'packages declared after a malformed one are still staged');

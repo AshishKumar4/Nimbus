@@ -59,20 +59,23 @@ export interface ResolvablePackageJson {
   module?: string;
 }
 
+// An invalid leaf (`require: 7`) becomes `null`, the spec's "no target", so
+// resolveConditionValue skips it and a valid sibling (`default`) still
+// resolves. Rejecting the whole field would lose that sibling, which the
+// hand-rolled walk this replaced did not.
 const ExportsFieldSchema: z.ZodType<ExportsField> = z.lazy(() => z.union([
   z.string(),
   z.null(),
   z.array(ExportsFieldSchema),
   z.record(z.string(), ExportsFieldSchema),
-]));
+]).catch(null));
 
 // Each entry field validates on its own: a field the resolver cannot read
-// (`main: 7`, `exports: true`) is dropped, the others stay. Whole-object
-// rejection would lose a valid `main` next to a bad `module`, which the
-// runtime resolver tolerates.
+// (`main: 7`) is dropped, the others stay. Whole-object rejection would lose
+// a valid `main` next to a bad `module`, which the runtime resolver tolerates.
 const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
-  exports: ExportsFieldSchema.optional().catch(undefined),
-  imports: ExportsFieldSchema.optional().catch(undefined),
+  exports: ExportsFieldSchema.optional(),
+  imports: ExportsFieldSchema.optional(),
   main: z.string().optional().catch(undefined),
   module: z.string().optional().catch(undefined),
 });
@@ -84,10 +87,10 @@ const ResolvablePackageJsonSchema: z.ZodType<ResolvablePackageJson> = z.object({
  * declared entry" instead of throwing inside the resolver.
  */
 export function parseResolvablePackageJson(text: string): ResolvablePackageJson | null {
-  let json;
-  try { json = z.json().parse(JSON.parse(text)); } catch { return null; }
-  const result = ResolvablePackageJsonSchema.safeParse(json);
-  return result.success ? result.data : null;
+  try {
+    const result = ResolvablePackageJsonSchema.safeParse(JSON.parse(text));
+    return result.success ? result.data : null;
+  } catch { return null; }
 }
 
 /**
