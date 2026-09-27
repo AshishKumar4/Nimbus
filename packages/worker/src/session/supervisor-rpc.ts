@@ -4,12 +4,15 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
+ *   hostIncarnation — the host instance that minted the binding, present
+ *           when that host applies delivered mutations once
+ *           (@nimbus-sh/core/workspace/supervisor-delivery.js)
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -29,13 +32,23 @@
  *   stderr(data) → void
  *   reportExit(code, tail?) → void  (called from facet's finally block)
  *   prefetch(cwd, entryCode) → Record<string, string>
+ *
+ * Delivery: every call reaches the session over a Durable Object stub the
+ * platform can drop ("Network connection lost.", `retryable`). Reads are
+ * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * host's incarnation, are re-sent under one delivery id that host applies at
+ * most once (`_fsMutation`); on any other binding they are sent once.
+ * Appends are re-sent under the append ledger's identity. Everything else is
+ * sent once and a drop surfaces.
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
-import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
+import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { SUPERVISOR_DELIVER_OP, type SupervisorDeliveredOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -149,12 +162,55 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * what failed CPython's start in about one fresh session in twenty.
    */
   private _fsRead<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
-    const envelope: SupervisorOpEnvelope = { op, args, pid: this._pid() };
+    return this._resent<T>({ op, args, pid: this._pid() });
+  }
+
+  /**
+   * A filesystem mutation, delivered exactly once. The platform drops this
+   * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
+   * write loop, each failing "Network connection lost." (`retryable`) as
+   * EIO — and a dropped mutation may or may not have run.
+   *
+   * So on a binding whose host names its incarnation, every attempt carries
+   * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+   * host instance applies the id at most once: a repeat of a mutation that
+   * ran is answered from its receipt and never applied again, even over
+   * another writer's newer write; one that never arrived applies on the
+   * repeat. Any other instance, and any host that predates delivery, refuses
+   * the envelope outright, and that refusal is never repeated. Repeats stop
+   * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+   * receipt retention.
+   *
+   * A binding minted by a host that dedupes nothing names no incarnation,
+   * and its mutations are sent once.
+   *
+   * The id is random because this entrypoint keeps nothing between calls and
+   * may answer from any isolate; the pid still comes from the binding.
+   */
+  private _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
+    const hostIncarnation = this._hostIncarnation();
+    if (hostIncarnation === undefined) return this._fsOp<T>(op, args);
+    return this._resent<T>(
+      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id: crypto.randomUUID(), hostIncarnation } },
+      { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS },
+    );
+  }
+
+  /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
+  private _resent<T>(envelope: SupervisorOpEnvelope, policy?: DoCallRetryPolicy): Promise<T> {
     return idempotent(
-      op,
+      envelope.delivery?.op ?? envelope.op,
       () => this._host(),
       (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
+      policy,
     );
+  }
+
+  private _hostIncarnation(): string | undefined {
+    const props = this.ctx.props;
+    if (typeof props !== 'object' || props === null || !('hostIncarnation' in props)) return undefined;
+    const incarnation = props.hostIncarnation;
+    return typeof incarnation === 'string' && incarnation.length > 0 ? incarnation : undefined;
   }
 
   private _reportingPid(): number {
@@ -202,7 +258,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
     // and corrupting binary content. RPC structured-clone handles
     // Uint8Array transparently; downstream _rpcWriteFile also accepts
-    return this._call(this._fsOp('writeFile', [path, content]));
+    return this._call(this._fsMutation('writeFile', [path, content]));
   }
 
   async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {
@@ -218,11 +274,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt> {
-    return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
+    return this._call(this._fsMutation('utimes', [path, atimeMs, mtimeMs]));
   }
 
   async chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt> {
-    return this._call(this._fsOp('chmod', [path, mode]));
+    return this._call(this._fsMutation('chmod', [path, mode]));
   }
 
   async access(path: RuntimeFsPath, mode: number): Promise<void> {
@@ -235,7 +291,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     gid: number,
     options?: { followSymlinks?: boolean },
   ): Promise<VfsMutationReceipt> {
-    return this._call(this._fsOp('chown', [path, uid, gid, options]));
+    return this._call(this._fsMutation('chown', [path, uid, gid, options]));
   }
 
   async setUmask(mask: number): Promise<number> {
@@ -251,19 +307,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void> {
-    return this._call(this._fsOp('mkdir', [path, options]));
+    return this._call(this._fsMutation('mkdir', [path, options]));
   }
 
   async rmdir(path: RuntimeFsPath): Promise<void> {
-    return this._call(this._fsOp('rmdir', [path]));
+    return this._call(this._fsMutation('rmdir', [path]));
   }
 
   async rename(from: RuntimeFsPath, to: RuntimeFsPath): Promise<void> {
-    return this._call(this._fsOp('rename', [from, to]));
+    return this._call(this._fsMutation('rename', [from, to]));
   }
 
   async unlink(path: RuntimeFsPath): Promise<void> {
-    return this._call(this._fsOp('unlink', [path]));
+    return this._call(this._fsMutation('unlink', [path]));
   }
 
   async readlink(path: RuntimeFsPath): Promise<string | null> {
@@ -271,7 +327,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async symlink(target: string, path: RuntimeFsPath): Promise<void> {
-    return this._call(this._fsOp('symlink', [target, path]));
+    return this._call(this._fsMutation('symlink', [target, path]));
   }
 
   /**
@@ -345,7 +401,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
-    return this._call(this._fsOp('fsOpen', [path, flags]));
+    return this._call(this._fsMutation('fsOpen', [path, flags]));
   }
 
   async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
@@ -353,60 +409,61 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return this._call(this._fsOp('fsWrite', [handleId, offset, bytes]));
+    return this._call(this._fsMutation('fsWrite', [handleId, offset, bytes]));
   }
 
+  /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
   async fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>> {
-    return this._call(this._fsOp('fsFstat', args));
+    return this._call(this._fsRead('fsFstat', args));
   }
   async fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>> {
-    return this._call(this._fsOp('fsDup', args));
+    return this._call(this._fsMutation('fsDup', args));
   }
   async fsSeek(...args: Parameters<RuntimeFsBridge['seek']>): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>> {
-    return this._call(this._fsOp('fsSeek', args));
+    return this._call(this._fsMutation('fsSeek', args));
   }
   async fsSetStatus(...args: Parameters<RuntimeFsBridge['setStatus']>): Promise<Awaited<ReturnType<RuntimeFsBridge['setStatus']>>> {
-    return this._call(this._fsOp('fsSetStatus', args));
+    return this._call(this._fsMutation('fsSetStatus', args));
   }
   async fsReaddirHandle(...args: Parameters<RuntimeFsBridge['readdirHandle']>): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>> {
-    return this._call(this._fsOp('fsReaddirHandle', args));
+    return this._call(this._fsRead('fsReaddirHandle', args));
   }
   async fsFtruncate(...args: Parameters<RuntimeFsBridge['ftruncate']>): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>> {
-    return this._call(this._fsOp('fsFtruncate', args));
+    return this._call(this._fsMutation('fsFtruncate', args));
   }
   async fsFchmod(...args: Parameters<RuntimeFsBridge['fchmod']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchmod']>>> {
-    return this._call(this._fsOp('fsFchmod', args));
+    return this._call(this._fsMutation('fsFchmod', args));
   }
   async fsFchown(...args: Parameters<RuntimeFsBridge['fchown']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchown']>>> {
-    return this._call(this._fsOp('fsFchown', args));
+    return this._call(this._fsMutation('fsFchown', args));
   }
   async fsFutimes(...args: Parameters<RuntimeFsBridge['futimes']>): Promise<Awaited<ReturnType<RuntimeFsBridge['futimes']>>> {
-    return this._call(this._fsOp('fsFutimes', args));
+    return this._call(this._fsMutation('fsFutimes', args));
   }
   async fsSync(...args: Parameters<RuntimeFsBridge['fsync']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fsync']>>> {
-    return this._call(this._fsOp('fsSync', args));
+    return this._call(this._fsMutation('fsSync', args));
   }
   async fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>> {
     return this._call(this._fsRead('fsRealpath', args));
   }
   async fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>> {
-    return this._call(this._fsOp('fsRemove', args));
+    return this._call(this._fsMutation('fsRemove', args));
   }
   async fsCopyFile(...args: Parameters<RuntimeFsBridge['copyFile']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>> {
-    return this._call(this._fsOp('fsCopyFile', args));
+    return this._call(this._fsMutation('fsCopyFile', args));
   }
   async fsCopyTree(...args: Parameters<RuntimeFsBridge['copyTree']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyTree']>>> {
-    return this._call(this._fsOp('fsCopyTree', args));
+    return this._call(this._fsMutation('fsCopyTree', args));
   }
   async fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>> {
-    return this._call(this._fsOp('fsAcquireExclusiveMutation', args));
+    return this._call(this._fsMutation('fsAcquireExclusiveMutation', args));
   }
   async fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>> {
-    return this._call(this._fsOp('fsReleaseExclusiveMutation', args));
+    return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
   }
 
   async fsClose(handleId: number): Promise<void> {
-    return this._call(this._fsOp('fsClose', [handleId]));
+    return this._call(this._fsMutation('fsClose', [handleId]));
   }
 
   /**
@@ -457,9 +514,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt> {
-    return this._call(this._fsOp('fsWriteRange', [path, offset, bytes]));
+    return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
   }
 
+  /**
+   * An append and its acknowledgement carry the append ledger's own identity
+   * (writer, module incarnation, operation sequence), whose receipt the host
+   * keeps until the acknowledgement: a repeat of either applies nothing twice,
+   * so a dropped one is simply re-sent.
+   */
   async fsAppend(
     path: string,
     moduleId: string,
@@ -467,18 +530,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<number> {
     return this._call(
-      this._op('fsAppend', [path, moduleId, operationId, bytes], { pid: this._pid(), writerId: this._writerId() }),
+      this._resent({ op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() }),
     );
   }
 
   async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
     return this._call(
-      this._op('fsAppendAck', [moduleId, operationId], { pid: this._pid(), writerId: this._writerId() }),
+      this._resent({ op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() }),
     );
   }
 
   async fsTruncate(path: string, size: number): Promise<VfsMutationReceipt> {
-    return this._call(this._fsOp('fsTruncate', [path, size]));
+    return this._call(this._fsMutation('fsTruncate', [path, size]));
   }
 
   /**
@@ -502,7 +565,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('writeBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {
-      return await this._call(this._fsOp('writeBatch', [payload]));
+      return await this._call(this._fsMutation('writeBatch', [payload]));
     } finally {
       rpcPayloadEnd(payloadBytes);
     }

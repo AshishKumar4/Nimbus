@@ -158,6 +158,31 @@ for (const mode of PROCESS_HOST_MODES) {
     console.log(`  [${mode}] case1: a resident process is a pid-keyed facet with a coordinator supervisor`);
   }
 
+  // ── (1b) a coordinator that applies mutations once names its instance ─────
+  // Wherever the process runs, its binding names the COORDINATOR instance, so
+  // a dropped mutation is re-sent and that instance alone dedupes it; and the
+  // loader key carries it too, so a warm worker built for one instance is
+  // never served to the next, whose every delivered mutation it would refuse.
+  {
+    const world = createFacetWorld(makeProgram());
+    const host = createProcessHost(mode, world, setupDisk([]).reader, { deliveries: true });
+    const handle = await new ProcessFabric(host).startResidentProcess({
+      ...WRITER_LIFECYCLE,
+      startContract: 'lifetime',
+      pid: 44,
+      workerKey: 'nimbus-process:coord-do-id:44',
+      boot: CODE_BOOT,
+    });
+    await handle.done;
+    const [boot] = world.boots;
+    assert.match(host.hostIncarnation, /^[0-9a-f-]{36}$/);
+    assert.equal(boot.config.env.SUPERVISOR.props.hostIncarnation, host.hostIncarnation,
+      'the binding does not name the coordinator instance');
+    assert.equal(boot.loaderId, `nimbus-process:coord-do-id:44:${host.hostIncarnation}`,
+      'the loader key does not name the coordinator instance');
+    console.log(`  [${mode}] case1b: a delivering coordinator's instance rides the binding and the loader key`);
+  }
+
   // ── (3) a code spec resolves its by-path members inside the loader callback ──
   {
     const reads = [];

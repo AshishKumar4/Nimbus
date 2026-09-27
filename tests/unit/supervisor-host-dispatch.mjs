@@ -65,6 +65,7 @@ const target = '/home/user/file', symlinkPath = '/home/user/link2';
 const wPath = '/home/user/w', dirPath = '/home/user/dir', delPath = '/home/user/del';
 const linkPath = '/home/user/link';
 const chmodPath = '/home/user/chmod', utimesPath = '/home/user/utimes', truncPath = '/home/user/trunc';
+const rangePath = '/home/user/range';
 // The descriptor ops all act on one open file, plus a directory for
 // readdirHandle; remove/copy/mutation each get their own subject.
 const handlePath = '/home/user/handle', handleDir = '/home/user/hdir';
@@ -76,6 +77,7 @@ sessionFs.writeFile('home/user/del', 'x');
 sessionFs.writeFile('home/user/chmod', 'x');
 sessionFs.writeFile('home/user/utimes', 'x');
 sessionFs.writeFile('home/user/trunc', 'truncate me');
+sessionFs.writeFile('home/user/range', 'xxxxxx');
 sessionFs.writeFile('home/user/file', 'seeded\n');
 sessionFs.writeFile('home/user/handle', handleContent);
 sessionFs.mkdir('home/user/hdir', { recursive: true });
@@ -155,7 +157,7 @@ const INPUTS = {
   fsReadRange: [path, offset, length],
   fsReadRangeUncached: [path, offset, length],
   fsReadBatch: [requests],
-  fsWriteRange: [path, offset, bytes],
+  fsWriteRange: [rangePath, 2, bytes],
   fsAppend: [path, moduleId, operationId, bytes],
   fsAppendAck: [moduleId, operationId],
   fsTruncate: [truncPath, size],
@@ -335,6 +337,10 @@ const nativeAssert = {
   fsTruncate: async (r) => {
     assertReceipt(r, 'fsTruncate answers a mutation receipt');
     assert.equal(kernelVfs.readFile('home/user/trunc').length, size, 'fsTruncate sized');
+  },
+  fsWriteRange: (r) => {
+    assertReceipt(r, 'fsWriteRange answers a mutation receipt');
+    assert.deepEqual(Array.from(kernelVfs.readFile('home/user/range')), [120, 120, 1, 2, 3, 120], 'fsWriteRange wrote at its offset');
   },
   // The descriptor ops, in the order the canonical list runs them: fsOpen
   // mints the handle every one of them addresses.

@@ -205,4 +205,38 @@ const FAST = { baseDelayMs: 1 };
   assert.equal(await idempotent('pinnedRead', resolveAsync, (s) => s.ping(), FAST), 'pinned');
 }
 
+// ── 14. A retry window closes retries by elapsed time, not attempt count ─────
+// A caller whose callee dedupes repeats only for a bounded retention must
+// stop repeating inside it, however long an attempt took to fail.
+
+{
+  const realNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const drop = () => Object.assign(new Error('Network connection lost.'), { retryable: true });
+    const late = mintKit(async () => { now += 20_001; throw drop(); });
+    const seen = [];
+    await assert.rejects(
+      idempotent('late', late.resolve, (s) => s.ping(), { baseDelayMs: 1, retryWindowMs: 20_000, onRetry: (i) => seen.push(i) }),
+      /Network connection lost/,
+    );
+    assert.equal(late.stubs.length, 1, 'a failure that ended past the window was retried');
+    assert.deepEqual(seen, [], 'a retry past the window was announced');
+
+    const early = mintKit(async (n) => {
+      now += 19_000;
+      if (n === 1) throw drop();
+      return 'second';
+    });
+    assert.equal(
+      await idempotent('early', early.resolve, (s) => s.ping(), { baseDelayMs: 1, retryWindowMs: 20_000 }),
+      'second',
+    );
+    assert.equal(early.stubs.length, 2, 'a failure inside the window was not retried');
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 console.log('ok - fabric-do-calls (fresh-stub retry, overloaded refusal, mutating never retries, typed cause)');

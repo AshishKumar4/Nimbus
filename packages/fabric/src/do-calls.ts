@@ -9,6 +9,8 @@
  * wearing resilience as a costume." agent-core has no retry machinery at all
  * and its backlog calls the gap "the most production-proven gap in the
  * corpus". Here the rule is a type: `idempotent` retries, `mutating` cannot.
+ * A mutation earns a retry only by carrying an identity its callee applies
+ * at most once; it is then `idempotent` by construction (see `mutating`).
  *
  * What the platform contract requires, and this keeps:
  *   - a FRESH stub per attempt. Cloudflare documents that many exceptions
@@ -46,6 +48,14 @@ const BASE_DELAY_MS = 60;
 export interface DoCallRetryPolicy {
   maxAttempts?: number;
   baseDelayMs?: number;
+  /**
+   * No retry starts once this long has passed since the first attempt did;
+   * the failure in hand surfaces instead. A mutation made repeatable by an
+   * identity its callee dedupes needs it: the callee keeps what answers a
+   * repeat for a bounded time, so the caller's repeats must stop well inside
+   * it. Unbounded when absent.
+   */
+  retryWindowMs?: number;
   /**
    * Called once per retry, before its backoff delay, with the failure the
    * retry is answering. The consumer's logging seam: Proteus's hand-rolled
@@ -102,9 +112,11 @@ export class DoCallError extends Error {
 
 /**
  * Call another Durable Object with an operation that is safe to repeat: a
- * read, or a converge-to-a-value write. Transient failures retry on a fresh
- * stub with full-jitter backoff; overloaded and permanent failures surface
- * unchanged, as does the last error at exhaustion.
+ * read, a converge-to-a-value write, or a mutation carrying an identity its
+ * callee applies at most once (see {@link mutating}). Transient failures
+ * retry on a fresh stub with full-jitter backoff; overloaded and permanent
+ * failures surface unchanged, as does the last error at exhaustion or once
+ * the policy's retry window has closed.
  */
 export async function idempotent<S, T>(
   operation: string,
@@ -114,6 +126,7 @@ export async function idempotent<S, T>(
 ): Promise<T> {
   const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
   const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
+  const startedAt = Date.now();
   for (let attempt = 1; ; attempt++) {
     const minted = await stub();
     try {
@@ -125,9 +138,11 @@ export async function idempotent<S, T>(
       disposeRpcResource(minted);
       const classification = classifyDoCall(error);
       if (!isRetryableDoCall(classification) || attempt >= maxAttempts) throw error;
+      const delayMs = Math.floor(Math.random() * 2 ** attempt * baseDelayMs);
+      if (policy.retryWindowMs !== undefined && Date.now() + delayMs - startedAt > policy.retryWindowMs) throw error;
       policy.onRetry?.({ operation, classification, attempt, maxAttempts, error });
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, Math.floor(Math.random() * 2 ** attempt * baseDelayMs));
+        setTimeout(resolve, delayMs);
       });
     }
   }
@@ -138,6 +153,21 @@ export async function idempotent<S, T>(
  * or mints. NEVER retried — a dropped call may already have run. Failure
  * surfaces as a {@link DoCallError} carrying the classification, so the
  * caller can tell a refusal from an indeterminate drop.
+ *
+ * The rule is about the call as sent, not the operation's kind. A mutation
+ * the callee applies at most once per identity the call carries is
+ * repeatable by construction: a repeat of one that already ran is answered
+ * from the callee's record and applies nothing. Nimbus has two:
+ *   - delivered filesystem mutations (@nimbus-sh/core supervisor-delivery):
+ *     a delivery id plus the callee INSTANCE's incarnation. The record lives
+ *     in that instance's memory, and any other instance — or a callee that
+ *     predates delivery — refuses the call permanently rather than apply it
+ *     without one;
+ *   - appends: writer, module incarnation and operation sequence, recorded
+ *     durably until acknowledged.
+ * Such a call goes through {@link idempotent}, re-sending the same identity
+ * on every attempt, with a `retryWindowMs` inside the callee's retention of
+ * that record. Without such an identity, a mutation stays here.
  */
 export async function mutating<S, T>(
   operation: string,

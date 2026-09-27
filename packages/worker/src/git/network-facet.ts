@@ -25,7 +25,8 @@
  * in the PR that introduced this file.
  */
 
-import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
@@ -692,7 +693,7 @@ export async function execGitNetwork(
     const ctxExports = getCtxExports();
     const supervisorBinding = ctxExports?.SupervisorRPC
       ? ctxExports.SupervisorRPC<GitSupervisorStub>({
-          props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner, route: hostRoute() ?? undefined },
+          props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner },
         })
       : undefined;
 

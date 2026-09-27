@@ -43,6 +43,7 @@ import {
   type ResidentDiskReader,
   type ResidentSupervisorProps,
 } from './process-fabric.js';
+import { supervisorLoaderKey } from './supervisor-props.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -58,7 +59,7 @@ export interface NimbusCtxExports {
       key: string;
       name: string | null;
       depth: number;
-      supervisor: { doId: string; pid: number; writerId: string };
+      supervisor: ResidentSupervisorProps;
       stage?: unknown;
     };
   }) => LoadedWorkerEntrypointStub;
@@ -80,7 +81,7 @@ export function getNimbusCtxExports(): NimbusCtxExports {
  */
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
-  supervisor: { doId: string; pid: number; writerId: string },
+  supervisor: ResidentSupervisorProps,
   stage: unknown,
   name: string | null = null,
 ): Promise<LoadedWorkerEntrypointStub> {
@@ -89,7 +90,9 @@ export async function createLoadedWorkerEntrypoint(
   }
   return await ctxExports.NimbusLoadedEntrypoint({
     props: {
-      key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+      // The entrypoint's loader outlives this instance, and a warm worker keeps
+      // the SUPERVISOR binding it was built with.
+      key: supervisorLoaderKey(`nimbus-process:${supervisor.doId}:${supervisor.pid}`, supervisor),
       name,
       depth: 0,
       supervisor,
@@ -574,11 +577,14 @@ function residentProcessClass(
         + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
     );
   }
+  // A warm worker keeps the SUPERVISOR binding it was built with, and the
+  // loader outlives this instance.
+  const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
   try {
     const worker = loader
-      .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+      .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
       .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-    recordLoaderId(ctx, params.workerKey);
+    recordLoaderId(ctx, loaderKey);
     return worker;
   } catch (error) {
     throw withDynamicWorkerCapNamed(ctx, error);

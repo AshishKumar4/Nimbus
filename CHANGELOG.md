@@ -78,6 +78,38 @@ published independently in the `@nimbus-sh` npm scope.
   pulls the resident store's source text into the Worker by importing two
   constants from it; they now live in `vfs/facet-resident-limits.ts`.
 
+- A process's filesystem mutations are re-sent when the platform drops the
+  call to the session ("Network connection lost.", `retryable`), and apply
+  once. Previously the program saw EIO (pip install failing with errno 29 on
+  a wheel member; a FileHandle write loop failing partway). A session now
+  names its instance in every SUPERVISOR binding it mints (`hostIncarnation`).
+  SupervisorRPC sends a mutation on such a binding under the new
+  `deliverOnce` op with one delivery id on every attempt, and the instance
+  applies an id once, keeping its answer in memory: a repeat of a mutation
+  that ran gets the same answer, or the same failure, and never overwrites a
+  later write by another process. Another instance of the session refuses
+  the repeat with ESTALE, and a host that predates the op refuses it as
+  unserved; neither is retried or applied. Nothing is written to storage.
+  Covered: writeFile, writeRange, truncate, mkdir, rmdir, unlink, rename,
+  symlink, metadata changes, descriptor open/write/close/seek/dup, remove,
+  copy and writeBatch. Appends are re-sent under their existing ledger
+  identity, and descriptor stat and directory reads are re-sent like other
+  reads. Only failures the platform marks retryable are repeated: three
+  attempts, with the existing backoff, none started more than 5 s after the
+  first. Overloaded and other failures surface unchanged, and so does the
+  last drop when attempts run out. Answers are kept 15 to 30 s; after that,
+  or once their process exits, the delivery id is kept as a 53-bit hash for
+  10 to 20 minutes (at most 2 × 65,536 of them, about 5 MiB), and a repeat
+  that arrives that late gets EIO, outcome unknown, and is not applied.
+  Only bindings that act as a real process and route to the session itself
+  name the instance, so pid-0 pools keep their warm isolates across
+  restarts. Bindings minted by hosts that do not open a delivery store send
+  each mutation once, as before. `fsWriteRange` is now served by the shared
+  supervisor-op handler instead of `_rpcFsWriteRange`; it takes the same
+  byte shapes and answers EINVAL for anything else, where the routed op
+  wrote nothing and reported success. `writeBatchStream`, position-relative
+  `fsRead` and non-filesystem calls are still sent once.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged
