@@ -8518,7 +8518,7 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   }
   let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
   // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
-  // dist/.mjs files were transformed to CJS by transformEsmInBundle
+  // dist/.mjs files were transformed to CJS
   // by transformEsmInBundle (facets/manager.ts). Without this,
   // packages like nuxt — whose exports map only contains
   // {types, import} for the root subpath — return null from the CJS
