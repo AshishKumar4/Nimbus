@@ -243,5 +243,22 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
     `state ${r.state} code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
 }
 
+// ── mkdir -p of an absolute path passes through `/` ──────────────────────
+// BusyBox's mkdir -p creates every prefix, `/` first, and goes on only when
+// that answers EEXIST. `/` has no row in the store, so it used to reach the
+// root-write check and answer EACCES: "can't create directory '/':
+// Permission denied" for every absolute `mkdir -p` by a user (and the
+// staging probe shell/ls-absolute-path found nothing to list). The directory
+// made is then found by a cwd-relative operand after `cd`.
+for (const remote of [false, true]) {
+  const r = await runScript(
+    'mkdir -p /home/user/ptest/deep && echo M > /home/user/ptest/CWDMARK && mkdir -p / && cd /home/user && ls ptest',
+    { remote },
+  );
+  check(`${remote ? 'over RPC' : 'in-process'}: mkdir -p through / as a user, then a cwd-relative ls`,
+    r.exitCode === 0 && r.stdout === 'CWDMARK\ndeep\n' && r.stderr === '',
+    `stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
 console.log(failures === 0 ? '\nAll bash WASI correctness checks passed.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

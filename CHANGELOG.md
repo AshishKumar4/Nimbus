@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `mkdir -p /abs/path` works again for a non-root user under bash and for any
+  process `mkdir` of `/`: creating `/` answers EEXIST, as mkdir(2) does, instead
+  of EACCES from the root-directory write check. BusyBox's `mkdir -p` creates
+  every prefix starting at `/`, so every absolute `mkdir -p` by a user failed
+  with "can't create directory '/': Permission denied".
+
 - In the workspace shell, `cat /dev/zero > file` (or into the terminal or
   /dev/null) fails at once with the device's "produces bytes without end"
   error again, instead of writing zeros until the session's storage is full.
