@@ -12,6 +12,15 @@ try {
   plain.mkdir('a'); plain.mkdir('b'); plain.writeFile('a/file', 'old');
   const a = raw.acquireExclusiveMutation('a');
   const owned = raw.as(CRED_KERNEL, { mutationOwner: a.owner });
+  let listenerError;
+  const unlisten = raw.events.onPath('a/trigger', () => {
+    try { plain.writeFile('a/from-listener', 'must not inherit authority'); }
+    catch (error) { listenerError = error.code; }
+  });
+  owned.writeFile('a/trigger', 'owned event');
+  assert.equal(listenerError, 'EBUSY');
+  assert.equal(plain.exists('a/from-listener'), false);
+  unlisten();
   assert.throws(() => plain.writeFile('a/file', 'foreign'), (e) => e.code === 'EBUSY');
   assert.throws(() => raw.as(CRED_KERNEL, { mutationOwner: 'not-a-lease' }).unlink('a/file'), (e) => e.code === 'ESTALE');
   assert.throws(() => raw.as(CRED_KERNEL, { mutationOwner: '' }).unlink('a/file'), (e) => e.code === 'ESTALE');

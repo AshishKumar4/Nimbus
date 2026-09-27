@@ -7564,7 +7564,7 @@ export class SqliteVFS {
     if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
     this.deliverEvents(publication.removedDirectories, () => {
       for (const event of publication.events) {
-        this.events.emit(event.type, event.path, event.oldPath);
+        this.emitMutation(event.type, event.path, event.oldPath);
       }
     });
     this.runContentMaintenanceSafely(1);
@@ -7596,7 +7596,11 @@ export class SqliteVFS {
     if (this.transactionPublication) {
       this.transactionPublication.events.push({ type, path, oldPath });
     } else {
-      this.events.emit(type, path, oldPath);
+      // Synchronous path listeners are callers, not part of the lease holder's mutation.
+      const owner = this.activeMutationOwner;
+      this.activeMutationOwner = null;
+      try { this.events.emit(type, path, oldPath); }
+      finally { this.activeMutationOwner = owner; }
     }
   }
 
