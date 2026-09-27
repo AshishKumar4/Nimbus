@@ -5482,27 +5482,33 @@ export class SqliteVFS {
     return [...out.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   }
 
-  /** One keyset page of the tree as of `g`, in path order: live and history merged. */
+  /**
+   * One keyset page of the tree as of `g`, in SQLite's path order (UTF-8 bytes,
+   * the order `path > ?` keysets use): live and history merged in SQL, so the
+   * page boundary and the cursor never disagree. A JS `<` on strings orders by
+   * UTF-16 code units and would place U+10000 before U+E000.
+   */
   private pageAt(g: number, after: string, limit: number, upper: string | null = null): INode[] {
     const below = upper === null ? '' : ' AND path < ?';
     const bound = upper === null ? [] : [upper];
-    const live = [...this.sql.exec(
-      `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${below} AND gen <= ? ORDER BY path LIMIT ?`,
-      after,
-      ...bound,
-      g,
+    return [...this.sql.exec(
+      `SELECT * FROM (
+         SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${below} AND gen <= ? ORDER BY path LIMIT ?
+       ) UNION ALL SELECT * FROM (
+         SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history WHERE path > ?${below} AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?
+       ) ORDER BY path LIMIT ?`,
+      after, ...bound, g, limit,
+      after, ...bound, g, g, limit,
       limit,
     )].map((row) => this.inodeFromRow(row));
-    const past = [...this.sql.exec(
-      `SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
-       WHERE path > ?${below} AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?`,
-      after,
-      ...bound,
-      g,
-      g,
-      limit,
-    )].map((row) => this.inodeFromRow(row));
-    return [...live, ...past].sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit);
+  }
+
+  /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
+  private static comparePaths(a: string, b: string): number {
+    const x = enc.encode(a), y = enc.encode(b);
+    const n = Math.min(x.length, y.length);
+    for (let i = 0; i < n; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+    return x.length - y.length;
   }
 
   /**
@@ -6075,7 +6081,7 @@ export class SqliteVFS {
       if (partial) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next };
       if (!inode.isDir) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null };
     }
-    const key = lastPath < range.lower ? range.lower : lastPath;
+    const key = SqliteVFS.comparePaths(lastPath, range.lower) < 0 ? range.lower : lastPath;
     let exhausted = true;
     for (const inode of this.pageAt(g, key, limit + 1, range.upper)) {
       if (!take(inode)) { exhausted = false; break; }
@@ -6224,9 +6230,15 @@ export class SqliteVFS {
   ): { imported: number; want: string[]; done: boolean; pending: string[] } {
     // N18: the page's rows and the bytes it brings are admitted and reserved
     // before its first transaction, which then draw from the reservation.
-    const given = [...chunks];
+    // Collected under the frame bound as it is pulled: an iterable larger than a
+    // frame, or one that never ends, stops at the first chunk past the budget.
+    const given: VfsExportChunk[] = [];
     let bytes = 0;
-    for (const chunk of given) bytes += chunk.data.byteLength;
+    for (const chunk of chunks) {
+      bytes += chunk.data.byteLength;
+      if (bytes > EXPORT_FRAME_BYTES) throw vfsError('E2BIG', 'import chunk frame exceeds its budget');
+      given.push(chunk);
+    }
     const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
     const rows = (Array.isArray(page?.rows) ? page.rows.length : 0) + pieces + 2;
     const reservation = crypto.randomUUID();
@@ -6252,19 +6264,17 @@ export class SqliteVFS {
     const full = (path: string): string => path === '' ? target : (target === '' ? path : `${target}/${path}`);
     const compare = (a: [string, number] | null, b: [string, number] | null): number => {
       if (a === null || b === null) return a === b ? 0 : a === null ? -1 : 1;
-      if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+      const byPath = SqliteVFS.comparePaths(a[0], b[0]);
+      if (byPath !== 0) return byPath;
       const x = a[1] === -1 ? Infinity : a[1], y = b[1] === -1 ? Infinity : b[1];
       return x === y ? 0 : x < y ? -1 : 1;
     };
     if (compare(from, cursor) > 0) throw vfsError('EINVAL', 'import page skips uncommitted progress');
-    const rows = page.rows.filter((row) => cursor === null || row.path > cursor[0] || (row.path === cursor[0] && cursor[1] >= 0));
+    const rows = page.rows.filter((row) => cursor === null || SqliteVFS.comparePaths(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
     if (job === undefined && page.after === null) this.assertImportTarget(target);
     const identity = this.importIdentity(target, page, job, rows);
     const given = new Map<string, Uint8Array>();
-    let givenBytes = 0;
     for (const chunk of chunks) {
-      givenBytes += chunk.data.byteLength;
-      if (givenBytes > EXPORT_FRAME_BYTES) throw vfsError('E2BIG', 'import chunk frame exceeds its budget');
       if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
       given.set(chunk.hash, chunk.data);
     }
@@ -6273,7 +6283,7 @@ export class SqliteVFS {
     let pending = job?.pending;
     let lastPath: string | undefined;
     for (const row of page.rows) {
-      if (lastPath !== undefined && row.path <= lastPath) throw vfsError('EINVAL', 'import rows are not strictly ordered');
+      if (lastPath !== undefined && SqliteVFS.comparePaths(row.path, lastPath) <= 0) throw vfsError('EINVAL', 'import rows are not strictly ordered');
       lastPath = row.path;
       if (!Number.isSafeInteger(row.size) || row.size < 0 || !Number.isSafeInteger(row.pieceOffset) || row.pieceOffset < 0
           || row.pieceOffset > row.size || (row.kind === 'directory' ? row.contentKey !== null : !/^[0-9a-f]{64}$/.test(row.contentKey ?? ''))) {
@@ -6292,7 +6302,7 @@ export class SqliteVFS {
           || (!row.manifest && (row.pieceOffset !== 0 || end !== row.size || row.pieces.length > 1 || row.size > CHUNK_SIZE))) {
         throw vfsError('EINVAL', `${row.path}: invalid manifest extent`);
       }
-      const already = cursor !== null && (row.path < cursor[0] || (row.path === cursor[0] && cursor[1] === -1));
+      const already = cursor !== null && (SqliteVFS.comparePaths(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
       if (already) {
         const inode = this.inodes.get(full(row.path));
         if (!inode || inode.kind !== row.kind || inode.size !== row.size || (inode.mode & 0o7777) !== (row.mode & 0o7777)
@@ -6352,9 +6362,13 @@ export class SqliteVFS {
     }
     if (rows.length === 0 && job === undefined && page.after !== null) return { imported: 0, want: [], done: page.next === null, pending: [] };
     const wanted = this.absentChunks(keys);
-    const missing = wanted.filter((hash) => !given.has(hash));
-    if (missing.length && !lazy) return { imported: 0, want: missing, done: false, pending: [] };
-    if (lazy) this.insertPendingChunks(missing.map((hash) => ({ hash, size: lengths.get(hash)! })));
+    const missing: { hash: string; size: number }[] = [];
+    for (const hash of wanted) {
+      const size = lengths.get(hash);
+      if (size !== undefined && !given.has(hash)) missing.push({ hash, size });
+    }
+    if (missing.length && !lazy) return { imported: 0, want: missing.map(({ hash }) => hash), done: false, pending: [] };
+    if (lazy) this.insertPendingChunks(missing);
     const jobId = job?.id ?? this.beginImport(target);
     const state: z.infer<typeof ImportJobArgsSchema> = { dst: target, ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }) };
     if (job?.sourceNextIno === undefined) this.transactionSync(() => {
@@ -6391,6 +6405,8 @@ export class SqliteVFS {
         position += size;
       }
       const complete = position === row.size;
+      const digest = finalDigests.get(row.path);
+      if (row.manifest && complete && digest === undefined) throw vfsError('EIO', `${row.path}: completed manifest has no verified digest`);
       const blobBytes = pieces.reduce((n, piece) => n + (piece.data?.byteLength ?? 0), 0);
       if (row.manifest && (previous !== undefined || !complete || pieces.length > IMPORT_INLINE_PIECES || blobBytes > MAX_TX_BLOB_BYTES / 2)) {
         const staging: StagingContent = { id: previous?.content ?? 0, size: previous?.offset ?? 0,
@@ -6415,13 +6431,13 @@ export class SqliteVFS {
         flush();
         if (!complete) continue;
         const publish = this.newPlan(true);
-        publish.addInode(this.importedEntry(path, row, { type: 'staged', content: staging, digest: finalDigests.get(row.path)! }, identity.preserveInos ? row.ino : undefined));
+        publish.addInode(this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined));
         state.pending = undefined; progress = exportCursor(row.path);
         commit(publish.build());
       } else {
         const plan = this.newPlan(true);
         const content: InodeContent = row.kind === 'directory' || row.size === 0 ? { type: 'none' }
-          : { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest: finalDigests.get(row.path) ?? null };
+          : { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest: digest ?? null };
         plan.addInode(this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined));
         progress = exportCursor(row.path);
         commit(plan.build());
@@ -6440,7 +6456,7 @@ export class SqliteVFS {
       if (held !== undefined && held.id !== 0) this.abandonStaging(held);
     }
     this.runContentMaintenanceSafely(1);
-    return { imported, want: [], done, pending: missing };
+    return { imported, want: [], done, pending: missing.map(({ hash }) => hash) };
   }
 
   private ensureImportIdentityIndexes(): void {

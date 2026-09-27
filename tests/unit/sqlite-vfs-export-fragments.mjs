@@ -145,6 +145,33 @@ try {
   assert.equal(rows, 40 + 2400, 'every long-path row exported once; the root itself has no row');
   assert.ok(widest <= FRAME);
   assert.throws(() => oracle.raw.importPage('', { ...template, rows: [rowAt(0, PIECES + 1)], next: null }), (e) => e.code === 'E2BIG');
+  // The chunk iterable is collected under the frame bound as it is pulled, not materialized first,
+  // and the iterator is closed on the way out.
+  let pulls = 0, returned = false;
+  const endless = { [Symbol.iterator]() { return { next() { pulls++; if (pulls === 130) throw new Error('pulled past the budget'); return { value: { hash, data: chunk }, done: false }; }, return() { returned = true; return { done: true }; } }; } };
+  assert.throws(() => oracle.raw.importPage('', template, endless), (e) => e.code === 'E2BIG');
+  assert.equal(pulls, 129, 'E2BIG fires on the first chunk past 8 MiB, before the iterable is exhausted');
+  assert.equal(returned, true, 'the iterator is returned when collection stops');
+
+  // Page boundaries and cursors follow SQLite's UTF-8 byte order, not UTF-16 code units:
+  // U+E000 (3 bytes) sorts before U+10000 (4 bytes) in SQL but after it in JS.
+  const uni = open();
+  uni.fs.writeFile('\ue000', 'bmp'); uni.fs.writeFile('\u{10000}', 'astral'); uni.fs.writeFile('\ue000-history', 'gone');
+  uni.raw.snapshot('u1');
+  uni.fs.unlink('\ue000-history'); uni.fs.writeFile('\ue000', 'bmp-later');
+  uni.raw.snapshot('u2');
+  for (const [at, expected] of [['u1', ['\ue000', '\ue000-history', '\u{10000}']], ['u2', ['\ue000', '\u{10000}']]]) {
+    for (const limit of [1, 2, 10]) {
+      const paths = []; let c = null;
+      do { const page = uni.raw.exportPage({ at, after: c, limit }); paths.push(...page.rows.map((row) => row.path)); c = page.next; } while (c !== null);
+      assert.deepEqual(paths, expected, `${at} limit ${limit}: every name once, in SQLite order (history included)`);
+      const into = open(); c = null;
+      do { const page = uni.raw.exportPage({ at, after: c, limit }); const r = into.raw.importPage('', page, uni.raw.exportChunks(into.raw.wantChunks(page)).chunks); assert.deepEqual(r.want, []); c = page.next; } while (c !== null);
+      assert.deepEqual(into.fs.readdir('/').map((entry) => entry.name).sort(), [...expected].sort(), `${at} limit ${limit}: import lands both names`);
+      assert.equal(into.fs.readFileString('\ue000'), at === 'u1' ? 'bmp' : 'bmp-later');
+      assert.equal(into.fs.readFileString('\u{10000}'), 'astral');
+    }
+  }
 } finally {
   const closed = new Set();
   for (const { db } of handles) if (!closed.has(db)) { db.close(); closed.add(db); }

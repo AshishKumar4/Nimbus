@@ -221,7 +221,9 @@ database-size accounting until reused; they are not deducted as an exemption.
 bytes, metadata included. A file whose manifest does not fit is exported as
 fragments: rows for the same path carry `pieceOffset` and consecutive
 references, and the cursor `next` is opaque, a (path, byte offset) position.
-Pass `next` back unchanged; do not construct cursors.
+Pass `next` back unchanged; do not construct cursors. Rows and page
+boundaries follow SQLite's path order (UTF-8 bytes), which differs from a JS
+string sort for names outside the BMP; the importer compares in the same order.
 
 The importer keeps one pending manifest per job, pinned against GC and
 recorded durably with its offset, so fragments survive a reset and a
