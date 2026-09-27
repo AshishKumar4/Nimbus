@@ -185,6 +185,48 @@ interruption. The staged-apply test reopens the database and replays a prefix
 of nested replacements/deletions, preserving untouched inode identities and
 content keys.
 
+## Host-owned shared directories
+
+Ordinary setgid, default ACLs, chmod and rename keep POSIX behavior. A trusted
+host can opt an existing kernel-owned, setgid directory with a group-rwx
+default ACL into owner/group-coupled permissions:
+
+```ts
+const revoke = workspace.vfs.registerSharedDirectory('/shared');
+// Call revoke() when the host no longer delegates this policy.
+```
+
+Only strict descendants are covered. Creation, chmod and native tree adoption
+mirror owner rwx into the registered group; directories retain setgid. Within
+this explicit domain `chmod 755` means `2775` on a directory, and `chmod 600`
+means `660` on a file. Outside it, confined owners can narrow to `700`/`600` without
+granting group or other access. Group membership never permits chmod of
+another owner's inode; other-bit widening, setuid and sticky-bit removal keep
+their existing checks. A nonkernel rename cannot re-share a foreign-owned
+entry whose metadata would change. Symlink targets outside the domain stay
+outside it. File descriptors use the current linked inode without repeating
+parent search; detached descriptors receive no sharing grant.
+Membership includes the credential's primary gid or any supplementary group.
+
+The registration belongs to this engine instance, not a snapshot or exported
+row. Re-register after reopening. Duplicate or overlapping registrations fail
+with EBUSY. Moving, replacing or deleting the root, reducing its permissions
+or default ACL, changing its owner/group, rotating the filesystem incarnation,
+or restoring/importing a scope covering it revokes the grant permanently.
+An authorized root publication that fails may also revoke it; rollback does
+not restore authority. Failed guest permission/lease checks do not revoke it.
+The returned disposer cannot revoke a later registration at the same path.
+
+Registration does not rewrite existing descendants. Subsequent descendant
+restore/import/copy operations apply the current destination policy while
+preserving content references and the existing bounded publication contract.
+Replay checks compare policy-normalized metadata; changing or revoking the
+policy during an import can refuse replay rather than reinterpret earlier
+rows. Revocation stops future delegation, not permissions already committed.
+No guest RPC or setfacl option exposes this administrator API, and no host or
+application is opted in automatically.
+
+
 ## Inode identities in row imports
 
 Export rows carry `ino`; each page carries the source allocator's exclusive
