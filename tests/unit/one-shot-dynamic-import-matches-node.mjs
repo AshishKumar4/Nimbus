@@ -35,6 +35,8 @@ const files = {
   'app/package.json': JSON.stringify({ name: 'app', imports: { '#int': { import: './esm.mjs', default: './c.cjs' } } }),
   'app/esm.mjs': 'export const kind = "esm";\nexport default "esm-default";\n',
   'app/c.cjs': 'exports.a = 1;\nexports.b = 2;\n',
+  'app/load.cjs': 'exports.load = () => import("./esm.mjs");\n',
+  'app/counted.mjs': 'globalThis.__nimbusCountedImport = (globalThis.__nimbusCountedImport || 0) + 1; export const count = globalThis.__nimbusCountedImport;\n',
   'app/data.json': '{"k":1}\n',
   'app/dir/index.js': 'module.exports = "idx";\n',
   'app/rel.js': 'module.exports = "rel";\n',
@@ -64,6 +66,7 @@ const attempt = async (label, load) => {
     await attempt('file url with query', () => import('file://${ROOT}/app/esm.mjs?v=1')),
     await attempt('relative esm', () => import('./esm.mjs')),
     await attempt('commonjs namespace', () => import('./c.cjs')),
+    await attempt('dynamic import inside required cjs', () => require('./load.cjs').load()),
     await attempt('directory', () => import('./dir')),
     await attempt('no extension', () => import('./rel')),
     await attempt('missing', () => import('./nope.js')),
@@ -74,6 +77,8 @@ const attempt = async (label, load) => {
     await attempt('no package', () => import('nopkg')),
     await attempt('json needs its attribute', () => import('./data.json')),
     await attempt('json', () => import('./data.json', { with: { type: 'json' } })),
+    await attempt('json data needs its attribute', () => import('data:application/json,%7B%22x%22%3A1%7D')),
+    await attempt('json data', () => import('data:application/json,%7B%22x%22%3A1%7D', { with: { type: 'json' } })),
     await attempt('unknown builtin', () => import('node:nope')),
     await attempt('bad options', () => import('./rel.js', 1)),
   ];
@@ -81,6 +86,11 @@ const attempt = async (label, load) => {
   out.push(['the loaded module runs', sdk.run()]);
   const http = await import('node:http');
   out.push(['builtin is the process\\'s own', http.default === require('http')]);
+  const one = await import('./counted.mjs?v=one');
+  const repeated = await import('./counted.mjs?v=one');
+  const two = await import('./counted.mjs?v=two');
+  const fragment = await import('./counted.mjs#fragment');
+  out.push(['ESM evaluation uses complete URL', [one.count, repeated.count, two.count, fragment.count]]);
   console.log(JSON.stringify(out));
 })();
 `;
@@ -163,7 +173,7 @@ for (const [rel, text] of Object.entries(files)) {
 kfs.writeFile(`${ROOT.slice(1)}/app/script.js`, SCRIPT);
 
 const real = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
-const result = await manager.exec(SCRIPT, { filename: `${ROOT}/app/script.js`, cwd: `${ROOT}/app`, captureOutput: true });
+const result = await manager.exec(SCRIPT, { filename: `${ROOT}/app/script.js`, dirname: `${ROOT}/app`, cwd: `${ROOT}/app`, captureOutput: true });
 globalThis.console = real.console;
 globalThis.process = real.process;
 globalThis.Buffer = real.Buffer;

@@ -3464,8 +3464,8 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
  * Mutates `bundle` in place. A module esbuild rejects becomes a diagnostic
  * shim that throws the reason when required (`esbuildDiagnosticShim`).
  *
- * Candidate set is `isBundleModuleCandidate`; within it, files with no
- * top-level import/export are already CJS-shaped and left alone.
+ * ESM/TypeScript candidates are `isBundleModuleCandidate`. CommonJS cells,
+ * including .cjs, also visit the rewrite-only path for dynamic import().
  *
  * A JavaScript cell is rewritten in place. A TypeScript source keeps its
  * bytes and gets a compiled cell beside it — see `compiledCellKey`.
@@ -3487,12 +3487,14 @@ async function transformEsmInBundle(
   const candidates: string[] = [];
   for (const path of Object.keys(bundle)) {
     if (compiledCellPath(path) !== null) continue;
-    if (!isBundleModuleCandidate(path)) continue;
+    if (!isBundleModuleCandidate(path) && !path.endsWith('.cjs')) continue;
     const src = bundle[path];
     // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
     // esbuild.transform expect strings.
     if (typeof src !== 'string') continue;
-    if (bundleTypescriptLoader(path) === null && !looksLikeEsm(path, src) && !mayHaveDynamicImport(src)) continue;
+    if (path.endsWith('.cjs')) {
+      if (!mayHaveDynamicImport(src)) continue;
+    } else if (bundleTypescriptLoader(path) === null && !looksLikeEsm(path, src) && !mayHaveDynamicImport(src)) continue;
     candidates.push(path);
   }
   interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
@@ -3579,7 +3581,7 @@ async function transformEsmInBundle(
       continue;
     }
     // CommonJS already: only its dynamic import() calls change.
-    const cell = loader === null && !looksLikeEsm(path, src) ? cellFor(src, true) : cellFor(src);
+    const cell = path.endsWith('.cjs') || (loader === null && !looksLikeEsm(path, src)) ? cellFor(src, true) : cellFor(src);
     if (cell.request.options?.rewriteOnly !== true && loader === null && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
       // The bounded rewrite is computation in this isolate, however large.
       if (pacer) await pacer.spend(src.length);

@@ -330,6 +330,12 @@ kernel credential, because Nimbus follows POSIX here:
 
 ### node
 
+- Dynamic imports inside required `.cjs` files use the process loader too.
+  JSON `data:` URLs require the JSON import attribute and load when it is
+  supplied. ESM source lookup uses the file path, while evaluation caching
+  uses the complete URL: distinct queries/fragments evaluate separately,
+  and importing the same URL again reuses its evaluation.
+
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry
   that holds none of the session's files: `import('/usr/local/lib/

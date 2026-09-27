@@ -8747,12 +8747,12 @@ function __makeLoadingExports(mod) {
  * Load and execute a JS/JSON module from VFS.
  * Returns the module.exports value.
  */
-function __loadModule(resolvedPath) {
+function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
-  if (__moduleCache.has(resolvedPath)) return __moduleCache.get(resolvedPath);
+  if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
   const mod = { exports: {} };
-  __moduleCache.set(resolvedPath, __makeLoadingExports(mod));
+  __moduleCache.set(evaluationKey, __makeLoadingExports(mod));
 
   const code = __readFileOr(resolvedPath, null);
   if (code === null) throw new Error("Cannot read module: " + resolvedPath);
@@ -8760,7 +8760,7 @@ function __loadModule(resolvedPath) {
   // JSON
   if (resolvedPath.endsWith(".json")) {
     mod.exports = JSON.parse(code);
-    __moduleCache.set(resolvedPath, mod.exports);
+    __moduleCache.set(evaluationKey, mod.exports);
     return mod.exports;
   }
 
@@ -8828,7 +8828,7 @@ function __loadModule(resolvedPath) {
       }
     }
   } catch (e) {
-    __moduleCache.delete(resolvedPath);
+    __moduleCache.delete(evaluationKey);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
       try {
         Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
@@ -8848,7 +8848,7 @@ function __loadModule(resolvedPath) {
   }
 
   // Update cache with final exports (module.exports may have been reassigned)
-  __moduleCache.set(resolvedPath, mod.exports);
+  __moduleCache.set(evaluationKey, mod.exports);
   return mod.exports;
 }
 
@@ -8983,9 +8983,11 @@ function __esmLoad(resolution) {
     ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
-    const exports = __loadModule(key);
     const esm = resolution.format === "module"
       || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+    // Source/precompiled code is shared by pathname. ESM evaluation is not:
+    // each resolved URL (query and fragment included) is a separate module.
+    const exports = __loadModule(key, esm ? resolution.url : key);
     if (resolution.format === "json") {
       ns = __esmNamespaceOf(["default"], () => exports);
     } else if (esm) {

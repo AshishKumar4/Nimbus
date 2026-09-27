@@ -606,7 +606,9 @@ export function createEsmResolver(host: EsmResolverHost): EsmResolver {
         }
       }
       const type = attributes.type;
-      if (format === 'json') {
+      // Keep the data-URL loading route, but validate its media type like
+      // the equivalent file format. application/json still requires type.
+      if (format === 'json' || (format === 'data' && /^data:application\/json(?:;[^,]*)?,/.test(url))) {
         if (type === 'json') return;
         if (!('type' in attributes)) {
           throw codedError(TypeError, 'ERR_IMPORT_ATTRIBUTE_MISSING', `Module "${url}" needs an import attribute of "type: json"`);
