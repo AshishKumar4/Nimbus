@@ -708,7 +708,6 @@ const WORKSPACE_TABLES = [
   'vfs_append_module_state_v2',
   'vfs_append_pid_revocations_v2',
   'vfs_append_acked_gaps_v2',
-  'vfs_delivery_receipts',
   'vfs_state',
   'vfs_inodes',
   'vfs_chunks',

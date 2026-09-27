@@ -7,9 +7,11 @@
 // lost." with `retryable: true` — pip's `fsWrite` of a wheel member
 // (werkzeug/sansio/utils.py, OSError errno 29) and an 8 MiB FileHandle loop
 // (EIO at 4,390,912). The dropped call may or may not have run, so a blind
-// repeat could apply it twice or clobber a newer write. Every attempt now
-// carries one delivery id and the session applies an id at most once,
-// answering a repeat from a receipt committed with the mutation.
+// repeat could apply it twice or clobber a newer write. On a binding that
+// names its host instance (`hostIncarnation`), every attempt carries one
+// delivery id under the `deliverOnce` op, and that instance applies an id at
+// most once, answering a repeat from the receipt it kept in memory. Any
+// other instance, and any host that predates delivery, refuses outright.
 //
 // Real code on both sides: SupervisorRPC, the session's supervisor-op
 // handler, ProcessFiles and SqliteVFS over SQLite. Only the platform's stub
@@ -20,9 +22,16 @@ import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import * as coreConstants from '../../packages/core/src/constants.ts';
-import { _rpcFsWriteRange } from '../../packages/worker/src/session/rpc.ts';
+import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
+import {
+  SupervisorDeliveries,
+  openSupervisorDeliveries,
+  supervisorDeliveryProps,
+} from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
@@ -41,16 +50,22 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const dropped = () => Object.assign(new Error('Network connection lost.'), { retryable: true });
+const sqlWrites = (statements) => statements.filter((statement) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(statement.sql));
 
-/** A session Durable Object instance over `harness`'s SQLite: a fresh one is a restart. */
-function openSession(harness) {
+/**
+ * One session Durable Object instance over `harness`'s SQLite: a fresh one is
+ * a restart. `deliveries: false` is a host that applies nothing once — what
+ * a session that predates delivery answers.
+ */
+function openSession(harness, { deliveries = true } = {}) {
+  const ctx = {};
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const processes = new SessionProcessSupervisor();
+  const files = new ProcessFiles(vfs);
   const host = { sqliteFs: vfs, processes, ensureSqliteFs() {} };
-  // The routed op the session serves from its own _rpc* surface, as NimbusSession does.
-  host._rpcFsWriteRange = (path, offset, bytes, pid) => _rpcFsWriteRange(host, path, offset, bytes, pid);
-  attachSupervisorOps(host);
-  return { host, vfs, processes };
+  if (deliveries) host.supervisorDeliveries = openSupervisorDeliveries(ctx);
+  attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem: files })));
+  return { ctx, host, vfs, processes, files };
 }
 
 /**
@@ -71,7 +86,6 @@ function world() {
     session: openSession(harness),
     faults: [],
     arrivals: [],
-    stubs: new Set(),
   };
   w.env = {
     NIMBUS_SESSION: {
@@ -82,8 +96,14 @@ function world() {
           async supervisorOp(sent) {
             const envelope = structuredClone(sent);
             const fault = w.faults.shift();
-            w.arrivals.push({ op: envelope.op, pid: envelope.pid, delivery: envelope.delivery, stub });
-            w.stubs.add(stub);
+            w.arrivals.push({
+              op: envelope.delivery?.op ?? envelope.op,
+              wire: envelope.op,
+              pid: envelope.pid,
+              id: envelope.delivery?.id,
+              envelope,
+              stub,
+            });
             if (fault?.kind === 'lost-request') throw fault.error ?? dropped();
             const answer = await w.session.host.supervisorOp(envelope);
             if (fault?.kind === 'lost-reply') {
@@ -97,26 +117,28 @@ function world() {
       },
     },
   };
-  /** A process in the current session instance and the SUPERVISOR binding it holds. */
+  /** A process of the current session instance and the SUPERVISOR binding that instance mints for it. */
   w.process = () => {
     const pid = w.session.processes.spawn('python3', ['python3'], '/home/user').pid;
-    return { pid, rpc: new SupervisorRPC({ props: { doId: 'session', pid } }, w.env) };
+    const hostIncarnation = supervisorDeliveryProps(w.session.ctx).hostIncarnation;
+    return { pid, rpc: new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation } }, w.env) };
   };
-  w.read = (path) => {
-    const bytes = w.session.vfs.as(CRED_KERNEL).readFile(path);
-    return typeof bytes === 'string' ? bytes : dec.decode(bytes);
-  };
+  w.read = (path) => dec.decode(w.session.vfs.as(CRED_KERNEL).readFile(path));
+  w.exists = (path) => w.session.vfs.as(CRED_KERNEL).exists(path);
   w.revision = (path) => w.session.vfs.revision(path);
   w.of = (pid) => w.arrivals.filter((arrival) => arrival.pid === pid);
   return w;
 }
 
-/** Every attempt of one call carried the same delivery id, each on its own stub. */
+/** Every attempt of one call carried the same delivery id under `deliverOnce`, each on its own stub. */
 function assertOneDelivery(arrivals, op, attempts) {
   assert.equal(arrivals.length, attempts, `${op}: ${arrivals.length} arrivals, expected ${attempts}`);
-  for (const arrival of arrivals) assert.equal(arrival.op, op);
-  assert.match(arrivals[0].delivery ?? '', UUID, `${op}: the call carried no delivery id`);
-  assert.equal(new Set(arrivals.map((arrival) => arrival.delivery)).size, 1, `${op}: a repeat carried a new delivery id`);
+  for (const arrival of arrivals) {
+    assert.equal(arrival.op, op);
+    assert.equal(arrival.wire, 'deliverOnce', `${op}: travelled as '${arrival.wire}', which a host that predates delivery would apply`);
+  }
+  assert.match(arrivals[0].id ?? '', UUID, `${op}: the call carried no delivery id`);
+  assert.equal(new Set(arrivals.map((arrival) => arrival.id)).size, 1, `${op}: a repeat carried a new delivery id`);
   assert.equal(new Set(arrivals.map((arrival) => arrival.stub)).size, attempts, `${op}: a repeat reused a stub that threw`);
 }
 
@@ -130,6 +152,8 @@ function assertOneDelivery(arrivals, op, attempts) {
   assert.equal(w.read('home/user/lost-request.txt'), 'hello', 'a write dropped before it ran never applied');
   assert.equal(revision, w.revision('home/user/lost-request.txt'), 'the answer is the revision the write produced');
   assertOneDelivery(w.of(pid), 'writeFile', 2);
+  await rpc.writeFile('/home/user/lost-request.txt', 'again');
+  assert.notEqual(w.of(pid)[2].id, w.of(pid)[0].id, 'a second mutation reused the first one\'s delivery id');
   console.log('  ok  writeFile dropped before the session ran it applies on the repeat');
 }
 
@@ -171,7 +195,7 @@ function assertOneDelivery(arrivals, op, attempts) {
   console.log('  ok  fsWrite at the file position whose reply was lost advances the position once');
 }
 
-// ── fsWriteRange: a routed mutation, with its revision receipt ───────────
+// ── fsWriteRange: the FileHandle loop's write, with its revision receipt ─
 
 {
   const w = world();
@@ -232,31 +256,77 @@ function assertOneDelivery(arrivals, op, attempts) {
   console.log('  ok  rename whose reply was lost moves once; a new file at the old name stays');
 }
 
-// ── The session restarts between attempts ────────────────────────────────
+// ── Another instance, or a host that predates delivery ───────────────────
 
 {
+  // The session restarts between attempts. Its receipts died with it, so the
+  // new instance cannot tell whether the write ran: it refuses the repeat —
+  // permanently, since the process it came from died with that instance too.
   const w = world();
   const { pid, rpc } = w.process();
   let restarted;
   w.faults.push({
     kind: 'lost-reply',
     between: async () => {
-      // The instance that ran it is gone; a fresh one opens the same SQLite.
       w.session = openSession(w.harness);
-      // The writer's pid, registered again in the fresh process table.
-      w.session.processes.spawn('python3', ['python3'], '/home/user');
+      // The writer's pid, registered again in the fresh process table: what
+      // refuses the repeat is the instance, not a missing process.
+      assert.equal(w.session.processes.spawn('python3', ['python3'], '/home/user').pid, pid);
       const other = w.process();
-      assert.notEqual(other.pid, pid);
       await other.rpc.writeFile('/home/user/restart.txt', 'after restart');
       restarted = w.revision('home/user/restart.txt');
     },
   });
-  const revision = await rpc.writeFile('/home/user/restart.txt', 'before restart');
-  assert.equal(w.read('home/user/restart.txt'), 'after restart', 'the new instance applied the repeat again');
+  await assert.rejects(rpc.writeFile('/home/user/restart.txt', 'before restart'), /ESTALE/);
+  assert.equal(w.read('home/user/restart.txt'), 'after restart', 'the new instance applied the repeat');
   assert.equal(w.revision('home/user/restart.txt'), restarted);
-  assert.ok(revision < restarted, 'the answer is the write that ran before the restart');
   assertOneDelivery(w.of(pid), 'writeFile', 2);
-  console.log('  ok  a receipt committed with the mutation answers the repeat after a restart');
+  console.log("  ok  a repeat that reaches a restarted instance is refused, never applied again");
+}
+
+{
+  // The reviewer's aliasing case: an open whose reply was lost across a
+  // restart, and a concurrent open through the same binding. Descriptor
+  // numbering starts again in the new instance; a replayed descriptor from
+  // the old one would name the new file.
+  const w = world();
+  const { pid, rpc } = w.process();
+  let concurrent;
+  w.faults.push({
+    kind: 'lost-reply',
+    between: async () => {
+      w.session = openSession(w.harness);
+      assert.equal(w.session.processes.spawn('python3', ['python3'], '/home/user').pid, pid);
+      concurrent = await rpc.fsOpen('/home/user/b.txt', { write: true, create: true }).catch((error) => error);
+    },
+  });
+  await assert.rejects(rpc.fsOpen('/home/user/a.txt', { write: true, create: true }), /ESTALE/);
+  assert.match(String(concurrent), /ESTALE/, 'a binding of the dead instance opened a descriptor in the new one');
+  assert.equal(w.exists('home/user/b.txt'), false, 'the new instance served the dead instance\'s binding');
+  console.log('  ok  a dead instance\'s binding is refused by its successor: no descriptor aliases');
+}
+
+{
+  // A host that predates delivery, or applies nothing once, serves no
+  // `deliverOnce`: its refusal is permanent, so the mutation is neither
+  // applied nor repeated — the deploy- and rollback-boundary case where an
+  // old session applied a write, recorded nothing, and a repeat applied it
+  // again.
+  const w = world();
+  w.session = openSession(w.harness, { deliveries: false });
+  const pid = w.session.processes.spawn('python3', ['python3'], '/home/user').pid;
+  const handle = await w.session.host.supervisorOp({ op: 'fsOpen', args: ['/home/user/wheel.py', { write: true, create: true }], pid });
+  const rpc = new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation: crypto.randomUUID() } }, w.env);
+  w.faults.push({ kind: 'lost-reply' });
+  await assert.rejects(rpc.fsWrite(handle.id, null, enc.encode('member.')), /supervisor op: 'deliverOnce' is not served by this host/);
+  assert.equal(w.of(pid).length, 1, 'a refused delivery was repeated');
+  assert.equal(w.read('home/user/wheel.py'), '', 'a host that could not dedupe it applied the write');
+  // And a binding such a host mints — none names an incarnation — sends plainly.
+  const plain = new SupervisorRPC({ props: { doId: 'session', pid } }, w.env);
+  assert.equal(await plain.fsWrite(handle.id, null, enc.encode('member.')), 7);
+  assert.equal(w.of(pid).at(-1).wire, 'fsWrite');
+  assert.equal(w.read('home/user/wheel.py'), 'member.');
+  console.log('  ok  a host without delivery refuses deliverOnce permanently; its own bindings send plainly');
 }
 
 // ── What is not retried, and exhaustion ──────────────────────────────────
@@ -277,7 +347,7 @@ function assertOneDelivery(arrivals, op, attempts) {
   // The filesystem's own answer is an answer, and is not a drop.
   await assert.rejects(rpc.mkdir('/home/user/missing/child', { recursive: false }), /ENOENT/);
   assert.equal(w.of(pid).length, 3);
-  assert.equal(w.session.vfs.as(CRED_KERNEL).exists('home/user/permanent.txt'), false, 'a refused write applied');
+  assert.equal(w.exists('home/user/permanent.txt'), false, 'a refused write applied');
   console.log('  ok  permanent, overloaded and errno failures surface after one attempt');
 }
 
@@ -287,7 +357,7 @@ function assertOneDelivery(arrivals, op, attempts) {
   w.faults.push({ kind: 'lost-request' }, { kind: 'lost-request' }, { kind: 'lost-request' });
   await assert.rejects(rpc.writeFile('/home/user/never.txt', 'x'), /Network connection lost/);
   assertOneDelivery(w.of(pid), 'writeFile', 3);
-  assert.equal(w.session.vfs.as(CRED_KERNEL).exists('home/user/never.txt'), false);
+  assert.equal(w.exists('home/user/never.txt'), false);
   assert.equal(w.faults.length, 0);
 
   // Every reply lost: the write ran once, and the caller is still told it failed.
@@ -296,7 +366,7 @@ function assertOneDelivery(arrivals, op, attempts) {
   const unanswered = w.revision('home/user/unanswered.txt');
   assert.equal(w.read('home/user/unanswered.txt'), 'once');
   assert.equal(w.of(pid).length, 6);
-  assert.equal(new Set(w.of(pid).slice(3).map((arrival) => arrival.delivery)).size, 1);
+  assert.equal(new Set(w.of(pid).slice(3).map((arrival) => arrival.id)).size, 1);
   assert.equal(w.revision(), unanswered, 'a repeat of a write that ran applied it again');
   console.log('  ok  exhaustion surfaces the drop, never a silent success, and applied at most once');
 }
@@ -306,86 +376,192 @@ function assertOneDelivery(arrivals, op, attempts) {
 {
   const w = world();
   const { pid } = w.process();
-  const handle = await w.session.host.supervisorOp({ op: 'fsOpen', args: ['/home/user/r.txt', { write: true, create: true }], pid });
+  const { host } = w.session;
+  const hostIncarnation = supervisorDeliveryProps(w.session.ctx).hostIncarnation;
+  const deliver = (op, args, extra = {}) => host.supervisorOp({
+    op: 'deliverOnce', args, pid, delivery: { op, id: crypto.randomUUID(), hostIncarnation }, ...extra,
+  });
+  const handle = await host.supervisorOp({ op: 'fsOpen', args: ['/home/user/r.txt', { write: true, create: true }], pid });
+  await assert.rejects(deliver('fsRead', [handle.id, 0, 4]), /names no mutation it can deliver once/);
   await assert.rejects(
-    w.session.host.supervisorOp({ op: 'fsRead', args: [handle.id, 0, 4], pid, delivery: crypto.randomUUID() }),
-    /not delivered once/,
+    host.supervisorOp({ op: 'writeFile', args: ['/home/user/r.txt', 'x'], pid, delivery: { op: 'writeFile', id: crypto.randomUUID(), hostIncarnation } }),
+    /cannot carry a delivery/,
   );
   await assert.rejects(
-    w.session.host.supervisorOp({ op: 'writeFile', args: ['/home/user/r.txt', 'x'], pid, delivery: 'not-a-uuid' }),
-    /invalid delivery id/,
+    host.supervisorOp({ op: 'deliverOnce', args: ['/home/user/r.txt', 'x'], pid, delivery: { op: 'writeFile', id: 'not-a-uuid', hostIncarnation } }),
+    /names no mutation it can deliver once/,
+  );
+  await assert.rejects(deliver('writeFile', ['/home/user/r.txt', 'x'], { pid: undefined }), /names no process/);
+  await assert.rejects(
+    host.supervisorOp({ op: 'deliverOnce', args: ['/home/user/r.txt', 'x'], pid, delivery: { op: 'writeFile', id: crypto.randomUUID(), hostIncarnation: crypto.randomUUID() } }),
+    /ESTALE/,
   );
   // One id is one mutation: a different op under it is refused, not applied.
-  const delivery = crypto.randomUUID();
-  await w.session.host.supervisorOp({ op: 'mkdir', args: ['/home/user/once', { recursive: false }], pid, delivery });
+  const id = crypto.randomUUID();
+  await host.supervisorOp({ op: 'deliverOnce', args: ['/home/user/once', { recursive: false }], pid, delivery: { op: 'mkdir', id, hostIncarnation } });
   await assert.rejects(
-    w.session.host.supervisorOp({ op: 'unlink', args: ['/home/user/r.txt'], pid, delivery }),
+    host.supervisorOp({ op: 'deliverOnce', args: ['/home/user/r.txt'], pid, delivery: { op: 'unlink', id, hostIncarnation } }),
     /EINVAL/,
   );
-  assert.equal(w.session.vfs.as(CRED_KERNEL).exists('home/user/r.txt'), true);
-  console.log('  ok  a delivery id rides only a delivered mutation, and names only one');
+  assert.equal(w.exists('home/user/r.txt'), true);
+  console.log('  ok  deliverOnce carries only a delivered mutation of this instance, and an id names only one');
 }
 
 {
-  // A mutation still running when a repeat arrives: the repeat joins it. The
-  // same pending receipt found by a fresh instance has no runner, and its
-  // outcome is unknown: EIO, never a second application.
-  const harness = createSqliteVfsTestHarness();
-  const first = new SqliteVFS(harness.sql, harness.ctx);
-  const delivery = crypto.randomUUID();
+  // Identity before receipt: a receipt answers only for the live process it
+  // was recorded for. A cred riding the pid, and a process released since,
+  // are refused although the receipt is still held.
+  const w = world();
+  const { pid } = w.process();
+  const { host } = w.session;
+  const envelope = {
+    op: 'deliverOnce',
+    args: ['/home/user/id.txt', 'mine'],
+    pid,
+    delivery: { op: 'writeFile', id: crypto.randomUUID(), hostIncarnation: supervisorDeliveryProps(w.session.ctx).hostIncarnation },
+  };
+  const revision = await host.supervisorOp(envelope);
+  assert.equal(await host.supervisorOp(envelope), revision, 'a repeat was not answered from its receipt');
+  await assert.rejects(host.supervisorOp({ ...envelope, cred: CRED_KERNEL }), /cred cannot ride a pid/);
+  await w.session.files.releaseProcess(pid);
+  await assert.rejects(host.supervisorOp(envelope), /ESTALE: process released/);
+  await assert.rejects(host.supervisorOp({ ...envelope, pid: pid + 1000 }), /does not exist/);
+  assert.equal(w.read('home/user/id.txt'), 'mine');
+  console.log('  ok  identity is checked before a receipt answers: a released or foreign pid is refused');
+}
+
+{
+  // What a delivery costs: nothing in storage. The same sequence — a write,
+  // a read-only open, seek and close, another write — issues exactly the same
+  // SQL delivered as plain, and the open, seek and close write none.
+  const run = async (delivered) => {
+    const w = world();
+    const { pid } = w.process();
+    const { host } = w.session;
+    const hostIncarnation = supervisorDeliveryProps(w.session.ctx).hostIncarnation;
+    const send = (op, args) => host.supervisorOp(delivered
+      ? { op: 'deliverOnce', args, pid, delivery: { op, id: crypto.randomUUID(), hostIncarnation } }
+      : { op, args, pid });
+    const from = w.harness.statements.length;
+    await send('writeFile', ['/home/user/mod.py', 'print(1)']);
+    const opened = w.harness.statements.length;
+    const handle = await send('fsOpen', ['/home/user/mod.py', { read: true }]);
+    await send('fsSeek', [handle.id, 0, 'set']);
+    await send('fsClose', [handle.id]);
+    const closed = w.harness.statements.length;
+    await send('writeFile', ['/home/user/next.py', 'x'.repeat(100)]);
+    const statements = w.harness.statements;
+    return {
+      sql: statements.slice(from).map((statement) => statement.sql),
+      readOnlyWrites: sqlWrites(statements.slice(opened, closed)),
+    };
+  };
+  const plain = await run(false);
+  const delivered = await run(true);
+  assert.deepEqual(delivered.readOnlyWrites, [], 'a delivered read-only open, seek and close wrote SQL');
+  assert.deepEqual(plain.readOnlyWrites, []);
+  assert.deepEqual(delivered.sql, plain.sql, 'a delivery changed what the session asked of SQLite');
+  console.log(`  ok  a delivery writes nothing to storage (open/seek/close: 0 writes; ${plain.sql.length} statements either way)`);
+}
+
+// ── The receipt store ─────────────────────────────────────────────────────
+
+{
+  // A mutation still running when a repeat arrives: the repeat joins it and
+  // gets the same answer. One that failed answers its repeat with the same
+  // failure — it is never applied a second time. Receipts are per process.
+  const store = new SupervisorDeliveries();
+  const id = crypto.randomUUID();
   const running = Promise.withResolvers();
   let applied = 0;
-  const answer = first.deliverOnce(7, delivery, 'fsCopyTree', () => { applied++; return running.promise; });
-  const repeat = first.deliverOnce(7, delivery, 'fsCopyTree', () => { applied++; return 0; });
-  const restarted = new SqliteVFS(harness.sql, harness.ctx);
-  assert.throws(
-    () => restarted.deliverOnce(7, delivery, 'fsCopyTree', () => { applied++; return 0; }),
-    (error) => error.code === 'EIO',
-  );
+  const answer = store.deliver(7, id, 'fsCopyTree', () => { applied++; return running.promise; });
+  const repeat = store.deliver(7, id, 'fsCopyTree', () => { applied++; return 0; });
   running.resolve(12);
   assert.equal(await answer, 12);
   assert.equal(await repeat, 12, 'the repeat did not join the running mutation');
-  assert.equal(first.deliverOnce(7, delivery, 'fsCopyTree', () => { applied++; return 0; }), 12);
+  assert.equal(store.deliver(7, id, 'fsCopyTree', () => { applied++; return 0; }), 12);
   assert.equal(applied, 1);
 
-  // A mutation that fails leaves nothing behind: it did not apply, so a
-  // repeat is asked again.
-  const failing = crypto.randomUUID();
-  await assert.rejects(first.deliverOnce(7, failing, 'fsCopyTree', () => Promise.reject(new Error('ENOSPC: full'))), /ENOSPC/);
-  assert.equal(first.deliverOnce(7, failing, 'fsCopyTree', () => 3), 3);
-  // Receipts are per process: another pid's id is its own.
-  assert.equal(first.deliverOnce(8, delivery, 'fsCopyTree', () => 5), 5);
-  console.log('  ok  a running delivery is joined; one orphaned by a restart is EIO');
+  for (const fail of [() => Promise.reject(new Error('ENOSPC: full')), () => { throw new Error('ENOSPC: full'); }]) {
+    const failing = crypto.randomUUID();
+    let tries = 0;
+    const attempt = () => { tries++; return fail(); };
+    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt), /ENOSPC/);
+    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt), /ENOSPC/);
+    assert.equal(tries, 1, 'a repeat of a failed mutation applied it again');
+  }
+  assert.equal(store.deliver(8, id, 'fsCopyTree', () => 5), 5, 'another pid\'s id was answered from this one\'s receipt');
+  assert.notEqual(new SupervisorDeliveries().incarnation, store.incarnation);
+  assert.equal(store.incarnation, store.incarnation);
+
+  // A repeat is answered with the very value the first delivery answered.
+  const handle = { id: 3, path: 'home/user/f', flags: { write: true }, position: 0, closed: false };
+  const opened = crypto.randomUUID();
+  assert.equal(store.deliver(9, opened, 'fsOpen', () => handle), handle);
+  assert.equal(store.deliver(9, opened, 'fsOpen', () => ({ ...handle, id: 4 })), handle);
+  console.log('  ok  a running delivery is joined; a failure answers its repeat; receipts are per process');
 }
 
 {
-  // Retention: a receipt answers for the whole retention and is pruned after
-  // it, two for each receipt recorded, so the table never outgrows the rate
-  // of mutation times the retention.
-  const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  // The reviewer's atomicity case: a durable receipt INSERT that failed after
+  // the write applied told the caller it failed, and the repeat wrote again
+  // (AB → ABAB). Now nothing but the mutation touches storage, and its
+  // outcome is what the repeat meets: a write the storage refused is refused
+  // again, never half-recorded.
+  const w = world();
+  const { pid } = w.process();
+  const { host } = w.session;
+  const handle = await host.supervisorOp({ op: 'fsOpen', args: ['/home/user/w.txt', { write: true, create: true }], pid });
+  const envelope = {
+    op: 'deliverOnce',
+    args: [handle.id, null, enc.encode('AB')],
+    pid,
+    delivery: { op: 'fsWrite', id: crypto.randomUUID(), hostIncarnation: supervisorDeliveryProps(w.session.ctx).hostIncarnation },
+  };
+  w.harness.setFaultInjector((statement) => /^\s*(INSERT|UPDATE|DELETE)/i.test(statement.sql) ? new Error('SQLITE_FULL: database or disk is full') : null);
+  await assert.rejects(host.supervisorOp(envelope), /SQLITE_FULL/);
+  w.harness.clearFault();
+  await assert.rejects(host.supervisorOp(envelope), /SQLITE_FULL/, 'the repeat of a refused write was applied');
+  assert.equal(w.read('home/user/w.txt'), '', 'a refused write left bytes behind');
+  const written = await host.supervisorOp({ ...envelope, delivery: { ...envelope.delivery, id: crypto.randomUUID() } });
+  assert.equal(written, 2);
+  assert.equal(await host.supervisorOp({ ...envelope, delivery: { ...envelope.delivery, id: crypto.randomUUID() } }), 2);
+  assert.equal(w.read('home/user/w.txt'), 'ABAB', 'two distinct writes at the file position');
+  console.log('  ok  a delivered write the storage refuses is refused again on its repeat, and leaves nothing');
+}
+
+{
+  // Retention: a receipt answers for at least the retention after it was
+  // recorded, and is gone by twice that; a process's exit drops its own.
+  const R = coreConstants.VFS_DELIVERY_RECEIPT_RETENTION_MS;
+  assert.equal(R, 3 * coreConstants.VFS_DELIVERY_RETRY_WINDOW_MS);
   const realNow = Date.now;
   let now = 1_800_000_000_000;
   Date.now = () => now;
   try {
-    const old = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-    for (const id of old) vfs.deliverOnce(9, id, 'mkdir', () => undefined);
-    now += coreConstants.VFS_DELIVERY_RECEIPT_RETENTION_MS;
+    const store = new SupervisorDeliveries();
     let applied = 0;
-    assert.equal(vfs.deliverOnce(9, old[0], 'mkdir', () => { applied++; }), undefined);
-    assert.equal(applied, 0, 'a receipt inside its retention did not answer');
-    const count = () => Number(harness.sql.exec('SELECT COUNT(*) AS n FROM vfs_delivery_receipts')[0].n);
-    vfs.deliverOnce(9, crypto.randomUUID(), 'mkdir', () => undefined);
-    assert.equal(count(), 4, 'a receipt exactly at its retention was pruned');
-    now += 1;
-    vfs.deliverOnce(9, crypto.randomUUID(), 'mkdir', () => undefined);
-    assert.equal(count(), 3, 'recording a receipt did not prune two expired ones');
-    vfs.deliverOnce(9, crypto.randomUUID(), 'mkdir', () => undefined);
-    assert.equal(count(), 3, 'the third expired receipt was not pruned by the next record');
+    const apply = () => { applied++; };
+    const id = crypto.randomUUID();
+    store.deliver(9, id, 'mkdir', apply);
+    for (const at of [R - 1, R, 2 * R - 1]) {
+      now = 1_800_000_000_000 + at;
+      store.deliver(9, id, 'mkdir', apply);
+      assert.equal(applied, 1, `a receipt ${at} ms old did not answer`);
+    }
+    now = 1_800_000_000_000 + 2 * R;
+    store.deliver(9, id, 'mkdir', apply);
+    assert.equal(applied, 2, 'a receipt twice the retention old was still held');
+
+    const kept = crypto.randomUUID();
+    store.deliver(4, kept, 'mkdir', apply);
+    store.forget(4);
+    store.deliver(4, kept, 'mkdir', apply);
+    assert.equal(applied, 4, 'a forgotten process\'s receipt answered');
   } finally {
     Date.now = realNow;
   }
-  console.log('  ok  receipts answer for their retention and are pruned after it');
+  console.log('  ok  receipts answer for their retention, are dropped by twice it, and go with their process');
 }
 
 console.log('supervisor-rpc-write-delivery: ok');

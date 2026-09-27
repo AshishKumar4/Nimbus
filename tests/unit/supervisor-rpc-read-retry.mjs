@@ -7,8 +7,8 @@
 // lost." and `retryable: true` while the session itself is fine, and when it
 // was CPython's `stat` of its stdlib the interpreter failed to start
 // ("failed to get the Python codec of the filesystem encoding"). A read
-// changes nothing, so it is repeated on a fresh stub; a mutation carrying no
-// identity the host dedupes is never repeated, since the dropped call may
+// changes nothing, so it is repeated on a fresh stub; a write on a binding
+// whose host dedupes nothing is never repeated, since the dropped call may
 // already have run; and an overloaded host is never retried, per
 // Cloudflare's error-handling contract.
 
@@ -70,14 +70,22 @@ function host(failures, error) {
   console.log('  ok  a dropped barrier is answered on a fresh stub');
 }
 
-// A mutation with no identity the host dedupes is still never repeated: the
-// dropped call may already have run. (Filesystem mutations carry a delivery
-// id and are repeated exactly once: supervisor-rpc-write-delivery.)
+// A descriptor's stat and directory listing change nothing either.
+for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
+  const { rpc, calls } = host(1, () => dropped());
+  assert.equal(await rpc[op](...args), 1, `a ${op} the platform dropped once did not answer`);
+  assert.deepEqual(calls, [op, op]);
+  console.log(`  ok  a dropped ${op} is answered on a fresh stub`);
+}
+
+// A binding whose host does not name its incarnation has no host that would
+// dedupe a repeat, so its writes are sent once (supervisor-rpc-write-delivery
+// covers the bindings that do).
 {
   const { rpc, calls } = host(1, () => dropped());
-  await assert.rejects(() => rpc.setUmask(0o077), /Network connection lost/);
-  assert.deepEqual(calls, ['setUmask'], 'a dropped umask change was repeated');
-  console.log('  ok  a dropped mutation without a delivery identity is surfaced, not repeated');
+  await assert.rejects(() => rpc.writeFile('home/user/x', 'y'), /Network connection lost/);
+  assert.deepEqual(calls, ['writeFile'], 'a dropped write was repeated');
+  console.log('  ok  a dropped write is surfaced, not repeated');
 }
 
 {

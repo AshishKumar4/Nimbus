@@ -15,6 +15,7 @@ import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { hostRoute, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
@@ -214,7 +215,7 @@ export async function runEsbuildCli(
   const mint = supervisorEntrypoint();
   if (!mint) throw new Error('Nimbus: no supervisor entrypoint is composed, so the esbuild facet cannot reach the files');
   const supervisor = mint<WasiSupervisorStub>({
-    props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined },
+    props: { doId: ctx.id.toString(), pid, route: hostRoute() ?? undefined, ...supervisorDeliveryProps(ctx) },
   });
   const facet = await esbuildFacet(ctx, env);
   return await facet.cli(args, supervisor, output);

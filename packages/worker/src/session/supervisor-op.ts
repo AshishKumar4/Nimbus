@@ -26,6 +26,7 @@ import {
   SUPERVISOR_OP_ROUTES,
 } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { withReadAllocation } from './rpc.js';
@@ -42,6 +43,12 @@ export interface SessionSupervisorHost {
   readonly processes: SessionProcessSupervisor;
   readonly runtimeWorkspace?: { filesystem: NimbusFilesystemAuthority } | null;
   getFilesystemAuthority?(): NimbusFilesystemAuthority;
+  /**
+   * This instance's receipts for mutations its processes deliver exactly
+   * once, opened with `openSupervisorDeliveries(ctx)` before anything is
+   * spawned. Absent, the session serves no delivered mutation.
+   */
+  readonly supervisorDeliveries?: SupervisorDeliveries;
   _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
 }
@@ -107,6 +114,11 @@ export function buildSessionSupervisorOps(
     // Every native read holds a lease for the payload it can answer with.
     readLease: withReadAllocation,
     extend,
+    deliveries: host.supervisorDeliveries,
   });
-  return { dispatch, bridge: store.bridge, forget: store.forget, dispose: store.dispose };
+  const forget: SessionSupervisorOps['forget'] = (pid) => {
+    host.supervisorDeliveries?.forget(pid);
+    return store.forget(pid);
+  };
+  return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
 }

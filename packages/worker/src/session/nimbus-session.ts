@@ -121,6 +121,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -500,6 +501,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   constructor(ctx: DurableObjectState, env: SessionEnv) {
     super(ctx, env);
+    this.supervisorDeliveries = openSupervisorDeliveries(ctx);
     this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
       ctx,
       env,
@@ -746,6 +748,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    */
   private _supervisorOps: SessionSupervisorOps | null = null;
   private processFiles: ProcessFiles | null = null;
+  /**
+   * This instance's receipts for its processes' mutations delivered exactly
+   * once. Opened in the constructor, before anything is spawned, so every
+   * SUPERVISOR binding minted from this ctx names this instance.
+   */
+  readonly supervisorDeliveries: SupervisorDeliveries;
 
   /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
   getFilesystemAuthority(): ProcessFiles {

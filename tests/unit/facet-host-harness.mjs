@@ -213,6 +213,7 @@ import {
 } from '../../packages/fabric/src/process-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
+import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
 // answer to the name the real worker registers for its supervisor class.
@@ -230,9 +231,13 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
  *
  * `colocated: true` makes every fake peer report the COORDINATOR's isolate,
  * which is the single-process topology placement has to fall back through.
+ *
+ * `deliveries: true` makes the coordinator a host that applies its processes'
+ * mutations exactly once (it opens its delivery store, as NimbusSession
+ * does); the host then reports that instance's `hostIncarnation`.
  */
 export function createProcessHost(mode, world, disk, {
-  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false,
+  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
 } = {}) {
   const calls = [];
   const stubs = [];
@@ -240,8 +245,12 @@ export function createProcessHost(mode, world, disk, {
     LOADER: world.loader,
     ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
   };
+  const coordinator = createFacetCtx(world, coordDoId);
+  const hostIncarnation = deliveries ? openSupervisorDeliveries(coordinator).incarnation : undefined;
   if (mode === 'facet') {
-    return processHostFor(createFacetCtx(world, coordDoId), hostEnv, () => disk);
+    const host = processHostFor(coordinator, hostEnv, () => disk);
+    host.hostIncarnation = hostIncarnation;
+    return host;
   }
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
@@ -316,13 +325,14 @@ export function createProcessHost(mode, world, disk, {
     },
   };
   const host = processHostFor(
-    createFacetCtx(world, coordDoId),
+    coordinator,
     { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
   host.peers = peers;
   host.namesResolved = calls;
   host.stubs = stubs;
+  host.hostIncarnation = hostIncarnation;
   return host;
 }
 

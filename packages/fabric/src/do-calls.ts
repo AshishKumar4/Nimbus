@@ -155,13 +155,18 @@ export async function idempotent<S, T>(
  * caller can tell a refusal from an indeterminate drop.
  *
  * The rule is about the call as sent, not the operation's kind. A mutation
- * the callee applies at most once per identity the call carries — Nimbus's
- * delivered filesystem mutations (`SqliteVFS.deliverOnce`, keyed by the
- * envelope's `delivery` id) and its appends (writer, module incarnation,
- * operation sequence) — is repeatable by construction: a repeat of one that
- * already ran is answered from the callee's record and applies nothing. Such
- * a call goes through {@link idempotent}, re-sending the same identity on
- * every attempt, with a `retryWindowMs` inside the callee's retention of
+ * the callee applies at most once per identity the call carries is
+ * repeatable by construction: a repeat of one that already ran is answered
+ * from the callee's record and applies nothing. Nimbus has two:
+ *   - delivered filesystem mutations (@nimbus-sh/core supervisor-delivery):
+ *     a delivery id plus the callee INSTANCE's incarnation. The record lives
+ *     in that instance's memory, and any other instance — or a callee that
+ *     predates delivery — refuses the call permanently rather than apply it
+ *     without one;
+ *   - appends: writer, module incarnation and operation sequence, recorded
+ *     durably until acknowledged.
+ * Such a call goes through {@link idempotent}, re-sending the same identity
+ * on every attempt, with a `retryWindowMs` inside the callee's retention of
  * that record. Without such an identity, a mutation stays here.
  */
 export async function mutating<S, T>(

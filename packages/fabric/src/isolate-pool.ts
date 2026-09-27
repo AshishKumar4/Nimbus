@@ -26,6 +26,7 @@
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { hostRoute, supervisorEntrypoint, type HostRoute } from './composition.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
@@ -529,8 +530,11 @@ export class IsolatePool {
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
         const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
         const supPid = opts?.supervisorPid ?? 0;
+        // Only this actor's own instance can answer a delivered mutation; a
+        // binding routed to another actor sends each mutation once.
+        const delivery = opts?.supervisorDoIdOverride === undefined ? supervisorDeliveryProps(ctx) : {};
         bindings.SUPERVISOR = supervisorRpc({
-          props: { doId: supDoId, pid: supPid, route: opts?.supervisorRoute ?? hostRoute() ?? undefined },
+          props: { doId: supDoId, pid: supPid, route: opts?.supervisorRoute ?? hostRoute() ?? undefined, ...delivery },
         });
         // Whatever the minted worker's env carries must be in its loader
         // cache key — workerd's loader cache survives a DO hibernation
@@ -539,8 +543,10 @@ export class IsolatePool {
         // the new generation still credentialed to the dead pid, and
         // every pid-authorized RPC from it fails "process pid … does
         // not exist". doIdShort alone cannot cover this — it changes
-        // across sessions, not across wakes of the same session.
-        this.supervisorKey = `s${supDoId.slice(0, 12)}-${supPid}`;
+        // across sessions, not across wakes of the same session. The
+        // instance's delivery incarnation is part of that identity: a
+        // later instance refuses every delivered mutation minted for it.
+        this.supervisorKey = `s${supDoId.slice(0, 12)}-${supPid}${delivery.hostIncarnation === undefined ? '' : `-${delivery.hostIncarnation}`}`;
       } else {
         // Supervisor entrypoint unavailable — running without ctx.exports
         // (e.g. unit-test harness, or LOADER.load contexts where the

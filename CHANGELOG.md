@@ -8,20 +8,28 @@ published independently in the `@nimbus-sh` npm scope.
 - A process's filesystem mutations are re-sent when the platform drops the
   call to the session ("Network connection lost.", `retryable`), and apply
   once. Previously the program saw EIO (pip install failing with errno 29 on
-  a wheel member; a FileHandle write loop failing partway). SupervisorRPC
-  sends each mutation with one delivery id on every attempt; the session
-  applies an id once and records its answer in the same turn, in the new
-  `vfs_delivery_receipts` table, so a repeat of a mutation that ran is
-  answered from the record, including after a session restart, and never
-  overwrites a later write by another process. Covered: writeFile, writeRange,
-  truncate, mkdir, rmdir, unlink, rename, symlink, metadata changes,
-  descriptor open/write/close/seek/dup, remove, copy and writeBatch. Appends
-  are re-sent under their existing ledger identity. Only failures the platform
-  marks retryable are repeated: three attempts, with the existing backoff,
-  none started more than 20 s after the first. Overloaded and other failures
-  surface unchanged, and so does the last drop when attempts run out. Records
-  are kept two minutes. `writeBatchStream`, descriptor reads and non-filesystem
-  calls are still sent once.
+  a wheel member; a FileHandle write loop failing partway). A session now
+  names its instance in every SUPERVISOR binding it mints (`hostIncarnation`).
+  SupervisorRPC sends a mutation on such a binding under the new
+  `deliverOnce` op with one delivery id on every attempt, and the instance
+  applies an id once, keeping its answer in memory: a repeat of a mutation
+  that ran gets the same answer, or the same failure, and never overwrites a
+  later write by another process. Another instance of the session refuses
+  the repeat with ESTALE, and a host that predates the op refuses it as
+  unserved; neither is retried or applied. Nothing is written to storage.
+  Covered: writeFile, writeRange, truncate, mkdir, rmdir, unlink, rename,
+  symlink, metadata changes, descriptor open/write/close/seek/dup, remove,
+  copy and writeBatch. Appends are re-sent under their existing ledger
+  identity, and descriptor stat and directory reads are re-sent like other
+  reads. Only failures the platform marks retryable are repeated: three
+  attempts, with the existing backoff, none started more than 5 s after the
+  first. Overloaded and other failures surface unchanged, and so does the
+  last drop when attempts run out. Answers are kept 15 to 30 s, and dropped
+  when their process exits; bindings minted by hosts that do not open a
+  delivery store send each mutation once, as before. `fsWriteRange` is now
+  served by the shared supervisor-op handler instead of `_rpcFsWriteRange`.
+  `writeBatchStream`, position-relative `fsRead` and non-filesystem calls are
+  still sent once.
 
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and

@@ -4,12 +4,15 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
+ *   hostIncarnation — the host instance that minted the binding, present
+ *           when that host applies delivered mutations once
+ *           (@nimbus-sh/core/workspace/supervisor-delivery.js)
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -32,17 +35,19 @@
  *
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
- * re-sent on a fresh stub; filesystem mutations are re-sent under one
- * delivery id the session applies at most once (`_fsMutation`); appends
- * are re-sent under the append ledger's identity. Everything else is sent
- * once and a drop surfaces.
+ * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * host's incarnation, are re-sent under one delivery id that host applies at
+ * most once (`_fsMutation`); on any other binding they are sent once.
+ * Appends are re-sent under the append ledger's identity. Everything else is
+ * sent once and a drop surfaces.
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
-import type { SupervisorDeliveredOpName, SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { SUPERVISOR_DELIVER_OP, type SupervisorDeliveredOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -164,20 +169,29 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * A filesystem mutation, delivered exactly once. The platform drops this
    * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
    * write loop, each failing "Network connection lost." (`retryable`) as
-   * EIO — and a dropped mutation may or may not have run. So every attempt
-   * carries the one delivery id minted here, and the host applies the id at
-   * most once (SqliteVFS.deliverOnce): a repeat of a mutation that ran is
-   * answered from its receipt and never applied again, even over another
-   * writer's newer write; one that never arrived applies on the repeat.
-   * Repeats stop VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, well
-   * inside the host's receipt retention.
+   * EIO — and a dropped mutation may or may not have run.
+   *
+   * So on a binding whose host names its incarnation, every attempt carries
+   * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+   * host instance applies the id at most once: a repeat of a mutation that
+   * ran is answered from its receipt and never applied again, even over
+   * another writer's newer write; one that never arrived applies on the
+   * repeat. Any other instance, and any host that predates delivery, refuses
+   * the envelope outright, and that refusal is never repeated. Repeats stop
+   * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+   * receipt retention.
+   *
+   * A binding minted by a host that dedupes nothing names no incarnation,
+   * and its mutations are sent once.
    *
    * The id is random because this entrypoint keeps nothing between calls and
    * may answer from any isolate; the pid still comes from the binding.
    */
   private _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
+    const hostIncarnation = this._hostIncarnation();
+    if (hostIncarnation === undefined) return this._fsOp<T>(op, args);
     return this._resent<T>(
-      { op, args, pid: this._pid(), delivery: crypto.randomUUID() },
+      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id: crypto.randomUUID(), hostIncarnation } },
       { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS },
     );
   }
@@ -185,11 +199,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
   /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
   private _resent<T>(envelope: SupervisorOpEnvelope, policy?: DoCallRetryPolicy): Promise<T> {
     return idempotent(
-      envelope.op,
+      envelope.delivery?.op ?? envelope.op,
       () => this._host(),
       (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
       policy,
     );
+  }
+
+  private _hostIncarnation(): string | undefined {
+    const props = this.ctx.props;
+    if (typeof props !== 'object' || props === null || !('hostIncarnation' in props)) return undefined;
+    const incarnation = props.hostIncarnation;
+    return typeof incarnation === 'string' && incarnation.length > 0 ? incarnation : undefined;
   }
 
   private _reportingPid(): number {
@@ -391,8 +412,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsMutation('fsWrite', [handleId, offset, bytes]));
   }
 
+  /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
   async fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>> {
-    return this._call(this._fsOp('fsFstat', args));
+    return this._call(this._fsRead('fsFstat', args));
   }
   async fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>> {
     return this._call(this._fsMutation('fsDup', args));
@@ -404,7 +426,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsMutation('fsSetStatus', args));
   }
   async fsReaddirHandle(...args: Parameters<RuntimeFsBridge['readdirHandle']>): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>> {
-    return this._call(this._fsOp('fsReaddirHandle', args));
+    return this._call(this._fsRead('fsReaddirHandle', args));
   }
   async fsFtruncate(...args: Parameters<RuntimeFsBridge['ftruncate']>): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>> {
     return this._call(this._fsMutation('fsFtruncate', args));

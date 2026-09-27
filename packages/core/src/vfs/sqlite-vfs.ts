@@ -37,7 +37,6 @@ import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
   FS_READ_BATCH_REQUEST_BYTES,
   INODE_CACHE_MAX_ENTRIES,
-  VFS_DELIVERY_RECEIPT_RETENTION_MS,
 } from '../constants.js';
 import {
   CHUNK_SIZE,
@@ -100,7 +99,7 @@ const VFS_SCHEMA = 3;
 /** Every table of the content store, dropped when an older schema is reset. */
 const STORE_TABLES = [
   'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
-  'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_delivery_receipts', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
+  'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
   'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
   'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs',
 ] as const;
@@ -612,33 +611,6 @@ function assertAppendIncarnation(value: string, kind: 'writer' | 'module'): void
   if (!VFS_APPEND_INCARNATION_PATTERN.test(value)) {
     throw vfsError('EINVAL', `invalid append ${kind} incarnation`);
   }
-}
-
-/**
- * What a delivered mutation answers (a revision, a receipt, a descriptor, or
- * nothing): plain data, so its receipt can give the same answer again.
- */
-export type VfsDeliveryAnswer =
-  | undefined
-  | null
-  | boolean
-  | number
-  | string
-  | VfsDeliveryAnswer[]
-  | { [key: string]: VfsDeliveryAnswer };
-
-/** Wrapped, so an answer of nothing is recorded as such. */
-function encodeDeliveryAnswer<T>(value: T): string {
-  return JSON.stringify({ value });
-}
-
-function decodeDeliveryAnswer(text: string): VfsDeliveryAnswer {
-  const recorded: { value?: VfsDeliveryAnswer } = JSON.parse(text);
-  return recorded.value;
-}
-
-function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
-  return value instanceof Promise;
 }
 
 interface TransactionPlan {
@@ -1316,8 +1288,6 @@ export class SqliteVFS {
   private readonly hotSnapshotGens = new Map<string, number>();
   /** Where the next tier pass resumes its walk of vfs_chunks. */
   private tierCursor = 0;
-  /** Delivered mutations still running in this instance, by `${pid}:${delivery}` (deliverOnce). */
-  private readonly deliveriesInFlight = new Map<string, { op: string; settled: Promise<{ text: string }> }>();
   private _invalidations: LoggedMutation[] = [];
   private _invalidationBytes = 0;
   /**
@@ -1599,19 +1569,6 @@ export class SqliteVFS {
         digest TEXT NOT NULL,
         PRIMARY KEY (namespace, pid, writer_id, module_id, operation_id)
       )`);
-      // What a delivered mutation answered, by the id its sender repeats it
-      // under (deliverOnce). `settled` 0 is a mutation still running.
-      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_delivery_receipts (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        delivery TEXT NOT NULL,
-        op TEXT NOT NULL,
-        settled INTEGER NOT NULL,
-        result TEXT,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (namespace, pid, delivery)
-      )`);
-      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_delivery_receipts_age ON vfs_delivery_receipts (namespace, created_at)');
 
       // Every counter moves inside the transaction that consumes it.
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_state (
@@ -4067,121 +4024,6 @@ export class SqliteVFS {
       )`,
       [this.namespace],
     );
-  }
-
-  /**
-   * Apply one delivered mutation at most once, however often it arrives.
-   *
-   * A process's supervisor re-sends a mutation the platform dropped under the
-   * id it first sent it with, because the dropped call may or may not have
-   * run. The first arrival applies it and records its answer in the same
-   * synchronous turn — nothing awaited in between — so the receipt commits
-   * with the mutation's own writes (a Durable Object commits a turn's writes
-   * together, and releases the reply only once they are durable). Every later
-   * arrival of the id is answered from the receipt and applies nothing,
-   * whatever the filesystem has become since: another writer's newer bytes
-   * stay.
-   *
-   * An `apply` answering a promise (a routed host method, copyTree) has made
-   * its synchronous writes when it returns; its receipt is recorded pending in
-   * that turn, a repeat while it runs joins it, and it settles with it. A
-   * pending receipt that no running call owns was left by an instance that
-   * died mid-mutation: its outcome is unknown, so that repeat is EIO — never a
-   * second application. A mutation that throws records nothing: the
-   * filesystem refused it, nothing applied, and a repeat asks again.
-   *
-   * Receipts are kept VFS_DELIVERY_RECEIPT_RETENTION_MS, which outlasts every
-   * repeat (constants.ts), and pruned two for each one recorded.
-   */
-  deliverOnce<T>(
-    pid: number,
-    delivery: string,
-    op: string,
-    apply: () => T | Promise<T>,
-  ): T | VfsDeliveryAnswer | Promise<T | VfsDeliveryAnswer> {
-    if (!Number.isSafeInteger(pid) || pid < 0) throw vfsError('EINVAL', `invalid delivery pid ${pid}`);
-    if (!VFS_APPEND_INCARNATION_PATTERN.test(delivery)) throw vfsError('EINVAL', 'invalid delivery id');
-    const key = `${pid}:${delivery}`;
-    const running = this.deliveriesInFlight.get(key);
-    if (running) {
-      if (running.op !== op) throw vfsError('EINVAL', `delivery ${delivery} is ${running.op}, not ${op}`);
-      return running.settled.then(({ text }) => decodeDeliveryAnswer(text));
-    }
-    const receipt = [...this.sql.exec(
-      'SELECT op, settled, result FROM vfs_delivery_receipts WHERE namespace = ? AND pid = ? AND delivery = ?',
-      this.namespace,
-      pid,
-      delivery,
-    )][0];
-    if (receipt !== undefined) {
-      if (receipt.op !== op) throw vfsError('EINVAL', `delivery ${delivery} was ${String(receipt.op)}, not ${op}`);
-      if (Number(receipt.settled) === 0 || typeof receipt.result !== 'string') {
-        throw vfsError('EIO', `${op} delivery ${delivery}: the session restarted while applying it, so its outcome is unknown`);
-      }
-      return decodeDeliveryAnswer(receipt.result);
-    }
-
-    const answer = apply();
-    if (!isPromise(answer)) {
-      this.recordDelivery(pid, delivery, op, encodeDeliveryAnswer(answer));
-      return answer;
-    }
-    this.recordDelivery(pid, delivery, op, null);
-    const settled = answer.then(
-      (value) => {
-        const text = encodeDeliveryAnswer(value);
-        this.transactionSync(() => {
-          this.sql.exec(
-            'UPDATE vfs_delivery_receipts SET settled = 1, result = ? WHERE namespace = ? AND pid = ? AND delivery = ?',
-            text,
-            this.namespace,
-            pid,
-            delivery,
-          );
-        });
-        return { value, text };
-      },
-      (error) => {
-        this.transactionSync(() => {
-          this.sql.exec(
-            'DELETE FROM vfs_delivery_receipts WHERE namespace = ? AND pid = ? AND delivery = ?',
-            this.namespace,
-            pid,
-            delivery,
-          );
-        });
-        return Promise.reject(error);
-      },
-    ).finally(() => this.deliveriesInFlight.delete(key));
-    this.deliveriesInFlight.set(key, { op, settled });
-    return settled.then(({ value }) => value);
-  }
-
-  /** A receipt, `result` null while its mutation runs, with up to two expired ones pruned. */
-  private recordDelivery(pid: number, delivery: string, op: string, result: string | null): void {
-    const now = this.now();
-    const expired = [...this.sql.exec(
-      `SELECT rowid FROM vfs_delivery_receipts
-       WHERE namespace = ? AND created_at < ?
-       ORDER BY created_at
-       LIMIT 2`,
-      this.namespace,
-      now - VFS_DELIVERY_RECEIPT_RETENTION_MS,
-    )].map((row) => row.rowid);
-    this.transactionSync(() => {
-      for (const rowid of expired) this.sql.exec('DELETE FROM vfs_delivery_receipts WHERE rowid = ?', rowid);
-      this.sql.exec(
-        `INSERT INTO vfs_delivery_receipts (namespace, pid, delivery, op, settled, result, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        this.namespace,
-        pid,
-        delivery,
-        op,
-        result === null ? 0 : 1,
-        result,
-        now,
-      );
-    });
   }
 
   /**

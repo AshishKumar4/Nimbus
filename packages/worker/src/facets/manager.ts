@@ -138,6 +138,7 @@ import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import {
   prefetchBundleStart,
@@ -5591,7 +5592,12 @@ export class FacetManager {
     // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
     // context, which stays open for the whole run), never in this DO.
     const writerId = crypto.randomUUID();
-    const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid, writerId };
+    const supervisor = {
+      doId: this.ctx.id.toString(),
+      pid: staged.pid,
+      writerId,
+      ...supervisorDeliveryProps(this.ctx),
+    };
     const ctxExports = getNimbusCtxExports();
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     let writerActivated = false;

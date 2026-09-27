@@ -86,6 +86,7 @@ import {
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
 import { hostRoute, type HostRoute } from './composition.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -138,7 +139,13 @@ class FacetProcessHost implements ProcessHost {
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined },
+      {
+        doId: this.coordDoId,
+        pid: params.pid,
+        writerId: params.writerId,
+        route: hostRoute() ?? undefined,
+        ...supervisorDeliveryProps(this.ctx),
+      },
       params,
       consume,
     );
@@ -150,6 +157,7 @@ class FacetProcessHost implements ProcessHost {
       pid: params.pid,
       writerId: params.writerId,
       route: hostRoute() ?? undefined,
+      ...supervisorDeliveryProps(this.ctx),
     };
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
@@ -198,6 +206,8 @@ export interface HostProcessOpts {
   route?: HostRoute;
   pid: number;
   writerId: string;
+  /** The coordinator instance's delivery incarnation, minted into the SUPERVISOR binding (ResidentSupervisorProps). */
+  hostIncarnation?: string;
   workerKey: string;
   /** Unforgeable capability for the fetch-semantic WebSocket hop. */
   webSocketCapability: string;
@@ -358,7 +368,13 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined },
+      {
+        doId: this.coordDoId,
+        pid: params.pid,
+        writerId: params.writerId,
+        route: hostRoute() ?? undefined,
+        ...supervisorDeliveryProps(this.ctx),
+      },
       params,
       consume,
     );
@@ -388,6 +404,7 @@ class PeerProcessHost implements ProcessHost {
       route: hostRoute() ?? undefined,
       pid: params.pid,
       writerId: params.writerId,
+      ...supervisorDeliveryProps(this.ctx),
       workerKey: params.workerKey,
       webSocketCapability,
       startArgs: params.startArgs,

@@ -334,6 +334,12 @@ export interface ResidentSupervisorProps {
    * supervisor binding is minted either.
    */
   route?: HostRoute;
+  /**
+   * The coordinator INSTANCE's incarnation (`supervisorDeliveryProps`),
+   * when it applies its processes' mutations exactly once: the binding then
+   * re-sends a dropped mutation, and only that instance will apply it.
+   */
+  hostIncarnation?: string;
 }
 
 /** Everything a host needs to run one process. Substrate-free by construction. */

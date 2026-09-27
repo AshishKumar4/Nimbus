@@ -132,17 +132,17 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 export const FS_LIST_PAGE_LIMIT = 8192;
 
 // Exactly-once delivery of a process's filesystem mutations (SupervisorRPC →
-// session). The retrier re-sends a mutation under the same delivery id only
-// while it is younger than the RETRY window, measured on its own clock from
-// the first attempt; the session keeps the receipt that answers such a repeat
-// for the RETENTION, measured on its clock from when the mutation applied,
-// which is after the first attempt was sent. A repeat therefore always finds
-// its receipt as long as retention exceeds the window by more than any one
-// attempt's delivery can lag — independent of the two clocks' offsets. The
-// window covers what was measured: a dropped call fails at once
-// (startedAt === failedAt), and three attempts back off under a second.
-export const VFS_DELIVERY_RETRY_WINDOW_MS = 20_000;
-export const VFS_DELIVERY_RECEIPT_RETENTION_MS = 120_000;
+// session; workspace/supervisor-delivery.ts). The retrier re-sends a mutation
+// under its delivery id only while no more than the RETRY window has passed
+// since its first attempt started, on its own clock. The session holds the
+// receipt that answers such a repeat, in memory, for at least the RETENTION
+// after the mutation applied — which is after that first attempt was sent — so
+// a repeat finds it whenever it arrives within RETENTION − WINDOW of being
+// sent: 10 s of delivery lag, whatever the two clocks' offset. The window
+// covers what was measured: a dropped call fails at once (startedAt ===
+// failedAt), and three attempts back off in under 0.4 s.
+export const VFS_DELIVERY_RETRY_WINDOW_MS = 5_000;
+export const VFS_DELIVERY_RECEIPT_RETENTION_MS = 3 * VFS_DELIVERY_RETRY_WINDOW_MS;
 
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and

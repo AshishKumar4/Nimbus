@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
+import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 const boundProps = [];
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
@@ -104,6 +105,40 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
     'identical supervisorPid must reuse the loader id (warm slot preserved)');
 
   await poolG1.dispose(); await poolG2.dispose(); await poolG2b.dispose(); await warmPool.dispose();
+}
+
+// ── A host that delivers mutations exactly once names its INSTANCE in the
+// binding, and a restarted instance refuses every delivered mutation minted
+// by the one before. So the instance is part of the loader key: a warm slot
+// from before a restart, keyed by doId and pid alone (which an embedder's
+// pid numbering can repeat), would serve the new instance a binding whose
+// every mutation it refuses. A binding routed to another actor names none.
+{
+  const loaderIds = [];
+  const keyedLoader = {
+    get(id, cb) {
+      loaderIds.push(id);
+      void Promise.resolve(cb());
+      return { getEntrypoint: () => ({ async execute() { return 'ok'; } }) };
+    },
+  };
+  const before = { id: { toString: () => 'loader-pid-test' } };
+  const after = { id: { toString: () => 'loader-pid-test' } };
+  const incarnations = [openSupervisorDeliveries(before).incarnation, openSupervisorDeliveries(after).incarnation];
+  boundProps.length = 0;
+  for (const ctx of [before, after]) {
+    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { tag: 'x', concurrency: 1, supervisorPid: 5 });
+    await pool.map((v) => v, ['a']);
+    await pool.dispose();
+  }
+  assert.deepEqual(boundProps, incarnations.map((hostIncarnation) => ({ doId: 'loader-pid-test', pid: 5, route, hostIncarnation })),
+    'each instance mints its own incarnation into the binding');
+  assert.notEqual(loaderIds[0], loaderIds[1], 'a restarted instance reused the warm slot of the one before');
+
+  boundProps.length = 0;
+  new IsolatePool(env, before, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
+  assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
+    'a binding routed to another actor named this instance');
 }
 
 console.log('loader-pool supervisor pid: ok');
