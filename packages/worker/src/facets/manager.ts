@@ -75,6 +75,12 @@ import {
   type EsbuildTransformRequest,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import {
+  DEFAULT_CJS_CONDITIONS,
+  DEFAULT_ESM_CONDITIONS,
+  resolvePackageEntry,
+  type ResolvablePackageJson,
+} from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
@@ -2159,22 +2165,6 @@ export async function greedyAddMainEntries(
     } catch { return false; }
   }
 
-  // X.5-C Fix #2 helper: walk a (possibly nested) exports value and
-  // collect every string-leaf path. unbuild-shaped packages like pathe
-  // nest two deep — `exports."."`.{require,import}.{types,default} —
-  // and the previous one-level loop only caught the inner string leaves
-  // when default was at the top, missing the unbuild shape entirely.
-  function collectExportLeaves(node: any, out: Set<string>): void {
-    if (typeof node === 'string') { out.add(node); return; }
-    if (!node || typeof node !== 'object') return;
-    // Order matters for the "most likely usable" leaf: prefer require
-    // (most CJS-friendly), then default, then node, then import. We add
-    // ALL of them to the candidate set — addPkgEntry will probe each.
-    for (const k of ['require', 'node', 'default', 'import']) {
-      if (k in node) collectExportLeaves(node[k], out);
-    }
-  }
-
   /**
    * Whether guessing at `pkgDir`'s main entry is still a guess.
    *
@@ -2209,26 +2199,26 @@ export async function greedyAddMainEntries(
     // A package the closure reached keeps exactly what it reached; only an
     // unreached one gets the guess below.
     if (!mainIsSpeculative(pkgDir)) return;
-    let meta: any;
-    try { meta = JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json'))); }
-    catch { meta = null; }
-    const candidates = new Set<string>();
-    if (meta) {
-      if (typeof meta.main === 'string') candidates.add(meta.main);
-      if (typeof meta.module === 'string') candidates.add(meta.module);
-      const exp = meta.exports;
-      if (typeof exp === 'string') candidates.add(exp);
-      else if (exp && typeof exp === 'object') {
-        const dot = (exp as any)['.'];
-        // X.5-C Fix #2: walk nested condition trees recursively. Without
-        // this, packages with two-level exports (pathe, magic-string,
-        // most unbuild-emitted libs) miss their actual entry leaf and
-        // greedyAddMainEntries falls back to /index.js probing — which
-        // doesn't exist for those packages.
-        collectExportLeaves(dot, candidates);
-      }
+    let pkg: ResolvablePackageJson | null;
+    try { pkg = JSON.parse((await filesOf(vfs).readFileString(pkgDir + '/package.json'))); }
+    catch { pkg = null; }
+    // The root entry a bare require of this package resolves to, in the
+    // order the runtime resolves it (require-resolver.ts resolvePkgSubpathEx):
+    // exports under the CJS conditions, then the ESM ones, then legacy main,
+    // then an index probe. A hand-rolled walk of `exports["."]` read nothing
+    // from a root conditional map (on-change@6: `{ types, default }`, no ".",
+    // no main) and guessed `index.js`, which does not exist.
+    // Probed in that order until one lands: exports entry, `main`, `index`;
+    // a denied root (`"." : null`) resolves to nothing and falls through
+    // exactly as the runtime does.
+    const candidates: string[] = [];
+    if (pkg) {
+      let entry = resolvePackageEntry(pkg, '.', DEFAULT_CJS_CONDITIONS);
+      if (entry === null && pkg.exports != null) entry = resolvePackageEntry(pkg, '.', DEFAULT_ESM_CONDITIONS);
+      if (entry !== null) candidates.push(entry);
+      if (typeof pkg.main === 'string') candidates.push(pkg.main);
     }
-    if (candidates.size === 0) candidates.add('index.js');
+    candidates.push('index.js');
     for (const rel of candidates) {
       const norm = rel.replace(/^\.\//, '');
       const base = pkgDir + '/' + norm;
