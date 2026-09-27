@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Node's dependency walk uses the existing launch turn budget, including
+  metadata-only resolution work before a closure-size refusal. Scheduling
+  failures and cancellation propagate through CJS and ESM resolution without
+  becoming missing dependencies. Each recursive or interleaved scan owns its
+  regexp cursor, and directory-resolution package metadata finishes loading
+  before the closure returns. The 18 MiB snapshot limit is unchanged.
+
 - A node launch's speculative main-entry pass resolves each package's root
   entry with the shared exports resolver, in the runtime's order (exports
   under CJS then ESM conditions, `main`, `index`). A root conditional map

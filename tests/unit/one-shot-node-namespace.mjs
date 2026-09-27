@@ -22,6 +22,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -185,5 +186,88 @@ assert.doesNotMatch(refused.stdout + out, /USER_CODE_MUST_NOT_START/);
 injectedStoreBudget = null;
 const afterRefusal = await run();
 assert.deepEqual(afterRefusal, second, 'normal allowance restores a complete coherent namespace');
+
+// A small source can do a large metadata walk before finding an oversized
+// dependency. The refusal itself must cross turns, not strand its caller.
+{
+  let grants = 0;
+  const walkOpts = { ...OPTS, dirname: '/home/user/app' };
+  let beforeGrant;
+  let grantFailure;
+  const paced = new FacetManager(
+    createFacetCtx(createFacetWorld(() => ({})), 'paced-static-refusal'),
+    { ...env, NIMBUS_LAUNCH_CHUNK_BYTES: '4096' }, host.processes, new PortRegistry(), processHostFor,
+    { requestLaunchTurn: () => {
+      grants++;
+      if (grantFailure) return Promise.reject(grantFailure);
+      setTimeout(() => { beforeGrant?.(); void paced.pumpResidentLaunches(); }, 0);
+    } },
+  );
+  paced.setVfs(rawVfs, processFiles(rawVfs));
+  kfs.writeFile('home/user/app/oversized.json', new Uint8Array(VFS_BUNDLE_MAX_BYTES + 1));
+  const prelude = Array.from({ length: 8 }, (_, n) => `try { require('absent-${n}'); } catch {}`).join('\n');
+  const program = prelude + '\nrequire("./oversized.json");';
+  assert.ok(program.length < 4096);
+  out = '';
+  let refusal;
+  try { refusal = await paced.exec(program, walkOpts); }
+  finally { Object.assign(globalThis, real); }
+  assert.ok(grants >= 3, 'metadata work yields several real turns BEFORE returning the closure refusal');
+  assert.equal(refusal.exitCode, 1);
+  assert.match(refusal.stderr, /18\.0 MiB/);
+  assert.match(refusal.stderr, /oversized\.json/);
+  out = '';
+  let alive;
+  try { alive = await paced.exec('console.log(6 * 7)', walkOpts); }
+  finally { Object.assign(globalThis, real); }
+  assert.equal(alive.exitCode, 0, alive.stderr + out);
+  assert.equal((alive.stdout + out).trim(), '42', 'the same session executes real user code after refusing the closure');
+  kfs.unlink('home/user/app/oversized.json');
+
+  kfs.writeFile('home/user/app/later.json', '{"answer":1}');
+  beforeGrant = () => { beforeGrant = undefined; kfs.writeFile('home/user/app/later.json', '{"answer":42}'); };
+  out = '';
+  let changed;
+  try { changed = await paced.exec(prelude + '\nconsole.log(require("./later.json").answer)', walkOpts); }
+  finally { Object.assign(globalThis, real); }
+  assert.equal(changed.exitCode, 0, changed.stderr + out);
+  assert.equal((changed.stdout + out).trim(), '42', 'a dependency changed before its resumed read is current');
+
+  beforeGrant = () => { beforeGrant = undefined; kfs.writeFile('home/user/app/later.json', new Uint8Array(VFS_BUNDLE_MAX_BYTES + 1)); };
+  const grown = await paced.exec(prelude + '\nrequire("./later.json")', walkOpts);
+  assert.equal(grown.exitCode, 1);
+  assert.match(grown.stderr, /later\.json/);
+  assert.match(grown.stderr, /18\.0 MiB/, 'the size gate uses the file after the intervening turn');
+  kfs.unlink('home/user/app/later.json');
+
+  root.mkdir('home/user/app/guarded', { mode: 0o755 });
+  root.writeFile('home/user/app/guarded/secret.json', '"private"', { mode: 0o644 });
+  beforeGrant = () => { beforeGrant = undefined; root.chmod('home/user/app/guarded', 0o700); };
+  await assert.rejects(paced.exec(prelude + '\nrequire("./guarded/secret.json")', walkOpts), /EACCES|permission denied/i,
+    'a resumed walk keeps its principal and observes revoked search permission');
+  root.unlink('home/user/app/guarded/secret.json');
+  root.rmdir('home/user/app/guarded');
+
+  kfs.writeFile('home/user/app/recovery.json', '{"answer":56}');
+  const controlledProgram = prelude + '\nconsole.log(require("./recovery.json").answer)';
+  grantFailure = new Error('the alarm turn could not be scheduled');
+  await assert.rejects(paced.exec(controlledProgram, walkOpts), error => error === grantFailure);
+  grantFailure = undefined;
+  beforeGrant = () => {
+    beforeGrant = undefined;
+    const entry = paced.processes.getRunning().at(-1);
+    assert.ok(entry);
+    paced.processes.exit(entry.pid, 137);
+  };
+  await assert.rejects(paced.exec(controlledProgram, walkOpts), /cancelled while it was suspended/);
+  out = '';
+  const beforeRecovery = grants;
+  try { alive = await paced.exec(controlledProgram, walkOpts); }
+  finally { Object.assign(globalThis, real); }
+  assert.equal(alive.exitCode, 0, alive.stderr + out);
+  assert.equal((alive.stdout + out).trim(), '56', 'failed or cancelled static walks release the session for the next command');
+  assert.ok(grants > beforeRecovery, 'the same source/revision/principal rebuilds after failure instead of reusing a partial cache entry');
+  kfs.unlink('home/user/app/recovery.json');
+}
 
 console.log('one-shot-node-namespace: a one-shot answers stat, exists and readdir from the namespace, and sees a peer\'s writes between runs');

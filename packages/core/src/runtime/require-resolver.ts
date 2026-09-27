@@ -194,7 +194,25 @@ const normalizePath = normalizeVfsPath;
  * Recording every consulted package.json lets the prefetch walker add
  * its content so prefetch and runtime agree.
  */
-type PkgJsonSink = (pkgJsonPath: string) => void;
+type PkgJsonSink = (pkgJsonPath: string) => Awaitable<void>;
+type WalkProgress = (work: number) => Promise<void>;
+
+// Work weight, not a storage or transfer size: even a missing candidate costs
+// path resolution and metadata queries. A fixed charge bounds metadata-only
+// walks; path length also accounts for traversal of long ancestor chains.
+const METADATA_CANDIDATE_WORK = 256;
+
+// Only the speculative ESM resolution boundary catches traversal failures.
+// Keep scheduling errors distinct there, then return the original cause.
+class WalkControlFailure extends Error {}
+
+async function packageText(vfs: RequireFs, path: string, progress?: WalkProgress): Promise<string | null> {
+  if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
+  let text: string;
+  try { text = await vfs.readFileString(path); } catch { return null; }
+  if (progress) await progress(text.length);
+  return text;
+}
 
 /**
  * Extension-list probe; mirrors node-shims.ts:__resolveFile so prefetch
@@ -211,27 +229,30 @@ type PkgJsonSink = (pkgJsonPath: string) => void;
  * a directory-style require (e.g. `require('./mod')` where mod has
  * main='entry.js' and no index.js).
  */
-async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink): Promise<string | null> {
+async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null> {
   const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
   for (const ext of fileExts) {
     const p = normalizePath(base + ext);
+    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
   const baseTrim = base.replace(/\/+$/, '');
   const pkgJsonPath = normalizePath(baseTrim + '/package.json');
+  if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
   if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
     let pkg: ResolvablePackageJson | null = null;
-    try { pkg = JSON.parse((await vfs.readFileString(pkgJsonPath))); } catch { /* fall through */ }
+    const text = await packageText(vfs, pkgJsonPath, progress);
+    try { pkg = JSON.parse(text ?? ''); } catch { /* fall through */ }
     if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
       // Record this package.json so the bundle carries the content the
       // runtime resolver needs to repeat this directory resolution.
-      sink?.(pkgJsonPath);
+      await sink?.(pkgJsonPath);
       const mainStripped = pkg.main.replace(/^\.\/+/, '').replace(/^\/+/, '');
       const mainBase = baseTrim + '/' + mainStripped;
       // Guard against pkg.main === '.' or empty → would re-enter same base.
       if (mainBase !== base && mainBase !== baseTrim) {
-        const resolved = (await resolveFile(vfs, mainBase, sink));
+        const resolved = (await resolveFile(vfs, mainBase, sink, progress));
         if (resolved) return resolved;
       }
     }
@@ -239,6 +260,7 @@ async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink): Pr
   const indexExts = ['/index.js', '/index.cjs', '/index.mjs', '/index.json'];
   for (const ext of indexExts) {
     const p = normalizePath(base + ext);
+    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   // TypeScript sources, probed only once every candidate above has missed —
@@ -246,10 +268,12 @@ async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink): Pr
   // to nothing today. See _shared/typescript-specifiers.ts for the scope.
   for (const candidate of typescriptFallbackCandidates(baseTrim)) {
     const p = normalizePath(candidate);
+    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
     const p = normalizePath(baseTrim + ext);
+    if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   return null;
@@ -318,36 +342,38 @@ interface ResolveSubpathResult {
  *      finds it through its extension-probe loop without needing
  *      a runtime-side fix.
  */
-async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   const pkgJsonPath = pkgDir + '/package.json';
+  if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
   if (!(await vfs.exists(pkgJsonPath))) {
     // No package.json — direct probe (matches node-shims fallback).
     if (subpath === '.') {
-      const r = (await resolveFile(vfs, pkgDir + '/index', sink));
+      const r = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
       return r ? { resolved: r } : null;
     }
-    const r = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink));
+    const r = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
     if (r) return { resolved: r };
     // Even with no parent package.json, attempt the legacy nested-pkg
     // fallback (consistent behaviour across the no-pkgjson branch).
-    return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink));
+    return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress));
   }
   let pkg: ResolvablePackageJson;
-  try { pkg = JSON.parse((await vfs.readFileString(pkgJsonPath))); }
+  const text = await packageText(vfs, pkgJsonPath, progress);
+  try { pkg = JSON.parse(text ?? ''); }
   catch {
-    const r = (await resolveFile(vfs, pkgDir + '/index', sink));
+    const r = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
     return r ? { resolved: r } : null;
   }
   // The runtime resolver reads this package.json unconditionally to walk
   // exports/main; record it so its content ships in the bundle.
-  sink?.(pkgJsonPath);
+  await sink?.(pkgJsonPath);
 
   let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
   if (entry == null && pkg.exports != null) {
     entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
   }
   if (entry != null) {
-    const resolved = (await resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink));
+    const resolved = (await resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink, progress));
     if (resolved) return { resolved };
     // W2.6a D2 (mirror of node-shims:__resolvePkgSubpath): exports/main
     // yielded a path that doesn't exist on disk. Fall through to the
@@ -356,20 +382,20 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
   }
   if (subpath === '.') {
     if (typeof pkg.main === 'string') {
-      const r = (await resolveFile(vfs, pkgDir + '/' + pkg.main.replace(/^\.\//, ''), sink));
+      const r = (await resolveFile(vfs, pkgDir + '/' + pkg.main.replace(/^\.\//, ''), sink, progress));
       if (r) return { resolved: r };
     }
-    const idx = (await resolveFile(vfs, pkgDir + '/index', sink));
+    const idx = (await resolveFile(vfs, pkgDir + '/index', sink, progress));
     return idx ? { resolved: idx } : null;
   }
   // Non-root subpath: extension-probe first (most common path).
-  const direct = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink));
+  const direct = (await resolveFile(vfs, pkgDir + '/' + subpath.replace(/^\.\//, ''), sink, progress));
   if (direct) return { resolved: direct };
 
   // X.5-L: legacy directory-with-nested-package.json fallback. Only
   // engaged when the standard probes have failed AND
   // `<pkgDir>/<subpath>` exists as a directory.
-  return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink));
+  return (await tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink, progress));
 }
 
 /**
@@ -390,14 +416,16 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
  * Returns null if there's no directory match or no readable nested
  * package.json (caller falls through to its existing null return).
  */
-async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   if (subpath === '.' || !subpath.startsWith('./')) return null;
 
   const subRelative = subpath.replace(/^\.\//, '');
   const subDir = normalizePath(pkgDir + '/' + subRelative);
+  if (progress) await progress(METADATA_CANDIDATE_WORK + subDir.length);
   if (!(await vfs.exists(subDir)) || !(await vfs.isDirectory(subDir))) return null;
 
   const nestedPkgJson = subDir + '/package.json';
+  if (progress) await progress(METADATA_CANDIDATE_WORK + nestedPkgJson.length);
   if (!(await vfs.exists(nestedPkgJson))) {
     // Last-resort: probe `<subDir>/index.{js,…}`. This is already
     // covered by `resolveFile(pkgDir + '/' + subRelative)`'s
@@ -407,11 +435,12 @@ async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath
   }
 
   let nested: { module?: string; main?: string };
-  try { nested = JSON.parse((await vfs.readFileString(nestedPkgJson))); }
+  const text = await packageText(vfs, nestedPkgJson, progress);
+  try { nested = JSON.parse(text ?? ''); }
   catch { return null; }
   // The runtime resolver reads this nested package.json to repeat the
   // resolution; record it so its content ships in the bundle.
-  sink?.(nestedPkgJson);
+  await sink?.(nestedPkgJson);
 
   // Prefer `main` for CJS conditions; fall back to `module` if no main.
   // (resolvePackageEntry would do the same prioritisation, but nested
@@ -425,7 +454,7 @@ async function tryLegacyDirectorySubpath(vfs: RequireFs, pkgDir: string, subpath
   // Resolve relative to the subpath dir; nestedEntry can be
   // up-pointing (`../dist/x.js`) or relative-down (`./dist/x.js`).
   const targetPath = normalizePath(subDir + '/' + nestedEntry.replace(/^\.\//, ''));
-  const resolved = (await resolveFile(vfs, targetPath, sink));
+  const resolved = (await resolveFile(vfs, targetPath, sink, progress));
   if (!resolved) return null;
 
   // Build the stub. The stub lives at `<pkgDir>/<subRelative>.js`
@@ -472,7 +501,7 @@ function relativeFrom(fromDir: string, toPath: string): string {
  * X.5-L: extended bare-spec resolver that also returns any synthetic
  * stub emitted by resolvePkgSubpathEx's legacy-directory branch.
  */
-async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   let pkgName: string;
   let subpath: string;
   if (name.startsWith('@')) {
@@ -497,8 +526,9 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
     if (visited.has(dir)) break;
     visited.add(dir);
     const nmDir = (dir ? dir + '/' : '') + 'node_modules/' + pkgName;
+    if (progress) await progress(METADATA_CANDIDATE_WORK + nmDir.length);
     if ((await vfs.exists(nmDir))) {
-      const r = (await resolvePkgSubpathEx(vfs, nmDir, subpath, sink));
+      const r = (await resolvePkgSubpathEx(vfs, nmDir, subpath, sink, progress));
       if (r) return r;
     }
     if (!dir) break;
@@ -514,12 +544,12 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
  * the legacy directory-subpath pattern. Relative paths never need
  * stubs, so for those we just return `{ resolved }` with no stub.
  */
-async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink): Promise<ResolveSubpathResult | null> {
+async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
       ? strip(id)
       : normalizePath(strip(fromDir) + '/' + id);
-    const r = (await resolveFile(vfs, base, sink));
+    const r = (await resolveFile(vfs, base, sink, progress));
     return r ? { resolved: r } : null;
   }
   // package.json#imports field — `#name` specifiers resolved against
@@ -534,7 +564,7 @@ async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sin
   // "Cannot find module '#name' (from ...)" error.
   //
   if (id.startsWith('#')) {
-    const r = (await resolveImportsField(vfs, id, fromDir, sink));
+    const r = (await resolveImportsField(vfs, id, fromDir, sink, progress));
     return r ? { resolved: r } : null;
   }
   // The enclosing package's own name resolves through its exports map
@@ -542,9 +572,9 @@ async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sin
   // enclosing package claims the name, its map is the whole answer: a
   // subpath it does not expose is not found, never a node_modules copy's.
   // Mirrors node-shims.ts:__resolvePackageSelf.
-  const self = await resolvePackageSelf(vfs, id, fromDir, sink);
+  const self = await resolvePackageSelf(vfs, id, fromDir, sink, progress);
   if (self) return self.resolved ? { resolved: self.resolved } : null;
-  return (await resolveNodeModuleEx(vfs, id, fromDir, sink));
+  return (await resolveNodeModuleEx(vfs, id, fromDir, sink, progress));
 }
 
 /**
@@ -562,15 +592,18 @@ async function nearestPackageScope(
   vfs: RequireFs,
   fromDir: string,
   sink?: PkgJsonSink,
+  progress?: WalkProgress,
 ): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
   let dir = strip(fromDir);
   while (true) {
     if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
+    if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
     if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
-      sink?.(pkgJsonPath);
+      await sink?.(pkgJsonPath);
       let pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null = null;
-      try { pkg = JSON.parse((await vfs.readFileString(pkgJsonPath))); } catch { /* malformed */ }
+      const text = await packageText(vfs, pkgJsonPath, progress);
+      try { pkg = JSON.parse(text ?? ''); } catch { /* malformed */ }
       return { dir, pkg };
     }
     if (!dir) return null;
@@ -589,9 +622,10 @@ async function resolveImportsField(
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
+  progress?: WalkProgress,
 ): Promise<string | null> {
   // First package.json wins (Node spec), even if no imports field.
-  const scope = await nearestPackageScope(vfs, fromDir, sink);
+  const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
   if (!scope || !scope.pkg || !scope.pkg.imports) return null;
   const dir = scope.dir;
   const target = sharedResolveExports(scope.pkg.imports, name, DEFAULT_CJS_CONDITIONS);
@@ -599,13 +633,13 @@ async function resolveImportsField(
   // imports targets are relative to the package root (`dir`).
   if (target.startsWith('./')) {
     const base = (dir ? dir + '/' : '') + target.slice(2);
-    return (await resolveFile(vfs, normalizePath(base), sink));
+    return (await resolveFile(vfs, normalizePath(base), sink, progress));
   }
   if (target.startsWith('/')) {
-    return (await resolveFile(vfs, strip(target), sink));
+    return (await resolveFile(vfs, strip(target), sink, progress));
   }
   // Bare specifier — re-resolve as a node_module from `dir`.
-  const r = (await resolveNodeModuleEx(vfs, target, dir, sink));
+  const r = (await resolveNodeModuleEx(vfs, target, dir, sink, progress));
   return r ? r.resolved : null;
 }
 
@@ -628,15 +662,16 @@ async function resolvePackageSelf(
   name: string,
   fromDir: string,
   sink?: PkgJsonSink,
+  progress?: WalkProgress,
 ): Promise<{ resolved: string | null } | null> {
-  const scope = await nearestPackageScope(vfs, fromDir, sink);
+  const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
   if (!scope || !scope.pkg) return null;
   const subpath = packageSelfReferenceSubpath(scope.pkg, name);
   if (subpath === null) return null;
   let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
   if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
   if (entry == null) return { resolved: null };
-  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink);
+  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink, progress);
   return { resolved };
 }
 
@@ -693,7 +728,13 @@ export async function prefetchForRequire(
   cwd: string,
   entryFile?: string,
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
+  progress?: WalkProgress,
 ): Promise<PrefetchOutcome> {
+  const report = progress;
+  if (report) progress = async work => {
+    try { await report(work); }
+    catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
+  };
   const bundle: Record<string, string> = {};
   const speculative = new Set<string>();
   const visited = new Set<string>();
@@ -716,6 +757,9 @@ export async function prefetchForRequire(
     // failure means the size is unknown; the read attempt decides, as it
     // did before this gate existed.
     let size = 0;
+    if (progress) await progress(METADATA_CANDIDATE_WORK + vfsPath.length);
+    // No pacing point between the size check and the read: a turn may change
+    // the file, so always check its current size after resuming.
     try { size = (await vfs.stat(vfsPath))?.size ?? 0; } catch { /* size unknown */ }
     if (bytesSeen + size > maxBundleBytes) {
       if (lazy) return;
@@ -734,6 +778,7 @@ export async function prefetchForRequire(
     bytesSeen += size;
     bundle[vfsPath] = content;
     if (lazy) speculative.add(vfsPath);
+    if (progress) await progress(content.length);
 
     // Also add the package.json for the enclosing node_modules package
     // so the runtime resolver can read the same exports/main field we
@@ -744,12 +789,11 @@ export async function prefetchForRequire(
       if (nmIdx >= 0) {
         const pkgEnd = parts[nmIdx + 1]?.startsWith('@') ? nmIdx + 3 : nmIdx + 2;
         const pkgJsonPath = parts.slice(0, pkgEnd).join('/') + '/package.json';
+        if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
         if (!visited.has(pkgJsonPath) && (await vfs.exists(pkgJsonPath))) {
           visited.add(pkgJsonPath);
-          try {
-            const pkgContent = (await vfs.readFileString(pkgJsonPath));
-            bundle[pkgJsonPath] = pkgContent;
-          } catch { /* ignore */ }
+          const pkgContent = await packageText(vfs, pkgJsonPath, progress);
+          if (pkgContent !== null) bundle[pkgJsonPath] = pkgContent;
         }
       }
     }
@@ -771,12 +815,11 @@ export async function prefetchForRequire(
         dir = dir.substring(0, sl);
         const dirPkgJson = dir + '/package.json';
         if (visited.has(dirPkgJson)) break; // already shipped, stop walking
+        if (progress) await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
         if ((await vfs.exists(dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
           visited.add(dirPkgJson);
-          try {
-            const pkgContent = (await vfs.readFileString(dirPkgJson));
-            bundle[dirPkgJson] = pkgContent;
-          } catch { /* ignore */ }
+          const pkgContent = await packageText(vfs, dirPkgJson, progress);
+          if (pkgContent !== null) bundle[dirPkgJson] = pkgContent;
         }
       }
     }
@@ -793,6 +836,7 @@ export async function prefetchForRequire(
   }
 
   async function parseAndResolve(code: string, fromDir: string, entry = false): Promise<void> {
+    if (progress) await progress(code.length);
     // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
     // `/* */` comments before running IMPORT_RE / REQUIRE_RE so the
     // regexes don't break on embedded comments. Real-world bite:
@@ -817,12 +861,13 @@ export async function prefetchForRequire(
     // See `comment-strip.ts` header + the wave's verdict.md.
     const stripped = stripCommentsForImports(code);
 
-    REQUIRE_RE.lastIndex = 0;
-    for (let match = REQUIRE_RE.exec(stripped); match !== null; match = REQUIRE_RE.exec(stripped)) {
+    // Recursive and concurrently suspended walks each own their cursor.
+    // Mutating a shared RegExp.lastIndex repeats or skips a parent's imports.
+    for (const match of stripped.matchAll(REQUIRE_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded) break;
-      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
       if (r) {
         (await addFile(r.resolved));
         if (r.stub) (await addStub(r.stub.path, r.stub.content));
@@ -830,12 +875,11 @@ export async function prefetchForRequire(
     }
     // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
     // require of './x' from this file's directory (pi-coding-agent's bin).
-    CREATE_REQUIRE_CALL_RE.lastIndex = 0;
-    for (let match = CREATE_REQUIRE_CALL_RE.exec(stripped); match !== null; match = CREATE_REQUIRE_CALL_RE.exec(stripped)) {
+    for (const match of stripped.matchAll(CREATE_REQUIRE_CALL_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded) break;
-      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
       if (r) {
         (await addFile(r.resolved));
         if (r.stub) (await addStub(r.stub.path, r.stub.content));
@@ -847,20 +891,18 @@ export async function prefetchForRequire(
     // bundle but none of the relative `import './x'` siblings — at
     // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
     // fails because `x` was never added.
-    IMPORT_RE.lastIndex = 0;
-    for (let match = IMPORT_RE.exec(stripped); match !== null; match = IMPORT_RE.exec(stripped)) {
+    for (const match of stripped.matchAll(IMPORT_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (closureExceeded) break;
-      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+      const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
       if (r) {
         (await addFile(r.resolved));
         if (r.stub) (await addStub(r.stub.path, r.stub.content));
       }
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
-    DYNIMPORT_RE.lastIndex = 0;
-    for (let match = DYNIMPORT_RE.exec(stripped); match !== null; match = DYNIMPORT_RE.exec(stripped)) {
+    for (const match of stripped.matchAll(DYNIMPORT_RE)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       if (!entry) { deferredDynamic.push({ specifier, fromDir }); continue; }
@@ -883,6 +925,7 @@ export async function prefetchForRequire(
    */
   async function addStub(stubPath: string, content: string): Promise<void> {
     if (visited.has(stubPath)) return;
+    if (progress) await progress(METADATA_CANDIDATE_WORK + stubPath.length);
     // Don't shadow a real on-disk file: if VFS already has something
     // at this path, skip the stub. (Defence-in-depth — should never
     // happen because the legacy-directory branch only fires when all
@@ -899,6 +942,7 @@ export async function prefetchForRequire(
   const esm = createEsmResolver({
     async kind(path) {
       const key = strip(path);
+      if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
       if (!(await vfs.exists(key))) return null;
       return (await vfs.isDirectory(key)) ? 'directory' : 'file';
     },
@@ -906,11 +950,9 @@ export async function prefetchForRequire(
     realpath: (path) => path,
     async readText(path) {
       const key = strip(path);
-      try {
-        const text = await vfs.readFileString(key);
-        if (key.endsWith('/package.json') || key === 'package.json') await addPkgJson(key);
-        return text;
-      } catch { return null; }
+      const text = await packageText(vfs, key, progress);
+      if (text !== null && (key.endsWith('/package.json') || key === 'package.json')) await addPkgJson(key);
+      return text;
     },
     isBuiltin: (specifier) => isFacetProvided(specifier),
     cjsResolve: () => null,
@@ -921,7 +963,8 @@ export async function prefetchForRequire(
     try {
       const resolution = await esm.resolve(specifier, parentUrl);
       return resolution.path === undefined ? null : strip(resolution.path);
-    } catch {
+    } catch (error) {
+      if (error instanceof WalkControlFailure) throw error;
       return null;
     }
   }
@@ -935,8 +978,8 @@ export async function prefetchForRequire(
   async function addPkgJson(pkgJsonPath: string): Promise<void> {
     const k = strip(pkgJsonPath);
     if (visited.has(k) || k in bundle) return;
-    let content: string;
-    try { content = (await vfs.readFileString(k)); } catch { return; }
+    const content = await packageText(vfs, k, progress);
+    if (content === null) return;
     visited.add(k);
     bundle[k] = content;
   }
@@ -953,42 +996,47 @@ export async function prefetchForRequire(
   // Falling back to cwd preserves the legacy behaviour for naked
   // entryCode (no file context) — covers the `node -e '<code>'`
   // path where opts.filename is '<eval>'.
-  const cwdStripped = strip(cwd);
-  let entryFromDir = cwdStripped;
-  if (entryFile) {
-    const stripped = strip(entryFile);
-    const slash = stripped.lastIndexOf('/');
-    if (slash > 0) entryFromDir = stripped.substring(0, slash);
+  async function walk(): Promise<PrefetchOutcome> {
+    const cwdStripped = strip(cwd);
+    let entryFromDir = cwdStripped;
+    if (entryFile) {
+      const stripped = strip(entryFile);
+      const slash = stripped.lastIndexOf('/');
+      if (slash > 0) entryFromDir = stripped.substring(0, slash);
+    }
+    await parseAndResolve(entryCode, entryFromDir, true);
+
+    // If there's an entry file, add it (and recurse).
+    if (entryFile) await addFile(strip(entryFile), true);
+
+    // Also add cwd package.json if it exists (for npm scripts, main field etc).
+    const cwdPkg = cwdStripped + '/package.json';
+    if (progress) await progress(METADATA_CANDIDATE_WORK + cwdPkg.length);
+    if ((await vfs.exists(cwdPkg)) && !visited.has(cwdPkg)) {
+      const c = await packageText(vfs, cwdPkg, progress);
+      if (c !== null) {
+        bundle[cwdPkg] = c;
+        visited.add(cwdPkg);
+      }
+    }
+
+    if (closureExceeded) return closureExceeded;
+
+    // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
+    lazy = true;
+    for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
+      const { specifier, fromDir } = deferredDynamic[i];
+      const resolved = await resolveDynamicImport(specifier, fromDir);
+      if (resolved) await addFile(resolved);
+    }
+
+    return { bundle, speculative };
   }
-  (await parseAndResolve(entryCode, entryFromDir, true));
-
-  // If there's an entry file, add it (and recurse)
-  if (entryFile) {
-    const stripped = strip(entryFile);
-    (await addFile(stripped, true));
+  try { return await walk(); }
+  catch (error) {
+    if (error instanceof WalkControlFailure) throw error.cause;
+    throw error;
   }
-
-  // Also add cwd package.json if it exists (for npm scripts, main field etc)
-  const cwdPkg = cwdStripped + '/package.json';
-  if ((await vfs.exists(cwdPkg)) && !visited.has(cwdPkg)) {
-    try {
-      const c = (await vfs.readFileString(cwdPkg));
-      bundle[cwdPkg] = c;
-      visited.add(cwdPkg);
-    } catch { /* ignore */ }
-  }
-
-  if (closureExceeded) return closureExceeded;
-
-  // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
-  lazy = true;
-  for (let i = 0; i < deferredDynamic.length && bytesSeen < maxBundleBytes; i++) {
-    const { specifier, fromDir } = deferredDynamic[i];
-    const resolved = (await resolveDynamicImport(specifier, fromDir));
-    if (resolved) (await addFile(resolved));
-  }
-
-  return { bundle, speculative };
 }
 
 const BUILTINS = new Set([
