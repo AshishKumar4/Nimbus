@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The in-process facet host (`localFacetHost()`, every embedder that is not
+  workerd) parks a wasm guest where the engine can suspend one: Bun ships
+  JSPI (`WebAssembly.Suspending`/`promising`), so a plain-WASI child now waits
+  at a full pipe as on Linux, and `seq 100000 | cat | head -1` reports GNU's
+  `141 141 0` instead of `0 141 0`; `yes | cat | head -1` and
+  `yes | head -c 80000000 | wc -c` run instead of failing on the pipe budget.
+  Node 22 has no JSPI, keeps `parking: 'none'`, and behaves as before. No
+  runner, artifact or rule change: the host states its capability and the
+  bash runner already carried both paths.
+
 - A node launch's speculative main-entry pass resolves each package's root
   entry with the shared exports resolver, in the runtime's order (exports
   under CJS then ESM conditions, `main`, `index`). A root conditional map

@@ -145,11 +145,16 @@ export interface FacetHost {
    * of the authority answers its file syscalls.
    *
    * `jspi` — the host can park the guest on a promise, so a syscall may go
-   *   back to the session mid-instruction over the supervisor RPC.
+   *   back to the session mid-instruction over the supervisor RPC, and a
+   *   plain-WASI writer waits at a full pipe.
    * `none` — it cannot; V8 traps any call into a suspending import off a
    *   stack `WebAssembly.promising` did not enter. Every syscall must answer
    *   synchronously, so the guest is wired to the authority's synchronous
    *   view instead of a suspending one.
+   *
+   * The Worker Loader host is always `jspi`. The in-process host
+   * ({@link ./local-facet-host.ts}) reads the engine: Bun (JavaScriptCore)
+   * has JSPI and parks; Node 22 does not and answers on the guest's stack.
    */
   readonly parking: WasiParking;
   /**

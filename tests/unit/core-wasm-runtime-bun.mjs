@@ -220,18 +220,31 @@ const ws = await open({ facets: localFacetHost() });
     assert.equal(r.stderr, '', `${command}: stderr`);
     assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
   }
-  // Where a child would have to wait for a writer (a WASI child cannot pause
-  // without JSPI) the command fails and says why; it never reports a false end
-  // of input or loses output.
-  for (const command of ['yes | cat | head -1', 'yes | head -c 80000000 | wc -c']) {
+  // A pipeline whose middle stage must wait for a writer. On a host that can
+  // park a guest (JSPI, which Bun has) every stage is real backpressure and the
+  // statuses are GNU's; on one that cannot, a WASI child has no way to pause,
+  // so the command fails and says why rather than report a false end of input
+  // or lose output.
+  const parks = localFacetHost().parking === 'jspi';
+  for (const [command, want] of [
+    ['yes | cat | head -1; echo "${PIPESTATUS[*]}"', 'y\n141 141 0\n'],
+    ['yes | head -c 80000000 | wc -c; echo "${PIPESTATUS[*]}"', '80000000\n141 0 0\n'],
+  ]) {
     const r = await Promise.race([
       ws.exec(`bash -c '${command}'`),
       new Promise((_, reject) => setTimeout(() => reject(new Error(`${command}: still running after 30 s`)), 30_000)),
     ]);
-    assert.equal(r.exitCode, 1, command);
-    assert.match(r.stderr, /^bash: pipe buffer limit \d+ MiB exceeded: this runtime cannot pause a WASI writer without JSPI\n$/, command);
+    if (parks) {
+      assert.equal(r.exitCode, 0, `${command}: ${r.stderr}`);
+      assert.equal(r.stdout, want, command);
+    } else {
+      assert.equal(r.exitCode, 1, command);
+      assert.match(r.stderr, /^bash: pipe buffer limit \d+ MiB exceeded: this runtime cannot pause a WASI writer without JSPI\n$/, command);
+    }
   }
-  console.log('  ok  without JSPI, pipes match bash or fail saying why');
+  console.log(parks
+    ? '  ok  a parking host: a waiting middle stage gets GNU\'s statuses'
+    : '  ok  without JSPI, pipes match bash or fail saying why');
 }
 
 // ── bash and the durable filesystem are the same filesystem ─────────────────
