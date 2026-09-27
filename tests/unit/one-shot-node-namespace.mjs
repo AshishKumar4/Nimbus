@@ -250,6 +250,7 @@ assert.deepEqual(afterRefusal, second, 'normal allowance restores a complete coh
 
   kfs.writeFile('home/user/app/recovery.json', '{"answer":56}');
   const controlledProgram = prelude + '\nconsole.log(require("./recovery.json").answer)';
+  const revisionAtFailure = rawVfs.revision();
   grantFailure = new Error('the alarm turn could not be scheduled');
   await assert.rejects(paced.exec(controlledProgram, walkOpts), error => error === grantFailure);
   grantFailure = undefined;
@@ -260,6 +261,7 @@ assert.deepEqual(afterRefusal, second, 'normal allowance restores a complete coh
     paced.processes.exit(entry.pid, 137);
   };
   await assert.rejects(paced.exec(controlledProgram, walkOpts), /cancelled while it was suspended/);
+  assert.equal(rawVfs.revision(), revisionAtFailure, 'the recovery cannot evade a poisoned cache by changing filesystem revision');
   out = '';
   const beforeRecovery = grants;
   try { alive = await paced.exec(controlledProgram, walkOpts); }
