@@ -1,5 +1,5 @@
 /**
- * Dynamic `import()` in a module cell.
+ * Dynamic `import()` and evaluation metadata in a module cell.
  *
  * A cell is compiled with `new Function`, so an `import()` that survives into
  * it is the runtime's own: workerd resolves it against its module registry,
@@ -14,10 +14,14 @@
  * parse runs where the ESM→CJS transform runs, in the esbuild facet (its
  * staged runner installs `__nimbusRewriteDynamicImports`), never in the
  * session's isolate, and the session caches the result by content.
+ * The same parse binds compiler-produced metadata references to the wrapper
+ * module, using an identifier absent from every parsed scope. User bindings
+ * named `module` cannot capture them; directives and five-argument CommonJS
+ * wrappers are preserved.
  */
 import { parse } from 'acorn';
-import type { Node } from 'acorn';
-import { simple } from 'acorn-walk';
+import type { Node, Program, Identifier, MemberExpression } from 'acorn';
+import { full } from 'acorn-walk';
 
 /** The loader a rewritten `import()` calls (node-shims.ts). */
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
@@ -37,7 +41,7 @@ export function mayHaveDynamicImport(code: string): boolean {
  * module syntax, for what a transform left in (`import.meta`), which a
  * script may not contain.
  */
-function parseCell(code: string): Node | null {
+function parseCell(code: string): Program | null {
   for (const sourceType of ['script', 'module'] as const) {
     try {
       return parse(code, {
@@ -66,24 +70,55 @@ interface ImportExpressionNode extends Node {
  * A cell is a function body (it may `return` or `await` at its top level);
  * one acorn cannot parse is returned unchanged, for the compile to report.
  */
-export function rewriteDynamicImports(code: string, parentUrl: string): string {
-  if (!mayHaveDynamicImport(code)) return code;
+export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false): string {
+  const metadata = moduleMetadata && (code.includes('__nimbusModuleUrl') || code.includes('__nimbusImportMetaResolve'));
+  if (!mayHaveDynamicImport(code) && !metadata) return code;
   const ast = parseCell(code);
   if (ast === null) return code;
-  const spans: { start: number; end: number }[] = [];
-  simple(ast, {
-    ImportExpression(node) {
-      const expression = node as ImportExpressionNode;
-      spans.push({ start: expression.start, end: expression.source.start });
-    },
-  });
-  if (spans.length === 0) return code;
-  spans.sort((a, b) => a.start - b.start);
+  const spans: { start: number; end: number; text: string }[] = [];
+  const metadataMembers: MemberExpression[] | null = metadata ? [] : null;
+  const identifiers = metadata ? new Set<string>() : null;
   const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
+  full(ast, (node) => {
+    // These tags identify acorn's concrete node types, including escaped
+    // identifiers and bindings in nested scopes.
+    if (identifiers && node.type === 'Identifier') {
+      const identifier = node as Identifier;
+      identifiers.add(identifier.name);
+    }
+    if (node.type === 'ImportExpression') {
+      const expression = node as ImportExpressionNode;
+      spans.push({ start: expression.start, end: expression.source.start, text: call });
+    }
+    if (metadataMembers && node.type === 'MemberExpression') {
+      const member = node as MemberExpression;
+      if (!member.computed && member.property.type === 'Identifier'
+        && (member.property.name === '__nimbusModuleUrl' || member.property.name === '__nimbusImportMetaResolve')) metadataMembers.push(member);
+    }
+  });
+  if (metadataMembers?.length) {
+    // `module` can be a user binding (or a nested function parameter).
+    // Capture the actual wrapper module by position once, using a name no
+    // parsed scope binds. No additional CommonJS argument or wrapper parse.
+    let binding = '__nimbusMetadataModule';
+    while (identifiers!.has(binding)) binding += '_';
+    for (const member of metadataMembers) {
+      const property = member.property as Identifier;
+      spans.push({ start: member.start, end: member.end, text: `${binding}.${property.name}` });
+    }
+    let insertion = ast.body[0]?.start ?? 0;
+    for (const statement of ast.body) {
+      if (!('directive' in statement) || typeof statement.directive !== 'string') break;
+      insertion = statement.end;
+    }
+    spans.push({ start: insertion, end: insertion, text: `\nconst ${binding} = arguments[2];\n` });
+  }
+  if (spans.length === 0) return code;
+  spans.sort((a, b) => a.start - b.start || a.end - b.end);
   let out = '';
   let at = 0;
-  for (const { start, end } of spans) {
-    out += code.slice(at, start) + call;
+  for (const { start, end, text } of spans) {
+    out += code.slice(at, start) + text;
     at = end;
   }
   return out + code.slice(at);

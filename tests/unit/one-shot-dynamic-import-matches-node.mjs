@@ -36,7 +36,13 @@ const files = {
   'app/esm.mjs': 'export const kind = "esm";\nexport default "esm-default";\n',
   'app/c.cjs': 'exports.a = 1;\nexports.b = 2;\n',
   'app/load.cjs': 'exports.load = () => import("./esm.mjs");\n',
-  'app/counted.mjs': 'globalThis.__nimbusCountedImport = (globalThis.__nimbusCountedImport || 0) + 1; export const count = globalThis.__nimbusCountedImport;\n',
+  'app/counted.mjs': '"use strict"; globalThis.__nimbusCountedImport = (globalThis.__nimbusCountedImport || 0) + 1; export const count = globalThis.__nimbusCountedImport; export const url = import.meta.url; export const resolve = import.meta.resolve; export function readUrl(__nimbusMetadataModule) { if ((function () { return this; })() !== undefined) throw new Error("strictness lost"); return import.meta.url; }\n',
+  'app/arity.cjs': '"use strict"; module.exports = [arguments.length, (function () { return this; })() === undefined];\n',
+  'app/static-counted.mjs': 'export { count } from "./counted.mjs";\n',
+  // Bundler-shaped ESM beyond the large-cell rewrite threshold: its metadata
+  // must also come from the evaluation, not from source transformation.
+  'app/large-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst url = import.meta.url; export { url };\n',
+  'app/large-shadow-meta.mjs': '/*' + 'x'.repeat(600 * 1024) + '*/\nconst module = "local"; const url = import.meta.url; export { url, module };\n',
   'app/data.json': '{"k":1}\n',
   'app/dir/index.js': 'module.exports = "idx";\n',
   'app/rel.js': 'module.exports = "rel";\n',
@@ -91,6 +97,16 @@ const attempt = async (label, load) => {
   const two = await import('./counted.mjs?v=two');
   const fragment = await import('./counted.mjs#fragment');
   out.push(['ESM evaluation uses complete URL', [one.count, repeated.count, two.count, fragment.count]]);
+  const required = require('./counted.mjs');
+  const canonical = await import('./counted.mjs');
+  const reexported = await import('./static-counted.mjs');
+  out.push(['canonical ESM shares require and static evaluation', [required.count, canonical.count, reexported.count]]);
+  out.push(['import.meta.url follows evaluation', [one.url, two.url, fragment.url, one.readUrl(), canonical.url]]);
+  out.push(['extracted import.meta.resolve retains parent', one.resolve('./c.cjs')]);
+  out.push(['large-cell import.meta.url follows evaluation', (await import('./large-meta.mjs?large#fragment')).url]);
+  const shadowed = await import('./large-shadow-meta.mjs?shadow');
+  out.push(['module binding does not shadow metadata', [shadowed.module, shadowed.url]]);
+  out.push(['CommonJS wrapper arguments and strictness unchanged', require('./arity.cjs')]);
   console.log(JSON.stringify(out));
 })();
 `;

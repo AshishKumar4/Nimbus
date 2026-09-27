@@ -3535,20 +3535,10 @@ async function transformEsmInBundle(
     const loader = bundleTypescriptLoader(path);
     // A TypeScript source keeps its bytes; its emit lands beside it.
     const target = loader === null ? path : compiledCellKey(path);
-    // `import.meta.url` substitution mirrors the sibling fix at
-    // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
-    // Without `define`, esbuild's CJS transform reduces `import.meta.url`
-    // to undefined (single-pass) or preserves it literally — only to
-    // SyntaxError at `new Function(...)` parse time (two-pass via
-    // EsbuildService.transform's async-IIFE wrap → "Cannot use
-    // 'import.meta' outside a module"). The substitution value is the
-    // real `file:///<absolute-path>` URL — exactly what real Node returns
-    // for an ESM module at that path.
-    //
-    // Note: cache key now incorporates the path because the transformed
-    // output is path-specific (the URL literal is baked in). Two files
-    // with identical source but different paths would otherwise share a
-    // cache entry and the second file would get the first file's URL.
+    // Source is transformed once per path; import.meta reads metadata from
+    // each evaluation's module object, including its query and fragment.
+    // The source URL still keys transforms and supplies the static parent
+    // for rewritten dynamic imports and diagnostics.
     const absUrl = 'file:///' + path.replace(/^\/+/, '');
     // Keyed on the staged bytes, so a cell the pre-pass fails has a key too.
     const key = __cacheKey(original + '\0' + absUrl);
@@ -3560,6 +3550,7 @@ async function transformEsmInBundle(
     }
     // Every cell's dynamic import() is the process's: the transform keeps
     // them, and the facet rewrites each to the process's ESM loader.
+    const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
     const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
       path,
       target,
@@ -3568,8 +3559,8 @@ async function transformEsmInBundle(
       request: {
         code,
         options: rewriteOnly
-          ? { rewriteOnly: true, dynamicImportParent: absUrl }
-          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl), dynamicImportParent: absUrl },
+          ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
+          : { loader: loader ?? 'js', format: 'cjs', target: 'esnext', define: importMetaDefines(absUrl, true), dynamicImportParent: absUrl, moduleMetadata },
       },
     });
     let src: string;
@@ -3587,7 +3578,7 @@ async function transformEsmInBundle(
       if (pacer) await pacer.spend(src.length);
       let rewritten: EsbuildTransformOutcome | null;
       try {
-        rewritten = rewriteBundledEsmToCjs(src, absUrl);
+        rewritten = rewriteBundledEsmToCjs(src, absUrl, true);
       } catch (e) {
         rewritten = { error: errorText(e) };
       }
@@ -3598,7 +3589,7 @@ async function transformEsmInBundle(
       if (rewritten) {
         // Its declarations are CommonJS now; what import() calls remain go to
         // the facet like any cell's.
-        if (!mayHaveDynamicImport(rewritten.code)) {
+        if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('__nimbusModuleUrl') && !rewritten.code.includes('__nimbusImportMetaResolve')) {
           settle(cell, rewritten);
           continue;
         }

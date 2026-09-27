@@ -334,7 +334,10 @@ kernel credential, because Nimbus follows POSIX here:
   JSON `data:` URLs require the JSON import attribute and load when it is
   supplied. ESM source lookup uses the file path, while evaluation caching
   uses the complete URL: distinct queries/fragments evaluate separately,
-  and importing the same URL again reuses its evaluation.
+  and importing the same URL again reuses its evaluation. Queryless imports,
+  `require`, and transformed static imports share the canonical evaluation.
+  `import.meta.url` receives that evaluation's complete URL, not a source-path
+  literal; extracted `import.meta.resolve` retains its module's parent.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry

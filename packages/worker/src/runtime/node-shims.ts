@@ -8783,6 +8783,15 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   // const import_meta = {}. Save+restore for recursive __loadModule.
   const __prevModulePath = globalThis.__currentModulePath;
   globalThis.__currentModulePath = resolvedPath;
+  const moduleUrl = evaluationKey.startsWith("file:")
+    ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
+  // Evaluation metadata lives on the module, not in source text. Keeping
+  // it here preserves the five CommonJS arguments and captures the parent
+  // even when import.meta.resolve is extracted and called later.
+  Object.defineProperties(mod, {
+    __nimbusModuleUrl: { value: moduleUrl, writable: true, configurable: true },
+    __nimbusImportMetaResolve: { value: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl), writable: true, configurable: true },
+  });
   try {
     // Use pre-compiled function from startup (new Function allowed at module eval time)
     // Normalize path to match VFS bundle key format (no leading /)
@@ -8985,9 +8994,10 @@ function __esmLoad(resolution) {
     const key = resolution.path.replace(/^\\/+/, "");
     const esm = resolution.format === "module"
       || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
-    // Source/precompiled code is shared by pathname. ESM evaluation is not:
-    // each resolved URL (query and fragment included) is a separate module.
-    const exports = __loadModule(key, esm ? resolution.url : key);
+    // Canonical queryless ESM shares evaluation with require() and static
+    // imports lowered to require(). Queries/fragments are distinct jobs.
+    const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
+    const exports = __loadModule(key, variant ? resolution.url : key);
     if (resolution.format === "json") {
       ns = __esmNamespaceOf(["default"], () => exports);
     } else if (esm) {
