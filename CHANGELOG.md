@@ -412,6 +412,11 @@ kernel credential, because Nimbus follows POSIX here:
   as JavaScript first; module strictness and local binding names are preserved.
   Dot access, computed access and destructuring share the same per-evaluation
   metadata object; its existing `url` and `resolve` behavior is consistent.
+- The transform facet consumes Acorn trees one completed top-level statement
+  at a time, keeping edit spans and binding names instead of the whole module
+  AST. Grammar, scope, exports and directives still use Acorn's parser. This
+  reduces retained parsing memory for large bundled modules; it does not
+  change the session's closure bound or dependency coverage.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry

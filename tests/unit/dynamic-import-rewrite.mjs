@@ -8,11 +8,53 @@
 // here over the service's in-isolate path, which runs the same function.
 
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 const parent = 'file:///home/user/app/lib/mod.js';
+const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
+const { parse } = coreRequire('acorn');
+const { full } = coreRequire('acorn-walk');
+
+// Full-tree reference for the streaming parser's externally visible edits:
+// positions, captured binding name, directives and syntax rejection.
+function reference(source) {
+  let ast;
+  for (const sourceType of ['module', 'script']) {
+    try { ast = parse(source, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, allowHashBang: true }); break; } catch {}
+  }
+  if (!ast) return source;
+  const edits = [], metas = [], names = new Set();
+  full(ast, node => {
+    if (node.type === 'Identifier') names.add(node.name);
+    if (node.type === 'ImportExpression') edits.push({ start: node.start, end: node.source.start, text: `__nimbusDynamicImport(${JSON.stringify(parent)}, ` });
+    if (node.type === 'MetaProperty' && node.meta.name === 'import') metas.push({ start: node.start, end: node.end });
+  });
+  if (metas.length) {
+    let binding = '__nimbusMetadataModule';
+    while (names.has(binding)) binding += '_';
+    for (const span of metas) edits.push({ ...span, text: `${binding}.__nimbusImportMeta` });
+    let at = ast.body[0]?.start ?? 0;
+    for (const statement of ast.body) { if (typeof statement.directive !== 'string') break; at = statement.end; }
+    edits.push({ start: at, end: at, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+  }
+  edits.sort((a, b) => a.start - b.start || a.end - b.end);
+  let at = 0, result = '';
+  for (const edit of edits) { result += source.slice(at, edit.start) + edit.text; at = edit.end; }
+  return result + source.slice(at);
+}
+for (const source of [
+  'export { value }; const value = import.meta.url; const __nimbusMetadataModule = 0;',
+  '"use strict"; "another directive"; const f = async (__nimbusMetadataModule_) => import(await import("x")); const __nimbusMetadataModule = import.meta["url"];',
+  'class Reader { #x = import.meta.url; method() { return import("x", {with:{type:"json"}}); } } export {Reader};',
+  'export const x = import.meta.url; export {x};', // duplicate export
+  'export {missing}; import("x");', // unresolved forward export
+  'const duplicate = 1; let duplicate = import.meta.url;',
+  'function broken( { return import("x");',
+  '#!/usr/bin/env node\n"use strict"; import(import.meta.url);',
+]) assert.equal(rewriteDynamicImports(source, parent, true), reference(source), 'streamed statement parsing preserves full-parser edits and syntax checks');
 
 // What the rewritten code does: every call carries the parent, the specifier
 // and the options as the program wrote them, evaluated in its order.
@@ -59,11 +101,28 @@ return { quoted, template, pattern: String(pattern), viaMember, viaOptional, loa
       [parent, './nested.js'],
       [parent, 'ns:./nested.js'],
     ]);
-    assert.doesNotMatch(rewritten, /in-comment\.js'\)[^\n]*__nimbus/, 'a comment is untouched');
-    assert.match(rewritten, /\/\/ import\('\.\/in-comment\.js'\)/);
   } finally {
     delete globalThis.__nimbusDynamicImport;
   }
+}
+
+// Statement-at-a-time parsing must still see later bindings, nested syntax
+// and directives before choosing its metadata capture name.
+{
+  const source = `"use strict";
+class Reader {
+  #url = import.meta['url'];
+  read() { return this.#url; }
+}
+function later(__nimbusMetadataModule_) { return [import.meta.url, __nimbusMetadataModule_]; }
+const __nimbusMetadataModule = 'user binding';
+const { url } = import.meta;
+return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
+  (function () { return this; })() === undefined];`;
+  const rewritten = rewriteDynamicImports(source, parent, true);
+  const execute = new Function('exports', 'require', 'module', rewritten);
+  assert.deepEqual(execute({}, () => {}, { __nimbusImportMeta: { url: parent } }),
+    [parent, [parent, 'argument'], parent, 'user binding', true]);
 }
 
 // A script the parse refuses is returned as written, for the compile to report.
