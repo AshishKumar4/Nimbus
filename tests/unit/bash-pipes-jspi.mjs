@@ -32,11 +32,14 @@ const cases = [
   ['yes | head -c 80000000 | wc -c', '80000000\n'],
 ];
 
+console.log('bash-pipes-jspi: starting local workerd');
 const probe = await startLocalProbe();
 try {
+  console.log('bash-pipes-jspi: installing runtime and opening terminal');
   const terminal = await localTerminal(probe);
   try {
     for (const [command, want] of cases) {
+      console.log(`bash-pipes-jspi: ${command}`);
       const r = await terminal.run(`bash -c '${command.replaceAll("'", "'\\''")}'`, 90_000);
       assert.equal(r.stdout.replace(/^\s+/gm, ''), want, command);
       assert.equal(r.status, 0, command);

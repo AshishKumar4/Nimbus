@@ -93,6 +93,7 @@ async function putObjects(puts, persist, work) {
   const worker = async () => {
     while (queue.length) {
       const { key, file, contentType } = queue.shift();
+      console.log(`workerd-probe: staging ${key} (${queue.length} remaining)`);
       await new Promise((done, fail) => {
         const args = ['r2', 'object', 'put', `${BUCKET}/${key}`, '--file', file, '--local', '--persist-to', persist];
         if (contentType) args.push('--content-type', contentType);
@@ -133,6 +134,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist, work);
 
     const port = await freePort();
+    console.log('workerd-probe: starting wrangler dev');
     const secret = randomBytes(24).toString('hex');
     child = spawn(WRANGLER, [
       'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
