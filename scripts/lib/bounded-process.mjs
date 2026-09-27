@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, accessSync, constants } from 'node:fs';
+import { readdirSync, readFileSync, accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const active = new Set();
@@ -132,6 +134,16 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     function resolveResultMissing() {
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
     }
+    let statusDir;
+    let statusFile;
+    if (unit) {
+      try { accessSync('/usr/bin/bwrap', constants.X_OK); } catch {
+        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: 'required PID isolation unavailable: /usr/bin/bwrap', code: null, signal: null, outputTruncated: false });
+        return;
+      }
+      statusDir = mkdtempSync(resolvePath(tmpdir(), 'bounded-status-'));
+      statusFile = resolvePath(statusDir, 'status.json');
+    }
     const launchArgs = unit ? [
       // oneshot treats SIGTERM as a signal failure, not a clean service stop.
       '--user', '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
@@ -143,7 +155,11 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       '--property=TimeoutStopSec=1s', `--property=TimeoutStartSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}s`,
       // The launcher needs the caller's user-bus environment. The target
       // receives only its requested environment, not the manager's defaults.
-      '--', '/usr/bin/env', '-i', ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}=${value}`),
+      // PID/user namespaces isolate signals, not filesystem or network access.
+      '--', '/usr/bin/bwrap', '--unshare-user', '--uid', String(process.getuid()), '--gid', String(process.getgid()),
+      '--unshare-pid', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--die-with-parent',
+      '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), statusFile,
+      '/usr/bin/env', '-i', ...Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}=${value}`),
       executable, ...args,
     ] : args;
     const child = spawn(unit ? '/usr/bin/systemd-run' : command, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
@@ -153,9 +169,15 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       kill() {
         if (unit) {
           spawnSync('/usr/bin/systemctl', ['--user', 'kill', '--kill-whom=all', '--signal=KILL', unit], { stdio: 'ignore', timeout: 3000 });
+          // The systemd-run client can retain its bus/stdio handles after the
+          // service is killed. It is our direct child, not a namespace PID.
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         } else killTree(child, rootStart, known);
       },
-      cancel(signal) { reason = `runner received ${signal}`; cleanup(); },
+      cancel(signal) {
+        reason = `runner received ${signal}`;
+        cleanup();
+      },
     };
     active.add(job);
     const census = unit ? null : setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known); }, 25);
@@ -207,7 +229,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         // status alone cannot distinguish an oracle exit from exec/OOM failure.
         const info = spawnSync('/usr/bin/systemctl', ['--user', 'show', unit, '--property=Result,ExecMainCode,ExecMainStatus'], { encoding: 'utf8', timeout: 3000 });
         const props = Object.fromEntries((info.stdout ?? '').trim().split('\n').map((line) => line.split('=')));
-        if ((!props.Result || props.ExecMainCode === '0') && code !== 0) reason ||= `spawn failed: systemd-run exited ${code} before recording a process status`;
+
         if (props.Result && !['success', 'exit-code'].includes(props.Result)) reason ||= `cgroup result=${props.Result} ExecMainCode=${props.ExecMainCode} ExecMainStatus=${props.ExecMainStatus}`;
         if (props.ExecMainCode === '1') {
           code = Number(props.ExecMainStatus);
@@ -217,6 +239,18 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
           reason ||= `process terminated by ${signal}`;
         }
         spawnSync('/usr/bin/systemctl', ['--user', 'reset-failed', unit], { stdio: 'ignore', timeout: 3000 });
+        try {
+          if (statSync(statusFile).size > 1024) throw new Error('oversized wait status');
+          const status = JSON.parse(readFileSync(statusFile, 'utf8'));
+          if (!(status.code === null || (Number.isInteger(status.code) && status.code >= 0 && status.code <= 255))
+            || !(status.signal === null || typeof status.signal === 'string') || typeof status.error !== 'string') throw new Error('invalid wait status');
+          code = status.code;
+          signal = status.signal;
+          if (status.error) reason ||= `spawn failed: ${status.error}`;
+          if (signal) reason ||= `process terminated by ${signal}`;
+        } catch (error) {
+          reason ||= `PID-isolated process produced no valid wait status: ${error.message}`;
+        } finally { rmSync(statusDir, { recursive: true, force: true }); }
       }
       resolve({ ok: code === 0 && !reason, stdout: stdout.text(), stderr: stderr.text(), reason, code, signal, outputTruncated });
     };
