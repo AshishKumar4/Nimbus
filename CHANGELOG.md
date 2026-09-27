@@ -25,7 +25,9 @@ published independently in the `@nimbus-sh` npm scope.
   covers `kill -9`/`-s` forms, child shells and named programmatic shells.
   `kill -0` only checks that the process is alive; stop, continue and
   ignored signals are refused for a resident, since its teardown can only
-  end it. A successful kill prints nothing, as in bash.
+  end it. A successful kill prints nothing, as in bash. The resident exits
+  with the signal's status (TERM 143, INT 130, HUP 129, KILL 137) and its
+  exit record names the signal, instead of 137 for every signal.
 
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and

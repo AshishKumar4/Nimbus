@@ -1,6 +1,6 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
-import { signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
@@ -91,14 +91,15 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
         } catch (error) {
           await stderr.write(`kill: while stopping vite shim: ${error instanceof Error ? error.message : String(error)}\n`);
         }
+        const code = exitCodeForSignal(signal);
         self.portRegistry.unregisterByPid(pid);
-        self.processes.kill(pid);
-        notifyTerminalEvent(terminal, { type: 'exit', pid, code: 137, command: 'vite' });
+        self.processes.kill(pid, code);
+        notifyTerminalEvent(terminal, { type: 'exit', pid, code, reason: `SIG${signal}`, command: 'vite' });
         self._viteShimPid = null;
         self._viteShimPort = null;
         return 'delivered';
       }
-      return facetMgr.kill(pid) ? 'delivered' : 'no-such-process';
+      return facetMgr.kill(pid, signal) ? 'delivered' : 'no-such-process';
     },
   };
   shell.setHostProcessSignals(hostSignals);

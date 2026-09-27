@@ -183,6 +183,23 @@ try {
   const job = await sh('( sleep 30 & kill %1; wait %1; echo "job=$?" )');
   assert.deepEqual(job, { code: 0, out: 'job=143\n', err: '' }, 'a subshell %job names its own job');
   console.log('  [5] sh -c, a named shell and a subshell %job all resolve');
+
+  // ── 6. the exit status is the signal's ─────────────────────────────────
+  // A resident ended by a signal exits 128+signo, as a shell reports it; the
+  // exit record names the signal.
+  const cases = [['', 'TERM', 143], ['-KILL', 'KILL', 137], ['-s INT', 'INT', 130], ['-1', 'HUP', 129], ['-n 15', 'TERM', 143]];
+  for (const [flag, name, code] of cases) {
+    const pid = await serve(`node sig-${name}-${code}.js`, `/home/user/sig-${flag.replace(/\W/g, '') || 'default'}`);
+    assert.deepEqual(await sh(`kill ${flag} ${pid}`.replace(/ +/g, ' ')), { code: 0, out: '', err: '' }, `kill ${flag}`);
+    assert.equal(running(pid), false, `kill ${flag} ended it`);
+    assert.equal(processes.get(pid)?.exitCode, code, `kill ${flag}: exit status 128+SIG${name}`);
+    assert.deepEqual(
+      { code: processes.getExit(pid)?.code, reason: processes.getExit(pid)?.reason },
+      { code, reason: `SIG${name}` },
+      `kill ${flag}: the exit record`,
+    );
+  }
+  console.log('  [6] TERM 143, KILL 137, INT 130, HUP 129 in the table and the exit record');
 } finally {
   await runtime.close();
 }
