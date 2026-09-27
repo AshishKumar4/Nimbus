@@ -5,10 +5,13 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { runBoundedProcess } from './lib/bounded-process.mjs';
 import { scaffold } from '../packages/cli/src/commands/scaffold.ts';
 import { CLI_VERSION } from '../packages/cli/src/version.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const { values } = parseArgs({ options: { 'cli-bin': { type: 'string' } } });
 const manifests = [];
 for (const base of ['packages', 'apps']) {
   for (const entry of await readdir(join(root, base), { withFileTypes: true })) {
@@ -42,6 +45,22 @@ try {
   for (const name of ['@nimbus-sh/config', '@nimbus-sh/worker', '@nimbus-sh/sdk']) {
     assert.ok(generated.dependencies[name], `fresh bootstrap must install ${name}`);
     check('scaffold', name, generated.dependencies[name]);
+  }
+  if (values['cli-bin']) {
+    const binary = values['cli-bin'];
+    const options = { cwd: scratch, timeoutMs: 30_000, maxOutputBytes: 1 << 20 };
+    const version = await runBoundedProcess(binary, ['--version'], options);
+    assert.ok(version.ok, `${version.reason}\n${version.stderr}`);
+    assert.equal(version.stdout.trim(), versions.get('@nimbus-sh/cli'));
+    const standalone = join(scratch, 'standalone');
+    const init = await runBoundedProcess(binary, ['init', standalone], options);
+    assert.ok(init.ok, `${init.reason}\n${init.stderr}`);
+    const packed = JSON.parse(await readFile(join(standalone, 'package.json'), 'utf8'));
+    for (const name of ['@nimbus-sh/config', '@nimbus-sh/worker', '@nimbus-sh/sdk']) {
+      assert.ok(packed.dependencies[name], `standalone bootstrap must install ${name}`);
+      check('standalone scaffold', name, packed.dependencies[name]);
+    }
+    console.log('release-manifests: standalone CLI version and scaffold pass outside the checkout');
   }
   console.log(`release-manifests: ${manifests.length} manifests, ${edges} compatible internal edges; fresh scaffold targets this release`);
 } finally { await rm(scratch, { recursive: true, force: true }); }

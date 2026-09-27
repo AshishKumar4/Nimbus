@@ -18,11 +18,7 @@
 
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, basename, relative } from 'node:path';
-import { createRequire } from 'node:module';
-
-const { dependencies } = createRequire(import.meta.url)('../../package.json') as {
-  dependencies: Record<string, string>;
-};
+import manifest from '@nimbus-sh/cli/package.json' with { type: 'json' };
 
 /**
  * Scaffold a new Nimbus project at the given directory.
@@ -143,9 +139,9 @@ function renderPackageJson(name: string): string {
         typecheck: 'tsc --noEmit',
       },
       dependencies: {
-        '@nimbus-sh/config': dependencies['@nimbus-sh/config'],
-        '@nimbus-sh/worker': dependencies['@nimbus-sh/worker'],
-        '@nimbus-sh/sdk': dependencies['@nimbus-sh/sdk'],
+        '@nimbus-sh/config': manifest.dependencies['@nimbus-sh/config'],
+        '@nimbus-sh/worker': manifest.dependencies['@nimbus-sh/worker'],
+        '@nimbus-sh/sdk': manifest.dependencies['@nimbus-sh/sdk'],
       },
       devDependencies: {
         '@cloudflare/workers-types': '^4.20250327.0',

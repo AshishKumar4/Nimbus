@@ -17,6 +17,7 @@
  */
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, basename, relative } from 'node:path';
+import manifest from '@nimbus-sh/cli/package.json' with { type: 'json' };
 /**
  * Scaffold a new Nimbus project at the given directory.
  *
@@ -125,9 +126,9 @@ function renderPackageJson(name) {
             typecheck: 'tsc --noEmit',
         },
         dependencies: {
-            '@nimbus-sh/config': '^0.1.4',
-            '@nimbus-sh/worker': '^0.2.0',
-            '@nimbus-sh/sdk': '^0.2.0',
+            '@nimbus-sh/config': manifest.dependencies['@nimbus-sh/config'],
+            '@nimbus-sh/worker': manifest.dependencies['@nimbus-sh/worker'],
+            '@nimbus-sh/sdk': manifest.dependencies['@nimbus-sh/sdk'],
         },
         devDependencies: {
             '@cloudflare/workers-types': '^4.20250327.0',
@@ -197,6 +198,7 @@ function renderWranglerJsonc(name) {
 function renderIndexTs() {
     return `import {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,
