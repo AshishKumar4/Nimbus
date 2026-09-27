@@ -185,6 +185,25 @@ interruption. The staged-apply test reopens the database and replays a prefix
 of nested replacements/deletions, preserving untouched inode identities and
 content keys.
 
+## Inode identities in row imports
+
+Export rows carry `ino`; each page carries the source allocator's exclusive
+`nextIno` high-water. A whole-root export imported at `/` preserves those
+numbers only in a fresh identity domain: allocator at 2, no live or historical
+inodes, snapshots, other jobs or open descriptions. Pre-staged import chunks
+do not consume inode identities. A used-but-empty filesystem, subtree import
+or staging import allocates destination-local inode numbers instead.
+Import before booting/seeding a `NimbusWorkspace` when preserving full-tree
+inode numbers is required.
+
+The import job records that decision and the first source high-water. Later
+source allocations may raise exported headers, but cannot enlarge the job's
+reserved identity range. Ordinary destination allocations start above that
+range. Active import progress follows the job cursor, not unrelated live
+paths; a reset before cursor persistence replays committed rows harmlessly.
+Invalid IDs and collisions are refused before publishing the page. Content
+keys remain portable, and page digests do not include local inode identity.
+
 ## Mounts in df, mount and /proc/mounts
 
 The workspace has one namespace: a `CompositeVFS` at `ws.filesystem.vfs`,
