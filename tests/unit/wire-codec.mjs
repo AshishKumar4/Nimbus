@@ -27,4 +27,16 @@ for (const base64 of ['!', 'A', '===', 'AA!A']) assert.throws(() => WireDecoder.
 for (const base64 of ['Zg', 'Zg==', 'Z g==']) assert.deepEqual(WireDecoder.parse({ __nimbusWireType: 'bytes', base64 }), new Uint8Array([102]));
 assert.equal(WireEncoder.parse(undefined), undefined);
 assert.equal(WireDecoder.parse(undefined), undefined);
+const dictionary = JSON.parse('{"__proto__":{"polluted":true},"constructor":3,"prototype":4}');
+for (const schema of [WireEncoder, WireDecoder]) {
+  const value = schema.parse(dictionary);
+  assert.equal(Object.getPrototypeOf(value), Object.prototype);
+  assert.equal(Object.hasOwn(value, '__proto__'), true);
+  assert.deepEqual(value, dictionary);
+  assert.equal(value.polluted, undefined);
+}
+assert.deepEqual(WireDecoder.parse(Object.assign(Object.create({ __nimbusWireType: 'bytes', base64: 'AQ==' }), { keep: 1 })), { keep: 1 });
+const unusualNumbers = { list: [undefined, NaN, Infinity, -Infinity], absent: undefined, nan: NaN, infinite: Infinity };
+assert.equal(JSON.stringify(WireEncoder.parse(unusualNumbers)), JSON.stringify(unusualNumbers));
+assert.equal(Object.prototype.polluted, undefined);
 console.log('wire-codec: byte windows, nesting, undefined fields and tag/error boundaries pass');

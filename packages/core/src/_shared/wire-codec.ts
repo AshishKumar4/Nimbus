@@ -19,8 +19,14 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
-const scalar = z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()]);
-const bytes = z.object({ __nimbusWireType: z.literal('bytes'), base64: z.string() });
+const scalar = z.union([z.string(), z.custom<number>((value) => typeof value === 'number'), z.boolean(), z.null(), z.undefined()]);
+type WireInput = WireScalar | ArrayBuffer | ArrayBufferView | WireInput[] | { [key: string]: WireInput };
+const record = z.custom<Record<string, WireInput>>((value) => typeof value === 'object' && value !== null
+  && !Array.isArray(value) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value));
+const bytes = z.custom<{ __nimbusWireType: 'bytes'; base64: string }>((value) => typeof value === 'object' && value !== null
+  && Object.hasOwn(value, '__nimbusWireType') && Object.hasOwn(value, 'base64')
+  && '__nimbusWireType' in value && value.__nimbusWireType === 'bytes'
+  && 'base64' in value && typeof value.base64 === 'string');
 
 // Validation and conversion share a traversal; binary views are encoded without a validation copy.
 export const WireEncoder: z.ZodType<WireEncoded> = z.lazy(() => z.union([
@@ -32,9 +38,14 @@ export const WireEncoder: z.ZodType<WireEncoded> = z.lazy(() => z.union([
     __nimbusWireType: 'bytes', base64: bytesToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
   })),
   z.array(WireEncoder),
-  z.record(z.string(), WireEncoder).transform((record) => {
-    for (const key of Object.keys(record)) if (record[key] === undefined) delete record[key];
-    return record;
+  record.transform((value) => {
+    const out: Record<string, WireEncoded> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) Object.defineProperty(out, key, {
+        value: WireEncoder.parse(item), enumerable: true, writable: true, configurable: true,
+      });
+    }
+    return out;
   }),
 ]));
 
@@ -42,5 +53,11 @@ export const WireDecoder: z.ZodType<WireDecoded> = z.lazy(() => z.union([
   bytes.transform((value) => base64ToBytes(value.base64)),
   scalar,
   z.array(WireDecoder),
-  z.record(z.string(), WireDecoder),
+  record.transform((value) => {
+    const out: Record<string, WireDecoded> = {};
+    for (const [key, item] of Object.entries(value)) Object.defineProperty(out, key, {
+      value: WireDecoder.parse(item), enumerable: true, writable: true, configurable: true,
+    });
+    return out;
+  }),
 ]));
