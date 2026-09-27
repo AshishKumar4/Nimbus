@@ -15,10 +15,8 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import {
-  FACET_RESIDENT_STORE_SOURCE,
-  RESIDENT_CHUNK_BYTES,
-} from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
 
 /** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
 function sqlShim(meter) {
