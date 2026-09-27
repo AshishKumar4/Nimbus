@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `DELETE /s/<id>/` no longer answers with the session shell. The core
+  router served the UI HTML for the session root whatever the method, so a
+  DELETE carrying only an attach token got 200 HTML and destroyed nothing.
+  With the remote API enabled, a root DELETE is now `box.destroy()` under its
+  own authorization and answers the JSON destroy result; without destroy
+  scopes it gets the usual 401/403. The root serves the UI to GET and HEAD
+  only; other methods are 405. The hosted demo refuses an anonymous session's
+  DELETE with 401 (`E_ANON_SESSION_TTL`); its fixed lifetime reaps it. The
+  probe target drops its own DELETE route for the core one. Behavioral
+  cleanup counts a session as deleted only when the DELETE returned the
+  destroy result.
+
 - `kill <pid>` in a hosted session ends the session's resident processes
   again. The shell's `kill` builtin only looked in its own process registry,
   so a resident pid (1000002, …) answered "No such process" and stayed up;

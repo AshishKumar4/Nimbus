@@ -16,6 +16,7 @@ const SCRATCH = mkdtempSync(join(tmpdir(), 'probe-session-cleanup-'));
 let minted = 0;
 let deletes = [];
 let deleteStatus = 200;
+let deleteShape = 'destroy';
 const target = Bun.serve({
   port: 0,
   fetch(req) {
@@ -32,20 +33,24 @@ const target = Bun.serve({
     const m = pathname.match(/^\/s\/([^/]+)\/$/);
     if (req.method === 'DELETE' && m) {
       deletes.push(`${m[1]} ${req.headers.get('authorization')}`);
-      return new Response(null, { status: deleteStatus });
+      if (deleteShape === 'html') return new Response('<html>session shell</html>', { status: deleteStatus, headers: { 'content-type': 'text/html' } });
+      if (deleteShape === 'broken-json') return new Response('{"ok":', { status: deleteStatus, headers: { 'content-type': 'application/json' } });
+      if (deleteShape === 'ok-only') return Response.json({ ok: true }, { status: deleteStatus });
+      return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: 1234, reason: null } }, { status: deleteStatus });
     }
     return new Response('not found', { status: 404 });
   },
 });
 
 /** Run `body` as a probe process that imports the driver: its exit, the DELETEs it caused, its ledger. */
-async function probe(name, body, { status = 200, token = 'probe-token' } = {}) {
+async function probe(name, body, { status = 200, token = 'probe-token', shape = 'destroy' } = {}) {
   const file = join(SCRATCH, `${name}.mjs`);
   const ledger = join(SCRATCH, `${name}.jsonl`);
   writeFileSync(file, `import { mintSession, deleteSession, sleep } from ${JSON.stringify(DRIVER)};\n${body}\n`);
   minted = 0;
   deletes = [];
   deleteStatus = status;
+  deleteShape = shape;
   const child = Bun.spawn([process.execPath, file], {
     env: { ...process.env, BASE: `http://127.0.0.1:${target.port}`, NIMBUS_PROBE_TOKEN: token, NIMBUS_PROBE_LEDGER: ledger },
     stdout: 'ignore',
@@ -54,7 +59,7 @@ async function probe(name, body, { status = 200, token = 'probe-token' } = {}) {
   const code = await child.exited;
   const text = existsSync(ledger) ? readFileSync(ledger, 'utf8') : '';
   const events = text ? text.trim().split('\n').map((l) => JSON.parse(l)).map((e) => `${e.event} ${e.sid} ${e.status}`) : [];
-  return { code, signal: child.signalCode, deletes, events, outcomes: sessionOutcomes(text) };
+  return { code, signal: child.signalCode, deletes, events, outcomes: sessionOutcomes(text), text };
 }
 
 // [1] An early exit without deleteSession: the hook DELETEs with the probe's credential; the exit code stands.
@@ -110,6 +115,24 @@ async function probe(name, body, { status = 200, token = 'probe-token' } = {}) {
   assert.equal(deleted.outcomes.deleted, 1);
   console.log('  [5] an anonymous session is TTL-reaped, not leaked');
 }
+
+// [6] Only the destroy result releases a session. A 200 carrying the session
+// shell's HTML (a router that ignores the method), broken JSON or a bare
+// `{ ok: true }` destroyed nothing: deleteSession reports it unconfirmed, the
+// exit hook tries again, and run-all names the session a leak.
+for (const shape of ['html', 'broken-json', 'ok-only']) {
+  const r = await probe(`false-success-${shape}`, 'const r = await deleteSession(await mintSession());\nif (r.ok) throw new Error("false deletion proof");', { shape });
+  assert.equal(r.code, 0, `${shape}: deleteSession reports the DELETE unconfirmed`);
+  assert.deepEqual(r.deletes, ['fixture-1 Bearer probe-token', 'fixture-1 Bearer probe-token'], `${shape}: the exit hook retries it`);
+  assert.equal(r.outcomes.deleted, 0);
+  assert.deepEqual(r.outcomes.leaks.map(([sid]) => sid), ['fixture-1']);
+  const deletes = r.text.trim().split('\n').map((line) => JSON.parse(line)).filter((e) => e.event !== 'mint');
+  assert.deepEqual(deletes.map((e) => [e.event, e.status, e.confirmed]), [['delete', 200, false], ['exit-delete', 200, false]]);
+}
+const historical = [{ event: 'mint', sid: 'historical' }, { event: 'delete', sid: 'historical', status: 200 }]
+  .map((e) => JSON.stringify(e)).join('\n');
+assert.equal(sessionOutcomes(historical).deleted, 0, 'a bare 200 row without confirmation proves no deletion');
+console.log('  [6] only the destroy result confirms a deletion');
 
 target.stop(true);
 rmSync(SCRATCH, { recursive: true, force: true });

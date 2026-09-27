@@ -46,10 +46,10 @@
 //
 // SESSION HYGIENE
 //   `DEMO_ANON_MAX_ACTIVE` is small and shared with the public docs
-//   terminal, so this takes exactly one session and releases it. Anon
+//   terminal, so this takes exactly one session and gives it back. Anon
 //   sessions answer DELETE with 401 by design — they are owned by nobody
-//   — and reap on their own ~600s TTL, so a refused delete is reported,
-//   not failed.
+//   — and reap on their own ~600s TTL. The refusal is asserted: a 200
+//   here was the session shell's HTML, reported as a deletion.
 
 import { BASE, Terminal, makeAsserter, requestHeaders } from '../../_driver.mjs';
 
@@ -188,12 +188,14 @@ a.check('anonymous session runs a command and returns its output',
 const released = await fetch(new URL(`/s/${sid}/`, BASE), {
   method: 'DELETE',
   headers: { Cookie: sessionCookie, 'X-Nimbus-Cleanup-Reason': 'behavioral-probe-cleanup' },
-}).then((r) => r.status).catch((e) => `error: ${e?.message ?? e}`);
+}).then(async (r) => ({ status: r.status, type: r.headers.get('content-type') ?? '', body: await r.text() }))
+  .catch((e) => ({ status: `error: ${e?.message ?? e}`, type: '', body: '' }));
 
-// Not an assertion: an anon session is owned by nobody, so DELETE is 401
-// by design and the ~600s TTL reaps it either way. Reported so a change
-// in that behaviour is visible rather than silently absorbed.
-console.log(`\n  released ${sid}: DELETE → ${released} (401 expected; anon sessions reap on TTL)`);
+// An anon session is owned by nobody: its DELETE is refused, and the ~600s
+// TTL reaps it.
+a.check('an anonymous session refuses DELETE with 401 JSON (the TTL reaps it)',
+  released.status === 401 && released.type.startsWith('application/json') && released.body.includes('E_ANON_SESSION_TTL'),
+  `${released.status} ${released.type} ${released.body.slice(0, 120)}`);
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

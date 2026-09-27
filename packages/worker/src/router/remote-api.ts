@@ -1,6 +1,8 @@
 import {
   LEGACY_PUBLIC_DO_SEGMENT,
+  parseSessionRoute,
 } from '../_shared/session-router.js';
+import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import {
@@ -165,25 +167,36 @@ export async function handleNimbusRemoteApi(
   if (!remote.enabled) return null;
 
   const url = new URL(request.url);
-  const match = matchRemoteRpc(url.pathname, remote.basePath);
+  // `DELETE /s/<id>/` is the session's own address for `box.destroy()`: the
+  // same operation, under the same authorization, as the RPC below.
+  const sessionRoot = request.method === 'DELETE' ? parseSessionRoute(url.pathname) : null;
+  const destroyingRoot = sessionRoot !== null && sessionRoot.innerPath === '/';
+  const match = destroyingRoot ? { sandboxId: sessionRoot.sessionId } : matchRemoteRpc(url.pathname, remote.basePath);
   if (!match) return null;
 
-  if (request.method === 'OPTIONS') return corsResponse(null, 204);
-  if (request.method !== 'POST') {
-    return remoteJson({ ok: false, error: 'Method not allowed', code: 'E_METHOD_NOT_ALLOWED' }, 405);
+  if (!destroyingRoot) {
+    if (request.method === 'OPTIONS') return corsResponse(null, 204);
+    if (request.method !== 'POST') {
+      return remoteJson({ ok: false, error: 'Method not allowed', code: 'E_METHOD_NOT_ALLOWED' }, 405);
+    }
   }
   if (!env?.NIMBUS_SESSION) {
     return remoteJson({ ok: false, error: 'NIMBUS_SESSION binding is missing', code: 'E_NIMBUS_BINDING_MISSING' }, 500);
   }
-  if (!isNimbusIdComponent(match.sandboxId)) {
+  if (!isNimbusIdComponent(match.sandboxId) || (destroyingRoot && !isValidSessionId(match.sandboxId))) {
     return remoteJson({ ok: false, error: 'Invalid sandbox id', code: 'E_SANDBOX_ID' }, 400);
   }
 
   let body: RemoteRpcBody;
-  try {
-    body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
-  } catch (e: unknown) {
-    return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
+  if (destroyingRoot) {
+    const reason = request.headers.get('X-Nimbus-Cleanup-Reason');
+    body = { op: 'destroy', args: [reason === null ? {} : { reason }] };
+  } else {
+    try {
+      body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
+    } catch (e: unknown) {
+      return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);
+    }
   }
 
   const remoteAuth = await resolveRemoteAuth(
@@ -242,6 +255,11 @@ export async function handleNimbusRemoteApi(
       code: err.code,
     }, err.httpStatus);
   }
+}
+
+/** Whether the remote API (and with it `DELETE /s/<id>/`) is served. */
+export function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolean {
+  return normalizeRemoteConfig(sdk?.remote).enabled;
 }
 
 function normalizeRemoteConfig(remote: boolean | NimbusRemoteApiConfig | undefined): Required<NimbusRemoteApiConfig> {

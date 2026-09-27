@@ -71,6 +71,7 @@ import {
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import {
   handleNimbusRemoteApi,
+  remoteApiEnabled,
   type NimbusSdkRouterConfig,
 } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
@@ -547,7 +548,18 @@ export function createNimbusHandler(
       }
 
       // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
+      // Only to GET and HEAD: a root DELETE is the SDK's destroy, answered by
+      // handleNimbusRemoteApi above when the remote API is enabled.
       if (route.innerPath === '/' || route.innerPath === '') {
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          return new Response('Method not allowed', {
+            status: 405,
+            headers: {
+              Allow: remoteApiEnabled(options.sdk) ? 'GET, HEAD, DELETE' : 'GET, HEAD',
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
         if (env.ASSETS) {
           const shellUrl = new URL('/s/index.html', url.origin);
           return env.ASSETS.fetch(new Request(shellUrl.toString(), {

@@ -215,6 +215,13 @@ Applications normally call it through `Nimbus.connect({ endpoint, token,
 config })`. The route requires a valid Nimbus JWT and `sandbox:use` scope.
 `box.destroy()` additionally requires `session:destroy` or `session:admin`.
 
+With the remote API enabled, `DELETE /s/<id>/` is the same operation under
+the same authorization as `box.destroy()`, and answers
+`{ ok: true, result: { ok, killed, destroyedAt, reason } }`. An
+`X-Nimbus-Cleanup-Reason` header supplies the reason. The session root
+serves the UI only to `GET` and `HEAD`; any other method is `405`, and so is
+`DELETE` when the remote API is off.
+
 For an app server, start the process and expose its virtual port:
 
 ```ts
