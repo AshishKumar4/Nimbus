@@ -531,7 +531,7 @@ type InodeContent =
   /** Unchanged or moved content (metadata change, rename, copy). */
   | { type: 'ref'; chunkId: number | null; contentId: number | null }
   /** A staged content this transaction publishes. */
-  | { type: 'staged'; content: StagingContent }
+  | { type: 'staged'; content: StagingContent; digest?: Uint8Array }
   /** An unshared small file's chunk, rewritten in place unless its new hash exists. */
   | { type: 'rewrite'; chunkId: number; piece: Piece }
   /**
@@ -672,7 +672,7 @@ class TransactionPlanBuilder {
   private gcRefCount = 0;
 
   /** `history`: a snapshot is pinned, so replaced rows keep before-images. */
-  constructor(private readonly history: boolean) {}
+  constructor(private readonly history: boolean, private readonly commitRow = false) {}
 
   addInode(entry: StoredInodeEntry): void {
     this.inodes.push(entry);
@@ -824,7 +824,7 @@ class TransactionPlanBuilder {
       staged: this.staged,
       stagingCreated: this.stagingCreated,
       affectedPaths: this.affectedPaths,
-      metrics: this.metricsWith({}),
+      metrics: this.metricsWith({}, false),
     };
   }
 
@@ -834,7 +834,7 @@ class TransactionPlanBuilder {
    * checked against a different accounting than the one it commits under.
    * Counts are upper bounds: a deduplicated chunk writes no row.
    */
-  private metricsWith(addition: PlanAddition): TransactionPlanMetrics {
+  private metricsWith(addition: PlanAddition, reserveCommit = this.commitRow): TransactionPlanMetrics {
     const inodeRows = this.inodes.length + (addition.inodeRows ?? 0);
     const deletes = this.deletes.length + (addition.deletes ?? 0);
     const pieces = this.pieces + (addition.pieces ?? 0);
@@ -846,8 +846,8 @@ class TransactionPlanBuilder {
     return {
       blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
       // A delete writes its tombstone too.
-      logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows,
-      sqlExecs: 2
+      logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + (reserveCommit ? 1 : 0),
+      sqlExecs: 2 + (reserveCommit ? 1 : 0)
         + groupedSqlExecs(historyRows, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(deletes, KEYS_PER_SQL_EXEC)
         + groupedSqlExecs(deletes, TOMBSTONE_ROWS_PER_SQL_EXEC)
@@ -910,6 +910,9 @@ export interface VfsExportRow {
   defaultAcl: number | null;
   atime: number;
   mtime: number;
+  contentKey: string | null;
+  /** Byte offset of this bounded manifest fragment. */
+  pieceOffset: number;
   /** False for content in one chunk (<= CHUNK_SIZE bytes). */
   manifest: boolean;
   /** Chunk sha256 (hex) and size, in content order. */
@@ -937,7 +940,29 @@ const ImportJobArgsSchema = z.object({
   sourceRoot: z.string().optional(),
   sourceNextIno: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER).optional(),
   preserveInos: z.boolean().optional(),
+  pending: z.object({
+    path: z.string(),
+    meta: z.string(),
+    content: z.number().int().positive(),
+    offset: z.number().int().nonnegative(),
+    count: z.number().int().nonnegative(),
+  }).optional(),
 });
+
+const ExportCursorSchema = z.tuple([z.string(), z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER)]);
+function exportCursor(path: string, offset = -1): string { return JSON.stringify([path, offset]); }
+function readExportCursor(cursor: string | null): [string, number] | null {
+  if (cursor === null) return null;
+  try {
+    const parsed = ExportCursorSchema.safeParse(JSON.parse(cursor));
+    if (parsed.success) return parsed.data;
+  } catch {}
+  throw vfsError('EINVAL', 'invalid export cursor');
+}
+function importRowMeta(row: VfsExportRow): string {
+  return JSON.stringify([row.path, row.ino, row.kind, row.size, row.mode, row.uid, row.gid,
+    row.defaultAcl, row.atime, row.mtime, row.manifest, row.contentKey]);
+}
 
 export interface SnapshotInfo {
   name: string;
@@ -1467,6 +1492,7 @@ export class SqliteVFS {
     for (const row of this.sql.exec("SELECT args FROM vfs_jobs WHERE kind = 'import'")) {
       const job = ImportJobArgsSchema.parse(JSON.parse(String(row.args)));
       if (job.preserveInos) this.transactionSync(() => this.ensureImportIdentityIndexes());
+      if (job.pending !== undefined) this.activeStagingContentIds.add(job.pending.content);
     }
     if ([...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino') LIMIT 1")].length) {
       this.transactionSync(() => this.dropUnusedImportIdentityIndexes());
@@ -1716,9 +1742,8 @@ export class SqliteVFS {
   }
 
   /**
-   * After a restart no operation is assembling anything, so every state-0
-   * content is an abandoned write: queue them all. Read first, so a store
-   * with none opens without a write.
+   * Queue interrupted staging after a restart. Durable import manifests
+   * have been re-pinned above, so GC skips them. A store with none stays read-only.
    */
   private queueAbandonedStaging(): void {
     if ([...this.sql.exec(`SELECT 1 FROM vfs_contents WHERE state = ${CONTENT_STAGING} LIMIT 1`)].length === 0) return;
@@ -3313,17 +3338,25 @@ export class SqliteVFS {
     if (content.digest !== null && content.digest !== undefined) return hex(this.blobToUint8Array(content.digest));
     const memo = this.contentKeyMemo.get(ref.contentId);
     if (memo !== undefined) return memo;
-    const digest = new ManifestDigest();
-    for (const row of this.sql.exec(
-      `SELECT c.hash AS hash FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
-       WHERE cc.content_id = ? ORDER BY cc.off`,
-      ref.contentId,
-    )) digest.add(this.blobToUint8Array(row.hash));
+    const digest = this.manifestDigest(ref.contentId);
     const key = digest.digest(ref.size);
     const taken = [...this.sql.exec('SELECT 1 FROM vfs_contents WHERE digest = ?', key)].length > 0;
     if (taken) this.contentKeyMemo.set(ref.contentId, hex(key));
     else this.transactionSync(() => { this.sql.exec('UPDATE vfs_contents SET digest = ? WHERE id = ?', key, ref.contentId); });
     return hex(key);
+  }
+
+  private manifestDigest(content: number): ManifestDigest {
+    const digest = new ManifestDigest();
+    for (let after = -1; ;) {
+      const rows = [...this.sql.exec(
+        `SELECT cc.off, c.hash FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
+         WHERE cc.content_id = ? AND cc.off > ? ORDER BY cc.off LIMIT ?`, content, after, EXPORT_PAGE_PIECES,
+      )];
+      for (const row of rows) digest.add(this.blobToUint8Array(row.hash));
+      if (rows.length < EXPORT_PAGE_PIECES) return digest;
+      after = Number(rows[rows.length - 1]!.off);
+    }
   }
 
   /** contentKeyOf from a list row's joined chunk hash or digest, so a page costs no lookup per file. */
@@ -4222,8 +4255,8 @@ export class SqliteVFS {
     )].length === 0;
   }
 
-  private newPlan(): TransactionPlanBuilder {
-    return new TransactionPlanBuilder(this._pinGen > 0);
+  private newPlan(commitRow = false): TransactionPlanBuilder {
+    return new TransactionPlanBuilder(this._pinGen > 0, commitRow);
   }
 
   /** Create a state-0 content in its own transaction and hold it live. */
@@ -5449,27 +5482,37 @@ export class SqliteVFS {
     return [...out.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   }
 
-  /** One keyset page of the tree as of `g`, in path order: live and history merged. */
+  /**
+   * One keyset page of the tree as of `g`, in SQLite's path order (UTF-8 bytes,
+   * the order `path > ?` keysets use): live and history merged in SQL, so the
+   * page boundary and the cursor never disagree. A JS `<` on strings orders by
+   * UTF-16 code units and would place U+10000 before U+E000.
+   */
   private pageAt(g: number, after: string, limit: number, upper: string | null = null): INode[] {
     const below = upper === null ? '' : ' AND path < ?';
     const bound = upper === null ? [] : [upper];
-    const live = [...this.sql.exec(
-      `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${below} AND gen <= ? ORDER BY path LIMIT ?`,
-      after,
-      ...bound,
-      g,
+    return [...this.sql.exec(
+      `SELECT * FROM (
+         SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${below} AND gen <= ? ORDER BY path LIMIT ?
+       ) UNION ALL SELECT * FROM (
+         SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history WHERE path > ?${below} AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?
+       ) ORDER BY path LIMIT ?`,
+      after, ...bound, g, limit,
+      after, ...bound, g, g, limit,
       limit,
     )].map((row) => this.inodeFromRow(row));
-    const past = [...this.sql.exec(
-      `SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
-       WHERE path > ?${below} AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?`,
-      after,
-      ...bound,
-      g,
-      g,
-      limit,
-    )].map((row) => this.inodeFromRow(row));
-    return [...live, ...past].sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, limit);
+  }
+
+  /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
+  private static comparePaths(a: string, b: string): number {
+    const x = enc.encode(a), y = enc.encode(b);
+    let i = 0;
+    for (const byte of x) {
+      const other = y[i++];
+      if (other === undefined) return 1;
+      if (byte !== other) return byte - other;
+    }
+    return i === y.length ? 0 : -1;
   }
 
   /**
@@ -5996,94 +6039,97 @@ export class SqliteVFS {
       ledger: this.ledger.view(),
     };
   }
-
-  // ── Export and import between databases (N15, N16) ────────────────────
-  //
-  // A tree moves between databases as rows naming chunks by hash, and bytes
-  // only for the chunks the importer lacks: exportPage lists a snapshot's
-  // rows with their chunk hashes; the importer asks wantChunks which hashes
-  // it lacks; exportChunks sends those bytes; importPage re-hashes every
-  // byte it is given and writes in bounded transactions. Content ids are
-  // local integers; hashes and content keys are portable.
-
-  /**
-   * One page of snapshot `at`'s tree under `root`, after the relative path
-   * `after` (null: from the start), in path order. Rows carry their chunk
-   * hashes and sizes, never bytes; a page stops at `limit` rows or
-   * EXPORT_PAGE_PIECES chunk references. `next` is the cursor for the
-   * following page, null after the last.
-   */
+  /** Bounded rows and manifest fragments; cursors are opaque (path, byte offset) positions. */
   exportPage(options: { at: string; root?: string; after?: string | null; limit?: number }): VfsExportPage {
     const g = this.requireSnapshot(options.at);
     const nextIno = Number([...this.sql.exec('SELECT next_ino FROM vfs_state WHERE slot = 1')][0]!.next_ino);
     const root = normalizeVfsPath(options.root ?? '');
     const after = options.after ?? null;
-    const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? EXPORT_PAGE_ROWS)), EXPORT_PAGE_ROWS);
+    const start = readExportCursor(after);
+    const limit = Math.max(1, Math.min(EXPORT_PAGE_ROWS, Math.trunc(options.limit ?? EXPORT_PAGE_ROWS)));
     const range = subtreeRange(root);
-    const full = (rel: string): string => (rel === '' ? root : root === '' ? rel : `${root}/${rel}`);
-    const relative = (path: string): string => (path === root ? '' : root === '' ? path : path.slice(root.length + 1));
     const rows: VfsExportRow[] = [];
+    const envelopeBytes = enc.encode(JSON.stringify({ schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null })).byteLength;
+    let rowBytes = 0;
     let pieces = 0;
-    const take = (inode: INode): boolean => {
-      const row = this.exportRow(inode, relative(inode.path));
-      if (rows.length > 0 && pieces + row.pieces.length > EXPORT_PAGE_PIECES) return false;
-      rows.push(row);
-      pieces += row.pieces.length;
-      return rows.length < limit;
-    };
-    let more = true;
-    if (after === null && root !== '') {
-      const top = this.inodeAt(root, g);
-      if (top === undefined) throw vfsError('ENOENT', `${root} in snapshot ${options.at}`);
-      more = take(top) && top.isDir;
-      if (!top.isDir) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null };
-    }
-    let cursor = after === null ? range.lower : full(after);
-    let exhausted = false;
-    while (more) {
-      const page = this.pageAt(g, cursor, limit + 1, range.upper);
-      if (page.length === 0) { exhausted = true; break; }
-      for (const inode of page) {
-        cursor = inode.path;
-        if (!take(inode)) { more = false; break; }
+    let next: string | null = null;
+    let lastPath = start === null ? root : (start[0] === '' ? root : (root === '' ? start[0] : `${root}/${start[0]}`));
+    let partial = false;
+    const take = (inode: INode, offset = 0): boolean => {
+      if (rows.length === limit) return false;
+      const relative = inode.path === root ? '' : (root === '' ? inode.path : inode.path.slice(root.length + 1));
+      const cursorBytes = enc.encode(JSON.stringify(exportCursor(relative, Math.max(10, inode.size)))).byteLength;
+      const allowance = EXPORT_FRAME_BYTES - envelopeBytes - rowBytes - (rows.length > 0 ? 1 : 0) - (cursorBytes - 4);
+      const fragment = this.exportRow(inode, relative, offset, EXPORT_PAGE_PIECES - pieces, allowance);
+      if (fragment === null) {
+        if (rows.length === 0) throw vfsError('E2BIG', `${inode.path}: export metadata cannot fit one frame`);
+        return false;
       }
-      if (more && page.length <= limit) { exhausted = true; break; }
+      rowBytes += fragment.bytes + (rows.length > 0 ? 1 : 0);
+      rows.push(fragment.row);
+      pieces += fragment.row.pieces.length;
+      partial = fragment.offset < inode.size;
+      next = exportCursor(relative, partial ? fragment.offset : -1);
+      lastPath = inode.path;
+      return true;
+    };
+    if (start !== null && start[1] >= 0) {
+      const inode = this.inodeAt(lastPath, g);
+      if (inode === undefined || inode.isDir) throw vfsError('EINVAL', 'manifest cursor does not name a file');
+      take(inode, start[1]);
+      if (partial) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next };
+    } else if (root !== '' && start === null) {
+      const inode = this.inodeAt(root, g);
+      if (inode === undefined) throw vfsError('ENOENT', root);
+      take(inode);
+      if (partial) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next };
+      if (!inode.isDir) return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: null };
     }
-    if (!exhausted) {
-      exhausted = this.pageAt(g, full(rows[rows.length - 1]!.path), 1, range.upper).length === 0;
+    const key = SqliteVFS.comparePaths(lastPath, range.lower) < 0 ? range.lower : lastPath;
+    let exhausted = true;
+    for (const inode of this.pageAt(g, key, limit + 1, range.upper)) {
+      if (!take(inode)) { exhausted = false; break; }
+      if (partial) { exhausted = false; break; }
     }
-    return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: exhausted ? null : rows[rows.length - 1]!.path };
+    return { schema: VFS_EXPORT_SCHEMA, root, nextIno, after, rows, next: exhausted ? null : next };
   }
 
-  private exportRow(inode: INode, path: string): VfsExportRow {
-    const pieces: [string, number][] = [];
-    let manifest = false;
-    if (inode.chunkId !== null) {
-      const row = [...this.sql.exec('SELECT hash, size FROM vfs_chunks WHERE id = ?', inode.chunkId)][0];
-      if (!row) throw vfsError('EIO', `${inode.path}: missing chunk ${inode.chunkId}`);
-      pieces.push([hex(this.blobToUint8Array(row.hash)), Number(row.size)]);
-    } else if (inode.contentId !== null) {
-      manifest = true;
-      for (const row of this.sql.exec(
-        `SELECT c.hash AS hash, cc.len AS len FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
-         WHERE cc.content_id = ? ORDER BY cc.off`,
-        inode.contentId,
-      )) pieces.push([hex(this.blobToUint8Array(row.hash)), Number(row.len)]);
-    }
-    return {
-      path,
-      ino: inode.ino,
-      kind: inode.kind,
-      size: inode.size,
-      mode: inode.mode,
-      uid: inode.uid,
-      gid: inode.gid,
-      atime: inode.atime,
-      mtime: inode.mtime,
-      manifest,
-      defaultAcl: inode.defaultAcl ?? null,
-      pieces,
+  private exportRow(inode: INode, path: string, offset: number, maximum: number, byteLimit: number): { row: VfsExportRow; bytes: number; offset: number } | null {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > inode.size) throw vfsError('EINVAL', 'invalid manifest offset');
+    const row: VfsExportRow = {
+      path, ino: inode.ino, kind: inode.kind, size: inode.size, mode: inode.mode,
+      uid: inode.uid, gid: inode.gid, defaultAcl: inode.defaultAcl ?? null,
+      atime: inode.atime, mtime: inode.mtime, contentKey: inode.isDir ? null : this.contentKeyOf(inode),
+      manifest: inode.contentId !== null, pieceOffset: offset, pieces: [],
     };
+    let bytes = enc.encode(JSON.stringify(row)).byteLength;
+    if (bytes > byteLimit) return null;
+    let position = offset;
+    const append = (hash: string, length: number): boolean => {
+      const cost = hash.length + String(length).length + 5 + (row.pieces.length > 0 ? 1 : 0);
+      if (row.pieces.length === maximum || bytes + cost > byteLimit) return false;
+      row.pieces.push([hash, length]);
+      bytes += cost;
+      position += length;
+      return true;
+    };
+    if (inode.chunkId !== null) {
+      if (offset !== 0) throw vfsError('EINVAL', 'chunk cursor must start at zero');
+      const chunk = [...this.sql.exec('SELECT hash, size FROM vfs_chunks WHERE id = ?', inode.chunkId)][0];
+      if (!chunk) throw vfsError('EIO', `${inode.path}: missing chunk`);
+      if (!append(hex(this.blobToUint8Array(chunk.hash)), Number(chunk.size))) return null;
+    } else if (inode.contentId !== null) {
+      for (const piece of this.sql.exec(
+        `SELECT cc.off, cc.len, c.hash FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
+         WHERE cc.content_id = ? AND cc.off >= ? ORDER BY cc.off LIMIT ?`, inode.contentId, offset, maximum + 1,
+      )) {
+        if (Number(piece.off) !== position) throw vfsError('EINVAL', 'manifest cursor is not at a chunk boundary');
+        if (!append(hex(this.blobToUint8Array(piece.hash)), Number(piece.len))) break;
+      }
+      if (position === offset && offset < inode.size) return null;
+    }
+    if (position > inode.size) throw vfsError('EIO', `${inode.path}: manifest exceeds file size`);
+    return { row, bytes, offset: position };
   }
 
   /**
@@ -6100,7 +6146,7 @@ export class SqliteVFS {
     const page = this.exportPage(options);
     const hash = createHash('sha256');
     for (const row of page.rows) {
-      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.defaultAcl, row.pieces])}\n`));
+      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.defaultAcl, row.contentKey, row.pieceOffset, row.pieces])}\n`));
     }
     const result = { digest: hex(new Uint8Array(hash.digest())), next: page.next };
     if (this.pageDigests.size >= PAGE_DIGEST_MEMO_ENTRIES) this.pageDigests.clear();
@@ -6128,21 +6174,25 @@ export class SqliteVFS {
   }
 
   /**
-   * The bytes of chunks by hash, up to `maxBytes` (at least one chunk);
-   * `rest` is what did not fit. ENOENT for a hash this database lacks.
+   * The bytes of chunks by hash, up to `maxBytes` (at least one chunk) and at
+   * most EXPORT_PAGE_PIECES chunks (a page names no more, so tiny chunks cannot
+   * make an object frame past the reference budget); `rest` is what did not
+   * fit. ENOENT for a hash this database lacks.
    */
   exportChunks(hashes: readonly string[], maxBytes = EXPORT_FRAME_BYTES): { chunks: VfsExportChunk[]; rest: string[] } {
     const chunks: VfsExportChunk[] = [];
     let bytes = 0;
     let index = 0;
-    for (; index < hashes.length; index++) {
-      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hashes[index]!))][0];
-      if (!row) throw vfsError('ENOENT', `chunk ${hashes[index]}`);
-      if (Number(row.state) !== CHUNK_LOCAL) throw coldChunkError(`chunk ${hashes[index]}`);
+    for (const hash of hashes) {
+      if (chunks.length === EXPORT_PAGE_PIECES) break;
+      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
+      if (!row) throw vfsError('ENOENT', `chunk ${hash}`);
+      if (Number(row.state) !== CHUNK_LOCAL) throw coldChunkError(`chunk ${hash}`);
       if (chunks.length > 0 && bytes + Number(row.size) > maxBytes) break;
       const data = this.blobToUint8Array(row.data);
-      chunks.push({ hash: hashes[index]!, data });
+      chunks.push({ hash, data });
       bytes += data.byteLength;
+      index++;
     }
     return { chunks, rest: hashes.slice(index) };
   }
@@ -6158,7 +6208,7 @@ export class SqliteVFS {
     const job = this.importJob(target);
     if (job !== undefined) {
       if (job.cursor === '') return null;
-      return target === '' ? job.cursor : job.cursor.slice(target.length + 1);
+      return job.cursor;
     }
     const range = subtreeRange(target);
     const last = range.upper === null
@@ -6166,9 +6216,9 @@ export class SqliteVFS {
       : [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper)][0];
     if (last?.path !== null && last?.path !== undefined) {
       const path = String(last.path);
-      return target === '' ? path : path.slice(target.length + 1);
+      return exportCursor(target === '' ? path : path.slice(target.length + 1));
     }
-    return this.inodes.get(target) ? '' : null;
+    return this.inodes.get(target) ? exportCursor('') : null;
   }
 
   /**
@@ -6188,10 +6238,21 @@ export class SqliteVFS {
   ): { imported: number; want: string[]; done: boolean; pending: string[] } {
     // N18: the page's rows and the bytes it brings are admitted and reserved
     // before its first transaction, which then draw from the reservation.
-    const given = [...chunks];
-    let bytes = 0;
-    for (const chunk of given) bytes += chunk.data.byteLength;
+    // Collected under the frame bound as it is pulled: bytes against the frame,
+    // objects against the page's own reference budget (a page names at most
+    // EXPORT_PAGE_PIECES chunks, so a valid frame never carries more), and an
+    // empty chunk is not a chunk. An iterable larger than that, or one that
+    // never ends, stops at the first chunk past the budget.
     const pieces = Array.isArray(page?.rows) ? page.rows.reduce((sum, row) => sum + (row.pieces?.length ?? 0), 0) : 0;
+    if (pieces > EXPORT_PAGE_PIECES) throw vfsError('E2BIG', 'import metadata frame exceeds its budget');
+    const given: VfsExportChunk[] = [];
+    let bytes = 0;
+    for (const chunk of chunks) {
+      if (chunk.data.byteLength === 0) throw vfsError('EINVAL', `chunk ${chunk.hash} is empty`);
+      bytes += chunk.data.byteLength;
+      if (bytes > EXPORT_FRAME_BYTES || given.length === pieces) throw vfsError('E2BIG', 'import chunk frame exceeds its budget');
+      given.push(chunk);
+    }
     const rows = (Array.isArray(page?.rows) ? page.rows.length : 0) + pieces + 2;
     const reservation = crypto.randomUUID();
     this.ledger.reserve(reservation, bytes + rows * LEDGER_ROW_BYTES);
@@ -6202,46 +6263,236 @@ export class SqliteVFS {
     }
   }
 
-  private importPageNow(
-    dst: string,
-    page: VfsExportPage,
-    chunks: Iterable<VfsExportChunk>,
-    lazy: boolean,
-  ): { imported: number; want: string[]; done: boolean; pending: string[] } {
-    if (page?.schema !== VFS_EXPORT_SCHEMA) {
-      throw vfsError('EINVAL', `export schema ${String(page?.schema)}, this filesystem reads ${VFS_EXPORT_SCHEMA}`);
-    }
+  private importPageNow(dst: string, page: VfsExportPage, chunks: Iterable<VfsExportChunk>, lazy: boolean): { imported: number; want: string[]; done: boolean; pending: string[] } {
+    if (page.schema !== VFS_EXPORT_SCHEMA) throw vfsError('EINVAL', `export schema ${page.schema}, expected ${VFS_EXPORT_SCHEMA}`);
+    if (page.rows.length > EXPORT_PAGE_ROWS || page.rows.reduce((n, row) => n + row.pieces.length, 0) > EXPORT_PAGE_PIECES
+        || enc.encode(JSON.stringify(page)).byteLength > EXPORT_FRAME_BYTES) throw vfsError('E2BIG', 'import metadata frame exceeds its budget');
     const target = normalizeVfsPath(dst);
     this.assertMutationsAllowed([target]);
-    if (!Number.isSafeInteger(page.nextIno) || page.nextIno < 2 || typeof page.root !== 'string') {
-      throw vfsError('EINVAL', 'invalid import inode high-water or source root');
-    }
+    if (!Number.isSafeInteger(page.nextIno) || page.nextIno < 2 || typeof page.root !== 'string') throw vfsError('EINVAL', 'invalid import identity header');
+    const job = this.importJob(target);
+    const storedCursor = job === undefined && page.after === null ? null : this.importCursor(target);
+    const cursor = readExportCursor(storedCursor);
+    const from = readExportCursor(page.after);
+    const full = (path: string): string => path === '' ? target : (target === '' ? path : `${target}/${path}`);
+    const compare = (a: [string, number] | null, b: [string, number] | null): number => {
+      if (a === null || b === null) return a === b ? 0 : a === null ? -1 : 1;
+      const byPath = SqliteVFS.comparePaths(a[0], b[0]);
+      if (byPath !== 0) return byPath;
+      const x = a[1] === -1 ? Infinity : a[1], y = b[1] === -1 ? Infinity : b[1];
+      return x === y ? 0 : x < y ? -1 : 1;
+    };
+    if (compare(from, cursor) > 0) throw vfsError('EINVAL', 'import page skips uncommitted progress');
+    const rows = page.rows.filter((row) => cursor === null || SqliteVFS.comparePaths(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
+    if (job === undefined && page.after === null) this.assertImportTarget(target);
+    const identity = this.importIdentity(target, page, job, rows);
     const given = new Map<string, Uint8Array>();
     for (const chunk of chunks) {
       if (hex(chunkHash(chunk.data)) !== chunk.hash) throw vfsError('EINVAL', `chunk ${chunk.hash} does not hash to its name`);
       given.set(chunk.hash, chunk.data);
     }
-    const job = this.importJob(target);
-    const full = (rel: string): string => (rel === '' ? target : target === '' ? rel : `${target}/${rel}`);
-    let cursor: string | null = null;
-    if (job === undefined) {
-      if (page.after !== null) {
-        // A page replayed after the import finished: harmless if it holds
-        // nothing past what is there.
-        const at = this.importCursor(target);
-        if (at !== null && page.rows.every((row) => full(row.path) <= full(at)) && full(page.after) <= full(at)) {
-          return { imported: 0, want: [], done: page.next === null, pending: [] };
-        }
-        throw vfsError('EINVAL', `no import into ${target} is in progress`);
+    const lengths = new Map<string, number>();
+    const finalDigests = new Map<string, Uint8Array>();
+    let pending = job?.pending;
+    let lastPath: string | undefined;
+    for (const row of page.rows) {
+      if (lastPath !== undefined && SqliteVFS.comparePaths(row.path, lastPath) <= 0) throw vfsError('EINVAL', 'import rows are not strictly ordered');
+      lastPath = row.path;
+      if (!Number.isSafeInteger(row.size) || row.size < 0 || !Number.isSafeInteger(row.pieceOffset) || row.pieceOffset < 0
+          || row.pieceOffset > row.size || (row.kind === 'directory' ? row.contentKey !== null : !/^[0-9a-f]{64}$/.test(row.contentKey ?? ''))) {
+        throw vfsError('EINVAL', `${row.path}: invalid manifest metadata`);
       }
-      this.assertImportTarget(target);
-    } else {
-      cursor = this.importCursor(target);
-      if (page.after !== null && (cursor === null || full(page.after) > full(cursor))) {
-        throw vfsError('EINVAL', `import into ${target} is at ${String(cursor)}, the page starts after ${page.after}`);
+      let end = row.pieceOffset;
+      for (const [hash, length] of row.pieces) {
+        const known = lengths.get(hash), supplied = given.get(hash);
+        if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isSafeInteger(length) || length <= 0
+            || (known !== undefined && known !== length)) throw vfsError('EINVAL', `${row.path}: invalid chunk reference`);
+        if (supplied !== undefined && supplied.byteLength !== length) throw vfsError('EINVAL', `${row.path}: chunk size differs`);
+        lengths.set(hash, length);
+        end += length;
+      }
+      if (!Number.isSafeInteger(end) || end > row.size || (end === row.pieceOffset && end !== row.size)
+          || (row.kind === 'directory' && (row.size !== 0 || row.pieces.length !== 0 || row.manifest))
+          || (!row.manifest && (row.pieceOffset !== 0 || end !== row.size || row.pieces.length > 1 || row.size > CHUNK_SIZE))) {
+        throw vfsError('EINVAL', `${row.path}: invalid manifest extent`);
+      }
+      const already = cursor !== null && (SqliteVFS.comparePaths(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
+      if (already) {
+        const inode = this.inodes.get(full(row.path));
+        if (!inode || inode.kind !== row.kind || inode.size !== row.size || (inode.mode & 0o7777) !== (row.mode & 0o7777)
+            || inode.uid !== row.uid || inode.gid !== row.gid || inode.mtime !== row.mtime
+            || (inode.defaultAcl ?? null) !== row.defaultAcl || (row.kind !== 'directory' && this.contentKeyOf(inode) !== row.contentKey)) {
+          throw vfsError('EINVAL', `${row.path}: replay metadata differs`);
+        }
+        continue;
+      }
+      if (pending !== undefined && (pending.path !== row.path || pending.meta !== importRowMeta(row))) throw vfsError('EINVAL', 'pending manifest metadata changed');
+      const committed = pending?.offset ?? 0;
+      if (row.pieceOffset > committed) throw vfsError('EINVAL', `${row.path}: manifest fragment is out of order`);
+      let position = row.pieceOffset;
+      if (pending !== undefined && position < committed) {
+        const old = [...this.sql.exec(
+          `SELECT cc.off, cc.len, c.hash FROM vfs_content_chunks cc JOIN vfs_chunks c ON c.id = cc.chunk_id
+           WHERE cc.content_id = ? AND cc.off >= ? AND cc.off < ? ORDER BY cc.off LIMIT ?`, pending.content, position, Math.min(end, committed), EXPORT_PAGE_PIECES + 1,
+        )];
+        let index = 0;
+        for (const [hash, length] of row.pieces) {
+          if (position >= committed) break;
+          const prior = old[index++];
+          if (!prior || Number(prior.off) !== position || Number(prior.len) !== length || hex(this.blobToUint8Array(prior.hash)) !== hash
+              || position + length > committed) throw vfsError('EINVAL', `${row.path}: replayed manifest differs`);
+          position += length;
+        }
+        if (index !== old.length) throw vfsError('EINVAL', `${row.path}: replay extent differs`);
+      }
+      if (end === row.size) {
+        if (row.manifest) {
+          const digest = pending === undefined ? new ManifestDigest() : this.manifestDigest(pending.content);
+          let at = row.pieceOffset;
+          for (const [hash, length] of row.pieces) { if (at >= committed) digest.add(unhex(hash)); at += length; }
+          const bytes = digest.digest(row.size);
+          if (hex(bytes) !== row.contentKey) throw vfsError('EINVAL', `${row.path}: manifest digest differs`);
+          finalDigests.set(row.path, bytes);
+        } else if (row.kind !== 'directory' && (row.pieces[0]?.[0] ?? hex(EMPTY_CONTENT_KEY)) !== row.contentKey) {
+          throw vfsError('EINVAL', `${row.path}: content key differs`);
+        }
+        pending = undefined;
+      } else {
+        if (row !== page.rows[page.rows.length - 1] || page.next === null) throw vfsError('EINVAL', 'incomplete manifest must end a continued page');
       }
     }
-    const rows = page.rows.filter((row) => cursor === null || full(row.path) > full(cursor));
+    const keys = [...lengths.keys()];
+    for (let offset = 0; offset < keys.length; offset += KEYS_PER_SQL_EXEC) {
+      const batch = keys.slice(offset, offset + KEYS_PER_SQL_EXEC);
+      for (const row of this.sql.exec(`SELECT hash, size FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex))) {
+        if (lengths.get(hex(this.blobToUint8Array(row.hash))) !== Number(row.size)) throw vfsError('EINVAL', 'stored chunk size differs');
+      }
+    }
+    if (page.next !== null) {
+      const last = page.rows[page.rows.length - 1];
+      if (!last) throw vfsError('EINVAL', 'continued page has no rows');
+      const end = last.pieceOffset + last.pieces.reduce((n, piece) => n + piece[1], 0);
+      if (page.next !== exportCursor(last.path, end < last.size ? end : -1)) throw vfsError('EINVAL', 'page cursor differs from its rows');
+    }
+    if (rows.length === 0 && job === undefined && page.after !== null) return { imported: 0, want: [], done: page.next === null, pending: [] };
+    const wanted = this.absentChunks(keys);
+    const missing: { hash: string; size: number }[] = [];
+    for (const hash of wanted) {
+      const size = lengths.get(hash);
+      if (size !== undefined && !given.has(hash)) missing.push({ hash, size });
+    }
+    if (missing.length && !lazy) return { imported: 0, want: missing.map(({ hash }) => hash), done: false, pending: [] };
+    if (lazy) this.insertPendingChunks(missing);
+    const jobId = job?.id ?? this.beginImport(target);
+    const state: z.infer<typeof ImportJobArgsSchema> = { dst: target, ...identity, ...(job?.pending === undefined ? {} : { pending: job.pending }) };
+    if (job?.sourceNextIno === undefined) this.transactionSync(() => {
+      if (identity.preserveInos) {
+        this.ensureImportIdentityIndexes();
+        this.sql.exec('UPDATE vfs_state SET next_ino = MAX(next_ino, ?) WHERE slot = 1', identity.sourceNextIno);
+      }
+      this.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify(state), jobId);
+    });
+    let progress = storedCursor;
+    let imported = 0;
+    const save = (): void => { this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId); };
+    const commit = (plan: TransactionPlan): void => {
+      this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+      if (plan.inodes.length) this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
+      else this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, save);
+    };
+    if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
+      const root = this.newPlan(true);
+      root.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0,
+        defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, contentKey: null, pieceOffset: 0, pieces: [] }, { type: 'none' }));
+      commit(root.build());
+    }
+    for (const row of rows) {
+      const path = full(row.path);
+      const occupied = this.inodes.get(path);
+      if (occupied && row.path !== '' && (!identity.preserveInos || occupied.ino !== row.ino)) throw vfsError('EEXIST', `${path}: import path became occupied`);
+      const previous = state.pending;
+      const already = previous?.offset ?? 0;
+      let position = row.pieceOffset;
+      const pieces: ImportedPiece[] = [];
+      for (const [hash, size] of row.pieces) {
+        if (position >= already) pieces.push({ hash: unhex(hash), size, data: given.get(hash) ?? null });
+        position += size;
+      }
+      const complete = position === row.size;
+      const digest = finalDigests.get(row.path);
+      if (row.manifest && complete && digest === undefined) throw vfsError('EIO', `${row.path}: completed manifest has no verified digest`);
+      const blobBytes = pieces.reduce((n, piece) => n + (piece.data?.byteLength ?? 0), 0);
+      if (row.manifest && (previous !== undefined || !complete || pieces.length > IMPORT_INLINE_PIECES || blobBytes > MAX_TX_BLOB_BYTES / 2)) {
+        const staging: StagingContent = { id: previous?.content ?? 0, size: previous?.offset ?? 0,
+          count: previous?.count ?? 0, hashed: false, digest: new ManifestDigest() };
+        let part = this.newPlan(true);
+        const flush = (): void => {
+          if (part.empty) return;
+          const plan = part.build(); part = this.newPlan(true);
+          const prior = state.pending;
+          this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+          this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
+            state.pending = { path: row.path, meta: importRowMeta(row), content: staging.id, offset: staging.size, count: staging.count };
+            progress = exportCursor(row.path, staging.size);
+            save();
+          });
+          if (prior && prior.content !== staging.id) throw vfsError('EIO', 'import staging identity changed');
+        };
+        for (const piece of pieces) {
+          if (part.wouldExceedPieces(piece.data?.byteLength ?? 0, 1) !== null) flush();
+          part.addStagedImport(staging, piece, path);
+        }
+        flush();
+        if (!complete) continue;
+        const publish = this.newPlan(true);
+        publish.addInode(this.importedEntry(path, row, { type: 'staged', content: staging, digest }, identity.preserveInos ? row.ino : undefined));
+        state.pending = undefined; progress = exportCursor(row.path);
+        commit(publish.build());
+      } else {
+        const plan = this.newPlan(true);
+        const content: InodeContent = row.kind === 'directory' || row.size === 0 ? { type: 'none' }
+          : { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest: digest ?? null };
+        plan.addInode(this.importedEntry(path, row, content, identity.preserveInos ? row.ino : undefined));
+        progress = exportCursor(row.path);
+        commit(plan.build());
+      }
+      imported++;
+    }
+    if (page.next === null && state.pending !== undefined) throw vfsError('EINVAL', 'import ends inside a manifest');
+    const done = page.next === null;
+    if (done) {
+      this.transactionSync(() => {
+        this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
+        this.dropUnusedImportIdentityIndexes();
+      });
+      const held = this.importStagings.get(target);
+      this.importStagings.delete(target);
+      if (held !== undefined && held.id !== 0) this.abandonStaging(held);
+    }
+    this.runContentMaintenanceSafely(1);
+    return { imported, want: [], done, pending: missing.map(({ hash }) => hash) };
+  }
+
+  private ensureImportIdentityIndexes(): void {
+    const names = new Set([...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino')")].map((row) => String(row.name)));
+    if (!names.has('vfs_inodes_ino')) {
+      if ([...this.sql.exec('SELECT 1 FROM vfs_inodes LIMIT 1')].length) throw vfsError('EIO', 'active import lost its inode index');
+      this.sql.exec('CREATE INDEX vfs_inodes_ino ON vfs_inodes(ino)');
+    }
+    if (!names.has('vfs_history_ino')) {
+      if ([...this.sql.exec('SELECT 1 FROM vfs_inode_history LIMIT 1')].length) throw vfsError('EIO', 'active import lost its history index');
+      this.sql.exec('CREATE INDEX vfs_history_ino ON vfs_inode_history(ino)');
+    }
+  }
+
+  private dropUnusedImportIdentityIndexes(): void {
+    if ([...this.sql.exec("SELECT 1 FROM vfs_jobs WHERE kind = 'import' AND json_extract(args, '$.preserveInos') = 1 LIMIT 1")].length) return;
+    this.sql.exec('DROP INDEX IF EXISTS vfs_inodes_ino');
+    this.sql.exec('DROP INDEX IF EXISTS vfs_history_ino');
+  }
+
+  private importIdentity(target: string, page: VfsExportPage, job: ReturnType<SqliteVFS["importJob"]>, rows: VfsExportRow[]): { sourceRoot: string; sourceNextIno: number; preserveInos: boolean } {
+    const full = (path: string): string => path === "" ? target : (target === "" ? path : target + "/" + path);
     const sourceRoot = normalizeVfsPath(page.root);
     const sourceNextIno = job?.sourceNextIno ?? page.nextIno;
     if (page.nextIno < sourceNextIno || (job?.sourceRoot !== undefined && sourceRoot !== job.sourceRoot)) {
@@ -6292,104 +6543,7 @@ export class SqliteVFS {
     if (!Number.isSafeInteger(Math.max(stateNextIno, preserveInos ? sourceNextIno : 2) + rows.length + 1)) {
       throw vfsError('EINVAL', 'import inode high-water leaves no safe allocator range');
     }
-    for (const row of rows) {
-      if (row.pieces.reduce((sum, [, size]) => sum + size, 0) !== row.size) {
-        throw vfsError('EINVAL', `${row.path}: chunks do not add up to ${row.size} bytes`);
-      }
-      if (!row.manifest && row.pieces.length > 1) throw vfsError('EINVAL', `${row.path}: several chunks without a manifest`);
-      for (const [hash, size] of row.pieces) {
-        const data = given.get(hash);
-        if (data !== undefined && data.byteLength !== size) throw vfsError('EINVAL', `chunk ${hash} is ${data.byteLength} bytes, named as ${size}`);
-      }
-    }
-    const want = this.absentChunks([...new Set(rows.flatMap((row) => row.pieces.map(([hash]) => hash)))].filter((hash) => !given.has(hash)));
-    // A lazy import (N17) names what it lacks as pending chunks, hydrated
-    // later; any other import asks for them first.
-    if (want.length > 0 && !lazy) return { imported: 0, want, done: false, pending: [] };
-    if (want.length > 0) {
-      const sizes = new Map<string, number>();
-      for (const row of rows) for (const [hash, size] of row.pieces) sizes.set(hash, size);
-      this.insertPendingChunks(want.map((hash) => ({ hash, size: sizes.get(hash)! })));
-    }
-
-    const jobId = job?.id ?? this.beginImport(target);
-    if (job?.sourceNextIno === undefined) {
-      this.transactionSync(() => {
-        if (preserveInos) {
-          this.ensureImportIdentityIndexes();
-          this.sql.exec('UPDATE vfs_state SET next_ino = MAX(next_ino, ?) WHERE slot = 1', sourceNextIno);
-        }
-        this.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify({ dst: target, sourceRoot, sourceNextIno, preserveInos }), jobId);
-      });
-    }
-    let builder = this.newPlan();
-    let imported = 0;
-    const flush = (): void => {
-      if (builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan();
-      this.assertTransactionFits(plan.metrics);
-      this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' });
-      const last = plan.inodes[plan.inodes.length - 1]?.path;
-      // A reset before this cursor update replays same-path rows; ordinary writes never advance it.
-      if (last !== undefined) this.transactionSync(() => { this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', last, jobId); });
-    };
-    if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
-      builder.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0, defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, pieces: [] }, { type: 'none' }));
-    }
-    for (const row of rows) {
-      const path = full(row.path);
-      const pieces: ImportedPiece[] = row.pieces.map(([hash, size]) => ({ hash: unhex(hash), size, data: given.get(hash) ?? null }));
-      const blob = pieces.reduce((sum, piece) => sum + (piece.data?.byteLength ?? 0), 0);
-      if (pieces.length === 0) {
-        if (builder.wouldExceedInode() !== null) flush();
-        builder.addInode(this.importedEntry(path, row, { type: 'none' }, preserveInos ? row.ino : undefined));
-      } else if (pieces.length <= IMPORT_INLINE_PIECES && blob <= MAX_TX_BLOB_BYTES / 2) {
-        if (builder.wouldExceedPieces(blob, pieces.length) !== null || builder.wouldExceedInode() !== null) flush();
-        let digest: Uint8Array | null = null;
-        if (row.manifest) {
-          const running = new ManifestDigest();
-          for (const piece of pieces) running.add(piece.hash);
-          digest = running.digest(row.size);
-        }
-        builder.addInode(this.importedEntry(path, row, { type: 'imported', pieces, size: row.size, manifest: row.manifest, digest }, preserveInos ? row.ino : undefined));
-      } else {
-        // Too large for one transaction: stage it, then publish with the group.
-        flush();
-        const staging: StagingContent = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        try {
-          for (const piece of pieces) {
-            if (builder.wouldExceedPieces(piece.data?.byteLength ?? 0, 1) !== null) {
-              const plan = builder.build();
-              builder = this.newPlan();
-              this.assertTransactionFits(plan.metrics);
-              this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
-            }
-            builder.addStagedImport(staging, piece, path);
-          }
-          flush();
-          builder.addInode(this.importedEntry(path, row, { type: 'staged', content: staging }, preserveInos ? row.ino : undefined));
-          flush();
-        } catch (error) {
-          if (staging.id !== 0) this.abandonStaging(staging);
-          throw error;
-        }
-      }
-      imported++;
-    }
-    flush();
-    const done = page.next === null;
-    if (done) {
-      this.transactionSync(() => {
-        this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', jobId);
-        this.dropUnusedImportIdentityIndexes();
-      });
-      const held = this.importStagings.get(target);
-      this.importStagings.delete(target);
-      if (held !== undefined && held.id !== 0) this.abandonStaging(held);
-    }
-    this.runContentMaintenanceSafely(1);
-    return { imported, want: [], done, pending: want };
+    return { sourceRoot, sourceNextIno, preserveInos };
   }
 
   /**
@@ -6530,24 +6684,6 @@ export class SqliteVFS {
     }
     flush();
     return { stored };
-  }
-
-  private ensureImportIdentityIndexes(): void {
-    const names = new Set([...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino')")].map((row) => String(row.name)));
-    if (!names.has('vfs_inodes_ino')) {
-      if ([...this.sql.exec('SELECT 1 FROM vfs_inodes LIMIT 1')].length) throw vfsError('EIO', 'active import lost its inode index');
-      this.sql.exec('CREATE INDEX vfs_inodes_ino ON vfs_inodes(ino)');
-    }
-    if (!names.has('vfs_history_ino')) {
-      if ([...this.sql.exec('SELECT 1 FROM vfs_inode_history LIMIT 1')].length) throw vfsError('EIO', 'active import lost its history index');
-      this.sql.exec('CREATE INDEX vfs_history_ino ON vfs_inode_history(ino)');
-    }
-  }
-
-  private dropUnusedImportIdentityIndexes(): void {
-    if ([...this.sql.exec("SELECT 1 FROM vfs_jobs WHERE kind = 'import' AND json_extract(args, '$.preserveInos') = 1 LIMIT 1")].length) return;
-    this.sql.exec('DROP INDEX IF EXISTS vfs_inodes_ino');
-    this.sql.exec('DROP INDEX IF EXISTS vfs_history_ino');
   }
 
   private importJob(target: string): (z.infer<typeof ImportJobArgsSchema> & { id: number; cursor: string }) | undefined {
@@ -7868,10 +8004,12 @@ export class SqliteVFS {
           else if (entry.content.type === 'imported' && entry.content.digest !== null) {
             digests.set(hex(entry.content.digest), entry.content.digest);
           }
-          else if (entry.content.type === 'staged' && entry.content.content.hashed) {
-            const digest = entry.content.content.digest.digest(entry.size);
-            stagedDigests.set(entry.content.content, digest);
-            digests.set(hex(digest), digest);
+          else if (entry.content.type === 'staged') {
+            const digest = entry.content.digest ?? (entry.content.content.hashed ? entry.content.content.digest.digest(entry.size) : undefined);
+            if (digest !== undefined) {
+              stagedDigests.set(entry.content.content, digest);
+              digests.set(hex(digest), digest);
+            }
           }
         }
         const contentByDigest = new Map<string, number>();

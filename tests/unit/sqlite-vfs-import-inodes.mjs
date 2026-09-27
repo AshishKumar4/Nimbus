@@ -54,18 +54,20 @@ try {
   widened.rows[0].ino = first.nextIno;
   assert.throws(() => send(src, dst, widened), (e) => e.code === 'EINVAL', 'later headers cannot enlarge the latched inode domain');
   assert.equal(dst.fs.revision(), beforeRevision);
-  // Force a failure after a row batch commits but before its cursor is persisted.
+  // Interrupt after a row and its cursor commit together; the caller can replay the whole page.
+  const committedCursor = src.raw.exportPage({ at: 'saved', after: cursor, limit: 1 }).next;
+  const reset = new Error('simulated caller reset');
   let interrupted = false;
   dst.h.setFaultInjector(({ sql }) => {
-    if (!interrupted && sql.startsWith('UPDATE vfs_jobs SET cursor')) {
+    if (!interrupted && sql.startsWith('INSERT OR REPLACE INTO vfs_inodes')) {
       interrupted = true;
-      return new Error('interrupted cursor publication');
+      dst.h.failAfterTransaction({ transaction: dst.h.transactionCount, error: reset });
     }
   });
-  assert.throws(() => send(src, dst, second), /interrupted cursor publication/);
+  assert.throws(() => send(src, dst, second), (error) => error === reset);
   dst.h.clearFault();
   const resumed = open(createSqliteVfsTestHarness(dst.h.db));
-  assert.equal(resumed.raw.importCursor(''), cursor);
+  assert.equal(resumed.raw.importCursor(''), committedCursor);
   assert.equal(send(src, resumed, second).done, true);
   for (const row of [...first.rows, ...second.rows]) assert.equal(resumed.fs.stat(row.path).ino, row.ino);
   assert.equal(resumed.fs.readFileString('zz-local'), 'ordinary allocation between pages');
