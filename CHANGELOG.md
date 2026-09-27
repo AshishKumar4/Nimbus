@@ -6,6 +6,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+### Test process safety
+
+- Unit files run serially by default, with a five-minute deadline and a
+  combined 1 MiB stdout/stderr limit. Timeout and output overflow kill the
+  subprocess group; failures name the file, exit status or signal, and
+  bounded output diagnostics. Explicit worker-count overrides remain.
+- Under the bounded test wrapper, each case runs in its own systemd cgroup
+  with inherited memory limits, no swap, and group teardown, including
+  detached descendants. Signal cancellation settles pending calls so caller
+  cleanup runs. Outside systemd, process groups and PID-start-time-checked
+  polling provide weaker cleanup with a finite output-pipe drain deadline;
+  that fallback is not a memory or detached-descendant containment boundary.
+
 ### Breaking changes for embedders
 
 The published `@nimbus-sh/core` no longer carries the compiled output of the

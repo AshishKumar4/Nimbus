@@ -10,7 +10,7 @@
 //
 // Concurrency:
 //   Each file is still its own `bun` process — only scheduling changed.
-//   Default pool width is min(8, os.availableParallelism()); `--jobs N`
+//   Default pool width is 1; `--jobs N`
 //   or NIMBUS_UNIT_JOBS override it and `--serial` forces 1 (the old
 //   sequential behavior, in sorted order).
 //
@@ -34,12 +34,12 @@
 //
 // Optional:
 //   --timeout MS / NIMBUS_UNIT_TIMEOUT_MS — kill a file's process after
-//   MS milliseconds and score it FAIL. Off by default, matching the
-//   runner's historical semantics (a unit file runs to completion).
+//   MS milliseconds and score it FAIL. Default: five minutes per file.
+//   Output is capped at 1 MiB per file; exceeding it fails and kills the tree.
 
-import { spawn } from 'node:child_process';
+import { runBoundedProcess, DEFAULT_TEST_TIMEOUT_MS } from '../../scripts/lib/bounded-process.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { availableParallelism, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,7 +64,7 @@ function positiveInt(raw, what) {
   return n;
 }
 
-const DEFAULT_JOBS = Math.max(1, Math.min(8, availableParallelism()));
+const DEFAULT_JOBS = 1;
 const JOBS = process.argv.includes('--serial')
   ? 1
   : flagValue('--jobs', 'NIMBUS_UNIT_JOBS') !== undefined
@@ -73,7 +73,7 @@ const JOBS = process.argv.includes('--serial')
 
 const TIMEOUT_MS = flagValue('--timeout', 'NIMBUS_UNIT_TIMEOUT_MS') !== undefined
   ? positiveInt(flagValue('--timeout', 'NIMBUS_UNIT_TIMEOUT_MS'), 'per-file timeout')
-  : 0; // 0 = no per-file timeout — the runner's historical semantics.
+  : DEFAULT_TEST_TIMEOUT_MS;
 
 // ── Discovery ────────────────────────────────────────────────────────
 
@@ -142,44 +142,28 @@ process.on('exit', () => rmSync(RUN_TMP, { recursive: true, force: true }));
 let tmpSerial = 0;
 
 /** Spawn one test file; collect stdout/stderr/exit. Pure I/O. */
-function runOnce(path) {
-  return new Promise((resolve) => {
-    const t0 = Date.now();
-    const ownTmp = join(RUN_TMP, `${String(++tmpSerial).padStart(4, '0')}-${basename(path, '.mjs')}`);
-    mkdirSync(ownTmp);
-    const child = spawn(process.execPath, [path], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, TMPDIR: ownTmp, TMP: ownTmp, TEMP: ownTmp },
-    });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    const timer = TIMEOUT_MS > 0
-      ? setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, TIMEOUT_MS)
-      : null;
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
-    const done = (ok, extra) => {
-      clearTimeout(timer);
-      let left = [];
-      // node-compile-cache is Node's own module compile cache (a child `node`
-      // writes it under TMPDIR and reuses it), not a test's directory.
-      try { left = readdirSync(ownTmp).filter((name) => name !== 'node-compile-cache').sort(); } catch { /* removed by the test itself */ }
-      rmSync(ownTmp, { recursive: true, force: true });
-      const leak = left.length > 0
-        ? `\nleft in TMPDIR (a test must remove what it creates, in finally): ${left.slice(0, 8).join(', ')}${left.length > 8 ? `, and ${left.length - 8} more` : ''}`
-        : '';
-      resolve({
-        ok: ok && !timedOut && !leak,
-        stdout,
-        stderr: (timedOut ? `${stderr}\nfile exceeded --timeout ${TIMEOUT_MS}ms (SIGKILL)` : stderr) + leak,
-        elapsedMs: Date.now() - t0,
-        ...extra,
-      });
-    };
-    child.on('close', (code) => done(code === 0));
-    child.on('error', (e) => done(false, { stderr: String(e?.message || e) }));
+async function runOnce(path) {
+  const t0 = Date.now();
+  const ownTmp = join(RUN_TMP, `${String(++tmpSerial).padStart(4, '0')}-${basename(path, '.mjs')}`);
+  mkdirSync(ownTmp);
+  const result = await runBoundedProcess(process.execPath, [path], {
+    name: basename(path), timeoutMs: TIMEOUT_MS,
+    env: { ...process.env, TMPDIR: ownTmp, TMP: ownTmp, TEMP: ownTmp },
   });
+  let left = [];
+  // node-compile-cache is Node's own module compile cache, not a test's leak.
+  try { left = readdirSync(ownTmp).filter((name) => name !== 'node-compile-cache').sort(); } catch { /* Removed by the test itself. */ }
+  rmSync(ownTmp, { recursive: true, force: true });
+  const leak = left.length > 0
+    ? `\nleft in TMPDIR (a test must remove what it creates, in finally): ${left.slice(0, 8).join(', ')}${left.length > 8 ? `, and ${left.length - 8} more` : ''}`
+    : '';
+  return {
+    ok: result.ok && !leak,
+    stdout: result.stdout,
+    reason: result.reason || (!result.ok ? `exit code=${result.code} signal=${result.signal ?? 'none'}` : ''),
+    stderr: result.stderr + leak,
+    elapsedMs: Date.now() - t0,
+  };
 }
 
 /** One line per finished file, plus the stderr tail that explains a FAIL. */
@@ -187,11 +171,13 @@ function report(name, r) {
   const elapsedS = (r.elapsedMs / 1000).toFixed(1);
   console.log(`[${name}] ... ${r.ok ? 'PASS' : 'FAIL'} (${elapsedS}s)`);
   if (!r.ok) {
+    if (r.reason) console.log(`    ${name}: ${r.reason}`);
+    for (const line of r.stdout.split('\n').filter(Boolean).slice(-4)) console.log(`    stdout: ${line.slice(-2048)}`);
     const stderrLines = r.stderr
       .split('\n')
       .map((l) => l.trimEnd())
       .filter((l) => l.trim() && !/^Bun v\d+\.\d+\.\d+ \([^)]+\)$/.test(l));
-    for (const l of stderrLines.slice(-4)) console.log('    stderr: ' + l);
+    for (const l of stderrLines.slice(-4)) console.log('    stderr: ' + l.slice(-2048));
   }
   return { name, ok: r.ok, elapsed: Number(elapsedS) };
 }
@@ -233,5 +219,5 @@ if (fail > 0) {
   for (const r of results.filter((r) => !r.ok).sort((a, b) => a.name.localeCompare(b.name))) {
     console.log(`  FAIL ${r.name}`);
   }
-  process.exit(1);
+  process.exit(process.exitCode || 1);
 }
