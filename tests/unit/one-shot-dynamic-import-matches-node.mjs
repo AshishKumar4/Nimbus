@@ -40,6 +40,7 @@ const files = {
   'app/arity.cjs': '"use strict"; module.exports = [arguments.length, (function () { return this; })() === undefined];\n',
   'app/user-metadata.mjs': 'const user = { __nimbusModuleUrl: 123, __nimbusImportMetaResolve: 456 }; globalThis.__nimbusModuleUrl = 789; globalThis.__nimbusImportMetaResolveUser = 987; export const value = [user.__nimbusModuleUrl, user.__nimbusImportMetaResolve, globalThis.__nimbusModuleUrl]; export function shadow(module) { return [module.__nimbusModuleUrl, module.__nimbusImportMetaResolve]; }\n',
   'app/typed/package.json': '{"type":"module"}',
+  'app/meta-forms.mjs': 'const {url, resolve} = import.meta; export const values = [import.meta["url"],url,import.meta["resolve"]("./c.cjs"),resolve("./c.cjs"),import.meta===import.meta,Object.getPrototypeOf(import.meta)===null]; import.meta.extra=123; export const mutation=import.meta.extra;\n',
   'app/typed/user-metadata-with-meta.ts': 'const user: { __nimbusModuleUrl: number } = { __nimbusModuleUrl: 123 }; export const value = user.__nimbusModuleUrl; export const url = import.meta.url;\n',
   'app/static-counted.mjs': 'export { count } from "./counted.mjs";\n',
   // Bundler-shaped ESM beyond the large-cell rewrite threshold: its metadata
@@ -114,6 +115,8 @@ const attempt = async (label, load) => {
   out.push(['user metadata spellings preserved', [userMetadata.value, userMetadata.shadow({__nimbusModuleUrl: 12,__nimbusImportMetaResolve: 34})]]);
   const typedMetadata = await import('./typed/user-metadata-with-meta.ts?typed');
   out.push(['typed actual metadata and user property remain distinct', [typedMetadata.value, typedMetadata.url]]);
+  const forms = await import('./meta-forms.mjs?forms#fragment');
+  out.push(['metadata computed destructured identity mutation', [forms.values, forms.mutation]]);
   console.log(JSON.stringify(out));
 })();
 `;

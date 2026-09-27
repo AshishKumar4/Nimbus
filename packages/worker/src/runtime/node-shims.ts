@@ -8788,10 +8788,11 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   // Evaluation metadata lives on the module, not in source text. Keeping
   // it here preserves the five CommonJS arguments and captures the parent
   // even when import.meta.resolve is extracted and called later.
-  Object.defineProperties(mod, {
-    __nimbusModuleUrl: { value: moduleUrl, writable: true, configurable: true },
-    __nimbusImportMetaResolve: { value: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl), writable: true, configurable: true },
+  const importMeta = Object.assign(Object.create(null), {
+    url: moduleUrl,
+    resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),
   });
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
   try {
     // Use pre-compiled function from startup (new Function allowed at module eval time)
     // Normalize path to match VFS bundle key format (no leading /)

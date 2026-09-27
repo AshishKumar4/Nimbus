@@ -341,6 +341,8 @@ kernel credential, because Nimbus follows POSIX here:
   Metadata rewriting visits actual `import.meta` syntax in the transform
   facet, not user object properties with similar names. TypeScript is emitted
   as JavaScript first; module strictness and local binding names are preserved.
+  Dot access, computed access and destructuring share the same per-evaluation
+  metadata object; its existing `url` and `resolve` behavior is consistent.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry

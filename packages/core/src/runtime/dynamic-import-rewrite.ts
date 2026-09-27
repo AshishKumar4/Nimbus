@@ -20,7 +20,7 @@
  * wrappers are preserved.
  */
 import { parse } from 'acorn';
-import type { Node, Program, Identifier, MemberExpression } from 'acorn';
+import type { Node, Program, Identifier, MetaProperty } from 'acorn';
 import { full } from 'acorn-walk';
 
 /** The loader a rewritten `import()` calls (node-shims.ts). */
@@ -76,7 +76,7 @@ export function rewriteDynamicImports(code: string, parentUrl: string, moduleMet
   const ast = parseCell(code);
   if (ast === null) return code;
   const spans: { start: number; end: number; text: string }[] = [];
-  const metadataMembers: MemberExpression[] | null = metadata ? [] : null;
+  const metadataNodes: MetaProperty[] | null = metadata ? [] : null;
   const identifiers = metadata ? new Set<string>() : null;
   const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
   full(ast, (node) => {
@@ -90,23 +90,19 @@ export function rewriteDynamicImports(code: string, parentUrl: string, moduleMet
       const expression = node as ImportExpressionNode;
       spans.push({ start: expression.start, end: expression.source.start, text: call });
     }
-    if (metadataMembers && node.type === 'MemberExpression') {
-      const member = node as MemberExpression;
-      if (!member.computed && member.object.type === 'MetaProperty'
-        && member.object.meta.name === 'import' && member.object.property.name === 'meta'
-        && member.property.type === 'Identifier'
-        && (member.property.name === 'url' || member.property.name === 'resolve')) metadataMembers.push(member);
+    if (metadataNodes && node.type === 'MetaProperty') {
+      const meta = node as MetaProperty;
+      if (meta.meta.name === 'import' && meta.property.name === 'meta') metadataNodes.push(meta);
     }
   });
-  if (metadataMembers?.length) {
+  if (metadataNodes?.length) {
     // `module` can be a user binding (or a nested function parameter).
     // Capture the actual wrapper module by position once, using a name no
     // parsed scope binds. No additional CommonJS argument or wrapper parse.
     let binding = '__nimbusMetadataModule';
     while (identifiers!.has(binding)) binding += '_';
-    for (const member of metadataMembers) {
-      const property = member.property as Identifier;
-      spans.push({ start: member.start, end: member.end, text: `${binding}.${property.name === 'url' ? '__nimbusModuleUrl' : '__nimbusImportMetaResolve'}` });
+    for (const meta of metadataNodes) {
+      spans.push({ start: meta.start, end: meta.end, text: `${binding}.__nimbusImportMeta` });
     }
     let insertion = ast.body[0]?.start ?? 0;
     for (const statement of ast.body) {
