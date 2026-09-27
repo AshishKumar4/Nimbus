@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
 
@@ -83,20 +83,50 @@ try {
  const installed = new URL('./node_modules/@nimbus-sh/worker/', import.meta.url);
  const {GIT_BUNDLE_CODE} = await import(new URL('dist/git-bundle.generated.js', installed));
  assert.equal(readFileSync(new URL('vendor/git.generated.mjs', installed),'utf8'), GIT_BUNDLE_CODE, 'host and facet use byte-identical canonical git code');
+ const {gitHttp} = await import(new URL('vendor/git.generated.mjs', installed));
+ assert.equal(gitHttp.request, gitHttp.default.request, 'the namespace and default HTTP APIs expose the same request implementation');
 
  console.log('PACKED GIT OK: 2000 files, one index write, all blob ids and commit');
 } finally { db.close(); }
 `;
 try {
-  const tarballs = [];
+  const dependencies = {};
+  const packages = [];
+  const vendorBytes = readFileSync(join(root, 'packages/worker/vendor/git.generated.mjs'));
   for (const pkg of ['platform', 'core', 'fabric', 'worker']) {
-    const result = JSON.parse(run('npm', ['pack', join(root, 'packages', pkg), '--json', '--ignore-scripts', '--pack-destination', work], work));
-    tarballs.push(join(work, result[0].filename));
+    const directory = join(root, 'packages', pkg);
+    const filename = run('bun', ['pm', 'pack', '--destination', work, '--quiet'], directory).trim();
+    const tarball = resolve(work, filename);
+    const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
+    dependencies[manifest.name] = 'file:' + tarball;
+    packages.push({ name: manifest.name, version: manifest.version, tarball });
   }
   const consumer = join(work, 'consumer');
   mkdirSync(consumer);
-  writeFileSync(join(consumer, 'package.json'), JSON.stringify({name:'worker-git-consumer',version:'0.0.0',private:true,type:'module'}));
-  run('npm', ['install', '--no-audit', '--no-fund', ...tarballs], consumer);
+  // Unpublished candidate versions must satisfy transitive edges too, as in
+  // a release consumer: every internal edge resolves to the same packed bytes.
+  writeFileSync(join(consumer, 'package.json'), JSON.stringify({name:'worker-git-consumer',version:'0.0.0',private:true,type:'module',dependencies,overrides:dependencies}));
+  run('bun', ['install'], consumer);
+  let payloadFiles = 0;
+  for (const pkg of packages) {
+    const files = await new Bun.Archive(await Bun.file(pkg.tarball).arrayBuffer()).files();
+    for (const [path, file] of files) {
+      if (path.endsWith('/')) continue;
+      assert.ok(path.startsWith('package/'));
+      const relative = path.slice('package/'.length);
+      const installed = readFileSync(join(consumer, 'node_modules', pkg.name, relative));
+      const packed = new Uint8Array(await file.arrayBuffer());
+      if (relative === 'package.json') {
+        const manifest = JSON.parse(new TextDecoder().decode(packed));
+        assert.equal(manifest.name, pkg.name);
+        assert.equal(manifest.version, pkg.version);
+        assert.deepEqual(JSON.parse(installed.toString('utf8')), manifest, 'installed manifest matches the candidate, not a registry fallback');
+      } else assert.equal(Buffer.compare(installed, packed), 0, pkg.name + '/' + relative);
+      payloadFiles++;
+    }
+  }
+  assert.equal(Buffer.compare(readFileSync(join(consumer, 'node_modules/@nimbus-sh/worker/vendor/git.generated.mjs')), vendorBytes), 0);
+  console.log(`  installed candidate payload: ${payloadFiles} files verified against packed bytes`);
   writeFileSync(join(consumer, 'consume.mjs'), program);
   for (const runtime of ['node', 'bun']) {
     const output = run(runtime, ['consume.mjs'], consumer);
@@ -109,7 +139,7 @@ try {
   const imports = Object.values(bundled.metafile.outputs).flatMap(output => output.imports);
   assert.ok(imports.every(item => item.path !== 'isomorphic-git'));
   assert.ok(Object.keys(bundled.metafile.inputs).some(path => path.endsWith('/vendor/git.generated.mjs')));
-  const check = `import {git} from './node_modules/@nimbus-sh/worker/vendor/git.generated.mjs';
+  const check = `import {git, gitHttp} from './node_modules/@nimbus-sh/worker/vendor/git.generated.mjs';
 function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.stage({fs, dir:'/repo', add:['a','b'], remove:['c'], parallel:false});
  void git.add({fs, dir:'/repo', filepath:['a','b']});
@@ -119,11 +149,17 @@ function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.checkoutFreshChunk({fs, dir:'/repo', maxEntries:1, maxDecodedBytes:1024, maxWallMs:20});
 }
 void patched;
+export function request(options: Parameters<typeof gitHttp.request>[0]) {
+ return [gitHttp.request(options), gitHttp.default.request(options)];
+}
 `;
   writeFileSync(join(consumer, 'consumer.mts'), check);
   writeFileSync(join(consumer, 'consumer.cts'), `export async function stageFromCommonJs() {
-    const {git} = await import('./node_modules/@nimbus-sh/worker/vendor/git.generated.mjs');
-    return (options: Parameters<typeof git.add>[0]) => git.stage({...options, add:['a','b'], remove:['old']});
+    const {git, gitHttp} = await import('./node_modules/@nimbus-sh/worker/vendor/git.generated.mjs');
+    return {
+      stage: (options: Parameters<typeof git.add>[0]) => git.stage({...options, add:['a','b'], remove:['old']}),
+      request: (options: Parameters<typeof gitHttp.request>[0]) => [gitHttp.request(options), gitHttp.default.request(options)],
+    };
   }`);
   run(join(root, 'node_modules/.bin/tsc'), ['--noEmit','--strict','--module','NodeNext','--moduleResolution','NodeNext','--target','ES2022','consumer.mts','consumer.cts'], consumer);
   console.log('worker-git-npm-package-consumer: normal installed Node/Bun APIs, Worker import path, and ESM/CJS declaration consumers pass');

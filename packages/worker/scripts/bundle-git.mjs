@@ -62,7 +62,7 @@ export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 's
     deferIndexFragmentCleanup?: boolean;
   }): Promise<{ nextCursor: object | null; files: number; decodedBytes: number; treeEntriesVisited: number; indexEntries: number }>;
 };
-export { default as gitHttp } from './git-http.generated.js';
+export * as gitHttp from './git-http.generated.js';
 `;
 
 function declaration(source, destination) {
