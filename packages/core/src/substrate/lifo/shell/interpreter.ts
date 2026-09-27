@@ -120,6 +120,7 @@ export interface TrapTable {
 }
 
 export interface BuiltinExecutionContext {
+  interactive?: boolean;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -319,7 +320,7 @@ export class Interpreter {
    * A child shell, as fork(2) makes one: its own copy of every piece of shell
    * state (variables and arrays, cwd, options, traps, readonly names,
    * aliases, functions, $?, the open descriptors), so nothing it changes
-   * reaches this shell. Shared: the process registry, job table, filesystem,
+   * reaches this shell. Shared: the process registry and filesystem,
    * command registry and terminal; `$$` stays this shell's. Traps reset to
    * the default, except ignored ones, and the child runs its own EXIT trap
    * when it finishes (`finishChild`).
@@ -331,6 +332,7 @@ export class Interpreter {
     const config: InterpreterConfig = {
       ...parent,
       env,
+      jobTable: parent.jobTable.fork(),
       arrays: new Map(Array.from(parent.arrays, ([name, elements]) => [name, [...elements]])),
       getCwd: () => cwd,
       setCwd: (next: string) => { cwd = next; env.PWD = next; },
@@ -719,6 +721,7 @@ export class Interpreter {
           executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
           shell: this.config,
+          interactive: redirIo.interactive,
           getLastExitCode: () => this.lastExitCode,
         },
       )));
@@ -1036,6 +1039,7 @@ export class Interpreter {
               executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
           shell: this.config,
+          interactive: io.interactive,
           getLastExitCode: () => this.lastExitCode,
             });
           } else {

@@ -237,6 +237,13 @@ kernel credential, because Nimbus follows POSIX here:
   served as a command (`printf`) ends its element, as `echo` does. A
   background job's `[N] PID` notice appears only in the interactive shell,
   in bash's form.
+- Shell job operands accept `%N`, `%%`, `%+`, `%-`, command prefixes and
+  `%?substring`; ambiguous names are refused. `kill -s` and `-n` select the
+  signal, `kill -l` converts names and numbers, and `jobs` shows current and
+  previous markers with `-p`/`-l` output. An explicit wait keeps its status
+  for repeated waits until the job number is reused; bare `wait` returns 0.
+  Child shells have their own job-table membership, so `jobs | cat` cannot
+  reap a parent's jobs. Noninteractive `fg` and `bg` report no job control.
 - A subshell, each pipeline element, `$( )` and a background job run in a
   child shell, as bash forks one: variables, arrays, cwd, `set` options,
   traps, aliases and functions changed there stay there, `exit` ends only

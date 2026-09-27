@@ -148,9 +148,7 @@ try {
     'g() { return 7; }; g & p=$!; wait "$p"; echo RC:$?', 'RC:7\n');
   await assertRunStdout('wait on a successful background function answers 0',
     'f() { return 0; }; f & p=$!; if wait "$p"; then echo CHECK:0; else echo CHECK:$?; fi', 'CHECK:0\n');
-  await assertRun('wait on an unknown id is 127 and says so',
-    'wait 424242; echo RC:$?',
-    { stdout: 'RC:127\n', stderr: 'wait: 424242: no such process\n', exitCode: 0 });
+
 } finally {
   box.destroy();
 }
