@@ -247,6 +247,9 @@ kernel credential, because Nimbus follows POSIX here:
   for repeated waits until the job number is reused; bare `wait` returns 0.
   Child shells have their own job-table membership, so `jobs | cat` cannot
   reap a parent's jobs. Noninteractive `fg` and `bg` report no job control.
+  Signal defaults are shared with delivery: CHLD, URG and WINCH are ignored;
+  STOP, TSTP, TTIN and TTOU mark jobs stopped; CONT resumes their state.
+  Ignored and stop/continue signals do not abort a process.
 - A subshell, each pipeline element, `$( )` and a background job run in a
   child shell, as bash forks one: variables, arrays, cwd, `set` options,
   traps, aliases and functions changed there stay there, `exit` ends only

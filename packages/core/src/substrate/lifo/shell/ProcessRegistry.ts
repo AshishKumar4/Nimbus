@@ -1,4 +1,4 @@
-import { exitCodeForSignal, signalAbortReason } from './signals.js';
+import { exitCodeForSignal, parseSignalName, signalAbortReason, signalDisposition } from './signals.js';
 
 /**
  * Process information structure
@@ -215,6 +215,8 @@ export class ProcessRegistry {
    * Returns true if process was killed, false if not found or is a shell process.
    */
   kill(pid: number, signal?: string): boolean {
+    const name = parseSignalName(signal ?? 'TERM');
+    if (name === null) return false;
     const proc = this.processes.get(pid);
     if (!proc) {
       return false;
@@ -230,17 +232,19 @@ export class ProcessRegistry {
       return true;
     }
 
-    if (signal === 'STOP' || signal === 'TSTP') {
+    const disposition = signalDisposition(name);
+    if (disposition === 'ignore') return true;
+    if (disposition === 'stop') {
       proc.status = 'stopped';
       return true;
     }
 
-    if (signal === 'CONT') {
+    if (disposition === 'continue') {
       proc.status = 'running';
       return true;
     }
 
-    const reason = signalAbortReason(signal);
+    const reason = signalAbortReason(name);
     proc.abortController.abort(reason);
     this.finish(pid, reason.exitCode);
     return true;

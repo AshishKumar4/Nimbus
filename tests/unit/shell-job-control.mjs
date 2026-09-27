@@ -18,6 +18,8 @@ const cases = [
   ['sleep 30 & p=$!; kill -s NOPE $p 2>/dev/null; echo invalid=$?; kill -0 $p; echo live=$?; kill -sTERM $p; wait $p; echo status=$?', 'invalid=1\nlive=0\nstatus=143\n'],
   ['fg 2>/dev/null; echo fg=$?; bg 2>/dev/null; echo bg=$?', 'fg=1\nbg=1\n'],
   ['wait 999999 2>/dev/null; echo unknown=$?', 'unknown=127\n'],
+  ['rm -f /tmp/job-release; hold() { while [ ! -e /tmp/job-release ]; do :; done; }; hold & p=$!; kill -WINCH $p; kill -0 $p 2>/dev/null; echo live=$?; touch /tmp/job-release; wait $p; echo done=$?', 'live=0\ndone=0\n'],
+  ['rm -f /tmp/job-release; hold() { while [ ! -e /tmp/job-release ]; do :; done; }; hold & p=$!; kill -CHLD $p; kill -0 $p 2>/dev/null; echo live=$?; touch /tmp/job-release; wait $p; echo done=$?', 'live=0\ndone=0\n'],
 ];
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
@@ -36,6 +38,19 @@ try {
   const waited = await ws.shell.execute(`wait %${completed.id}; echo preserved=$?`);
   assert.equal(waited.stdout, 'preserved=0\n', 'a pipeline jobs listing must not reap the parent job');
   assert.equal(waited.stderr, '');
+  const started = await ws.shell.execute('rm -f /tmp/signal-release; hold() { while [ ! -e /tmp/signal-release ]; do :; done; }; hold & echo $!');
+  const pid = Number(started.stdout.trim());
+  const process = ws.shell.getProcessRegistry().get(pid);
+  for (const signal of ['STOP', 'TSTP', 'TTIN', 'TTOU']) {
+    assert.equal((await ws.shell.execute(`kill -${signal} ${pid}`)).exitCode, 0);
+    assert.equal(process.status, 'stopped', signal);
+    assert.equal(process.abortController.signal.aborted, false, `${signal} must not terminate`);
+    assert.equal((await ws.shell.execute(`kill -CONT ${pid}`)).exitCode, 0);
+    assert.equal(process.status, 'running');
+    assert.equal(process.abortController.signal.aborted, false);
+  }
+  await ws.fs.writeFile('/tmp/signal-release', 'release');
+  assert.equal(await process.promise, 0);
 } finally {
   await ws.close();
 }
