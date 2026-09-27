@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Guessed Node package entries bring their readable literal dependencies on
+  the first launch, including relative imports, re-exports and nested package
+  resolution. Each root and its new dependency cells fit or decline together;
+  transformed-size eviction removes whole optional groups, keeping shared
+  dependencies and compiled companions while another retained owner needs them.
+  One-hop package selection, required/evidence priority and the 18 MiB limit
+  are unchanged. Dynamic imports of guessed roots remain optional. Held bytes
+  are reused only after checking current read permission through the same
+  process bridge. Unresolvable specifiers keep their existing runtime errors.
+
 - Node's dependency walk uses the existing launch turn budget, including
   metadata-only work before a closure-size refusal. Scheduling failures and
   cancellation propagate through CJS and ESM resolution without becoming

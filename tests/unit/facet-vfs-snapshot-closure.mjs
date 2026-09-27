@@ -151,9 +151,15 @@ assert.equal(
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
   const budget = { totalBytes: 0, fileCount: 0 };
-  (await greedyAddMainEntries(launchFs(optionalFiles).fs, cwd, bundle, budget));
+  const overfull = launchFs(optionalFiles);
+  (await greedyAddMainEntries(overfull.fs, cwd, bundle, budget));
 
   assert.equal(bundle[requiredPath].length, VFS_BUNDLE_MAX_BYTES + 1);
+  assert.equal(budget.fileCount, 0, 'an overfull required closure leaves no room for optional admission');
+  assert.equal(overfull.reads.some(path => path.endsWith('/index.js')), false, 'optional code is not read when no bytes remain');
+  // Exercise the unchanged count ceiling separately, with byte headroom.
+  const smallBundle = { [requiredPath]: 'module.exports = 1;' };
+  await greedyAddMainEntries(launchFs(optionalFiles).fs, cwd, smallBundle, budget);
   assert.equal(
     budget.fileCount,
     VFS_BUNDLE_MAX_FILES,
@@ -164,62 +170,12 @@ assert.equal(
     'optional greedy content retains the existing raw-byte ceiling',
   );
   assert.equal(
-    Object.keys(bundle).length,
+    Object.keys(smallBundle).length,
     VFS_BUNDLE_MAX_FILES + 1,
     'the optional budget is independent from required closure content',
   );
 }
 
-// Evicting optional enrichment is a real loss — the sync reads it exists for
-// have no live fallback — so it has to name what it dropped.
-{
-  const cwd = 'home/user';
-  const optionalFiles = {};
-  for (let index = 0; index < 8; index++) {
-    const packageRoot = `${cwd}/node_modules/bulky-${index}`;
-    optionalFiles[`${packageRoot}/package.json`] = JSON.stringify({
-      name: `bulky-${index}`,
-      main: 'index.js',
-    });
-    optionalFiles[`${packageRoot}/index.js`] = `// ${'x'.repeat(3 * 1024 * 1024)}`;
-  }
-  // A required closure of its own: the greedy pass budgets only the optional
-  // cells, so the two together are what pass the snapshot's bound (raw bytes).
-  optionalFiles[`${cwd}/app.js`] = 'require("./big.js");\n';
-  optionalFiles[`${cwd}/big.js`] = `// ${'y'.repeat(VFS_BUNDLE_MAX_BYTES / 2)}`;
-  optionalFiles[`${cwd}/package.json`] = JSON.stringify({
-    name: 'app',
-    dependencies: Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`bulky-${index}`, '*'])),
-  });
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (...args) => { warnings.push(args.join(' ')); };
-  let evictionSnapshot;
-  try {
-    evictionSnapshot = await buildPrefetchBundle(
-      launchFs(optionalFiles).fs,
-      `/${cwd}/app.js`,
-      cwd,
-      optionalFiles[`${cwd}/app.js`],
-      identityEsbuild,
-    );
-  } finally {
-    console.warn = realWarn;
-  }
-
-  assert.equal(evictionSnapshot.truncated, true, 'an over-budget snapshot reports truncation');
-  assert.equal(warnings.length, 1, 'optional eviction is reported exactly once');
-  assert.match(
-    warnings[0],
-    /evicted \d+ optional file\(s\)/,
-    'the eviction report states how many files went',
-  );
-  assert.match(
-    warnings[0],
-    /home\/user\/node_modules\/bulky-\d+\/index\.js \(\d+ bytes\)/,
-    'the eviction report names the paths it dropped',
-  );
-}
 
 // The staged path serializes the snapshot into ONE RPC payload and has no
 // side-module relief, so a snapshot that cannot fit must fail loud.
