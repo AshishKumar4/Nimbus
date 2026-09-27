@@ -791,24 +791,21 @@ requirements:
       - Per-principal sources and the ENXIO/EBUSY/EXDEV refusal order are modeled in Nimbus.Vfs.Composite, not together with permissions and links here
       - Default ACLs are modeled by their base entries only (u::, g::, o::); named ACL entries and the mask are not; no exec permission on files, umask fixed at 022; MemoryVFS backends carry no modes
   N18-001:
-    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + the per-principal namespace images, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, image write) evicts the oldest images other than the one written, no more than it must, and is refused with ENOSPC exactly when it would not fit with all of them gone, a refusal changing nothing (destination included) and evicting nothing; every operation but a delete, settle or report frees at most the bytes of the images it evicted, and only admission evicts; a facet row leaves the ledger only by facets.delete; reservations count in used and are never evicted, a reservation is admitted like a write, a draw within its reservation is always admitted and changes no total, and a reservation shrinks only by its own draws, its release, releaseAll or a restart, whatever else runs.
+    statement: N18 admission - with used = the session DO's own bytes + every recorded facet database (live, dead or persisted) + reservations held by running operations, used never exceeds the limit plus the overshoot facets report beyond their admitted bytes (a report makes the row the larger of reported and recorded), an admitted operation that succeeds always leaves used within the limit, and while the session and facets are over the limit every admitted operation is refused; an admitted write (session write, facet fill, reserve, draw past its reservation) is refused with ENOSPC exactly when it would not fit, a refusal changing nothing (destination included); nothing in the ledger is evictable (the namespace image cache the design proposed was never wired and was removed), so no operation other than a delete lowers used; a facet row leaves only by facets.delete; a draw within its reservation is always admitted and changes no total, and a reservation shrinks only by its own draws, release or releaseAll/restart.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.Ledger.sumB_nil
       - Nimbus.Vfs.Ledger.sumB_cons
       - Nimbus.Vfs.Ledger.sumB_append
       - Nimbus.Vfs.Ledger.sumB_split
-      - Nimbus.Vfs.Ledger.sumB_filter_le
-      - Nimbus.Vfs.Ledger.fitDrop_some
-      - Nimbus.Vfs.Ledger.fitDrop_none
-      - Nimbus.Vfs.Ledger.fitDrop_min
       - Nimbus.Vfs.Ledger.step_limit
       - Nimbus.Vfs.Ledger.step_used
       - Nimbus.Vfs.Ledger.used_le_limit
       - Nimbus.Vfs.Ledger.refused_unchanged
       - Nimbus.Vfs.Ledger.refuses_iff
-      - Nimbus.Vfs.Ledger.evicts_oldest_minimal
-      - Nimbus.Vfs.Ledger.only_eviction_frees
+      - Nimbus.Vfs.Ledger.fits_true
+      - Nimbus.Vfs.Ledger.fits_false
+      - Nimbus.Vfs.Ledger.nothing_frees
       - Nimbus.Vfs.Ledger.facet_row_stays
       - Nimbus.Vfs.Ledger.a_ledger_trace
       - Nimbus.Vfs.Ledger.step_over
@@ -824,7 +821,7 @@ requirements:
     refinement:
       - lean/fixtures/n18-ledger.json :: tests/unit/n18-ledger-refinement.mjs
     remainingEvidence:
-      - A refused write evicts no image (Main's ruling); CUTOVER.md's first wording dropped images first and then refused when none was left
+      - CUTOVER.md v3.1 describes a per-principal namespace image cache evicted oldest first; no producer was ever wired (writeImage/touchImage/dropImages had zero callers), so the model, ledger and fixture carry no images and the transform OOM it aimed at is not addressed by it
       - Sizes are the ledger's numbers (declared or estimated bytes); overshoot is a ghost count of reported-over-admitted bytes
   N17-001:
     statement: N17 hydration in an import window, at chunk granularity, with fetch failure and reader deadlines - no reader, sync or async, is ever handed the bytes of a path with a chunk that is not local; stored chunks stay stored; every remote chunk neither stored nor failed for good stays queued through any failures, backoffs and retries; a job fetches the first queued hash whose backoff has passed, a failed hash goes to the back with an exponential backoff and after maxAttempts is failed for good and never stored; every read, waiting reader and gate of a path backed by a failed hash has EIO naming the path and chunk; no waiting reader outlives its read deadline and no open gate its launch deadline, whatever the fetches do; a sync read of a non-local path answers EIO and moves its chunks to the front; after a gate opens no sync read of a named path answers EIO; with every queued hash ready and no named chunk failed, the named paths are local after as many successful fetches as they had remote chunks.

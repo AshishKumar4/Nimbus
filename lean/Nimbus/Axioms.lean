@@ -736,10 +736,8 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.sumB_append
 #print axioms Nimbus.Vfs.Ledger.sumB_split
 #print axioms Nimbus.Vfs.Ledger.sumB_setR
-#print axioms Nimbus.Vfs.Ledger.sumB_filter_le
-#print axioms Nimbus.Vfs.Ledger.fitDrop_some
-#print axioms Nimbus.Vfs.Ledger.fitDrop_none
-#print axioms Nimbus.Vfs.Ledger.fitDrop_min
+#print axioms Nimbus.Vfs.Ledger.fits_true
+#print axioms Nimbus.Vfs.Ledger.fits_false
 #print axioms Nimbus.Vfs.Ledger.step_limit
 #print axioms Nimbus.Vfs.Ledger.step_over
 #print axioms Nimbus.Vfs.Ledger.admitted_within
@@ -748,8 +746,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Ledger.refuses_when_over
 #print axioms Nimbus.Vfs.Ledger.refused_unchanged
 #print axioms Nimbus.Vfs.Ledger.refuses_iff
-#print axioms Nimbus.Vfs.Ledger.evicts_oldest_minimal
-#print axioms Nimbus.Vfs.Ledger.only_eviction_frees
+#print axioms Nimbus.Vfs.Ledger.nothing_frees
 #print axioms Nimbus.Vfs.Ledger.facet_row_stays
 #print axioms Nimbus.Vfs.Ledger.a_ledger_trace
 #print axioms Nimbus.Vfs.Ledger.an_over_report_refuses
