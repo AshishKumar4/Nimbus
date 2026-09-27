@@ -53,7 +53,7 @@ export interface ProgrammaticShell {
  */
 type ProgrammaticShellParent = ProgrammaticShell & Pick<
   Shell,
-  'getVfs' | 'getRegistry' | 'getProcessRegistry' | 'getRunAsHost' | 'filesystem'
+  'getVfs' | 'getRegistry' | 'getProcessRegistry' | 'getHostProcessSignals' | 'getRunAsHost' | 'filesystem'
 >;
 
 interface ProgrammaticShellExecuteOptions {
@@ -203,6 +203,8 @@ export function createProgrammaticShell(
       runAs: parent.getRunAsHost(),
     },
   );
+  const hostSignals = parent.getHostProcessSignals();
+  if (hostSignals) shell.setHostProcessSignals(hostSignals);
   shell.setCwd(state.cwd);
   return shell as unknown as ProgrammaticShell;
 }

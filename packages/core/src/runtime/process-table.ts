@@ -164,12 +164,12 @@ export class ProcessTable {
     entry.endTime = Date.now();
   }
 
-  /** Mark a process as killed. */
-  kill(pid: number): boolean {
+  /** Mark a process as killed, by SIGKILL (137) unless the signal's status is given. */
+  kill(pid: number, exitCode = 137): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
     entry.state = 'killed';
-    entry.exitCode = 137; // SIGKILL
+    entry.exitCode = exitCode;
     entry.endTime = Date.now();
     return true;
   }

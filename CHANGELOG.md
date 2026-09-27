@@ -5,6 +5,30 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `DELETE /s/<id>/` no longer answers with the session shell. The core
+  router served the UI HTML for the session root whatever the method, so a
+  DELETE carrying only an attach token got 200 HTML and destroyed nothing.
+  With the remote API enabled, a root DELETE is now `box.destroy()` under its
+  own authorization and answers the JSON destroy result; without destroy
+  scopes it gets the usual 401/403. The root serves the UI to GET and HEAD
+  only; other methods are 405. The hosted demo refuses an anonymous session's
+  DELETE with 401 (`E_ANON_SESSION_TTL`); its fixed lifetime reaps it. The
+  probe target drops its own DELETE route for the core one. Behavioral
+  cleanup counts a session as deleted only when the DELETE returned the
+  destroy result.
+
+- `kill <pid>` in a hosted session ends the session's resident processes
+  again. The shell's `kill` builtin only looked in its own process registry,
+  so a resident pid (1000002, …) answered "No such process" and stayed up;
+  a numeric pid the shell does not hold now goes to the session's own
+  teardown, which releases the port and retires the capability. This also
+  covers `kill -9`/`-s` forms, child shells and named programmatic shells.
+  `kill -0` only checks that the process is alive; stop, continue and
+  ignored signals are refused for a resident, since its teardown can only
+  end it. A successful kill prints nothing, as in bash. The resident exits
+  with the signal's status (TERM 143, INT 130, HUP 129, KILL 137) and its
+  exit record names the signal, instead of 137 for every signal.
+
 - Trusted hosts can register a shared directory on the raw SqliteVFS. Its
   strict descendants couple owner/group permissions on creation, chmod and
   native adoption; ordinary POSIX and confined-owner rules remain unchanged

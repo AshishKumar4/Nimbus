@@ -314,9 +314,11 @@ defensive-catch tests. The driver owns session cleanup: every session
 probe process exits, however it exits, unless `deleteSession` already
 released it. Only SIGKILL or a runtime crash escapes, and `run-all` fails the
 suite on those: `_driver.mjs` records each mint and DELETE in a per-run
-ledger, and every minted session without a 2xx DELETE is named with its
-probe. A session created outside the driver (the remote SDK's
-`.sandbox(id)`, the anonymous demo launch) is the probe's to delete in
+ledger, and every minted session whose DELETE never returned the destroy
+result (JSON `{ ok: true, result: { ok: true, killed, destroyedAt } }`; a bare
+2xx proves nothing) is named with its probe. A session created outside the
+driver (the remote SDK's `.sandbox(id)`, the anonymous demo launch) is the
+probe's to delete in
 `finally`. An anonymous demo session (the `mintSession` fallback on
 `nimbus-os.dev`, below) is the one exception: its DELETE answers 401 by
 design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and

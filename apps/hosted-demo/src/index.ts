@@ -208,6 +208,15 @@ async function handleSessionRequest(
   // sid-pinned attach token in the request is the credential, and the
   // core router verifies it in enforce mode. Fixed lifetime — no touch.
   if (session?.userId === ANON_USER_ID) {
+    // Nobody may delete one: its attach token authorizes using it, not
+    // destroying it, and its fixed lifetime ends it (demo-cleanup reaps it).
+    const { pathname } = new URL(request.url);
+    if (request.method === 'DELETE' && (pathname === `/s/${sessionId}` || pathname === `/s/${sessionId}/`)) {
+      return Response.json(
+        { error: 'An anonymous session cannot be deleted; it ends when its lifetime expires', code: 'E_ANON_SESSION_TTL' },
+        { status: 401, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
     if (session.status !== 'active' || session.expiresAt <= Date.now()) {
       return renderExpiredSession(sessionId, { anonymous: true });
     }

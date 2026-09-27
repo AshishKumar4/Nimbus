@@ -19,6 +19,7 @@
 import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
@@ -7127,16 +7128,21 @@ export class FacetManager {
     }
   }
 
-  /** Kill a running process by PID. */
-  kill(pid: number): boolean {
+  /**
+   * Kill a running process by PID. Given the signal that ends it (a name
+   * without `SIG`), it exits with that signal's status, 128+signo, and its
+   * exit names `SIG<name>`; without one it is SIGKILL's 137, `killed`.
+   */
+  kill(pid: number, signal?: string): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
+    const code = signal === undefined ? 137 : exitCodeForSignal(signal);
     this.portRegistry.unregisterByPid(pid);
     this.releaseProcessRpcResources(pid);
     this.revokeProcessVfsWriters(pid);
-    const result = this.processes.kill(pid);
+    const result = this.processes.kill(pid, code);
     if (result) {
-      try { this.hooks.onExternalExit?.(pid, 137, 'killed'); } catch {}
+      try { this.hooks.onExternalExit?.(pid, code, signal === undefined ? 'killed' : `SIG${signal}`); } catch {}
     }
     this._teardownPairedServeFacet(pid);
     return result;

@@ -15,6 +15,7 @@ import { appendFileSync } from 'node:fs';
 import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { deletionResult } from './_ledger.mjs';
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
@@ -118,12 +119,21 @@ function noteMinted(sid, status, { reap } = {}) {
 }
 
 // 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
+// Each DELETE is read through deletionResult: only the destroy result confirms a deletion.
 const DELETE_SESSIONS = `
-const { base, sessions } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-Promise.all(sessions.map(([sid, headers]) =>
-  fetch(base + '/s/' + encodeURIComponent(sid) + '/', { method: 'DELETE', headers })
-    .then((r) => r.status, (e) => 'error: ' + e.message)))
-  .then((statuses) => process.stdout.write(JSON.stringify(statuses)));
+(async () => {
+  const { deletionResult } = await import(${JSON.stringify(new URL('./_ledger.mjs', import.meta.url).href)});
+  const { base, sessions } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+  const results = await Promise.all(sessions.map(async ([sid, headers]) => {
+    try {
+      const result = await deletionResult(await fetch(base + '/s/' + encodeURIComponent(sid) + '/', { method: 'DELETE', headers }));
+      return { status: result.status, confirmed: result.ok };
+    } catch (error) {
+      return { status: 'error: ' + error.message, confirmed: false };
+    }
+  }));
+  process.stdout.write(JSON.stringify(results));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
 
 function deleteUndeletedSync() {
@@ -138,11 +148,12 @@ function deleteUndeletedSync() {
       timeout: 60_000,
     }));
   } catch (e) {
-    statuses = sessions.map(() => `error: ${String(e?.message ?? e).split('\n')[0]}`);
+    statuses = sessions.map(() => ({ status: `error: ${String(e?.message ?? e).split('\n')[0]}`, confirmed: false }));
   }
   sessions.forEach(([sid], i) => {
-    console.log(`deleteSession (exit hook): ${sid} → ${statuses[i]}`);
-    ledger('exit-delete', sid, statuses[i]);
+    const result = statuses[i];
+    console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}`);
+    ledger('exit-delete', sid, result.status, { confirmed: result.confirmed === true });
   });
 }
 
@@ -237,10 +248,10 @@ export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
     method: 'DELETE',
     headers: requestHeaders({ 'X-Nimbus-Cleanup-Reason': reason }),
   });
-  const text = await r.text().catch(() => '');
-  ledger('delete', sid, r.status);
-  if (r.ok) undeleted.delete(sid);
-  return { ok: r.ok, status: r.status, body: text };
+  const result = await deletionResult(r);
+  ledger('delete', sid, result.status, { confirmed: result.ok });
+  if (result.ok) undeleted.delete(sid);
+  return result;
 }
 
 /** GET /s/<sid>/preview/ — returns {status, html}. */
