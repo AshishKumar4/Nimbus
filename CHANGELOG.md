@@ -8,6 +8,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### Test process safety
 
+- Unit timing checks use operation counts, explicit completion handshakes,
+  and timer ordering instead of elapsed-time performance thresholds. The
+  tests still check blocked work, cancellation, timeout errors, exact output,
+  and linear index replacement; hang guards remain finite.
+
 - Unit files run serially by default, with a five-minute deadline and a
   combined 1 MiB stdout/stderr limit. Timeout and output overflow kill the
   subprocess group; failures name the file, exit status or signal, and

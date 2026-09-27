@@ -17,22 +17,28 @@ const openWorkspace = () => {
 
 const ws = await openWorkspace();
 
+// The commands sleep an hour; a call that was not aborted fails the guard, a
+// minute on, rather than being timed.
+function ended(pending, what) {
+  let guard;
+  return Promise.race([
+    pending,
+    new Promise((_, reject) => { guard = setTimeout(() => reject(new Error(what)), 60_000); }),
+  ]).finally(() => clearTimeout(guard));
+}
+
 // ── An active call aborts on the caller's signal ────────────────────────────
 {
   const controller = new AbortController();
-  const started = Date.now();
-  const pending = ws.exec('sleep 30', { signal: controller.signal });
+  const pending = ws.exec('sleep 3600', { signal: controller.signal });
   setTimeout(() => controller.abort(), 50);
-  const result = await pending;
-  assert.ok(Date.now() - started < 10_000, 'sleep outlived the caller abort');
+  const result = await ended(pending, 'sleep outlived the caller abort');
   assert.notEqual(result.exitCode, 0, 'an aborted command reported success');
 }
 
 // ── timeout: aborts the same way ────────────────────────────────────────────
 {
-  const started = Date.now();
-  const result = await ws.exec('sleep 30', { timeout: 80 });
-  assert.ok(Date.now() - started < 10_000, 'sleep outlived the exec timeout');
+  const result = await ended(ws.exec('sleep 3600', { timeout: 80 }), 'sleep outlived the exec timeout');
   assert.notEqual(result.exitCode, 0, 'a timed-out command reported success');
 }
 

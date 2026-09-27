@@ -18,25 +18,22 @@ import {
   rpcStartProcess,
 } from '../../packages/worker/src/session/programmatic.ts';
 
-const SLEEP_MS = 400;
-
+// The fake `sleep` ends when the test wakes it (or on abort), never on a
+// clock, so every "before it finished" below is an ordering, not a timing.
 function makeHost() {
   const processes = new SessionProcessSupervisor();
   const held = [];
+  const sleepers = [];
   const shell = {
     getEnv: () => ({ HOME: '/home/user' }),
     getCwd: () => '/home/user',
     async execute(command, options) {
       const [name, argument] = String(command).split(/\s+/);
       if (name === 'sleep') {
-        const ms = Number(argument) * 1000;
         options.onStdout?.(bytes('starting\n'));
         const aborted = await new Promise((resolve) => {
-          const timer = setTimeout(() => resolve(false), ms);
-          options.signal?.addEventListener('abort', () => {
-            clearTimeout(timer);
-            resolve(true);
-          }, { once: true });
+          sleepers.push(() => resolve(false));
+          options.signal?.addEventListener('abort', () => resolve(true), { once: true });
         });
         if (aborted) return { exitCode: 130 };
         options.onStdout?.(bytes('woke\n'));
@@ -73,6 +70,8 @@ function makeHost() {
     _viteShimPort: null,
     terminal: null,
     held,
+    /** Wake every sleeping `sleep`. */
+    wake() { for (const wake of sleepers.splice(0)) wake(); },
     ensureSqliteFs() {},
     ensureFacetManager() {},
     ensureRuntimeReady() { assert.ok(this.shell && this.sqliteFs, 'the test host must already be initialized'); },
@@ -82,14 +81,8 @@ function makeHost() {
 // ── startProcess returns before the process completes ────────────────────
 {
   const host = makeHost();
-  const before = Date.now();
-  const started = await rpcStartProcess(host, `sleep ${SLEEP_MS / 1000}`);
-  const elapsed = Date.now() - before;
-
-  assert.ok(
-    elapsed < SLEEP_MS / 2,
-    `startProcess returned in ${elapsed}ms, which is not ahead of the ${SLEEP_MS}ms command`,
-  );
+  // Returns while its command still sleeps: nothing has woken it.
+  const started = await rpcStartProcess(host, 'sleep 1');
   assert.equal(typeof started.pid, 'number');
   assert.equal(started.process.state, 'running');
   assert.equal(started.process.longRunning, true);
@@ -101,6 +94,7 @@ function makeHost() {
   assert.equal(early.exit, null);
   assert.equal(host.processes.get(started.pid).state, 'running');
 
+  host.wake();
   await host.held[0];
 
   const done = await rpcProcessLogs(host, started.pid);
@@ -115,25 +109,25 @@ function makeHost() {
 // ── kill terminates a running background process ─────────────────────────
 {
   const host = makeHost();
-  const started = await rpcStartProcess(host, `sleep ${SLEEP_MS / 1000}`);
-  const killedAt = Date.now();
+  const started = await rpcStartProcess(host, 'sleep 1');
   const killed = await rpcKillProcess(host, started.pid);
   assert.deepEqual(killed, { ok: true, pid: started.pid });
 
+  // The command ends without being woken: kill aborted it.
   await host.held[0];
-  assert.ok(
-    Date.now() - killedAt < SLEEP_MS / 2,
-    'kill aborts the running command instead of waiting it out',
-  );
   assert.equal(host.processes.get(started.pid).state, 'killed');
+  assert.equal((await rpcProcessLogs(host, started.pid)).text, 'starting\n', 'kill aborts the running command instead of waiting it out');
 }
 
 // ── exec still waits for completion ──────────────────────────────────────
 {
   const host = makeHost();
-  const before = Date.now();
-  const result = await rpcExec(host, `sleep ${SLEEP_MS / 1000}`);
-  assert.ok(Date.now() - before >= SLEEP_MS * 0.8, 'exec awaits the command');
+  let settled = false;
+  const pending = rpcExec(host, 'sleep 1').finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false, 'exec awaits the command');
+  host.wake();
+  const result = await pending;
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'starting\nwoke\n');
 }

@@ -41,6 +41,19 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
   return loop(exitPromise);
 }
 
+// These cases never time the loop. A loop that must not wait is given a
+// deadline no test outlives (NEVER) and must return at all (a wait shows as
+// the guard's failure, a minute on, not as a slow run); a wait that must
+// happen is checked by what had happened when the loop returned.
+const NEVER = 3_600_000;
+function returns(promise, what) {
+  let guard;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { guard = setTimeout(() => reject(new Error(`${what}: the loop never returned`)), 60_000); }),
+  ]).finally(() => clearTimeout(guard));
+}
+
 // ── 1. An unsettled promise is not a handle ─────────────────────────────────
 // The npm-bin fixture verbatim: a floating chain that adopts a promise nothing
 // will ever settle. Node prints and exits 0; so must the facet, promptly.
@@ -50,13 +63,10 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
   Promise.resolve().then(() => new Promise(() => {}));
   printed = true;
 
-  const t0 = Date.now();
-  const r = await l.runEntrypointToExit(undefined, 5000);
-  const elapsed = Date.now() - t0;
+  const r = await returns(l.runEntrypointToExit(undefined, NEVER), 'an unsettled promise');
 
   assert.equal(printed, true);
   assert.equal(r.pending, 0, 'an unsettled promise was counted as unfinished work');
-  assert.ok(elapsed < 500, `the loop waited on an unsettleable promise (elapsed=${elapsed}ms)`);
 }
 
 // A whole microtask chain, however long, still resolves inside the loop's
@@ -86,15 +96,17 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
 
 // A timer that never fires is not a clean exit: the program did not finish and
 // the caller has to be able to say so.
+// The deadline is honored, not cut short: an untracked timer due before it
+// has fired by the time the loop gives up (timers fire in due order).
 {
   const l = freshLoop();
   globalThis.__nimbusPendingTimers = 1;    // a live setInterval
+  let dueEarlier = false;
+  setTimeout(() => { dueEarlier = true; }, 100);
 
-  const t0 = Date.now();
   const r = await l.runEntrypointToExit(undefined, 300);
-  const elapsed = Date.now() - t0;
   assert.ok(r.pending > 0, 'a live timer must be reported as work still in flight');
-  assert.ok(elapsed >= 250 && elapsed < 2000, `deadline not honored (elapsed=${elapsed}ms)`);
+  assert.equal(dueEarlier, true, 'the loop gave up before its deadline');
 }
 
 // ── 3. An open server keeps the program alive ───────────────────────────────
@@ -108,11 +120,9 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
 
   setTimeout(() => globalThis.__portRegistry.delete(3000), 400);
 
-  const t0 = Date.now();
-  const r = await l.runEntrypointToExit(undefined, 5000);
-  const elapsed = Date.now() - t0;
+  const r = await l.runEntrypointToExit(undefined, NEVER);
   assert.equal(r.pending, 0, 'the program ended once its server closed');
-  assert.ok(elapsed >= 350, `the loop exited while a server was still listening (elapsed=${elapsed}ms)`);
+  assert.equal(globalThis.__portRegistry.has(3000), false, 'the loop exited while a server was still listening');
 }
 
 // A RESIDENT facet only settles its startup — it keeps serving afterwards, and
@@ -123,10 +133,7 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
   globalThis.__portRegistry.set(3000, {});
   assert.equal(l.pendingStartupWork(), 0, 'a listening server is not startup work');
 
-  const t0 = Date.now();
-  await l.settleEntrypointStartup(undefined, 5000);
-  const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 500, `a resident boot waited on its own server (elapsed=${elapsed}ms)`);
+  await returns(l.settleEntrypointStartup(undefined, NEVER), 'a resident boot waited on its own server');
 }
 
 // ── 4. In-flight async operations are awaited ───────────────────────────────
@@ -162,11 +169,8 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
   globalThis.__nimbusPendingTimers = 1;
   globalThis.__portRegistry.set(8080, {});
 
-  const t0 = Date.now();
-  const r = await l.runEntrypointToExit(new Promise(() => {}), 5000);
-  const elapsed = Date.now() - t0;
+  const r = await returns(l.runEntrypointToExit(new Promise(() => {}), NEVER), 'process.exit did not exit');
   assert.equal(r.pending, 0, 'an explicit process exit is not a truncation');
-  assert.ok(elapsed < 500, `process.exit did not exit immediately (elapsed=${elapsed}ms)`);
 }
 
 // ── 6. An entry's own evaluation promise IS awaited ─────────────────────────
@@ -177,10 +181,8 @@ function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
   let evaluated = false;
   const entry = new Promise((r) => setTimeout(() => { evaluated = true; r(); }, 400));
 
-  const t0 = Date.now();
-  await l.runEntrypointToExit(entry, 5000);
+  await l.runEntrypointToExit(entry, NEVER);
   assert.equal(evaluated, true, 'the entry module evaluation was abandoned');
-  assert.ok(Date.now() - t0 >= 350);
 }
 
 globalThis.__nimbusPendingTimers = 0;

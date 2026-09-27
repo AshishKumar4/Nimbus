@@ -12,29 +12,35 @@ const box = await testBox();
 const shell = box.shell;
 
 // The programmatic command starts first, so at its end the controller it
-// saved predates the interactive command's own.
-const programmatic = shell.execute('sleep 0.2');
-await new Promise((resolve) => setTimeout(resolve, 20));
+// saved predates the interactive command's own. Each command runs until the
+// test releases it (or it is aborted), so the order is the test's, not a race
+// between sleeps.
+let releaseFirst;
+let interactiveAborted = false;
+shell.getRegistry().register('first-programmatic', async () => {
+  await new Promise((resolve) => { releaseFirst = resolve; });
+  return 0;
+});
+shell.getRegistry().register('then-interactive', async (ctx) => {
+  await new Promise((resolve) => ctx.signal.addEventListener('abort', () => { interactiveAborted = true; resolve(); }, { once: true }));
+  return 130;
+});
+const programmatic = shell.execute('first-programmatic');
+await new Promise((resolve) => setTimeout(resolve, 0));
+const interactive = shell.executeLine('then-interactive');
+await new Promise((resolve) => setTimeout(resolve, 0));
 
-const interactiveStarted = Date.now();
-const interactive = shell.executeLine('sleep 5');
-
+releaseFirst();
 await programmatic;
 assert.ok(shell.running, 'the interactive command is still running');
 
 shell.handleInput('\x03');
-await Promise.race([
-  interactive,
-  new Promise((_, reject) => setTimeout(() => reject(new Error(
-    'Ctrl+C did not reach the running command: a finished concurrent execution '
-    + 'restored a stale abort controller over it',
-  )), 1000)),
-]);
-
-assert.ok(
-  Date.now() - interactiveStarted < 2000,
-  'the interrupted command ended early rather than sleeping out its 5s',
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(
+  interactiveAborted, true,
+  'Ctrl+C did not reach the running command: a finished concurrent execution restored a stale abort controller over it',
 );
+await interactive;
 
 console.log('shell concurrent abort controller: ok');
 

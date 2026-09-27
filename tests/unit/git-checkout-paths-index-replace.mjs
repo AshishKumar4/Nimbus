@@ -16,11 +16,20 @@ assert.deepEqual(replacedIndexEntries(['ab', 'a/b'], new Set(['a'])), ['a/b'], '
 assert.deepEqual(replacedIndexEntries(['a'], new Set(['ab/c'])), [], 'so does a file named like part of a directory');
 
 const index = Array.from({ length: 50_000 }, (_, i) => `pkg${i % 50}/dir${i % 500}/file${i}.js`);
-const restored = new Set(index.filter((p) => p.startsWith('pkg7/')).slice(0, 1_000));
 index.push('pkg7', 'pkg7/dir7');
-const started = performance.now();
+// Linear, counted rather than timed: every look at the restored set (a
+// membership test, or a step through it) is one operation.
+let looks = 0;
+class CountedSet extends Set {
+  has(value) { looks++; return super.has(value); }
+  *[Symbol.iterator]() { for (const value of super.values()) { looks++; yield value; } }
+}
+const restored = new CountedSet(index.filter((p) => p.startsWith('pkg7/')).slice(0, 1_000));
+looks = 0;
 const replaced = replacedIndexEntries(index, restored);
-const ms = performance.now() - started;
 assert.deepEqual(replaced, ['pkg7', 'pkg7/dir7']);
-assert.ok(ms < 100, `50,000 entries with ${restored.size} restored took ${ms.toFixed(0)} ms`);
-console.log(`git-checkout-paths-index-replace: ok (${ms.toFixed(1)} ms for 50,000 entries)`);
+// Each entry is tested once per leading directory and once whole (at most 3
+// here), and the restored set is walked once: index x restored would be 5e7.
+const bound = index.length * 3 + restored.size;
+assert.ok(looks <= bound, `50,000 entries with ${restored.size} restored took ${looks} looks at the restored set (linear is at most ${bound})`);
+console.log(`git-checkout-paths-index-replace: ok (${looks} looks for 50,000 entries)`);

@@ -135,11 +135,18 @@ function routedRequest(port, path, init = {}) {
   let handlerRes;
   const server = http.createServer((_req, res) => { handlerRes = res; /* never writes headers */ });
   server.listen(4313);
-  const t0 = Date.now();
-  const res = await serveHttp(routedRequest(4313, '/hang'));
-  const dt = Date.now() - t0;
+  // Ordered, not timed: a timer due before the pinned timeout has fired when
+  // the 504 arrives, and the default (30 s) would lose to the guard.
+  let dueEarlier = false;
+  setTimeout(() => { dueEarlier = true; }, 50);
+  let guard;
+  const res = await Promise.race([
+    serveHttp(routedRequest(4313, '/hang')),
+    new Promise((_, reject) => { guard = setTimeout(() => reject(new Error('the pinned header timeout was not honored')), 20_000); }),
+  ]).finally(() => clearTimeout(guard));
   assert.equal(res.status, 504, 'a handler that sends no headers times out with 504');
-  assert.ok(dt >= 100 && dt < 5000, `504 fired on the header timeout, not a 5s cap (dt=${dt}ms)`);
+  assert.equal(await res.text(), 'Nimbus: HTTP handler sent no response headers in time');
+  assert.equal(dueEarlier, true, 'the 504 came before its timeout');
   assert.equal(handlerRes.destroyed, true, 'the hung handler response is destroyed on timeout');
   delete globalThis.__nimbusHttpHeaderTimeoutMs;
 }
