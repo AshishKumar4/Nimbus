@@ -912,7 +912,7 @@ export async function _rpcWriteBatchStream(self: RpcHost,
    * resolver-facet to flush a wave of resolved packages back to the
    * supervisor without per-entry round-trips.
    *
-   * Payload is the array of RegistryCacheEntry shapes from src/npm-cache.ts.
+   * Payload is the array of RegistryCacheEntry shapes from src/npm/cache.ts.
    * Returns { written, failed } so the facet can surface partial-write
    * warnings to the install log.
    */

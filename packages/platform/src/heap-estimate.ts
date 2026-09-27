@@ -6,7 +6,7 @@
  * `process.memoryUsage()` returns 0 for every field inside a Durable
  * Object class context (only dynamic-worker isolates under nodejs_compat
  * get the real implementation). The previous `readNodeMem` /
- * `sampleMemory` helpers in nimbus-session-diag.ts called it anyway and
+ * `sampleMemory` helpers in session/diag.ts called it anyway and
  * therefore reported zero forever — useless for verifying memory-
  * containment work in plan §3 Track A'.
  *

@@ -5,8 +5,8 @@
  * `node:*` builtins.
  *
  * Used by:
- *   - src/facet-manager.ts one-shot runtime worker template
- *   - src/facet-manager.ts long-running process worker template
+ *   - src/facets/manager.ts one-shot runtime worker template
+ *   - src/facets/manager.ts long-running process worker template
  *
  * Symmetry constraint (W3 plan §3): both templates MUST consume this
  * helper to prevent drift. If you add a new `import * as __real_X`,

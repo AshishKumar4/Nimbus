@@ -4,7 +4,7 @@
  * Why this exists
  * ───────────────
  * Pre-bundling npm packages (the `Pre-bundling N modules…` step in
- * src/npm-installer.ts:704) used to call `EsbuildService.build(...)`
+ * src/npm/installer.ts) used to call `EsbuildService.build(...)`
  * inside the supervisor DO isolate. Each `esbuild.build` allocates
  * 30–80 MiB of WASM linear memory plus the input/output graph; against
  * the 128 MB DO heap cap this OOM-killed the supervisor on installs
@@ -366,7 +366,7 @@ export const prebundleOne = async function prebundleOne(
     initPromise = (async () => {
       // Read the WebAssembly.Module the pool registered. The key matches
       // the name passed to IsolatePool's `wasmModules` option (see
-      // src/npm-installer.ts:prebundleUsedModules dispatch site).
+      // src/npm/installer.ts:prebundleUsedModules dispatch site).
       const wasmRegistry = (globalThis as any).__NIMBUS_WASM;
       const wasmModule = wasmRegistry && wasmRegistry['esbuild.wasm'];
       if (!wasmModule) {
@@ -711,5 +711,5 @@ export const prebundleOne = async function prebundleOne(
 
 // Re-export so the supervisor can stamp results without re-importing.
 export { BUNDLER_VERSION };
-// Type re-export for npm-installer.ts.
+// Type re-export for npm/installer.ts.
 export type _ResolvedPackage = ResolvedPackage;

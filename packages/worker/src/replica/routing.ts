@@ -1,5 +1,5 @@
 /**
- * replica-routing.ts — W12 — DO read replica routing primitives.
+ * replica/routing.ts — W12 — DO read replica routing primitives.
  *
  * Pure module (no `cloudflare:workers` import) so it can be unit-tested
  * under Bun. NimbusSession wraps these helpers in its constructor and
@@ -28,10 +28,7 @@
  *     pins it near the DO; RPC into the DO is unaffected. DOs themselves
  *     don't move.
  *
- *   - ~lambros/Feedback for DO read replication API: replicas error with
- *     "Network connection lost" during high-volume writes. Mitigation:
- *     suspend replicas during npm install / git clone bursts (the
- *     suspension state lives in `replica-suspension.ts`).
+
  */
 
 /** Result of `classifyReplicaPolicy(pathname, method)`. */

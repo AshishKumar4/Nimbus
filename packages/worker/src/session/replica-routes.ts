@@ -9,7 +9,7 @@
  *
  *   getReplicaState(self) — composes `_w12EnableResult` (constructor-time
  *     enable result) + live `inspectReplicaState(ctx)` (per-fetch isReplica
- *     + bookmark) + `replicasSuspended()` (write-burst guard). Surfaced
+ *     + bookmark). Surfaced
  *     via `/api/_diag/memory.replica` so operators (and the CT1 drift
  *     detector) can confirm replicas landed and observe replication lag.
  *
