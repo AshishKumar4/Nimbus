@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d1c3267d2f71869ebf493b94eecfbdb98e4f9bc755dd4a7dc143ddfe7d675d00",
+  "fingerprint": "c7989766c40ce2244c224b7ac55d7cb385fea7467588796e49d8944612507d3b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -184,8 +184,8 @@
     "packages/core/dist/runtime/esbuild-cli/types.d.ts.map": "b1b2cd09f5bf39e86ecb4e4c125cda1ba6601dc2425bcb8174377e50467038c0",
     "packages/core/dist/runtime/esbuild-cli/types.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
     "packages/core/dist/runtime/esbuild-service.d.ts": "3bb577dd6949a06f0f13c3126d3b40e16ac9ea7fc36204a4bb1236e9e841c396",
-    "packages/core/dist/runtime/esbuild-service.d.ts.map": "ea2423de38711a3930795ac2986169dc48d23c16f048e49f071eb104540a1bea",
-    "packages/core/dist/runtime/esbuild-service.js": "793fc1381732e0ea49025c8ee1c5b4377d25ebed6ac4ac6c519bc28f588f83fb",
+    "packages/core/dist/runtime/esbuild-service.d.ts.map": "7a40a9d57470aabde15bde108b8963d1d75b8205d29580c7809a6ff0e8084de9",
+    "packages/core/dist/runtime/esbuild-service.js": "c7078e1688309461049b3c8853be35ebe64c71d5bb26fc2915a9589863dd99e2",
     "packages/core/dist/runtime/exec-stream.d.ts": "0f32b7807fdbd07ba2a4e0a9772dea7cb83e1d4aea461dcffe910c72ed120631",
     "packages/core/dist/runtime/exec-stream.d.ts.map": "5fe33ddc93c275a5eccf22db37c59c8558f3f9737859e65c5421fc3d80c948dd",
     "packages/core/dist/runtime/exec-stream.js": "1fd56d23e2ed50b2a9aed9148816f928ac6d56d796a4d4e230c93ff4f6edfad9",
@@ -940,7 +940,7 @@
     "packages/core/src/runtime/esbuild-cli.ts": "ade0aefd8ea4c93f4dbc91fe36f4c22ec38f2c30885afc02235c16c3da0ab151",
     "packages/core/src/runtime/esbuild-cli/preamble.ts": "8df4db41a98438c8528c2849a372340bd38ca734bcf543bc61bef83bd76d60c1",
     "packages/core/src/runtime/esbuild-cli/types.ts": "87316fb7937f8a0536be666f144f7319e4884540604dd02c7e8af07adac87599",
-    "packages/core/src/runtime/esbuild-service.ts": "8ca1b16d3fafbde1227723bd239261e07da06f088d18e3ea8c02a7e6c5d81df4",
+    "packages/core/src/runtime/esbuild-service.ts": "31b55f34045b51c6bee7005e1601f1badf0075aef650c33af166d12cdcbcbdcb",
     "packages/core/src/runtime/exec-stream.ts": "7d5d94eb140adeeb6f1afdeea016bf49d5d9b74fc698f5673a6ad268426231a9",
     "packages/core/src/runtime/facet-host.ts": "f9ba60a26e12008f49d7362f2788d91e471421510b1e52d25a9f5971311108d4",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",
