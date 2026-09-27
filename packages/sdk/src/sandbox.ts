@@ -18,6 +18,7 @@ import {
   type ExecStream,
 } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { z } from 'zod/v4';
+import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 
 export type RuntimeSpec = string;
 export type RuntimeName =
@@ -427,10 +428,7 @@ function remoteFailure(response: Response, payload: unknown): NimbusRemoteError 
   });
 }
 
-const WireBytesSchema = z.object({
-  __nimbusWireType: z.literal('bytes'),
-  base64: z.string(),
-}).passthrough();
+
 
 const UndefinedResultSchema = z.undefined();
 const UnknownResultSchema = z.unknown();
@@ -774,7 +772,7 @@ export class NimbusSandbox {
     const payload = await remotePayload(response);
     const success = RemoteRpcSuccessSchema.safeParse(payload);
     if (!response.ok || !success.success) throw remoteFailure(response, payload);
-    return resultSchema.parse(decodeWire(success.data.result));
+    return resultSchema.parse(WireDecoder.parse(success.data.result));
   }
 
   /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
@@ -802,7 +800,7 @@ export class NimbusSandbox {
       {
         method: 'POST',
         headers,
-        body: JSON.stringify(encodeWire({
+        body: JSON.stringify(WireEncoder.parse({
           profile: this.profileName,
           tenant: this.options.tenant,
           subject: this.options.subject,
@@ -1444,63 +1442,10 @@ async function resolveHeaders(input: NimbusHeaders | undefined): Promise<Headers
   return typeof input === 'function' ? await input() : input;
 }
 
-function encodeWire(value: unknown): unknown {
-  if (value instanceof Uint8Array) {
-    return {
-      __nimbusWireType: 'bytes',
-      base64: bytesToBase64(value),
-    };
-  }
-  if (value instanceof ArrayBuffer) {
-    return {
-      __nimbusWireType: 'bytes',
-      base64: bytesToBase64(new Uint8Array(value)),
-    };
-  }
-  if (ArrayBuffer.isView(value)) {
-    const view = value as ArrayBufferView;
-    return {
-      __nimbusWireType: 'bytes',
-      base64: bytesToBase64(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)),
-    };
-  }
-  if (Array.isArray(value)) return value.map(encodeWire);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (item !== undefined) out[key] = encodeWire(item);
-    }
-    return out;
-  }
-  return value;
-}
 
-function decodeWire(value: unknown): unknown {
-  const bytes = WireBytesSchema.safeParse(value);
-  if (bytes.success) return base64ToBytes(bytes.data.base64);
-  if (Array.isArray(value)) return value.map(decodeWire);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = decodeWire(item);
-    }
-    return out;
-  }
-  return value;
-}
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
 
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
+
+
+
+
