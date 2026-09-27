@@ -37,6 +37,11 @@ for (const manifest of manifests) {
   }
 }
 assert.equal(CLI_VERSION, versions.get('@nimbus-sh/cli'), 'CLI --version must identify the release being packed');
+for (const name of ['@nimbus-sh/cli', 'create-nimbus-app']) {
+  const range = manifests.find((manifest) => manifest.name === name).engines.node;
+  assert.ok(Bun.semver.satisfies('20.10.0', range), `${name}: Node 20.10 supports the emitted JSON import attributes`);
+  assert.ok(!Bun.semver.satisfies('20.9.999', range), `${name}: Node before 20.10 cannot parse the emitted JSON import attributes`);
+}
 const scratch = await mkdtemp(join(tmpdir(), 'nimbus-release-manifests-'));
 try {
   const project = join(scratch, 'app');
