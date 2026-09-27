@@ -176,10 +176,13 @@ export class ServedReads {
 export class ReadProfile {
     bucket;
     now;
+    onConflict;
     index = null;
-    constructor(bucket, now = Date.now) {
+    /** onConflict reports a change after every conditional write fails. */
+    constructor(bucket, now = Date.now, onConflict) {
         this.bucket = bucket;
         this.now = now;
+        this.onConflict = onConflict;
     }
     static key(integrity) {
         return IDENTITY.test(integrity) ? PREFIX + encodeURIComponent(integrity) : null;
@@ -217,7 +220,7 @@ export class ReadProfile {
         let changed = 0;
         for (const [key, items] of ReadProfile.byPackage(evidence, integrityOf)) {
             let observed = 0;
-            const wrote = await this.update(key, tag, ({ entries }) => {
+            const wrote = await this.update(key, tag, 'observe', ({ entries }) => {
                 let dirty = false;
                 observed = 0;
                 for (const { item, rel } of items) {
@@ -242,7 +245,7 @@ export class ReadProfile {
                 }
                 return dirty;
             });
-            if (wrote) {
+            if (wrote === 'written') {
                 this.index?.keys.add(key);
                 changed += observed;
             }
@@ -253,20 +256,23 @@ export class ReadProfile {
      * One read-modify-write of `key` by `tag`: `mutate` changes the profile
      * read and says whether it did. The write is conditional on the object
      * still being the one read, and is tried again from a fresh read when
-     * another writer got there first, so concurrent writers each land. False
-     * when nothing changed, the principal is over its cap, or every try lost.
+     * another writer got there first, so concurrent writers each land. A
+     * change that lost every try is a `conflict`: said, and counted by the
+     * owner (`onConflict`), never dropped silently.
      */
-    async update(key, tag, mutate) {
+    async update(key, tag, kind, mutate) {
         for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
             const { profile, etag } = await this.readVersioned(key);
             if (!mutate(profile))
-                return false;
+                return 'unchanged';
             if (!this.admitWrite(profile, tag))
-                return false;
+                return 'over-cap';
             if (await this.write(key, profile, etag))
-                return true;
+                return 'written';
         }
-        return false;
+        console.warn(`[read-profile] ${kind} of ${key} lost ${WRITE_ATTEMPTS} write races and was dropped`);
+        this.onConflict?.(key, kind);
+        return 'conflict';
     }
     /**
      * Count one write by `tag` to `profile`, or refuse it: a principal writes
@@ -374,7 +380,7 @@ export class ReadProfile {
             list.push({ rel: entry.rel, path: key(entry.path) });
         }
         for (const [objectKey, items] of byKey) {
-            await this.update(objectKey, tag, ({ entries }) => {
+            await this.update(objectKey, tag, 'settle', ({ entries }) => {
                 let dirty = false;
                 for (const { rel, path } of items) {
                     const entry = entries.get(rel);

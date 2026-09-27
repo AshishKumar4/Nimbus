@@ -198,6 +198,8 @@ type Entries = Map<string, Entry>;
 /** Per principal tag: the start of its current write window, and its writes in it. */
 type Writes = Map<string, [number, number]>;
 interface Profile { entries: Entries; writes: Writes }
+/** What one read-modify-write did. */
+type UpdateOutcome = 'written' | 'unchanged' | 'over-cap' | 'conflict';
 
 /** One profile entry `lookup` offered a launch. */
 export interface StagedProfileEntry {
@@ -212,7 +214,12 @@ export interface StagedProfileEntry {
 export class ReadProfile {
   private index: { at: number; keys: Set<string> } | null = null;
 
-  constructor(private readonly bucket: ReadProfileBucket, private readonly now: () => number = Date.now) {}
+  /** onConflict reports a change after every conditional write fails. */
+  constructor(
+    private readonly bucket: ReadProfileBucket,
+    private readonly now: () => number = Date.now,
+    private readonly onConflict?: (key: string, kind: 'observe' | 'settle') => void,
+  ) {}
 
   private static key(integrity: string): string | null {
     return IDENTITY.test(integrity) ? PREFIX + encodeURIComponent(integrity) : null;
@@ -247,7 +254,7 @@ export class ReadProfile {
     let changed = 0;
     for (const [key, items] of ReadProfile.byPackage(evidence, integrityOf)) {
       let observed = 0;
-      const wrote = await this.update(key, tag, ({ entries }) => {
+      const wrote = await this.update(key, tag, 'observe', ({ entries }) => {
       let dirty = false;
       observed = 0;
       for (const { item, rel } of items) {
@@ -268,7 +275,7 @@ export class ReadProfile {
       }
       return dirty;
       });
-      if (wrote) {
+      if (wrote === 'written') {
         this.index?.keys.add(key);
         changed += observed;
       }
@@ -280,17 +287,20 @@ export class ReadProfile {
    * One read-modify-write of `key` by `tag`: `mutate` changes the profile
    * read and says whether it did. The write is conditional on the object
    * still being the one read, and is tried again from a fresh read when
-   * another writer got there first, so concurrent writers each land. False
-   * when nothing changed, the principal is over its cap, or every try lost.
+   * another writer got there first, so concurrent writers each land. A
+   * change that lost every try is a `conflict`: said, and counted by the
+   * owner (`onConflict`), never dropped silently.
    */
-  private async update(key: string, tag: string, mutate: (profile: Profile) => boolean): Promise<boolean> {
+  private async update(key: string, tag: string, kind: 'observe' | 'settle', mutate: (profile: Profile) => boolean): Promise<UpdateOutcome> {
     for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
       const { profile, etag } = await this.readVersioned(key);
-      if (!mutate(profile)) return false;
-      if (!this.admitWrite(profile, tag)) return false;
-      if (await this.write(key, profile, etag)) return true;
+      if (!mutate(profile)) return 'unchanged';
+      if (!this.admitWrite(profile, tag)) return 'over-cap';
+      if (await this.write(key, profile, etag)) return 'written';
     }
-    return false;
+    console.warn(`[read-profile] ${kind} of ${key} lost ${WRITE_ATTEMPTS} write races and was dropped`);
+    this.onConflict?.(key, kind);
+    return 'conflict';
   }
 
   /**
@@ -395,7 +405,7 @@ export class ReadProfile {
       list.push({ rel: entry.rel, path: key(entry.path) });
     }
     for (const [objectKey, items] of byKey) {
-      await this.update(objectKey, tag, ({ entries }) => {
+      await this.update(objectKey, tag, 'settle', ({ entries }) => {
       let dirty = false;
       for (const { rel, path } of items) {
         const entry = entries.get(rel);

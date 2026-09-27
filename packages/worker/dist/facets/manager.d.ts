@@ -953,6 +953,8 @@ export declare class FacetManager {
      * (residencyProfiles).
      */
     private readProfile;
+    /** Read-profile changes dropped after losing every write race. */
+    private readProfileConflicts;
     /** Per module path: its static references at a revision (see _closureStaticRefs). */
     private staticRefsMemo;
     /** Modules whose references are remembered: a few programs' closures. */
@@ -1048,6 +1050,14 @@ export declare class FacetManager {
     private _imageVfs;
     /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
+    /**
+     * The entry script as the facet compiles it: each dynamic `import()` routed
+     * to the process's ESM loader, with the entry's own URL as the parent (Node
+     * names `-e` code `<cwd>/[eval]` and stdin `<cwd>/[stdin]`). The parse runs
+     * in the esbuild facet like every cell's, and is cached by content. The
+     * module-map walk reads the script as written, before this.
+     */
+    private _entryDynamicImports;
     /**
      * The pacer every launch is built under: the session's alarm-driven turn
      * pump, the deployment's chunk bound, and the one check a suspended launch
@@ -1529,6 +1539,7 @@ export declare class FacetManager {
     /** Poll for a port registration the in-flight launch has not made yet. */
     private _waitForPort;
     get stats(): {
+        readProfileConflicts: number;
         total: number;
         running: number;
         exited: number;

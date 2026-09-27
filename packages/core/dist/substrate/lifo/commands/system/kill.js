@@ -1,76 +1,95 @@
-import { formatSignalList, parseSignalName } from '../../shell/signals.js';
-export function createKillCommand(processRegistry) {
-    return async (ctx) => {
-        const args = ctx.args;
-        if (args.length === 0) {
-            await ctx.stderr.write('kill: usage: kill [-signal] pid|%job ...\n');
-            return 1;
-        }
-        // Handle -l (list signals)
-        if (args[0] === '-l' || args[0] === '--list') {
+import { resolveJobSpec } from '../../shell/jobs.js';
+import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
+const USAGE = 'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]\n';
+export async function runKill(ctx, processes, jobs) {
+    const args = ctx.args;
+    if (args[0] === '-l' || args[0] === '-L' || args[0] === '--list') {
+        if (args.length === 1) {
             await ctx.stdout.write(formatSignalList());
             return 0;
         }
-        // Parse optional signal
-        let startIdx = 0;
-        let signalName;
-        if (args[0].startsWith('-') && !args[0].startsWith('-%')) {
-            const sigArg = args[0].slice(1);
-            startIdx = 1;
-            const parsed = parseSignalName(sigArg);
-            if (!parsed) {
-                await ctx.stderr.write(`kill: invalid signal: ${sigArg}\n`);
-                return 1;
+        let status = 0;
+        for (const operand of args.slice(1)) {
+            const result = signalOperand(operand);
+            if (result === null) {
+                await ctx.stderr.write(`kill: ${operand}: invalid signal specification\n`);
+                status = 1;
             }
-            signalName = parsed;
+            else
+                await ctx.stdout.write(result + '\n');
         }
-        if (startIdx >= args.length) {
-            await ctx.stderr.write('kill: usage: kill [-signal] pid|%job ...\n');
+        return status;
+    }
+    let index = 0;
+    let signal = 'TERM';
+    if (args[0]?.startsWith('-') && args[0] !== '--') {
+        const flag = args[index++];
+        let raw;
+        if (flag === '-s' || flag === '-n')
+            raw = args[index++];
+        else if (flag.startsWith('-s') || flag.startsWith('-n'))
+            raw = flag.slice(2);
+        else
+            raw = flag.slice(1);
+        if (raw === undefined) {
+            await ctx.stderr.write(`kill: ${flag}: option requires an argument\n`);
             return 1;
         }
-        let exitCode = 0;
-        for (let i = startIdx; i < args.length; i++) {
-            const target = args[i];
-            let pid;
-            if (target.startsWith('%')) {
-                // Job spec: %N
-                const jobId = parseInt(target.slice(1), 10);
-                if (isNaN(jobId)) {
-                    await ctx.stderr.write(`kill: ${target}: no such job\n`);
-                    exitCode = 1;
-                    continue;
-                }
-                // Look up process by job ID
-                const proc = processRegistry.getByJobId(jobId);
-                if (!proc) {
-                    await ctx.stderr.write(`kill: ${target}: no such job\n`);
-                    exitCode = 1;
-                    continue;
-                }
-                pid = proc.pid;
-            }
-            else {
-                // Direct PID
-                pid = parseInt(target, 10);
-                if (isNaN(pid)) {
-                    await ctx.stderr.write(`kill: ${target}: invalid argument\n`);
-                    exitCode = 1;
-                    continue;
-                }
-            }
-            // Kill the process
-            const killed = processRegistry.kill(pid, signalName);
-            if (!killed) {
-                const proc = processRegistry.get(pid);
-                if (proc && proc.command === 'shell') {
-                    await ctx.stderr.write(`kill: (${pid}) - Operation not permitted (cannot kill shell)\n`);
-                }
-                else {
-                    await ctx.stderr.write(`kill: (${pid}) - No such process\n`);
-                }
-                exitCode = 1;
-            }
+        const parsed = parseSignalName(raw);
+        if (parsed === null) {
+            await ctx.stderr.write(`kill: ${raw}: invalid signal specification\n`);
+            return 1;
         }
-        return exitCode;
+        signal = parsed;
+    }
+    if (args[index] === '--')
+        index++;
+    if (index === args.length) {
+        await ctx.stderr.write(USAGE);
+        return 2;
+    }
+    let status = 0;
+    for (const target of args.slice(index)) {
+        let pid;
+        const byJob = target.startsWith('%');
+        if (byJob) {
+            const job = resolveJobSpec(target, jobs);
+            if (!job || job === 'ambiguous') {
+                await ctx.stderr.write(`kill: ${target}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
+                status = 1;
+                continue;
+            }
+            pid = job.pid;
+        }
+        else if (/^\d+$/.test(target))
+            pid = Number(target);
+        else {
+            await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`);
+            status = 1;
+            continue;
+        }
+        const proc = pid === undefined ? undefined : processes.get(pid);
+        if (!proc || !byJob && proc.status === 'zombie') {
+            await ctx.stderr.write(`kill: (${pid ?? target}) - No such process\n`);
+            status = 1;
+            continue;
+        }
+        if (signal === '0')
+            continue;
+        if (!processes.kill(proc.pid, signal)) {
+            await ctx.stderr.write(`kill: (${proc.pid}) - Operation not permitted (cannot kill shell)\n`);
+            status = 1;
+        }
+    }
+    return status;
+}
+export function createKillCommand(processes) {
+    return async (ctx) => {
+        const jobs = new Map();
+        for (const proc of processes.getBackgroundJobs()) {
+            if (proc.jobId !== undefined)
+                jobs.set(proc.jobId, { id: proc.jobId, command: proc.args.join(' '), pid: proc.pid });
+        }
+        return await runKill(ctx, processes, [...jobs.values()]);
     };
 }

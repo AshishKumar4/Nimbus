@@ -198,7 +198,6 @@ export declare class Shell {
     private builtinReadonly;
     private builtinRead;
     private builtinWait;
-    private resolveWaitTarget;
     private builtinUnset;
     /**
      * `local name`, `local name=value`, `local name=(word …)` and the `declare` /

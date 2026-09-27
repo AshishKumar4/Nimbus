@@ -82,8 +82,10 @@ export interface StagedProfileEntry {
 export declare class ReadProfile {
     private readonly bucket;
     private readonly now;
+    private readonly onConflict?;
     private index;
-    constructor(bucket: ReadProfileBucket, now?: () => number);
+    /** onConflict reports a change after every conditional write fails. */
+    constructor(bucket: ReadProfileBucket, now?: () => number, onConflict?: ((key: string, kind: "observe" | "settle") => void) | undefined);
     private static key;
     /** Group paths under their package's profile key. */
     private static byPackage;
@@ -97,8 +99,9 @@ export declare class ReadProfile {
      * One read-modify-write of `key` by `tag`: `mutate` changes the profile
      * read and says whether it did. The write is conditional on the object
      * still being the one read, and is tried again from a fresh read when
-     * another writer got there first, so concurrent writers each land. False
-     * when nothing changed, the principal is over its cap, or every try lost.
+     * another writer got there first, so concurrent writers each land. A
+     * change that lost every try is a `conflict`: said, and counted by the
+     * owner (`onConflict`), never dropped silently.
      */
     private update;
     /**

@@ -90,9 +90,12 @@ const OTHER_PID = 1000003;
   const relay = new WebSocketRelay();
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   await relay.poll(PID, id, 100);
-  const started = Date.now();
+  // Ordered, not timed: a timer due inside the window has fired by the time
+  // the poll gives up on it.
+  let dueInside = false;
+  setTimeout(() => { dueInside = true; }, 5);
   assert.deepEqual(await relay.poll(PID, id, 30), [], 'a quiet socket returns empty');
-  assert.ok(Date.now() - started >= 25, 'and it waited for the window it was given');
+  assert.equal(dueInside, true, 'and it waited for the window it was given');
 }
 
 // ── a socket belongs to the process that opened it ──

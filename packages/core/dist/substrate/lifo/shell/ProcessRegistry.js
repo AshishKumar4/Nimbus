@@ -1,4 +1,4 @@
-import { signalAbortReason } from './signals.js';
+import { parseSignalName, signalAbortReason, signalDisposition } from './signals.js';
 /**
  * Central process registry for tracking all running processes.
  * Provides Linux-like process management with PIDs, status tracking,
@@ -77,18 +77,6 @@ export class ProcessRegistry {
         return this.processes.get(pid);
     }
     /**
-     * Get process information by job ID.
-     */
-    /** The newest process holding job number `jobId` (numbers are reused once a job is reaped). */
-    getByJobId(jobId) {
-        let found;
-        for (const proc of this.processes.values()) {
-            if (proc.jobId === jobId && (found === undefined || proc.pid > found.pid))
-                found = proc;
-        }
-        return found;
-    }
-    /**
      * Check if a process exists.
      */
     has(pid) {
@@ -129,6 +117,9 @@ export class ProcessRegistry {
      * Returns true if process was killed, false if not found or is a shell process.
      */
     kill(pid, signal) {
+        const name = parseSignalName(signal ?? 'TERM');
+        if (name === null)
+            return false;
         const proc = this.processes.get(pid);
         if (!proc) {
             return false;
@@ -141,15 +132,18 @@ export class ProcessRegistry {
         if (proc.status === 'zombie') {
             return true;
         }
-        if (signal === 'STOP' || signal === 'TSTP') {
+        const disposition = signalDisposition(name);
+        if (disposition === 'ignore')
+            return true;
+        if (disposition === 'stop') {
             proc.status = 'stopped';
             return true;
         }
-        if (signal === 'CONT') {
+        if (disposition === 'continue') {
             proc.status = 'running';
             return true;
         }
-        const reason = signalAbortReason(signal);
+        const reason = signalAbortReason(name);
         proc.abortController.abort(reason);
         this.finish(pid, reason.exitCode);
         return true;

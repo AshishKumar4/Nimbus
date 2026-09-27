@@ -11,14 +11,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ### Test process safety
 
-- Under the bounded test wrapper, each case runs in its own systemd cgroup
-  with inherited memory limits, no swap, and group teardown, including
-  detached descendants. A bubblewrap PID namespace prevents signals from
-  addressing host processes; filesystem and network access remain unchanged.
+- Unit timing checks use operation counts, explicit completion handshakes,
+  and timer ordering instead of elapsed-time performance thresholds. The
+  tests still check blocked work, cancellation, timeout errors, exact output,
+  and linear index replacement; hang guards remain finite.
+
+- Unit files have a five-minute deadline and a
+  combined 1 MiB stdout/stderr limit. Timeout and output overflow kill the
+  subprocess group; failures name the file, exit status or signal, and
+  bounded output diagnostics. The bounded workstation wrapper sets one
+  worker; the repository's existing pool default remains available to CI.
+- The subprocess helper supports an opt-in Linux backend using systemd and
+  bubblewrap. Each case gets its own cgroup and PID namespace. This backend
+  cleans up detached descendants and isolates process signals. The caller
+  configures resource limits; filesystem and network access remain unchanged.
   Signal cancellation settles pending calls so caller
   cleanup runs. Outside systemd, process groups and PID-start-time-checked
   polling provide weaker cleanup with a finite output-pipe drain deadline;
   that fallback is not a memory or detached-descendant containment boundary.
+- Launch arguments and environment travel in a size-bounded private request
+  file (0700 directory, 0600 file), not in systemd command lines or service
+  descriptions. The target still receives exact argument/environment values;
+  malformed requests fail before execution and private files are removed.
 
 ### Breaking changes for embedders
 
@@ -382,6 +396,31 @@ kernel credential, because Nimbus follows POSIX here:
 - SECURITY: a lookup rooted at a WASI preopen (or any `beneath` path) checks
   search permission on each directory it leaves and refuses every absolute
   link and every `..` above its root, across mounts too.
+
+### node
+
+- Dynamic imports inside required `.cjs` files use the process loader too.
+  JSON `data:` URLs require the JSON import attribute and load when it is
+  supplied. ESM source lookup uses the file path, while evaluation caching
+  uses the complete URL: distinct queries/fragments evaluate separately,
+  and importing the same URL again reuses its evaluation.
+
+- A program's dynamic `import()` loads what Node's loads and fails as Node's
+  fails. It was workerd's own `import()`, resolved against a module registry
+  that holds none of the session's files: `import('/usr/local/lib/
+  node_modules/<pkg>/dist/index.js')` from a CommonJS script (how pi's SDK
+  is loaded) failed with "No such module". Each `import()` now goes to the
+  process's ESM loader, which is Node 22's resolver (`import` conditions in
+  the map's key order, `exports`/`imports`, self-reference, `file:` URLs, no
+  extension or index probing, `ERR_UNSUPPORTED_DIR_IMPORT`,
+  `ERR_MODULE_NOT_FOUND` and the rest with Node's messages and "Did you
+  mean" hints, the JSON import-attribute rule) and returns Node's namespace
+  (a CommonJS module's `module.exports` as `default`). A literal
+  `import('dual')` of a package with `import` and `require` conditions now
+  loads its `import` build, as in Node, where before it was lowered to
+  `require`. `import.meta.resolve` is the same resolver's, synchronous as in
+  Node. The `import()` calls are found by parsing (acorn), in the esbuild
+  facet, and the result is cached by content.
 
 ## 2026-09-24
 

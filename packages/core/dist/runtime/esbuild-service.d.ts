@@ -63,6 +63,11 @@ export declare const BUNDLER_VERSION = "v11";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
+/**
+ * Converts bundler-emitted ESM without constructing an AST or loading
+ * esbuild-wasm. Returns null for module declarations that are not the compact,
+ * semicolon-terminated shapes emitted by current JS bundlers.
+ */
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export declare function rewriteProvidedCommonJsModules(source: string): string;
 export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string): TransformResult | null;
@@ -92,6 +97,15 @@ export interface EsbuildTransformOptions {
     jsxFragment?: string;
     tsconfigRaw?: string;
     define?: Record<string, string>;
+    /**
+     * The URL of the module being transformed, when its dynamic `import()`
+     * calls are the process's (dynamic-import-rewrite.ts): esbuild keeps them
+     * as written and each becomes a call of the process's ESM loader with this
+     * parent. Unset, esbuild lowers them to `require`.
+     */
+    dynamicImportParent?: string;
+    /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
+    rewriteOnly?: boolean;
 }
 export interface TransformResult {
     code: string;

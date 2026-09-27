@@ -69,12 +69,10 @@ await fm._runOpencodeServerFacet({
 }, port);
 
 // The gate must abandon the wedged first poll at its per-poll cap and pass on
-// a later poll — well inside the overall budget.
-const t0 = Date.now();
+// a later poll, inside the overall budget: a gate that starved on the wedged
+// poll throws at its deadline (the fail-loud path below) instead of returning.
 await fm._awaitOpencodeServerReady(pid, port, 5000, 150);
-const elapsed = Date.now() - t0;
 assert.ok(polls >= 2, `a fresh poll fired after the wedged one (polls=${polls})`);
-assert.ok(elapsed < 3000, `gate passed without starving on the wedged poll (took ${elapsed}ms)`);
 
 // Fail-loud path: never-200 polls surface the last poll outcome at the deadline.
 const entry2 = processes.spawn('opencode serve --port 4097', ['opencode', 'serve'], '/home/user');

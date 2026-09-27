@@ -205,8 +205,10 @@ const ws = await open({ facets: localFacetHost() });
     ["seq 100000 | head -1; echo \"${PIPESTATUS[*]}\"", '1\n141 0\n'],
     ["seq 100000 | cat | wc -l; echo \"${PIPESTATUS[*]}\"", '100000\n0 0 0\n'],
     // The writer is done once its reader drains the pipe, as on Linux, even
-    // though a background job still holds the read end.
-    ["SECONDS=0; seq 100000 | { cat >/dev/null; sleep 3 >/dev/null 2>&1 & }; echo \"t=$SECONDS ${PIPESTATUS[*]}\"", 't=0 0 0\n'],
+    // though a background job still holds the read end: the pipeline ends
+    // while the job is still waiting to be released, which it is only after.
+    // (Whole seconds: this bash's sleep takes no fractions.)
+    ["rm -f go out; seq 100000 | { cat >/dev/null; { while [ ! -e go ]; do sleep 1; done; echo bg-done > out; } >/dev/null 2>&1 & }; echo \"after ${PIPESTATUS[*]}\"; : > go; while [ ! -e out ]; do sleep 1; done; cat out", 'after 0 0\nbg-done\n'],
     // A bash process forking on every iteration, its output past a pipe's 64 KiB.
     ["i=0; while [ $i -lt 300 ]; do echo \"$(printf %0200d $i)\"; i=$((i+1)); done | wc -c", '60300\n'],
   ]) {

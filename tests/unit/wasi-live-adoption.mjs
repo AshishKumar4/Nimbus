@@ -179,15 +179,22 @@ console.log('wasi-live-adoption: all assertions passed');
   P.__wasiAdoptSupervisor(sup);
   const h = host();
   const { fd } = await h.open('home/user/wedge.txt');
-  const started = Date.now();
-  const settled = await Promise.race([
-    h.read(fd).then(() => 'settled'),
-    new Promise((r) => setTimeout(() => r('HUNG'), 30000)),
-  ]);
+  // The deadline is read off the timer the park arms, and that timer is run
+  // at once: the case is about which delay is asked for and what the read
+  // answers when it fires, not about waiting ten seconds.
+  const realSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0, ...rest); };
+  let settled;
+  try {
+    settled = await h.read(fd).then(() => 'settled');
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
   assert.equal(settled, 'settled',
     'a never-settling park must resolve to an errno rather than hang forever');
-  assert.ok(Date.now() - started < 15000,
-    'the park deadline must fire below the measured 15-18s suspension ceiling');
+  assert.ok(delays.length > 0 && Math.max(...delays) < 15000,
+    `the park deadline must fire below the measured 15-18s suspension ceiling (armed ${delays.join(', ')} ms)`);
 }
 
 // ── 6. No supervisor means no filesystem, never a write that evaporates ─────

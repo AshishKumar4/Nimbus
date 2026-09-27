@@ -492,10 +492,14 @@ for (const mode of PROCESS_HOST_MODES) {
   const route = _rpcRouteHostedHttp(peer, 'k62', { method: 'GET', url: 'http://x/', headers: [], body: null });
   route.catch(() => {});
   assert.equal(peer._hostedProcessWaiters.size, 1, 'the first key parks, waiting for its host leg');
-  const t0 = Date.now();
-  await assert.rejects(_rpcRouteHostedHttp(peer, 'other-key', { method: 'GET', url: 'http://x/', headers: [], body: null }),
-    /hosts no process/, 'a second key is refused rather than parked');
-  assert.ok(Date.now() - t0 < 1_000, 'and refused immediately, not waited out');
+  // Refused at once: settled before any timer can fire, the parked key's
+  // 30-second wait included.
+  const second = _rpcRouteHostedHttp(peer, 'other-key', { method: 'GET', url: 'http://x/', headers: [], body: null });
+  let refusedAtOnce = false;
+  second.catch(() => { refusedAtOnce = true; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(refusedAtOnce, true, 'and refused immediately, not waited out');
+  await assert.rejects(second, /hosts no process/, 'a second key is refused rather than parked');
   assert.equal(peer._hostedProcessWaiters.size, 1, 'so the waiter map cannot grow past one key');
 
   // The parked leg is then served by the host call it was racing, which is the

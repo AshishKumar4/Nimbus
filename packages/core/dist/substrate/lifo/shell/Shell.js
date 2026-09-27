@@ -5,7 +5,7 @@ import { ExitSignal, Interpreter, assignScalar, } from './interpreter.js';
 import { continuationState, lex } from './lexer.js';
 import { TokenKind } from './types.js';
 import { HistoryManager } from './history.js';
-import { JobTable } from './jobs.js';
+import { JobTable, resolveJobSpec } from './jobs.js';
 import { signalAbortReason } from './signals.js';
 import { complete } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
@@ -15,6 +15,7 @@ import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
+import { runKill } from '../commands/system/kill.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? '/home/user';
     let displayPath = cwd;
@@ -167,6 +168,7 @@ export class Shell {
         const view = Object.create(this, {
             env: { value: state.env },
             arrays: { value: state.arrays },
+            jobTable: { value: state.jobTable },
             cwd: { get: () => state.getCwd(), set: (cwd) => { state.setCwd(cwd); } },
             shellOptions: { value: state.options },
             traps: { value: state.traps },
@@ -195,13 +197,14 @@ export class Shell {
         this.ownBuiltins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
         this.ownBuiltins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
         this.ownBuiltins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
+        this.ownBuiltins.set('kill', async (args, stdout, stderr) => (await runKill({ args, stdout, stderr }, this.processRegistry, this.jobTable.list())));
         this.ownBuiltins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
         this.ownBuiltins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
         this.ownBuiltins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
         this.ownBuiltins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
-        this.ownBuiltins.set('jobs', async (_args, stdout) => (await this.builtinJobs(stdout)));
-        this.ownBuiltins.set('fg', async (args, stdout, stderr) => (await this.builtinFg(args, stdout, stderr)));
-        this.ownBuiltins.set('bg', async (args, stdout, stderr) => (await this.builtinBg(args, stdout, stderr)));
+        this.ownBuiltins.set('jobs', async (args, stdout, stderr) => (await this.builtinJobs(args, stdout, stderr)));
+        this.ownBuiltins.set('fg', async (args, stdout, stderr, _stdin, context) => (await this.builtinFg(args, stdout, stderr, context)));
+        this.ownBuiltins.set('bg', async (args, stdout, stderr, _stdin, context) => (await this.builtinBg(args, stdout, stderr, context)));
         this.ownBuiltins.set('history', async (_args, stdout) => (await this.builtinHistory(stdout)));
         this.ownBuiltins.set('source', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
         this.ownBuiltins.set('.', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
@@ -1315,71 +1318,46 @@ export class Shell {
         return 0;
     }
     async builtinWait(args, stderr) {
-        const targets = [];
-        for (const arg of args) {
-            const parsed = parseWaitTarget(arg);
-            if (parsed === null) {
-                (await stderr.write(`wait: ${arg}: not a valid job id\n`));
-                return 127;
-            }
-            targets.push({ value: parsed.value, byJob: parsed.byJob });
-        }
-        // A target is either a waitable or absent; the two are kept apart from
-        // the exit status itself, which is what `wait $!` answers with and is
-        // zero for the common case. An async resolver that returned the job's
-        // promise had it unwrapped into that status, and a successful job read
-        // as "no such job" (127) — the Pi installer runs its preflight checks
-        // as a background job and treats that 127 as a failed check.
-        const waitables = targets.length === 0
-            ? this.jobTable.list()
-                .filter((job) => job.status === 'running')
-                .map((job) => ({ promise: job.promise }))
-            : await Promise.all(targets.map((target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
-        // A job waited for is reaped (bash): its number is free for the next.
-        const reap = targets.map((target) => (target.byJob ? this.jobTable.get(target.value) : this.jobTable.byPid(target.value)));
-        // A bare `wait` reaps every job, as bash's does: their numbers are free again.
-        if (targets.length === 0) {
-            await Promise.all(waitables.map((w) => w?.promise.catch(() => undefined)));
-            for (const job of this.jobTable.list())
-                if (job.status === 'done')
-                    this.jobTable.remove(job.id);
+        if (args[0] === '--')
+            args = args.slice(1);
+        if (args.length === 0) {
+            const jobs = this.jobTable.list();
+            await Promise.all(jobs.map((job) => job.promise.catch(() => undefined)));
+            for (const job of jobs)
+                this.jobTable.remove(job.id);
+            this.jobTable.clearWaited();
+            return 0;
         }
         let last = 0;
-        for (const waitable of waitables) {
-            if (waitable === null) {
+        for (const arg of args) {
+            const byJob = arg.startsWith('%');
+            if (!byJob && !/^\d+$/.test(arg)) {
+                await stderr.write(`wait: \`${arg}': not a pid or valid job spec\n`);
+                last = 1;
+                continue;
+            }
+            const job = byJob ? this.jobTable.waitTarget(arg) : this.jobTable.byPid(Number(arg));
+            if (job === 'ambiguous') {
+                await stderr.write(`wait: ${arg.slice(1)}: ambiguous job spec\n`);
+                last = 127;
+                continue;
+            }
+            const promise = job?.promise ?? (byJob ? undefined : this.processRegistry.get(Number(arg))?.promise);
+            if (!promise) {
+                await stderr.write(byJob ? `wait: ${arg}: no such job\n` : `wait: pid ${arg} is not a child of this shell\n`);
                 last = 127;
                 continue;
             }
             try {
-                const result = await waitable.promise;
-                last = typeof result === 'number' ? result : 0;
+                last = await promise;
             }
             catch {
                 last = 1;
             }
+            if (job)
+                this.jobTable.reap(job);
         }
-        for (const job of reap)
-            if (job !== undefined)
-                this.jobTable.remove(job.id);
         return last;
-    }
-    async resolveWaitTarget(value, byJob, stderr) {
-        if (byJob) {
-            const job = this.jobTable.get(value);
-            if (!job) {
-                (await stderr.write(`wait: %${value}: no such job\n`));
-                return null;
-            }
-            return { promise: job.promise };
-        }
-        const proc = this.processRegistry.get(value);
-        if (proc)
-            return { promise: proc.promise };
-        const job = this.jobTable.get(value);
-        if (job)
-            return { promise: job.promise };
-        (await stderr.write(`wait: ${value}: no such process\n`));
-        return null;
     }
     async builtinUnset(args, stderr) {
         let exitCode = 0;
@@ -1515,43 +1493,107 @@ export class Shell {
         }
         throw new ExitSignal(status);
     }
-    async builtinJobs(stdout) {
+    async builtinJobs(args, stdout, stderr) {
         const jobs = this.jobTable.list();
         for (const job of jobs) {
-            (await stdout.write(`[${job.id}] ${job.status}    ${job.command}\n`));
+            const proc = job.pid === undefined ? undefined : this.processRegistry.get(job.pid);
+            if (proc?.status === 'stopped')
+                job.status = 'stopped';
+            else if (job.status === 'stopped' && proc?.status === 'running')
+                job.status = 'running';
         }
-        return 0;
+        let format = '';
+        let filter = '';
+        let index = 0;
+        for (; index < args.length; index++) {
+            const arg = args[index];
+            if (arg === '--') {
+                index++;
+                break;
+            }
+            if (!arg.startsWith('-'))
+                break;
+            for (const flag of arg.slice(1)) {
+                if (flag === 'l' || flag === 'p')
+                    format = flag;
+                else if (flag === 'r' || flag === 's')
+                    filter = flag;
+                else {
+                    await stderr.write(`jobs: -${flag}: invalid option\n`);
+                    return 2;
+                }
+            }
+        }
+        const current = resolveJobSpec('%+', jobs);
+        const previous = resolveJobSpec('%-', jobs);
+        let status = 0;
+        const selected = index === args.length ? jobs : args.slice(index).map((arg) => resolveJobSpec(arg, jobs));
+        for (let n = 0; n < selected.length; n++) {
+            const job = selected[n];
+            if (!job || job === 'ambiguous') {
+                const spec = args[index + n];
+                await stderr.write(`jobs: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
+                status = 1;
+                continue;
+            }
+            if (filter === 'r' && job.status !== 'running' || filter === 's' && job.status !== 'stopped')
+                continue;
+            if (format === 'p')
+                await stdout.write(`${job.pid}\n`);
+            else {
+                const marker = job === current ? '+' : job === previous ? '-' : ' ';
+                const state = job.status === 'running' ? 'Running' : job.status === 'stopped' ? 'Stopped'
+                    : job.exitCode === 0 ? 'Done' : job.exitCode === 143 ? 'Terminated' : job.exitCode === 137 ? 'Killed' : `Exit ${job.exitCode}`;
+                await stdout.write(`[${job.id}]${marker} ${format === 'l' ? `${job.pid} ` : ' '}${state.padEnd(27)}${job.command}${job.status === 'running' ? ' &' : ''}\n`);
+            }
+            if (job.status === 'done')
+                this.jobTable.remove(job.id);
+        }
+        return status;
     }
-    async builtinFg(args, stdout, stderr) {
-        const id = args[0] ? parseInt(args[0], 10) : undefined;
+    async builtinFg(args, stdout, stderr, context) {
+        if (!context?.interactive) {
+            await stderr.write('fg: no job control\n');
+            return 1;
+        }
         const jobs = this.jobTable.list();
         if (jobs.length === 0) {
-            (await stderr.write('fg: no current job\n'));
+            await stderr.write('fg: no current job\n');
             return 1;
         }
-        const job = id ? this.jobTable.get(id) : jobs[jobs.length - 1];
-        if (!job) {
-            (await stderr.write(`fg: ${id}: no such job\n`));
+        const spec = args[0] ?? '%+';
+        const job = resolveJobSpec(spec, jobs);
+        if (!job || job === 'ambiguous') {
+            await stderr.write(`fg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
             return 1;
         }
-        (await stdout.write(`${job.command}\n`));
+        await stdout.write(`${job.command}\n`);
+        if (job.pid !== undefined && this.processRegistry.get(job.pid)?.status === 'stopped')
+            this.processRegistry.kill(job.pid, 'CONT');
         const exitCode = await job.promise;
-        this.jobTable.remove(job.id);
+        this.jobTable.reap(job);
         return exitCode;
     }
-    async builtinBg(args, stdout, stderr) {
-        const id = args[0] ? parseInt(args[0], 10) : undefined;
+    async builtinBg(args, stdout, stderr, context) {
+        if (!context?.interactive) {
+            await stderr.write('bg: no job control\n');
+            return 1;
+        }
         const jobs = this.jobTable.list();
         if (jobs.length === 0) {
-            (await stderr.write('bg: no current job\n'));
+            await stderr.write('bg: no current job\n');
             return 1;
         }
-        const job = id ? this.jobTable.get(id) : jobs[jobs.length - 1];
-        if (!job) {
-            (await stderr.write(`bg: ${id}: no such job\n`));
+        const spec = args[0] ?? '%+';
+        const job = resolveJobSpec(spec, jobs);
+        if (!job || job === 'ambiguous') {
+            await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
             return 1;
         }
-        (await stdout.write(`[${job.id}] ${job.command} &\n`));
+        if (job.pid !== undefined)
+            this.processRegistry.kill(job.pid, 'CONT');
+        job.status = 'running';
+        await stdout.write(`[${job.id}]+ ${job.command} &\n`);
         return 0;
     }
     async builtinHistory(stdout) {
@@ -1833,13 +1875,6 @@ function splitWhitespaceFields(line) {
 }
 function isTerminalControlSequence(data) {
     return data.startsWith('\x1b[') || data.startsWith('\x1b(') || data.startsWith('\x1b)');
-}
-function parseWaitTarget(arg) {
-    const byJob = arg[0] === '%';
-    const text = byJob ? arg.slice(1) : arg;
-    if (!isDecimalInteger(text))
-        return null;
-    return { value: Number.parseInt(text, 10), byJob };
 }
 /** A lexed word's text with its quoting removed, the way expansion leaves it. */
 function unquoteWord(token) {

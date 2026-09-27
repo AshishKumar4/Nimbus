@@ -39,6 +39,7 @@ export interface TrapTable {
     entries(): IterableIterator<[string, string]>;
 }
 export interface BuiltinExecutionContext {
+    interactive?: boolean;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -150,7 +151,7 @@ export declare class Interpreter {
      * A child shell, as fork(2) makes one: its own copy of every piece of shell
      * state (variables and arrays, cwd, options, traps, readonly names,
      * aliases, functions, $?, the open descriptors), so nothing it changes
-     * reaches this shell. Shared: the process registry, job table, filesystem,
+     * reaches this shell. Shared: the process registry and filesystem,
      * command registry and terminal; `$$` stays this shell's. Traps reset to
      * the default, except ignored ones, and the child runs its own EXIT trap
      * when it finishes (`finishChild`).

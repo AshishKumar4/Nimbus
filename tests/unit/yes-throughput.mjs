@@ -6,9 +6,9 @@
 //
 // Two checks. On the command itself: the output is exact (the line, repeated,
 // with no partial line inside a write), and the writes needed for N bytes are
-// N / buffer, not N / line. Through the shell: the real workspace, within 10x
-// of bash on this host (with a floor for process start-up), for the pipeline
-// that measured 45 s.
+// N / buffer, not N / line. Through the shell: the real workspace, for the
+// pipeline that measured 45 s, gives bash's bytes and arms about one timer
+// per buffer (counted, not timed).
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -33,7 +33,7 @@ import { NimbusWorkspace, localFacetHost } from '../../packages/core/src/index.t
   assert.ok(out.length >= WANT, 'yes wrote until it was stopped');
   assert.ok(/^(abcdef\n)+$/.test(out), 'every byte is the line, repeated');
   for (const w of writes) assert.equal(w.length % 7, 0, 'no write ends mid-line');
-  assert.ok(writes.length <= Math.ceil(WANT / 8192) + 1, `${writes.length} writes for ${WANT} bytes: one per line, not per buffer`);
+  assert.ok(writes.length <= Math.ceil(WANT / 8192) + 1, `${writes.length} writes for ${WANT} bytes: one per buffer, not per line`);
 }
 // And with no argument, `y`.
 {
@@ -54,15 +54,17 @@ import { NimbusWorkspace, localFacetHost } from '../../packages/core/src/index.t
   const transactions = { storage: { transactionSync(cb) { db.exec('BEGIN'); try { const r = cb(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } } } };
   const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(), runtimes: [] });
   const CMD = 'yes abcdef | head -c 300000 | wc -c';
-  const t0 = performance.now();
   const bashOut = execFileSync('bash', ['-c', CMD], { encoding: 'utf8' });
-  const bashMs = performance.now() - t0;
-  const t1 = performance.now();
-  const r = await workspace.exec(CMD);
-  const shellMs = performance.now() - t1;
+  // Counted, not timed: the 45 s was one timer turn per 7-byte line (42,858
+  // for this pipeline). Every timer the whole pipeline arms is counted.
+  const realSetTimeout = globalThis.setTimeout;
+  let timers = 0;
+  globalThis.setTimeout = (...args) => { timers++; return realSetTimeout(...args); };
+  let r;
+  try { r = await workspace.exec(CMD); } finally { globalThis.setTimeout = realSetTimeout; }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.stdout.trim(), bashOut.trim(), 'the same bytes as bash');
-  const allowed = Math.max(10 * bashMs, 500);
-  assert.ok(shellMs <= allowed, `${CMD}: ${shellMs.toFixed(0)} ms in the shell, bash ${bashMs.toFixed(0)} ms (allowed ${allowed.toFixed(0)} ms)`);
-  console.log(`yes-throughput: ${CMD} in ${shellMs.toFixed(0)} ms (bash ${bashMs.toFixed(0)} ms)`);
+  const allowed = 2 * Math.ceil(300_000 / 8192) + 16;
+  assert.ok(timers <= allowed, `${CMD}: ${timers} timer turns (allowed ${allowed}: about one per buffer, not per line)`);
+  console.log(`yes-throughput: ${CMD} in ${timers} timer turns`);
 }

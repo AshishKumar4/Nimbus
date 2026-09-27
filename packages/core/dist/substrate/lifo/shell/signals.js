@@ -1,41 +1,50 @@
-const SIGNAL_NUMBERS = new Map([
-    ['HUP', 1],
-    ['INT', 2],
-    ['QUIT', 3],
-    ['KILL', 9],
-    ['TERM', 15],
-    ['STOP', 19],
-    ['TSTP', 20],
-    ['CONT', 18],
-]);
-const SIGNAL_NAMES = new Map(Array.from(SIGNAL_NUMBERS.entries()).map(([name, number]) => [number, name]));
+const STANDARD_SIGNALS = [
+    ['HUP', 'terminate'], ['INT', 'terminate'], ['QUIT', 'terminate'], ['ILL', 'terminate'], ['TRAP', 'terminate'],
+    ['ABRT', 'terminate'], ['BUS', 'terminate'], ['FPE', 'terminate'], ['KILL', 'terminate'], ['USR1', 'terminate'],
+    ['SEGV', 'terminate'], ['USR2', 'terminate'], ['PIPE', 'terminate'], ['ALRM', 'terminate'], ['TERM', 'terminate'],
+    ['STKFLT', 'terminate'], ['CHLD', 'ignore'], ['CONT', 'continue'], ['STOP', 'stop'], ['TSTP', 'stop'],
+    ['TTIN', 'stop'], ['TTOU', 'stop'], ['URG', 'ignore'], ['XCPU', 'terminate'], ['XFSZ', 'terminate'],
+    ['VTALRM', 'terminate'], ['PROF', 'terminate'], ['WINCH', 'ignore'], ['IO', 'terminate'], ['PWR', 'terminate'], ['SYS', 'terminate'],
+];
+const SIGNALS = new Map(STANDARD_SIGNALS.map(([name, disposition], index) => [name, { number: index + 1, disposition }]));
+for (let number = 34; number <= 64; number++) {
+    const name = number === 34 ? 'RTMIN' : number === 64 ? 'RTMAX'
+        : number <= 49 ? `RTMIN+${number - 34}` : `RTMAX-${64 - number}`;
+    SIGNALS.set(name, { number, disposition: 'terminate' });
+}
+const SIGNAL_NAMES = new Map(Array.from(SIGNALS.entries()).map(([name, { number }]) => [number, name]));
 export function parseSignalName(raw) {
     const normalized = raw.trim().toUpperCase().replace(/^SIG/, '');
-    if (SIGNAL_NUMBERS.has(normalized))
+    if (SIGNALS.has(normalized))
         return normalized;
-    const number = Number.parseInt(normalized, 10);
-    if (Number.isNaN(number))
+    if (normalized === '0')
+        return '0';
+    if (!/^\d+$/.test(normalized))
         return null;
+    const number = Number(normalized);
     return SIGNAL_NAMES.get(number) ?? null;
 }
 export function formatSignalList() {
-    return Array.from(SIGNAL_NAMES.entries())
-        .sort(([a], [b]) => a - b)
-        .map(([number, name]) => `${String(number).padStart(2, ' ')}) ${name}`)
-        .join('\n') + '\n';
+    let result = '';
+    let column = 0;
+    for (const [number, name] of SIGNAL_NAMES) {
+        result += `${String(number).padStart(2, ' ')}) SIG${name}`;
+        result += ++column % 5 === 0 ? '\n' : '\t';
+    }
+    return result.endsWith('\n') ? result : result.slice(0, -1) + '\n';
+}
+export function signalOperand(raw) {
+    if (/^\d+$/.test(raw))
+        return SIGNAL_NAMES.get(Number(raw) >= 128 ? Number(raw) - 128 : Number(raw)) ?? null;
+    const name = parseSignalName(raw);
+    const number = name === null ? undefined : SIGNALS.get(name)?.number;
+    return number === undefined ? null : String(number);
 }
 export function exitCodeForSignal(signal) {
-    switch (signal) {
-        case 'HUP': return 129;
-        case 'INT': return 130;
-        case 'QUIT': return 131;
-        case 'KILL': return 137;
-        case 'TERM':
-        case undefined:
-            return 143;
-        default:
-            return 128;
-    }
+    return 128 + (SIGNALS.get(signal ?? 'TERM')?.number ?? 0);
+}
+export function signalDisposition(signal) {
+    return signal === '0' ? 'ignore' : SIGNALS.get(signal)?.disposition;
 }
 export function signalAbortReason(signal) {
     const normalized = signal ? parseSignalName(signal) : 'TERM';
