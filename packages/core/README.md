@@ -206,6 +206,7 @@ their existing checks. A nonkernel rename cannot re-share a foreign-owned
 entry whose metadata would change. Symlink targets outside the domain stay
 outside it. File descriptors use the current linked inode without repeating
 parent search; detached descriptors receive no sharing grant.
+Membership includes the credential's primary gid or any supplementary group.
 
 The registration belongs to this engine instance, not a snapshot or exported
 row. Re-register after reopening. Duplicate or overlapping registrations fail

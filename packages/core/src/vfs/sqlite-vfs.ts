@@ -2082,7 +2082,7 @@ export class SqliteVFS {
     const mode = this.sharedMode(entry.mode, entry.isDir);
     const acl = entry.isDir ? registration.acl : entry.defaultAcl;
     if (mode === entry.mode && entry.gid === registration.gid && acl === entry.defaultAcl) return;
-    if (cred.uid !== 0 && (owner !== cred.uid || !cred.groups.includes(registration.gid))) {
+    if (cred.uid !== 0 && (owner !== cred.uid || (cred.gid !== registration.gid && !cred.groups.includes(registration.gid)))) {
       throw vfsError('EPERM', entry.path + ': shared metadata requires owner and group membership');
     }
     entry.mode = mode;
@@ -2162,7 +2162,7 @@ export class SqliteVFS {
     }
     const shared = this.sharedDirectory(key);
     if (shared) {
-      if (cred.uid !== 0 && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', key + ': shared group membership required');
+      if (cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', key + ': shared group membership required');
       mode = this.sharedMode(mode, directory);
       gid = shared.gid;
       return { mode, gid, defaultAcl: directory ? shared.acl : null };
@@ -4479,7 +4479,7 @@ export class SqliteVFS {
   private chmodInode(inode: INode, mode: number, cred: VfsCred, path: string | null): void {
     if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsError('EPERM', path ?? 'detached inode');
     const shared = path === null ? undefined : this.sharedDirectory(path);
-    if (shared && cred.uid !== 0 && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', path + ': shared group membership required');
+    if (shared && cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', path + ': shared group membership required');
     let gid = inode.gid;
     if (shared) {
       const delegated = 0o070 | (inode.isDir ? 0o2000 : 0);
@@ -5161,7 +5161,7 @@ export class SqliteVFS {
     if (target.inode) throw vfsError('EEXIST', target.path);
     this.checkParentAccess(target.path, cred);
     const sharing = this.sharedDirectory(target.path);
-    if (sharing && cred.uid !== 0 && !cred.groups.includes(sharing.gid)) throw vfsError('EPERM', target.path + ': shared group membership required');
+    if (sharing && cred.uid !== 0 && cred.gid !== sharing.gid && !cred.groups.includes(sharing.gid)) throw vfsError('EPERM', target.path + ': shared group membership required');
     if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
       throw vfsError('EINVAL', `cannot copy ${source.path} into itself`);
     }

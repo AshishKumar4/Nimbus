@@ -196,3 +196,39 @@ fixture(({ v, k, a, mode }) => {
 });
 console.log('sqlite-vfs-shared-directory: bounded rename fault and nondelegating content writes pass');
 
+
+for (const [label, cred, member] of [
+  ['primary', { ...A, gid: 1000, groups: [] }, true],
+  ['supplementary', { ...A, groups: [1000] }, true],
+  ['nonmember', { ...A, groups: [] }, false],
+]) fixture(({ v, k, mode }) => {
+  const user = v.as(cred);
+  k.chmod('team', 0o3777);
+  k.mkdir('team/owned'); k.chown('team/owned', A.uid, 1000);
+  k.chmod('team/owned', 0o2775);
+  user.mkdir('private/source'); user.writeFile('private/source/f', 'body');
+  v.registerSharedDirectory('team');
+  const operations = [
+    () => user.mkdir('team/new', { mode: 0o755 }),
+    () => user.chmod('team/owned', 0o755),
+    () => user.copyTree('private/source', 'team/copy'),
+    () => user.rename('private/source', 'team/moved'),
+  ];
+  for (const operation of operations) {
+    if (member) operation();
+    else assert.throws(operation, { code: 'EPERM' }, label);
+  }
+  if (member) {
+    for (const path of ['team/new', 'team/owned', 'team/copy', 'team/moved']) {
+      assert.equal(mode(path), 0o2775, label + ': ' + path);
+      assert.equal(k.stat(path).gid, 1000, label + ': shared gid');
+    }
+    assert.equal(user.readFileString('team/copy/f'), 'body');
+    assert.equal(user.readFileString('team/moved/f'), 'body');
+  } else {
+    for (const path of ['team/new', 'team/copy', 'team/moved']) assert.equal(k.exists(path), false);
+    assert.equal(user.readFileString('private/source/f'), 'body');
+  }
+});
+console.log('sqlite-vfs-shared-directory: primary and supplementary group membership agree');
+
