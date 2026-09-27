@@ -2104,9 +2104,8 @@ const MANIFEST_MAX_DEPTH = 12;
  * prefetch via require-resolver covers the require() chain literally
  * present in source; greedy oversampling adds a safety net for dynamic
  * patterns the regex misses (jest/`bindings`/`import-local` style
- * computed-path requires). Bounded to package.json + 1 main-entry file
- * per package — sub-agent §Q3 quantified the worst-case cumulative
- * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
+ * computed-path requires). Each guessed root brings its readable literal
+ * closure as one optional admission/eviction unit, within the existing caps.
  *
  * `requiredPaths` is the static require closure. A package the closure
  * already reached — but reached only through a SUBPATH — has its main entry
@@ -2116,22 +2115,55 @@ const MANIFEST_MAX_DEPTH = 12;
 // was a file-local helper. Adding the named export is a pure surface
 // addition — no callers other than buildPrefetchBundle (same file) and
 // the new probe.
+interface OptionalModuleGroup {
+  root: string;
+  members: ReadonlySet<string>;
+}
+
 export async function greedyAddMainEntries(
   vfs: LaunchFs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   requiredPaths: ReadonlySet<string> = new Set(),
-): Promise<{ added: number }> {
+  options: { maxBundleBytes?: number; pacer?: TurnBudget } = {},
+): Promise<{ added: number; groups: OptionalModuleGroup[] }> {
   let added = 0;
+  const groups: OptionalModuleGroup[] = [];
+  const bound = Math.min(options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES, VFS_BUNDLE_MAX_BYTES);
+  const independent = new Set(Object.keys(bundle));
+  let rawBytes = 0;
+  for (const cell of Object.values(bundle)) rawBytes += _bundleCellRawBytes(cell);
+  if (rawBytes >= bound) return { added, groups };
   const cwdStripped = cwd.replace(/^\/+/, '');
   const nmDir = cwdStripped + '/node_modules';
-  if (!((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir)))) return { added };
+  if (!((await filesOf(vfs).exists(nmDir)) && (await filesOf(vfs).isDirectory(nmDir)))) return { added, groups };
 
   const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
 
   async function addOne(path: string): Promise<boolean> {
     const stripped = path.replace(/^\/+/, '');
+    if ((isBundleModuleCandidate(stripped) || stripped.endsWith('.cjs')) && !isNativeBinPath(stripped)) {
+      if (independent.has(stripped)) return false;
+      if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))) return false;
+      const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')),
+        '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
+          purpose: 'dependency-closure', held: bundle,
+          maxAdditionalBytes: Math.max(0, bound - rawBytes),
+          maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
+        });
+      if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
+      for (const [member, cell] of Object.entries(closure.bundle)) {
+        if (bundle[member] !== undefined) continue;
+        bundle[member] = cell;
+        rawBytes += _bundleCellRawBytes(cell);
+        budgetState.totalBytes += _bundleCellLength(cell);
+        budgetState.fileCount++;
+        added++;
+      }
+      groups.push({ root: stripped, members: new Set(Object.keys(closure.bundle)) });
+      return true;
+    }
     if (stripped in bundle) return false;
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
@@ -2143,8 +2175,8 @@ export async function greedyAddMainEntries(
       // `lib/typescript.js` beside the `lib/tsc.js` that actually runs), and
       // one guess must not spend a third of the budget — and a third of the
       // supervisor's headroom — on every invocation that never reads it.
-      // Anything the program really requires arrives through the closure,
-      // which is uncapped.
+      // Literal dependencies use the closure's byte allowance, not this
+      // speculative-root per-file ceiling.
       if (!(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))) return false;
       // A guess must not be a native binary. Nothing in a Workers isolate can
       // load a `.node` addon or a `.exe` — the ABI policy classifies them
@@ -2155,10 +2187,14 @@ export async function greedyAddMainEntries(
       // Only the guess is filtered; a path the closure requires is untouched.
       if (isNativeBinPath(stripped)) return false;
       // hardening-r5: preserve binary content as Uint8Array.
+      const stat = await filesOf(vfs).stat(stripped);
+      if (stat === null || rawBytes + stat.size > bound) return false;
       const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);
-      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
+      const raw = _bundleCellRawBytes(content);
+      if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES || rawBytes + raw > bound) return false;
       bundle[stripped] = content;
+      rawBytes += raw;
       budgetState.totalBytes += cellLen;
       budgetState.fileCount++;
       added++;
@@ -2196,7 +2232,8 @@ export async function greedyAddMainEntries(
   }
 
   async function addPkgEntry(pkgDir: string) {
-    (await addOne(pkgDir + '/package.json'));
+    const manifest = (pkgDir + '/package.json').replace(/^\/+/, '');
+    if (bundle[manifest] === undefined && !(await addOne(manifest))) return;
     // A package the closure reached keeps exactly what it reached; only an
     // unreached one gets the guess below.
     if (!mainIsSpeculative(pkgDir)) return;
@@ -2205,7 +2242,7 @@ export async function greedyAddMainEntries(
     // unparseable JSON is a package with no declared entry. Either way the
     // next package is unaffected.
     let pkg: ResolvablePackageJson | null;
-    try { pkg = parseResolvablePackageJson((await filesOf(vfs).readFileString(pkgDir + '/package.json'))); }
+    try { const text = bundle[manifest]; pkg = typeof text === 'string' ? parseResolvablePackageJson(text) : null; }
     catch { pkg = null; }
     // The root entry a bare require of this package resolves to, in the
     // order the runtime resolves it (require-resolver.ts resolvePkgSubpathEx):
@@ -2245,8 +2282,8 @@ export async function greedyAddMainEntries(
         // The static walker cannot discover computed hash-chunk imports, so
         // the greedy oversample is the safety net for their reachability.
         const entryDir = base.replace(/\/[^/]+$/, '');
-        try {
-          const sibs = (await vfs.readdir(entryDir));
+        {
+          const sibs = await (async () => vfs.readdir(entryDir))().catch(() => []);
           for (const sib of sibs) {
             if (sib.type !== 'file') continue;
             // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
@@ -2271,22 +2308,21 @@ export async function greedyAddMainEntries(
           // typical shared/ dir returns 1-5 files.
           const sharedDir = entryDir + '/shared';
           const sharedStripped = sharedDir.replace(/^\/+/, '');
-          if ((await filesOf(vfs).exists(sharedStripped)) && (await filesOf(vfs).isDirectory(sharedStripped))) {
-            for (const sh of (await vfs.readdir(sharedDir))) {
+          if (await (async () => filesOf(vfs).isDirectory(sharedStripped))().catch(() => false)) {
+            for (const sh of await (async () => vfs.readdir(sharedDir))().catch(() => [])) {
               if (sh.type !== 'file') continue;
               if (!/\.(cjs|mjs|js)$/.test(sh.name)) continue;
               (await addOne(sharedDir + '/' + sh.name));
             }
           }
-        } catch { /* unreadable dir — drop sibling oversample, entry
-                       file is enough */ }
+        }
         break;
       }
     }
   }
 
   for (const pkgDir of (await speculativePackageDirs(vfs, cwdStripped, bundle))) (await addPkgEntry(pkgDir));
-  return { added };
+  return { added, groups };
 }
 
 /**
@@ -3730,7 +3766,8 @@ async function _buildPrefetchBundle(
   //    Catches dynamic-require / `bindings()` / plugin-loader cases the
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
-  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, closurePaths));
+  const independentBeforeGroups = new Set(Object.keys(bundle));
+  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, closurePaths, { maxBundleBytes, pacer }));
   await paceAfterPass();
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
@@ -3834,12 +3871,6 @@ async function _buildPrefetchBundle(
     }
   }
   await paceAfterPass();
-  // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
-  //    from content cap so fs.readdirSync remains honest even if the
-  //    content for a given file was capped out.
-  await paceAfterPass();
-  await paceAfterPass();
-
   // 4. The snapshot's size guard, in the unit the session DO's memory was
   //    measured in and the require walk counts: raw bytes, a cell's UTF-8
   //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
@@ -3898,24 +3929,60 @@ async function _buildPrefetchBundle(
       const source = compiledCellPath(path) ?? path;
       return closurePaths.has(source) ? 3 : observedPaths.has(source) ? 2 : learnedPaths.has(source) ? 1 : 0;
     };
-    const lastAdmittedFirst = (tier: Set<string>): string[] =>
-      [...tier].reverse().flatMap((path) => [compiledCellKey(path), path]).filter((path) => bundle[path] !== undefined);
-    const enrichment = Object.keys(bundle)
-      .filter((path) => tierOf(path) === 0)
+    const members = new Set<string>();
+    for (const group of greedy.groups) for (const path of group.members) members.add(path);
+    const sources = new Set(Object.keys(bundle).map(path => compiledCellPath(path) ?? path));
+    const independent = new Set([...sources].filter(path => !members.has(path) || independentBeforeGroups.has(path)));
+    const keptGroups = new Set(greedy.groups);
+    const weight = (path: string) => (rawBytes.get(path) ?? 0) + (rawBytes.get(compiledCellKey(path)) ?? 0);
+    const unitBytes = new Map<string, number>();
+    for (const group of greedy.groups) {
+      let total = 0;
+      for (const member of group.members) if (!independent.has(member)) total += weight(member);
+      unitBytes.set(group.root, total);
+      if (pacer) await pacer.spend(group.members.size * 256);
+    }
+    const lastAdmittedFirst = (tier: Set<string>): string[] => [...tier].reverse().filter(path => independent.has(path));
+    const enrichment = [...independent, ...greedy.groups.map(group => group.root)]
+      .filter(path => tierOf(path) === 0)
       .sort((a, b) => {
         const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
         if (loadable !== 0) return loadable;
         const rankA = rankOf(a);
         const rankB = rankOf(b);
         if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
-        return (rawBytes.get(b) ?? 0) - (rawBytes.get(a) ?? 0);
+        return (unitBytes.get(b) ?? weight(b)) - (unitBytes.get(a) ?? weight(a));
       });
     const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
-    const evicted: BundleCellSize[] = [];
-    for (const k of evictable) {
+    async function retainedPaths(): Promise<Set<string>> {
+      const retained = new Set(independent);
+      for (const group of keptGroups) {
+        let work = 0;
+        for (const path of group.members) { retained.add(path); work += path.length + 256; }
+        if (pacer) await pacer.spend(work);
+      }
+      for (const source of [...retained]) {
+        const compiled = compiledCellKey(source);
+        if (bundle[compiled] !== undefined) retained.add(compiled);
+      }
+      return retained;
+    }
+    let retained = await retainedPaths();
+    for (const path of evictable) {
       if (rawTotal <= maxBundleBytes) break;
+      if (independent.delete(path)) {
+        for (const group of keptGroups) if (group.members.has(path)) keptGroups.delete(group);
+      } else {
+        for (const group of keptGroups) if (group.root === path) keptGroups.delete(group);
+      }
+      retained = await retainedPaths();
+      rawTotal = 0;
+      for (const path of retained) rawTotal += rawBytes.get(path) ?? 0;
+    }
+    const evicted: BundleCellSize[] = [];
+    for (const k of Object.keys(bundle)) {
+      if (retained.has(k)) continue;
       evicted.push([k, rawBytes.get(k) ?? 0]);
-      rawTotal -= rawBytes.get(k) ?? 0;
       delete bundle[k];
       size.remove(k);
     }

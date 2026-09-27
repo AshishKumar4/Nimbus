@@ -272,4 +272,59 @@ assert.deepEqual(afterRefusal, second, 'normal allowance restores a complete coh
   kfs.unlink('home/user/app/recovery.json');
 }
 
+// A cold computed package load needs the admitted root's literal closure.
+{
+  const app = 'home/user/cold-computed';
+  const pkg = app + '/node_modules/computed-lib';
+  kfs.mkdir(pkg + '/source/deep', { recursive: true });
+  kfs.writeFile(app + '/package.json', JSON.stringify({ dependencies: { 'computed-lib': '1.0.0' } }));
+  kfs.writeFile(pkg + '/package.json', JSON.stringify({ name: 'computed-lib', exports: { default: './source/index.js' } }));
+  kfs.writeFile(pkg + '/source/index.js', 'try { require("./absent.js"); } catch {} module.exports = require("./constants.js") + 2;');
+  kfs.writeFile(pkg + '/source/constants.js', 'module.exports = require("./deep/value.js") + 3;');
+  kfs.writeFile(pkg + '/source/deep/value.js', 'module.exports = 37;');
+  out = '';
+  let result;
+  try {
+    result = await manager.exec('const name = ["computed", "lib"].join("-"); console.log(require(name));',
+      { filename: '/' + app + '/app.js', dirname: '/' + app, cwd: '/' + app });
+  } finally { Object.assign(globalThis, real); }
+  assert.equal(result.exitCode, 0, result.stderr + out);
+  assert.equal((result.stdout + out).trim(), '42', 'first launch executes the computed package and two literal dependency levels');
+}
+// A cell staged by the initial walk is not authority to read it after revocation.
+{
+  const app='home/user/held-revocation';
+  const secret=app+'/private/shared.cjs';
+  const pkg=app+'/node_modules/revoked-lib';
+  kfs.mkdir(app+'/private',{recursive:true});
+  kfs.mkdir(pkg,{recursive:true});
+  kfs.writeFile(app+'/package.json','{"dependencies":{"revoked-lib":"1"}}');
+  kfs.writeFile(secret,'console.log("SECRET_EXECUTED"); module.exports=42;');
+  kfs.writeFile(pkg+'/package.json','{"name":"revoked-lib","main":"index.cjs"}');
+  kfs.writeFile(pkg+'/index.cjs','module.exports=require("../../private/shared.cjs");');
+  let staged=false, revoked=false;
+  const filesystem=processFiles(rawVfs);
+  const bind=filesystem.bind.bind(filesystem);
+  filesystem.bind=(...args)=>{
+    const view=bind(...args);
+    return new Proxy(view,{get(target,key){
+      if(key==='readFile')return async(path,...rest)=>{const result=await target.readFile(path,...rest);if(String(path).replace(/^\//,'')===secret)staged=true;return result;};
+      const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+    }});
+  };
+  const guarded=new FacetManager(createFacetCtx(createFacetWorld(()=>({})),'held-revocation'),
+    {...env,NIMBUS_LAUNCH_CHUNK_BYTES:'1'},host.processes,new PortRegistry(),processHostFor,
+    {requestLaunchTurn:()=>{setTimeout(()=>{if(staged&&!revoked){root.chmod(secret,0o000);revoked=true;}void guarded.pumpResidentLaunches();},0);}});
+  guarded.setVfs(rawVfs,filesystem);
+  out='';
+  let result, failure;
+  try {result=await guarded.exec('function unused(){return require("./private/shared.cjs");} const name=["revoked","lib"].join("-"); console.log(require(name));',
+    {cwd:'/'+app,dirname:'/'+app,filename:'/'+app+'/app.cjs'});}
+  catch(error){failure=error;}
+  finally{Object.assign(globalThis,real);root.chmod(secret,0o644);}
+  assert.equal(staged,true,'the earlier pass actually read the now-held source');
+  assert.equal(revoked,true,'permission changed on a resumed turn after the earlier read');
+  assert.ok(failure || result.exitCode!==0,'revoked content cannot successfully execute from the staged bundle');
+  assert.doesNotMatch(out+(result?.stdout??''),/SECRET_EXECUTED|^42$/m);
+}
 console.log('one-shot-node-namespace: a one-shot answers stat, exists and readdir from the namespace, and sees a peer\'s writes between runs');
