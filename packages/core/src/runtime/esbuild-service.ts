@@ -710,9 +710,13 @@ interface ConvertedModuleDeclarations {
   exports: string;
 }
 
-function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDeclarations | null {
+function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boolean): ConvertedModuleDeclarations | null {
   const imports: string[] = [];
   const exports: string[] = [];
+  // Only generated references use wrapper arguments. Source declarations
+  // named module/require/exports retain their own meanings.
+  const moduleTarget = moduleFactory ? 'arguments[2]' : 'module';
+  const requireTarget = moduleFactory ? 'arguments[1]' : 'module.require';
   let importIndex = 0;
   let markedEsm = false;
 
@@ -720,7 +724,7 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
     const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
     if (bindingList && !/\}\s*from\b/.test(snippet)) {
       if (!markedEsm) {
-        exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
         markedEsm = true;
       }
       for (const binding of bindingList[1].split(',')) {
@@ -729,7 +733,7 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
         const local = match[1];
         const exported = match[2] || local;
         exports.push(
-          `Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
+          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
         );
       }
       continue;
@@ -749,11 +753,11 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
       if (!source) return null;
       const specifiers = nodeList(declaration, 'specifiers');
       if (specifiers.length === 0) {
-        imports.push(`module.require(${JSON.stringify(source)});`);
+        imports.push(`${requireTarget}(${JSON.stringify(source)});`);
         continue;
       }
       const moduleName = `__nimbus_import_${importIndex++}`;
-      imports.push(`const ${moduleName} = module.require(${JSON.stringify(source)});`);
+      imports.push(`const ${moduleName} = ${requireTarget}(${JSON.stringify(source)});`);
       for (const specifier of specifiers) {
         const local = nodeName(nodeProp(specifier, 'local'));
         if (!local) return null;
@@ -775,7 +779,7 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
     if (declaration.type === 'ExportNamedDeclaration') {
       if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration')) return null;
       if (!markedEsm) {
-        exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
         markedEsm = true;
       }
       for (const specifier of nodeList(declaration, 'specifiers')) {
@@ -783,7 +787,7 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
         const exported = nodeName(nodeProp(specifier, 'exported'));
         if (!local || !exported) return null;
         exports.push(
-          `Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
+          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
         );
       }
       continue;
@@ -794,11 +798,11 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
       if (!value || typeof value.start !== 'number' || typeof value.end !== 'number') return null;
       if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration') return null;
       if (!markedEsm) {
-        exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
         markedEsm = true;
       }
       exports.push(
-        `Object.defineProperty(module.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`,
+        `Object.defineProperty(${moduleTarget}.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`,
       );
       continue;
     }
@@ -823,25 +827,17 @@ function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boo
       sourceType: 'module',
       allowHashBang: true,
     });
-    let mentionsModule = false;
-    const nextToken = () => {
-      const token = tokens.getToken();
-      if (token.type === tokTypes.name && Reflect.get(token, 'value') === 'module') mentionsModule = true;
-      return token;
-    };
     while (true) {
-      const start = nextToken();
-      // The bounded declaration converter emits module.exports. If source
-      // may bind module, let the facet compiler perform binding-aware emit.
-      if (start.type === tokTypes.eof) return moduleFactory && mentionsModule && edits.length ? null : edits;
+      const start = tokens.getToken();
+      if (start.type === tokTypes.eof) return edits;
       if (start.type !== tokTypes._import) continue;
-      const dot1 = nextToken();
+      const dot1 = tokens.getToken();
       if (dot1.type !== tokTypes.dot) continue;
-      const meta = nextToken();
+      const meta = tokens.getToken();
       if (meta.type !== tokTypes.name || source.slice(meta.start, meta.end) !== 'meta') return null;
-      const dot2 = nextToken();
+      const dot2 = tokens.getToken();
       if (dot2.type !== tokTypes.dot) return null;
-      const property = nextToken();
+      const property = tokens.getToken();
       if (property.type !== tokTypes.name) return null;
       const propertyName = source.slice(property.start, property.end);
       if (propertyName === 'url') {
@@ -959,7 +955,7 @@ export function rewriteBundledEsmToCjs(
     if (/^[ \t]*export\s+default\b/.test(declarationSnippets[i])
       && source.slice(declarations[i].end).trim() !== '') return null;
   }
-  const converted = convertBundledModuleDeclarations(declarationSnippets);
+  const converted = convertBundledModuleDeclarations(declarationSnippets, moduleFactory);
   if (!converted) return null;
   const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
@@ -982,7 +978,7 @@ export function rewriteBundledEsmToCjs(
   const body = bodyParts.join('');
 
   return {
-    code: converted.imports + '\n' + body + '\n' + converted.exports,
+    code: (moduleFactory ? '"use strict";\n' : '') + converted.imports + '\n' + body + '\n' + converted.exports,
     map: '',
     warnings: [],
   };
@@ -1574,7 +1570,7 @@ export class EsbuildService {
       if ('error' in outcome) throw new Error(outcome.error);
       return outcome;
     }
-    await this.ensureInit();
+    if (!options?.rewriteOnly) await this.ensureInit();
     const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
     return runTransformRequest(this._esbuild!, prepared, options, rewriteDynamicImports);
   }
@@ -1607,7 +1603,7 @@ export class EsbuildService {
       hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
       return outcomes;
     }
-    await this.ensureInit();
+    if (prepared.some(({ options }) => !options?.rewriteOnly)) await this.ensureInit();
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {

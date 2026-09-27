@@ -40,7 +40,7 @@ const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const RUNTIMES = [
   {
     name: 'bash',
-    version: '5.2.37-2',
+    version: '5.2.37-3',
     license: 'GPL-3.0-or-later',
     entrypoints: [{ binName: 'bash', runner: BASH_RUNNER, args: [] }],
     files: [

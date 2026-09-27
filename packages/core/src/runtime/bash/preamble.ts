@@ -813,6 +813,9 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
   };
   proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, env: envImports }) as BashInstance;
+  if (typeof proc.inst.exports.__nimbus_signal_disposition !== 'function') {
+    throw new Error('bash-runner@3 requires the signal disposition export; install bash 5.2.37-3');
+  }
   s.stats.instances++;
   s.procs.set(pid, proc);
   return proc;
@@ -949,6 +952,11 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   }
   const canPark = s.parking === 'jspi';
   if (!canPark && !s.fs.synchronous) throw new Error('Plain WASI child requires JSPI for an asynchronous filesystem');
+  let ignored = 0n;
+  for (let signal = 1; signal < 65; signal++) {
+    if (proc.inst.exports.__nimbus_signal_disposition(signal) === 1) ignored |= 1n << BigInt(signal);
+  }
+  proc.execIgnoredSignals = ignored;
   let instance: WebAssembly.Instance | undefined;
   function memory(): WebAssembly.Memory {
     const value = instance?.exports.memory;
@@ -1203,6 +1211,15 @@ function signalProc(s: BashSession, caller: BashProc, pid: number, signal: numbe
   // POSIX permits probing a zombie until its parent reaps it.
   if (!victim) return s.exitStatus.has(pid) ? 0 : -E.SRCH;
   if (signal === 0) return 0;
+  // Every virtual Bash process owns its instance/memory. Query the VICTIM,
+  // not the caller currently executing kill. An exec'd child has reset its
+  // caught handlers; consulting its old shell image would be incorrect.
+  const disposition = signal === 9 ? 0
+    : victim.execIgnoredSignals === undefined
+      ? victim.inst.exports.__nimbus_signal_disposition(signal)
+      : (victim.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+  if (disposition === 1) return 0;
+  if (disposition !== 0) return -E.NOSYS;
   switch (signal) {
     case 1: case 2: case 3: case 6: case 9: case 13: case 14: case 15: break;
     default: return -E.NOSYS;

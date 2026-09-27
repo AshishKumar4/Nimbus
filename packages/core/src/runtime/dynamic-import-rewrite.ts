@@ -19,7 +19,7 @@
  * named `module` cannot capture them; directives and five-argument CommonJS
  * wrappers are preserved.
  */
-import { parse } from 'acorn';
+import { Parser } from 'acorn';
 import type { Node, Program, Identifier, MetaProperty } from 'acorn';
 import { full } from 'acorn-walk';
 
@@ -37,14 +37,36 @@ export function mayHaveDynamicImport(code: string): boolean {
 }
 
 /**
- * A cell's syntax tree. Sloppy script first, as the cell is compiled; then
- * module syntax, for what a transform left in (`import.meta`), which a
- * script may not contain.
+ * Parse with acorn's grammar and scope/export checks, visiting each complete
+ * top-level statement before dropping its tree. A bundled 4 MiB module can
+ * otherwise retain hundreds of thousands of AST nodes alongside esbuild's
+ * wasm heap. Nested statements remain intact until their enclosing root has
+ * parsed; only acorn's Program body is reduced to positions and directives.
  */
-function parseCell(code: string): Program | null {
-  for (const sourceType of ['script', 'module'] as const) {
+function parseCell(code: string, moduleFirst: boolean, visit: (node: Node) => void, reset: () => void): Program | null {
+  const StreamingParser = Parser.extend(Base => {
+    const parseStatement = Reflect.get(Base.prototype, 'parseStatement');
+    if (typeof parseStatement !== 'function') throw new Error('Acorn statement parser unavailable');
+    return class extends Base {
+      parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
+        const node: Node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+        if (!topLevel) return node;
+        full(node, visit);
+        // adaptDirectivePrologue still sees literal expression statements.
+        // Keeping these small nodes preserves insertion after "use strict".
+        if (node.type === 'ExpressionStatement') {
+          const expression = Reflect.get(node, 'expression');
+          if (expression?.type === 'Literal' && typeof expression.value === 'string') return node;
+        }
+        return { type: 'EmptyStatement', start: node.start, end: node.end };
+      }
+    };
+  });
+  const grammars = moduleFirst ? ['module', 'script'] as const : ['script', 'module'] as const;
+  for (const sourceType of grammars) {
+    reset();
     try {
-      return parse(code, {
+      return StreamingParser.parse(code, {
         ecmaVersion: 'latest',
         sourceType,
         allowReturnOutsideFunction: true,
@@ -73,13 +95,11 @@ interface ImportExpressionNode extends Node {
 export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false): string {
   const metadata = moduleMetadata && code.includes('import');
   if (!mayHaveDynamicImport(code) && !metadata) return code;
-  const ast = parseCell(code);
-  if (ast === null) return code;
   const spans: { start: number; end: number; text: string }[] = [];
-  const metadataNodes: MetaProperty[] | null = metadata ? [] : null;
+  const metadataSpans: { start: number; end: number }[] | null = metadata ? [] : null;
   const identifiers = metadata ? new Set<string>() : null;
   const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
-  full(ast, (node) => {
+  const ast = parseCell(code, metadata, (node) => {
     // These tags identify acorn's concrete node types, including escaped
     // identifiers and bindings in nested scopes.
     if (identifiers && node.type === 'Identifier') {
@@ -90,18 +110,23 @@ export function rewriteDynamicImports(code: string, parentUrl: string, moduleMet
       const expression = node as ImportExpressionNode;
       spans.push({ start: expression.start, end: expression.source.start, text: call });
     }
-    if (metadataNodes && node.type === 'MetaProperty') {
+    if (metadataSpans && node.type === 'MetaProperty') {
       const meta = node as MetaProperty;
-      if (meta.meta.name === 'import' && meta.property.name === 'meta') metadataNodes.push(meta);
+      if (meta.meta.name === 'import' && meta.property.name === 'meta') metadataSpans.push({ start: meta.start, end: meta.end });
     }
+  }, () => {
+    spans.length = 0;
+    if (metadataSpans) metadataSpans.length = 0;
+    identifiers?.clear();
   });
-  if (metadataNodes?.length) {
+  if (ast === null) return code;
+  if (metadataSpans?.length) {
     // `module` can be a user binding (or a nested function parameter).
     // Capture the actual wrapper module by position once, using a name no
     // parsed scope binds. No additional CommonJS argument or wrapper parse.
     let binding = '__nimbusMetadataModule';
     while (identifiers!.has(binding)) binding += '_';
-    for (const meta of metadataNodes) {
+    for (const meta of metadataSpans) {
       spans.push({ start: meta.start, end: meta.end, text: `${binding}.__nimbusImportMeta` });
     }
     let insertion = ast.body[0]?.start ?? 0;

@@ -30,7 +30,7 @@ const PROBE_APP = join(REPO, 'apps/probe');
 const WRANGLER = join(REPO, 'node_modules/.bin/wrangler');
 const BUNDLE_RUNTIME = join(REPO, 'packages/worker/scripts/bundle-runtime.mjs');
 /** The runtimes a local probe can stage, as the publisher names them. */
-const RUNTIME_VERSIONS = { bash: '5.2.37-2' };
+const RUNTIME_VERSIONS = { bash: '5.2.37-3' };
 const BUCKET = 'nimbus-runtime-cache';
 
 async function freePort() {

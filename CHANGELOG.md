@@ -419,6 +419,21 @@ kernel credential, because Nimbus follows POSIX here:
   as JavaScript first; module strictness and local binding names are preserved.
   Dot access, computed access and destructuring share the same per-evaluation
   metadata object; its existing `url` and `resolve` behavior is consistent.
+- The transform facet consumes Acorn trees one completed top-level statement
+  at a time, keeping edit spans and binding names instead of the whole module
+  AST. Grammar, scope, exports and directives still use Acorn's parser. This
+  reduces retained parsing memory for large bundled modules; it does not
+  change the session's closure bound or dependency coverage.
+- Bounded module conversion addresses the actual CommonJS wrapper arguments,
+  not user variables named `module`, `require` or `exports`. Nested bundled
+  wrappers no longer force a large otherwise-supported module through Go.
+  Rewrite-only requests do not initialize the esbuild wasm heap.
+- A transient transform-isolate failure aborts launch before bundle or
+  Worker Loader cache publication. The next launch can transform again;
+  it no longer inherits a cached diagnostic shim from an infrastructure
+  failure. Permanent source errors remain lazy errors when required.
+  Eval-only entry rewrites also fail before worker publication; a failed
+  transform cannot fall back to workerd's native `import()`.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry
@@ -445,6 +460,13 @@ kernel credential, because Nimbus follows POSIX here:
   child work cannot publish a second exit after signal termination. These
   operations never target host process IDs. Process-group signal delivery
   and stop/continue/trap handling are not added by this change.
+- Bash build `5.2.37-3` and runner `bash-runner@3` expose the guest's signal
+  disposition: ignored signals stay ignored, default terminating signals
+  terminate, and unsupported custom-handler delivery returns an error.
+  Exec preserves ignored dispositions and resets caught handlers; SIGKILL
+  remains uncatchable. The runtime package requires core `>=0.13.0` and must
+  be published before that core release. Existing runtime-2 catalog objects
+  are not overwritten.
 
 ## 2026-09-24
 
