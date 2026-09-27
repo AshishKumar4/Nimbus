@@ -22,7 +22,12 @@ import {
   VFS_WRITE_LEDGER_ENTRY,
   VFS_WRITE_LEDGER_SHA256,
 } from '../node-shims-artifact.generated.js';
-import { fetchStagedSource, type StagedSource, type StagedSourceEnv } from './staged-source.js';
+import {
+  fetchStagedText,
+  memoizeUntilRejected,
+  stagedRuntimeSource,
+  type StagedSourceEnv,
+} from './staged-source.js';
 
 /** What a node facet's generated worker text splices around the program. */
 export interface NodeFacetSources {
@@ -37,49 +42,42 @@ export interface NodeFacetSources {
 const STAGED_BY = 'scripts/bundle-node-shims.mjs';
 const REQUIRED_BY = 'the node runtime';
 
-const NODE_SHIMS: StagedSource = {
+const NODE_SHIMS = stagedRuntimeSource({
   label: 'node-shims',
   entry: NODE_SHIMS_ENTRY,
   buildId: NODE_SHIMS_BUILD_ID,
   sha256: NODE_SHIMS_SHA256,
   stagedBy: STAGED_BY,
   requiredBy: REQUIRED_BY,
-};
-const VFS_WRITE_LEDGER: StagedSource = {
+});
+const VFS_WRITE_LEDGER = stagedRuntimeSource({
   label: 'vfs-write-ledger',
   entry: VFS_WRITE_LEDGER_ENTRY,
   buildId: VFS_WRITE_LEDGER_BUILD_ID,
   sha256: VFS_WRITE_LEDGER_SHA256,
   stagedBy: STAGED_BY,
   requiredBy: REQUIRED_BY,
-};
-const RESIDENT_STORE: StagedSource = {
+});
+const RESIDENT_STORE = stagedRuntimeSource({
   label: 'resident-store',
   entry: RESIDENT_STORE_ENTRY,
   buildId: RESIDENT_STORE_BUILD_ID,
   sha256: RESIDENT_STORE_SHA256,
   stagedBy: STAGED_BY,
   requiredBy: REQUIRED_BY,
-};
-
-let memo: Promise<NodeFacetSources> | null = null;
+});
 
 /**
  * The node-compat layer's sources for facet worker codegen. Memoized per
  * isolate; a failed fetch clears the memo so the next exec retries instead of
  * pinning the error.
  */
-export function fetchNodeFacetSources(env: StagedSourceEnv): Promise<NodeFacetSources> {
-  if (!memo) {
-    memo = Promise.all([
-      fetchStagedSource(env, NODE_SHIMS),
-      fetchStagedSource(env, VFS_WRITE_LEDGER),
-      fetchStagedSource(env, RESIDENT_STORE),
-    ]).then(([shims, ledger, residentStore]) => ({ shims, ledger, residentStore }))
-      .catch((e: unknown) => {
-        memo = null;
-        throw e;
-      });
-  }
-  return memo;
-}
+export const fetchNodeFacetSources: (env: StagedSourceEnv) => Promise<NodeFacetSources> =
+  memoizeUntilRejected(async (env: StagedSourceEnv) => {
+    const [shims, ledger, residentStore] = await Promise.all([
+      fetchStagedText(env, NODE_SHIMS),
+      fetchStagedText(env, VFS_WRITE_LEDGER),
+      fetchStagedText(env, RESIDENT_STORE),
+    ]);
+    return { shims, ledger, residentStore };
+  });

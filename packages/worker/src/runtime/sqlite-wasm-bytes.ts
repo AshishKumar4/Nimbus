@@ -10,16 +10,15 @@
  * via its `instantiateWasm` hook with that pre-compiled module —
  * request-time WebAssembly.compile(bytes) is blocked inside facets.
  *
- * Mirrors esbuild-wasm-bytes.ts: NO module-scope cache (no supervisor
- * residency), L2 colo cache via caches.default keyed by the version-pinned
- * asset URL, ASSETS as the source of truth, and a sha-256 integrity check on
- * both tiers so a stale or tampered asset never gets compiled.
+ * NO module-scope cache (no supervisor residency). The read itself is
+ * runtime/staged-source.ts: L2 keyed by the version-pinned asset URL, ASSETS
+ * as the source of truth, and a sha-256 check on both tiers so a stale or
+ * tampered asset never gets compiled.
  */
 
 import { SQLJS_VERSION } from '@nimbus-sh/core/constants.js';
 import { SQLITE_WASM_SHA256 } from '../sqlite-wasm-bundle.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { fetchStagedBytes, type StagedAsset } from './staged-source.js';
 
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so
@@ -47,60 +46,23 @@ export const SQLITE_WASM_L2_KEY = `https://nimbus-cache.invalid/_assets/sqljs-${
  * failures are silent — ASSETS is always the source of truth. A non-200
  * from ASSETS, or a digest mismatch on either tier, throws.
  */
-export async function fetchSqliteWasmBytes(env: SqliteWasmFetchEnv): Promise<ArrayBuffer> {
-  const caches = (globalThis as { caches?: { default?: Cache } }).caches;
-
-  // ── L2 fast path ────────────────────────────────────────────────
-  let ab: ArrayBuffer | null = null;
-  try {
-    if (caches?.default) {
-      const hit = await caches.default.match(new Request(SQLITE_WASM_L2_KEY));
-      if (hit && hit.ok) ab = await hit.arrayBuffer();
-    }
-  } catch { /* fall through to ASSETS */ }
-
-  const fromCache = ab !== null;
-  if (!ab) {
-    // ── ASSETS path ───────────────────────────────────────────────
-    const url = `https://nimbus-internal.invalid${SQLITE_WASM_ASSET_PATH}`;
-    const res = await env.ASSETS.fetch(new Request(url));
-    try {
-      if (!res.ok) {
-        throw new Error(
-          `sql.js wasm asset fetch failed: ${res.status} ${res.statusText} ` +
-            `for ${SQLITE_WASM_ASSET_PATH} — deploy is missing the wasm asset`,
-        );
-      }
-      ab = await res.arrayBuffer();
-    } finally {
-      disposeRpcResource(res);
-    }
-  }
-
-  const digest = await sha256Hex(ab);
-  if (digest !== SQLITE_WASM_SHA256) {
-    throw new Error(
-      `sql.js wasm integrity check failed: expected ${SQLITE_WASM_SHA256}, got ` +
-        `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${SQLITE_WASM_ASSET_PATH} — ` +
-        'the staged asset is corrupt or out of sync; rerun ' +
-        'scripts/bundle-sqlite-wasm.mjs and redeploy',
-    );
-  }
-
-  // ── L2 write-back (best-effort) ─────────────────────────────────
-  if (!fromCache) {
-    try {
-      if (caches?.default) {
-        const writeBack = new Response(new Uint8Array(ab), {
-          headers: {
-            'Content-Type': 'application/wasm',
-            'Cache-Control': 'public, max-age=31536000, immutable',
-          },
-        });
-        await caches.default.put(new Request(SQLITE_WASM_L2_KEY), writeBack);
-      }
-    } catch { /* silent */ }
-  }
-
-  return ab;
+export function fetchSqliteWasmBytes(env: SqliteWasmFetchEnv): Promise<ArrayBuffer> {
+  return fetchStagedBytes(env, SQLITE_WASM_ASSET);
 }
+
+const SQLITE_WASM_ASSET: StagedAsset = {
+  path: SQLITE_WASM_ASSET_PATH,
+  l2Key: SQLITE_WASM_L2_KEY,
+  sha256: SQLITE_WASM_SHA256,
+  contentType: 'application/wasm',
+  poisonedCache: 'reject',
+  missingBinding: `Nimbus: node:sqlite requires an env.ASSETS binding (serves ${SQLITE_WASM_ASSET_PATH})`,
+  fetchFailed: (res) =>
+    `sql.js wasm asset fetch failed: ${res.status} ${res.statusText} ` +
+    `for ${SQLITE_WASM_ASSET_PATH} — deploy is missing the wasm asset`,
+  integrityFailed: (digest, from) =>
+    `sql.js wasm integrity check failed: expected ${SQLITE_WASM_SHA256}, got ` +
+    `${digest} (${from}) for ${SQLITE_WASM_ASSET_PATH} — ` +
+    'the staged asset is corrupt or out of sync; rerun ' +
+    'scripts/bundle-sqlite-wasm.mjs and redeploy',
+};
