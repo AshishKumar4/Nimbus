@@ -3589,7 +3589,7 @@ async function transformEsmInBundle(
       if (rewritten) {
         // Its declarations are CommonJS now; what import() calls remain go to
         // the facet like any cell's.
-        if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('__nimbusModuleUrl') && !rewritten.code.includes('__nimbusImportMetaResolve')) {
+        if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('import.meta')) {
           settle(cell, rewritten);
           continue;
         }

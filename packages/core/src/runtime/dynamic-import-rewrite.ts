@@ -14,7 +14,7 @@
  * parse runs where the ESM→CJS transform runs, in the esbuild facet (its
  * staged runner installs `__nimbusRewriteDynamicImports`), never in the
  * session's isolate, and the session caches the result by content.
- * The same parse binds compiler-produced metadata references to the wrapper
+ * The same parse binds actual import.meta references to the wrapper
  * module, using an identifier absent from every parsed scope. User bindings
  * named `module` cannot capture them; directives and five-argument CommonJS
  * wrappers are preserved.
@@ -71,7 +71,7 @@ interface ImportExpressionNode extends Node {
  * one acorn cannot parse is returned unchanged, for the compile to report.
  */
 export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false): string {
-  const metadata = moduleMetadata && (code.includes('__nimbusModuleUrl') || code.includes('__nimbusImportMetaResolve'));
+  const metadata = moduleMetadata && code.includes('import');
   if (!mayHaveDynamicImport(code) && !metadata) return code;
   const ast = parseCell(code);
   if (ast === null) return code;
@@ -92,8 +92,10 @@ export function rewriteDynamicImports(code: string, parentUrl: string, moduleMet
     }
     if (metadataMembers && node.type === 'MemberExpression') {
       const member = node as MemberExpression;
-      if (!member.computed && member.property.type === 'Identifier'
-        && (member.property.name === '__nimbusModuleUrl' || member.property.name === '__nimbusImportMetaResolve')) metadataMembers.push(member);
+      if (!member.computed && member.object.type === 'MetaProperty'
+        && member.object.meta.name === 'import' && member.object.property.name === 'meta'
+        && member.property.type === 'Identifier'
+        && (member.property.name === 'url' || member.property.name === 'resolve')) metadataMembers.push(member);
     }
   });
   if (metadataMembers?.length) {
@@ -104,14 +106,16 @@ export function rewriteDynamicImports(code: string, parentUrl: string, moduleMet
     while (identifiers!.has(binding)) binding += '_';
     for (const member of metadataMembers) {
       const property = member.property as Identifier;
-      spans.push({ start: member.start, end: member.end, text: `${binding}.${property.name}` });
+      spans.push({ start: member.start, end: member.end, text: `${binding}.${property.name === 'url' ? '__nimbusModuleUrl' : '__nimbusImportMetaResolve'}` });
     }
     let insertion = ast.body[0]?.start ?? 0;
     for (const statement of ast.body) {
       if (!('directive' in statement) || typeof statement.directive !== 'string') break;
       insertion = statement.end;
     }
-    spans.push({ start: insertion, end: insertion, text: `\nconst ${binding} = arguments[2];\n` });
+    // ESM is strict even when the intermediate ESM printer removed an
+    // explicit directive as redundant. Carry it into the CJS function body.
+    spans.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
   }
   if (spans.length === 0) return code;
   spans.sort((a, b) => a.start - b.start || a.end - b.end);

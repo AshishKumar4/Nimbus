@@ -17,7 +17,6 @@ import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
-import { MODULE_URL_EXPRESSION, MODULE_RESOLVE_EXPRESSION } from './import-meta-transform.js';
 import {
   literalStringValue,
   nodeList,
@@ -817,7 +816,7 @@ interface SourceEdit {
 
 function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
   const edits: SourceEdit[] = [];
-  const urlExpression = moduleFactory ? MODULE_URL_EXPRESSION : JSON.stringify(absoluteUrl);
+  const urlExpression = moduleFactory ? 'import.meta.url' : JSON.stringify(absoluteUrl);
   try {
     const tokens = tokenizer(source, {
       ecmaVersion: 'latest',
@@ -851,7 +850,7 @@ function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boo
         edits.push({
           start: start.start,
           end: property.end,
-          text: moduleFactory ? MODULE_RESOLVE_EXPRESSION : `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
+          text: moduleFactory ? 'import.meta.resolve' : `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
         });
       } else {
         return null;
@@ -1143,7 +1142,7 @@ async function transformWithEsbuild(
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
       });
       return {
         code: direct.code,
@@ -1170,7 +1169,7 @@ async function transformWithEsbuild(
         jsxFragment: options?.jsxFragment,
         tsconfigRaw: options?.tsconfigRaw,
         define: options?.define,
-        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+        supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
       });
       const { requires, body } = convertEsmImportsToRequire(pass1.code);
       return {
@@ -1197,7 +1196,7 @@ async function transformWithEsbuild(
     jsxFragment: options?.jsxFragment,
     tsconfigRaw: options?.tsconfigRaw,
     define: options?.define,
-    supported: { 'dynamic-import': options?.dynamicImportParent !== undefined },
+    supported: { 'dynamic-import': options?.dynamicImportParent !== undefined, 'import-meta': options?.moduleMetadata === true },
   });
 
   return {
@@ -1227,6 +1226,20 @@ async function runTransformRequest(
   if (options?.rewriteOnly) {
     if (parent === undefined) throw new Error('a rewrite-only transform needs dynamicImportParent');
     return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
+  }
+  if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
+    // CJS emit replaces import.meta with an empty object even when syntax
+    // support is enabled. First emit JavaScript as ESM (including TS type
+    // erasure), rewrite real MetaProperty nodes, then lower declarations.
+    // Both passes and the sole AST parse stay in the transform facet.
+    const javascript = await esbuildApi.transform(code, {
+      loader: options.loader ?? 'js', format: 'esm', target: 'esnext',
+      jsx: options.jsx, jsxFactory: options.jsxFactory, jsxFragment: options.jsxFragment,
+      tsconfigRaw: options.tsconfigRaw, define: options.define,
+      supported: { 'dynamic-import': true, 'import-meta': true },
+    });
+    const routed = rewrite(javascript.code, parent, true);
+    return transformWithEsbuild(esbuildApi, routed, { ...options, loader: 'js', moduleMetadata: false });
   }
   const result = await transformWithEsbuild(esbuildApi, code, options);
   return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };

@@ -338,6 +338,9 @@ kernel credential, because Nimbus follows POSIX here:
   `require`, and transformed static imports share the canonical evaluation.
   `import.meta.url` receives that evaluation's complete URL, not a source-path
   literal; extracted `import.meta.resolve` retains its module's parent.
+  Metadata rewriting visits actual `import.meta` syntax in the transform
+  facet, not user object properties with similar names. TypeScript is emitted
+  as JavaScript first; module strictness and local binding names are preserved.
 
 - A program's dynamic `import()` loads what Node's loads and fails as Node's
   fails. It was workerd's own `import()`, resolved against a module registry
