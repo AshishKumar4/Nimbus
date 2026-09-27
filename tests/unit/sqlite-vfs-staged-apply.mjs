@@ -20,6 +20,7 @@ try {
   src.unlink('tree/file-to-dir'); src.mkdir('tree/file-to-dir'); src.writeFile('tree/file-to-dir/new', 'new child');
   src.removeRecursive('tree/dir-to-file'); src.writeFile('tree/dir-to-file', 'new file');
   src.unlink('tree/gone'); src.chmod('tree/meta', 0o750); src.chown('tree/meta', 1001, 1002); src.utimes('tree/meta', 11, 22);
+  src.setDefaultAcl('tree/meta', 0o770);
   src.chmod('tree/nested/edit', 0o640); src.utimes('tree/nested/edit', 33, 44);
   source.snapshot('head');
   const changes = source.diff('base', 'head').entries;
@@ -27,6 +28,7 @@ try {
     if (!view.exists(path)) return null;
     const stat = view.lstat(path);
     return { type: stat.type, mode: stat.mode & 0o7777, uid: stat.uid, gid: stat.gid, mtime: stat.mtime,
+      defaultAcl: stat.type === 'directory' ? view.getDefaultAcl(path) : null,
       key: stat.type === 'directory' ? null : view.contentKey(path) };
   };
   const before = new Map(changes.map(({ path }) => [path, fingerprint(dst, path)]));
@@ -76,6 +78,7 @@ try {
             } else own.rename(staged, path);
             const metadata = rows.find((row) => row.path === path.slice('tree/'.length));
             own.chmod(path, metadata.mode); own.chown(path, metadata.uid, metadata.gid); own.utimes(path, metadata.atime, metadata.mtime);
+            if (type === 'directory') own.setDefaultAcl(path, metadata.defaultAcl);
           }
         }
         if (index + 1 === interruptAfter) throw new Error('caller interrupted after committed prefix');

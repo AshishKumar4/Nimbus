@@ -907,6 +907,7 @@ export interface VfsExportRow {
   mode: number;
   uid: number;
   gid: number;
+  defaultAcl: number | null;
   atime: number;
   mtime: number;
   /** False for content in one chunk (<= CHUNK_SIZE bytes). */
@@ -1633,6 +1634,7 @@ export class SqliteVFS {
         PRIMARY KEY (path, gen_to)
       ) WITHOUT ROWID`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_parent ON vfs_inode_history(parent_path, gen_to)');
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_ino ON vfs_inode_history(ino)');
       // (gen_to, path): drop's keyset walk seeks it; gen_to alone made each page a scan.
       this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_gen_path ON vfs_inode_history(gen_to, path)');
       // One row per deleted path, written with the delete: what lets
@@ -1657,6 +1659,7 @@ export class SqliteVFS {
         gen INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       )`);
+      this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_snapshots_gen ON vfs_snapshots(gen)');
       // Operations of many transactions whose prefix is not a state a crash
       // may leave: the row records how to finish them.
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_jobs (
@@ -5939,7 +5942,8 @@ export class SqliteVFS {
       if (a === undefined && b === undefined) continue;
       if (a === undefined) { entries.push({ path, change: 'added', type: b!.kind }); continue; }
       if (b === undefined) { entries.push({ path, change: 'removed', type: a.kind }); continue; }
-      const sameMeta = a.kind === b.kind && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid && a.size === b.size;
+      const sameMeta = a.kind === b.kind && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid && a.size === b.size
+        && (a.defaultAcl ?? null) === (b.defaultAcl ?? null);
       const sameRef = a.chunkId === b.chunkId && a.contentId === b.contentId;
       if (sameMeta && (sameRef || a.kind === 'directory' || this.contentKeyOf(a) === this.contentKeyOf(b))) continue;
       entries.push({ path, change: 'modified', type: b.kind });
@@ -6072,6 +6076,7 @@ export class SqliteVFS {
       atime: inode.atime,
       mtime: inode.mtime,
       manifest,
+      defaultAcl: inode.defaultAcl ?? null,
       pieces,
     };
   }
@@ -6090,7 +6095,7 @@ export class SqliteVFS {
     const page = this.exportPage(options);
     const hash = createHash('sha256');
     for (const row of page.rows) {
-      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.pieces])}\n`));
+      hash.update(enc.encode(`${JSON.stringify([row.path, row.kind, row.size, row.mode, row.uid, row.gid, row.mtime, row.defaultAcl, row.pieces])}\n`));
     }
     const result = { digest: hex(new Uint8Array(hash.digest())), next: page.next };
     if (this.pageDigests.size >= PAGE_DIGEST_MEMO_ENTRIES) this.pageDigests.clear();
@@ -6246,18 +6251,33 @@ export class SqliteVFS {
       && [...this.sql.exec('SELECT 1 FROM vfs_jobs WHERE id != ? LIMIT 1', job?.id ?? -1)].length === 0);
     const ids = new Set<number>();
     for (const row of page.rows) {
+      if (row.defaultAcl !== null && (row.kind !== 'directory' || !Number.isSafeInteger(row.defaultAcl) || row.defaultAcl < 0 || row.defaultAcl > 0o777)) {
+        throw vfsError('EINVAL', `${row.path}: invalid default ACL`);
+      }
       if (!Number.isSafeInteger(row.ino) || row.ino <= ROOT_INODE || row.ino >= sourceNextIno || ids.has(row.ino)
           || (preserveInos && row.path === '')) throw vfsError('EINVAL', `${row.path}: invalid or duplicate import inode`);
       ids.add(row.ino);
     }
     if (preserveInos) {
       const byId = new Map(rows.map((row) => [row.ino, full(row.path)]));
-      const keys = [...byId.keys()];
-      for (let offset = 0; offset < keys.length; offset += KEYS_PER_SQL_EXEC) {
-        const batch = keys.slice(offset, offset + KEYS_PER_SQL_EXEC);
-        for (const existing of this.sql.exec(`SELECT ino, path FROM vfs_inodes WHERE ino IN (${batch.map(() => '?').join(',')})`, ...batch)) {
-          if (byId.get(Number(existing.ino)) !== String(existing.path)) throw vfsError('EEXIST', `import inode ${String(existing.ino)} already names another path`);
-        }
+      for (const opened of this.openNodes) {
+        const path = byId.get(opened.inode.ino);
+        if (path !== undefined && opened.path !== path) throw vfsError('EEXIST', `import inode ${opened.inode.ino} is held by another open description`);
+      }
+      const entries = [...byId];
+      const perBatch = Math.floor(KEYS_PER_SQL_EXEC / 2);
+      for (let offset = 0; offset < entries.length; offset += perBatch) {
+        const batch = entries.slice(offset, offset + perBatch);
+        const values: (number | string)[] = [];
+        for (const [ino, path] of batch) values.push(ino, path);
+        const supplied = `WITH incoming(ino, path) AS (VALUES ${batch.map(() => '(?, ?)').join(',')})`;
+        for (const existing of this.sql.exec(
+          `${supplied} SELECT v.ino FROM incoming i JOIN vfs_inodes v ON v.ino = i.ino WHERE v.path != i.path LIMIT 1`, ...values,
+        )) throw vfsError('EEXIST', `import inode ${String(existing.ino)} already names another path`);
+        for (const pinned of this.sql.exec(
+          `${supplied} SELECT h.ino FROM incoming i JOIN vfs_inode_history h ON h.ino = i.ino WHERE h.path != i.path
+           AND EXISTS (SELECT 1 FROM vfs_snapshots s WHERE s.gen >= h.gen_from AND s.gen < h.gen_to) LIMIT 1`, ...values,
+        )) throw vfsError('EEXIST', `import inode ${String(pinned.ino)} is pinned at another path`);
       }
       for (const row of rows) {
         const existing = this.inodes.get(full(row.path));
@@ -6307,7 +6327,7 @@ export class SqliteVFS {
       if (last !== undefined) this.transactionSync(() => { this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', last, jobId); });
     };
     if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
-      builder.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0, atime: this.now(), mtime: this.now(), manifest: false, pieces: [] }, { type: 'none' }));
+      builder.addInode(this.importedEntry(target, { path: '', ino: ROOT_INODE, kind: 'directory', size: 0, mode: 0o755, uid: 0, gid: 0, defaultAcl: null, atime: this.now(), mtime: this.now(), manifest: false, pieces: [] }, { type: 'none' }));
     }
     for (const row of rows) {
       const path = full(row.path);
@@ -6554,6 +6574,7 @@ export class SqliteVFS {
       mode: row.mode,
       uid: row.uid,
       gid: row.gid,
+      defaultAcl: row.defaultAcl,
       content,
     };
   }

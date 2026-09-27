@@ -203,6 +203,11 @@ range. Active import progress follows the job cursor, not unrelated live
 paths; a reset before cursor persistence replays committed rows harmlessly.
 Invalid IDs and collisions are refused before publishing the page. Content
 keys remain portable, and page digests do not include local inode identity.
+Collision checks include live rows, unlinked open descriptions and rows still
+visible to snapshots. Fully deleted, unreferenced identities do not require a
+historical seen-ID table; the allocator still stays above the reserved bound.
+Rows also preserve directory default ACLs; ACL-only changes participate in
+`diff` and `pageDigest`, so imported shared directories retain inheritance.
 
 ## Mounts in df, mount and /proc/mounts
 

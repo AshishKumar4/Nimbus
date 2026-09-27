@@ -73,6 +73,29 @@ try {
   resumed.fs.writeFile('zz-after', 'new');
   assert.ok(resumed.fs.stat('zz-after').ino > resumed.fs.stat('zz-local').ino);
 
+  const detached = open();
+  send(src, detached, first);
+  const handle = detached.raw.openDescription('a/child', CRED_KERNEL, { read: true, write: false });
+  const retiredId = handle.ino;
+  detached.fs.unlink('a/child');
+  const reuse = structuredClone(second);
+  reuse.rows[0].ino = retiredId;
+  assert.throws(() => send(src, detached, reuse), (e) => e.code === 'EEXIST', 'an unlinked but open inode still owns its identity');
+  assert.equal(handle.stat().nlink, 0);
+  assert.equal(new TextDecoder().decode(handle.read(0, 5)), 'child');
+  assert.equal(detached.fs.exists(reuse.rows[0].path), false);
+  handle.close();
+  assert.equal(send(src, detached, reuse).done, true, 'fully dead identities need no historical seen-ID table');
+
+  const pinned = open();
+  send(src, pinned, first);
+  pinned.raw.snapshot('pin');
+  pinned.fs.unlink('a/child');
+  assert.throws(() => send(src, pinned, reuse), (e) => e.code === 'EEXIST', 'snapshot-pinned inodes still own their identities');
+  assert.equal(pinned.raw.at('pin').readFileString('a/child'), 'child');
+  pinned.raw.dropSnapshot('pin');
+  assert.equal(send(src, pinned, reuse).done, true);
+
   for (const corrupt of [
     (page) => { page.rows[0].ino = 1; },
     (page) => { page.rows[0].path = ''; },
