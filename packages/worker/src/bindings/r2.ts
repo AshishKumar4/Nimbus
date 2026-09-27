@@ -29,6 +29,7 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { coerceBindingBody, ensureBindingDir } from './body.js';
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -215,7 +216,8 @@ export class R2Emulator {
       }
     }
 
-    const body = await this._coerceBody(value);
+    const body = typeof Blob !== 'undefined' && value instanceof Blob
+      ? new Uint8Array(await value.arrayBuffer()) : await coerceBindingBody(value);
     const etag = await this._sha256Hex(body);
 
     // Verify integrity hashes if supplied
@@ -240,7 +242,7 @@ export class R2Emulator {
     if (options?.httpMetadata) side.httpMetadata = options.httpMetadata;
     if (options?.customMetadata) side.customMetadata = options.customMetadata;
 
-    this._ensureDir();
+    ensureBindingDir(this.vfs, this.dir);
     const enc = encKey(key);
     this.vfs.writeFile(this.dir + '/' + enc, body);
     this.vfs.writeFile(this.dir + '/' + enc + '.meta', JSON.stringify(side));
@@ -327,40 +329,7 @@ export class R2Emulator {
 
   // ── internals ─────────────────────────────────────────────────────────
 
-  private _ensureDir(): void {
-    if (!this.vfs.exists(this.dir)) {
-      this.vfs.mkdir(this.dir, { recursive: true });
-    }
-  }
 
-  private async _coerceBody(value: any): Promise<Uint8Array> {
-    if (value == null) return new Uint8Array(0);
-    if (typeof value === 'string') return new TextEncoder().encode(value);
-    if (value instanceof Uint8Array) return value;
-    if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    if (ArrayBuffer.isView(value)) return new Uint8Array((value as any).buffer, (value as any).byteOffset, (value as any).byteLength);
-    if (typeof value === 'object' && typeof (value as any).getReader === 'function') {
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      const reader = (value as any).getReader();
-      while (true) {
-        const { value: chunk, done } = await reader.read();
-        if (done) break;
-        const u = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-        chunks.push(u);
-        total += u.length;
-      }
-      const out = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) { out.set(c, off); off += c.length; }
-      return out;
-    }
-    if (typeof Blob !== 'undefined' && value instanceof Blob) {
-      const ab = await (value as Blob).arrayBuffer();
-      return new Uint8Array(ab);
-    }
-    return new TextEncoder().encode(String(value));
-  }
 
   private _readSide(key: string): R2Sidecar | null {
     return this._readSideEnc(encKey(key));

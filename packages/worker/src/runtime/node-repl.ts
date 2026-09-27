@@ -25,7 +25,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
-import { ReplSession } from './repl-session.js';
+import { ReplSession, replPushResult, type ReplFacetResult } from './repl-session.js';
 import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 
 export interface NodeReplDeps {
@@ -33,15 +33,6 @@ export interface NodeReplDeps {
   terminal: WebSocketTerminal;
 }
 
-/** Result returned by the REPL-step facet fn. */
-interface NodeReplFacetResult {
-  stdout: string;
-  stderr: string;
-  incomplete?: boolean;
-  exit?: boolean;
-  exitCode?: number;
-  error?: string;
-}
 
 class NodeReplAdapter implements ReplAdapter {
   private pool: any = null;
@@ -103,25 +94,14 @@ class NodeReplAdapter implements ReplAdapter {
       }
     }
 
-    let result: NodeReplFacetResult;
+    let result: ReplFacetResult;
     try {
       result = await this.submitFacetFn({ mode: 'push', source });
     } catch (e: any) {
       return { kind: 'error', stderr: `[node-repl] push dispatch failed: ${e?.message || e}\n` };
     }
 
-    if (result.exit) {
-      return {
-        kind: 'exit',
-        exitCode: result.exitCode || 0,
-        stdout: result.stdout,
-        stderr: result.stderr,
-      };
-    }
-    if (result.incomplete) {
-      return { kind: 'incomplete' };
-    }
-    return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
+    return replPushResult(result);
   }
 
   async close(): Promise<void> {
@@ -147,7 +127,7 @@ class NodeReplAdapter implements ReplAdapter {
   }
 
   private async submitFacetFn(args: { mode: 'init' | 'push'; source?: string }):
-      Promise<NodeReplFacetResult> {
+      Promise<ReplFacetResult> {
     return await this.pool.submit(nodeReplStepFacetFn, args, {
       timeoutMs: 60_000,
     });
@@ -167,7 +147,7 @@ class NodeReplAdapter implements ReplAdapter {
  */
 function nodeReplStepFacetFn(
   args: { mode: 'init' | 'push'; source?: string },
-): Promise<NodeReplFacetResult> {
+): Promise<ReplFacetResult> {
   const g: any = globalThis as any;
 
   return (async function () {
