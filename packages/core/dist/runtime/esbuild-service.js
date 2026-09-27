@@ -1038,7 +1038,6 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl) {
         warnings: [],
     };
 }
-import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm';
 /**
  * Cached reference to the esbuild namespace. Populated on first
  * `loadEsbuild()` call; nullable until then so module-load code paths
@@ -1294,22 +1293,8 @@ export class EsbuildService {
             try {
                 const esb = await loadEsbuild();
                 this._esbuild = esb;
-                // The supervisor loads esbuild-wasm via wrangler's static-import
-                // resolution (`import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm'`
-                // at the top of this file). At deploy time wrangler bundles the
-                // .wasm bytes INTO the worker and resolves the import to a
-                // WebAssembly.Module value. If the import didn't resolve to a
-                // module — for example, a future bundler regression — we used
-                // to silently fall back to fetching from cdn.jsdelivr.net. That
-                // fallback violated the 100% edge contract: the supervisor
-                // would issue a third-party CDN request mid-request to bring
-                // up its bundler. Removed.
-                //
-                // If the bundled import is missing, fail loud with a clear
-                // remediation (rebuild the worker with the wasm asset). The
-                // supervisor's pre-bundle path also embeds esbuild-wasm via
-                // src/esbuild-wasm-bundle.generated.ts, so a complete loss of
-                // wasm support would surface there too.
+                // Keep the bundled precompiled asset off importers' static graph until initialization.
+                const { default: esbuildWasmUrl } = await import('esbuild-wasm/esbuild.wasm');
                 if (!esbuildWasmUrl || typeof esbuildWasmUrl !== 'object') {
                     throw new Error('esbuild-wasm bundled import is not a WebAssembly.Module. ' +
                         'Rebuild the worker so wrangler resolves ' +
@@ -1323,10 +1308,7 @@ export class EsbuildService {
                 let initTimeout = null;
                 await Promise.race([
                     esb.initialize({
-                        // wrangler resolves this static `.wasm` import to a compiled
-                        // module at bundle time; the asset stub for a `.wasm` module can
-                        // only declare its default export as a string, and the guard
-                        // above is what checks the resolution actually happened.
+                        // The host supplies a precompiled module; its asset declaration types the export as a string.
                         wasmModule: esbuildWasmUrl,
                         worker: false,
                     }),
