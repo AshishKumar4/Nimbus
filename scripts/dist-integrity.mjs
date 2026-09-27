@@ -173,6 +173,7 @@ export const FIXPOINT_RECORD_VERSION = 1;
 export const INPUT_ROOTS = [
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/src`),
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/scripts`),
+  'packages/worker/patches',
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/package.json`),
   ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/tsconfig.json`),
   'tsconfig.base.json',

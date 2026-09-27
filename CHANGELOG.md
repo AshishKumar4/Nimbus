@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The packed `@nimbus-sh/worker/git` command loads the patched Git module
+  shipped with the package, not a consumer's unpatched cf-git dependency.
+  Hosts and network facets use the same build output. Fresh Node and Bun
+  installs can stage and commit without repository patch hooks; staging a
+  2,000-file worktree writes the index once. Runtime code, self-contained
+  declarations and the upstream license are packaged and covered by the
+  build fixpoint. The raw dependency is now a build-time dependency.
+
 - Node's dependency walk uses the existing launch turn budget, including
   metadata-only work before a closure-size refusal. Scheduling failures and
   cancellation propagate through CJS and ESM resolution without becoming

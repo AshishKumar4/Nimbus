@@ -42,8 +42,9 @@ import {
 let _git: any = null;
 async function getGit() {
   if (!_git) {
-    // @ts-ignore — CF-compatible fork (github:AshishKumar4/cf-git)
-    _git = await import('isomorphic-git');
+    // Same patched build artifact used by the network facet. A fresh npm
+    // consumer does not run Nimbus' repository dependency-patching hook.
+    _git = (await import('../../vendor/git.generated.mjs')).git;
   }
   return _git;
 }
