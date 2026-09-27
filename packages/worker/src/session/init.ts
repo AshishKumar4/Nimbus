@@ -23,6 +23,7 @@ import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
+import { prewarmEsbuildFacet } from '../facets/esbuild-transform.js';
 import type { SessionInternal } from './internal.js';
 
 /**
@@ -498,4 +499,10 @@ if (persisted.cwd) {
     if (options.resume === 'wake') await started;
 
     ws?.send(JSON.stringify({ type: 'ready' }));
+
+    // Once the prompt is up, boot the esbuild facet in the background: a
+    // session's first transform (`vite` reading vite.config.ts, a TS entry's
+    // launch) otherwise pays its cold start, about a second. It is not
+    // awaited and never fails the session (esbuild-transform.ts).
+    void started.then(() => prewarmEsbuildFacet(self.ctx, self.env));
 }

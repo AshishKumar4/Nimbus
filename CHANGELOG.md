@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A session starts its esbuild facet in the background once the shell
+  prompt is up, so the first transform (`vite` reading `vite.config.ts`, a
+  TypeScript entry's launch) no longer pays the facet's cold start (about a
+  second). The pre-warm and the transforms share one facet stub and one
+  esbuild initialization; a failed pre-warm is logged once and the first
+  transform starts the facet as before. A failed esbuild initialization
+  inside the facet is no longer kept, so the next call retries it.
+  `/api/_diag/session` reports the pre-warm as `esbuildPrewarm`.
+
 - The Worker bundle is back under its 7 MiB size gate (`-e production`
   dry run: 7,704,433 to 7,289,911 bytes). The git network facet's copy of
   the git module is now a staged asset
