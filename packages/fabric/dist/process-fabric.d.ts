@@ -109,6 +109,7 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     }, z.core.$strip>]>>;
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
 }, z.core.$strip>;
@@ -136,6 +137,7 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
     }, z.core.$strip>;
@@ -214,6 +216,20 @@ export interface ResidentDiskReader {
  * so the worker config can tell "embedder takes the env" from the default.
  */
 export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;
+/**
+ * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
+ * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
+ * units, the unit the decoded text is sliced in, so decoding copies nothing:
+ * each module is a slice of the one string read.
+ *
+ * Encoded as its parts, in order, never joined: the image store encodes them
+ * straight into the image's bytes, and a joined copy would be a second full
+ * copy of the program's code on the coordinator.
+ */
+export declare function encodeCommonJsPack(modules: Record<string, string>): string[];
+export declare function decodeCommonJsPack(pack: string): Record<string, {
+    cjs: string;
+}>;
 /**
  * The identity a resident process's SUPERVISOR binding is minted for. Always
  * the COORDINATOR's — a process hosted somewhere else still reads and writes
@@ -384,6 +400,8 @@ export interface OneShotCodeSpec {
     mainModule: string;
     modules: Record<string, string | {
         wasm: ArrayBuffer;
+    } | {
+        cjs: string;
     }>;
 }
 /**

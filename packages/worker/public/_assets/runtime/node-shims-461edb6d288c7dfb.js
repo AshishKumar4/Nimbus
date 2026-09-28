@@ -9782,9 +9782,6 @@ function __resolveFile(base) {
   return null;
 }
 
-// __compiledModules is defined at MODULE TOP LEVEL in the generator code
-// (facets/manager.ts) so new Function() runs during module evaluation.
-
 // ── Single-source-of-truth exports/imports resolver (W2) ───────────────
 // Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
 // Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
@@ -10113,42 +10110,6 @@ function __resolvePackageSelf(name, fromDir) {
   return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\.\/+/, "")) };
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ──  __mkCompiledFn — the request-time fallback compile ──────────────
-// ═══════════════════════════════════════════════════════════════════════
-// One definition, from core/_shared/compiled-fn.ts (interpolated above as
-// MK_COMPILED_FN_SOURCE); here it serves a cell the startup precompile set
-// did not include, where the runtime permits it. See that file for why the
-// collision is detected by compiling rather than by scanning the source.
-
-function __mkCompiledFn(code) {
-  // Node strips a leading shebang from every module before evaluation;
-  // bin scripts are commonly bundled verbatim with their
-  // "#!/usr/bin/env node" line, which is a SyntaxError under new Function.
-  if (typeof code === "string" && code.charCodeAt(0) === 35 && code.charCodeAt(1) === 33) {
-    const __nl = code.indexOf("\n");
-    code = __nl >= 0 ? code.slice(__nl + 1) : "";
-  }
-  const __base = ["exports", "require", "module", "__filename", "__dirname"];
-  const __params = __base.slice();
-  let __error;
-  // Each pass renames exactly the parameter the parser reported; a module
-  // may declare more than one, so the loop runs once per slot at most.
-  for (let __attempt = 0; __attempt <= __base.length; __attempt++) {
-    try { return new Function(...__params, code); }
-    catch (e) {
-      __error = e;
-      // V8 (workerd) and JavaScriptCore (bun, the unit tests) word it differently.
-      const __m = /Identifier '([$\w]+)' has already been declared|Cannot declare a \w+ variable twice: '([$\w]+)'/.exec((e && e.message) || "");
-      const __slot = __m ? __base.indexOf(__m[1] || __m[2]) : -1;
-      if (__slot < 0 || __params[__slot] !== __base[__slot]) throw e;
-      __params[__slot] = __base[__slot] + "__nimbus_unused";
-    }
-  }
-  throw __error;
-}
-
-
 function __exportsTarget(mod) {
   const value = mod.exports;
   if (value && (typeof value === "object" || typeof value === "function")) return value;
@@ -10198,6 +10159,12 @@ function __makeLoadingExports(mod) {
 /**
  * Load and execute a JS/JSON module from VFS.
  * Returns the module.exports value.
+ *
+ * A JS module is one of the launch's module cells: the guest's registry
+ * compiles it the first time it is required (core/_shared/commonjs-cell.ts),
+ * and this calls the wrapper function it exports with the scoped require.
+ * Nothing here compiles source: request-time code generation is not
+ * available in a Worker, so a file the launch did not map cannot run.
  */
 function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
@@ -10206,17 +10173,16 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   const mod = { exports: {} };
   __moduleCache.set(evaluationKey, __makeLoadingExports(mod));
 
-  const code = __readFileOr(resolvedPath, null);
-  if (code === null) throw new Error("Cannot read module: " + resolvedPath);
-
   // JSON
   if (resolvedPath.endsWith(".json")) {
+    const code = __readFileOr(resolvedPath, null);
+    if (code === null) throw new Error("Cannot read module: " + resolvedPath);
     mod.exports = JSON.parse(code);
     __moduleCache.set(evaluationKey, mod.exports);
     return mod.exports;
   }
 
-  // JS — wrap in function and execute with scoped require
+  // JS — the cell's wrapper, called with a scoped require
   const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
   const scopedRequire = (id) => __requireFrom(id, modDir);
   scopedRequire.resolve = (id) => {
@@ -10239,56 +10205,24 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
   // Evaluation metadata lives on the module, not in source text. Keeping
   // it here preserves the five CommonJS arguments and captures the parent
-  // even when import.meta.resolve is extracted and called later.
+  // even when import.meta.resolve is extracted and called later. The
+  // registry's own import.meta cannot serve: its module URLs all live under
+  // file:///bundle/, never at the file's own path.
   const importMeta = Object.assign(Object.create(null), {
     url: moduleUrl,
     resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, moduleUrl),
   });
   Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
   try {
-    // Use pre-compiled function from startup (new Function allowed at module eval time)
-    // Normalize path to match VFS bundle key format (no leading /)
     const normalizedPath = resolvedPath.replace(/^\/+/, "");
-    const precompiled = __compiledModules.get(normalizedPath) || __compiledModules.get(resolvedPath);
-    if (precompiled) {
-      precompiled(
-        mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
-      );
-    } else {
-      // Try new Function at request time when the file was not part of the
-      // startup precompile set.
-      // X.5-S: conditional-param-rename via __mkCompiledFn — see helper
-      // comment above. Without this, esbuild-transformed ESM that declares
-      // `const __dirname = …` at top level (e.g. vite's chunks/node.js)
-      // collides with the previously hardcoded `__dirname` parameter.
-      try {
-        const fn = __mkCompiledFn(code);
-        fn(
-          mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir,
-        );
-      } catch (evalErr) {
-        // W3.5 Fix C: if the file was in the bundle but its pre-compile
-        // failed at facet startup, surface the original SyntaxError
-        // instead of the misleading "not in this launch's module map" text.
-        const normalizedPath2 = resolvedPath.replace(/^\/+/, "");
-        const compileErr =
-          (typeof __compileFailures !== "undefined" && __compileFailures &&
-            (__compileFailures.get(normalizedPath2) || __compileFailures.get(resolvedPath))) || null;
-        if (compileErr) {
-          throw new Error(
-            "Cannot load module '" + resolvedPath +
-            "': pre-compile failed at facet startup: " + compileErr,
-          );
-        }
-        if (evalErr.message && evalErr.message.includes("Code generation from strings disallowed")) {
-          // Not a read miss (the text is here) and nothing in the process can
-          // answer it, so it is kept apart from the read ledger that settles those.
-          (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath2);
-          throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
-        }
-        throw evalErr;
-      }
+    const cell = __nimbusModuleCell(normalizedPath);
+    if (!cell) {
+      // Not a read miss and nothing in the process can answer it, so it is
+      // kept apart from the read ledger that settles those.
+      (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
+      throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
     }
+    cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
     if (e && typeof e === "object" && !e.__nimbusModulePath) {

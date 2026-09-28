@@ -3,8 +3,8 @@
  *
  * opencode is ESM-only (its CLI entry uses top-level await, so it cannot be
  * bundled to CJS) and imports a broad set of node: builtins plus node:sqlite.
- * It therefore cannot run through the standard `new Function` CJS facet path
- * (that path wraps entry code in a function body, which forbids ESM syntax).
+ * It therefore cannot run through the standard node facet path, which runs
+ * every module as a CommonJS body (core/_shared/commonjs-cell.ts).
  *
  * Instead the bundle rides into the facet Worker Loader module map as a real
  * ESM module (`opencode-bundle.js`) and this runner is the mainModule that:

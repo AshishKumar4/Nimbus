@@ -1535,12 +1535,15 @@ function __residentStats() {
  * `takeBundle` hands over the module bundle and drops the module's own
  * reference to it. The parsed bundle is the largest allocation in the facet
  * before the program starts, so a cold boot releases it the moment it is
- * adopted, and a kept store that reconciles never adopts it at all.
+ * adopted, and a kept store that reconciles never adopts it at all. A cell
+ * may be a getter that reads its text as it is taken (a node process's code
+ * cells, read back from the module map); `moduleBytes`, when the launch
+ * costed the bundle already, spares reading each twice.
  *
  * Returns the cursor to publish and, when the boot fell short of the whole
  * filesystem, why.
  */
-async function __residentBoot(takeBundle, moduleCursor, supervisor) {
+async function __residentBoot(takeBundle, moduleCursor, supervisor, moduleBytes) {
   if (!__residentReady) throw new Error("Nimbus: __residentBoot before __residentBind");
   let failure = null;
   if (__residentCursor() !== null) {
@@ -1558,8 +1561,10 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   // The module map is the program's code: it is held whole or the launch
   // fails. Spawn admitted it (N18); this is room for it now, asked for when
   // the store's cap does not already cover it.
-  let moduleBytes = 0;
-  for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  if (typeof moduleBytes !== "number") {
+    moduleBytes = 0;
+    for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  }
   if (!(await __residentEnsureRoom(moduleBytes))) {
     throw Object.assign(new Error(
       "ENOSPC: workspace storage is full: this process's modules (" + Math.ceil(moduleBytes / 1048576)

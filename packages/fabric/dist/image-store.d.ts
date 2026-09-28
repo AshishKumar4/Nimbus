@@ -105,7 +105,7 @@ export declare class ImageStore {
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
      */
-    materialize(pid: number, images: AsyncIterable<readonly [string, string]> | Iterable<readonly [string, string]>, pacer: TurnBudget): Promise<Record<string, string>>;
+    materialize(pid: number, images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
     /**
      * Drop every image no running process boots from.
      *

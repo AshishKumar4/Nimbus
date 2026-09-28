@@ -116,6 +116,14 @@ export const ResidentCodeSpecSchema = z.object({
      */
     vfsTextModules: z.record(z.string(), z.string()).optional(),
     /**
+     * VFS paths of generated CommonJS PACKS (encodeCommonJsPack): each image
+     * carries many `{ cjs }` modules, and the map gains every one of them at
+     * load. A node process's module cells travel this way — one module per
+     * file, so the guest's registry compiles only what the program requires,
+     * and one image per launch, so the boot spec names a path and not thousands.
+     */
+    vfsCommonJsPacks: z.array(z.string()).optional(),
+    /**
      * The isolate's exact `env`: one entry per binding the embedder minted,
      * carried by reference so loopback stubs survive untouched. Defined —
      * even as `{}` — means the embedder takes the whole env and no
@@ -229,6 +237,9 @@ export async function residentLoaderConfig(spec, disk) {
     for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
         resolved[moduleName] = await readFacetImage(disk, path);
     }
+    for (const path of spec.vfsCommonJsPacks ?? []) {
+        Object.assign(resolved, decodeCommonJsPack(await readFacetImage(disk, path)));
+    }
     return {
         compatibilityDate: spec.compatibilityDate,
         compatibilityFlags: spec.compatibilityFlags,
@@ -237,6 +248,39 @@ export async function residentLoaderConfig(spec, disk) {
         ...(spec.env !== undefined ? { env: spec.env } : {}),
         ...(spec.globalOutbound !== undefined ? { globalOutbound: spec.globalOutbound } : {}),
     };
+}
+/**
+ * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
+ * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
+ * units, the unit the decoded text is sliced in, so decoding copies nothing:
+ * each module is a slice of the one string read.
+ *
+ * Encoded as its parts, in order, never joined: the image store encodes them
+ * straight into the image's bytes, and a joined copy would be a second full
+ * copy of the program's code on the coordinator.
+ */
+export function encodeCommonJsPack(modules) {
+    const index = [];
+    const parts = [''];
+    for (const [name, text] of Object.entries(modules)) {
+        index.push([name, text.length]);
+        parts.push(text);
+    }
+    parts[0] = JSON.stringify(index) + '\n';
+    return parts;
+}
+export function decodeCommonJsPack(pack) {
+    const newline = pack.indexOf('\n');
+    const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(pack.slice(0, newline)));
+    const modules = {};
+    let offset = newline + 1;
+    for (const [name, length] of index) {
+        modules[name] = { cjs: pack.slice(offset, offset + length) };
+        offset += length;
+    }
+    if (offset !== pack.length)
+        throw new Error(`Nimbus: CommonJS pack holds ${pack.length - offset} bytes its index does not name`);
+    return modules;
 }
 /**
  * Read one content-addressed facet image and verify it against the digest its
