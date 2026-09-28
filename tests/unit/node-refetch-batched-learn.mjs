@@ -57,6 +57,8 @@ const ctx = createFacetCtx(createFacetWorld(() => ({})), 'refetch-batch');
 
 const calls = new Map();
 const batched = { ranges: 0, lstats: 0 };
+// Every range request sent, as path@offset: one sent twice is a read made twice.
+const rangesSent = [];
 let batchesInFlight = 0;
 let batchesPeak = 0;
 const hostEnv = {
@@ -72,7 +74,10 @@ const hostEnv = {
           if (op === 'fsReadBatch') {
             for (const request of envelope.args[0]) {
               if (request.lstat === true) batched.lstats++;
-              else batched.ranges++;
+              else {
+                batched.ranges++;
+                rangesSent.push(`${request.path}@${request.offset}`);
+              }
             }
             batchesPeak = Math.max(batchesPeak, ++batchesInFlight);
           }
@@ -142,12 +147,20 @@ fs.writeFileSync('/home/user/probe/done.txt', 'ok');
   const learns = batched.lstats + (calls.get('lstat') ?? 0);
   assert.ok(learns >= FILES / 2, `the refetch learned only ${learns} of ${FILES} written paths`);
   assert.equal(calls.get('lstat') ?? 0, 0, `${calls.get('lstat')} learns each cost an lstat round trip of their own`);
-  // Every read-side round trip is a full batch, bar the last of each kind.
+  // Each read is sent once: a batch a bound closed used to be flushed by
+  // the bound and again by the microtask that opened it.
+  const distinctReads = new Set(rangesSent).size;
+  assert.equal(rangesSent.length, distinctReads,
+    `${rangesSent.length - distinctReads} of ${rangesSent.length} range reads were sent more than once`);
+  // Read-side round trips: full batches of the distinct reads, and a learn
+  // batch for each read batch whose answers it learns from, bar a last
+  // partial batch of each.
   const trips = (calls.get('fsReadBatch') ?? 0) + (calls.get('lstat') ?? 0);
-  const bound = Math.ceil((batched.ranges + learns) / PER_BATCH) + 2;
+  const readBatches = Math.ceil(distinctReads / PER_BATCH);
+  const bound = 2 * readBatches + 2;
   assert.ok(
     trips <= bound,
-    `the refetch took ${trips} round trips for ${batched.ranges} reads and ${learns} learns; ${bound} batches carry them`,
+    `the refetch took ${trips} round trips for ${distinctReads} reads and ${learns} learns; ${bound} batches carry them`,
   );
   console.log(`  ok  ${batched.ranges} reads and ${learns} learns in ${trips} round trips (at most ${batchesPeak} in flight)`);
 } finally {

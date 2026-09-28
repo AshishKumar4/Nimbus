@@ -2697,7 +2697,10 @@ const __fsMod = (() => {
       batch = { supervisor, requests: [], settlers: [], bytes: 0 };
       _openReadBatch = batch;
       queueMicrotask(() => {
-        if (_openReadBatch === batch) _openReadBatch = null;
+        // A batch a bound closed was flushed then; sending it here too would
+        // read every entry of it twice.
+        if (_openReadBatch !== batch) return;
+        _openReadBatch = null;
         _flushReadBatch(batch);
       });
     }
@@ -2709,7 +2712,9 @@ const __fsMod = (() => {
   }
 
   async function _flushReadBatch(batch) {
-    globalThis.__nimbusFsRpcReads++;
+    // A read round trip is one that carries a range; a batch of learns
+    // (lstat requests) is metadata, which the read count leaves out.
+    if (batch.requests.some((request) => request.lstat !== true)) globalThis.__nimbusFsRpcReads++;
     try {
       const entries = await __nimbusUseRpcResult(
         batch.supervisor.fsReadBatch(batch.requests), (r) => r,

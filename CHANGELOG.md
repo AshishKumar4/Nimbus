@@ -20,7 +20,12 @@ published independently in the `@nimbus-sh` npm scope.
   after 1,600 `writeFileSync` calls one facet sent 1,599 `lstat` calls at
   once. With concurrent sessions some of them stayed pending for more than
   30 s and never reached the session, and the program never exited. The same
-  refetch now takes 74 round trips (49 read batches and 25 lstat batches).
+  refetch now takes 50 round trips: 25 read batches and 25 lstat batches.
+- A batch of concurrent ranged reads that filled up (1,024 paths or 4 MiB
+  requested) is sent once. Before, it was sent when it filled and again by
+  the microtask that opened it, so every entry was read twice: 1,536 of the
+  3,135 reads that refetch sent were duplicates. Batches that carry only
+  lstat requests no longer count toward the exec-diag `fsRpcReads` counter.
 
 - `DELETE /s/<id>/` no longer answers with the session shell. The core
   router served the UI HTML for the session root whatever the method, so a
