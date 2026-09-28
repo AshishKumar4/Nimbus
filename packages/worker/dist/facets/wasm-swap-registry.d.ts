@@ -34,7 +34,7 @@
  */
 import { type PackageAbiPolicy, type PackageRejectEntry, type PackageStagedArtifactEntry, type PackageSwapEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
- * Sentinel bin target the installer writes for a staged-artifact package.
+ * Sentinel bin target the installer writes for a `bin` staged artifact.
  * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner
  * (init.ts) recognizes the scheme and dispatches the staged opencode bundle
  * through the node runtime instead of trying to exec the native launcher.
@@ -51,10 +51,12 @@ export declare function policyLookupSwap(policy: PackageAbiPolicy, name: string)
 export declare function policyLookupReject(policy: PackageAbiPolicy, name: string): PackageRejectEntry | undefined;
 export declare function policyLookupStagedArtifact(policy: PackageAbiPolicy, name: string): PackageStagedArtifactEntry | undefined;
 /**
- * Mutate a resolved-package shape so a staged-artifact package installs as
- * a Nimbus JS bundle instead of its native launcher: rewrite `bin` to the
- * single `nimbus-staged:<artifact>` sentinel and drop the platform-native
- * `optionalDependencies` (shards) so the resolver never enqueues them.
+ * Mutate a resolved-package shape so a staged-artifact package installs
+ * without its native part: drop the platform-native `optionalDependencies`
+ * (shards) so the resolver never enqueues them, and, for a `bin` artifact,
+ * rewrite `bin` to the single `nimbus-staged:<artifact>` sentinel. A
+ * `binding` artifact keeps its bin: its JavaScript runs as published and
+ * only its N-API `require` is answered by the staged build.
  *
  * Self-contained (parameters + globals only) so it serializes into the
  * resolver facet preamble. `pkg` is mutated in place and returned.

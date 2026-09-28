@@ -98,6 +98,8 @@ export function installAuthorityFilesystem(imports, options) {
     const resident = new Map();
     const residentBytes = options.residentBytes ?? 0;
     const residentContent = (fs, target, st) => {
+        if (options.retainResident === false)
+            return after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
         const key = `${st.dev}:${st.ino}`;
         const cached = resident.get(key);
         if (cached && cached.revision === st.revision)

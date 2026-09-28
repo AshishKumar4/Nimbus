@@ -33,6 +33,7 @@
  * asserts equality with this module.
  */
 import { NATIVE_BIN_EXTENSIONS, NATIVE_UNSUPPORTED_ABI, NIMBUS_ABI_TARGET, PYODIDE_PACKAGE_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ROLLDOWN_ARTIFACT_VERSION } from '../rolldown-artifact.generated.js';
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
 // ─────────────────────────────────────────────────────────────────────────
@@ -49,9 +50,19 @@ const SWAPS = [
         reason: 'Native esbuild not available in Workers; esbuild-wasm exposes the same build/transform/version/initialize API.',
         compat: 'drop-in',
     },
+    {
+        // Vite 8 requires lightningcss (CSS minify in `vite build`, and the
+        // lightningcss CSS transformer). Its node wasm build is plain wasm32
+        // over napi-wasm's JavaScript N-API — no WASI, no threads — and its
+        // versions track lightningcss's one for one.
+        from: 'lightningcss',
+        to: 'lightningcss-wasm',
+        reason: 'Native lightningcss ships platform .node bindings; lightningcss-wasm exposes the same transform/bundle/bundleAsync/browserslistToTargets API from one wasm module.',
+        compat: 'drop-in',
+    },
 ];
 /**
- * Sentinel bin target the installer writes for a staged-artifact package.
+ * Sentinel bin target the installer writes for a `bin` staged artifact.
  * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner
  * (init.ts) recognizes the scheme and dispatches the staged opencode bundle
  * through the node runtime instead of trying to exec the native launcher.
@@ -59,11 +70,32 @@ const SWAPS = [
 export const STAGED_ARTIFACT_BIN_PREFIX = 'nimbus-staged:';
 const STAGED_ARTIFACTS = [
     {
+        kind: 'bin',
         from: 'opencode-ai',
         bin: 'opencode',
         artifact: 'opencode',
         reason: 'opencode-ai ships a native launcher (bin/opencode.exe) and 12 platform-native shards; ' +
             'Nimbus runs the prebuilt opencode JS bundle instead.',
+    },
+    // ── Rolldown (Vite 8's bundler) ─────────────────────────────────────
+    // Both names are answered by one staged build: rolldown's JS installs as
+    // published minus its 15 platform shards, and its `require` of the binding
+    // (native shard or `@rolldown/binding-wasm32-wasi`) is answered by the
+    // node runtime with the single-threaded wasm32-wasip1 build
+    // (scripts/rolldown/, public/_assets/rolldown/<version>/).
+    {
+        kind: 'binding',
+        from: 'rolldown',
+        artifact: 'rolldown-binding',
+        version: ROLLDOWN_ARTIFACT_VERSION,
+        reason: 'rolldown loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.',
+    },
+    {
+        kind: 'binding',
+        from: '@rolldown/binding-wasm32-wasi',
+        artifact: 'rolldown-binding',
+        version: ROLLDOWN_ARTIFACT_VERSION,
+        reason: 'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
     },
 ];
 const REJECTS = [
@@ -218,36 +250,16 @@ const REJECTS = [
             'or @resvg/resvg-wasm for SVG.',
         transitive: 'fail',
     },
-    // ── Tailwind v4 oxide + lightningcss native parents ────────────────
-    // Both ship only platform-native .node bindings + a wasm32-wasi shard.
-    // workerd has no node:wasi, so neither path loads.
-    // Without these REJECT entries, both parents install fine and surface
-    // a misleading runtime error (npm-4828 fallthrough for oxide, detect-
-    // libc execSync gap for lightningcss). With transitive='fail', the
-    // install is loudly rejected at resolve time.
+    // ── Tailwind v4 oxide native parent ─────────────────────────────────
+    // Ships only platform-native .node bindings + a wasm32-wasi shard.
+    // workerd has no node:wasi, so neither path loads. Without this REJECT
+    // entry the parent installs fine and surfaces a misleading runtime
+    // error (npm-4828 fallthrough). With transitive='fail', the install is
+    // loudly rejected at resolve time.
     {
         from: '@tailwindcss/oxide',
         reason: 'Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen.',
         suggest: 'no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.',
-        transitive: 'fail',
-    },
-    {
-        from: 'lightningcss',
-        reason: 'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
-        suggest: 'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
-        transitive: 'fail',
-    },
-    // ── Rolldown (Vite 8's bundler): native shards plus a wasi-threads build ──
-    {
-        from: 'rolldown',
-        reason: 'Native Rust bundler that Vite 8 loads at startup. Its only non-native build, @rolldown/binding-wasm32-wasi, is a wasm32-wasip1-threads binary, and Workers run one thread per isolate with Atomics.wait disabled.',
-        suggest: 'no Workers-compatible target — rolldown publishes no single-threaded build, so tools that load Vite 8 themselves (Astro 7) cannot start here.',
-        transitive: 'fail',
-    },
-    {
-        from: '@rolldown/binding-wasm32-wasi',
-        reason: 'wasm32-wasip1-threads build of rolldown: it imports a shared memory and wasi thread-spawn, its Rust locks and thread parking execute memory.atomic.wait32, and its loader needs node:wasi and worker_threads. Workers run one thread per isolate with Atomics.wait disabled.',
-        suggest: 'no Workers-compatible target — rolldown publishes no single-threaded build.',
         transitive: 'fail',
     },
 ];
@@ -312,20 +324,24 @@ export function policyLookupStagedArtifact(policy, name) {
     return policy.stagedArtifacts.find((entry) => entry.from === name);
 }
 /**
- * Mutate a resolved-package shape so a staged-artifact package installs as
- * a Nimbus JS bundle instead of its native launcher: rewrite `bin` to the
- * single `nimbus-staged:<artifact>` sentinel and drop the platform-native
- * `optionalDependencies` (shards) so the resolver never enqueues them.
+ * Mutate a resolved-package shape so a staged-artifact package installs
+ * without its native part: drop the platform-native `optionalDependencies`
+ * (shards) so the resolver never enqueues them, and, for a `bin` artifact,
+ * rewrite `bin` to the single `nimbus-staged:<artifact>` sentinel. A
+ * `binding` artifact keeps its bin: its JavaScript runs as published and
+ * only its N-API `require` is answered by the staged build.
  *
  * Self-contained (parameters + globals only) so it serializes into the
  * resolver facet preamble. `pkg` is mutated in place and returned.
  */
 export function policyApplyStagedArtifact(pkg, entry, binPrefix) {
-    pkg.bin = { [entry.bin]: `${binPrefix}${entry.artifact}` };
+    if (entry.kind === 'bin')
+        pkg.bin = { [entry.bin]: `${binPrefix}${entry.artifact}` };
     pkg.optionalDependencies = undefined;
-    // The staged bundle is platform-independent; clear the package's native
+    // The staged build is platform-independent; clear the package's native
     // os/cpu/libc allowlists so the native-artifact reject does not fire on
-    // them (opencode-ai declares os=[darwin,linux,win32] cpu=[arm64,x64]).
+    // them (opencode-ai declares os=[darwin,linux,win32] cpu=[arm64,x64];
+    // @rolldown/binding-wasm32-wasi declares cpu=[wasm32]).
     pkg.os = undefined;
     pkg.cpu = undefined;
     pkg.libc = undefined;

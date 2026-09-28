@@ -81,6 +81,14 @@ export interface AuthorityFilesystemOptions {
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
+    /**
+     * Whether a resident copy outlives its descriptor (default true). A guest
+     * whose host process already holds the filesystem's content (a node
+     * process's resident view) gains nothing from a second copy per inode and
+     * pays for it in heap, so it reads afresh on every open and the copy dies
+     * with the descriptor.
+     */
+    retainResident?: boolean;
 }
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;

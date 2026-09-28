@@ -559,20 +559,39 @@ export interface PackageSwapEntry {
     compat: 'drop-in' | 'shim' | 'manual';
 }
 /**
- * Staged-artifact entry: a package whose only published runnable form is a
- * platform-native binary (so it would otherwise hit the native-artifact
- * reject), but for which Nimbus ships a prebuilt JS/WASM bundle in the
- * static-assets layer. At resolve time the package's native shards
- * (optionalDependencies) and lifecycle scripts are dropped and its `bin` is
- * rewritten to a Nimbus shim that loads the staged bundle.
+ * Staged-artifact entry: a package whose only published runnable form is
+ * platform-native (so it would otherwise hit the native-artifact reject), but
+ * for which Nimbus ships a prebuilt JS/WASM build in the static-assets layer.
+ * At resolve time the package's native shards (optionalDependencies) and
+ * platform allowlists are dropped. Two kinds, by what the native part is:
+ *
+ *   bin     — a native launcher. Its `bin` is rewritten to a Nimbus shim that
+ *             runs the staged bundle (opencode).
+ *   binding — a native N-API addon the package's own JavaScript `require`s.
+ *             The package installs as published minus its shards; the node
+ *             runtime answers the binding's `require` with the staged wasm
+ *             build, for `version` exactly (rolldown).
  */
-export interface PackageStagedArtifactEntry {
+export type PackageStagedArtifactEntry = PackageStagedBinEntry | PackageStagedBindingEntry;
+export interface PackageStagedBinEntry {
+    kind: 'bin';
     /** Package name the user installs (e.g. `opencode-ai`). */
     from: string;
     /** Bin name the staged artifact provides (e.g. `opencode`). */
     bin: string;
     /** Stable artifact id the node runtime resolves to a staged asset path. */
     artifact: string;
+    /** One-line reason shown to the user. */
+    reason: string;
+}
+export interface PackageStagedBindingEntry {
+    kind: 'binding';
+    /** Package name the user installs (e.g. `rolldown`). */
+    from: string;
+    /** Stable artifact id the node runtime resolves to a staged asset path. */
+    artifact: string;
+    /** The one upstream version the staged binding is built from. */
+    version: string;
     /** One-line reason shown to the user. */
     reason: string;
 }
