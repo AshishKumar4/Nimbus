@@ -61,9 +61,11 @@ export interface DoCallRetryPolicy {
      * and has its own deadline. Never hedged when absent.
      *
      * With attempts overlapping, a failure decides less. A retryable one is
-     * retried after its backoff while attempts remain. One that is not stops
-     * every further repeat. Either way the call keeps waiting on the attempts
-     * still in flight, and fails with the last failure only once none is.
+     * retried after its backoff while attempts remain, and `overloaded` stops
+     * every further repeat; either way the call keeps waiting on the attempts
+     * still in flight, and fails with the last failure only once none is. Any
+     * other failure is the callee's answer — the call ran — and is the call's
+     * at once.
      */
     hedgeAfterMs?: number;
     /**
@@ -121,8 +123,9 @@ export declare class DoCallError extends Error {
  * failures surface unchanged, as does the last error once no attempt may be
  * repeated — attempts spent, or the policy's retry window closed. With
  * `hedgeAfterMs`, an attempt still unanswered by then is joined by another
- * on a fresh stub, and the first success is taken; a failure then ends the
- * call only once no attempt is left in flight.
+ * on a fresh stub, and the first answer is taken: a success, or the
+ * callee's own error. A transient or overloaded failure then ends the call
+ * only once no attempt is left in flight.
  *
  * A failure of the resolver or of `onRetry` is the caller's own, and fails
  * the call with it at once.
