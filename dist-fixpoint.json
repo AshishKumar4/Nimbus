@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1684c25cd0018d79919f4be078f594034b65a50aa0925e440613a8496e3f9d22",
+  "fingerprint": "c27155707afa51c6fca26a5e050e946853df1e02da53e15a042032e969c5ba02",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1218,9 +1218,9 @@
     "packages/fabric/dist/derived.d.ts": "0212e487c72090d2a6dd8b0f6655e55d939b05d6242cd49757e35b7129874320",
     "packages/fabric/dist/derived.d.ts.map": "da1eaa936c95c6a33e8279cd3feefa425f7f05687a315a75b3c2be9ed8757c32",
     "packages/fabric/dist/derived.js": "8226f8216d274d4059ad3c50fc9a7bc3eb742341f022a26271a365236c650eca",
-    "packages/fabric/dist/do-calls.d.ts": "56d0ca9d87965dc5b0fb2c40fa4bc42281098a7e29397a56e2000d726f3c2cec",
-    "packages/fabric/dist/do-calls.d.ts.map": "9ebfce21ca37314754acc36a4803c414ae390e51d30c4902f0cbf7d9224ff7aa",
-    "packages/fabric/dist/do-calls.js": "a660a456293357d195b95b4f4c576905915d48afc211bddbe2789e77a6c8e0e9",
+    "packages/fabric/dist/do-calls.d.ts": "2e38b09533678b2c06164bd35e393694b9d097808159e2b5e6203850f11644c4",
+    "packages/fabric/dist/do-calls.d.ts.map": "9ea84cec2ca2de4193b6137c8faf14b83d6618657c678bbc8f07519a7613d25e",
+    "packages/fabric/dist/do-calls.js": "f76a415ca3d526738230b3bfb42c659153d15b4afcf0a381a8d7be4a0c970d13",
     "packages/fabric/dist/facet-pool.d.ts": "da616e32ee8e9c69965e45b5c928239bc1f208e8da81e3c6d654b02341a6b6b3",
     "packages/fabric/dist/facet-pool.d.ts.map": "a057e5a39fe3c7dfed828f2867a6f62a0f9cb6f344b57480f3c42eaebe329271",
     "packages/fabric/dist/facet-pool.js": "3ba602bbd9c2d91e81ebf42f5889790baf504043d1db1543d791918e10fa1c6d",
@@ -1294,7 +1294,7 @@
     "packages/fabric/src/composition.ts": "40216ae69e283b72d9e562a9b06d1c6ae608c99e433612203de743e06de9db2e",
     "packages/fabric/src/connections.ts": "c3a9c8d5ef3b76dbbd6b9de331ab1399135c3cb445fe06196ff5f0285ce9709d",
     "packages/fabric/src/derived.ts": "a5277821af28ea74b571f41c5ff2460d7f72befc0b719a7fe328e11afcdace52",
-    "packages/fabric/src/do-calls.ts": "f0e484cc93fd04ec800b2c95ed39721feab38b8bc218ea7eab4d0f4bea22a0f0",
+    "packages/fabric/src/do-calls.ts": "81a0ff9be313e4548538d96fdbae14ed740ec15d649a1ffdcdf6a30cff1410cc",
     "packages/fabric/src/facet-pool.ts": "8d329728e4e972a031b647cb872c2fc664ad0de0be064b8f5d2ca7303d8d4d53",
     "packages/fabric/src/fanout.ts": "e42ecf2cf603ba681787b295465b045c6bcdb85e4e8225183f4d92fb597dc6f0",
     "packages/fabric/src/fenced-work.ts": "f414d47b830e9c3e5e53a1815e74d2ec86cfe41eb9049aee3e3e49fe94c6a95c",
