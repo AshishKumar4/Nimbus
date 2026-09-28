@@ -24,8 +24,9 @@
  *     full-jitter delays in [0, 2**attempt * 60ms).
  *   - an `idempotent` call may also be HEDGED (`hedgeAfterMs`): an attempt
  *     that has not answered by then is joined by the same call on a fresh
- *     stub, both left running, the first answer taken. Hedges count against
- *     the attempts.
+ *     stub, both left running, the first success taken. Hedges count
+ *     against the attempts, and a callee that joins a repeat to the call it
+ *     is already serving makes one that did arrive cost nothing.
  *
  * The resolver MINTS a stub per call and the verb disposes each one it
  * minted — that ownership is what makes the fresh-stub retry real.
@@ -62,21 +63,27 @@ export interface DoCallRetryPolicy {
   retryWindowMs?: number;
   /**
    * Hedge an attempt that has not answered after this long: send the same
-   * call again on a fresh stub while the first stays in flight, and take
-   * whichever answers first. The late answer, if one comes, is disposed and
-   * dropped, so the caller sees one result — which is only harmless when a
-   * second delivery of the call changes nothing, a read. A hedge is an
-   * attempt: it counts against `maxAttempts`, and each has its own deadline.
-   * A failure the platform marks retryable is waited out while another
-   * attempt is still in flight, and retried once none is. Never hedged when
-   * absent.
+   * call again on a fresh stub while the first stays in flight. The caller
+   * gets the first success; an answer after it is disposed and dropped. That
+   * is only harmless when a second delivery of the call changes nothing — a
+   * read — and cheap only when the callee joins a repeat to the call it is
+   * already serving. A hedge is an attempt: it counts against `maxAttempts`,
+   * and has its own deadline. Never hedged when absent.
+   *
+   * With attempts overlapping, a failure decides less. A retryable one is
+   * retried after its backoff while attempts remain. One that is not stops
+   * every further repeat. Either way the call keeps waiting on the attempts
+   * still in flight, and fails with the last failure only once none is.
    */
   hedgeAfterMs?: number;
   /**
-   * Called once per retry, before its backoff delay, with the failure the
-   * retry is answering. The consumer's logging seam: Proteus's hand-rolled
-   * predecessor logged every retry so a flaky object is visible in Workers
-   * Logs rather than silently absorbed, and `operation` names it there.
+   * Called once per retry, as it starts — after its backoff delay — with the
+   * failure the retry is answering. A retry a hedge made unnecessary, or
+   * that no attempt is left for, is never announced. The consumer's logging
+   * seam: Proteus's hand-rolled predecessor logged every retry so a flaky
+   * object is visible in Workers Logs rather than silently absorbed, and
+   * `operation` names it there. A callback that throws fails the call with
+   * its error.
    */
   onRetry?(info: DoCallRetryInfo): void;
 }
@@ -86,7 +93,10 @@ export interface DoCallRetryPolicy {
 export interface DoCallRetryInfo {
   operation: string;
   classification: DoCallClass;
-  /** The 1-based attempt that failed; the retry about to run is attempt+1. */
+  /**
+   * The 1-based number of the attempt that failed. Without hedging the retry
+   * is attempt+1; with it, other attempts may have started in between.
+   */
   attempt: number;
   maxAttempts: number;
   error: unknown;
@@ -131,10 +141,14 @@ export class DoCallError extends Error {
  * read, a converge-to-a-value write, or a mutation carrying an identity its
  * callee applies at most once (see {@link mutating}). Transient failures
  * retry on a fresh stub with full-jitter backoff; overloaded and permanent
- * failures surface unchanged, as does the last error once the attempts are
- * spent and none is left in flight, or once the policy's retry window has
- * closed. With `hedgeAfterMs`, an attempt still unanswered by then is
- * joined by another on a fresh stub, and the first answer is taken.
+ * failures surface unchanged, as does the last error once no attempt may be
+ * repeated — attempts spent, or the policy's retry window closed. With
+ * `hedgeAfterMs`, an attempt still unanswered by then is joined by another
+ * on a fresh stub, and the first success is taken; a failure then ends the
+ * call only once no attempt is left in flight.
+ *
+ * A failure of the resolver or of `onRetry` is the caller's own, and fails
+ * the call with it at once.
  */
 export function idempotent<S, T>(
   operation: string,
@@ -148,91 +162,106 @@ export function idempotent<S, T>(
   const startedAt = Date.now();
   // The executor form: fabric's library target predates Promise.withResolvers.
   return new Promise<T>((resolve, reject) => {
-    const hedgeTimers = new Set<ReturnType<typeof setTimeout>>();
-    let sent = 0;
-    let inFlight = 0;
+    const hedges = new Set<ReturnType<typeof setTimeout>>();
+    let started = 0;
+    // Attempts in flight, or backing off before their retry: while one is,
+    // a failure is not the call's answer.
+    let live = 0;
+    // A failure that is not transient: nothing is repeated after it.
+    let refused = false;
     let settled = false;
 
     const settle = (answer: () => void): void => {
       if (settled) return;
       settled = true;
-      for (const timer of hedgeTimers) clearTimeout(timer);
-      hedgeTimers.clear();
+      for (const timer of hedges) clearTimeout(timer);
+      hedges.clear();
       answer();
     };
-    const repeatAllowedAt = (at: number): boolean => retryWindowMs === undefined || at - startedAt <= retryWindowMs;
+    /** May another attempt start at `at`? */
+    const canRepeat = (at: number): boolean =>
+      !settled && !refused && started < maxAttempts
+      && (retryWindowMs === undefined || at - startedAt <= retryWindowMs);
+    /** `error` ended an attempt that will not be repeated: the call's answer, once nothing else is live. */
+    const exhausted = <E>(error: E): void => {
+      if (live === 0) settle(() => reject(error));
+    };
 
-    const attempt = async (): Promise<void> => {
-      sent++;
-      inFlight++;
-      let minted: S;
-      try {
-        minted = await stub();
-      } catch (error) {
-        inFlight--;
-        settle(() => reject(error));
+    /** A failed attempt, numbered: repeat it after its backoff, or let it stand. */
+    const failed = async <E>(number: number, error: E): Promise<void> => {
+      if (settled) return;
+      const classification = classifyDoCall(error);
+      if (!isRetryableDoCall(classification)) {
+        refused = true;
+        exhausted(error);
         return;
       }
+      const delayMs = Math.floor(Math.random() * 2 ** number * baseDelayMs);
+      if (!canRepeat(Date.now() + delayMs)) {
+        exhausted(error);
+        return;
+      }
+      live++;
+      await new Promise<void>((wake) => {
+        setTimeout(wake, delayMs);
+      });
+      live--;
+      // A hedge may have taken the last attempt, or answered, meanwhile.
+      if (!canRepeat(Date.now())) {
+        exhausted(error);
+        return;
+      }
+      policy.onRetry?.({ operation, classification, attempt: number, maxAttempts, error });
+      attempt();
+    };
+
+    const run = async (): Promise<void> => {
+      const number = ++started;
+      live++;
+      const minted = await stub();
       if (settled) {
-        inFlight--;
+        live--;
         disposeRpcResource(minted);
         return;
       }
-      let answered = false;
-      if (hedgeAfterMs !== undefined) {
-        const timer = setTimeout(() => {
-          hedgeTimers.delete(timer);
-          if (settled || answered || sent >= maxAttempts || !repeatAllowedAt(Date.now())) return;
-          void attempt();
-        }, hedgeAfterMs);
-        hedgeTimers.add(timer);
-      }
+      const hedge = hedgeAfterMs === undefined ? undefined : setTimeout(() => {
+        if (hedge !== undefined) hedges.delete(hedge);
+        if (canRepeat(Date.now())) attempt();
+      }, hedgeAfterMs);
+      if (hedge !== undefined) hedges.add(hedge);
+      /** This attempt has its answer: it hedges no more, and its stub goes. */
+      const answered = (): void => {
+        if (hedge !== undefined) {
+          clearTimeout(hedge);
+          hedges.delete(hedge);
+        }
+        live--;
+        // A stub that threw may be permanently broken; none is ever reused.
+        disposeRpcResource(minted);
+      };
       let result: T;
       try {
         result = await call(minted);
       } catch (error) {
-        answered = true;
-        inFlight--;
-        // A stub that threw may be permanently broken; it is never reused.
-        disposeRpcResource(minted);
-        if (settled) return;
-        const classification = classifyDoCall(error);
-        if (!isRetryableDoCall(classification)) {
-          settle(() => reject(error));
-          return;
-        }
-        if (sent >= maxAttempts) {
-          // An attempt still in flight may yet answer; the last to fail says why none did.
-          if (inFlight === 0) settle(() => reject(error));
-          return;
-        }
-        const delayMs = Math.floor(Math.random() * 2 ** sent * baseDelayMs);
-        if (!repeatAllowedAt(Date.now() + delayMs)) {
-          if (inFlight === 0) settle(() => reject(error));
-          return;
-        }
-        policy.onRetry?.({ operation, classification, attempt: sent, maxAttempts, error });
-        await new Promise<void>((wake) => {
-          setTimeout(wake, delayMs);
-        });
-        if (settled) return;
-        // A hedge may have taken the last attempt during the backoff.
-        if (sent < maxAttempts) void attempt();
-        else if (inFlight === 0) settle(() => reject(error));
+        answered();
+        await failed(number, error);
         return;
       }
-      answered = true;
-      inFlight--;
-      disposeRpcResource(minted);
+      answered();
       if (settled) {
-        // A hedge answered first; this answer is dropped, so nothing of it is kept.
+        // Another attempt answered first: this answer is dropped, so nothing of it is kept.
         disposeRpcResource(result);
         return;
       }
       settle(() => resolve(result));
     };
 
-    void attempt();
+    /** Start an attempt. Whatever it throws outside the call itself fails the call. */
+    const attempt = (): void => {
+      run().catch((error) => settle(() => reject(error)));
+    };
+
+    attempt();
   });
 }
 

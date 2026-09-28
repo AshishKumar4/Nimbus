@@ -112,6 +112,7 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
   const never = new Promise(() => {});
   const hanging = (answer) => {
     const calls = [];
+    const readIds = [];
     const env = {
       NIMBUS_SESSION: {
         idFromName: (id) => ({ toString: () => id }),
@@ -120,13 +121,14 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
           return {
             async supervisorOp(envelope) {
               calls.push(envelope.delivery?.op ?? envelope.op);
+              readIds.push(envelope.readId);
               return calls.length === 1 ? never : answer;
             },
           };
         },
       },
     };
-    return { env, calls };
+    return { env, calls, readIds };
   };
   const read = hanging([{ bytes: new Uint8Array([7]) }]);
   const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7 } }, read.env);
@@ -140,6 +142,10 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
   const tookMs = Date.now() - startedAt;
   assert.deepEqual(Array.from(entries[0].bytes), [7], 'the read answered with something other than the hedge\'s answer');
   assert.deepEqual(read.calls, ['fsReadBatch', 'fsReadBatch'], 'the unanswered read was not hedged');
+  // One read, one id: the session joins the hedge to the read if both arrive.
+  assert.match(read.readIds[0] ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(read.readIds[1], read.readIds[0], 'the hedge carried another read id, so the session could not join it');
+  assert.deepEqual(write.readIds, [undefined], 'a mutation carried a read id');
   assert.ok(tookMs >= SUPERVISOR_READ_HEDGE_AFTER_MS - 50, `the read was hedged after ${tookMs} ms, before its deadline`);
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   assert.deepEqual(write.calls, ['writeFile'], 'a delivered mutation was hedged');
