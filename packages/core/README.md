@@ -319,10 +319,12 @@ program's directory and arguments, the literal paths its code names, and the
 files its module map was read from. A directory named there is listed whole,
 breadth first, up to 8192 names per launch (`MOUNT_LIST_NAME_LIMIT`), and so
 is every directory from the mount point down to it. A mount the launch does
-not name is not walked, and a name past the bound is not in the process's
-synchronous view; `fs.promises` reads it. The process holds the mount's
-names and content as of its launch, plus its own writes, which reach the
-mount through its write-back.
+not name is not walked. A synchronous call on a mounted path the launch did
+not list, or past the bound, answers EAGAIN ("/shared is an asynchronous
+mount; this caller cannot wait for it") and names the `fs.promises` form that
+reads it; a missing name in a listed directory is ENOENT. The process holds
+the mount's names and content as of its launch, plus its own writes, which
+reach the mount through its write-back.
 
 ## What the worker package adds
 

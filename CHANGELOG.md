@@ -19,13 +19,20 @@ published independently in the `@nimbus-sh` npm scope.
   mount as the process's credential. A named directory is listed whole,
   breadth first, up to `MOUNT_LIST_NAME_LIMIT` (8192) names per launch, with
   every directory from the mount point down to it; a mount the launch does
-  not name is not walked, and a name past the bound is not in the
-  synchronous view (`fs.promises` still reads it). Contents follow the
-  existing data plan and store budget. A synchronous write reaches the mount
-  through the process's write-back, once. A kept resident store never
-  vouches for a mounted file's bytes (a mount keeps no revision on the
+  not name is not walked. A synchronous call on a mounted path the launch did
+  not list (or past the bound) answers EAGAIN, "<mount> is an asynchronous
+  mount; this caller cannot wait for it", naming the `fs.promises` form that
+  reads it; `require` of one reports the same, and `existsSync` is false. A
+  missing name in a directory the launch listed is ENOENT. The listing marks
+  such a directory with `VfsListEntry.unlisted` (its mount point). Contents
+  follow the existing data plan and store budget. A synchronous write reaches
+  the mount through the process's write-back, once. A kept resident store
+  never vouches for a mounted file's bytes (a mount keeps no revision on the
   session's clock), so a relaunch reads what the mount holds.
   `NimbusFilesystemAuthority.nameLaunch` is how a launch names those paths.
+  The one-shot runners' `vfsWrites` result field and the manager's fallback
+  that wrote it into SQLite are gone: a runner without a supervisor never
+  started user code, so the field was always empty.
 
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to

@@ -138,8 +138,9 @@ export const FS_LIST_PAGE_LIMIT = 8192;
 // launch names — its working directory, program and arguments, the literal
 // paths its code names, the directories its module map was read from — and
 // every directory on the way down from the mount point. A directory is listed
-// whole or not at all, breadth first, until this many names; what is left is
-// not in the process's synchronous view (fs.promises still reads it). The
+// whole or not at all, breadth first, until this many names. A directory left
+// unlisted is marked so (VfsListEntry.unlisted): a synchronous call under it
+// answers the mount's EAGAIN, never ENOENT, and fs.promises reads it. The
 // names are paged like SQLite's (FS_LIST_PAGE_LIMIT), so the supervisor holds
 // at most this many mounted names per listing.
 export const MOUNT_LIST_NAME_LIMIT = 8192;

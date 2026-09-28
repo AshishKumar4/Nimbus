@@ -196,16 +196,6 @@ export interface FacetExecResult {
   stdout: string;
   stderr: string;
   /**
-   * Files written by the script (path → content), to be flushed back to VFS.
-   *
-   * binary-fs wave: cells may be string | Uint8Array. After JSON.parse on
-   * the result envelope (NodeProcess.run returns JSON.stringify; the
-   * LOADER.load fallback uses Response.json) Uint8Array becomes a
-   * {"0":n,"1":n,...} object — _reviveVfsWriteCell reconstitutes the
-   * bytes.
-   */
-  vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
-  /**
    * VFS paths whose content the process read synchronously and did not have.
    *
    * The facet cannot serve those reads and cannot recover from them, so the
@@ -234,44 +224,6 @@ export interface StagedArtifactExecResult extends FacetExecResult {
   pid: number;
   /** For the resident server path: the loopback port the facet is bound to. */
   port?: number;
-}
-
-/**
- * Detect & restore a Uint8Array that's been JSON-mangled to a
- * {"0":n,"1":n,...} object during the result-envelope round-trip.
- * String inputs and already-Uint8Array inputs pass through unchanged.
- *
- * Heuristic: a plain object whose keys are dense non-negative integers
- * starting at 0 and whose values are byte-sized integers is treated as
- * a serialized Uint8Array. False-positive risk is negligible because
- * (a) only `__vfsWrites` cells reach this path and (b) the only types
- * that ever land in `__vfsWrites` are string and Uint8Array.
- */
-function _reviveVfsWriteCell(v: unknown): string | Uint8Array {
-  if (typeof v === 'string') return v;
-  if (v instanceof Uint8Array) return v;
-  if (v && typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    const keys = Object.keys(o);
-    if (keys.length === 0) return new Uint8Array(0);
-    // Quick bail-out: not all keys are non-negative integers.
-    let maxIdx = -1;
-    for (const k of keys) {
-      const n = Number(k);
-      if (!Number.isInteger(n) || n < 0) return String(v);
-      if (n > maxIdx) maxIdx = n;
-    }
-    // Dense check: keys.length === maxIdx + 1
-    if (keys.length !== maxIdx + 1) return String(v);
-    const out = new Uint8Array(keys.length);
-    for (let i = 0; i < keys.length; i++) {
-      const b = o[String(i)];
-      if (typeof b !== 'number' || b < 0 || b > 255) return String(v);
-      out[i] = b;
-    }
-    return out;
-  }
-  return String(v);
 }
 
 // ── Code generators ─────────────────────────────────────────────────────
@@ -703,7 +655,7 @@ ${sources.residentStore}
     // synchronous stat, exists and readdir reads (CUTOVER #13).
     const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) {
-      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", vfsWrites: {}, residencyMisses: [] });
+      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
@@ -865,7 +817,6 @@ ${RESIDENCY_MISS_REPORT}
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
-      vfsWrites: __supervisor ? {} : __vfsWrites,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -5403,7 +5354,6 @@ export class FacetManager {
       // a listing of the namespace, and a one-shot takes no listing of its own
       // (§2.8: the principal's image is where that comes from).
       const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
-      this._flushVfsWrites(result, entry.pid);
       this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
       this.processes.exit(entry.pid, result.exitCode);
       if (result.exitCode !== 0) {
@@ -5649,7 +5599,6 @@ export class FacetManager {
       );
       try {
         const result = await response.json() as FacetExecResult;
-        this._flushVfsWrites(result, staged.pid);
         this.processes.exit(staged.pid, result.exitCode);
         return { ...result, pid: staged.pid };
       } finally {
@@ -5799,7 +5748,7 @@ export class FacetManager {
             this.releaseProcessRpcResources(pid);
           }),
       );
-      return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+      return { pid, exitCode: 0, stdout: '', stderr: '' };
     } catch (e) {
       this.releaseProcessRpcResources(pid);
       handle?.kill();
@@ -5937,7 +5886,7 @@ export class FacetManager {
       );
       await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
       this.portRegistry.register(port, pid);
-      return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+      return { pid, exitCode: 0, stdout: '', stderr: '' };
     } catch (e) {
       this.portRegistry.unregisterByPid(pid);
       if (resourcesTracked) this.releaseProcessRpcResources(pid);
@@ -6185,24 +6134,6 @@ export class FacetManager {
     this.processes.exit(pid, 1);
     this._w5RecordTermination(pid, 1, 'facet', reason);
     try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
-  }
-
-  /** Flush files written by the script back to the supervisor's VFS. */
-  private _flushVfsWrites(result: FacetExecResult, pid: number) {
-    if (!this.vfs || !result.vfsWrites) return;
-    const vfs = this.vfs.as(this.processes.cred(pid));
-    for (const [path, content] of Object.entries(result.vfsWrites)) {
-      const parts = path.split('/');
-      for (let i = 1; i < parts.length; i++) {
-        const dir = parts.slice(0, i).join('/');
-        if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
-      }
-      // No-supervisor fallback: these are full sync-write cells, not failed
-      // append residues. A write-back error is the command's error and must
-      // propagate before a successful process exit is recorded.
-      const restored = _reviveVfsWriteCell(content);
-      vfs.writeFile(path, restored);
-    }
   }
 
   /**

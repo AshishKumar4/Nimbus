@@ -506,7 +506,9 @@ const MOUNT_WALK_CONCURRENCY = 8;
  * one level, each after every directory from the mount point down to it,
  * one level each. A directory is listed whole or not at all, only where the
  * view's credential may search it, and only while the names so far leave
- * room under MOUNT_LIST_NAME_LIMIT; what is not listed is not named.
+ * room under MOUNT_LIST_NAME_LIMIT. A mounted directory it did not list
+ * carries `unlisted` (its mount point): what is under it is not absent, only
+ * not named.
  */
 async function walkMounts(view: CompositeVFS, cred: VfsCred, points: readonly string[], named: readonly string[]): Promise<VfsListEntry[]> {
   const found = new Map<string, VfsListEntry>();
@@ -577,6 +579,10 @@ async function walkMounts(view: CompositeVFS, cred: VfsCred, points: readonly st
   const queue = trees.sort(comparePaths);
   while (queue.length > 0 && room > 0) {
     for (const dirs of await Promise.all(queue.splice(0, MOUNT_WALK_CONCURRENCY).map(walk))) queue.push(...dirs);
+  }
+  for (const [path, entry] of found) {
+    const point = view.mountOf(path);
+    if (entry.kind === 'directory' && live.has(point) && !Array.isArray(walked.get(path))) entry.unlisted = point;
   }
   return [...found.values()].sort((a, b) => comparePaths(a.path, b.path));
 }

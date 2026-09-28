@@ -497,6 +497,12 @@ export interface VfsListEntry {
   linkTarget?: string;
   /** Files only: equal keys mean equal bytes (SqliteVFS.contentKey). */
   contentKey?: string;
+  /**
+   * A directory on a mount whose entries this listing does not name (the
+   * launch did not name it, or it was past MOUNT_LIST_NAME_LIMIT): the mount
+   * point it is on. A name under it is not absent, only not listed.
+   */
+  unlisted?: string;
 }
 
 /**

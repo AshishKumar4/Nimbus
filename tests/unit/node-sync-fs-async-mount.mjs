@@ -179,6 +179,41 @@ console.log('readdir', fs.readdirSync('/m/nl').sort().join(','));
 console.log('require', require('/m/nl/mod.js'));`, { filename: '/home/user/lit.js', cwd: '/home/user' }),
 'read data\nexists true\nreaddir mod.js,x.txt\nrequire 7', 'literal mounted paths in the code are in the launch\'s view');
 
+// ── No false ENOENT: what the launch did not list is not known absent ───────
+/** Each check's value, or its error code; `:mount` when it is the mount's refusal naming /m and the async form. */
+const CHECK = `const fs = require('fs');
+const code = (f) => { try { return f(); } catch (e) {
+  return 'ERR:' + e.code + (e.code === 'EAGAIN' && /\\/m is an asynchronous mount; this caller cannot wait for it; fs\\.promises\\.\\w+ reads it/.test(e.message) ? ':mount' : '');
+} };
+const at = (...parts) => ['', ...parts].join('/');
+`;
+await ws.exec('mkdir -p /m/app && echo resident-data > /m/app/data.txt');
+assert.deepEqual(JSON.parse(await node(`${CHECK}
+(async () => console.log(JSON.stringify({
+  stat: code(() => fs.statSync(at('m', 'app', 'data.txt')).size),
+  statQuiet: code(() => fs.statSync(at('m', 'app', 'nope'), { throwIfNoEntry: false })),
+  read: code(() => fs.readFileSync(at('m', 'app', 'data.txt'), 'utf8')),
+  list: code(() => fs.readdirSync(at('m'))),
+  exists: fs.existsSync(at('m', 'app', 'data.txt')),
+  write: code(() => fs.writeFileSync(at('m', 'app', 'new.txt'), 'x')),
+  require: code(() => require(at('m', 'nl', 'mod.js'))),
+  live: (await fs.promises.readFile(at('m', 'app', 'data.txt'), 'utf8')).trim(),
+})))();`, { filename: '/home/user/unlisted.js', cwd: '/home/user' })), {
+  stat: 'ERR:EAGAIN:mount', statQuiet: 'ERR:EAGAIN:mount', read: 'ERR:EAGAIN:mount', list: 'ERR:EAGAIN:mount',
+  exists: false, write: 'ERR:EAGAIN:mount', require: 'ERR:EAGAIN:mount', live: 'resident-data',
+}, 'a mounted path the launch did not name is the mount\'s refusal, never ENOENT, and fs.promises reads it');
+assert.deepEqual(JSON.parse(await node(`${CHECK}
+console.log(JSON.stringify({
+  stat: code(() => fs.statSync(process.argv[2] + '/nope')),
+  statQuiet: code(() => fs.statSync(process.argv[2] + '/nope', { throwIfNoEntry: false })) ?? null,
+  read: code(() => fs.readFileSync(process.argv[2] + '/nope')),
+  require: (() => { try { return require(process.argv[2] + '/nope.js'); } catch (e) { return /^Cannot find module/.test(e.message) ? 'not found' : 'ERR:' + e.code; } })(),
+  names: fs.readdirSync(process.argv[2]).sort(),
+}));`, { filename: '/home/user/listed.js', cwd: '/home/user', argv: ['/m/n'] })), {
+  stat: 'ERR:ENOENT', statQuiet: null, read: 'ERR:ENOENT', require: 'not found',
+  names: ['lib', 'r.js', 'w.txt', 'x.txt'],
+}, 'a missing name in a directory the launch listed is ENOENT');
+
 // ── A resident process on the mount ─────────────────────────────────────────
 await ws.exec('mkdir -p /m/app && echo resident-data > /m/app/data.txt');
 {
@@ -213,17 +248,30 @@ assert.deepEqual(calls.filter((call) => call.startsWith('readdir')), [], 'a laun
   const { pid } = ws.processes.spawn('node big.js', [], '/m/big');
   ws.filesystem.nameLaunch({ pid, cred: ws.processes.cred(pid) }, () => ['/m/big']);
   const fs = ws.filesystem.bind({ pid, cred: ws.processes.cred(pid) });
-  const names = [];
+  const entries = new Map();
   for (let after = null; ;) {
     const page = await fs.list(after);
-    names.push(...page.entries.map((entry) => entry.path).filter((path) => path.startsWith('m/big/')));
+    for (const entry of page.entries) if (entry.path.startsWith('m/big/')) entries.set(entry.path, entry);
     if (page.next === null) break;
     after = page.next;
   }
+  const names = [...entries.keys()];
   assert.ok(names.length <= MOUNT_LIST_NAME_LIMIT, `a named tree lists at most MOUNT_LIST_NAME_LIMIT names (${names.length})`);
   assert.ok(names.includes('m/big/d0/f0'), 'breadth first, whole directories while they fit');
   assert.ok(!names.some((path) => path.startsWith('m/big/d2/')), 'a directory that does not fit is not listed in part');
+  assert.equal(entries.get('m/big/d2')?.unlisted, '/m', 'and the listing says so, naming its mount');
+  assert.equal(entries.get('m/big/d0')?.unlisted, undefined, 'a listed directory is not marked');
   await ws.filesystem.releaseProcess(pid);
+  assert.deepEqual(JSON.parse(await node(`${CHECK}
+console.log(JSON.stringify({
+  listed: code(() => fs.statSync(process.argv[2] + '/d0/f0').size),
+  listedMissing: code(() => fs.statSync(process.argv[2] + '/d0/nope')),
+  past: code(() => fs.statSync(process.argv[2] + '/d2/f0').size),
+  pastMissing: code(() => fs.statSync(process.argv[2] + '/d2/nope')),
+  pastList: code(() => fs.readdirSync(process.argv[2] + '/d2').length),
+}));`, { filename: '/home/user/big.js', cwd: '/home/user', argv: ['/m/big'] })), {
+    listed: 1, listedMissing: 'ERR:ENOENT', past: 'ERR:EAGAIN:mount', pastMissing: 'ERR:EAGAIN:mount', pastList: 'ERR:EAGAIN:mount',
+  }, 'past MOUNT_LIST_NAME_LIMIT a name is the mount\'s refusal, not ENOENT');
 }
 
 // ── A kept store holds mounted bytes it cannot date ─────────────────────────
