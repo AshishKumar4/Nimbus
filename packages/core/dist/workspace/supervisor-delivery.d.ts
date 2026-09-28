@@ -26,7 +26,6 @@
  * a permanent answer the sender never repeats — rather than applying the
  * mutation without a receipt for its repeat to find.
  */
-import type { TraceSpan } from '@nimbus-sh/platform/tracing.js';
 import type { SupervisorOpDispatch } from './supervisor-op.js';
 /**
  * The filesystem mutations a process's supervisor delivers exactly once.
@@ -77,6 +76,22 @@ export type SupervisorDeliveryAnswer = undefined | null | boolean | number | str
     readonly [key: string]: SupervisorDeliveryAnswer;
 };
 type Answered = SupervisorDeliveryAnswer | Promise<SupervisorDeliveryAnswer>;
+/**
+ * What one attempt of a delivered mutation met: `applied` (it ran the
+ * mutation), `replayed` (answered from the settled receipt of an earlier
+ * attempt), `awaited` (joined an earlier attempt still running).
+ */
+export type DeliveryReceipt = 'applied' | 'replayed' | 'awaited';
+/** A delivered mutation's answer, and what this attempt met. */
+export interface Delivered {
+    readonly receipt: DeliveryReceipt;
+    readonly answer: Answered;
+}
+/** A joined read's answer, and whether this attempt joined one being served. */
+export interface JoinedRead {
+    readonly joined: boolean;
+    readonly answer: ReturnType<SupervisorOpDispatch>;
+}
 /**
  * `value`, what a delivered mutation's handler returned, as a delivery
  * answer; anything else is refused. Checked where the handler's answer
@@ -144,12 +159,9 @@ export declare class SupervisorDeliveries {
      * The caller has already established that `pid` is a live process of this
      * instance; receipts are its, and are consulted only for it.
      *
-     * `span`, the traced call's, gets `nimbus.receipt`: `applied` (this
-     * attempt ran the mutation), `replayed` (answered from a settled
-     * receipt), `awaited` (joined the first attempt, still running),
-     * `tombstoned` (refused EIO) or `mismatched` (the id names another op).
+     * Returns the answer and what this attempt met ({@link DeliveryReceipt}).
      */
-    deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered, span?: TraceSpan): Answered;
+    deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered): Delivered;
     /**
      * Serve read `id` of process `pid` once, however many of its attempts
      * arrive while it is being served. The first runs `read`; a repeat that
@@ -161,10 +173,10 @@ export declare class SupervisorDeliveries {
      * kept once the read settles: an attempt after that reads afresh, which a
      * read may. The map holds only reads in flight.
      *
-     * `span`, the traced read's, gets `nimbus.read.joined`: whether this
-     * attempt joined one already being served rather than reading.
+     * Returns the answer, and whether this attempt joined a read already
+     * being served rather than reading.
      */
-    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>, span?: TraceSpan): ReturnType<SupervisorOpDispatch>;
+    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>): JoinedRead;
     /** Reads being served, which repeats of them would join. */
     get readsServing(): number;
     /** A process ended: its receipts answer nothing more, and their ids stay refused. */

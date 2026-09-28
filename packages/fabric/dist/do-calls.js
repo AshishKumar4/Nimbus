@@ -41,7 +41,7 @@
  */
 import { classifyDoCall, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { spanException } from '@nimbus-sh/platform/tracing.js';
+import { untraced } from '@nimbus-sh/platform/tracing.js';
 /** Total attempts. Two retries is what a dropped connection or a deploy
  *  bounce needs; beyond that the object is not coming back inside this
  *  request (the consumer's measured bound). */
@@ -88,7 +88,7 @@ export class DoCallError extends Error {
 export function idempotent(operation, stub, call, policy = {}) {
     const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
     const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
-    const { hedgeAfterMs, retryWindowMs, span } = policy;
+    const { hedgeAfterMs, retryWindowMs, span = untraced } = policy;
     const startedAt = Date.now();
     // The executor form: fabric's library target predates Promise.withResolvers.
     return new Promise((resolve, reject) => {
@@ -109,13 +109,13 @@ export function idempotent(operation, stub, call, policy = {}) {
             for (const timer of hedges)
                 clearTimeout(timer);
             hedges.clear();
-            span?.setAttributes({
+            answer();
+            span.set({
                 'do_call.attempts': started,
                 'do_call.hedges': hedged,
                 'do_call.answered_by': answeredBy,
                 'do_call.outcome': outcome,
             });
-            answer();
         };
         /** May another attempt start at `at`? */
         const canRepeat = (at) => !settled && !refused && started < maxAttempts
@@ -136,12 +136,7 @@ export function idempotent(operation, stub, call, policy = {}) {
                 return;
             }
             // A lost attempt: the call's span says which, and why.
-            if (span?.isTraced) {
-                const lost = spanException(error, classification);
-                span.recordException(typeof lost === 'string'
-                    ? lost
-                    : { ...lost, message: `attempt ${number} of ${maxAttempts}: ${lost.message ?? ''}` });
-            }
+            span.exception(error, classification, `attempt ${number} of ${maxAttempts}: `);
             if (classification === 'overloaded') {
                 // A shed call is no answer: nothing more is sent, and an attempt
                 // still in flight may yet answer.

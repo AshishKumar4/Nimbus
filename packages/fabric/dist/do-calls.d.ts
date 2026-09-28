@@ -40,7 +40,7 @@
  * namespace stubs, where the thunk shape is production-proven in Proteus.
  */
 import { type DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
-import { type TraceSpan } from '@nimbus-sh/platform/tracing.js';
+import { type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 export interface DoCallRetryPolicy {
     maxAttempts?: number;
     baseDelayMs?: number;
@@ -80,18 +80,25 @@ export interface DoCallRetryPolicy {
      */
     onRetry?(info: DoCallRetryInfo): void;
     /**
-     * The span the call runs in, when it is traced. Each attempt lost to a
-     * transient or overloaded failure is recorded on it as an exception whose
-     * `code` is the failure's class, and when the call settles it gets
+     * Where the call's telemetry goes: its span's recorder. Each attempt lost
+     * to a transient or overloaded failure is recorded as an exception whose
+     * `code` is the failure's class, and once the call has settled it gets
      * `do_call.attempts` (started), `do_call.hedges` (started by a hedge),
      * `do_call.answered_by` (the attempt whose answer the call took, absent
-     * when none answered) and `do_call.outcome`: `answered`, `callee_error`
-     * (the callee's own failure, which is an answer), `exhausted` (the last
-     * transient failure, no repeat left), `overloaded`, or `caller_error` (the
-     * resolver or `onRetry` threw).
+     * when none answered) and `do_call.outcome` ({@link DoCallOutcome}).
+     * Nothing recorded can change the call's answer. Records nothing when
+     * absent.
      */
-    span?: TraceSpan;
+    span?: SpanRecorder;
 }
+/**
+ * How an `idempotent` call ended: `answered` (an attempt succeeded),
+ * `callee_error` (the callee's own failure, which is an answer),
+ * `exhausted` (the last transient failure, no repeat left), `overloaded`
+ * (shed, nothing repeated after it), or `caller_error` (the resolver or
+ * `onRetry` threw).
+ */
+export type DoCallOutcome = 'answered' | 'callee_error' | 'exhausted' | 'overloaded' | 'caller_error';
 /** What one retry is answering: which call, which platform class, which
  *  attempt just failed out of how many. */
 export interface DoCallRetryInfo {
