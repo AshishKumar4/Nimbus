@@ -9,6 +9,7 @@ import {
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { HostedSession } from '@nimbus-sh/worker/workspace-host';
 import {
   EXEC_STREAM_CONTENT_TYPE,
   collectExecStream,
@@ -93,6 +94,8 @@ export interface NimbusSandboxOptions {
   tenant?: string;
   subject?: string;
   root?: string;
+  /** The named shell every command runs in unless the call names another; see {@link NimbusExecOptions.shellId}. */
+  shellId?: string;
 }
 
 export interface NimbusExecOptions {
@@ -321,7 +324,11 @@ export interface NimbusAvailableRuntime {
   versions: Array<{ version: string; sizeBytes: number; license: string }>;
 }
 
-interface NimbusSessionStub {
+/**
+ * The RPC surface a sandbox drives: what a `NimbusSession` Durable Object
+ * answers, and what a hosted runtime's `session()` hands its embedder.
+ */
+export interface NimbusSessionSurface {
   _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;
   _rpcExecStream(command: string, options?: Record<string, unknown>): Promise<ReadableStream<Uint8Array>>;
   _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
@@ -363,13 +370,19 @@ interface NimbusSessionStub {
   _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
 }
 
+/** A hosted runtime serves every method a sandbox calls; a method added to the surface fails here until it does. */
+type HostedSessionServesTheSurface = HostedSession extends NimbusSessionSurface ? true : never;
+const hostedSessionServesTheSurface: HostedSessionServesTheSurface = true;
+void hostedSessionServesTheSurface;
+
 interface NimbusSessionNamespace {
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): NimbusSessionStub;
+  get(id: DurableObjectId): NimbusSessionSurface;
 }
 
 type NimbusTarget =
   | { kind: 'binding'; namespace: NimbusSessionNamespace }
+  | { kind: 'session'; open: () => NimbusSessionSurface }
   | {
       kind: 'remote';
       endpoint: string;
@@ -641,6 +654,19 @@ export class Nimbus {
     });
   }
 
+  /**
+   * A client over a session surface the caller already holds, such as the
+   * one a hosted runtime's `session()` returns, possibly as an RPC stub from
+   * another isolate. `open` is asked once per call, so a caller whose stub
+   * does not outlive one RPC session can hand out a fresh one each time. It
+   * is a function, never the surface itself: an RPC stub is callable too,
+   * so the two could not be told apart. The sandbox id names nothing here;
+   * the surface is the session.
+   */
+  static fromSession(open: () => NimbusSessionSurface, config: NimbusConfig = {}): Nimbus {
+    return new Nimbus({ kind: 'session', open }, config);
+  }
+
   static connect(options: NimbusConnectOptions): Nimbus {
     if (!options.endpoint) {
       throw new Error('Nimbus.connect: endpoint is required');
@@ -710,13 +736,14 @@ export class NimbusSandbox {
     return this.options.root ?? this.profile.root ?? '/home/user';
   }
 
-  private stub(): NimbusSessionStub {
+  private stub(): NimbusSessionSurface {
     if (this.target.kind === 'remote') return this.remoteStub();
+    if (this.target.kind === 'session') return this.target.open();
     const id = this.target.namespace.idFromName(this.doName);
     return this.target.namespace.get(id);
   }
 
-  private remoteStub(): NimbusSessionStub {
+  private remoteStub(): NimbusSessionSurface {
     return {
       _rpcReady: (options) => this.remoteRpc('ready', [options], ReadyResultSchema),
       _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
@@ -1183,7 +1210,8 @@ export class NimbusSandbox {
   }
 
   private execOptions(options: NimbusExecOptions): Record<string, unknown> {
-    const normalized: Record<string, unknown> = { ...options };
+    const shellId = options.shellId ?? this.options.shellId;
+    const normalized: Record<string, unknown> = { ...options, ...(shellId === undefined ? {} : { shellId }) };
     if (typeof normalized.cwd === 'string') {
       // The session shell only understands absolute paths; a relative cwd
       // forwarded verbatim used to reach it anyway — `pwd` echoed the

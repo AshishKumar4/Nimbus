@@ -88,12 +88,22 @@ Nimbus keeps no user OAuth token in Durable Object storage.
 
 ## Sandboxes from your own code
 
-The same sandbox handle API works in two modes:
+The same sandbox handle API works in three modes:
 
 - `Nimbus.fromEnv(env, config)` for a Worker or Durable Object with the
   `NIMBUS_SESSION` binding.
 - `Nimbus.connect({ endpoint, token, config })` for any backend that can reach
   a deployed Nimbus Worker.
+- `Nimbus.fromSession(() => session, config)` for a session surface you
+  already hold: what a hosted runtime's `session({ shellId, cred })` returns
+  (`@nimbus-sh/worker/workspace-host`). It is an `RpcTarget`, so the embedder
+  can pass it to code in another isolate. A scoped session runs commands only
+  in its named shell and acts only as its identity (the session user when the
+  scope names none), so open the sandbox with `sandbox(id, { shellId })`; a
+  scope without a shell runs no command, only file calls. It cannot `destroy`
+  the workspace. Processes, ports, logs and applications are not confined:
+  those verbs are workspace-wide, as the shell's own `ps`, `kill`, `logs` and
+  `nimbus expose`/`app` are.
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';
