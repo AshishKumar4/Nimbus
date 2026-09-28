@@ -33,6 +33,7 @@ import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPre
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -94,7 +95,7 @@ interface ProgrammaticCirrusServer {
   stop(ctx: ProgrammaticContext): void;
 }
 
-export interface ProgrammaticHost {
+export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
   _w1SessionDestroyed: boolean;
@@ -1404,6 +1405,12 @@ export async function rpcDestroy(
 
     try { self.processes.flushLogs(); } catch {}
     await quiesceInMemorySessionState(self);
+    // Void the multiplexer's timers in the same turn as the wipe below: an
+    // alarm dispatch whose handlers are still running (a resident-launch
+    // turn, a log flush) otherwise writes its reasons map back and re-arms
+    // setAlarm after deleteAll and deleteAlarm, and the destroyed session
+    // keeps a live alarm.
+    timers(self, self.ctx).reset();
     try { await self.ctx.storage.deleteAll(); } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);

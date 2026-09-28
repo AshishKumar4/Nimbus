@@ -58,9 +58,12 @@ export const TIMER_REASONS_KEY = 'w1_next_alarm_reasons';
  * The host instance carrying the per-instance timer chain. The field lives on
  * the embedder's DO instance so one chain serializes every timer-map
  * read-modify-write for that instance (see {@link Timers.schedule}).
+ * `_timerEpoch` counts {@link Timers.reset}s: a schedule or dispatch writes
+ * only while the epoch it was requested in is still current.
  */
 export interface TimerHost {
   _timerChain?: Promise<unknown>;
+  _timerEpoch?: number;
 }
 
 /**
@@ -159,6 +162,7 @@ export class Timers {
       arms.push({ reason, whenMs });
       return Promise.resolve(true);
     }
+    const epoch = host._timerEpoch ?? 0;
     // Serialize every read-modify-write of the reasons map through one
     // per-instance chain: two schedulers firing back-to-back from one activity
     // hook would otherwise interleave their get→put cycles and silently drop
@@ -170,15 +174,20 @@ export class Timers {
         const existing = (await ctx.storage.get(TIMER_REASONS_KEY)) as
           | Record<string, number>
           | undefined;
+        // Requested before a reset: it belongs to the timers the reset voided.
+        if ((host._timerEpoch ?? 0) !== epoch) return false;
         const map: Record<string, number> = { ...(existing || {}) };
         // Earliest-deadline-first: only update if new request is sooner or
         // this reason has no pending entry.
+        let written: Promise<unknown> | undefined;
         if (!(reason in map) || whenMs < map[reason]) {
           map[reason] = whenMs;
-          await ctx.storage.put(TIMER_REASONS_KEY, map);
+          written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
-        const earliest = Math.min(...Object.values(map));
-        setAlarmFn.call(ctx.storage, earliest);
+        // Issued in the turn the epoch was checked in: a reset after this
+        // point wipes and disarms after these, never before.
+        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
+        await written;
         return true;
       } catch (e) {
         console.warn('[nimbus/W1] timers.schedule threw:', errorText(e));
@@ -188,6 +197,18 @@ export class Timers {
     const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
     host._timerChain = chained;
     return chained;
+  }
+
+  /**
+   * Void every timer of this instance: a schedule or dispatch already
+   * requested — still queued on the chain, or a dispatch whose handlers are
+   * running — writes no reason and arms no alarm from here on. For a
+   * deliberate end of the actor's state (a session destroy): call it before
+   * wiping storage and deleting the alarm, so nothing in flight writes the
+   * map back or re-arms after the wipe. Requests made after it proceed.
+   */
+  reset(): void {
+    this.host._timerEpoch = (this.host._timerEpoch ?? 0) + 1;
   }
 
   /**
@@ -216,19 +237,28 @@ export class Timers {
     alarmInfo?: TimerAlarmInfo,
   ): Promise<void> {
     const { host, ctx } = this;
+    const epoch = host._timerEpoch ?? 0;
+    const current = (): boolean => (host._timerEpoch ?? 0) === epoch;
     // Same serialization as schedule: the dispatcher's read→handlers→write
     // cycle must not interleave with an activity-hook schedule.
     const chained = (host._timerChain ?? Promise.resolve()).then(
-      () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo),
-      () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo),
+      () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo),
+      () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo),
     );
     host._timerChain = chained;
     return chained;
   }
 }
 
+/**
+ * One dispatch. `current` answers whether the epoch it was requested in still
+ * stands: once a reset voids it, no further handler runs and nothing is
+ * written or armed — the reset's caller is wiping this state, and a write
+ * after the wipe would outlive it.
+ */
 async function dispatchBody(
   ctx: TimerContext,
+  current: () => boolean,
   handlers: TimerHandlers,
   onLegacyAlarm?: () => void,
   alarmInfo?: TimerAlarmInfo,
@@ -242,6 +272,7 @@ async function dispatchBody(
     const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY)) as
       | Record<string, number>
       | undefined;
+    if (!current()) return;
     const map: Record<string, number> = { ...(existing || {}) };
     const hadMap = Object.keys(map).length > 0;
     if (!hadMap) {
@@ -255,6 +286,7 @@ async function dispatchBody(
         if (when <= now) fired.push(reason);
       }
       for (const reason of fired) {
+        if (!current()) return;
         delete map[reason];
         const handler = handlers[reason];
         // Unknown reasons silently dropped (forward-compat).
@@ -269,20 +301,24 @@ async function dispatchBody(
         }
       }
     }
+    // A reset while the handlers ran: the map read above is gone, and
+    // writing it back — or arming for it — would revive what was ended.
+    if (!current()) return;
     // Fold the in-dispatch arms, earliest-deadline-first per reason.
     for (const arm of arms) {
       if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
         map[arm.reason] = arm.whenMs;
       }
     }
-    // Re-arm or clear.
+    // Re-arm or clear, issued in the turn the epoch was checked in: a reset
+    // after this point wipes and disarms after these, never before.
     const setAlarmFn = ctx?.storage?.setAlarm;
     if (Object.keys(map).length > 0) {
-      await ctx.storage.put(TIMER_REASONS_KEY, map);
-      const earliest = Math.min(...Object.values(map));
+      const written = ctx.storage.put(TIMER_REASONS_KEY, map);
       if (typeof setAlarmFn === 'function') {
-        setAlarmFn.call(ctx.storage, earliest);
+        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
       }
+      await written;
     } else if (hadMap) {
       try { await ctx.storage.delete(TIMER_REASONS_KEY); } catch {}
       // No remaining reasons → no setAlarm call → DO becomes

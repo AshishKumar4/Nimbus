@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A destroyed session no longer keeps a live alarm when an alarm handler was
+  running at the time of the destroy. The alarm dispatcher wrote its reasons
+  map back and re-armed `setAlarm` after destroy's `deleteAll` and
+  `deleteAlarm`. A schedule queued behind it did the same. `Timers.reset()`
+  in `@nimbus-sh/fabric/timers` now voids every schedule and dispatch
+  already requested, and destroy calls it in the same turn as the wipe.
+
 - Workers traces are on for every deployment: every invocation on dev,
   staging, `apps/probe` and throwaways, 1 in 100 on production
   (`observability.traces`). A supervisor call the platform drops is now
