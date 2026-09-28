@@ -85,7 +85,6 @@ export function cpythonResidentStart(facetMgr) {
         const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
             resident: { argv: args.argv, runtime: 'python' },
             restart: z.object({ NIMBUS_RESTART: z.literal('on-failure') }).safeParse(args.startArgs.userEnv).success ? 'on-failure' : 'never',
-            compatibilityFlags: ['nodejs_compat'],
             // By path, not by value: the interpreter is 10.6 MiB, more than a single
             // RPC value may carry, so whichever host runs this process reads it itself.
             vfsWasmModules: { 'python.wasm': args.wasmVfsPath },
