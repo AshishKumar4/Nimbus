@@ -8,17 +8,19 @@
  * sandbox client runs — another isolate included, since an `RpcTarget`
  * crosses RPC as a stub whose calls run here.
  *
- * A session may be scoped. Its scope names the one shell its commands may run
- * in, and the identity every command and file operation runs as; the stub is
- * the capability, so a caller that names another shell or identity is
- * refused rather than obeyed. A scoped session reaches only the processes it
- * started (and their children), and the ports they serve; the application
- * verbs, which address launches by owner across every shell, and the
- * workspace's destruction stay with the embedder.
+ * A session may be scoped. A scope confines two things: the one named shell
+ * its commands run in, and the identity every command and file operation
+ * runs as. The stub is the capability, so a caller that names another shell
+ * or identity is refused rather than obeyed; a scope that names no shell
+ * runs no command, since the only shell left to it is the embedder's own.
+ * The application verbs, which address launches by owner, and the
+ * workspace's destruction stay with the embedder. Processes, ports and logs
+ * are not confined: they are workspace-wide, as they are to the shell's own
+ * `ps`, `kill` and `logs`.
  */
 
 import { RpcTarget } from 'cloudflare:workers';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
@@ -46,13 +48,6 @@ function sameCred(a: VfsCred, b: VfsCred): boolean {
     && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
 
-/**
- * The pids each scope started, per runtime. Keyed by the scope's value, not
- * the session object: a client asks for a fresh session per call, and every
- * session with the same scope is the same capability.
- */
-const startedByScope = new WeakMap<HostedSessionOwner, Map<string, Set<number>>>();
-
 export class HostedSession extends RpcTarget {
   private readonly scope: HostedSessionScope | null;
 
@@ -68,63 +63,30 @@ export class HostedSession extends RpcTarget {
     return this.owner;
   }
 
+  /**
+   * The identity a call acts as. A scoped session always names one: its own,
+   * or the session user every command runs as by default, so no verb's own
+   * default (the kernel, for `files.delete`) applies to it.
+   */
   private cred(asked: VfsCred | undefined): VfsCred | undefined {
-    if (this.scope === null || asked === undefined) return this.scope?.cred ?? asked;
-    // A scope without a credential acts as the runtime's default identity,
-    // which is still its own: naming any identity is naming another.
-    if (this.scope.cred === undefined || !sameCred(this.scope.cred, asked)) {
-      throw new Error('EPERM: this session is bound to another identity');
-    }
-    return this.scope.cred;
+    if (this.scope === null) return asked;
+    const bound = this.scope.cred ?? CRED_SESSION_USER;
+    if (asked !== undefined && !sameCred(bound, asked)) throw new Error('EPERM: this session is bound to another identity');
+    return bound;
   }
 
   private exec<T extends operations.ProgrammaticExecOptions>(options: T | undefined): T {
-    if (this.scope !== null && options?.shellId !== this.scope.shellId) {
+    if (this.scope !== null && (this.scope.shellId === undefined || options?.shellId !== this.scope.shellId)) {
       // Named, never defaulted: a client that omits the shell also sends a cwd
       // for the session's one shell, which would pin the named shell's cwd.
-      // A scope without a shell names none, so it may enter none.
+      // A scope without a shell would run on the embedder's workspace shell,
+      // reading and planting its environment, so it runs nothing.
       throw new Error(this.scope.shellId === undefined
-        ? 'EPERM: this session runs commands only on the workspace shell; it names no shell'
+        ? 'EPERM: this session names no shell, so it runs no command'
         : `EPERM: this session runs commands only in shell '${this.scope.shellId}'; name it`);
     }
     const cred = this.cred(options?.cred);
     return { ...options, ...(cred === undefined ? {} : { cred }) } as T;
-  }
-
-  private started(): Set<number> | null {
-    if (this.scope === null) return null;
-    let scopes = startedByScope.get(this.owner);
-    if (scopes === undefined) startedByScope.set(this.owner, scopes = new Map());
-    const { shellId, cred } = this.scope;
-    const key = JSON.stringify([shellId ?? null, cred === undefined ? null : [cred.uid, cred.gid, cred.umask, cred.groups]]);
-    let pids = scopes.get(key);
-    if (pids === undefined) scopes.set(key, pids = new Set());
-    return pids;
-  }
-
-  /** Whether this session may act on `pid`: unscoped, or a process its scope started, or one of theirs. */
-  private reaches(pid: number): boolean {
-    const started = this.started();
-    if (started === null) return true;
-    const seen = new Set<number>();
-    for (let at: number | undefined = Number(pid); at !== undefined && !seen.has(at); at = this.owner.processes.get(at)?.parentPid) {
-      if (started.has(at)) return true;
-      seen.add(at);
-    }
-    return false;
-  }
-
-  private process(pid: number): HostedSessionOwner {
-    if (!this.reaches(pid)) throw new Error(`EPERM: process ${pid} was not started by this session`);
-    return this.client();
-  }
-
-  private port(port: number): HostedSessionOwner {
-    const live = this.scope === null ? undefined : this.owner.portRegistry.get(Number(port));
-    if (this.scope !== null && (live === undefined || !this.reaches(live.pid))) {
-      throw new Error(`EPERM: port ${port} is not served by a process this session started`);
-    }
-    return this.client();
   }
 
   /** Applications are addressed by owner, across every shell's launches: the embedder's to manage. */
@@ -138,9 +100,7 @@ export class HostedSession extends RpcTarget {
     return encodeExecStream(await operations.rpcExecStream(this.client(), command, this.exec(options)));
   }
   async _rpcStartProcess(command: string, options?: operations.ProgrammaticExecOptions) {
-    const started = await operations.rpcStartProcess(this.client(), command, this.exec(options));
-    this.started()?.add(started.pid);
-    return started;
+    return operations.rpcStartProcess(this.client(), command, this.exec(options));
   }
   async _rpcRunCode(code: string, options?: RunCodeOptions) { return operations.rpcRunCode(this.client(), code, this.exec(options)); }
 
@@ -177,28 +137,19 @@ export class HostedSession extends RpcTarget {
   _rpcEnsureRuntimes(specs: string[], options?: { force?: boolean }) { return operations.rpcEnsureRuntimes(this.client(), specs, options); }
   _rpcListRuntimes() { return operations.rpcListRuntimes(this.client()); }
 
-  async _rpcListProcesses() {
-    return (await operations.rpcListProcesses(this.client())).filter((process) => this.reaches(process.pid));
+  _rpcListProcesses() { return operations.rpcListProcesses(this.client()); }
+  _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.client(), pid); }
+  _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.client(), pid, data); }
+  _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.client(), pid); }
+  _rpcResizeProcess(pid: number, size: { columns: number; rows: number }) { return operations.rpcResizeProcess(this.client(), pid, size); }
+  _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.client(), pid, signal); }
+  _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }) {
+    return operations.rpcProcessLogs(this.client(), pid, options);
   }
-  async _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.process(pid), pid); }
-  async _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.process(pid), pid, data); }
-  async _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.process(pid), pid); }
-  async _rpcResizeProcess(pid: number, size: { columns: number; rows: number }) {
-    return operations.rpcResizeProcess(this.process(pid), pid, size);
-  }
-  async _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.process(pid), pid, signal); }
-  async _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }) {
-    return operations.rpcProcessLogs(this.process(pid), pid, options);
-  }
-
-  async _rpcListPorts() {
-    return (await operations.rpcListPorts(this.client())).filter((port) => this.reaches(port.pid));
-  }
-  async _rpcExposePort(port: number, options?: Visibility) { return operations.rpcExposePort(this.port(port), port, options); }
-  async _rpcUnexposePort(port: number) { return operations.rpcUnexposePort(this.port(port), port); }
-  async _rpcListApps() {
-    return (await operations.rpcListApps(this.client())).filter((app) => this.scope === null || (app.pid !== null && this.reaches(app.pid)));
-  }
+  _rpcListPorts() { return operations.rpcListPorts(this.client()); }
+  _rpcExposePort(port: number, options?: Visibility) { return operations.rpcExposePort(this.client(), port, options); }
+  _rpcUnexposePort(port: number) { return operations.rpcUnexposePort(this.client(), port); }
+  _rpcListApps() { return operations.rpcListApps(this.client()); }
   async _rpcExposeApp(target: operations.AppTarget, options?: Visibility) { return operations.rpcExposeApp(this.apps(), target, options); }
   async _rpcRotateLink(target: operations.AppTarget) { return operations.rpcRotateLink(this.apps(), target); }
   async _rpcRemoveApp(target: operations.AppTarget) { return operations.rpcRemoveApp(this.apps(), target); }

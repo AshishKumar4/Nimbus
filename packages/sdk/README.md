@@ -98,10 +98,12 @@ The same sandbox handle API works in three modes:
   already hold: what a hosted runtime's `session({ shellId, cred })` returns
   (`@nimbus-sh/worker/workspace-host`). It is an `RpcTarget`, so the embedder
   can pass it to code in another isolate. A scoped session runs commands only
-  in its shell and acts only as its identity, so open the sandbox with
-  `sandbox(id, { shellId })`. It reaches only the processes it started and
-  the ports they serve; the `apps` verbs, durable applications and `destroy`
-  stay with the embedder.
+  in its named shell and acts only as its identity (the session user when the
+  scope names none), so open the sandbox with `sandbox(id, { shellId })`; a
+  scope without a shell runs no command, only file calls. It cannot `destroy`
+  the workspace or use the `apps` and durable-application verbs. Processes,
+  ports and logs are not confined: those verbs are workspace-wide, as the
+  shell's own `ps`, `kill` and `logs` are.
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';

@@ -11,11 +11,12 @@
 //   - a file written through the session is the embedder's file, and a
 //     command reads it;
 //   - a session scoped to an identity acts as that identity for commands and
-//     files, and refuses a caller that names another shell or identity;
-//   - a session cannot destroy the workspace its embedder owns;
-//   - a scoped session reaches only the processes it started: another
-//     scope's pid is refused and not listed, its ports are not its to
-//     expose, and the application verbs stay with the embedder.
+//     files, and refuses a caller that names another shell or identity; a
+//     shell-only scope acts as the session user, never the kernel;
+//   - a scope that names no shell runs no command, so it can neither read
+//     nor plant the embedder's workspace shell environment, yet reads files;
+//   - a scoped session cannot destroy the workspace or manage its
+//     applications.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -40,7 +41,7 @@ try {
     `export { PortRegistry } from '${root}packages/core/src/runtime/port-registry.ts';`,
     `export { SqliteVFS } from '${root}packages/core/src/vfs/sqlite-vfs.ts';`,
     `export { PID_GEN_STRIDE } from '${root}packages/core/src/runtime/process-table.ts';`,
-    `export { CRED_SESSION_USER } from '${root}packages/core/src/runtime/os-contracts.ts';`,
+    `export { CRED_KERNEL, CRED_SESSION_USER } from '${root}packages/core/src/runtime/os-contracts.ts';`,
     `export { composeFabric } from '${root}packages/fabric/src/composition.ts';`,
     '',
   ].join('\n'));
@@ -147,31 +148,33 @@ try {
   await assert.rejects(stranger.exec('true', { cred: bundle.CRED_SESSION_USER }), /EPERM/, 'nor run a command as another identity');
   await assert.rejects(a.files.as(STRANGER).read('/tmp/shared.txt'), /EPERM/, 'a shell scope acts as its own identity: it names none');
   await assert.rejects(a.exec('true', { cred: STRANGER }), /EPERM/, 'and runs no command as one');
-  const identityOnly = bundle.Nimbus.fromSession(() => runtime.session({ cred: STRANGER })).sandbox('workspace');
-  assert.match((await identityOnly.exec('id')).stdout, /^uid=2001\b/, 'an identity scope runs on the workspace shell as its identity');
-  await assert.rejects(identityOnly.exec('true', { shellId: 'agent-a' }), /EPERM/, 'and enters no named shell');
+  // A shell-only scope is the session user for every verb, `files.delete`
+  // included, whose own default is the kernel.
+  const kernel = runtime.files.as(bundle.CRED_KERNEL);
+  await kernel.mkdir('/rootonly', { mode: 0o755 });
+  await kernel.writeFile('/rootonly/f', 'kernel');
+  await assert.rejects(a.files.delete('/rootonly/f'), /EACCES/, 'a shell-only scope deletes as the session user, not the kernel');
+  assert.equal(await runtime.files.exists('/rootonly/f'), true, 'and the kernel\'s file stays');
   console.log('  [3] a session scoped to an identity acts as it and refuses another');
 
-  // ── the embedder owns the workspace's life ──────────────────────────────
+  // ── no shell named, no command: the workspace shell is the embedder's ──
+  await runtime.exec('export EMBEDDER_SECRET=s3cr3t');
+  const shellless = bundle.Nimbus.fromSession(() => runtime.session({ cred: STRANGER })).sandbox('workspace');
+  await assert.rejects(shellless.exec('echo "secret=$EMBEDDER_SECRET"'), /EPERM/, 'a scope with no shell cannot read the embedder\'s shell');
+  await assert.rejects(shellless.exec('cd /tmp && export PLANTED=by-stranger'), /EPERM/, 'nor plant in it');
+  await assert.rejects(shellless.execStream('true'), /EPERM/, 'streaming or not');
+  await assert.rejects(shellless.startProcess('true'), /EPERM/, 'nor start a process');
+  await assert.rejects(shellless.exec('true', { shellId: 'agent-a' }), /EPERM/, 'nor enter a named shell');
+  assert.equal((await runtime.exec('echo "planted=$PLANTED"')).stdout, 'planted=\n', 'the embedder\'s shell is untouched');
+  assert.equal(await shellless.files.read('/tmp/shared.txt'), 'one plane', 'its files still answer');
+  console.log('  [4] a scope that names no shell runs no command');
+
+  // ── the embedder owns the workspace's life and its applications ─────────
   await assert.rejects(a.destroy(), /EPERM/, 'a session cannot destroy the workspace');
   assert.equal(await runtime.files.readFileString('/tmp/shared.txt'), 'one plane', 'and the workspace is intact');
-  console.log('  [4] a session cannot destroy the workspace');
-
-  // ── processes: a scope reaches what it started, and nothing else ────────
-  const b = sandbox({ shellId: 'agent-b' });
-  const started = await a.startProcess('sleep 30');
-  assert.ok((await a.processes.list()).some((p) => p.pid === started.pid), 'the scope lists its own process');
-  assert.equal((await b.processes.list()).some((p) => p.pid === started.pid), false, 'another scope does not see it');
-  await assert.rejects(b.processes.kill(started.pid), /EPERM/, 'nor kill it');
-  await assert.rejects(b.processes.signal(started.pid, 'SIGTERM'), /EPERM/, 'nor signal it');
-  await assert.rejects(b.processes.write(started.pid, 'x'), /EPERM/, 'nor write its input');
-  await assert.rejects(b.processes.logs(started.pid), /EPERM/, 'nor read its logs');
-  await assert.rejects(b.ports.expose(8080), /EPERM/, 'a port no process of its serves is not its to expose');
-  await assert.rejects(a.apps.expose(started.pid), /EPERM/, 'the application verbs are the embedder\'s');
+  await assert.rejects(a.apps.expose(3000), /EPERM/, 'the application verbs are the embedder\'s');
   await assert.rejects(a.ports.removeDurableApp('anyone'), /EPERM/, 'durable applications too');
-  assert.equal((await a.processes.logs(started.pid)).pid, started.pid, 'the scope reads its own process');
-  assert.equal((await a.processes.kill(started.pid)).ok, true, 'and ends it');
-  console.log('  [5] a scoped session reaches only the processes it started');
+  console.log('  [5] a scoped session cannot destroy the workspace or manage its applications');
 } finally {
   await runtime.close();
 }
