@@ -28,6 +28,7 @@ import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 import * as services from './services.js';
 import { registerHostedCommands } from './commands.js';
+import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
@@ -425,6 +426,11 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
     runtimes: owner.runtimeManager,
     ...client,
     supervisorOp: (envelope: SupervisorOpEnvelope) => owner.supervisorOp(envelope),
+    /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
+    session: (scope: HostedSessionScope = {}) => {
+      owner.assertOpen();
+      return new HostedSession(owner, scope);
+    },
     onScheduled: (task: HostedRuntimeTask) => owner.onScheduled(task),
     terminalClose: (ws: WebSocket) => owner.terminalClose(ws),
     close: () => owner.close(),

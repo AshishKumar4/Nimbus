@@ -643,6 +643,21 @@ kernel credential, because Nimbus follows POSIX here:
   be published before that core release. Existing runtime-2 catalog objects
   are not overwritten.
 
+### SDK and hosted runtime
+
+- A hosted runtime serves the SDK's session surface. `runtime.session({ shellId, cred })`
+  returns an `RpcTarget` with every method a `NimbusSession` answers,
+  streaming exec included, and `Nimbus.fromSession(() => session)` drives a
+  sandbox over it, from the embedder's isolate or another one. A scoped
+  session runs commands only in its named shell and acts only as its
+  identity: a caller that names another shell or identity, or no shell, is
+  refused with `EPERM`; a scope with an identity and no shell enters no named
+  shell. It reaches only the processes it started (and their children) and
+  the ports they serve. The `apps` verbs, durable applications and `destroy`
+  are refused with `EPERM`: they stay with the embedder.
+- `sandbox(id, { shellId })` runs every command in that named shell unless
+  the call names another.
+
 ## 2026-09-24
 
 ### filesystem
