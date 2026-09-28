@@ -25,7 +25,7 @@
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
- *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
+ *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -35,7 +35,9 @@
  *
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
- * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * re-sent on a fresh stub, and hedged: one unanswered after
+ * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
  * Appends are re-sent under the append ledger's identity. Everything else is
@@ -45,7 +47,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FsAcquireArgs, FsReadBatchEntry, FsReadBatchRequest, VfsDeliveredAcquire } from './rpc.js';
+import { type FsAcquireArgs, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -65,6 +67,7 @@ export type SupervisorCacheStatEvent = {
     tier: CacheTier;
     cacheKind: CacheKind;
 };
+export declare const SUPERVISOR_READ_HEDGE_AFTER_MS = 5000;
 export declare class SupervisorRPC extends WorkerEntrypoint {
     /**
      * A fresh stub for the host, by the route the binding carries, per call.
@@ -81,6 +84,15 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * dropped on the way to it is repeated on a fresh stub. Measured: the
      * host's `stat` failing with "Network connection lost." (`retryable`) is
      * what failed CPython's start in about one fresh session in twenty.
+     *
+     * A read can also never answer: under concurrent sessions a burst of reads
+     * from one facet left some attempts pending for minutes without reaching
+     * the host, and the program waiting on them never exited
+     * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
+     * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+     * stub, the first attempt left running, the first answer taken. A read
+     * answered twice changes nothing. Mutations are not hedged: their repeats
+     * stay bounded by the delivery retry window, unchanged.
      */
     private _fsRead;
     /**
@@ -235,8 +247,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * A file the caller knows is small is one entry; a large one is a run of
      * entries over the same path.
      *
+     * A request may instead ask for a path's lstat, so a process learning the
+     * metadata of many paths pays one round trip, not one per path.
+     *
      * Entries come back positionally, each carrying exactly what the
-     * equivalent fsReadRange would have returned. The batch is bounded by
+     * equivalent fsReadRange or lstat would have returned. The batch is bounded by
      * FS_READ_BATCH_PATH_LIMIT paths and FS_READ_BATCH_REQUEST_BYTES of
      * requested range, and the supervisor rejects anything past either — never
      * a short result, which a caller could mistake for a short file.

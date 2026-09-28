@@ -22,6 +22,10 @@
  *     object is what overloaded it.
  *   - attempts and backoff are the consumer-proven bounds: 3 attempts total,
  *     full-jitter delays in [0, 2**attempt * 60ms).
+ *   - an `idempotent` call may also be HEDGED (`hedgeAfterMs`): an attempt
+ *     that has not answered by then is joined by the same call on a fresh
+ *     stub, both left running, the first answer taken. Hedges count against
+ *     the attempts.
  *
  * The resolver MINTS a stub per call and the verb disposes each one it
  * minted — that ownership is what makes the fresh-stub retry real.
@@ -39,13 +43,25 @@ export interface DoCallRetryPolicy {
     maxAttempts?: number;
     baseDelayMs?: number;
     /**
-     * No retry starts once this long has passed since the first attempt did;
-     * the failure in hand surfaces instead. A mutation made repeatable by an
-     * identity its callee dedupes needs it: the callee keeps what answers a
-     * repeat for a bounded time, so the caller's repeats must stop well inside
-     * it. Unbounded when absent.
+     * No repeat — retry or hedge — starts once this long has passed since the
+     * first attempt did; the failure in hand surfaces instead. A mutation made
+     * repeatable by an identity its callee dedupes needs it: the callee keeps
+     * what answers a repeat for a bounded time, so the caller's repeats must
+     * stop well inside it. Unbounded when absent.
      */
     retryWindowMs?: number;
+    /**
+     * Hedge an attempt that has not answered after this long: send the same
+     * call again on a fresh stub while the first stays in flight, and take
+     * whichever answers first. The late answer, if one comes, is disposed and
+     * dropped, so the caller sees one result — which is only harmless when a
+     * second delivery of the call changes nothing, a read. A hedge is an
+     * attempt: it counts against `maxAttempts`, and each has its own deadline.
+     * A failure the platform marks retryable is waited out while another
+     * attempt is still in flight, and retried once none is. Never hedged when
+     * absent.
+     */
+    hedgeAfterMs?: number;
     /**
      * Called once per retry, before its backoff delay, with the failure the
      * retry is answering. The consumer's logging seam: Proteus's hand-rolled
@@ -92,8 +108,10 @@ export declare class DoCallError extends Error {
  * read, a converge-to-a-value write, or a mutation carrying an identity its
  * callee applies at most once (see {@link mutating}). Transient failures
  * retry on a fresh stub with full-jitter backoff; overloaded and permanent
- * failures surface unchanged, as does the last error at exhaustion or once
- * the policy's retry window has closed.
+ * failures surface unchanged, as does the last error once the attempts are
+ * spent and none is left in flight, or once the policy's retry window has
+ * closed. With `hedgeAfterMs`, an attempt still unanswered by then is
+ * joined by another on a fresh stub, and the first answer is taken.
  */
 export declare function idempotent<S, T>(operation: string, stub: DoStubResolver<S>, call: (stub: S) => Promise<T>, policy?: DoCallRetryPolicy): Promise<T>;
 /**

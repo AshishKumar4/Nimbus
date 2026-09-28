@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
@@ -93,28 +94,44 @@ export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, c
 export declare function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
 export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
-declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodObject<{
+declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodObject<{
+    path: z.ZodString;
+    lstat: z.ZodLiteral<true>;
+}, z.core.$strict>, z.ZodObject<{
     path: z.ZodString;
     offset: z.ZodNumber;
     length: z.ZodNumber;
     expectedEpoch: z.ZodOptional<z.ZodString>;
     expectedRevision: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>>;
-/** One requested range in a batch read. `length` bounds what it may return. */
+}, z.core.$strip>]>>;
+/**
+ * One request in a batch read: a range, whose `length` bounds what it may
+ * return, or a path's lstat, which returns no file bytes.
+ */
 export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
+/** The file bytes a batch request may return: its range's length; an lstat, none. */
+export declare function fsReadBatchRequestBytes(request: FsReadBatchRequest): number;
 export interface FsReadBatchEntryError {
     readonly code?: string;
     readonly message: string;
 }
 /**
- * One range's outcome, positionally matched to its request. `bytes: null`
- * means the path does not exist — the same answer `fsReadRange` gives.
+ * One request's outcome, positionally matched to it. A range answers
+ * `bytes`, `null` when the path does not exist — the same answer
+ * `fsReadRange` gives. An lstat answers `stat`, `null` when the path does not
+ * exist — the same answer the `lstat` op gives.
  */
 export type FsReadBatchEntry = {
     bytes: Uint8Array | null;
+    stat?: undefined;
+    error?: undefined;
+} | {
+    stat: RuntimeVfsStat | null;
+    bytes?: undefined;
     error?: undefined;
 } | {
     bytes?: undefined;
+    stat?: undefined;
     error: FsReadBatchEntryError;
 };
 declare const FsAcquireArgsSchema: z.ZodObject<{
@@ -202,10 +219,11 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /**
- * Read many ranges in ONE round trip.
+ * Read many ranges, and lstat many paths, in ONE round trip.
  *
- * Every entry is the same read `_rpcFsReadRange` performs, through the same
- * process credential and the same live bridge, in request order. A batch is
+ * Every entry is the same read `_rpcFsReadRange` performs, or the same stat
+ * the `lstat` op performs, through the same process credential and the same
+ * live bridge, in request order. A batch is
  * therefore exactly as authoritative as the individual reads it replaces —
  * it takes no snapshot and consults nothing the single-read path would not.
  * What it saves is round trips, which is the whole cost of a read.
