@@ -15,18 +15,17 @@
 //      fetch with Nimbus's default "User-Agent: node"; api.github.com 403s
 //      UA-less requests), exits 0, and the template is on disk (node-tar's
 //      gzip extract over workerd's synchronous zlib).
-//   2. `npm install` of the generated project exits 0, and announces that
-//      rolldown has no Workers-compatible build.
-//   3. `npx astro dev` starts as a long-running bin and stops at that
-//      boundary with a diagnostic that says so.
+//   2. `npm install` of the generated project exits 0 and refuses neither
+//      rolldown nor its wasm binding (Nimbus answers the binding with its
+//      staged single-threaded wasm32-wasip1 build).
+//   3. `npx astro dev` starts as a long-running bin and serves the minimal
+//      template's page through /s/<sid>/port/4321/.
 //
-// The boundary is a platform limit, not a Nimbus gap: the template's
-// astro@7 requires vite@8, which loads rolldown's binding at startup.
-// rolldown ships platform .node shards and one wasm build,
-// @rolldown/binding-wasm32-wasi: a wasm32-wasip1-threads binary (shared
-// memory import, wasi thread-spawn, raw memory.atomic.wait32). Workers run
-// one thread per isolate with Atomics.wait disabled. If `astro dev` ever
-// serves, the check below fails so the probe goes back to asserting it.
+// Current boundary (check 3 is expected RED until it moves): Vite 8 and
+// rolldown load and run, but Astro loads astro.config and every page through
+// Vite's SSR module runner, which evaluates transformed module text with
+// `new AsyncFunction` — runtime code generation a Worker refuses outside
+// module evaluation. The evidence line records the process log's tail.
 
 import {
   Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort,
@@ -99,10 +98,9 @@ try {
   a.check('npm install exits 0', ins.exit === 0, `exit=${ins.exit} tail=${JSON.stringify(tail(ins.output, 20))}`);
   if (ins.exit !== 0) throw new Error('npm install failed; nothing to launch');
   const insOut = stripAnsi(ins.output);
-  const installNote = insOut.split(/\r?\n/).find((l) => /note:\s*rolldown has no Workers-compatible build/.test(l)) ?? '';
-  a.check('npm install announces that rolldown has no Workers-compatible build, naming the wasi-threads build',
-    /wasm32-wasip1-threads/.test(installNote) && /Atomics\.wait/.test(installNote),
-    JSON.stringify(installNote || tail(insOut, 20)));
+  a.check('npm install refuses neither rolldown nor its wasm binding',
+    !/note:\s*(rolldown|@rolldown\/binding-wasm32-wasi) has no Workers-compatible build/.test(insOut),
+    tail(insOut, 20));
 
   // ── 3. astro dev ────────────────────────────────────────────────────
   // A long-running npm bin returns the shell prompt immediately with a
@@ -134,13 +132,10 @@ try {
   const procTail = tail(procOut, 60);
   console.log(`[astro-real] process log tail:\n${procTail}`);
   const evidence = `exit=${JSON.stringify(proc.exit)} last ${lastStatus}\n--- last 60 lines of astro dev log (pid ${pid}) ---\n${procTail}`;
-  a.check(`port ${PORT} never serves: GET /s/<sid>/port/${PORT}/ is not 200 HTML (if it is, the rolldown boundary moved — assert the page again)`,
-    served === null, served ? JSON.stringify(served.body.slice(0, 600)) : evidence);
-  a.check(`astro dev exits non-zero within ${DEV_BUDGET_MS / 1000}s`,
-    proc.exit !== null && proc.exit.code !== 0, evidence);
-  const devNote = procOut.split(/\r?\n/).find((l) => /Nimbus: rolldown has no Workers-compatible build/.test(l)) ?? '';
-  a.check('astro dev\'s error says rolldown has no Workers-compatible build and why',
-    /wasm32-wasip1-threads/.test(devNote) && /Atomics\.wait/.test(devNote), evidence);
+  a.check(`astro dev serves the template's page: GET /s/<sid>/port/${PORT}/ is 200 HTML`,
+    served !== null, evidence);
+  a.check('astro dev does not stop at the rolldown binding',
+    !/rolldown has no Workers-compatible build|@rolldown\/binding-wasm32-wasi/.test(procOut), evidence);
 } finally {
   if (proc) { try { proc.ws.close(); } catch { /* probe teardown */ } }
   await t.close();

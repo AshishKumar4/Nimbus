@@ -25,7 +25,7 @@
 //
 // Seam: the peer-DO RPC (`_rpcFanoutExecute`), mirroring
 // tests/unit/npm-install-partial-honesty.mjs. Registry refusals use the
-// real policy table names (`sharp`, `lightningcss`).
+// real policy table names (`sharp`, `@tailwindcss/oxide`).
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -68,11 +68,11 @@ function advisedResult(name, version, reason, suggest, overrides = {}) {
   return r;
 }
 
-const LIGHTNINGCSS = {
+const OXIDE = {
   reason:
-    'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
+    'Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen.',
   suggest:
-    'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
+    'no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.',
 };
 
 function makeInstaller(pkgJson, resultFor) {
@@ -272,30 +272,30 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  caseD: dev-only sharp installs with a marked advisory, exit 0');
 }
 
-// ── Case E: lightningcss under dev-only vite installs with a note ───────
+// ── Case E: tailwind oxide under a dev-only root installs with a note ───
 //
-// vite@8 (rolldown-based) declares lightningcss as a required
-// `dependencies` edge; `npm create vite` lists vite in devDependencies.
-// lightningcss is a policy 'fail' entry — no Workers-compatible build —
-// but npm installs it, so the install keeps it and logs one advisory.
-// `--omit=dev` drops the dev root and its whole subtree either way.
+// @tailwindcss/vite declares @tailwindcss/oxide as a required
+// `dependencies` edge; projects list the plugin in devDependencies.
+// @tailwindcss/oxide is a policy 'fail' entry — no Workers-compatible
+// build — but npm installs it, so the install keeps it and logs one
+// advisory. `--omit=dev` drops the dev root and its whole subtree.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const viteDeps = { lightningcss: '^1.30.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
+  const pluginDeps = { '@tailwindcss/oxide': '^4.1.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
   const resultFor = (name) => {
-    if (name === 'vite') return resolvedResult(name, '8.0.0', { dependencies: viteDeps });
-    if (name === 'lightningcss') return advisedResult('lightningcss', '1.30.0', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+    if (name === '@tailwindcss/vite') return resolvedResult(name, '4.1.0', { dependencies: pluginDeps });
+    if (name === '@tailwindcss/oxide') return advisedResult('@tailwindcss/oxide', '4.1.0', OXIDE.reason, OXIDE.suggest);
     return resolvedResult(name, '1.0.0');
   };
-  const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { vite: '^8.0.0' } };
+  const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { '@tailwindcss/vite': '^4.1.0' } };
 
   const first = makeInstaller(pkgJson, resultFor);
   const result = await first.installer.install(PROJ);
   const output = first.log.join('\n');
-  assert.deepEqual(result.failed, [], `lightningcss under a dev root installs (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[npm\] note: lightningcss has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.deepEqual(result.failed, [], `@tailwindcss/oxide under a dev root installs (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: @tailwindcss\/oxide has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
   assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
-  for (const name of ['vite', 'lightningcss']) {
+  for (const name of ['@tailwindcss/vite', '@tailwindcss/oxide']) {
     assert.ok(result.installed.some((entry) => entry.startsWith(`${name}@`)), `${name} installed`);
     assert.ok(first.root.exists(`${NM}/${name}/package.json`), `${name} is on disk`);
   }
@@ -306,20 +306,20 @@ function makeInstaller(pkgJson, resultFor) {
   const prodResult = await prod.installer.install(PROJ, { production: true });
   const prodOutput = prod.log.join('\n');
   assert.deepEqual(prodResult.failed, [], `--omit=dev installs the rest (failed=${JSON.stringify(prodResult.failed)})`);
-  assert.ok(!/lightningcss/.test(prodOutput), 'the listed subtree is never walked under --omit=dev');
-  assert.ok(!prod.root.exists(`${NM}/lightningcss/package.json`), 'lightningcss is absent under --omit=dev');
+  assert.ok(!/oxide/.test(prodOutput), 'the listed subtree is never walked under --omit=dev');
+  assert.ok(!prod.root.exists(`${NM}/@tailwindcss/oxide/package.json`), '@tailwindcss/oxide is absent under --omit=dev');
   assert.ok(/\bDone!/.test(prodOutput), 'production install succeeds');
-  console.log('  caseE: lightningcss under dev-only vite installs with a note; --omit=dev drops it');
+  console.log('  caseE: @tailwindcss/oxide under a dev-only root installs with a note; --omit=dev drops it');
 }
 // ── Case F: a table-listed dep under a root dependency installs + note ──
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
-  const appDeps = { lightningcss: '^1.30.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
+  const appDeps = { '@tailwindcss/oxide': '^4.1.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const { installer, log, root } = makeInstaller(
-    { name: 'needs-lightningcss', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
+    { name: 'needs-oxide', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
     (name) => {
       if (name === 'some-app-dep') return resolvedResult(name, '1.0.0', { dependencies: appDeps });
-      if (name === 'lightningcss') return advisedResult('lightningcss', '1.30.0', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+      if (name === '@tailwindcss/oxide') return advisedResult('@tailwindcss/oxide', '4.1.0', OXIDE.reason, OXIDE.suggest);
       return resolvedResult(name, '1.0.0');
     },
   );
@@ -327,12 +327,12 @@ function makeInstaller(pkgJson, resultFor) {
   const output = log.join('\n');
 
   assert.deepEqual(result.failed, [], `a listed package does not fail (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[npm\] note: lightningcss has no Workers-compatible build: .*… try:/.test(output), `the advisory carries the hint:\n${output}`);
+  assert.ok(/\[npm\] note: @tailwindcss\/oxide has no Workers-compatible build: .*… try:/.test(output), `the advisory carries the hint:\n${output}`);
   assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
-  assert.ok(root.exists(`${NM}/lightningcss/package.json`), 'lightningcss installs');
+  assert.ok(root.exists(`${NM}/@tailwindcss/oxide/package.json`), '@tailwindcss/oxide installs');
   assert.ok(root.exists(`${NM}/some-app-dep/package.json`), 'the parent installs');
   assert.ok(/\bDone!/.test(output), 'the install succeeds');
-  console.log('  caseF: lightningcss under a root dependency installs with a note');
+  console.log('  caseF: @tailwindcss/oxide under a root dependency installs with a note');
 }
 
 // ── Case G: dev-first ancestor, required edge deeper — end-of-walk wins ─

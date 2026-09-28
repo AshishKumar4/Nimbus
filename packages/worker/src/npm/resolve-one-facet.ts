@@ -57,6 +57,7 @@
 
 import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
+import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,
@@ -70,18 +71,11 @@ declare function NATIVE_EXECUTABLE_REJECT(pkg: ResolvedPackage): {
   transitive: 'fail';
 } | undefined;
 
-type StagedArtifactEntry = {
-  from: string;
-  bin: string;
-  artifact: string;
-  reason: string;
-};
-
-declare function STAGED_ARTIFACT(name: string): StagedArtifactEntry | undefined;
+declare function STAGED_ARTIFACT(name: string): PackageStagedArtifactEntry | undefined;
 
 declare function STAGED_ARTIFACT_APPLY(
   pkg: { bin?: Record<string, string>; optionalDependencies?: Record<string, string>; os?: string[]; cpu?: string[]; libc?: string[] },
-  entry: StagedArtifactEntry,
+  entry: PackageStagedArtifactEntry,
 ): void;
 
 /**
@@ -296,6 +290,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       ctx: 'transitive',
     });
   };
+  // A staged binding is built from one upstream version; any other version's
+  // JavaScript would load a binding it was not written against, and the
+  // runtime refuses it. Say so at install time, where it can be pinned.
+  const adviseStagedBindingVersion = (pkg: ResolvedPackage) => {
+    const staged = STAGED_ARTIFACT(pkg.name);
+    if (staged?.kind !== 'binding' || staged.version === pkg.version) return;
+    emitAdvisory({
+      from: pkg.name,
+      reason: `Nimbus runs ${staged.from}'s binding from a staged ${staged.version} build, and ${pkg.name}@${pkg.version} will refuse to load it.`,
+      suggest: `${staged.from}@${staged.version}`,
+    });
+  };
   const outNativeExecutableReject = (
     pkg: ResolvedPackage,
     bytes: number,
@@ -408,6 +414,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       module: cached.moduleField,
       bin,
     };
+    adviseStagedBindingVersion(pkgFromCache);
     const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
     if (nativeReject) return nativeReject;
     return out(pkgFromCache, 0, 'cache-hit');
@@ -570,6 +577,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     return resolvedOut as ResolvedPackage;
   };
   const pkg = versionToResolved(vData);
+  adviseStagedBindingVersion(pkg);
   const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
   if (nativeReject) return nativeReject;
 

@@ -153,4 +153,18 @@ assert.equal(fromUrl.href, 'file:///home/user/proj/');
 const pkgUrl = new ShimURL('./node_modules/@nuxt/kit/package.json', fromUrl);
 assert.equal(fileURLToPath(pkgUrl), '/home/user/proj/node_modules/@nuxt/kit/package.json');
 
+// ── 6. pathToFileURL is Node's, relative paths and odd characters included ──
+// Vite's config bundler calls pathToFileURL(id) for every module rolldown
+// transforms, rolldown's own runtime included — whose id is the virtual
+// "\0rolldown/runtime.js". Node resolves it against the cwd and encodes the
+// NUL; prefixing "file://" made its first segment the URL's host and threw.
+{
+  const { pathToFileURL: nodePathToFileURL } = await import('node:url');
+  const { posix } = await import('node:path');
+  for (const input of ['\0rolldown/runtime.js', 'src/a b.ts', 'x/100%/y.js', '/abs/q?#.js', 'dir/', '/home/user/proj/']) {
+    const expected = nodePathToFileURL(posix.resolve('/home/user', input) + (input.endsWith('/') ? '/' : '')).href;
+    assert.equal(pathToFileURL(input).href, expected, `pathToFileURL(${JSON.stringify(input)}) matches Node`);
+  }
+}
+
 console.log('node-shims-url-constructor: ok');

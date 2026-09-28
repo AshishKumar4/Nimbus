@@ -18,7 +18,10 @@
 //   2. node -e 'console.log(process.env.HOST)'      → "0.0.0.0"
 //   3. node -e 'console.log(process.env.NIMBUS_SESSION_ID)' → matches sid
 //   4. The pre-existing keys are still set:
-//        NODE_ENV=development, PWD=/home/user, USER=user, HOME=/home/user
+//        PWD=/home/user, USER=user, HOME=/home/user
+//   5. NODE_ENV is unset, as on a real machine: bundlers read a set
+//      NODE_ENV as the user's mode, and a `development` default made
+//      `vite build` emit a development bundle.
 //
 // Black-box surfaces only: shell over WS.
 
@@ -73,7 +76,7 @@ const checks = [
   ['PORT === "3000"',                findings.observed.PORT === '3000'],
   ['HOST === "0.0.0.0"',             findings.observed.HOST === '0.0.0.0'],
   ['NIMBUS_SESSION_ID matches sid',  findings.observed.NIMBUS_SESSION_ID === sid],
-  ['NODE_ENV preserved',             findings.observed.NODE_ENV === 'development'],
+  ['NODE_ENV unset (Node parity)',   findings.observed.NODE_ENV === null],
   ['PWD preserved',                  findings.observed.PWD === '/home/user'],
   ['USER preserved',                 findings.observed.USER === 'user'],
   ['HOME preserved',                 findings.observed.HOME === '/home/user'],
