@@ -51,9 +51,12 @@ export declare const TIMER_REASONS_KEY = "w1_next_alarm_reasons";
  * The host instance carrying the per-instance timer chain. The field lives on
  * the embedder's DO instance so one chain serializes every timer-map
  * read-modify-write for that instance (see {@link Timers.schedule}).
+ * `_timerEpoch` counts {@link Timers.reset}s: a schedule or dispatch writes
+ * only while the epoch it was requested in is still current.
  */
 export interface TimerHost {
     _timerChain?: Promise<unknown>;
+    _timerEpoch?: number;
 }
 /**
  * What one timer handler may return: nothing, or a deadline this reason
@@ -113,6 +116,15 @@ export declare class Timers {
      * subsystem's in-isolate setTimeout fallback continues to work).
      */
     schedule(reason: string, whenMs: number): Promise<boolean>;
+    /**
+     * Void every timer of this instance: a schedule or dispatch already
+     * requested — still queued on the chain, or a dispatch whose handlers are
+     * running — writes no reason and arms no alarm from here on. For a
+     * deliberate end of the actor's state (a session destroy): call it before
+     * wiping storage and deleting the alarm, so nothing in flight writes the
+     * map back or re-arms after the wipe. Requests made after it proceed.
+     */
+    reset(): void;
     /**
      * Multi-reason timer dispatcher. Called from the DO's `alarm()` handler
      * with the embedder's handler map.

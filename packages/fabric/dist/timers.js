@@ -103,6 +103,7 @@ export class Timers {
             arms.push({ reason, whenMs });
             return Promise.resolve(true);
         }
+        const epoch = host._timerEpoch ?? 0;
         // Serialize every read-modify-write of the reasons map through one
         // per-instance chain: two schedulers firing back-to-back from one activity
         // hook would otherwise interleave their get→put cycles and silently drop
@@ -113,15 +114,21 @@ export class Timers {
                 if (typeof setAlarmFn !== 'function')
                     return false;
                 const existing = (await ctx.storage.get(TIMER_REASONS_KEY));
+                // Requested before a reset: it belongs to the timers the reset voided.
+                if ((host._timerEpoch ?? 0) !== epoch)
+                    return false;
                 const map = { ...(existing || {}) };
                 // Earliest-deadline-first: only update if new request is sooner or
                 // this reason has no pending entry.
+                let written;
                 if (!(reason in map) || whenMs < map[reason]) {
                     map[reason] = whenMs;
-                    await ctx.storage.put(TIMER_REASONS_KEY, map);
+                    written = ctx.storage.put(TIMER_REASONS_KEY, map);
                 }
-                const earliest = Math.min(...Object.values(map));
-                setAlarmFn.call(ctx.storage, earliest);
+                // Issued in the turn the epoch was checked in: a reset after this
+                // point wipes and disarms after these, never before.
+                setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
+                await written;
                 return true;
             }
             catch (e) {
@@ -132,6 +139,17 @@ export class Timers {
         const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
         host._timerChain = chained;
         return chained;
+    }
+    /**
+     * Void every timer of this instance: a schedule or dispatch already
+     * requested — still queued on the chain, or a dispatch whose handlers are
+     * running — writes no reason and arms no alarm from here on. For a
+     * deliberate end of the actor's state (a session destroy): call it before
+     * wiping storage and deleting the alarm, so nothing in flight writes the
+     * map back or re-arms after the wipe. Requests made after it proceed.
+     */
+    reset() {
+        this.host._timerEpoch = (this.host._timerEpoch ?? 0) + 1;
     }
     /**
      * Multi-reason timer dispatcher. Called from the DO's `alarm()` handler
@@ -155,14 +173,22 @@ export class Timers {
      */
     dispatch(handlers, onLegacyAlarm, alarmInfo) {
         const { host, ctx } = this;
+        const epoch = host._timerEpoch ?? 0;
+        const current = () => (host._timerEpoch ?? 0) === epoch;
         // Same serialization as schedule: the dispatcher's read→handlers→write
         // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo));
+        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo));
         host._timerChain = chained;
         return chained;
     }
 }
-async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
+/**
+ * One dispatch. `current` answers whether the epoch it was requested in still
+ * stands: once a reset voids it, no further handler runs and nothing is
+ * written or armed — the reset's caller is wiping this state, and a write
+ * after the wipe would outlive it.
+ */
+async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
     // Collect schedule requests made inside handler context (see
     // dispatchArms) and fold them into the map below, so an in-dispatch arm
     // neither deadlocks on the chain nor races the write.
@@ -170,6 +196,8 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
+        if (!current())
+            return;
         const map = { ...(existing || {}) };
         const hadMap = Object.keys(map).length > 0;
         if (!hadMap) {
@@ -185,6 +213,8 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
                     fired.push(reason);
             }
             for (const reason of fired) {
+                if (!current())
+                    return;
                 delete map[reason];
                 const handler = handlers[reason];
                 // Unknown reasons silently dropped (forward-compat).
@@ -201,20 +231,25 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
                 }
             }
         }
+        // A reset while the handlers ran: the map read above is gone, and
+        // writing it back — or arming for it — would revive what was ended.
+        if (!current())
+            return;
         // Fold the in-dispatch arms, earliest-deadline-first per reason.
         for (const arm of arms) {
             if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
                 map[arm.reason] = arm.whenMs;
             }
         }
-        // Re-arm or clear.
+        // Re-arm or clear, issued in the turn the epoch was checked in: a reset
+        // after this point wipes and disarms after these, never before.
         const setAlarmFn = ctx?.storage?.setAlarm;
         if (Object.keys(map).length > 0) {
-            await ctx.storage.put(TIMER_REASONS_KEY, map);
-            const earliest = Math.min(...Object.values(map));
+            const written = ctx.storage.put(TIMER_REASONS_KEY, map);
             if (typeof setAlarmFn === 'function') {
-                setAlarmFn.call(ctx.storage, earliest);
+                setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
             }
+            await written;
         }
         else if (hadMap) {
             try {

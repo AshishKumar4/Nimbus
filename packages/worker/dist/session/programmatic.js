@@ -26,6 +26,7 @@ import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/
 import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -1070,6 +1071,12 @@ export async function rpcDestroy(self, options = {}) {
         }
         catch { }
         await quiesceInMemorySessionState(self);
+        // Void the multiplexer's timers in the same turn as the wipe below: an
+        // alarm dispatch whose handlers are still running (a resident-launch
+        // turn, a log flush) otherwise writes its reasons map back and re-arms
+        // setAlarm after deleteAll and deleteAlarm, and the destroyed session
+        // keeps a live alarm.
+        timers(self, self.ctx).reset();
         try {
             await self.ctx.storage.deleteAll();
         }
