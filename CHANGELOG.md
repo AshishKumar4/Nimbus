@@ -11,8 +11,10 @@ published independently in the `@nimbus-sh` npm scope.
   (a dynamic worker has no module fallback), so this launch still refuses it —
   now with `EvalError` code `ERR_NIMBUS_CODE_NEXT_LAUNCH` — but the run's
   report (the one-shot envelope, the resident exit report) carries the text,
-  the supervisor keeps it by SHA-256 of its content (8 MiB, least recent
-  out), and the next launch carries it as `gen/<key>.js` modules compiled on
+  the supervisor keeps it by SHA-256 of its content in the session's Durable
+  Object storage (8 MiB, least recently recorded out; a relaunch after the
+  isolate was evicted or hibernated still gets it), and the next launch
+  carries it as `gen/<key>.js` modules compiled on
   first use. Two shapes: a file written then required or imported (a fresh
   file name each run, like Vite's `.vite-temp/*.timestamp-*.mjs`, converges
   because the key is the text), and text handed to

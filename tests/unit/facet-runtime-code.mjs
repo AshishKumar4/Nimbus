@@ -10,6 +10,10 @@
 // that produced them, reach the supervisor in the run's report, and are
 // carried by content into the next launch: the file under a name it has never
 // had before included, which is why the key is the text and not the path.
+// The next launch may be served by a fresh isolate — the session's was
+// evicted or hibernated in between — so what was learned is kept in the
+// session's storage, and the second launch here runs on a new manager over
+// the same storage.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -88,11 +92,16 @@ const env = {
   },
 };
 
-const manager = new FacetManager(
-  createFacetCtx(createFacetWorld(() => ({})), 'runtime-code'),
-  env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
-);
-manager.setVfs(rawVfs, processFiles(rawVfs));
+// The session's Durable Object storage, which outlives any one isolate.
+const sessionStorage = new Map();
+function sessionManager() {
+  const manager = new FacetManager(
+    createFacetCtx(createFacetWorld(() => ({})), 'runtime-code', sessionStorage),
+    env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
+  );
+  manager.setVfs(rawVfs, processFiles(rawVfs));
+  return manager;
+}
 kernel.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/app', 1000, 1000);
@@ -125,7 +134,7 @@ const restore = () => {
 };
 
 // ── First launch: both are produced here, so neither can compile here ──────
-const first = await manager.exec(PROGRAM, OPTS);
+const first = await sessionManager().exec(PROGRAM, OPTS);
 restore();
 assert.equal(
   first.stdout, 'fn-error=ERR_NIMBUS_CODE_NEXT_LAUNCH file-error=ERR_NIMBUS_CODE_NEXT_LAUNCH\n',
@@ -141,8 +150,9 @@ assert.ok(
 );
 globalThis.__nimbusModuleMisses?.clear();
 
-// ── Next launch of the same command: both compile, from the map ────────────
-const second = await manager.exec(PROGRAM, OPTS);
+// ── Next launch of the same command, after the isolate was evicted: both
+// compile, from the map ─────────────────────────────────────────────────────
+const second = await sessionManager().exec(PROGRAM, OPTS);
 restore();
 assert.equal(
   second.stdout, 'fn=anonymous:AsyncFunction file={"answer":42,"file":true}\nasync=5undefined\n',
