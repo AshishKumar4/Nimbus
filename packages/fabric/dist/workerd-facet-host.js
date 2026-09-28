@@ -87,7 +87,7 @@ export async function cloneStorage(ctx, clone) {
     const facets = facetContainer(ctx);
     if (typeof facets.clone !== 'function') {
         throw new Error('Nimbus: ctx.facets.clone is unavailable in this runtime; the reflink image '
-            + 'path needs deployed Cloudflare workerd (local workerd <= 1.20260603.1 lacks it)');
+            + 'path needs workerd 1.20260926.1 or later, or deployed Cloudflare workerd');
     }
     const { src, dst } = clone;
     if (!(await clone.populated(src))) {
