@@ -412,21 +412,18 @@ export function fsReadBatchRequestBytes(request: FsReadBatchRequest): number {
   return 'length' in request ? request.length : 0;
 }
 
-export interface FsReadBatchEntryError {
-  readonly code?: string;
-  readonly message: string;
-}
-
 /**
  * One request's outcome, positionally matched to it. A range answers
  * `bytes`, `null` when the path does not exist — the same answer
  * `fsReadRange` gives. An lstat answers `stat`, `null` when the path does not
- * exist — the same answer the `lstat` op gives.
+ * exist — the same answer the `lstat` op gives. A request that failed answers
+ * the error itself: with `enhanced_error_serialization` on both ends, workerd
+ * clones an Error with its own properties, so its `code` arrives with it.
  */
 export type FsReadBatchEntry =
   | { bytes: Uint8Array | null; stat?: undefined; error?: undefined }
   | { stat: RuntimeVfsStat | null; bytes?: undefined; error?: undefined }
-  | { bytes?: undefined; stat?: undefined; error: FsReadBatchEntryError };
+  | { bytes?: undefined; stat?: undefined; error: Error };
 
 const FsWriteRangeArgsSchema = z.object({
   path: z.string(),
@@ -580,7 +577,7 @@ export async function _rpcFsStorageGrant(
   const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
   const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
   if (owner !== undefined && owner !== args.facet) {
-    throw new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`);
+    throw Object.assign(new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`), { code: 'EPERM' });
   }
   const ledger: StorageLedger | undefined = self.sqliteFs?.ledger;
   if (ledger === undefined) return { granted: 0 };
@@ -750,27 +747,11 @@ export async function _rpcFsReadBatch(
             expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
           })) });
         } catch (error) {
-          entries.push({ error: readBatchEntryError(error) });
+          entries.push({ error: error instanceof Error ? error : new Error(String(error)) });
         }
       }
       return entries;
     });
-}
-
-/**
- * Errors cross an RPC boundary as `name`/`message` only, so the code a
- * caller needs to map to an errno travels as data.
- */
-function readBatchEntryError(error: unknown): FsReadBatchEntryError {
-  if (typeof error === 'object' && error !== null) {
-    const code = Reflect.get(error, 'code');
-    const message = Reflect.get(error, 'message');
-    if (typeof code === 'string') {
-      return { code, message: typeof message === 'string' ? message : code };
-    }
-    if (typeof message === 'string') return { message };
-  }
-  return { message: String(error) };
 }
 
 export async function _rpcFsWriteRange(

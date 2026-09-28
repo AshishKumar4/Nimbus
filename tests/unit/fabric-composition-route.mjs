@@ -28,6 +28,28 @@ import {
 import { hostNamespaceBinding, hostOpDispatch } from '../../packages/fabric/src/host-dispatch.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 
+// ── 0. A host whose errors lose their code across RPC is refused ────────────
+// workerd carries an error's own properties (the `code` a program branches
+// on) across RPC only with enhanced_error_serialization, which a compatibility
+// date before 2026-04-21 leaves off. Such a host must not compose: every
+// program it serves would see EIO where the filesystem said ENOENT.
+{
+  globalThis.Cloudflare = { compatibilityFlags: { enhanced_error_serialization: false } };
+  try {
+    assert.throws(
+      () => composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES' }),
+      (error) => {
+        assert.match(error.message, /enhanced_error_serialization/, 'names the missing flag');
+        assert.match(error.message, /2026-04-21/, 'and the compatibility date that enables it');
+        return true;
+      },
+    );
+    assert.equal(hostRoute(), null, 'the refused composition is not kept');
+  } finally {
+    delete globalThis.Cloudflare;
+  }
+}
+
 // ── 1. A conflicting composition is loud; an identical one is a no-op ──────
 {
   assert.equal(hostRoute(), null, 'no composition, no route: a program run without one gets no supervisor binding either');

@@ -22,9 +22,15 @@ npm install @nimbus-sh/fabric
 
 ## Requirements
 
-Set `compatibility_flags: ["nodejs_compat"]` in your Worker. The timer
-dispatcher needs `AsyncLocalStorage`, which workerd ships only under that
-flag. Without it the module fails to load at deploy time.
+Use a compatibility date of 2026-08-04 or later, or list `nodejs_compat` in
+`compatibility_flags`. The timer dispatcher needs `AsyncLocalStorage`, which
+workerd ships only under `nodejs_compat`, on by date from 2026-08-04. Without
+it the module fails to load at deploy time.
+
+`composeFabric` also needs `enhanced_error_serialization`, on by date from
+2026-04-21. A program's filesystem errors reach it across workerd RPC, and
+only that flag carries their `code`. Composing on workerd without it throws
+at startup, so the deploy fails rather than every program seeing `EIO`.
 
 Import the root inside a Worker. Outside workerd, import subpaths such as
 `@nimbus-sh/fabric/timers.js`, which are typed against plain objects and run

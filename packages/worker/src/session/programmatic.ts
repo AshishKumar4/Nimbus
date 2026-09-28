@@ -1358,7 +1358,7 @@ export async function rpcDestroy(
 ): Promise<ProgrammaticDestroyResult> {
   self.ensureSqliteFs();
   if (self.sqliteFs!.hasExclusiveMutation()) {
-    throw new Error('EBUSY: session has an active exclusive filesystem mutation');
+    throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
   }
   const guardedVfs = self.sqliteFs!;
   const destroyLease = guardedVfs.acquireGlobalExclusiveMutation();

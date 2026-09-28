@@ -16,6 +16,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { acrossRpc } from './lib/rpc-error.mjs';
 
 const RUNTIME_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '../../packages/worker/wasm/python');
 const WASM = path.join(RUNTIME_DIR, 'python.wasm');
@@ -96,7 +97,7 @@ if (typeof WebAssembly.promising === 'function') {
   const store = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
   const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} });
   // Structured clone across the hop hands bytes back as ArrayBuffer, not
-  // Uint8Array, and a thrown error keeps only its message.
+  // Uint8Array, and a thrown error as enhanced_error_serialization does.
   const cloned = (value) => value instanceof Uint8Array ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) : value;
   // workerd's RpcPromise is a callable proxy: typeof 'function', with `then`, not a Promise.
   const rpcThenable = (promise) => Object.assign(() => { throw new Error('pipelined call'); }, { then: (onFulfilled, onRejected) => promise.then(onFulfilled, onRejected) });
@@ -107,7 +108,7 @@ if (typeof WebAssembly.promising === 'function') {
     // A stub call answers with workerd's own thenable class, never a Promise.
     supervisor[op] = (...args) => rpcThenable((async () => {
       try { return cloned(await dispatch({ op, args, pid })); }
-      catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
+      catch (error) { throw acrossRpc(error); }
     })());
   }
   try {

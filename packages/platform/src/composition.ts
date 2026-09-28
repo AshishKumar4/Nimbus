@@ -67,12 +67,42 @@ let composition: FabricComposition | null = null;
 let ctxExports: CtxExports | null = null;
 
 /**
+ * A program's filesystem errors reach it across workerd RPC, from the host
+ * that answers its supervisor binding, and the program branches on the POSIX
+ * `code` each one carries. workerd carries an error's own properties across
+ * RPC only when the sending AND the receiving isolate have
+ * `enhanced_error_serialization`, on by compatibility date from 2026-04-21:
+ * the serializer writes a native error as a host object with its own
+ * properties only under the flag (src/workerd/jsg/ser.c++,
+ * Serializer::IsHostObject), and the receiver reads that detail back only
+ * under it (src/workerd/jsg/util.c++, decodeTunneledException); see
+ * https://developers.cloudflare.com/workers/runtime-apis/rpc/error-handling/.
+ * Programs load at CF_COMPAT_DATE, past it. The host runs at its embedder's
+ * date, and below it every ENOENT would reach every program as a bare message
+ * it maps to EIO. So composing refuses such a host, at startup, which on
+ * Cloudflare fails the deploy. Off workerd (bun, node) there is no RPC hop and
+ * no `Cloudflare` global to read.
+ */
+function requireEnhancedErrorSerialization(): void {
+  // `typeof` of an undeclared global is 'undefined', not a ReferenceError.
+  if (typeof Cloudflare === 'undefined') return;
+  if (Cloudflare.compatibilityFlags.enhanced_error_serialization === true) return;
+  throw new Error(
+    'fabric: this Worker runs without enhanced_error_serialization, so the code on a '
+      + "program's filesystem error (ENOENT, EEXIST, ...) would not survive the RPC back to it. "
+      + 'Set compatibility_date to 2026-04-21 or later.',
+  );
+}
+
+/**
  * Compose once per isolate. A second call with the same values is a no-op;
  * a second call with different values throws, naming both, so an embedder
  * whose composition lost to an earlier import learns it at startup rather
- * than from a facet that reached the wrong host.
+ * than from a facet that reached the wrong host. A host without
+ * `enhanced_error_serialization` is refused.
  */
 export function composeFabric(value: FabricComposition): void {
+  requireEnhancedErrorSerialization();
   if (!composition) {
     composition = value;
     return;

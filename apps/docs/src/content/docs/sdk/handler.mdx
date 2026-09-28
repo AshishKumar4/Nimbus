@@ -48,9 +48,11 @@ routes: async (request, env) => {
 ## The wrangler config
 
 `buildNimbusWranglerConfig` emits the DO binding and migration, the
-`LOADER` binding, three R2 buckets, static assets, `nodejs_compat`, and
-the required bundler aliases. Use `NIMBUS_REQUIRED_ALIASES` when keeping
-the config by hand.
+`LOADER` binding, three R2 buckets, static assets, a compatibility date
+(2026-09-26 by default, which enables `nodejs_compat`), and the required
+bundler aliases. Use `NIMBUS_REQUIRED_ALIASES` when keeping the config by
+hand, and keep the date at 2026-04-21 or later: below it the Worker refuses
+to start, because a process's filesystem errors would lose their `code`.
 
 ```ts
 import { buildNimbusWranglerConfig } from '@nimbus-sh/config';

@@ -70,7 +70,7 @@ export class HostedSession extends RpcTarget {
   private cred(asked: VfsCred | undefined): VfsCred | undefined {
     if (this.scope === null) return asked;
     const bound = this.scope.cred ?? CRED_SESSION_USER;
-    if (asked !== undefined && !sameCred(bound, asked)) throw new Error('EPERM: this session is bound to another identity');
+    if (asked !== undefined && !sameCred(bound, asked)) throw Object.assign(new Error('EPERM: this session is bound to another identity'), { code: 'EPERM' });
     return bound;
   }
 
@@ -153,6 +153,6 @@ export class HostedSession extends RpcTarget {
 
   /** The embedder owns the workspace's life; a session it handed out cannot end it. */
   async _rpcDestroy(): Promise<never> {
-    throw new Error('EPERM: a hosted session cannot destroy the workspace; its embedder closes the runtime');
+    throw Object.assign(new Error('EPERM: a hosted session cannot destroy the workspace; its embedder closes the runtime'), { code: 'EPERM' });
   }
 }

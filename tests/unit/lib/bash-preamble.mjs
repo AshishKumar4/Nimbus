@@ -20,6 +20,7 @@ import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/ses
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { acrossRpc } from './rpc-error.mjs';
 
 const wasmDir = fileURLToPath(new URL('../../../packages/worker/wasm/bash/', import.meta.url));
 
@@ -50,8 +51,9 @@ function wasmTable() {
  * serialized facet step (bashRequestStep / bashFacetStep) reaches the preamble.
  *
  * `remote: true` serves the filesystem the way a resident facet gets it: every
- * syscall is a supervisor op envelope across a hop that keeps an error's
- * message but not its code and hands bytes back as ArrayBuffer, parked on JSPI.
+ * syscall is a supervisor op envelope across a hop that hands an error back as
+ * workerd's enhanced_error_serialization does (message and own properties, no
+ * stack) and bytes back as ArrayBuffer, parked on JSPI.
  *
  * @param {object} [opts]
  * @param {Record<string,WebAssembly.Module>} [opts.extraWasm]  extra `__NIMBUS_WASM`
@@ -112,7 +114,7 @@ function remoteSupervisor(dispatch, pid) {
       // ordering the guest's unwind and rewind depend on.
       await new Promise((resolve) => setTimeout(resolve, 0));
       try { return cloned(await dispatch({ op, args, pid })); }
-      catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
+      catch (error) { throw acrossRpc(error); }
     })());
   }
   return supervisor;

@@ -2,41 +2,23 @@
 // Behavior test: a failed supervisor operation reaches the program as a
 // filesystem error it can branch on.
 //
-// Errors do not survive the DO RPC boundary intact. Structured clone carries
-// an Error's name, message and stack and DROPS every own property, so the
-// `code`, `syscall`, `path` and `errno` the authority set are gone by the time
-// the facet catches them. (Asserted below, so this premise is checked rather
-// than assumed.) _mapSupervisorError's first branch — "the error already has a
-// code, keep it" — therefore never fires for a real RPC failure, and every
-// filesystem error a program sees is reconstructed from the message string.
-//
-// RED on the pre-fix build: when the message did not begin with a recognised
-// CODE:, the error was returned UNCHANGED — no code, no syscall, no path. A
-// program branching on err.code gets undefined and takes NEITHER arm, which is
-// how an I/O failure becomes a silent hang instead of an error.
+// The error crosses a workerd RPC hop. Both ends run with
+// enhanced_error_serialization, so it arrives with the authority's own
+// properties, `code` among them (lib/rpc-error.mjs models the hop). The shim
+// keeps that code and fills in the syscall, path and errno from the call
+// site. A failure with no code at all (the object was reset, the RPC
+// disconnected) still reaches the program as a coded fs error, EIO,
+// rather than an error no `err.code` arm matches.
 
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-
-// ── the premise: what actually survives the boundary ───────────────────────
-{
-  const authored = Object.assign(new Error("ENOENT: truncate '/x/y.log'"), {
-    code: 'ENOENT', syscall: 'truncate', path: '/x/y.log', errno: -2,
-  });
-  const crossed = structuredClone(authored);
-  assert.equal(crossed.message, "ENOENT: truncate '/x/y.log'", 'the message survives');
-  assert.deepEqual(
-    [crossed.code, crossed.syscall, crossed.path, crossed.errno],
-    [undefined, undefined, undefined, undefined],
-    'code/syscall/path/errno are dropped crossing the boundary',
-  );
-}
+import { acrossRpc } from './lib/rpc-error.mjs';
 
 // A supervisor whose calls fail exactly the way a real one does: the error
-// arrives having been through structured clone.
+// arrives having crossed the RPC hop.
 function facetWithFailure(failure) {
-  const crossed = () => Promise.reject(structuredClone(failure));
+  const crossed = () => Promise.reject(acrossRpc(failure));
   const supervisor = {
     stat: crossed,
     lstat: crossed,
@@ -75,36 +57,31 @@ async function rejection(promise) {
   throw new Error('expected a rejection');
 }
 
-// ── a recognisable authority error still maps to its code ─────────────────
-// The behaviour the whole shim already depends on; it must not regress.
-{
+// ── the authority's code reaches the program ──────────────────────────────
+for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]]) {
   const fs = facetWithFailure(
-    Object.assign(new Error("ENOENT: stat '/home/user/gone.txt'"), { code: 'ENOENT' }),
+    Object.assign(new Error(`${code}: stat '/home/user/gone.txt'`), { code, syscall: 'stat', path: '/home/user/gone.txt' }),
   );
   const error = await rejection(fs.promises.stat('/home/user/gone.txt'));
-  assert.equal(error.code, 'ENOENT', 'an ENOENT from the authority is still an ENOENT');
+  assert.equal(error.code, code, `a ${code} from the authority is a ${code} in the program`);
+  assert.equal(error.errno, errno, `errno matches ${code}`);
   assert.equal(error.syscall, 'stat', 'the syscall is filled in from the call site');
   assert.equal(error.path, '/home/user/gone.txt', 'the path is filled in from the call site');
-  assert.equal(error.errno, -2, 'errno matches the code');
 }
 
-// ── an UNRECOGNISABLE failure still reaches the program as an fs error ────
-// This is the one that was silent. A supervisor can fail for reasons that have
-// no errno spelling at all — the DO was evicted, the RPC was disconnected, a
-// quota was hit. None of those messages begin with a code.
+// ── an UNCODED failure still reaches the program as an fs error ───────────
+// A supervisor can fail for reasons that have no errno spelling at all — the
+// DO was evicted, the RPC was disconnected, a quota was hit.
 for (const [label, failure] of [
   ['a disconnected RPC', new Error('The Durable Object was reset because its code was updated.')],
   ['an internal error', new Error('internal error')],
   ['an empty message', new Error('')],
-  ['a lowercase code-lookalike', new Error('enoent: not really a code')],
-  ['an unknown uppercase token', new Error('WEIRDCODE: not a real errno')],
+  ['an unknown code', Object.assign(new Error('WEIRDCODE: not a real errno'), { code: 'WEIRDCODE' })],
+  ['a thrown string', 'boom'],
 ]) {
   const fs = facetWithFailure(failure);
   const error = await rejection(fs.promises.stat('/home/user/thing.txt'));
-  assert.equal(
-    typeof error.code, 'string',
-    `${label} reaches the program with a code it can branch on`,
-  );
+  assert.equal(error.code, 'EIO', `${label} reaches the program as EIO`);
   assert.ok(
     Number.isInteger(error.errno) && error.errno < 0,
     `${label} carries a negative errno like every other fs error`,
@@ -123,13 +100,6 @@ for (const [label, failure] of [
     /Durable Object was reset/,
     'the authority’s own words survive into the message',
   );
-}
-
-// ── a non-Error rejection is still classified ─────────────────────────────
-{
-  const fs = facetWithFailure(new Error('x'));
-  const error = await rejection(fs.promises.mkdir('/home/user/d'));
-  assert.equal(typeof error.code, 'string', 'even a bare failure is a coded fs error');
 }
 
 console.log('node-shims-supervisor-error-mapping: PASS');
