@@ -388,9 +388,11 @@ it showed is persisted without one, and reading it touches no session:
   with a caller-side exception and no session span never reached the
   session. Query them with the observability telemetry API
   (`POST /accounts/<id>/workers/observability/telemetry/query`, filter on
-  `$metadata.service` and the attribute). Code inside a Dynamic Worker
-  (the facet's own program) is not traced: the loader's docs route its
-  logs through `WorkerCode.tails` only, so its side starts at the
+  `$metadata.service` and the attribute). It needs an API token with the
+  account permission Workers Observability Write; wrangler's OAuth login
+  lacks it and gets 403. Code inside a Dynamic Worker (the facet's own
+  program) is not instrumented: the Worker Loader docs route its output
+  through `WorkerCode.tails` only, so the trace of a call starts at the
   SupervisorRPC span.
 - **GraphQL `durableObjectsPeriodicGroups`**, per object and `datetime`:
   `sum { exceededMemoryErrors exceededCpuErrors fatalInternalErrors }`
