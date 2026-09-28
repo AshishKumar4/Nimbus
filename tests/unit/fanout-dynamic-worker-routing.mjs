@@ -13,7 +13,9 @@
 //   (3) Dynamic Workers the DO already has in flight shrink the headroom,
 //       and repeated requests to one of them count once;
 //   (4) a fan-out's width stays claimed while it runs, so a concurrent one
-//       sizes against what is left, and the claim is returned after.
+//       sizes against what is left, and the claim is returned after;
+//   (5) a batch its caller marks cpuHeavy goes to siblings regardless, since
+//       in-DO Dynamic Workers share the coordinator's thread.
 
 import assert from 'node:assert/strict';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
@@ -69,12 +71,13 @@ function freshCtx() {
   return { id: { toString: () => name } };
 }
 
-async function run(width, { ctx = freshCtx(), world = makeWorld() } = {}) {
+async function run(width, { ctx = freshCtx(), world = makeWorld(), cpuHeavy } = {}) {
   const routes = [];
   const pool = new Fanout(world.env, ctx, {
     tag: 'routing-test',
     omitSupervisor: true,
     onRoute: (route) => routes.push(route),
+    cpuHeavy,
   });
   const tasks = Array.from({ length: width }, (_, i) => ({ key: `task-${i}`, args: i }));
   const results = await pool.submitMany(tasks, (x) => x);
@@ -156,6 +159,14 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
   await assert.rejects(pool.submitMany([{ key: 'k', args: 1 }, { key: 'l', args: 2 }], (x) => x), /task failed/);
   assert.equal((await run(DO_DYNAMIC_WORKER_LIMIT, { ctx })).route.topology, 'in-do',
     'a failed batch gives its width back');
+}
+
+// ── (5) CPU-heavy work stays off the coordinator's thread ──────────────────
+{
+  const { world, route } = await run(2, { cpuHeavy: true });
+  assert.equal(world.inDo, 0, 'a cpu-heavy batch runs no task on the coordinator');
+  assert.equal(world.peerTasks, 2, 'it goes to siblings although the headroom holds it');
+  assert.equal(route.topology, 'peer-do');
 }
 
 console.log('ok - fanout-dynamic-worker-routing (in-DO to the headroom, peers past it, live holds and claims respected)');

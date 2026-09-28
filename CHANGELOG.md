@@ -10,21 +10,26 @@ published independently in the `@nimbus-sh` npm scope.
   with in-flight requests per Durable Object, where repeated requests to one
   worker count once (2026-08-28). A batch now runs in-DO when it fits the
   session's remaining headroom, and only a wider one shards to sibling
-  Durable Objects; before, anything of 5 or more tasks sharded. An install
-  of up to 8 shards, and resolve layers of up to 10 packages, no longer start
-  sibling objects on an idle session. The headroom is live: resident
-  processes count for as long as they run, and esbuild facet calls, git
-  network ops, one-shot programs and other fan-outs while they are in
-  flight. A sibling runs its shard as wide as its own headroom allows,
-  instead of 4. The install log names the route taken
+  Durable Objects; before, anything of 5 or more tasks sharded. Resolve
+  layers of up to 10 packages, and installs of up to 24 tarballs (8 shards,
+  one pLimit wave each), no longer start sibling objects on an idle
+  session: a 9-package install took 2.4-5.5 s against 8.9-13.2 s. Larger
+  installs still shard to siblings: Dynamic Workers usually share the
+  thread of the Worker that created them, and 850 packages in 8 in-DO
+  shards left the session silent in 3 of 15 runs. The headroom is live:
+  resident processes count for as long as they run, and esbuild facet
+  calls, git network ops, one-shot programs and other fan-outs while they
+  are in flight. A sibling runs its shard as wide as its own headroom
+  allows, instead of 4. The install log names the route taken
   (`Dispatching N packages across S shards (in-do, dynamic-worker headroom
   H, …)`), and each resolver layer's profile entry ends in its route.
   `@nimbus-sh/fabric`: `IN_DO_THRESHOLD` is removed; `DO_DYNAMIC_WORKER_LIMIT`,
   `dynamicWorkerHeadroom(ctx)` and `claimDynamicWorkers(ctx, n)` are new;
   `beginLoaderFetch(ctx, workerKey)` takes the worker's key;
   `recordLoaderId` is removed, and `loaderLedgerStats` reports
-  `{ limit, inFlightWorkers, claimed, headroom, peak }`. `Fanout` takes an
-  `onRoute` callback. `IsolatePool`'s default concurrency is 1 (was 4).
+  `{ limit, inFlightWorkers, claimed, headroom, peak }`. `Fanout` takes
+  `onRoute` and `cpuHeavy` options. `IsolatePool`'s default concurrency is
+  1 (was 4).
   The `/api/_test/fanout/topology` diag reports `dynamicWorkerHeadroom`
   instead of `inDoThreshold`.
 
