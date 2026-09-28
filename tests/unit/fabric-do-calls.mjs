@@ -320,6 +320,21 @@ const FAST = { baseDelayMs: 1 };
     'an overloaded hedge failed the call while an earlier attempt was still in flight');
   assert.equal(refused.stubs.length, 2, 'an overloaded answer was repeated');
 
+  // A hedge answered with the callee's own error: the call ran, and that is
+  // its answer — at once, although the first attempt never answers.
+  const enoent = mintKit(async (n) => {
+    if (n === 1) return never;
+    throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+  });
+  const answeredAt = Date.now();
+  const outcome = await Promise.race([
+    idempotent('hedge answers ENOENT', enoent.resolve, (s) => s.ping(), HEDGE).then(() => 'resolved', (error) => error.code),
+    sleep(500).then(() => 'still pending after 500 ms'),
+  ]);
+  assert.equal(outcome, 'ENOENT', 'a callee error answered by the hedge did not end the call');
+  assert.ok(Date.now() - answeredAt < 200);
+  assert.equal(enoent.stubs.length, 2);
+
   // When the attempt still in flight fails too, the last failure is the answer.
   const bothFail = mintKit(async (n) => {
     if (n === 1) { await sleep(60); throw new Error('no such row'); }
