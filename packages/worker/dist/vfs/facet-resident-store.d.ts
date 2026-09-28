@@ -112,21 +112,20 @@
  *
  * WHAT THIS STORE DOES NOT DO, and cannot
  * ───────────────────────────────────────
- * It does not make `require()` of a module outside the precompiled closure
+ * It does not make `require()` of a module outside the launch's module map
  * work. Measured on the same worker: `new Function` succeeds at MODULE SCOPE
  * and throws "Code generation from strings disallowed for this context" in the
- * DO constructor and at request time. Module evaluation is the only place a
- * string becomes code, and `ctx` — hence SQLite — does not exist there. So code
- * reaches a facet through the Worker Loader's module map or not at all, and
- * that is a platform boundary, not a policy this store could relax.
+ * DO constructor and at request time. So code reaches a facet through the
+ * Worker Loader's module map or not at all, and that is a platform boundary,
+ * not a policy this store could relax.
  *
  * The split falls out of that, and it is the whole architecture:
  *
- *   CODE cells  — the static require closure. Compiled at module eval into
- *                 `__compiledModules`, exactly as today. The source strings are
- *                 not retained afterwards; the compiled functions are the only
- *                 in-heap form, and a later `readFileSync` of a .js file is
- *                 answered from the store like any other file.
+ *   CODE cells  — the static require closure. Each is a module of the map,
+ *                 compiled by the guest's registry when first required
+ *                 (core/_shared/commonjs-cell.ts). The store adopts its text,
+ *                 read back from the map, so a later `readFileSync` of a .js
+ *                 file is answered from the store like any other file.
  *   EVERY OTHER — held here. Uncapped by admission, bounded only by the
  *      byte      storage budget, so a data read cannot miss.
  *

@@ -20,10 +20,12 @@ function evaluateBundleSource(source) {
   return new Function(...aliases, `return (${source.expression});`)(...parts);
 }
 
+// Data cells: a program's code files are modules of their own, not bundle
+// data (the last case below).
 const oversizedSource = 'const value = "escaped";\n'.repeat(900_000);
 const bundle = {
-  'usr/local/lib/node_modules/large-cli/index.js': oversizedSource,
-  'usr/local/lib/node_modules/shebang-command/index.js': 'module.exports = () => "node";',
+  'usr/local/lib/node_modules/large-cli/template.txt': oversizedSource,
+  'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
   'usr/local/lib/node_modules/native/data.bin': new Uint8Array([0, 127, 128, 255]),
   'usr/local/lib/node_modules/private.txt': { error: 'EACCES' },
 };
@@ -46,12 +48,23 @@ assert.deepEqual(
 );
 
 const inline = await buildFacetVfsBundleSource({
-  'usr/local/lib/node_modules/shebang-command/index.js': 'module.exports = true;',
+  'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
 });
 assert.deepEqual(inline.modules, {}, 'small bundles keep the existing inline path');
 assert.deepEqual(evaluateBundleSource(inline), {
-  'usr/local/lib/node_modules/shebang-command/index.js': 'module.exports = true;',
+  'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
 });
+
+// A code cell is its own `{ cjs }` module and not data as well — the store
+// takes its file from that module — so it costs the map its text once.
+{
+  const code = 'module.exports = () => "node";';
+  const split = await buildFacetVfsBundleSource({ 'usr/local/lib/node_modules/shebang-command/index.js': code });
+  assert.deepEqual(evaluateBundleSource(split), {}, 'no data copy of a code cell');
+  const texts = Object.values(split.codeModules);
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].split(code).length, 2, 'the module carries the cell once');
+}
 
 // The inline-vs-side-module decision is made from a COUNTED encoded size, not
 // from `TextEncoder().encode(expression)` — encoding a bundle to learn its own
@@ -59,7 +72,7 @@ assert.deepEqual(evaluateBundleSource(inline), {
 // A counter is only allowed to replace the encoder if it agrees with it
 // exactly, so pin both directions against the encoder at the ceiling, with
 // multi-byte content a char-count would get wrong by 2/3.
-const CELL = 'src/multibyte.js';
+const CELL = 'src/multibyte.txt';
 const overheadBytes = new TextEncoder()
   .encode((await buildFacetVfsBundleSource({ [CELL]: '' })).expression).length;
 

@@ -122,7 +122,7 @@ export class ImageStore {
    */
   async materialize(
     pid: number,
-    images: AsyncIterable<readonly [string, string]> | Iterable<readonly [string, string]>,
+    images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>,
     pacer: TurnBudget,
   ): Promise<Record<string, string>> {
     const fs = this.blobs();
@@ -138,7 +138,7 @@ export class ImageStore {
     fs.mkdirp(FACET_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      const bytes = new TextEncoder().encode(source);
+      const bytes = typeof source === 'string' ? new TextEncoder().encode(source) : encodeParts(source);
       const path = facetImagePath(await facetImageDigest(bytes));
       paths[moduleName] = path;
       rooted.push(path);
@@ -206,4 +206,31 @@ export class ImageStore {
       try { fs.unlink(`${FACET_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
     }
   }
+}
+
+/**
+ * UTF-8 bytes of an image given as ordered parts, encoded into one buffer a
+ * part at a time: joining the parts first would hold the whole image twice as
+ * text.
+ */
+function encodeParts(parts: readonly string[]): Uint8Array {
+  let length = 0;
+  for (const part of parts) {
+    for (let i = 0; i < part.length; i++) {
+      const code = part.charCodeAt(i);
+      if (code < 0x80) length += 1;
+      else if (code < 0x800) length += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && (part.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { length += 4; i++; }
+      else length += 3;
+    }
+  }
+  const bytes = new Uint8Array(length);
+  const encoder = new TextEncoder();
+  let offset = 0;
+  for (const part of parts) {
+    const encoded = encoder.encode(part);
+    bytes.set(encoded, offset);
+    offset += encoded.byteLength;
+  }
+  return bytes;
 }

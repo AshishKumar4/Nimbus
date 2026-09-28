@@ -100,6 +100,18 @@ Nimbus already has a real base:
 - Node sync filesystem calls run from a startup snapshot for speed. The
   snapshot includes the entry dependency graph and a bounded current-working
   tree project snapshot, excluding `node_modules`, `.git`, and `.nimbus`.
+- A node process's code reaches its Worker Loader guest as one `{ cjs }`
+  module per file of the entry's closure (`core/_shared/commonjs-cell.ts`),
+  compiled by the guest's `new_module_registry` the first time the program
+  requires it; nothing compiles at startup. The shims keep resolution
+  (`require-resolver.ts`, `__resolveFrom`), ESM→CJS lowering and
+  `import.meta` metadata, because the registry resolves specifiers as URLs
+  only, keeps every module under `file:///bundle/`, and takes no named
+  exports for a CommonJS module. Code the program produces at runtime (a
+  file written then required, or `__nimbusRuntimeCode.compileFunction` text)
+  cannot run in that launch (no request-time code generation, and a Worker
+  Loader map cannot grow); the next launch of the same command stages it by
+  content key as `gen/<sha256>.js`.
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.

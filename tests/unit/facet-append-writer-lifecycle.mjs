@@ -8,6 +8,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 
@@ -71,7 +72,7 @@ const env = {
     },
   },
 };
-const ctx = { id: { toString: () => 'writer-lifecycle-test' }, waitUntil() {} };
+const ctx = createFacetCtx(createFacetWorld(() => ({})), 'writer-lifecycle-test');
 const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {});
 const harness = createSqliteVfsTestHarness();

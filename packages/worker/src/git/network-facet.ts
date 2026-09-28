@@ -28,7 +28,7 @@
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
@@ -720,7 +720,7 @@ export async function execGitNetwork(
       const gitBundleSource = await fetchGitBundleSource(env);
       const loadedWorker: GitFacetWorker = env.LOADER.load({
         compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: ['nodejs_compat'],
+        compatibilityFlags: [...GUEST_COMPAT_FLAGS],
         mainModule: 'git-network-worker.js',
         // Facet gets:
         //   - its own worker code (git-network-worker.js), with the

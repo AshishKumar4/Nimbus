@@ -21,7 +21,7 @@
  */
 import { plugin } from 'bun';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -30,6 +30,7 @@ import { generateLongRunningNodeCode } from '../../../packages/worker/src/facets
 import { planFacetData } from '../../../packages/worker/src/facets/data-plan.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
 import { nodeFacetSources } from './node-facet-sources.mjs';
+import { generatedModuleSet, writeModuleSet } from './module-map-bundle.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -215,9 +216,7 @@ export async function launchResident({
   const dir = mkdtempSync(join(tmpdir(), 'resident-body-'));
   // The generated worker is imported from here: removed when the test process ends, however it ends.
   process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, 'worker.mjs'), generated.code);
-  for (const [name, source] of Object.entries(generated.modules)) writeFileSync(join(dir, name), source);
-  const mod = await import(pathToFileURL(join(dir, 'worker.mjs')).href);
+  const mod = await import(pathToFileURL(writeModuleSet(dir, generatedModuleSet(generated, 'worker.mjs'), 'worker.mjs')).href);
   const ctx = { storage: { sql }, waitUntil() {}, id: { toString: () => 'resident-body-test' } };
   const proc = new mod.NimbusProcess(ctx, env);
   // The plan a resident launch is handed: data-plan.ts over the authority,

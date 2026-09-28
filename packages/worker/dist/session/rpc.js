@@ -802,7 +802,7 @@ function shouldMirrorProcessOutputToShell(self, pid) {
  *
  * Idempotent — double-call is a no-op (ProcessLogStore.markExit guards).
  */
-export async function _rpcReportExit(self, pid, code, tail, residencyMisses, profileUnread) {
+export async function _rpcReportExit(self, pid, code, tail, residencyMisses, profileUnread, runtimeCode) {
     if (pid <= 0)
         return; // Ignore the pid-0 sentinel.
     // Prior-generation straggler unwinding after an instance reset: this
@@ -841,7 +841,7 @@ export async function _rpcReportExit(self, pid, code, tail, residencyMisses, pro
     // The reads this session served the process, taken whatever the manager does with them.
     const served = self.servedReads?.take(pid) ?? new Set();
     try {
-        self.facetManager?.noteProcessReportedExit?.(pid, code, residencyMisses, { served, profileUnread: profileUnread ?? null });
+        self.facetManager?.noteProcessReportedExit?.(pid, code, residencyMisses, { served, profileUnread: profileUnread ?? null }, runtimeCode);
     }
     catch {
         try {

@@ -3,8 +3,8 @@
  *
  * opencode is ESM-only (its CLI entry uses top-level await, so it cannot be
  * bundled to CJS) and imports a broad set of node: builtins plus node:sqlite.
- * It therefore cannot run through the standard `new Function` CJS facet path
- * (that path wraps entry code in a function body, which forbids ESM syntax).
+ * It therefore cannot run through the standard node facet path, which runs
+ * every module as a CommonJS body (core/_shared/commonjs-cell.ts).
  *
  * Instead the bundle rides into the facet Worker Loader module map as a real
  * ESM module (`opencode-bundle.js`) and this runner is the mainModule that:
@@ -137,13 +137,11 @@ const BUILTIN_BRIDGES = [
 // bare global `process`, `import … from "node:process"`, AND runtime
 // `require("process")` (split-build chunks force some CJS dependencies, e.g.
 // OpenTelemetry's resource detectors, to evaluate their requires at chunk
-// init). workerd aliases the bare require to `node:process` but provides NO
-// such module for require — so the facet module map must carry the bridge in
-// BOTH modes or any chunk that requires process dies with `No such module
-// "node:process"`. The bridge reads `globalThis.process`, which is
-// mode-correct by construction: the attached-TTY boot block parks the Nimbus
-// shim process there (raw-mode stdin pump, live stdout, SIGWINCH) before the
-// bundle links, and the one-shot path keeps workerd's process.
+// init). A resident run makes the Nimbus shim process the global (see the
+// boot block), so its map carries this bridge: every one of those references
+// must reach the same shim object. A one-shot run keeps workerd's own process,
+// which the guest's module registry already hands to all three
+// (GUEST_COMPAT_FLAGS: `require("process") === globalThis.process`).
 const PROCESS_NAMES = [
     'argv', 'argv0', 'env', 'platform', 'arch', 'version', 'versions', 'pid',
     'ppid', 'title', 'execPath', 'execArgv', 'stdin', 'stdout', 'stderr',
@@ -158,8 +156,8 @@ const PROCESS_NAMES = [
 // console capture does `new Console({ stdout, stderr, ... })` during renderer
 // setup, so the TUI aborts before its first frame. The attached path bridges
 // node:console to the shim's console (which provides a working Console writing
-// to the supplied streams); the one-shot path bridges the global console so
-// runtime `require("console")` resolves.
+// to the supplied streams). The other modes patch the global console's methods
+// in place, and the registry resolves node:console to that same object.
 const CONSOLE_NAMES = [
     'Console', 'log', 'info', 'debug', 'dir', 'error', 'warn', 'trace', 'assert',
     'table', 'group', 'groupEnd', 'time', 'timeEnd', 'timeLog', 'clear', 'count',
@@ -181,10 +179,9 @@ ${names}
 `;
 }
 /**
- * A bridge module that re-exports a GLOBAL (process, console) as a proper ESM
- * module. Evaluates when the opencode bundle links — after the runner's boot
- * block, so `globalThis.process` is already the mode-correct object (the shim
- * process in attached-TTY mode, workerd's process one-shot).
+ * A bridge module that re-exports a GLOBAL (process) as a proper ESM module.
+ * Evaluates when the opencode bundle links — after the runner's boot block,
+ * so `globalThis.process` is already the shim process.
  */
 function generateGlobalBridge(globalName, names) {
     const exports = names
@@ -201,19 +198,16 @@ ${exports}
  * Loader requires non-`.js`/`.py` module names (like `node:fs`) to use the
  * explicit `{ js }` content form.
  */
-export function opencodeBuiltinBridgeModules(attachedTty = false) {
+export function opencodeBuiltinBridgeModules(mode) {
     const out = {};
     for (const bridge of BUILTIN_BRIDGES) {
         out[bridge.specifier] = { js: generateBuiltinBridge(bridge) };
     }
-    // Both modes: workerd resolves bare `require("process")` to node:process
-    // but ships no such require-able module, so the map must provide it.
-    out['node:process'] = { js: generateGlobalBridge('process', PROCESS_NAMES) };
-    // console: the attached TUI needs the shim's working `Console` class; the
-    // one-shot path re-exports the global so runtime requires resolve.
-    out['node:console'] = attachedTty
-        ? { js: generateBuiltinBridge({ specifier: 'node:console', builtin: 'console', names: CONSOLE_NAMES }) }
-        : { js: generateGlobalBridge('console', CONSOLE_NAMES) };
+    if (mode !== 'oneshot')
+        out['node:process'] = { js: generateGlobalBridge('process', PROCESS_NAMES) };
+    if (mode === 'attached') {
+        out['node:console'] = { js: generateBuiltinBridge({ specifier: 'node:console', builtin: 'console', names: CONSOLE_NAMES }) };
+    }
     return out;
 }
 /** The Bun-global polyfill, as a facet module-init block. */

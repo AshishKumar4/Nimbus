@@ -221,6 +221,65 @@ published independently in the `@nimbus-sh` npm scope.
   <pkg>` and `npm uninstall` fail, and say why, when they cannot record the
   change in package.json; they exited 0 without recording it.
 
+- Code a node process produces while it runs compiles in the next launch of
+  the same command instead of never. A Worker compiles only from the module
+  map it was launched with, and a Worker Loader map cannot grow after load
+  (a dynamic worker has no module fallback), so this launch still refuses it —
+  now with `EvalError` code `ERR_NIMBUS_CODE_NEXT_LAUNCH` — but the run's
+  report (the one-shot envelope, the resident exit report) carries the text,
+  the supervisor keeps it by SHA-256 of its content in the session's Durable
+  Object storage (8 MiB, least recently recorded out; a relaunch after the
+  isolate was evicted or hibernated still gets it), and the next launch
+  carries it as `gen/<key>.js` modules compiled on
+  first use. Two shapes: a file written then required or imported (a fresh
+  file name each run, like Vite's `.vite-temp/*.timestamp-*.mjs`, converges
+  because the key is the text), and text handed to
+  `globalThis.__nimbusRuntimeCode.compileFunction(kind, params, body)`, which
+  builds the function the `Function`/`AsyncFunction`/generator constructors
+  would (same source text, body on line 3, global scope). Text that changes on
+  every run — a module runner's transform of an edited file — needs one
+  relaunch per change.
+
+- A node process compiles a module the first time it requires it, not at
+  startup. Each code file of the launch's closure, and its entry, is now a
+  `{ cjs }` module of the facet's map (`vfs/<path>`, `entry/<path>`) that the
+  guest's module registry (`new_module_registry`) compiles on first require;
+  the shims' `require` still resolves the path and calls the module's Node
+  wrapper with its own `require`, `module` and `exports`. The facet no longer
+  compiles the whole closure with `new Function` at module evaluation, and a
+  module's stack frames name its file and line
+  (`file:///bundle/vfs/home/user/app/a.js:2:7`) instead of `eval at
+  __mkCompiledFn`. A code file is carried once: the process's store takes the
+  file's content from the module's own text, read back through the bundle
+  filesystem, so the map holds no second copy. A TypeScript source stays the
+  file a program reads and its emit is the module. A resident launch ships
+  the modules as one content-addressed image (`vfsCommonJsPacks`, decoded by
+  `residentLoaderConfig`). Removed: the startup pre-compile loop
+  (`BUNDLE_PRECOMPILE_LOOP`, `__compiledModules`, `__compileFailures`), the
+  NUL-keyed compiled cells (`compiledCellKey`, `compiledCellPath`), the
+  request-time `new Function` fallback and `@nimbus-sh/core/_shared/compiled-fn`.
+  ESM is still lowered to CommonJS and resolution is still Nimbus's own: the
+  registry resolves specifiers as URLs only, keeps every module under
+  `file:///bundle/`, and takes no named exports for a `{ cjs }` module.
+  `generateEntrypointCode` takes the entry's filename as a sixth argument.
+
+- The Worker Loader guests Nimbus generates — the opencode facets, the
+  esbuild transform facet, the git network facet, the hosted fetch proxy and
+  every `IsolatePool` isolate (pre-bundle, npm resolve, child-process spawn)
+  — run with `new_module_registry`, from one list, `GUEST_COMPAT_FLAGS` in
+  `@nimbus-sh/core/constants`. Under it `require("process")` resolves to the
+  global process, so a one-shot opencode run no longer carries a
+  `node:process` bridge module, and only the attached TUI carries a
+  `node:console` one. The resident modes keep their `node:process` bridge: it
+  is how their bundle's `import "node:process"` reaches the shim process.
+  Map entries named `node:<x>` still shadow the builtin under the new
+  registry, so the `node:fs`, `node:http`, `node:os` and `node:sqlite`
+  bridges are unchanged. `opencodeBuiltinBridgeModules` now takes the run
+  mode instead of an attached-TTY boolean. The staged opencode 1.16.2 build
+  no longer defines `import.meta.url` as `"file:///opencode/opencode-bundle.js"`:
+  its modules read their real URL (`file:///bundle/<module>`), so its
+  `createRequire(import.meta.url)` calls construct without a rewrite.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

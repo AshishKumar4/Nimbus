@@ -55,10 +55,10 @@ clone, so the staged bundle is reproducible.
   pre-compiled — request-time `WebAssembly.instantiate(bytes)` is blocked in
   facets.
 
-  Nimbus-relevant defines:
-  - `import.meta.url` → a synthetic absolute file URL so the bundle's
-    top-level `createRequire(import.meta.url)` constructs (in a Worker Loader
-    ESM module `import.meta.url` is otherwise `undefined`).
+  No `import.meta.url` define: the facet runs with `new_module_registry`
+  (`GUEST_COMPAT_FLAGS`), so each staged module has a real `import.meta.url`
+  (`file:///bundle/<module>`) and the bundle's top-level
+  `createRequire(import.meta.url)` constructs.
 
   Nimbus build plugin (`nimbusPatchWebTreeSitter`): request-time
   `WebAssembly.compile(bytes)` is blocked in workerd facets, so

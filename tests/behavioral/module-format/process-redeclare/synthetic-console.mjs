@@ -10,8 +10,8 @@
 // console functions) — `typeof console` is therefore `"object"`, not
 // `"function"`. The collision risk is the same regardless: pass-1 ESM
 // preserves the binding name literally, and pass-2 emits
-// `const console = ...` which would collide with the `console`
-// extra-param at __mkCompiledFn.
+// `const console = ...`, which once collided with a `console` parameter
+// of the facet's module wrapper (core/_shared/commonjs-cell.ts).
 //
 // legacy-cleanup (2026-05-13): the original assertion required
 // `con=function` (assuming default-import returned the Console class

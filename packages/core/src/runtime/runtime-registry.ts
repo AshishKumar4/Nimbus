@@ -389,8 +389,8 @@ export function buildRuntimeHandler(
 
     // ── ESM-source detection (primitive: type:module entry scripts) ──
     //
-    // Nimbus's facet pre-compile loop wraps every entry script in
-    // `new Function(...)` which runs it as CJS. A real `node script.js`
+    // A node facet runs every entry script as a CommonJS module body
+    // (core/_shared/commonjs-cell.ts). A real `node script.js`
     // dispatch honours the nearest package.json's `"type"` field
     // (and the file extension) to decide whether to parse as ESM:
     //
@@ -410,12 +410,12 @@ export function buildRuntimeHandler(
     // a module" because their bin entry is `index.js` and the
     // package.json declares `type: module`.
     //
-    // We transform to CJS (format: 'cjs') so the facet's `new
-    // Function()` runs it as a CJS module body — same path that the
-    // bundle's `transformEsmInBundle` (W3.5 Fix B) takes for
-    // sub-module ESM files. esbuild's CJS output emits __require /
-    // module.exports / exports.X so the facet's pre-compile loop
-    // sees ordinary CJS source.
+    // We transform to CJS (format: 'cjs') so the facet runs it as a CJS
+    // module body — same path that the bundle's `transformEsmInBundle`
+    // (W3.5 Fix B) takes for sub-module ESM files. esbuild's CJS output
+    // emits __require / module.exports / exports.X, ordinary CJS source.
+    // The guest's registry could take the ES module itself, but not resolve
+    // its package imports or give it the file's own URL (commonjs-cell.ts).
     async function nearestPackageTypeIsModule(absPath: string): Promise<boolean> {
       // Walk up dirs looking for the nearest package.json. First one
       // wins (Node spec); we do NOT consult ancestors past it.

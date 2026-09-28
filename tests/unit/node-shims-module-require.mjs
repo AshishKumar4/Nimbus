@@ -7,7 +7,7 @@ import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs
 
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __require;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __require;',
 );
 const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
     'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],

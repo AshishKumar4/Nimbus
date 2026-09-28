@@ -26,6 +26,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src/facets/exec-telemetry.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -63,7 +64,7 @@ const env = {
 };
 
 const manager = new FacetManager(
-  { id: { toString: () => 'exec-telemetry-composition' }, waitUntil() {} },
+  createFacetCtx(createFacetWorld(() => ({})), 'exec-telemetry-composition'),
   env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
 const harness = createSqliteVfsTestHarness();

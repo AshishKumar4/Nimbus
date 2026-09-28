@@ -30,8 +30,7 @@ const NativeURL = globalThis.URL;
 
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
-    + generateShimsCode() + '\n;return builtins;',
+  '"use strict";' + generateShimsCode() + '\n;return builtins;',
 );
 const builtins = factory(
   {},

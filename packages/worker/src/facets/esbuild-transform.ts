@@ -1,4 +1,4 @@
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import {
   EsbuildService,
   generateEsbuildFacetRuntimeSource,
@@ -110,7 +110,7 @@ export function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string,
 
   return {
     compatibilityDate: CF_COMPAT_DATE,
-    compatibilityFlags: ['nodejs_compat'],
+    compatibilityFlags: [...GUEST_COMPAT_FLAGS],
     mainModule: 'worker.js',
     modules: {
       'worker.js': source,

@@ -52,7 +52,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
-import { moduleMapText } from './lib/module-map-bundle.mjs';
+import { generatedModuleSet, moduleMapText } from './lib/module-map-bundle.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
@@ -72,7 +72,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   // Generating first is the real order: the map is a total encoding of the
   // bundle source, which is what makes releasing it a pure drop.
   const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
-  assert.ok(generated.code.includes('module.exports = 1;'), 'the map carries the program');
+  assert.ok(moduleMapText(generatedModuleSet(generated, 'worker.js')).includes('module.exports = 1;'), 'the map carries the program');
 
   releaseGeneratedSources(state);
   assert.equal(state.bundleSource, undefined, 'bundle source released');

@@ -395,9 +395,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      *
      * `tail` is an optional trailing stderr string — useful when the facet
      * has error state it couldn't stream in-band (rare; main path drains
-     * via __pendingIO first).
+     * via __pendingIO first). `runtimeCode` is the code the process produced
+     * and could not compile, for its command's next launch (commonjs-cell.ts,
+     * RUNTIME CODE).
      */
-    reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[]): Promise<void>;
+    reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[], runtimeCode?: unknown[]): Promise<void>;
     prefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     registerPort(port: number): Promise<void>;
     unregisterPort(port: number): Promise<void>;

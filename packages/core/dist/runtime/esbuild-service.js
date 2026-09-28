@@ -252,7 +252,7 @@ function convertEsmImportsToRequire(src) {
     // project files via templates containing `import { redirect } from
     // '@sveltejs/kit';`) get parsed as actual imports — emitted twice into
     // the requires block → duplicate const declaration → SyntaxError at
-    // facet pre-compile ("Identifier 'redirect' has already been declared").
+    // facet compile ("Identifier 'redirect' has already been declared").
     //
     // stripCommentsAndStrings preserves newlines, so line indices align
     // between `src` and `strippedLines`. We use the stripped line to
@@ -285,7 +285,7 @@ function convertEsmImportsToRequire(src) {
         // becomes `process$1`). Pre-fix `\w+` truncated at `$`, all the regexes
         // below missed → line fell through to bodyLines → top-level `import`
         // statement survived into the async-IIFE wrap → SyntaxError
-        // "import statement outside module" at facet pre-compile.
+        // "import statement outside module" at facet compile.
         // Default + namespace: `import x, * as ns from "m";`
         m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
@@ -347,7 +347,7 @@ function convertEsmImportsToRequire(src) {
     // verbatim. The async-IIFE wrap (the caller wraps body in
     // `;(async () => { ... })();`) makes those exports illegal grammar
     // ('export' is module-only, not legal in function bodies) →
-    // SyntaxError "Unexpected token 'export'" at facet pre-compile.
+    // SyntaxError "Unexpected token 'export'" at facet compile.
     //
     // Rewrite each top-level export to a CJS-compatible equivalent (see
     // Same defences as imports:

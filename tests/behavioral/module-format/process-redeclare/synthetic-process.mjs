@@ -2,22 +2,17 @@
 // process-redeclare/synthetic-process — `import process from 'node:process'`
 // in a .mjs with TLA + ESM imports triggers the two-pass path. The
 // two-pass post-process emits `const process = (() => {...})()` in the
-// body. Pre-fix the facet wrap's `process` function parameter collides
-// with the body's `const process` → SyntaxError "Identifier 'process'
-// has already been declared" at facet pre-compile.
+// body. The facet's module wrapper once also took `process` as a
+// parameter, so the body's `const process` was a SyntaxError
+// "Identifier 'process' has already been declared".
 //
 // Root cause (audit 2026-05-11-nuxt-process-redeclare/plan.md §2-§4):
-//   src/runtime/esbuild-service.ts:566-572 "Default only" branch emits
+//   src/runtime/esbuild-service.ts "Default only" branch emits
 //   `const process = ...` for `import process from 'node:process'`.
-//   src/facets/manager.ts:269-277 (and twin at :544-552)
-//   __mkCompiledFn wraps in `new Function(...params, code)` where
-//   `process` is also a param → JS parse-time SyntaxError.
 //
-// Fix: extend the existing __filename/__dirname conditional-rename
-// trick at manager.ts:270-273 to cover the 7 extra-params
-// (process, console, Buffer, setTimeout, setInterval, clearTimeout,
-// clearInterval), AND broaden regex from (const|let|var) to
-// (const|let|var|function|class).
+// Now: the wrapper takes only Node's five parameters and runs the cell in
+// a block, where a lexical declaration of any name shadows instead of
+// colliding (core/_shared/commonjs-cell.ts, THE WRAPPER).
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../../_driver.mjs';
 

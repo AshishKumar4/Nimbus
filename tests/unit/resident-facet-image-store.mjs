@@ -25,6 +25,7 @@ import {
   FACET_IMAGE_DIR,
   facetImageDigest,
   facetImagePath,
+  encodeCommonJsPack,
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
@@ -71,16 +72,28 @@ const storedImages = () => {
 const spawn = (code, name) => manager.spawnNode(code, {
   command: `node ${name}`, filename: `/home/user/${name}`, cwd: '/home/user',
 });
-/** The image the last spawn's facet actually booted from. */
+/** The image the last spawn's facet actually booted its main module from. */
 const bootedImage = async () =>
   facetImagePath(await facetImageDigest(configs().at(-1).modules['worker.js']));
+/** And the one its code cells came from: the pack of every `{ cjs }` module it loaded. */
+const bootedPack = async () => {
+  const cells = {};
+  for (const [name, member] of Object.entries(configs().at(-1).modules)) {
+    if (member && typeof member === 'object' && typeof member.cjs === 'string') cells[name] = member.cjs;
+  }
+  return facetImagePath(await facetImageDigest(encodeCommonJsPack(cells).join('')));
+};
+const name = (path) => path.split('/').pop();
 
 const a1 = await spawn('const a = 1;', 'a.js');
 const imageA = await bootedImage();
+const packA = await bootedPack();
 assert.match(imageA, /^\/var\/lib\/nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
   'the image is named by the digest of its own bytes');
-assert.deepEqual(storedImages(), [imageA.split('/').pop()],
-  'the spawn materialized exactly that image in the store');
+assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
+  'the spawn materialized exactly its main module and its code pack in the store');
+assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('const a = 1;')),
+  'the program reached the loader as a { cjs } module out of the pack');
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
@@ -105,7 +118,7 @@ assert.deepEqual(storedImages(), afterA, 'and writes no second copy of it');
 const b = await spawn('const b = 2;', 'b.js');
 const imageB = await bootedImage();
 assert.notEqual(imageB, imageA, 'different program text is a different image');
-assert.equal(storedImages().length, afterA.length + 1, 'both live images are present');
+assert.equal(storedImages().length, afterA.length + 2, 'both programs\' images are present');
 
 // ── the sweep: an image is live exactly while its process is ───────────────
 // Two processes booted from imageA, so exiting one is NOT enough to drop it —
@@ -169,5 +182,21 @@ await assert.rejects(
   /not a content-addressed facet image path/,
   'a module named by a path that carries no digest is refused rather than trusted',
 );
+
+// A code pack becomes its `{ cjs }` modules, each exactly its text — a
+// multi-byte one included, whose length the index counts in UTF-16 units.
+{
+  const cells = { 'vfs/home/user/a.js': 'module.exports = "é — 😀";', 'entry/home/user/a.js': '', 'vfs/x': 'x' };
+  const pack = encodeCommonJsPack(cells).join('');
+  const packPath = facetImagePath(await facetImageDigest(pack));
+  files.set(packPath, new TextEncoder().encode(pack));
+  const loaded = await residentLoaderConfig({
+    compatibilityDate: '2026-04-01', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': '' },
+    vfsCommonJsPacks: [packPath],
+  }, disk);
+  for (const [moduleName, text] of Object.entries(cells)) {
+    assert.deepEqual(loaded.modules[moduleName], { cjs: text }, `${moduleName} is its own { cjs } module`);
+  }
+}
 
 console.log('resident-facet-image-store: ok');

@@ -9,7 +9,7 @@
  *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
  *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
- *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
+ *      the supervisor worker), compatibilityFlags = GUEST_COMPAT_FLAGS,
  *      globalOutbound = undefined (inherit parent network so the facet can
  *      reach https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's
@@ -24,7 +24,7 @@
  * and binding types used by this implementation.
  */
 
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, type HostRoute } from './composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -680,7 +680,7 @@ export class IsolatePool {
   ) {
     const workerOpts = {
       compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: ['nodejs_compat'],
+      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
       // Inherit parent network so the facet can reach registry.npmjs.org.
       globalOutbound: undefined,
       env: this.bindings,

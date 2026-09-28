@@ -25,6 +25,7 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
+import { wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -109,8 +110,37 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
   globalThis.__nimbusTestNamespace = { metadata, manifest };
 }
 
+/**
+ * The guest's module registry, for a standalone shims factory: every code
+ * file the test's bundle holds is one of the launch's module cells, compiled
+ * from the store's text with the wrapper a launch gives it
+ * (core/_shared/commonjs-cell.ts), as the registry compiles its `{ cjs }`
+ * module, once.
+ */
+globalThis.__nimbusTestCompileCell = (text) => {
+  const moduleObject = { exports: {} };
+  new Function('module', 'exports', wrapCommonJsCell(text).text)(moduleObject, moduleObject.exports);
+  return moduleObject.exports;
+};
+const MODULE_CELLS = `
+const __nimbusTestCells = new Map();
+function __nimbusModuleCell(key) {
+  if (!__nimbusTestCells.has(key)) {
+    const text = __vfsBundle[key];
+    __nimbusTestCells.set(key, typeof text === "string" ? globalThis.__nimbusTestCompileCell(text) : null);
+  }
+  return __nimbusTestCells.get(key);
+}
+// No runtime code is staged in a standalone factory.
+function __nimbusRuntimeModule(path) {
+  const err = new EvalError("Module '/" + path + "' was produced after this launch started.");
+  err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+  throw err;
+}
+`;
+
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n`;
+export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n`;
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into
