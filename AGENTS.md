@@ -367,23 +367,50 @@ valid across the flip.
 **Tails reset sessions.** Attaching `wrangler tail` to a Worker resets
 every live session DO it serves. Measured 2026-09-23: with a tail started,
 4 of 4 idle sessions dropped with 1006 within 1-5 s; without one, 0 of 4
-dropped. Start a tail before you create the sessions it should watch, and
-never restart it mid-run. A reset within a few seconds of a tail (re)start
-is self-inflicted. To name a real reset, read
-`durableObjectsPeriodicGroups` in the GraphQL analytics.
-`sum { exceededMemoryErrors exceededCpuErrors fatalInternalErrors }` per
-object and `datetime` names the cause, and `max { memoryUsageBytes }` is the
-peak over each 60 s window of the object's life. A session's facets report
-under the session's name and id. The session's own rows are the ones with
-`max { activeWebsocketConnections }` of at least 1 and nonzero
-`rowsWritten`. A reset with no counter, no deploy and no tail is a platform
-shutdown (runtime update or host move). The DO lifecycle docs say such a
-shutdown terminates WebSockets. `fatalInternalErrors` is also what a
-deliberate `ctx.abort()` counts as. `durable/eviction-survival` and
-`durable/universal-scoped-survival` call `POST /api/_diag/abort`, about 4-5
-minutes into a suite run. Their tail events end `aborted` with "Application
-called abort() to reset Durable Object.". Such a row is the probe working,
-not a session death.
+dropped. A reset within a few seconds of a tail (re)start is
+self-inflicted. So do not reach for a tail to diagnose a reset; everything
+it showed is persisted without one, and reading it touches no session:
+
+- **Workers Logs**, filtered by `$workers.durableObjectId`, the instance id
+  every Durable Object request log carries: the object's own lines, in
+  order, up to the reset.
+- **Traces** (`observability.traces`: every invocation on dev, staging,
+  `apps/probe` and throwaways; 1 in 100 on production). Spans carry
+  `cloudflare.durable_object.id`, and RPC spans link each caller to the
+  object it reached. A supervisor call the platform lost is classified by
+  its own spans: `nimbus.supervisor.deliver` / `.read` / `.append` on the
+  sender (`nimbus.pid`, `nimbus.writer_id`, `nimbus.operation_id` or
+  `nimbus.read_id`, `do_call.attempts`, `do_call.hedges`,
+  `do_call.answered_by`, `do_call.outcome`, one exception per lost attempt
+  whose code is its class), and under it `nimbus.session.deliver` /
+  `.read` per attempt that arrived (`nimbus.receipt`: `applied`,
+  `replayed`, `awaited`, `tombstoned`; `nimbus.read.joined`). An attempt
+  with a caller-side exception and no session span never reached the
+  session. Query them with the observability telemetry API
+  (`POST /accounts/<id>/workers/observability/telemetry/query`, filter on
+  `$metadata.service` and the attribute). Code inside a Dynamic Worker
+  (the facet's own program) is not traced: the loader's docs route its
+  logs through `WorkerCode.tails` only, so its side starts at the
+  SupervisorRPC span.
+- **GraphQL `durableObjectsPeriodicGroups`**, per object and `datetime`:
+  `sum { exceededMemoryErrors exceededCpuErrors fatalInternalErrors }`
+  names the cause, and `quantiles { memoryUsageBytesP50 memoryUsageBytesP90
+  memoryUsageBytesP99 memoryUsageBytesP999 }` (with `max { memoryUsageBytes }`
+  for the peak of each 60 s window) says how close the object came. Every
+  sample is the whole isolate's memory, other objects sharing it included.
+  A session's facets report under the session's name and id. The session's
+  own rows are the ones with `max { activeWebsocketConnections }` of at
+  least 1 and nonzero `rowsWritten`.
+
+If you must tail, start it before you create the sessions it should watch,
+and never restart it mid-run. A reset with no counter, no deploy and no
+tail is a platform shutdown (runtime update or host move). The DO
+lifecycle docs say such a shutdown terminates WebSockets.
+`fatalInternalErrors` is also what a deliberate `ctx.abort()` counts as.
+`durable/eviction-survival` and `durable/universal-scoped-survival` call
+`POST /api/_diag/abort`, about 4-5 minutes into a suite run. Their logs
+end `aborted` with "Application called abort() to reset Durable Object.".
+Such a row is the probe working, not a session death.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes

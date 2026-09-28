@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Workers traces are on for every deployment: every invocation on dev,
+  staging, `apps/probe` and throwaways, 1 in 100 on production
+  (`observability.traces`). A supervisor call the platform drops is now
+  classified by its spans. SupervisorRPC's `nimbus.supervisor.deliver`,
+  `.read` and `.append` spans name the process, writer, operation or read
+  id, the attempts, the hedges and the attempt that answered, with one
+  exception per lost attempt coded by its failure class. Under them, the
+  session's `nimbus.session.deliver` and `.read` spans record what each
+  arriving attempt met: `nimbus.receipt` (`applied`, `replayed`, `awaited`,
+  `tombstoned`) or `nimbus.read.joined`, and the refusal (ESTALE, EIO) as an
+  exception. `idempotent()` in `@nimbus-sh/fabric/do-calls` takes a `span`
+  policy field for this. `@nimbus-sh/platform/tracing` carries the Workers
+  span API to core and fabric, which cannot import `cloudflare:workers`;
+  `@nimbus-sh/worker` hands it over at module scope (`adoptTracing`).
+  AGENTS.md now points reset diagnosis at Workers Logs, traces and the
+  GraphQL memory percentiles instead of `wrangler tail`.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

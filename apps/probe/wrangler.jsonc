@@ -11,7 +11,13 @@
   "compatibility_flags": ["nodejs_compat"],
   // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
   "limits": { "cpu_ms": 300000 },
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Traces on every invocation: throwaways and nimbus-probe-staging are where
+  // a lost supervisor call is diagnosed (see apps/hosted-demo/wrangler.jsonc).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
   "preview_urls": false,
   "vars": {
     // Where every resident process in this deployment runs: "facet" (a child

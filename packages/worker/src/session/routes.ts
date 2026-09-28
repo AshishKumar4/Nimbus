@@ -1372,6 +1372,12 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     // Gated twice, like the other _diag writes: NIMBUS_DEBUG off → 404, and
     // the caller's verified scopes must carry `session:admin` — a reset is
     // destructive even in debug mode, and an attach-scope token is not one.
+    //
+    // The abort keeps the platform's default alarm retry (no `retryAlarm:
+    // false`, https://developers.cloudflare.com/changelog/post/2026-08-25-durable-object-alarm-abort-no-retry/):
+    // it stands in for a platform reset, after which an interrupted timer
+    // (a suspended resident launch, a process-log flush) must run again on
+    // the replacement instance, exactly as it would after a real one.
     if (url.pathname === '/api/_diag/abort' && request.method === 'POST') {
       if (!self.nimbusDebug) return new Response('not found', { status: 404 });
       const callerScopes = (request.headers.get(CALLER_SCOPES_HEADER) ?? '').split(' ');

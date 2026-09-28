@@ -46,6 +46,7 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
+import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
@@ -232,14 +233,37 @@ export class SupervisorRPC extends WorkerEntrypoint {
     );
   }
 
-  /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
+  /**
+   * `envelope`, re-sent as it is on a fresh stub while the platform drops it
+   * retryably, in the span that classifies a lost call: which process and
+   * writer sent which operation under which id, how many attempts it took,
+   * whether a hedge fired, which attempt answered, and how each lost one
+   * failed (fabric do-calls `span`). The session's side of the same call is
+   * its `nimbus.session.*` span, under the RPC span of the attempt that
+   * reached it.
+   */
   private _resent<T>(envelope: SupervisorOpEnvelope, policy?: DoCallRetryPolicy): Promise<T> {
-    return idempotent(
-      envelope.delivery?.op ?? envelope.op,
+    const operation = envelope.delivery?.op ?? envelope.op;
+    // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
+    const props = this.ctx.props as { doId?: string; writerId?: string } | undefined;
+    const kind = envelope.delivery ? 'deliver' : envelope.readId ? 'read' : 'append';
+    // An append and its acknowledgement repeat under the append ledger's operation id.
+    const appendOperation = envelope.op === 'fsAppend' ? envelope.args?.[2]
+      : envelope.op === 'fsAppendAck' ? envelope.args?.[1] : undefined;
+    return traced(`nimbus.supervisor.${kind}`, {
+      'nimbus.op': operation,
+      'nimbus.pid': envelope.pid,
+      'nimbus.session_do': props?.doId,
+      'nimbus.writer_id': envelope.writerId ?? props?.writerId,
+      'nimbus.operation_id': envelope.delivery?.id ?? (typeof appendOperation === 'string' ? appendOperation : undefined),
+      'nimbus.host_incarnation': envelope.delivery?.hostIncarnation,
+      'nimbus.read_id': envelope.readId,
+    }, (span) => idempotent(
+      operation,
       () => this._host(),
       (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
-      policy,
-    );
+      { ...policy, span },
+    ));
   }
 
   private _hostIncarnation(): string | undefined {
