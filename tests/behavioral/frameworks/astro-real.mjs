@@ -22,10 +22,13 @@
 //      template's page through /s/<sid>/port/4321/.
 //
 // Current boundary (check 3 is expected RED until it moves): Vite 8 and
-// rolldown load and run, but Astro loads astro.config and every page through
-// Vite's SSR module runner, which evaluates transformed module text with
-// `new AsyncFunction` — runtime code generation a Worker refuses outside
-// module evaluation. The evidence line records the process log's tail.
+// rolldown load and run. `astro dev` then stops at satteri, Astro 7's
+// Markdown engine: another napi-rs addon whose only wasm build
+// (@bruits/satteri-wasm32-wasi) imports a shared memory — the same
+// wasm32-wasip1-threads ABI rolldown had, so it needs the same staged
+// single-threaded build. Behind it, Astro loads astro.config and every page
+// through Vite's SSR module runner (`new AsyncFunction`), runtime code
+// generation a Worker refuses outside module evaluation.
 
 import {
   Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort,

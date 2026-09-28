@@ -6,16 +6,18 @@
 // Category: R (runtime-behavioral)
 //
 // User scenario:
-//   app/layout.tsx + app/page.tsx, package.json with vinext + vite@8 + react
+//   app/layout.tsx + app/page.tsx + the vite.config.ts `vinext init` writes,
+//   package.json with vinext + vite@8 + react
 //   npm install
 //   npx vinext dev --port 3000
 //
 // Current boundary (the serve check is expected RED until it moves): Vite 8
 // and rolldown load and run (Nimbus answers rolldown's binding with its
-// staged single-threaded wasm32-wasip1 build), but Vinext renders through
-// Vite's RSC/SSR module runner, which evaluates transformed module text with
-// `new AsyncFunction` — runtime code generation a Worker refuses outside
-// module evaluation. The evidence line records the process log's tail.
+// staged single-threaded wasm32-wasip1 build), but `vinext dev` loads
+// vite.config.ts the way the Vite CLI does — bundled to
+// node_modules/.vite-temp and import()ed — and renders through Vite's RSC/SSR
+// module runner (`new AsyncFunction`): runtime code generation a Worker
+// refuses outside module evaluation. The evidence line records the log tail.
 
 import {
   Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort,
@@ -39,6 +41,8 @@ const FILES = {
   }, null, 2),
   'app/layout.tsx': 'export default function RootLayout({ children }: { children: React.ReactNode }) {\n  return <html lang="en"><body>{children}</body></html>;\n}\n',
   'app/page.tsx': `export default function Page() {\n  return <h1>${MARKER}</h1>;\n}\n`,
+  // What `vinext init` writes: vinext refuses to start without a Vite config.
+  'vite.config.ts': "import { defineConfig } from 'vite';\nimport vinext from 'vinext';\n\nexport default defineConfig({ plugins: [vinext()] });\n",
 };
 
 async function run(t, cmd, timeoutMs) {
