@@ -244,9 +244,10 @@ for (const fixture of [
 }
 
 // ── 3b. Staged-artifact lookup + rewrite parity ─────────────────────────
-// The facet rewrites native-launcher packages (opencode-ai) into the Nimbus
-// staged-bundle sentinel via the injected __policyApplyStagedArtifact. Assert
-// the facet's lookup and rewrite produce the identical pkg as the supervisor's
+// The facet rewrites native packages with a staged Nimbus build — a native
+// launcher (opencode-ai, `bin`) or a native N-API binding (rolldown,
+// `binding`) — via the injected __policyApplyStagedArtifact. Assert the
+// facet's lookup and rewrite produce the identical pkg as the supervisor's
 // applyStagedArtifact, so the two paths can never drift.
 for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
   assert.deepEqual(
@@ -255,12 +256,12 @@ for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
     `staged-artifact lookup parity: ${entry.from}`,
   );
 
-  // Realistic native-launcher shape: a native bin + platform-native shards +
-  // os/cpu/libc allowlists — exactly what the rewrite must clear.
+  // Realistic native shape: a bin + platform-native shards + os/cpu/libc
+  // allowlists — what the rewrite must clear (and, for a launcher, redirect).
   const makePkg = () => ({
     name: entry.from,
-    bin: { [entry.bin]: 'bin/opencode.exe' },
-    optionalDependencies: { 'opencode-linux-x64': '1.16.2', 'opencode-darwin-arm64': '1.16.2' },
+    bin: { [entry.kind === 'bin' ? entry.bin : entry.from]: 'bin/cli.js' },
+    optionalDependencies: { [`${entry.from}-linux-x64`]: '1.0.0', [`${entry.from}-darwin-arm64`]: '1.0.0' },
     os: ['darwin', 'linux', 'win32'],
     cpu: ['arm64', 'x64'],
     libc: ['glibc'],
@@ -279,12 +280,22 @@ for (const entry of PACKAGE_ABI_POLICY.stagedArtifacts) {
     supervisorPkg,
     `staged-artifact rewrite parity: ${entry.from}`,
   );
-  // Spot-check the rewrite actually fired (sentinel bin, cleared natives).
-  assert.equal(facetPkg.bin[entry.bin], `nimbus-staged:${entry.artifact}`);
+  // A launcher's bin becomes the staged sentinel; a binding's JavaScript
+  // (and its bin) run as published. Both lose their native shards.
+  if (entry.kind === 'bin') assert.equal(facetPkg.bin[entry.bin], `nimbus-staged:${entry.artifact}`);
+  else assert.deepEqual(facetPkg.bin, { [entry.from]: 'bin/cli.js' });
   assert.equal(facetPkg.optionalDependencies, undefined);
   assert.equal(facetPkg.os, undefined);
   assert.equal(facetPkg.cpu, undefined);
   assert.equal(facetPkg.libc, undefined);
+}
+// rolldown and the wasm package it requires are answered by one staged
+// binding; neither is refused any longer.
+for (const name of ['rolldown', '@rolldown/binding-wasm32-wasi']) {
+  const staged = lookupStagedArtifact(name);
+  assert.equal(staged?.kind, 'binding', `${name} is a staged binding`);
+  assert.equal(staged?.artifact, 'rolldown-binding');
+  assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
 }
 // Names with no staged entry are left untouched by both paths.
 assert.equal(facet.STAGED_ARTIFACT('left-pad'), undefined);

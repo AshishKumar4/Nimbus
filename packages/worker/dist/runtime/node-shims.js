@@ -546,7 +546,7 @@ const __BufferMod = (() => {
   // throwaway views.
   const _view = Uint8Array.prototype.subarray;
 
-  function from(d, encoding) {
+  function from(d, encoding, length) {
     if (typeof d === "string") {
       if (encoding === "base64") {
         const bin = atob(d); const a = new Uint8Array(bin.length);
@@ -561,7 +561,18 @@ const __BufferMod = (() => {
       return _wrap(_enc.encode(d));
     }
     if (d instanceof Uint8Array) return _wrap(new Uint8Array(d));
-    if (d instanceof ArrayBuffer) return _wrap(new Uint8Array(d));
+    // Buffer.from(arrayBuffer[, byteOffset[, length]]) is a view that shares
+    // the memory, bounded by the two numbers — napi-wasm hands every result
+    // buffer back as Buffer.from(wasmMemory.buffer, ptr, len). Ignoring the
+    // bounds returned the whole memory instead (lightningcss-wasm's minified
+    // CSS came back as 1.4 MB of mostly NUL bytes).
+    if (d instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && d instanceof SharedArrayBuffer)) {
+      const offset = encoding === undefined ? 0 : Math.trunc(Number(encoding)) || 0;
+      if (offset < 0 || offset > d.byteLength) throw new RangeError('"offset" is outside of buffer bounds');
+      const size = length === undefined ? d.byteLength - offset : Math.trunc(Number(length)) || 0;
+      if (size < 0 || offset + size > d.byteLength) throw new RangeError('"length" is outside of buffer bounds');
+      return _wrap(new Uint8Array(d, offset, size));
+    }
     if (Array.isArray(d)) return _wrap(new Uint8Array(d));
     return _wrap(new Uint8Array(0));
   }
@@ -5787,7 +5798,21 @@ const __urlMod = {
   parse: (s) => { try { const u = new URL(s); return { protocol: u.protocol, hostname: u.hostname, port: u.port, pathname: u.pathname, search: u.search, hash: u.hash, href: u.href, host: u.host }; } catch { return { href: s }; } },
   format: (o) => { if (typeof o === "string") return o; if (o instanceof URL) return o.href; return (o.protocol || "http:") + "//" + (o.hostname || "") + (o.port ? ":" + o.port : "") + (o.pathname || "/") + (o.search || ""); },
   resolve: (from, to) => new URL(to, from).href,
-  pathToFileURL: (p) => new URL("file://" + p),
+  // Node's semantics: a relative path resolves against the process's cwd, a
+  // trailing slash survives, and the characters the URL parser would read as
+  // syntax or leave raw are percent-encoded ('%' first; the pathname setter
+  // encodes '?', '#', spaces and controls such as rolldown's "\\0" virtual-id
+  // prefix). Prefixing "file://" instead made a relative path's first segment
+  // the URL's host, which throws for "\\0rolldown/runtime.js" and misnames
+  // every other one.
+  pathToFileURL: (p) => {
+    const input = String(p);
+    let resolved = __pathMod.resolve(input);
+    if (input.endsWith("/") && !resolved.endsWith("/")) resolved += "/";
+    const url = new URL("file:///");
+    url.pathname = resolved.replace(/%/g, "%25").replace(/\\n/g, "%0A").replace(/\\r/g, "%0D").replace(/\\t/g, "%09");
+    return url;
+  },
   fileURLToPath: (u) => (typeof u === "string" ? u : u.pathname).replace(/^file:\\/\\//, ""),
 };
 __urlMod.URL = globalThis.URL;
@@ -7745,20 +7770,111 @@ builtins.tty = {
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
-	builtins.module = {
-	  get builtinModules() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); },
-	  createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)),
-	  isBuiltin: (specifier) => Object.hasOwn(builtins, String(specifier).replace(/^node:/, '')) && !__nimbusFacetProvidedPackages.has(String(specifier).replace(/^node:/, '')),
-	  // Node 22.1's on-disk compile cache. There is no disk to cache into and
-	  // nothing to compile ahead: callers (pi's CLI entry calls it
-	  // unconditionally) get Node's own answer for a cache that is off.
-	  enableCompileCache: () => ({ status: 3, message: 'compile cache is not available in this runtime' }),
-	  getCompileCacheDir: () => undefined,
-	  flushCompileCache: () => {},
-	  constants: { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } },
-	  _resolveFilename: (id) => id,
-	  _cache: {},
-	};
+// node:module. In Node \`require('module')\` IS the Module constructor, its
+// statics the module API, and \`Module.Module\` the same function: loaders
+// such as jiti (Nuxt's nuxt.config, c12) build a module by hand —
+// \`new Module(filename)\`, then \`paths\`, \`require\`, and \`_compile\` — so
+// the constructor has to exist with Node's shape. \`_compile\` turns source
+// text into code: through the runtime-code service when the launch carries
+// one (a module written after launch is staged for the next launch there),
+// otherwise with the compiler module evaluation allows, whose refusal at
+// request time names the file honestly.
+function __NodeModule(id = "", parent) {
+  if (!new.target) throw new TypeError("Class constructor Module cannot be invoked without 'new'");
+  this.id = String(id);
+  this.path = __pathMod.dirname(this.id || ".");
+  this.exports = {};
+  this.filename = null;
+  this.loaded = false;
+  this.children = [];
+  this.paths = [];
+  Object.defineProperty(this, "parent", { value: parent, writable: true, configurable: true, enumerable: false });
+  if (parent && Array.isArray(parent.children)) parent.children.push(this);
+}
+__NodeModule.prototype.require = function require(request) {
+  if (typeof request !== "string" || request === "") {
+    const e = new TypeError('The "id" argument must be of type string. Received ' + (request === "" ? "''" : typeof request));
+    e.code = request === "" ? "ERR_INVALID_ARG_VALUE" : "ERR_INVALID_ARG_TYPE";
+    throw e;
+  }
+  return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\\/+/, ""));
+};
+__NodeModule.prototype._compile = function _compile(content, filename) {
+  const file = String(filename ?? this.filename ?? this.id);
+  const dir = __pathMod.dirname(file);
+  const text = String(content).replace(/^#!.*/, "");
+  const service = globalThis.__nimbusRuntimeCode;
+  let wrapper;
+  if (service && typeof service.compileModule === "function") {
+    wrapper = service.compileModule(file, text);
+  } else {
+    try {
+      wrapper = __mkCompiledFn(text);
+    } catch (e) {
+      if (e && /Code generation from strings disallowed/.test(String(e.message))) {
+        const err = new Error("Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
+        err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+        throw err;
+      }
+      throw e;
+    }
+  }
+  const moduleRequire = (request) => this.require(request);
+  moduleRequire.resolve = (request) => __NodeModule._resolveFilename(request, this);
+  moduleRequire.cache = __moduleCache;
+  moduleRequire.main = __require.main;
+  return wrapper.call(this.exports, this.exports, moduleRequire, this, file, dir);
+};
+Object.defineProperty(__NodeModule, "builtinModules", {
+  get() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); },
+  enumerable: true, configurable: true,
+});
+__NodeModule.createRequire = (specifier) => __makeRequire(__requireBaseDir(specifier));
+__NodeModule.isBuiltin = (specifier) => Object.hasOwn(builtins, String(specifier).replace(/^node:/, '')) && !__nimbusFacetProvidedPackages.has(String(specifier).replace(/^node:/, ''));
+// Node 22.1's on-disk compile cache. There is no disk to cache into and
+// nothing to compile ahead: callers (pi's CLI entry calls it
+// unconditionally) get Node's own answer for a cache that is off.
+__NodeModule.enableCompileCache = () => ({ status: 3, message: 'compile cache is not available in this runtime' });
+__NodeModule.getCompileCacheDir = () => undefined;
+__NodeModule.flushCompileCache = () => {};
+__NodeModule.constants = { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } };
+__NodeModule.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\\n});"];
+__NodeModule.wrap = (script) => __NodeModule.wrapper[0] + script + __NodeModule.wrapper[1];
+__NodeModule._extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
+__NodeModule._cache = {};
+__NodeModule.globalPaths = [];
+// Node's lookup path list: every ancestor's node_modules, nearest first,
+// never a node_modules/node_modules.
+__NodeModule._nodeModulePaths = (from) => {
+  const resolved = __pathMod.resolve(String(from));
+  if (resolved === "/") return ["/node_modules"];
+  const paths = [];
+  const parts = resolved.split("/");
+  for (let i = parts.length; i > 0; i--) {
+    if (parts[i - 1] === "node_modules") continue;
+    const dir = parts.slice(0, i).join("/");
+    paths.push((dir || "") + "/node_modules");
+  }
+  return paths;
+};
+__NodeModule._resolveFilename = (request, parent) => {
+  const id = String(request).replace(/^node:/, "");
+  if (Object.hasOwn(builtins, id) && !__nimbusFacetProvidedPackages.has(id)) return String(request);
+  const from = parent && (parent.filename || parent.id)
+    ? __pathMod.dirname(parent.filename || parent.id)
+    : (cwd || "/home/user");
+  const resolved = __resolveFrom(String(request), from.replace(/^\\/+/, ""));
+  if (!resolved) {
+    const e = new Error("Cannot find module '" + request + "'");
+    e.code = "MODULE_NOT_FOUND";
+    throw e;
+  }
+  return "/" + String(resolved).replace(/^\\/+/, "");
+};
+__NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
+__NodeModule.Module = __NodeModule;
+Object.defineProperty(__NodeModule, "name", { value: "Module" });
+builtins.module = __NodeModule;
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
 // when called with a receiver other than globalThis (i.e. as
 // timers.setInterval(...)), which clack's spinner — used by
@@ -9124,6 +9240,48 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
 };
 
 /**
+ * Staged N-API bindings (PACKAGE_ABI_POLICY stagedArtifacts of kind
+ * "binding"). A launch whose closure requires one carries the staged wasm
+ * build in its module map and registers it on globalThis.__nimbusStagedBindings
+ * under the package name the binding is required by. require() answers that
+ * name from the registry ahead of node_modules: the published package of that
+ * name (rolldown's wasm32-wasip1-threads build, or a platform shard) cannot
+ * run in a Worker isolate.
+ */
+function __stagedBinding(id) {
+  const registry = globalThis.__nimbusStagedBindings;
+  return registry instanceof Map ? registry.get(id) : undefined;
+}
+
+function __loadStagedBinding(entry, fromDir) {
+  if (entry.exports !== undefined) return entry.exports;
+  // The binding is built from one upstream version. The package requiring it
+  // must be that version, or its JavaScript and the binding disagree about
+  // every class and option; a require from anywhere else has no version to
+  // check against.
+  const marker = "node_modules/" + entry.owner + "/";
+  const dir = fromDir + "/";
+  const at = dir.lastIndexOf(marker);
+  if (at >= 0) {
+    const manifest = "/" + dir.slice(0, at + marker.length) + "package.json";
+    let version = null;
+    try { version = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")).version; } catch {}
+    if (version !== entry.version) {
+      throw new Error("Nimbus runs " + entry.owner + "'s N-API binding from a staged " + entry.version
+        + " build; this process loaded " + entry.owner + "@" + version + " (" + manifest + "), which it"
+        + " does not match. Install " + entry.owner + "@" + entry.version + ".");
+    }
+  }
+  entry.exports = entry.create({
+    fs: builtins.fs,
+    env: builtins.process.env,
+    writeStdout: (bytes) => builtins.process.stdout.write(bytes),
+    writeStderr: (bytes) => builtins.process.stderr.write(bytes),
+  });
+  return entry.exports;
+}
+
+/**
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
  */
@@ -9134,6 +9292,8 @@ function __requireFrom(id, fromDir) {
     const bare = id.substring(5);
     if (builtins[bare]) return builtins[bare];
   }
+  const staged = __stagedBinding(id);
+  if (staged) return __loadStagedBinding(staged, fromDir);
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
@@ -9155,6 +9315,7 @@ function __requireBaseDir(specifier) {
 function __makeRequire(fromDir) {
   const localRequire = (id) => __requireFrom(id, fromDir);
   localRequire.resolve = (id) => {
+    if (__stagedBinding(id)) return id;
     const r = __resolveFrom(id, fromDir);
     if (!r) throw new Error("Cannot resolve '" + id + "'");
     return "/" + r;
@@ -9172,6 +9333,7 @@ function __require(id) {
   return __requireFrom(id, dirname || cwd || "/home/user");
 }
 __require.resolve = (id) => {
+  if (__stagedBinding(id)) return id;
   const r = __resolveFrom(id, dirname || cwd || "/home/user");
   if (!r) throw new Error("Cannot resolve '" + id + "'");
   return "/" + r;

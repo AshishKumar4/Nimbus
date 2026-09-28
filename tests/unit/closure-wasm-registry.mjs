@@ -53,13 +53,33 @@ assert.deepEqual(images, new Map([
 assert.equal(wasmImageDigest(big), wasmImageDigest(big), 'the closure digest is stable and consistent');
 console.log('  the closure walk records a staged image and an over-cap image, by path and digest');
 
-// A cell is digested from the cell; an unstaged path from a single read.
+// A cell is digested from the cell; a file from ranged reads, never whole:
+// the coordinator digests while the launch's module map is resident, and a
+// whole 15 MiB image beside it reset the isolate. A staged module naming a
+// sibling image by a relative literal (lightningcss-wasm's
+// `new URL('lightningcss_node.wasm', import.meta.url)`) names that image.
 {
-  let reads = 0;
-  const counting = { readFile: (p) => { reads++; return vfs.readFile(p); } };
-  const direct = (await collectClosureWasmImages(counting, { [`${PKG}/lib/small.wasm`]: small }, [`${PKG}/lib/small.wasm`, `${PKG}/esbuild.wasm`, `${PKG}/missing.wasm`]));
-  assert.equal(reads, 2, 'a staged cell is not read again; a missing file is skipped');
-  assert.deepEqual(direct.map((i) => i.vfsPath).sort(), [`/${PKG}/esbuild.wasm`, `/${PKG}/lib/small.wasm`]);
+  let wholeReads = 0;
+  let largestRange = 0;
+  const counting = new Proxy(vfs, {
+    get(target, prop) {
+      if (prop === 'readFile') return (...a) => { wholeReads++; return target.readFile(...a); };
+      if (prop === 'readRange') return (p, offset, length) => { largestRange = Math.max(largestRange, length); return target.readRange(p, offset, length); };
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const loader = 'home/user/app/node_modules/esbuild-wasm/lib/main.js';
+  const direct = (await collectClosureWasmImages(counting, {
+    [`${PKG}/lib/small.wasm`]: small,
+    [loader]: 'module.exports = new WebAssembly.Module(require("fs").readFileSync(new URL("../esbuild.wasm", import.meta.url)));',
+  }, [`${PKG}/lib/small.wasm`, `${PKG}/missing.wasm`]));
+  assert.equal(wholeReads, 0, 'no image is read whole; a staged cell is not read again; a missing file is skipped');
+  assert.ok(largestRange > 0 && largestRange <= 1024 * 1024, `digested in slices of at most 1 MiB (largest ${largestRange})`);
+  assert.deepEqual(new Map(direct.map((i) => [i.vfsPath, i.digest])), new Map([
+    [`/${PKG}/esbuild.wasm`, wasmImageDigest(big)],
+    [`/${PKG}/lib/small.wasm`, wasmImageDigest(small)],
+  ]), 'the literal-named sibling image is collected, with the same digest as a whole read');
 }
 
 // ── the launch stages them as wasm map entries, under both keys ───────

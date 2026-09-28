@@ -57,4 +57,21 @@ const target = Buffer.alloc(5);
 buf.copy(target, 0, 6, 11);
 assert.equal(target.toString(), 'World');
 
+// Buffer.from(arrayBuffer, byteOffset, length) is a bounded view on the same
+// memory — how napi-wasm returns every result buffer from a wasm memory. The
+// bounds were ignored and the whole ArrayBuffer came back.
+{
+  const memory = new ArrayBuffer(64);
+  new Uint8Array(memory).set([0x63, 0x73, 0x73, 0x21], 8);
+  const result = Buffer.from(memory, 8, 3);
+  assert.equal(result.length, 3);
+  assert.equal(result.byteOffset, 8);
+  assert.equal(result.toString(), 'css');
+  new Uint8Array(memory)[8] = 0x43;
+  assert.equal(result.toString(), 'Css', 'the view shares the memory');
+  assert.equal(Buffer.from(memory, 60).length, 4, 'length defaults to the rest of the buffer');
+  assert.throws(() => Buffer.from(memory, 65), RangeError);
+  assert.throws(() => Buffer.from(memory, 60, 5), RangeError);
+}
+
 console.log('ok - node-shims-buffer-views');

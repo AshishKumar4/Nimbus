@@ -138,6 +138,19 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             ctx: 'transitive',
         });
     };
+    // A staged binding is built from one upstream version; any other version's
+    // JavaScript would load a binding it was not written against, and the
+    // runtime refuses it. Say so at install time, where it can be pinned.
+    const adviseStagedBindingVersion = (pkg) => {
+        const staged = STAGED_ARTIFACT(pkg.name);
+        if (staged?.kind !== 'binding' || staged.version === pkg.version)
+            return;
+        emitAdvisory({
+            from: pkg.name,
+            reason: `Nimbus runs ${staged.from}'s binding from a staged ${staged.version} build, and ${pkg.name}@${pkg.version} will refuse to load it.`,
+            suggest: `${staged.from}@${staged.version}`,
+        });
+    };
     const outNativeExecutableReject = (pkg, bytes, source) => {
         const reject = NATIVE_EXECUTABLE_REJECT(pkg);
         if (!reject)
@@ -267,6 +280,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             module: cached.moduleField,
             bin,
         };
+        adviseStagedBindingVersion(pkgFromCache);
         const nativeReject = outNativeExecutableReject(pkgFromCache, 0, 'cache-hit');
         if (nativeReject)
             return nativeReject;
@@ -434,6 +448,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return resolvedOut;
     };
     const pkg = versionToResolved(vData);
+    adviseStagedBindingVersion(pkg);
     const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
     if (nativeReject)
         return nativeReject;

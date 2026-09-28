@@ -202,9 +202,14 @@ export class SessionProcessSupervisor {
         const signo = DEFAULT_TERMINATING_SIGNALS[signal];
         const entry = this.table.get(pid);
         // Only an attached program reads its signals from this channel; a job
-        // that never reads it is not "not yet started".
-        if (signo !== undefined && entry?.state === 'running' && entry.attachedTty === true
-            && this.input.has(pid) && !this.input.hasReader(pid)) {
+        // that never reads it is not "not yet started". SIGKILL cannot be caught,
+        // blocked or ignored: it ends any running process at once, whether or not
+        // the process reads this channel — a launch stuck before its first read
+        // (a top-level await that never settles) or a background job that never
+        // opens one was otherwise unkillable.
+        const uncatchable = signal === 'SIGKILL';
+        if (signo !== undefined && entry?.state === 'running'
+            && (uncatchable || (entry.attachedTty === true && this.input.has(pid) && !this.input.hasReader(pid)))) {
             const code = 128 + signo;
             // Stop the work first: exit() drops the terminator without running it.
             this.terminate(pid);

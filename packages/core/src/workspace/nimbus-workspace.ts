@@ -514,7 +514,10 @@ function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
  * workspace whose host never runs the login files is still on the real PATH.
  * `PORT` and `HOST` are here because every scaffolded server reads them and
  * gets `undefined` otherwise — Express's default app, every create-vite
- * template, `${PORT:-3000}` in a package.json script.
+ * template, `${PORT:-3000}` in a package.json script. `NODE_ENV` is NOT here,
+ * as on any real machine: every bundler reads a set NODE_ENV as the user's
+ * choice of mode, so a default of `development` made `vite build` emit a
+ * development bundle (jsxDEV calls, React's development build).
  */
 function defaultEnv(): Record<string, string> {
   return {
@@ -526,7 +529,6 @@ function defaultEnv(): Record<string, string> {
     PWD: DEFAULT_HOME,
     PATH: DEFAULT_PATH,
     PS1: `\x1b[1;32muser@${DEFAULT_HOSTNAME}\x1b[0m:\x1b[1;34m\\w\x1b[0m$ `,
-    NODE_ENV: 'development',
     LANG: 'en_US.UTF-8',
     EDITOR: 'nano',
     NIMBUS_VERSION: NIMBUS_VERSION,

@@ -23,6 +23,13 @@
 //      bin, binds 3000, and `GET /s/<sid>/port/3000/` answers 200 with
 //      HTML carrying Nuxt's mount point (`id="__nuxt"`) or the word Nuxt.
 //
+// Current boundary (check 3 RED): rolldown (nuxt depends on it directly and
+// through Vite 8) loads from Nimbus's staged single-threaded build. `nuxt
+// dev` stops loading nuxt.config.ts: c12 hands it to jiti, whose evaluator
+// does `new Module(filename)` (node-shims' node:module has no Module class:
+// "Be.Module is not a constructor") and then compiles the transpiled text at
+// runtime — code generation a Worker refuses outside module evaluation.
+//
 // Failure is loud: if the dev server does not serve within its budget the
 // probe fails with the last 60 lines of the process log in the message
 // instead of an assertion that encodes "expected to fail". Earlier

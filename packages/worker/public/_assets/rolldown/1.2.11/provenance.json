@@ -1,0 +1,104 @@
+{
+  "artifact": "rolldown-binding",
+  "rolldownVersion": "1.2.11",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.11.tar.gz",
+    "sha256": "fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403"
+  },
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1",
+    "rustflags": [
+      "--cfg",
+      "tokio_unstable",
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "binding/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "binding/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfileSha256": "2e0f37b366cc59702cca940f424e4c184804cc4040b4d6050315842b9f34f229",
+    "lockfilePackages": 318,
+    "upstreamLockfilePackages": 405
+  },
+  "npm": {
+    "emnapi@2.0.0-alpha.5": {
+      "tarball": "https://registry.npmjs.org/emnapi/-/emnapi-2.0.0-alpha.5.tgz",
+      "integrity": "sha512-E8LRA0oYT1KKPLMLtwWF1BNrXSpNNnOBlu1PU4m5wmBh8cNvrhm28UreTvfwJ2gg60ruyfylk4uCaJUXVhvSSg=="
+    },
+    "@emnapi/core@2.0.0-alpha.5": {
+      "tarball": "https://registry.npmjs.org/@emnapi/core/-/core-2.0.0-alpha.5.tgz",
+      "integrity": "sha512-DbeLFquQJyYGwM3LzPdjvb4IRmAAQuTzEmqUGtIAYxlAO4ArfUZ7WMytLWDSsCAYm6MZJNeojaawQQiFrFVehg=="
+    },
+    "@emnapi/runtime@2.0.0-alpha.5": {
+      "tarball": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-2.0.0-alpha.5.tgz",
+      "integrity": "sha512-SS4jUXRklsrPKTEtW92WHdneh9QBrZGmRyeYEac2ktLN3ie1wd/BrkBbk4DqPWKhjSFfrR8NClXwMlfZ73m60A=="
+    },
+    "@emnapi/wasi-threads@2.1.0": {
+      "tarball": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-2.1.0.tgz",
+      "integrity": "sha512-DM18NXgQ5coifswrwhFgrqeW/UiFRaLj0aLKU0cp0FoYjEfP/hj/yUeF+Hz754ViG+jQmG2HIeDCUeQsPnRwOA=="
+    }
+  },
+  "wasm": {
+    "memoryMinPages": 86,
+    "sharedMemory": false,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_get",
+      "fd_prestat_dir_name",
+      "fd_read",
+      "fd_readdir",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_unlink_file",
+      "poll_oneoff",
+      "proc_exit",
+      "sched_yield"
+    ],
+    "trampolineDispatches": [
+      "fd_close",
+      "fd_filestat_get",
+      "fd_filestat_set_size",
+      "fd_pread",
+      "fd_pwrite",
+      "fd_read",
+      "fd_readdir",
+      "fd_seek",
+      "fd_sync",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_rename",
+      "path_symlink",
+      "path_unlink_file",
+      "poll_oneoff"
+    ]
+  },
+  "outputs": {
+    "rolldown-binding.wasm": {
+      "bytes": 13472189,
+      "sha256": "375367ad1751e6d851890d3dd3f30c4ca66912d601d828862757438c59402f34"
+    },
+    "wasi-trampoline.wasm": {
+      "bytes": 1961,
+      "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6"
+    },
+    "rolldown-binding-loader.mjs": {
+      "bytes": 201491,
+      "sha256": "5477777f37f51c2ea326f0234bd95c5968eb5ab5fff1ec1bd67272226341d03c"
+    }
+  }
+}

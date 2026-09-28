@@ -13,11 +13,11 @@ const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
     'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],
     'home/user/kit dist': ['index.mjs'],
     'home/user/app': ['main.js', 'node_modules'],
-    'home/user/app/node_modules': ['rolldown', '@rolldown', 'left-pad'],
-    'home/user/app/node_modules/rolldown': ['dist'],
-    'home/user/app/node_modules/rolldown/dist': ['binding.mjs'],
-    'home/user/app/node_modules/@rolldown': ['binding-wasm32-wasi'],
-    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi': ['binding.cjs'],
+    'home/user/app/node_modules': ['sharp', '@tailwindcss', 'left-pad'],
+    'home/user/app/node_modules/sharp': ['lib'],
+    'home/user/app/node_modules/sharp/lib': ['sharp.js'],
+    'home/user/app/node_modules/@tailwindcss': ['oxide'],
+    'home/user/app/node_modules/@tailwindcss/oxide': ['index.js'],
     'home/user/app/node_modules/left-pad': ['index.js'],
   } }), factory(
   {
@@ -27,9 +27,9 @@ const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
     // answer is the status Node gives when the cache is off.
     'home/user/compile-cache.js': 'const m = require("node:module"); module.exports = [m.enableCompileCache().status === m.constants.compileCacheStatus.DISABLED, m.isBuiltin("node:fs"), m.isBuiltin("fs"), m.isBuiltin("undici"), m.isBuiltin("left-pad")];\n',
     'home/user/kit dist/index.mjs': 'module.exports = "kit";\n',
-    'home/user/app/main.js': 'require("./node_modules/rolldown/dist/binding.mjs");\n',
-    'home/user/app/node_modules/rolldown/dist/binding.mjs': 'throw new Error("Cannot find native binding.");\n',
-    'home/user/app/node_modules/@rolldown/binding-wasm32-wasi/binding.cjs': 'throw new Error("Cannot find module \'node:wasi\'");\n',
+    'home/user/app/main.js': 'require("./node_modules/sharp/lib/sharp.js");\n',
+    'home/user/app/node_modules/sharp/lib/sharp.js': 'throw new Error("Could not load the sharp module.");\n',
+    'home/user/app/node_modules/@tailwindcss/oxide/index.js': 'throw new Error("Cannot find native binding.");\n',
     'home/user/app/node_modules/left-pad/index.js': 'throw new Error("left-pad failed");\n',
   },
   {},
@@ -71,9 +71,9 @@ function loadError(path) {
   return assert.fail(`${path} was expected to throw`);
 }
 for (const [path, pkg] of [
-  ['/home/user/app/main.js', 'rolldown'],
-  ['/home/user/app/node_modules/rolldown/dist/binding.mjs', 'rolldown'],
-  ['/home/user/app/node_modules/@rolldown/binding-wasm32-wasi/binding.cjs', '@rolldown/binding-wasm32-wasi'],
+  ['/home/user/app/main.js', 'sharp'],
+  ['/home/user/app/node_modules/sharp/lib/sharp.js', 'sharp'],
+  ['/home/user/app/node_modules/@tailwindcss/oxide/index.js', '@tailwindcss/oxide'],
 ]) {
   const e = loadError(path);
   const note = `Nimbus: ${pkg} has no Workers-compatible build: ${lookupReject(pkg).reason}`;

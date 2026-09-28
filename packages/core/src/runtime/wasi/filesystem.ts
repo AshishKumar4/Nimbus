@@ -133,6 +133,14 @@ export interface AuthorityFilesystemOptions {
    * is fetched again on its next open. Zero keeps every open on the authority.
    */
   residentBytes?: number;
+  /**
+   * Whether a resident copy outlives its descriptor (default true). A guest
+   * whose host process already holds the filesystem's content (a node
+   * process's resident view) gains nothing from a second copy per inode and
+   * pays for it in heap, so it reads afresh on every open and the copy dies
+   * with the descriptor.
+   */
+  retainResident?: boolean;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -177,6 +185,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const resident = new Map<string, { revision: number; bytes: Uint8Array }>();
   const residentBytes = options.residentBytes ?? 0;
   const residentContent = (fs: Fs, target: RuntimeFsPath, st: RuntimeVfsStat): Awaitable<Uint8Array> => {
+    if (options.retainResident === false) return after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
     if (cached && cached.revision === st.revision) return cached.bytes;
