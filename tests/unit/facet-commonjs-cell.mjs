@@ -10,6 +10,7 @@ import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
   COMMONJS_CELL_TAIL,
+  runtimeFunctionModule,
   wrapCommonJsCell,
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
 
@@ -107,6 +108,28 @@ function run(cell, requireImpl = () => 'required') {
   assert.equal(commonJsCellReadsBack('home/user/50%.js'), false);
   assert.equal(commonJsCellReadsBack('home/user/a\\b.js'), false);
   console.log('  [9] module names escape exactly %, #, ? and \\');
+}
+
+// Runtime code: the module for a Function-constructor call builds what the
+// constructor builds — its source text (which a module runner measures its
+// source-map offset from) and its kind — and closes over the global scope.
+{
+  const cases = [
+    ['function', Function, ['a', 'b'], 'return a * b'],
+    ['async', (async () => {}).constructor, ['x'], 'return await x'],
+    ['generator', (function* () {}).constructor, [], 'yield 1'],
+    ['asyncGenerator', (async function* () {}).constructor, ['n = 2'], 'yield n'],
+  ];
+  for (const [kind, Ctor, params, body] of cases) {
+    const built = load(runtimeFunctionModule(kind, params, body));
+    const native = new Ctor(...params, body);
+    assert.equal(built.toString(), native.toString(), `${kind}: the source text is the constructor's`);
+    assert.equal(built.constructor, Ctor, `${kind}: the same kind of function`);
+  }
+  assert.equal(load(runtimeFunctionModule('function', ['a', 'b'], 'return a * b'))(6, 7), 42);
+  assert.equal(load(runtimeFunctionModule('function', [], 'return typeof module + typeof require + typeof exports'))(),
+    'undefinedundefinedundefined', 'the body sees the global scope, not the CommonJS module\'s');
+  console.log('  [10] a Function-constructor module builds the constructor\'s function');
 }
 
 console.log('facet-commonjs-cell OK');

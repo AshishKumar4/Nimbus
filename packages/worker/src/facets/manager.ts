@@ -22,8 +22,14 @@ import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
   commonJsEntryModuleName,
+  parseRuntimeCodeEntry,
+  RUNTIME_CODE_MAX_BYTES,
+  runtimeCodeKey,
+  runtimeCodeModuleName,
+  runtimeFunctionModule,
   wrapCommonJsCell,
   type CommonJsCellRow,
+  type RuntimeCodeEntry,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -199,6 +205,13 @@ export interface FacetExecResult {
    * when debugging is switched on is not a repair.
    */
   residencyMisses?: string[];
+  /**
+   * Code the run produced and could not compile (a file written then
+   * required, a Function-constructor call), as its ledger reported it:
+   * staged for the next launch of the same entry (commonjs-cell.ts, RUNTIME
+   * CODE). Validated where it is recorded.
+   */
+  runtimeCode?: unknown[];
   /**
    * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses,
    * rpcWrites and fsRpcReads originate inside the facet (see
@@ -647,6 +660,7 @@ const __NimbusHostResponse = globalThis.Response;
 
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
+const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // The module bundle, at module level (startup time); the code cells the store
@@ -859,6 +873,8 @@ ${RESIDENCY_MISS_REPORT}
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
       residencyMisses: __nimbusStagingMisses(),
+      // Code produced while it ran, for the next launch (commonjs-cell.ts).
+      runtimeCode: __nimbusRuntimeCodeLedger(),
       ...(__diag ? { diag: {
         drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
         namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
@@ -1005,6 +1021,7 @@ const __NimbusHostResponse = globalThis.Response;
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
+const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
@@ -1267,7 +1284,7 @@ ${RESIDENCY_MISS_REPORT}
         if (Number(code ?? 0) === 0) code = 1;
         try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])]);
+      await __supervisor.reportExit(code, reason || "", __nimbusStagingMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -1593,6 +1610,8 @@ interface FacetVfsBundleSource {
   codeModules: Record<string, string>;
   /** The JSON of the launch's CommonJsCellRow table. */
   codeCells: string;
+  /** The JSON list of runtime-code keys the map carries as `gen/<key>.js`. */
+  runtimeCode: string;
   /**
    * What the process's store charges itself to adopt the data cells and the
    * code cells it reads back (facet-resident-store's __residentCellCost).
@@ -1693,7 +1712,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
   const source = state.bundleSource;
   if (source) {
-    bytes += source.expression.length + source.imports.length + source.codeCells.length;
+    bytes += source.expression.length + source.imports.length + source.codeCells.length + source.runtimeCode.length;
     for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
     for (const [name, text] of Object.entries(source.codeModules)) bytes += name.length + text.length;
   }
@@ -1970,11 +1989,21 @@ export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
   pacer?: TurnBudget,
-  { consume = false, emits }: { consume?: boolean; emits?: ReadonlyMap<string, string> } = {},
+  {
+    consume = false,
+    emits,
+    runtimeCode,
+  }: {
+    consume?: boolean;
+    emits?: ReadonlyMap<string, string>;
+    /** Runtime code staged for this launch: `{ cjs }` module text by key. */
+    runtimeCode?: ReadonlyMap<string, string>;
+  } = {},
 ): Promise<FacetVfsBundleSource> {
   const storageBytes = moduleMapStorageBytes(bundle);
   const codeModules: Record<string, string> = {};
   const rows: CommonJsCellRow[] = [];
+  for (const [key, text] of runtimeCode ?? []) codeModules[runtimeCodeModuleName(key)] = text;
   // `consume`: the caller releases the raw cells right after (a launch's
   // build), so each is taken as its module is written and the map is never
   // held twice. Otherwise the caller's bundle is left as it was.
@@ -2001,6 +2030,7 @@ export async function buildFacetVfsBundleSource(
     ...await serializeFacetVfsData(data, forceSideModules, pacer, consume),
     codeModules,
     codeCells: JSON.stringify(rows),
+    runtimeCode: JSON.stringify([...(runtimeCode?.keys() ?? [])]),
     storageBytes,
   };
 }
@@ -4422,6 +4452,14 @@ export class FacetManager {
    */
   private residencyProfiles = new Map<string, Set<string>>();
   /**
+   * Runtime code by content key (commonjs-cell.ts, RUNTIME CODE), least
+   * recently recorded first, at most RUNTIME_CODE_MAX_BYTES of it.
+   */
+  private runtimeCode = new Map<string, { entry: RuntimeCodeEntry; bytes: number }>();
+  private runtimeCodeBytes = 0;
+  /** Which runtime code each entry produced, keyed like residencyProfiles. */
+  private runtimeCodeProfiles = new Map<string, Set<string>>();
+  /**
    * Misses shared across sessions per installed package (read-profile.ts),
    * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
    * tarballs. Unbound, a miss is learned for this session only
@@ -5056,7 +5094,11 @@ export class FacetManager {
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
       pacer,
-      { consume: true, emits: vfsState.emits },
+      {
+        consume: true,
+        emits: vfsState.emits,
+        runtimeCode: await this._stagedRuntimeCode(key, new Set(vfsState.bundlePaths), pacer),
+      },
     );
     vfsState.cacheHit = false;
 
@@ -5115,12 +5157,97 @@ export class FacetManager {
       this.residencyProfiles.delete(oldest);
     }
     if (learned === 0) return;
+    this._dropPrefetchCacheEntry(key);
+  }
 
+  private _dropPrefetchCacheEntry(key: string): void {
     const cached = this.prefetchBundleCache.get(key);
     if (!cached) return;
     this.prefetchBundleCache.delete(key);
     this.prefetchCacheBytes -= cached.bytes;
     setPrefetchCacheBytes(this.prefetchCacheBytes);
+  }
+
+  /**
+   * Record the code a run produced and could not compile (commonjs-cell.ts,
+   * RUNTIME CODE) for the next launch of the same entry: kept by content key,
+   * the key recomputed here rather than taken from the guest, and the entry's
+   * cached bundle dropped so that launch is built with it. The store is
+   * bounded in bytes, least recently recorded first out; like the residency
+   * profiles it lives as long as this isolate, which is as long as the case
+   * it serves — running the command again — needs.
+   */
+  private _recordRuntimeCode(key: string | undefined, reported: unknown[] | undefined): void {
+    if (!key || !Array.isArray(reported) || reported.length === 0) return;
+    let profile = this.runtimeCodeProfiles.get(key);
+    if (profile) this.runtimeCodeProfiles.delete(key);
+    else profile = new Set<string>();
+    this.runtimeCodeProfiles.set(key, profile);
+    let learned = 0;
+    for (const raw of reported) {
+      const entry = parseRuntimeCodeEntry(raw);
+      if (entry === null) continue;
+      const bytes = entry.kind === 'module' ? entry.path.length + entry.text.length : entry.params.join(',').length + entry.body.length;
+      if (bytes > RUNTIME_CODE_MAX_BYTES) continue;
+      const codeKey = runtimeCodeKey(entry);
+      const held = this.runtimeCode.get(codeKey);
+      if (held) this.runtimeCode.delete(codeKey);
+      else this.runtimeCodeBytes += bytes;
+      this.runtimeCode.set(codeKey, held ?? { entry, bytes });
+      if (!profile.has(codeKey)) {
+        profile.add(codeKey);
+        learned++;
+      }
+    }
+    for (const [oldest, held] of this.runtimeCode) {
+      if (this.runtimeCodeBytes <= RUNTIME_CODE_MAX_BYTES) break;
+      this.runtimeCode.delete(oldest);
+      this.runtimeCodeBytes -= held.bytes;
+    }
+    for (const oldest of this.runtimeCodeProfiles.keys()) {
+      if (this.runtimeCodeProfiles.size <= FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES) break;
+      this.runtimeCodeProfiles.delete(oldest);
+    }
+    if (learned > 0) this._dropPrefetchCacheEntry(key);
+  }
+
+  /**
+   * The runtime code recorded for an entry, as `{ cjs }` module text by key:
+   * a constructor call as the function module, a file lowered and wrapped as
+   * a module cell is. A file the launch already stages by its path is left
+   * to that cell — it is the file as it is now.
+   */
+  private async _stagedRuntimeCode(
+    key: string,
+    stagedPaths: ReadonlySet<string>,
+    pacer: TurnBudget,
+  ): Promise<Map<string, string> | undefined> {
+    const profile = this.runtimeCodeProfiles.get(key);
+    if (!profile || profile.size === 0) return undefined;
+    const modules = new Map<string, string>();
+    for (const codeKey of profile) {
+      const held = this.runtimeCode.get(codeKey);
+      if (!held) continue;
+      const entry: RuntimeCodeEntry = held.entry;
+      if (entry.kind !== 'module') {
+        modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
+        continue;
+      }
+      const path = entry.path.replace(/^\/+/, '');
+      if (stagedPaths.has(path)) continue;
+      const file: Record<string, string | Uint8Array> = { [path]: entry.text };
+      const emits = new Map<string, string>();
+      if (this.esbuild) await transformEsmInBundle(file, emits, this.esbuild, pacer);
+      else _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
+      let code = emits.get(path) ?? file[path] as string;
+      try {
+        code = rewriteProvidedCommonJsModules(code);
+      } catch {
+        // Unparseable: it stays as written, and requiring it says why.
+      }
+      modules.set(codeKey, wrapCommonJsCell(code).text);
+    }
+    return modules.size > 0 ? modules : undefined;
   }
 
   /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
@@ -5210,9 +5337,11 @@ export class FacetManager {
     exitCode: number,
     residencyMisses?: string[],
     evidence?: { served: ReadonlySet<string>; profileUnread: readonly string[] | null },
+    runtimeCode?: unknown[],
   ): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
     this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
+    this._recordRuntimeCode(this.residentBundleKeys.get(pid), runtimeCode);
     const exiting = this.processes.get(pid);
     const offer = this.residentProfileOffers.get(pid);
     this.residentProfileOffers.delete(pid);
@@ -5399,6 +5528,7 @@ export class FacetManager {
       const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
       this._flushVfsWrites(result, entry.pid);
       this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
+      this._recordRuntimeCode(vfsState.bundleKey, result.runtimeCode);
       this.processes.exit(entry.pid, result.exitCode);
       if (result.exitCode !== 0) {
         this._w5RecordTermination(

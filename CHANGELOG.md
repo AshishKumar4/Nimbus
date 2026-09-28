@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Code a node process produces while it runs compiles in the next launch of
+  the same command instead of never. A Worker compiles only from the module
+  map it was launched with, and a Worker Loader map cannot grow after load
+  (a dynamic worker has no module fallback), so this launch still refuses it —
+  now with `EvalError` code `ERR_NIMBUS_CODE_NEXT_LAUNCH` — but the run's
+  report (the one-shot envelope, the resident exit report) carries the text,
+  the supervisor keeps it by SHA-256 of its content (8 MiB, least recent
+  out), and the next launch carries it as `gen/<key>.js` modules compiled on
+  first use. Two shapes: a file written then required or imported (a fresh
+  file name each run, like Vite's `.vite-temp/*.timestamp-*.mjs`, converges
+  because the key is the text), and text handed to
+  `globalThis.__nimbusRuntimeCode.compileFunction(kind, params, body)`, which
+  builds the function the `Function`/`AsyncFunction`/generator constructors
+  would (same source text, body on line 3, global scope). Text that changes on
+  every run — a module runner's transform of an edited file — needs one
+  relaunch per change.
+
 - A node process compiles a module the first time it requires it, not at
   startup. Each code file of the launch's closure, and its entry, is now a
   `{ cjs }` module of the facet's map (`vfs/<path>`, `entry/<path>`) that the

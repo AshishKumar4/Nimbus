@@ -131,6 +131,12 @@ function __nimbusModuleCell(key) {
   }
   return __nimbusTestCells.get(key);
 }
+// No runtime code is staged in a standalone factory.
+function __nimbusRuntimeModule(path) {
+  const err = new EvalError("Module '/" + path + "' was produced after this launch started.");
+  err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+  throw err;
+}
 `;
 
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */

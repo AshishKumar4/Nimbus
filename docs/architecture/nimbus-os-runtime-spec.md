@@ -107,8 +107,11 @@ Nimbus already has a real base:
   (`require-resolver.ts`, `__resolveFrom`), ESM→CJS lowering and
   `import.meta` metadata, because the registry resolves specifiers as URLs
   only, keeps every module under `file:///bundle/`, and takes no named
-  exports for a CommonJS module. A file the launch did not map cannot run
-  (no request-time code generation in a Worker); the next launch stages it.
+  exports for a CommonJS module. Code the program produces at runtime (a
+  file written then required, or `__nimbusRuntimeCode.compileFunction` text)
+  cannot run in that launch (no request-time code generation, and a Worker
+  Loader map cannot grow); the next launch of the same command stages it by
+  content key as `gen/<sha256>.js`.
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.
