@@ -98,8 +98,13 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   }
 
   const log = [];
+  // Both fanouts answer through here, on either topology; the argument shape
+  // says which one. Resolve tasks are one package, install tasks are a shard
+  // of packages.
+  const answer = (task) => (Array.isArray(task?.packages) ? installShard(task) : resultFor(task.name));
   const env = {
-    LOADER: { get() { return {}; } },
+    // In-DO: one entrypoint.execute per task.
+    LOADER: { get() { return { getEntrypoint: () => ({ execute: async (task) => answer(task) }) }; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
       idFromString(id) { return { toString: () => id, name: id }; },
@@ -107,13 +112,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            // The same RPC carries both fanouts; the argument shape says
-            // which one. Resolve tasks are one package, install tasks are
-            // a shard of packages.
-            if (args[0] && Array.isArray(args[0].packages)) {
-              return { results: args.map((shard) => installShard(shard)) };
-            }
-            return { results: args.map((spec) => resultFor(spec.name)) };
+            return { results: args.map(answer) };
           },
         };
       },
@@ -130,8 +129,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 
 // ── Case 1: a required dependency that cannot be resolved ───────────────
 //
-// Six top-level deps so the resolver layer takes the peer-DO topology
-// (width >= IN_DO_THRESHOLD), which is the path both live repros hit.
+// Six top-level deps, as wide as the layer both live repros hit.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const deps = { ...ok, 'ghost-dep': '^2.0.0' };

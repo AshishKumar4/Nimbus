@@ -321,4 +321,39 @@ function okResult(decoded) {
   console.log('  case6: a failed wave does not poison later waves');
 }
 
+// ── Case 7: a wave the transport never answers is re-sent ───────────────
+//
+// Measured on a throwaway (2026-09-28): an 850-package install sat for
+// 160 s on one shard whose writeBatchStream never settled, while the
+// session held no stream, credit or transaction for it, until the install's
+// 10-minute deadline. Timers run a thousand times faster here, so the
+// shard's own deadline passes in milliseconds; a batch that never settles
+// fails the case instead of hanging the suite.
+{
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 1000), ...rest);
+  let attempts = 0;
+  let result;
+  try {
+    result = await Promise.race([
+      runBatch(async (stream) => {
+        attempts++;
+        const decoded = await decodeWave(stream);
+        detachLastPayload();
+        if (attempts === 1) return new Promise(() => {});
+        return okResult(decoded);
+      }),
+      new Promise((_, reject) => realSetTimeout(
+        () => reject(new Error(`the batch never settled: the unanswered wave was not re-sent (attempts=${attempts})`)),
+        5_000,
+      )),
+    ]);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.ok(attempts >= 2, `an unanswered wave must be re-sent (attempts=${attempts})`);
+  assert.ok(result.perPackage.every((pkg) => !pkg.errorText), 'every package installs once the re-sent wave lands');
+  console.log('  case7: unanswered wave re-sent');
+}
+
 console.log('npm-install-wave-shed-retry: all assertions passed');

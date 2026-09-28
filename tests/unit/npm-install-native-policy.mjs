@@ -119,9 +119,7 @@ function makeInstaller(pkgJson, resultFor) {
 // optionalDependencies edges keep their silent-skip contract for
 // platform-native bindings, but a table-listed package without os/cpu
 // constraints installs — npm parity — with the advisory note.
-// Five optional edges keep the resolve layer on the peer-DO topology the
-// harness fakes (width >= IN_DO_THRESHOLD), like every other layer in
-// this file.
+// Five optional edges beside the refused one.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const optShards = { sharp: '^0.34.0', 'opt-1': '^1.0.0', 'opt-2': '^1.0.0', 'opt-3': '^1.0.0', 'opt-4': '^1.0.0' };
@@ -174,9 +172,8 @@ function makeInstaller(pkgJson, resultFor) {
       return resolvedResult(name, name === 'sharp' ? '0.34.0' : '1.0.0');
     },
   );
-  // Padding specs keep the resolve layer on the peer-DO topology the
-  // harness fakes (width >= IN_DO_THRESHOLD); the swap and the refusal
-  // are what this case asserts.
+  // Padding specs widen the layer; the swap and the refusal are what this
+  // case asserts.
   const result = await installer.install(PROJ, { packages: ['esbuild', 'sharp', 'pad-a', 'pad-b', 'pad-c', 'pad-d'] });
   const output = log.join('\n');
 

@@ -1,34 +1,39 @@
 /**
  * budgets.ts — per-DO accounting for the platform budgets the fabric spends:
- * the Worker Loader's two caps, the facet-ID lifetime budget, and the
- * dynamic-worker module-map ceiling.
+ * the Durable Object's Dynamic Worker concurrency limit, the facet-ID
+ * lifetime budget, and the dynamic-worker module-map ceiling.
  *
- * Measured on production workerd: a Durable Object admits ~5–6 concurrent
- * dynamic workers before the platform refuses with "Too many concurrent
- * dynamic workers", one DO method can drive at most 4 concurrent Loader
- * fetches, and loader-cache entries are never released — every DISTINCT
- * `loader.get(id)` permanently consumes one of the dynamic-worker slots for
- * the object's lifetime. Nimbus stays under the caps by construction
- * (`IN_DO_THRESHOLD` = 5 in the fanout pool), which until now meant the slots
- * were counted in prose. This ledger counts them at the fabric's loader call
- * sites instead — the loader pool's slots, a resident process's keyed worker,
- * a one-shot's load — so proximity is measurable and a cap failure can name
- * the ids actually holding slots.
+ * The Dynamic Worker model is Cloudflare's documented one
+ * ({@link DO_DYNAMIC_WORKER_LIMIT}): a Durable Object may have a fixed number
+ * of DISTINCT Dynamic Workers with in-flight requests at once, shared across
+ * every concurrent request to that object (one I/O context), and any number
+ * of in-flight requests to the same Dynamic Worker count as one. Only
+ * in-flight requests count: a loader id with nothing in flight holds nothing.
  *
- * Measurement only: no admission control. The caps are the platform's, they
- * are approximate ("~5–6"), and a gate on an approximate number would refuse
- * work the platform would have run.
+ * The ledger counts, per hosting actor, the distinct workers that are in
+ * flight right now, keyed by loader id (a fresh key per unkeyed `load`), plus
+ * the width fan-outs have claimed and not yet released. A fan-out spends only
+ * the {@link dynamicWorkerHeadroom} that leaves, so work a Durable Object
+ * already has in flight — a resident process, the esbuild facet, a git
+ * network op, another fan-out — keeps its slots.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
- * caps are per Durable Object, and dynamic workers die with the isolate that
+ * limit is per Durable Object, and dynamic workers die with the isolate that
  * loaded them, so a ledger that goes away with its host describes nothing
  * that still exists.
  */
-/** Record a keyed `loader.get(id)` — a permanent slot if the id is new. */
-export declare function recordLoaderId(ctx: object, id: string): void;
 /**
- * Count one call into a dynamic worker as a live Loader fetch; the returned
- * function ends it (idempotently), from the caller's own `finally`.
+ * Distinct Dynamic Workers one Durable Object may have with in-flight
+ * requests at once, shared across all concurrent requests to that object;
+ * multiple in-flight requests to one Dynamic Worker count once.
+ * https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/
+ */
+export declare const DO_DYNAMIC_WORKER_LIMIT = 10;
+/**
+ * Hold the Dynamic Worker `workerKey` in flight on this actor's ledger; the
+ * returned function ends the hold (idempotently), from the caller's own
+ * `finally`. Holds on one key nest: the worker counts once until the last
+ * one ends, as the platform counts it.
  *
  * A begin/end pair rather than a wrapper on purpose, and the shape is
  * load-bearing: wrapping the stub call in a ledger-owned async frame
@@ -41,19 +46,35 @@ export declare function recordLoaderId(ctx: object, id: string): void;
  * workers: an RPC stub call must stay a direct property call awaited by the
  * frame that made it, so the ledger only brackets it.
  */
-export declare function beginLoaderFetch(ctx: object): () => void;
+export declare function beginLoaderFetch(ctx: object, workerKey: string): () => void;
+/**
+ * Distinct Dynamic Workers this actor may still put in flight: the limit
+ * less what is held and claimed right now. Never negative.
+ */
+export declare function dynamicWorkerHeadroom(ctx: object): number;
+/**
+ * Claim `width` distinct Dynamic Workers for one fan-out, or null when the
+ * headroom cannot hold it. The claim counts until `release` (idempotent), so
+ * a second fan-out sizing itself meanwhile sees it; the claimant's own
+ * dispatches are held as well while they run, which only ever over-counts
+ * toward sending that second fan-out elsewhere.
+ */
+export declare function claimDynamicWorkers(ctx: object, width: number): {
+    release(): void;
+} | null;
 /** Snapshot for the diag surface. Pure read; no I/O. */
 export declare function loaderLedgerStats(ctx: object): {
-    idsEverGotten: string[];
-    liveFetches: number;
-    peakLiveFetches: number;
+    limit: number;
+    inFlightWorkers: string[];
+    claimed: number;
+    headroom: number;
+    peak: number;
 };
 /**
  * Name the per-DO accounting on a "Too many concurrent dynamic workers"
  * failure; hand every other error back untouched. The platform's message
- * says only that the cap was hit — which ids hold the slots, and that a
- * keyed id can never give one back, is what the operator needs to know to
- * shrink anything.
+ * says only that the limit was hit — which workers were in flight, and what
+ * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */
 export declare function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error;
 /**

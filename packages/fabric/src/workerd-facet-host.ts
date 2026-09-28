@@ -28,7 +28,6 @@ import {
   facetNameCount,
   facetNameCountDurable,
   recordFacetNameMinted,
-  recordLoaderId,
   withDynamicWorkerCapNamed,
   withFacetBudgetNamed,
 } from './budgets.js';
@@ -472,10 +471,13 @@ function spawnResident(
       );
     }
     evaluated = true;
-    return { class: residentProcessClass(ctx, env, disk, supervisor, params) };
+    return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
   };
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
+  // A warm worker keeps the SUPERVISOR binding it was built with, and the
+  // loader outlives this instance.
+  const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
   let facet: ResidentFacetStub;
   try {
     // N18: the fill is admitted, and recorded under the facet's name, before
@@ -491,6 +493,12 @@ function spawnResident(
     throw withFacetBudgetNamed(facetNameCount(ctx), error);
   }
   if (explicit) book.live.add(name);
+  // The facet's worker is one Dynamic Worker in flight for as long as the
+  // process is resident, not only while a call is open: its WebSockets and
+  // streamed responses outlive the calls the ledger could bracket, and a
+  // request can reach it at any moment. Held from here to `release`, so no
+  // fan-out spends the slot a running process needs.
+  const endResidency = beginLoaderFetch(ctx, loaderKey);
   facetOfPid(ctx).set(params.pid, name);
 
   let disposed = false;
@@ -499,6 +507,7 @@ function spawnResident(
     disposed = true;
     released = true;
     facetOfPid(ctx).delete(params.pid);
+    endResidency();
     try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
     if (explicit) book.live.delete(name);
     // The two release classes: an ephemeral facet's SQLite is slot-reuse
@@ -565,11 +574,11 @@ function spawnResident(
  * the hosting DO's heap.
  */
 function residentProcessClass(
-  ctx: DurableObjectState,
   env: ResidentFacetEnv,
   disk: () => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   params: ProcessHostParams,
+  loaderKey: string,
 ): unknown {
   const loader = env.LOADER;
   if (!loader || typeof loader.get !== 'function') {
@@ -578,18 +587,9 @@ function residentProcessClass(
         + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
     );
   }
-  // A warm worker keeps the SUPERVISOR binding it was built with, and the
-  // loader outlives this instance.
-  const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
-  try {
-    const worker = loader
-      .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-      .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-    recordLoaderId(ctx, loaderKey);
-    return worker;
-  } catch (error) {
-    throw withDynamicWorkerCapNamed(ctx, error);
-  }
+  return loader
+    .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
 }
 
 async function runOneShot<T>(
@@ -639,21 +639,21 @@ async function runOneShot<T>(
       throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
     }
     params.onLoaded?.();
-    // The unkeyed worker is a live dynamic worker for exactly this call, so
-    // the run is a Loader fetch on the hosting actor's ledger — bracketed,
-    // never wrapped: see beginLoaderFetch for the measured DO-poisoning
-    // hazard, and the pipelined-`fetch.call` note above for its sibling.
-    const endFetch = beginLoaderFetch(ctx);
-    let response: Response;
+    // The unkeyed worker is one distinct dynamic worker in flight until its
+    // response is consumed (the body streams from it), keyed by this run's
+    // writer id — bracketed, never wrapped: see beginLoaderFetch for the
+    // measured DO-poisoning hazard, and the pipelined-`fetch.call` note above
+    // for its sibling.
+    const endFetch = beginLoaderFetch(ctx, `one-shot:${params.writerId}`);
     try {
-      response = await ep.fetch(params.request);
+      const response = await ep.fetch(params.request);
+      try {
+        return await consume(response);
+      } finally {
+        disposeRpcResource(response);
+      }
     } finally {
       endFetch();
-    }
-    try {
-      return await consume(response);
-    } finally {
-      disposeRpcResource(response);
     }
   } catch (error) {
     throw withDynamicWorkerCapNamed(ctx, error);

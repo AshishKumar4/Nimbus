@@ -1,33 +1,30 @@
 /**
  * Two-tier fan-out primitive for work that must execute in Worker Loader
- * facets without tripping workerd's per-DO dynamic-worker ceiling.
+ * isolates within the Durable Object's Dynamic Worker budget.
  *
- * A single Durable Object method can drive at most four concurrent
- * Worker Loader fetches before extra dispatches serialize or fail. Small
- * batches therefore run in the coordinator DO through IsolatePool.
- * Wider batches are sharded across sibling NimbusSession DOs, each of
- * which owns its own four-loader budget.
+ * A Durable Object may have `DO_DYNAMIC_WORKER_LIMIT` distinct Dynamic
+ * Workers with in-flight requests, shared across every concurrent request to
+ * it (budgets.ts). A batch the coordinator's remaining headroom can hold —
+ * the limit less the workers it already has in flight (resident processes,
+ * the esbuild facet, a git network op) and other fan-outs' claims — runs in
+ * the coordinator through IsolatePool, one Dynamic Worker per task. Only a
+ * batch wider than that headroom is sharded across sibling NimbusSession
+ * DOs, each of which spends its own budget.
  *
- * Routing is deterministic: each task has a stable key, and the key maps
- * to a sibling DO shard. There is no silent fallback to width-1 execution;
- * missing LOADER or NIMBUS_SESSION bindings fail loudly so install and
- * runtime operations do not appear successful after partial dispatch.
+ * Routing is deterministic for a given headroom: each task has a stable key,
+ * and the key maps to a sibling DO shard. There is no silent fallback to
+ * width-1 execution; missing LOADER or NIMBUS_SESSION bindings fail loudly so
+ * install and runtime operations do not appear successful after partial
+ * dispatch.
  */
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom } from './budgets.js';
 import { hostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { classifyDoCall, describeError, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { hostNamespaceBinding, hostOpDispatch, } from './host-dispatch.js';
-/**
- * Threshold at which routing switches from coordinator-local loaders to
- * sibling Durable Objects.
- *
- * Set to **5** so the in-DO path stays below the V8 4-loaders-per-method
- * cap by construction. width < 5 stays local; width >= 5 uses sibling DOs.
- */
-export const IN_DO_THRESHOLD = 5;
 /**
  * Hard cap on concurrent peer DOs per single submitMany call. Throughput stays
  * flat through this width while keeping per-request scheduler pressure bounded.
@@ -78,7 +75,7 @@ function isPeerResult(value) {
 }
 /**
  * Two-tier fan-out pool. Constructed by the supervisor DO; routes
- * each `submitMany` call automatically based on width.
+ * each `submitMany` call on the coordinator's live Dynamic Worker headroom.
  *
  * Lifetime: cheap to construct (no async init). Multiple submitMany
  * calls share NO state — each is dispatched fresh. The class
@@ -112,16 +109,16 @@ export class Fanout {
      * Dispatch `tasks` across the appropriate topology and return
      * results in input order.
      *
-     * Routing:
-     *   tasks.length < 5   -> coordinator-local IsolatePool
-     *   tasks.length >= 5  -> sibling NimbusSession DOs
+     * Routing, against the coordinator's Dynamic Worker headroom at call time:
+     *   tasks.length <= headroom -> coordinator-local IsolatePool, one Dynamic
+     *                               Worker per task, the width claimed on the
+     *                               ledger until the batch settles
+     *   tasks.length >  headroom -> sibling NimbusSession DOs
      *
-     * Backpressure: if `tasks.length > MAX_PEER_FANOUT (32)`, tasks
-     * are sharded modulo `MAX_PEER_FANOUT` and each shard's bucket
-     * runs serially inside its assigned peer DO via the in-peer
-     * IsolatePool's concurrency (capped at 4 there too). A
-     * single submitMany call returns when ALL tasks complete (or any
-     * throws).
+     * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
+     * peers and each peer runs its bucket through its own IsolatePool, as
+     * wide as that peer's headroom allows. A single submitMany call returns
+     * when ALL tasks complete (or any throws).
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
@@ -132,16 +129,23 @@ export class Fanout {
     async submitMany(tasks, fn) {
         if (tasks.length === 0)
             return [];
-        if (tasks.length < IN_DO_THRESHOLD) {
-            return this._dispatchInDo(tasks, fn);
+        const headroom = dynamicWorkerHeadroom(this.ctx);
+        const claim = claimDynamicWorkers(this.ctx, tasks.length);
+        this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
+        if (!claim)
+            return this._dispatchPeerDo(tasks, fn);
+        try {
+            return await this._dispatchInDo(tasks, fn);
         }
-        return this._dispatchPeerDo(tasks, fn);
+        finally {
+            claim.release();
+        }
     }
-    /** Report which topology a task count uses without dispatching. */
+    /** The topology a task count would take against the headroom right now. */
     topologyFor(taskCount) {
         if (taskCount === 0)
             return 'empty';
-        return taskCount < IN_DO_THRESHOLD ? 'in-do' : 'peer-do';
+        return taskCount <= dynamicWorkerHeadroom(this.ctx) ? 'in-do' : 'peer-do';
     }
     /**
      * Compute the deterministic peer-DO id for a task key and peer count.
@@ -156,13 +160,10 @@ export class Fanout {
     }
     // ── Private: in-DO dispatch (in-DO fanout) ──────────────────────────────
     async _dispatchInDo(tasks, fn) {
-        // Use the existing IsolatePool. Concurrency = task count
-        // (capped at 4 by constructor — tasks.length is already < 5
-        // here, so the cap won't bite). Each task = one pool.submit;
-        // pool.map runs them with stable-slot reuse.
-        const concurrency = Math.min(tasks.length, IN_DO_THRESHOLD - 1);
+        // One slot — one Dynamic Worker — per task; submitMany has claimed
+        // that width on the ledger.
         const pool = new IsolatePool(this.env, this.ctx, {
-            concurrency,
+            concurrency: tasks.length,
             timeoutMs: this.opts.timeoutMs,
             tag: this.opts.tag,
             preamble: this.opts.preamble,
@@ -172,9 +173,6 @@ export class Fanout {
             supervisorPid: this.opts.supervisorPid,
         });
         try {
-            // pool.map runs the function over `items` with concurrency-bounded
-            // slot reuse. Each slot is one warm loader isolate; we get exactly
-            // `concurrency` loader isolates total — well under the 4-cap.
             const items = tasks.map((t) => t.args);
             const results = await pool.map(fn, items);
             // pool.map returns Array<R | null> (null on per-item failure with
@@ -200,10 +198,9 @@ export class Fanout {
         // loader isolates (keyed on fnHash) reuse across calls with
         // identical fns.
         const fnSource = serializeFunction(fn);
-        // Cap peer count at MAX_PEER_FANOUT. Tasks beyond N=32 are
-        // bucketed into existing shards — each shard's peer DO then
-        // runs its bucket through its in-DO IsolatePool.map
-        // (concurrency capped at 4 there).
+        // Cap peer count at maxPeers (default MAX_PEER_FANOUT). Tasks beyond
+        // it bucket into existing shards; each peer runs its bucket through
+        // its own IsolatePool, as wide as its own headroom allows.
         const peerCount = Math.min(tasks.length, this.opts.maxPeers ?? MAX_PEER_FANOUT);
         // Group tasks by deterministic shard. Same key → same shard, so
         // tests can predict which peer handles which task.
@@ -242,10 +239,9 @@ export class Fanout {
                     const peerStub = ns.get(id);
                     try {
                         const dispatch = hostOpDispatch(peerStub, `Fanout peer ${siblingName}`);
-                        // Each peer DO RPC call uses ONE LOADER worker on its side.
-                        // Supervisor → peer DO is a stub.fetch / RPC method call,
-                        // NOT an env.LOADER.get(); that's the cap-sidestep that
-                        // makes peer-DO fanout work.
+                        // A peer DO call is a Durable Object RPC, not a Dynamic Worker:
+                        // it spends none of this coordinator's budget, and the peer
+                        // spends its own.
                         const rpcResp = await dispatch({
                             op: 'fanoutExecute',
                             args: [

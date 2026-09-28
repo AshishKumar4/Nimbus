@@ -24,18 +24,11 @@ export interface SpawnPoolReq {
 }
 export declare class ChildProcessSpawnPool {
     /**
-     * Shared single-slot pool. Serial dispatch keeps one dynamic-worker
-     * allocation in flight while moving child execution out of the
-     * supervisor isolate.
+     * Shared single-slot pool: one Dynamic Worker, whose slot queue runs
+     * spawns one at a time, moving child execution out of the supervisor
+     * isolate.
      */
     private readonly pool;
-    /**
-     * Promise chain for serializing submits. Each new submit awaits
-     * the previous one's completion BEFORE invoking pool.submit.
-     * This gives us strict 1-in-flight-at-a-time on slot 0; 4-cap
-     * never trips even with 8 concurrent cp.spawn invocations.
-     */
-    private chain;
     constructor(env: any, ctx: DurableObjectState);
     /**
      * Dispatch a single cp.spawn request through a fresh Worker Loader

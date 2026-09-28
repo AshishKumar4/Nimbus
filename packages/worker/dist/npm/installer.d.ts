@@ -101,9 +101,9 @@ export declare class NpmInstaller {
      * `Fanout.submitMany` call, layer N+1 builds from the
      * resolved metadata of layer N.
      *
-     * Topology auto-routes per layer:
-     *   width <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO loader-pool
-     *   width >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO (sibling NimbusSession DOs)
+     * Topology auto-routes per layer on the session's Dynamic Worker headroom
+     * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
+     * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
      * Resolution is per edge, not per name: the first version of a name goes
      * to root; a later edge the nearest visible placement does not satisfy
@@ -135,26 +135,17 @@ export declare class NpmInstaller {
     /**
      * Batch install via two-tier fan-out (Fanout).
      *
-     * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
-     * follows from it:
-     *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 IsolatePool with concurrency = shardCount, capped at
-     *     4 by V8 invariant. Each shard is one facet running its own
-     *     installPackagesInFacet.
-     *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
-     *     One peer NimbusSession sibling DO per shard, each running ONE
-     *     installPackagesInFacet against its shard with internal pLimit(3).
+     * Shard count is `min(tarballs, INSTALL_PEER_CAP)`; each shard is one
+     * installPackagesInFacet task with internal pLimit(3). Fanout routes the
+     * shards on the session's Dynamic Worker headroom: shards the headroom
+     * holds run on in-DO loaders, one Dynamic Worker each; more shards than
+     * that go one per sibling NimbusSession DO. The route taken is logged
+     * with the dispatch line.
      *
-     * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
+     * Sharding strategy: round-robin (`pkgIdx % N`) so every shard
      *   receives roughly equal work. Stable-id router maps each
      *   `shard-${i}` task key deterministically (tests can predict
      *   placement).
-     *
-     * Pre-fix lineage: this site previously ran ONE IsolatePool
-     *   with concurrency=1, internal pLimit(3) — the explicit "collapses
-     *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
-     *   Two-tier topology re-expands the fan-out without re-introducing
-     *   the V8 cap risk.
      */
     private fetchViaBatchFacet;
     private buildSpecs;

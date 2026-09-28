@@ -26,6 +26,7 @@
  */
 
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -711,6 +712,10 @@ export async function execGitNetwork(
 
     let worker: GitFacetWorker | undefined;
     let entrypoint: GitFacetEntrypoint | undefined;
+    // The unkeyed git worker is one distinct Dynamic Worker in flight on the
+    // session's ledger from load to teardown — bracketed, never wrapped (see
+    // beginLoaderFetch).
+    const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
     try {
       const gitBundleSource = await fetchGitBundleSource(env);
       const loadedWorker: GitFacetWorker = env.LOADER.load({
@@ -981,6 +986,7 @@ export async function execGitNetwork(
       disposeRpcResource(entrypoint);
       disposeRpcResource(worker);
       disposeRpcResource(supervisorBinding);
+      endFetch();
     }
   } catch (e: any) {
     return {

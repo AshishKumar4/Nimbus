@@ -31,7 +31,7 @@ import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from 
 import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
-import { Fanout, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout.js';
+import { Fanout } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
@@ -462,9 +462,9 @@ export class NpmInstaller {
      * `Fanout.submitMany` call, layer N+1 builds from the
      * resolved metadata of layer N.
      *
-     * Topology auto-routes per layer:
-     *   width <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO loader-pool
-     *   width >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO (sibling NimbusSession DOs)
+     * Topology auto-routes per layer on the session's Dynamic Worker headroom
+     * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
+     * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
      * Resolution is per edge, not per name: the first version of a name goes
      * to root; a later edge the nearest visible placement does not satisfy
@@ -538,10 +538,12 @@ export class NpmInstaller {
         let r2Wins = 0;
         let r2Losses = 0;
         // Layers are a hard barrier: layer N+1 cannot be built until every
-        // task in layer N returns. `width@ms` per layer is what separates
+        // task in layer N returns. `width@ms/route` per layer is what separates
         // "resolution is slow because there are many packuments" from
         // "resolution is slow because there are many barriers".
         const layerProfile = [];
+        // Set by the pool as each layer is routed, before it dispatches.
+        const layerRoute = {};
         // Every layer additionally splits into peer-DO dispatch phases, each its
         // own barrier, so the walk's real serialization is the barrier total
         // rather than the layer count.
@@ -567,6 +569,7 @@ export class NpmInstaller {
             timeoutMs: 5 * 60_000,
             preamble: NPM_RESOLVE_PREAMBLE,
             onDispatchPhase: () => { dispatchBarriers++; },
+            onRoute: (route) => { layerRoute.taken = route; },
             // One peer per package is what this dispatched before, and resolving a
             // package is one cached-packument read — far too little work to pay a
             // sibling DO start for. A 123-package install walked 8 layers as 23
@@ -574,7 +577,7 @@ export class NpmInstaller {
             // cache), because a layer of width W costs ⌈min(W,32)/FANOUT_PHASE_SIZE⌉
             // of them. Capping peers here is the same fix INSTALL_PEER_CAP already
             // applies to the write side, and it does not cost concurrency: each peer
-            // runs its bucket at concurrency 4, so 8 peers still resolve 32 at once.
+            // runs its bucket as wide as its own Dynamic Worker headroom allows.
             maxPeers: RESOLVE_PEER_CAP,
         });
         // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
@@ -666,18 +669,17 @@ export class NpmInstaller {
                 };
                 return { key: placement, args: taskSpec };
             });
-            // Dispatch the layer. Fanout routes:
-            //   <5 → in-DO fanout in-DO (IsolatePool), concurrency = layer.length (capped at 4)
-            //   ≥5 → peer-DO fanout peer-DO, N peers = min(layer.length, 32)
+            // Dispatch the layer. Fanout routes it in-DO when the session's
+            // Dynamic Worker headroom holds the layer, else across sibling DOs.
             let results;
             const layerT0 = Date.now();
             try {
                 results = await fanoutPool.submitMany(tasks, resolveOnePackumentInFacet);
-                layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms`);
+                layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms/${layerRoute.taken?.topology}`);
             }
             catch (e) {
                 // Per anti-requirement: no fallback. Log + propagate.
-                const msg = `${describeError(e)} (layer width ${layer.length}, ${fanoutPool.topologyFor(layer.length)})`;
+                const msg = `${describeError(e)} (layer width ${layer.length}, ${layerRoute.taken?.topology})`;
                 log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
                 throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`, { cause: e });
             }
@@ -911,26 +913,17 @@ export class NpmInstaller {
     /**
      * Batch install via two-tier fan-out (Fanout).
      *
-     * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
-     * follows from it:
-     *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 IsolatePool with concurrency = shardCount, capped at
-     *     4 by V8 invariant. Each shard is one facet running its own
-     *     installPackagesInFacet.
-     *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
-     *     One peer NimbusSession sibling DO per shard, each running ONE
-     *     installPackagesInFacet against its shard with internal pLimit(3).
+     * Shard count is `min(tarballs, INSTALL_PEER_CAP)`; each shard is one
+     * installPackagesInFacet task with internal pLimit(3). Fanout routes the
+     * shards on the session's Dynamic Worker headroom: shards the headroom
+     * holds run on in-DO loaders, one Dynamic Worker each; more shards than
+     * that go one per sibling NimbusSession DO. The route taken is logged
+     * with the dispatch line.
      *
-     * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
+     * Sharding strategy: round-robin (`pkgIdx % N`) so every shard
      *   receives roughly equal work. Stable-id router maps each
      *   `shard-${i}` task key deterministically (tests can predict
      *   placement).
-     *
-     * Pre-fix lineage: this site previously ran ONE IsolatePool
-     *   with concurrency=1, internal pLimit(3) — the explicit "collapses
-     *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
-     *   Two-tier topology re-expands the fan-out without re-introducing
-     *   the V8 cap risk.
      */
     async fetchViaBatchFacet(toFetch, nmDir, pid) {
         const log = (msg) => this.onProgress?.(msg);
@@ -989,9 +982,13 @@ export class NpmInstaller {
             shards[idx % shardCount].push(...group);
         });
         const nonEmptyShards = shards.filter((s) => s.length > 0);
-        const topology = nonEmptyShards.length < IN_DO_THRESHOLD ? 'in-do (in-DO fanout)' : 'peer-do (peer-DO fanout)';
-        log(`Dispatching ${specs.length} packages across ${nonEmptyShards.length} ` +
-            `shard${nonEmptyShards.length === 1 ? '' : 's'} (${topology}, internal pLimit=3)...`);
+        // Logged as Fanout routes the batch, so the line names the route taken.
+        const batchRoute = {};
+        const onRoute = (route) => {
+            batchRoute.taken = route;
+            log(`Dispatching ${specs.length} packages across ${route.tasks} ` +
+                `shard${route.tasks === 1 ? '' : 's'} (${route.topology}, dynamic-worker headroom ${route.headroom}, internal pLimit=3)...`);
+        };
         // Peer shards dispatch in bounded phases and each phase is a barrier, so
         // the phase profile is what distinguishes shard work from barrier count.
         const phaseProfile = [];
@@ -1010,6 +1007,7 @@ export class NpmInstaller {
             // rejects the write (S2a cred enforcement).
             supervisorPid: pid,
             onDispatchPhase: (width, elapsedMs) => phaseProfile.push(`${width}@${elapsedMs}ms`),
+            onRoute,
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across
@@ -1024,7 +1022,7 @@ export class NpmInstaller {
                 shardResults = await fanoutPool.submitMany(tasks, installPackagesInFacet);
             }
             catch (e) {
-                const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${fanoutPool.topologyFor(tasks.length)})`;
+                const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${batchRoute.taken?.topology})`;
                 log(`  [batch-fanout] aborted: ${msg}`);
                 // Mark all packages failed; surface to caller to set non-zero exit.
                 for (const s of specs)

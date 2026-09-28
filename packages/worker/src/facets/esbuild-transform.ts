@@ -15,6 +15,7 @@ import type { WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
@@ -168,18 +169,25 @@ function forgetEsbuildFacet(ctx: DurableObjectState, stub: Promise<Fetcher<Esbui
   if (sharedFacets.get(ctx) === stub) sharedFacets.delete(ctx);
 }
 
-/** One call on the shared facet; a call that throws drops the stub it used. */
+/**
+ * One call on the shared facet; a call that throws drops the stub it used.
+ * The facet's worker is one Dynamic Worker in flight on the ledger for the
+ * call's duration — bracketed, never wrapped (see beginLoaderFetch).
+ */
 async function onEsbuildFacet<T>(
   ctx: DurableObjectState,
   env: unknown,
   call: (facet: Fetcher<EsbuildFacetRpc>) => Promise<T>,
 ): Promise<T> {
   const stub = sharedEsbuildFacet(ctx, env);
+  const endFetch = beginLoaderFetch(ctx, ESBUILD_FACET_WORKER_ID);
   try {
     return await call(await stub);
   } catch (error) {
     forgetEsbuildFacet(ctx, stub);
     throw error;
+  } finally {
+    endFetch();
   }
 }
 
@@ -198,34 +206,41 @@ export function esbuildTransformHost(ctx: DurableObjectState, env: unknown): Esb
   return async (requests) => {
     let facet: Promise<Fetcher<EsbuildFacetRpc>> | null = null;
     const outcomes: EsbuildTransformOutcome[] = [];
-    for (let start = 0; start < requests.length;) {
-      let end = start;
-      let bytes = 0;
-      while (end < requests.length && (end === start || bytes + requests[end].code.length <= TRANSFORM_BATCH_SOURCE_BYTES)) {
-        bytes += requests[end].code.length;
-        end++;
-      }
-      const slice = requests.slice(start, end);
-      let answered: EsbuildTransformOutcome[] | null = null;
-      let failure: unknown = null;
-      for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
-        try {
-          facet ??= sharedEsbuildFacet(ctx, env);
-          answered = await (await facet).transformMany(slice);
-        } catch (error) {
-          // A stub that threw may be broken for good; the next call mints its own.
-          if (facet) forgetEsbuildFacet(ctx, facet);
-          facet = null;
-          failure = error;
-          if (classifyDoCall(error) === 'overloaded') break;
+    // The facet's worker is in flight for the whole batch (bracketed, as in
+    // onEsbuildFacet).
+    const endFetch = beginLoaderFetch(ctx, ESBUILD_FACET_WORKER_ID);
+    try {
+      for (let start = 0; start < requests.length;) {
+        let end = start;
+        let bytes = 0;
+        while (end < requests.length && (end === start || bytes + requests[end].code.length <= TRANSFORM_BATCH_SOURCE_BYTES)) {
+          bytes += requests[end].code.length;
+          end++;
         }
+        const slice = requests.slice(start, end);
+        let answered: EsbuildTransformOutcome[] | null = null;
+        let failure: unknown = null;
+        for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
+          try {
+            facet ??= sharedEsbuildFacet(ctx, env);
+            answered = await (await facet).transformMany(slice);
+          } catch (error) {
+            // A stub that threw may be broken for good; the next call mints its own.
+            if (facet) forgetEsbuildFacet(ctx, facet);
+            facet = null;
+            failure = error;
+            if (classifyDoCall(error) === 'overloaded') break;
+          }
+        }
+        if (answered === null) {
+          const error = `esbuild facet unavailable: ${errorText(failure)}`;
+          answered = slice.map(() => ({ error, transient: true as const }));
+        }
+        for (const outcome of answered) outcomes.push(outcome);
+        start = end;
       }
-      if (answered === null) {
-        const error = `esbuild facet unavailable: ${errorText(failure)}`;
-        answered = slice.map(() => ({ error, transient: true as const }));
-      }
-      for (const outcome of answered) outcomes.push(outcome);
-      start = end;
+    } finally {
+      endFetch();
     }
     return outcomes;
   };
