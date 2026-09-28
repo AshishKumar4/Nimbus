@@ -31,18 +31,11 @@ export interface SpawnPoolReq {
 
 export class ChildProcessSpawnPool {
   /**
-   * Shared single-slot pool. Serial dispatch keeps one dynamic-worker
-   * allocation in flight while moving child execution out of the
-   * supervisor isolate.
+   * Shared single-slot pool: one Dynamic Worker, whose slot queue runs
+   * spawns one at a time, moving child execution out of the supervisor
+   * isolate.
    */
   private readonly pool: IsolatePool;
-  /**
-   * Promise chain for serializing submits. Each new submit awaits
-   * the previous one's completion BEFORE invoking pool.submit.
-   * This gives us strict 1-in-flight-at-a-time on slot 0; 4-cap
-   * never trips even with 8 concurrent cp.spawn invocations.
-   */
-  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(env: any, ctx: DurableObjectState) {
     this.pool = new IsolatePool(env, ctx, {
@@ -86,28 +79,16 @@ export class ChildProcessSpawnPool {
       kind,
     };
 
-    // Serialize through slot 0 of the shared pool so workerd's per-
-    // method-context dynamic-worker cap (4) is never tripped. The
-    // chain promise links each spawn to wait for the previous one to
-    // settle BEFORE issuing pool.submit. Slot 0 has at most one
-    // in-flight LOADER.get ref at any moment.
     let result: SpawnInIsolateResult;
-    const myTurn = this.chain.then(async () => {
-      try {
-        return await this.pool.submit<SpawnInIsolateSpec, SpawnInIsolateResult>(
-          runSpawnInIsolate,
-          spec,
-        );
-      } catch (e: any) {
-        const msg = (e && e.message) ? String(e.message) : String(e);
-        return { exitCode: 1, stdout: '', stderr: 'spawn-pool: ' + msg + '\n' } as SpawnInIsolateResult;
-      }
-    });
-    // Update the chain BEFORE awaiting so the next caller serializes
-    // behind us. .catch consumed so a runOne failure doesn't break
-    // the chain for subsequent calls.
-    this.chain = myTurn.catch(() => undefined);
-    result = await myTurn;
+    try {
+      result = await this.pool.submit<SpawnInIsolateSpec, SpawnInIsolateResult>(
+        runSpawnInIsolate,
+        spec,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      result = { exitCode: 1, stdout: '', stderr: 'spawn-pool: ' + msg + '\n' };
+    }
     if (result.stdout) hooks.onStdout(RESULT_ENCODER.encode(result.stdout));
     if (result.stderr) hooks.onStderr(RESULT_ENCODER.encode(result.stderr));
     return typeof result.exitCode === 'number' ? result.exitCode : 1;

@@ -224,13 +224,18 @@ Warm isolates are scoped to one session. A pool may opt into
 `cacheScope: 'global'` only if it takes no supervisor binding and keeps no
 user state.
 
-`Fanout` handles wider batches. One DO method can drive at most 4 concurrent
-loader fetches, so batches under 5 run in the coordinator and larger ones
-shard across up to 32 sibling objects, 4 at a time.
+`Fanout` handles wider batches. A Durable Object may have 10 distinct Dynamic
+Workers with in-flight requests at once (`DO_DYNAMIC_WORKER_LIMIT`), shared
+across every concurrent request to it; repeated requests to one Dynamic
+Worker count once. A batch that fits the coordinator's remaining headroom
+runs there, one Dynamic Worker per task; a wider one shards across up to 32
+sibling objects, 4 at a time, each spending its own headroom.
 
-Each keyed `loader.get(id)` permanently holds one of roughly 5–6
-dynamic-worker slots. `loaderLedgerStats(ctx)` reports what you have
-consumed, and a cap refusal names the IDs holding slots.
+The loader ledger counts what is in flight per DO: pool and one-shot calls,
+esbuild facet calls, git network ops, and every resident process for as long
+as it lives. `dynamicWorkerHeadroom(ctx)` is what is left,
+`claimDynamicWorkers(ctx, n)` reserves a width, `loaderLedgerStats(ctx)`
+reports it all, and a limit refusal names the workers in flight.
 
 ## Process fabric
 
@@ -370,7 +375,7 @@ or left to you.
 | Request-time `WebAssembly.compile`/`instantiate` CSP-blocked; wasm rides the loader modules map as `{ wasm: ArrayBuffer }`, compiled at module load | RPC of a compiled `Module` refused by structured clone; inlined bytes OOMed the supervisor |
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |
 | The facet start callback fires at most once | re-running it would re-execute the user's program |
-| ~5–6 concurrent dynamic workers per DO; at most 4 concurrent Loader fetches per DO method; loader-cache entries are never released | `IN_DO_THRESHOLD` = 5 sits under the fetch cap; every `loader.get(id)` permanently consumes a slot — counted per DO by the loader ledger, and a cap refusal names the ids holding them |
+| 10 distinct Dynamic Workers with in-flight requests per DO, shared across its concurrent requests; repeated requests to one Dynamic Worker count once ([changelog, 2026-08-28](https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/)) | `DO_DYNAMIC_WORKER_LIMIT`; `Fanout` sizes in-DO batches to the live headroom, and a refusal names the workers in flight |
 | `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success — `cloneStorage` enforces the both-ends validation |
 | A DO dies at ~200 MiB of live wasm linear memory; reserved and written pages die at the same ceiling | lazy growth buys nothing; bound guest memory by rewriting the memory section |
 | A wasm stack suspended (JSPI) in one request cannot resume in another | 3 in-context resumes took 6 ms; the first cross-context one hit a 30 s timeout |

@@ -533,12 +533,8 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     // buffers registry responses to dodge wrangler-local-dev port
     // exhaustion. It is only needed for the in-supervisor npm paths.
     // When the resolver and install paths run in facets (default-on),
-    // they use bare globalThis.fetch and need no proxy.
-    //
-    // workerd has a per-DO cap on concurrent dynamic workers (~5-6
-    // empirically). A permanent live proxy worker eats one of those
-    // slots for the entire DO lifetime, so the proxy is built only when
-    // any facet path is disabled via its env flag.
+    // they use bare globalThis.fetch and need no proxy, so the proxy is
+    // built only when a facet path is disabled via its env flag.
     const useFacetResolver = self._envFlagDefaultOn('NIMBUS_FACET_RESOLVER');
     const useFacetInstall  = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL');
     const useBatchFacet    = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL_BATCH');

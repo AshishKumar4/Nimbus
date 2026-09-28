@@ -127,10 +127,9 @@ export function classifyMessage(msg: string): OomCause {
   // Subrequest cap (Cloudflare platform)
   if (m.includes('too many subrequests')) return 'subrequest_cap';
 
-  // Worker Loader concurrency cap (Cloudflare platform): a Durable Object
-  // admits ~5-6 concurrent dynamic workers, and loader-cache entries are
-  // never released — every distinct loader.get(id) permanently consumes a
-  // slot, so this cap recurs until the DO itself is replaced.
+  // Dynamic Worker concurrency limit (Cloudflare platform): a Durable Object
+  // may have a fixed number of distinct Dynamic Workers with in-flight
+  // requests at once (fabric budgets.ts, DO_DYNAMIC_WORKER_LIMIT).
   if (m.includes('too many concurrent dynamic workers')) return 'dynamic_worker_cap';
 
   // Memory exhaustion. workerd trace outcome `exceededMemory`; in-band it

@@ -15,6 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
+import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
 import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/platform/src/oom-classify.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
@@ -58,6 +59,9 @@ function makeEnv(stubFactory) {
   };
 }
 const ctx = { id: { toString: () => 'coord-do-id-abcdef' } };
+// Every Dynamic Worker slot on the coordinator is in flight, so each batch
+// below shards to sibling DOs — the path under test.
+for (let i = 0; i < DO_DYNAMIC_WORKER_LIMIT; i++) beginLoaderFetch(ctx, `busy-${i}`);
 const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i }));
 
 // ── Case 1: every shard's first RPC hits a transient reset, then recovers.

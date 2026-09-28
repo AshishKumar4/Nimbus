@@ -5,6 +5,29 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- npm installs and other fan-outs run on the session's own Worker Loader
+  isolates up to Cloudflare's documented limit: 10 distinct Dynamic Workers
+  with in-flight requests per Durable Object, where repeated requests to one
+  worker count once (2026-08-28). A batch now runs in-DO when it fits the
+  session's remaining headroom, and only a wider one shards to sibling
+  Durable Objects; before, anything of 5 or more tasks sharded. An install
+  of up to 8 shards, and resolve layers of up to 10 packages, no longer start
+  sibling objects on an idle session. The headroom is live: resident
+  processes count for as long as they run, and esbuild facet calls, git
+  network ops, one-shot programs and other fan-outs while they are in
+  flight. A sibling runs its shard as wide as its own headroom allows,
+  instead of 4. The install log names the route taken
+  (`Dispatching N packages across S shards (in-do, dynamic-worker headroom
+  H, …)`), and each resolver layer's profile entry ends in its route.
+  `@nimbus-sh/fabric`: `IN_DO_THRESHOLD` is removed; `DO_DYNAMIC_WORKER_LIMIT`,
+  `dynamicWorkerHeadroom(ctx)` and `claimDynamicWorkers(ctx, n)` are new;
+  `beginLoaderFetch(ctx, workerKey)` takes the worker's key;
+  `recordLoaderId` is removed, and `loaderLedgerStats` reports
+  `{ limit, inFlightWorkers, claimed, headroom, peak }`. `Fanout` takes an
+  `onRoute` callback. `IsolatePool`'s default concurrency is 1 (was 4).
+  The `/api/_test/fanout/topology` diag reports `dynamicWorkerHeadroom`
+  instead of `inDoThreshold`.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

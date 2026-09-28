@@ -17,6 +17,7 @@ import {
   FANOUT_PHASE_SIZE,
   MAX_PEER_FANOUT,
 } from '../../packages/fabric/src/fanout.ts';
+import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
 
 function makeEnv(seen) {
   return {
@@ -37,6 +38,9 @@ function makeEnv(seen) {
   };
 }
 const ctx = { id: { toString: () => 'coord-do-id-abcdef' } };
+// Every Dynamic Worker slot on the coordinator is in flight, so even the
+// narrow batch below shards to sibling DOs — the path under test.
+for (let i = 0; i < DO_DYNAMIC_WORKER_LIMIT; i++) beginLoaderFetch(ctx, `busy-${i}`);
 
 /** Run `count` tasks through a pool and report peers used + barriers paid. */
 async function dispatch(count, opts = {}) {

@@ -7,7 +7,7 @@
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
  *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
- *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
+ *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -29,7 +29,7 @@ import { supervisorEntrypoint, type HostRoute } from './composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
+import { beginLoaderFetch, withDynamicWorkerCapNamed } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -62,7 +62,11 @@ export interface IsolatePoolEnv {
 
 /** Options handed to IsolatePool's constructor. */
 export interface IsolatePoolOptions {
-  /** Maximum concurrent in-flight facets. Default 4. */
+  /**
+   * Maximum concurrent in-flight facets, each a distinct Dynamic Worker
+   * spent from the hosting DO's `DO_DYNAMIC_WORKER_LIMIT`. Default 1; a
+   * caller that wants more sizes it against that budget (Fanout does).
+   */
   concurrency?: number;
   /** Per-task timeout in ms. Default 60_000. */
   timeoutMs?: number;
@@ -367,7 +371,7 @@ export function assembleLoaderWorkerModuleSource(
  * Typical use:
  *
  *   const pool = new IsolatePool(env, ctx, {
- *     concurrency: 4,
+ *     concurrency: 2,
  *     tag: 'npm-install',
  *   });
  *   const results = await pool.map(
@@ -457,7 +461,7 @@ export class IsolatePool {
     }
     this.loader = loader;
     this.ctx = ctx;
-    this.concurrency = Math.max(1, opts?.concurrency ?? 4);
+    this.concurrency = Math.max(1, opts?.concurrency ?? 1);
     this.defaultTimeoutMs = opts?.timeoutMs ?? 60_000;
     this.defaultRetries = Math.max(0, opts?.retries ?? 0);
     this.tag = opts?.tag ?? 'facet';
@@ -843,11 +847,10 @@ export class IsolatePool {
       // binding stub once the whole pool is done, which does NOT
       // invalidate any in-flight slot's entrypoint reference.
       const stub = this.loader.get(id, async () => code);
-      recordLoaderId(this.ctx, id);
       const entrypoint = stub.getEntrypoint();
       // Direct property call, awaited by this frame — bracketed, never
       // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
-      const endFetch = beginLoaderFetch(this.ctx);
+      const endFetch = beginLoaderFetch(this.ctx, id);
       try {
         return await invoke(entrypoint, attempt);
       } catch (err) {
@@ -952,9 +955,9 @@ export class IsolatePool {
         attempt++;
       }
     }
-    // On the way out only, so retries do not stack the annotation: a cap hit
-    // carries the ledger — which ids hold slots, and that a keyed id never
-    // gives one back — instead of the platform's bare message.
+    // On the way out only, so retries do not stack the annotation: a limit
+    // hit carries the ledger — which workers were in flight — instead of the
+    // platform's bare message.
     const named = withDynamicWorkerCapNamed(this.ctx, lastError!);
     if (maxAttempts > 1) {
       throw new RetryExhaustedError(maxAttempts, named);

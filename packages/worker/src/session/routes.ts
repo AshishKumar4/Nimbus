@@ -53,8 +53,7 @@ import { startRealVite } from './start-real-vite.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { facetIdBudget } from '@nimbus-sh/fabric/budgets.js';
-import { loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
+import { dynamicWorkerHeadroom, facetIdBudget, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
@@ -82,7 +81,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_JS_L2_KEY, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
-import { Fanout, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
+import { Fanout, MAX_PEER_FANOUT, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { z } from 'zod/v4';
 
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -714,9 +713,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // (32 entries) with FIFO eviction. The counters here let
         // ops dashboards visualise the bound + the eviction rate.
         loadedCodes: getLoadedCodesStats(),
-        // Per-DO Worker Loader accounting: distinct loader ids ever gotten
-        // (each permanently holds one of the ~5-6 dynamic-worker slots) and
-        // live/peak concurrent Loader fetches.
+        // Per-DO Dynamic Worker accounting: distinct workers in flight now,
+        // fan-out claims, remaining headroom against the platform limit,
+        // and the peak.
         loader: loaderLedgerStats(self.ctx),
         rpc: {
           lastFrame: getLastRpcFrame(),
@@ -1570,7 +1569,7 @@ async function handleFanoutTestEndpoint(
     return Response.json({
       n,
       topology: pool.topologyFor(n),
-      inDoThreshold: IN_DO_THRESHOLD,
+      dynamicWorkerHeadroom: dynamicWorkerHeadroom(self.ctx),
       maxPeerFanout: MAX_PEER_FANOUT,
     });
   }
@@ -1595,9 +1594,11 @@ async function handleFanoutTestEndpoint(
     const n = Math.max(1, Math.min(64, body.n || 8));
     const sleepMs = Math.max(0, Math.min(2000, body.sleepMs || 100));
 
+    let route: FanoutRoute | undefined;
     const pool = new Fanout(env, self.ctx, {
       tag: 'fanout-bench',
       timeoutMs: 60_000,
+      onRoute: (taken) => { route = taken; },
     });
 
     const tasks = Array.from({ length: n }, (_, i) => ({
@@ -1648,7 +1649,7 @@ async function handleFanoutTestEndpoint(
         maxEnd,
         spanMs: maxEnd - minStart,
         sumDurations: totalDurations.reduce((a, b) => a + b, 0),
-        topology: pool.topologyFor(n),
+        route,
       },
     });
   }

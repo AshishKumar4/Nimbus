@@ -1,8 +1,8 @@
 // Shared fanout env fake for NpmInstaller unit tests.
 //
-// Fanout picks its topology by task width: >= IN_DO_THRESHOLD goes to
-// NIMBUS_SESSION._rpcFanoutExecute (peer-DO), below that to the in-DO
-// IsolatePool which drives LOADER.get(id).getEntrypoint().execute(spec).
+// Fanout picks its topology on the session's Dynamic Worker headroom: a
+// batch wider than it goes to NIMBUS_SESSION supervisorOp (peer-DO), others
+// to the in-DO IsolatePool which drives LOADER.get(id).getEntrypoint().execute(spec).
 // A fake that only covers the session binding breaks the moment a test
 // dispatches a narrow layer — both shapes here answer the same fake so
 // either topology works. `resultFor(name, spec)` answers resolve tasks

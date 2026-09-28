@@ -72,8 +72,7 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const { installer, log, root, shardsSeen } = makeInstaller(
     {
-      // Six names so the resolve layer takes the peer-DO topology the
-      // harness fakes (width >= IN_DO_THRESHOLD), the path a real clone hits.
+      // Seven names: a layer as wide as a real clone's first one.
       name: 'cloned', dependencies: { react: '^19.0.0', 'react-dom': '^19.0.0' },
       devDependencies: { typescript: '^5.4.0', '@types/node': '^22.0.0', eslint: '^9.0.0', prettier: '^3.0.0', wrangler: '^4.0.0' },
     },

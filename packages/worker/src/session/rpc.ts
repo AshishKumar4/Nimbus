@@ -31,6 +31,7 @@ import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { claimDynamicWorkers, dynamicWorkerHeadroom } from '@nimbus-sh/fabric/budgets.js';
 import {
   residentBootSpecSchema,
   type ResidentDiskReader,
@@ -1542,16 +1543,13 @@ export function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): vo
  * THIS DO instance acts as a peer worker: it runs ONE IsolatePool
  * over its assigned shard and returns the per-task results.
  *
- * Cap-sidestep mechanic
- * ─────────────────────
- * The supervisor's `submitMany` makes N RPC calls to N peer DOs.
- * Each RPC is a stub.fetch / RPC method invocation, NOT an
- * `env.LOADER.get()` from the supervisor's own method context — so
- * those N calls don't count against the V8 4-loaders-per-method cap.
- * Inside this RPC handler, we run a SINGLE IsolatePool with concurrency
- * matching the shard size — and since the shard arrived via the peer
- * router (capped at MAX_PEER_FANOUT = 32 peers, so each shard is
- * ⌈totalTasks / 32⌉ wide), the in-DO pool stays well under 4.
+ * Budget
+ * ──────
+ * The coordinator's calls to its peers are Durable Object RPCs and spend
+ * none of its Dynamic Worker budget; each peer spends its own. The shard
+ * runs one IsolatePool as wide as this DO's headroom allows (at least one
+ * slot — a peer has nowhere further to send it), claimed on the ledger
+ * while it runs.
  *
  * Failure model
  * ─────────────
@@ -1602,12 +1600,8 @@ export async function _rpcFanoutExecute(
   }
   if (args.length === 0) return { results: [] };
 
-  // Concurrency = shard size, capped at 4 (the V8 in-DO ceiling).
-  // Shard size on the coordinator side is at most ⌈totalTasks / N⌉
-  // where N <= MAX_PEER_FANOUT (32) — for typical 50-pkg installs
-  // with N=8 peers, that's 7 tasks per peer, capped to 4 here so
-  // each peer DO stays safely below the cap.
-  const concurrency = Math.min(args.length, 4);
+  const concurrency = Math.max(1, Math.min(args.length, dynamicWorkerHeadroom(self.ctx)));
+  const claim = claimDynamicWorkers(self.ctx, concurrency);
   const pool = new IsolatePool(self.env, self.ctx, {
     concurrency,
     timeoutMs: poolOpts.timeoutMs,
@@ -1633,6 +1627,7 @@ export async function _rpcFanoutExecute(
     return { results };
   } finally {
     try { pool.dispose(); } catch { /* best-effort */ }
+    claim?.release();
   }
 }
 
