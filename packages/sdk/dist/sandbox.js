@@ -9,6 +9,8 @@ import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js'
 function fileWireOptions(cred) {
     return cred === undefined ? [] : [{ cred }];
 }
+const hostedSessionServesTheSurface = true;
+void hostedSessionServesTheSurface;
 export class NimbusRemoteError extends Error {
     status;
     code;
@@ -236,6 +238,18 @@ export class Nimbus {
             previewHostSuffix: readPreviewHostSuffix(env) ?? config.previewHostSuffix,
         });
     }
+    /**
+     * A client over a session surface the caller already holds, such as the
+     * one a hosted runtime's `session()` returns, possibly as an RPC stub from
+     * another isolate. `open` is asked once per call, so a caller whose stub
+     * does not outlive one RPC session can hand out a fresh one each time. It
+     * is a function, never the surface itself: an RPC stub is callable too,
+     * so the two could not be told apart. The sandbox id names nothing here;
+     * the surface is the session.
+     */
+    static fromSession(open, config = {}) {
+        return new Nimbus({ kind: 'session', open }, config);
+    }
     static connect(options) {
         if (!options.endpoint) {
             throw new Error('Nimbus.connect: endpoint is required');
@@ -298,6 +312,8 @@ export class NimbusSandbox {
     stub() {
         if (this.target.kind === 'remote')
             return this.remoteStub();
+        if (this.target.kind === 'session')
+            return this.target.open();
         const id = this.target.namespace.idFromName(this.doName);
         return this.target.namespace.get(id);
     }
@@ -742,7 +758,8 @@ export class NimbusSandbox {
         return caps;
     }
     execOptions(options) {
-        const normalized = { ...options };
+        const shellId = options.shellId ?? this.options.shellId;
+        const normalized = { ...options, ...(shellId === undefined ? {} : { shellId }) };
         if (typeof normalized.cwd === 'string') {
             // The session shell only understands absolute paths; a relative cwd
             // forwarded verbatim used to reach it anyway — `pwd` echoed the

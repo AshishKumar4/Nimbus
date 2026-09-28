@@ -8,6 +8,7 @@ import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/comp
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import * as operations from '../session/programmatic.js';
 import * as services from './services.js';
+import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
 declare const HostedTask: z.ZodEnum<{
     "resident-launch": "resident-launch";
@@ -37,6 +38,8 @@ export type RuntimeFiles = ProcessView & {
 };
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
     supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+    /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
+    session: (scope?: HostedSessionScope) => HostedSession;
     onScheduled: (task: HostedRuntimeTask) => Promise<void>;
     terminalClose: (ws: WebSocket) => void;
     close: () => Promise<void>;

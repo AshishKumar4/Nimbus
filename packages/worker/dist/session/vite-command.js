@@ -15,7 +15,7 @@
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { parseViteConfigSource, viteBuildBlockingPlugins, unhandledVitePlugins } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -49,15 +49,18 @@ export function createViteCommand(self) {
             const cfgPath = cwd + '/' + cfgName;
             if (kernelFs.exists(cfgPath)) {
                 try {
-                    let cfgCode = kernelFs.readFileString(cfgPath);
-                    // Transform TS to JS
-                    if (cfgName.endsWith('.ts')) {
-                        if (!self.esbuildService)
-                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
-                        const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
-                        cfgCode = t.code;
-                    }
-                    Object.assign(viteConfig, parseViteConfigSource(cfgCode));
+                    const cfgCode = kernelFs.readFileString(cfgPath);
+                    // A .ts config needs esbuild only when it holds type syntax
+                    // (parseViteConfigTypeScript); a plain one is read as is, so a
+                    // fresh session's `vite` does not wait on the esbuild facet.
+                    const parsed = cfgName.endsWith('.ts')
+                        ? await parseViteConfigTypeScript(cfgCode, async (source) => {
+                            if (!self.esbuildService)
+                                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+                            return (await self.esbuildService.transform(source, { loader: 'ts', format: 'esm' })).code;
+                        })
+                        : parseViteConfigSource(cfgCode);
+                    Object.assign(viteConfig, parsed);
                 }
                 catch (e) {
                     ctx.stderr.write(`Warning: could not parse ${cfgName}: ${e?.message}\n`);

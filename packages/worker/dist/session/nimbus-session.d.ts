@@ -676,12 +676,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild: Promise<void> | null;
-    /**
-     * Boot this activation's esbuild facet in the background, for a terminal
-     * that attached (facets/esbuild-transform.ts prewarmEsbuildFacet; once per
-     * activation, so an activation already pre-warmed is a no-op).
-     */
-    prewarmEsbuildFacet(): void;
     ensureGlobalPrefixDirs(prefix: string): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the

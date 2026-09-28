@@ -18,6 +18,30 @@ export interface ParsedViteConfig {
      */
     plugins?: string[];
 }
+/**
+ * Read a `vite.config.ts` without a TypeScript transform where the transform
+ * cannot change what this reader sees.
+ *
+ * The transform is esbuild, and on a fresh session it is the session's first:
+ * it starts the esbuild facet (loading the wasm and initializing esbuild,
+ * about a second), and `vite` waits on it before it serves anything. Most
+ * configs, the seeded one included, are plain JavaScript under a `.ts` name.
+ *
+ * The direct read is taken only for a source that parses as a JavaScript
+ * module built solely from PASS_THROUGH_NODES: syntax esbuild's `ts` transform
+ * leaves as it is. That rules out, by construction, the two ways a source can
+ * mean something else to esbuild. Type syntax: annotations, casts and enums do
+ * not parse as JavaScript, and a generic call such as `f<T>(x)` or
+ * `f<A<B>>(x)` parses only as comparisons or shifts, which are not on the
+ * list. And rewriting: esbuild folds constants (`'a' + 'b'`, `!0`,
+ * `+"5173"`, `null || x`, `false && f()`, conditionals, templates with
+ * substitutions), all of them operators that are not on the list either.
+ * TypeScript (and esbuild) also drop an import none of whose bindings is
+ * used, which changes `importsVitePlugin` and so the dev-server choice, so a
+ * source with such an import, or one that declares a name an import binds,
+ * goes through esbuild too. Anything else calls `eraseTypes`.
+ */
+export declare function parseViteConfigTypeScript(source: string, eraseTypes: (source: string) => Promise<string>): Promise<ParsedViteConfig>;
 export declare function parseViteConfigSource(source: string): ParsedViteConfig;
 /** Plugins a parsed config declares that the built-in build must refuse:
  *  the framework denylist only — everything else gets a warning and tries. */

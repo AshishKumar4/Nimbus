@@ -1,6 +1,135 @@
 import { booleanField, literalBooleanValue, literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, stringField, } from './javascript-ast.js';
+import { full, simple } from 'acorn-walk';
+/**
+ * Read a `vite.config.ts` without a TypeScript transform where the transform
+ * cannot change what this reader sees.
+ *
+ * The transform is esbuild, and on a fresh session it is the session's first:
+ * it starts the esbuild facet (loading the wasm and initializing esbuild,
+ * about a second), and `vite` waits on it before it serves anything. Most
+ * configs, the seeded one included, are plain JavaScript under a `.ts` name.
+ *
+ * The direct read is taken only for a source that parses as a JavaScript
+ * module built solely from PASS_THROUGH_NODES: syntax esbuild's `ts` transform
+ * leaves as it is. That rules out, by construction, the two ways a source can
+ * mean something else to esbuild. Type syntax: annotations, casts and enums do
+ * not parse as JavaScript, and a generic call such as `f<T>(x)` or
+ * `f<A<B>>(x)` parses only as comparisons or shifts, which are not on the
+ * list. And rewriting: esbuild folds constants (`'a' + 'b'`, `!0`,
+ * `+"5173"`, `null || x`, `false && f()`, conditionals, templates with
+ * substitutions), all of them operators that are not on the list either.
+ * TypeScript (and esbuild) also drop an import none of whose bindings is
+ * used, which changes `importsVitePlugin` and so the dev-server choice, so a
+ * source with such an import, or one that declares a name an import binds,
+ * goes through esbuild too. Anything else calls `eraseTypes`.
+ */
+export async function parseViteConfigTypeScript(source, eraseTypes) {
+    let ast = null;
+    try {
+        ast = parseJavaScriptModule(source);
+    }
+    catch {
+        // Type syntax, or not a module at all: esbuild decides.
+    }
+    if (ast && onlyPassThroughSyntax(ast) && everyImportIsUsed(ast))
+        return readViteConfig(ast);
+    return parseViteConfigSource(await eraseTypes(source));
+}
+/**
+ * Every import binding is referenced, and no declaration reuses its name. A
+ * side-effect-only `import 'x'` binds nothing and is kept either way.
+ */
+function everyImportIsUsed(ast) {
+    const imported = new Set();
+    for (const statement of nodeList(ast, 'body')) {
+        if (statement.type !== 'ImportDeclaration')
+            continue;
+        for (const specifier of nodeList(statement, 'specifiers')) {
+            const local = nodeName(nodeProp(specifier, 'local'));
+            if (local)
+                imported.add(local);
+        }
+    }
+    if (imported.size === 0)
+        return true;
+    const referenced = new Set();
+    const declared = new Set();
+    const declare = (pattern) => {
+        if (!pattern)
+            return;
+        if (pattern.type === 'Identifier')
+            declared.add(pattern.name);
+        else if (pattern.type === 'ObjectPattern') {
+            for (const property of pattern.properties)
+                declare(property.type === 'RestElement' ? property.argument : property.value);
+        }
+        else if (pattern.type === 'ArrayPattern')
+            for (const element of pattern.elements)
+                declare(element);
+        else if (pattern.type === 'RestElement')
+            declare(pattern.argument);
+        else if (pattern.type === 'AssignmentPattern')
+            declare(pattern.left);
+    };
+    simple(ast, {
+        // Identifiers the walker visits: references and declaration patterns;
+        // import specifiers, non-computed keys and member names are not visited.
+        Identifier(node) { referenced.add(node.name); },
+        VariableDeclarator(node) { declare(node.id); },
+        Function(node) {
+            if (node.id)
+                declared.add(node.id.name);
+            for (const param of node.params)
+                declare(param);
+        },
+        Class(node) { if (node.id)
+            declared.add(node.id.name); },
+        CatchClause(node) { declare(node.param); },
+    });
+    for (const name of imported) {
+        if (!referenced.has(name) || declared.has(name))
+            return false;
+    }
+    return true;
+}
+/**
+ * Syntax esbuild's `ts` transform passes through unchanged, and that a config
+ * the reader understands is written in. No operator of any kind: every one is
+ * either a candidate for constant folding or how a generic call parses.
+ */
+const PASS_THROUGH_NODES = new Set([
+    'Program', 'ImportDeclaration', 'ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier',
+    'ExportDefaultDeclaration', 'ExportNamedDeclaration', 'ExportSpecifier',
+    'VariableDeclaration', 'VariableDeclarator', 'ExpressionStatement', 'BlockStatement', 'ReturnStatement',
+    'CallExpression', 'NewExpression', 'MemberExpression', 'MetaProperty',
+    'ObjectExpression', 'Property', 'ArrayExpression', 'Literal', 'TemplateLiteral', 'TemplateElement', 'Identifier',
+    'ArrowFunctionExpression', 'FunctionExpression', 'ObjectPattern', 'ArrayPattern', 'AssignmentPattern', 'RestElement',
+]);
+function onlyPassThroughSyntax(ast) {
+    let passes = true;
+    // `full` calls back on every node its base walker descends into. It does
+    // not descend into non-computed property keys, non-computed member names,
+    // MetaProperty parts or export specifiers (all identifiers or literals), nor
+    // hand over an ObjectPattern's Property nodes, so that computed check is
+    // made on the pattern itself.
+    full(ast, (node) => {
+        if (!PASS_THROUGH_NODES.has(node.type))
+            passes = false;
+        // A computed key or member may be folded to a plain one; a template with
+        // substitutions may be folded to a string.
+        else if ((node.type === 'Property' || node.type === 'MemberExpression') && node.computed)
+            passes = false;
+        else if (node.type === 'ObjectPattern' && node.properties.some((property) => property.type === 'Property' && property.computed))
+            passes = false;
+        else if (node.type === 'TemplateLiteral' && node.expressions.length > 0)
+            passes = false;
+    });
+    return passes;
+}
 export function parseViteConfigSource(source) {
-    const ast = parseJavaScriptModule(source);
+    return readViteConfig(parseJavaScriptModule(source));
+}
+function readViteConfig(ast) {
     const bindings = collectTopLevelBindings(ast);
     const configExpr = findExportedConfigExpression(ast, bindings);
     const configObject = configExpr ? unwrapConfigExpression(configExpr, bindings) : null;

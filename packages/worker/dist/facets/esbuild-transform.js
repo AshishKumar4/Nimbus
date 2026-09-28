@@ -25,8 +25,8 @@ const ESBUILD_FACET_BODY = [
     ESBUILD_NAME_GLOBAL_SHIM,
     generateEsbuildFacetRuntimeSource(),
     'let initialized;',
-    // One initialization per facet, shared by warm() and every transform. A
-    // failed one is forgotten, as esbuild forgets it, so the next call retries.
+    // One initialization per facet, shared by every transform. A failed one is
+    // forgotten, as esbuild forgets it, so the next call retries.
     'function ensureInitialized() {',
     '  initialized ||= esbuild.initialize({ wasmModule, worker: false }).catch((e) => {',
     '    initialized = undefined;',
@@ -35,9 +35,6 @@ const ESBUILD_FACET_BODY = [
     '  return initialized;',
     '}',
     'export class EsbuildFacet extends DurableObject {',
-    '  async warm() {',
-    '    await ensureInitialized();',
-    '  }',
     '  async transformMany(requests) {',
     '    if (requests.some(({ options }) => !options?.rewriteOnly)) await ensureInitialized();',
     '    const outcomes = [];',
@@ -123,7 +120,7 @@ async function esbuildFacet(ctx, env) {
 }
 /**
  * The one way to a Durable Object's esbuild facet: its transforms, builds,
- * `esbuild` commands and pre-warm share one stub, so a caller that starts
+ * and `esbuild` commands share one stub, so a caller that starts
  * while another is still loading the facet (fetching and verifying the 12 MiB
  * wasm) waits on that load instead of starting a second one. A load or call
  * that failed drops the entry; the next caller mints a fresh stub.
@@ -152,43 +149,6 @@ async function onEsbuildFacet(ctx, env, call) {
         forgetEsbuildFacet(ctx, stub);
         throw error;
     }
-}
-/** A Durable Object activation's one pre-warm: its status as it goes, and its outcome. */
-const prewarms = new WeakMap();
-/**
- * Load a Durable Object's esbuild facet and initialize its esbuild in the
- * background, so the session's first transform (`vite` reading a
- * vite.config.ts, a node launch of a TS entry) does not pay the facet's cold
- * start: fetching the esbuild wasm, loading the worker and esbuild's own
- * initialization, about a second on a fresh session. Once per Durable Object
- * activation: later calls return the first one's outcome. It shares the
- * transforms' facet stub and the facet's one initialization. A failure is
- * recorded and logged once and leaves the lazy path as it was; nothing
- * retries it.
- */
-export function prewarmEsbuildFacet(ctx, env) {
-    const existing = prewarms.get(ctx);
-    if (existing)
-        return existing.done;
-    const status = { state: 'pending' };
-    const started = Date.now();
-    const done = onEsbuildFacet(ctx, env, (facet) => facet.warm()).then(() => {
-        status.state = 'ok';
-        status.wallMs = Date.now() - started;
-        return status;
-    }, (error) => {
-        status.state = 'failed';
-        status.wallMs = Date.now() - started;
-        status.error = errorText(error);
-        console.warn('[nimbus] esbuild facet pre-warm failed; the first transform starts it instead:', status.error);
-        return status;
-    });
-    prewarms.set(ctx, { status, done });
-    return done;
-}
-/** The pre-warm's outcome so far, or null before one started. */
-export function esbuildPrewarmStatus(ctx) {
-    return prewarms.get(ctx)?.status ?? null;
 }
 /** Calls per slice: a slice whose call failed is sent once more. */
 const SLICE_ATTEMPTS = 2;

@@ -58,6 +58,8 @@ export interface NimbusSandboxOptions {
     tenant?: string;
     subject?: string;
     root?: string;
+    /** The named shell every command runs in unless the call names another; see {@link NimbusExecOptions.shellId}. */
+    shellId?: string;
 }
 export interface NimbusExecOptions {
     /**
@@ -269,7 +271,11 @@ export interface NimbusAvailableRuntime {
         license: string;
     }>;
 }
-interface NimbusSessionStub {
+/**
+ * The RPC surface a sandbox drives: what a `NimbusSession` Durable Object
+ * answers, and what a hosted runtime's `session()` hands its embedder.
+ */
+export interface NimbusSessionSurface {
     _rpcReady(options?: {
         preinstall?: string[];
     }): Promise<{
@@ -381,11 +387,14 @@ interface NimbusSessionStub {
 }
 interface NimbusSessionNamespace {
     idFromName(name: string): DurableObjectId;
-    get(id: DurableObjectId): NimbusSessionStub;
+    get(id: DurableObjectId): NimbusSessionSurface;
 }
 type NimbusTarget = {
     kind: 'binding';
     namespace: NimbusSessionNamespace;
+} | {
+    kind: 'session';
+    open: () => NimbusSessionSurface;
 } | {
     kind: 'remote';
     endpoint: string;
@@ -407,6 +416,16 @@ export declare class NimbusRemoteError extends Error {
 export declare class Nimbus {
     private readonly config;
     static fromEnv(env: Record<string, unknown>, config?: NimbusConfig, options?: NimbusFromEnvOptions): Nimbus;
+    /**
+     * A client over a session surface the caller already holds, such as the
+     * one a hosted runtime's `session()` returns, possibly as an RPC stub from
+     * another isolate. `open` is asked once per call, so a caller whose stub
+     * does not outlive one RPC session can hand out a fresh one each time. It
+     * is a function, never the surface itself: an RPC stub is callable too,
+     * so the two could not be told apart. The sandbox id names nothing here;
+     * the surface is the session.
+     */
+    static fromSession(open: () => NimbusSessionSurface, config?: NimbusConfig): Nimbus;
     static connect(options: NimbusConnectOptions): Nimbus;
     private readonly target;
     constructor(target: NimbusSessionNamespace | NimbusTarget, config?: NimbusConfig);

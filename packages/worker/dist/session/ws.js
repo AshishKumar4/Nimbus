@@ -104,12 +104,8 @@ export async function bindShellSocket(self, ws) {
         }
         return true;
     }
-    if (self.terminal.ws !== ws) {
+    if (self.terminal.ws !== ws)
         self.terminal.attach(ws, shellTerminalTee(self));
-        // An activation the SDK built (initSession(null)) did not pre-warm: this
-        // is its first terminal.
-        self.prewarmEsbuildFacet();
-    }
     return true;
 }
 /** The shell state each instance last wrote, so an unchanged state costs no SQL. */
