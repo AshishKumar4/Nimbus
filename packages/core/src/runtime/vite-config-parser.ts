@@ -1,7 +1,6 @@
 import {
   type AstNode,
   booleanField,
-  isAstNode,
   literalBooleanValue,
   literalStringValue,
   nodeList,
@@ -11,7 +10,7 @@ import {
   stringField,
 } from './javascript-ast.js';
 import type { Pattern } from 'acorn';
-import { simple } from 'acorn-walk';
+import { full, simple } from 'acorn-walk';
 
 export interface ParsedViteConfig {
   root?: string;
@@ -128,18 +127,22 @@ const PASS_THROUGH_NODES = new Set([
   'ArrowFunctionExpression', 'FunctionExpression', 'ObjectPattern', 'ArrayPattern', 'AssignmentPattern', 'RestElement',
 ]);
 
-function onlyPassThroughSyntax(node: unknown): boolean {
-  if (Array.isArray(node)) return node.every(onlyPassThroughSyntax);
-  if (!isAstNode(node)) return true;
-  if (!PASS_THROUGH_NODES.has(node.type)) return false;
-  // A computed key or member may be folded to a plain one; a template with
-  // substitutions may be folded to a string.
-  if ((node.type === 'Property' || node.type === 'MemberExpression') && node.computed === true) return false;
-  if (node.type === 'TemplateLiteral' && nodeList(node, 'expressions').length > 0) return false;
-  for (const [key, value] of Object.entries(node)) {
-    if (key !== 'type' && typeof value === 'object' && value !== null && !onlyPassThroughSyntax(value)) return false;
-  }
-  return true;
+function onlyPassThroughSyntax(ast: AstNode): boolean {
+  let passes = true;
+  // `full` calls back on every node its base walker descends into. It does
+  // not descend into non-computed property keys, non-computed member names,
+  // MetaProperty parts or export specifiers (all identifiers or literals), nor
+  // hand over an ObjectPattern's Property nodes, so that computed check is
+  // made on the pattern itself.
+  full(ast, (node) => {
+    if (!PASS_THROUGH_NODES.has(node.type)) passes = false;
+    // A computed key or member may be folded to a plain one; a template with
+    // substitutions may be folded to a string.
+    else if ((node.type === 'Property' || node.type === 'MemberExpression') && node.computed) passes = false;
+    else if (node.type === 'ObjectPattern' && node.properties.some((property) => property.type === 'Property' && property.computed)) passes = false;
+    else if (node.type === 'TemplateLiteral' && node.expressions.length > 0) passes = false;
+  });
+  return passes;
 }
 
 export function parseViteConfigSource(source: string): ParsedViteConfig {
