@@ -89,20 +89,13 @@ import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parse
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 
 /**
- * Compatibility flags for the real-vite facet.
- *
- *   nodejs_compat                       — base Node polyfills
- *   enable_nodejs_http_modules          — http.get / http.request
- *   enable_nodejs_http_server_modules   — http.createServer / Server
- *
- * (expose_global_message_channel is not strictly required for our flow
- *  since we don't use Worker in FakeWorker mode yet; add later if needed.)
+ * The real-vite facet needs Node's http client and server modules. At
+ * CF_COMPAT_DATE both come with Node compatibility, which is on by date
+ * (enable_nodejs_http_modules from 2025-08-15, enable_nodejs_http_server_modules
+ * from 2025-09-01, nodejs_compat from 2026-08-04; workerd
+ * src/workerd/io/compatibility-date.capnp), so it lists no flags.
  */
-const REAL_VITE_COMPAT_FLAGS = [
-  'nodejs_compat',
-  'enable_nodejs_http_modules',
-  'enable_nodejs_http_server_modules',
-];
+const REAL_VITE_COMPAT_FLAGS: string[] = [];
 
 /**
  * Resolve opt-in mode.

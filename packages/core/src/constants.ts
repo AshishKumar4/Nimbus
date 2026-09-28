@@ -327,9 +327,10 @@ export const SEEDED_TOP_LEVEL_DIRS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr',
 // (workerd src/workerd/jsg/modules-new.c++ isValidBundleModuleUrl and
 // IsolateModuleRegistry::resolve) — so the builtin bridges keep working.
 //
-// `nodejs_compat` implies `nodejs_compat_v2` at every date after 2024-09-23
-// (workerd src/workerd/io/compatibility-date.capnp, nodeJsCompatV2).
-export const GUEST_COMPAT_FLAGS: readonly string[] = ['nodejs_compat', 'new_module_registry'];
+// Node compatibility itself needs no flag: `nodejs_compat` (and `_v2`) are on
+// by date from 2026-08-04, and every guest runs at CF_COMPAT_DATE
+// (https://developers.cloudflare.com/changelog/post/2026-08-04-nodejs-compat-default/).
+export const GUEST_COMPAT_FLAGS: readonly string[] = ['new_module_registry'];
 
 // ── npm packages the facet runtime provides itself ──────────────────────
 //

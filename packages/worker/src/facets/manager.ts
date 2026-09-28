@@ -7037,7 +7037,7 @@ export class FacetManager {
     try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
 
     const compatibilityDate = opts.compatibilityDate ?? CF_COMPAT_DATE;
-    const compatibilityFlags = opts.compatibilityFlags || ['nodejs_compat'];
+    const compatibilityFlags = opts.compatibilityFlags ?? [];
     const mainModule = opts.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
     if (opts.modules && Object.hasOwn(opts.modules, mainModule)) {
       throw new Error(`Nimbus: spawnWorker main module '${mainModule}' is also an inline module; workerCode is the main module`);
