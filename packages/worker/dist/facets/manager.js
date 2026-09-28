@@ -268,11 +268,38 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
 // A resident facet keeps running after the call that boots it returns, so it
 // settles startup and nothing more. The handles it holds open deliberately —
 // its listening port — are the point of it, not a reason to make the shell's
-// prompt wait.
+// prompt wait. Its module's own evaluation is bounded by the same budget: a
+// server entry that ends in a top-level await which never settles
+// (\`await new Promise(() => {})\`, a dev server awaiting a listen that fails)
+// is a running program in Node, and waiting on it here left the boot call —
+// and every request routed to the facet, which waits for boot — hung
+// forever. A rejection after the budget fails the process as Node's does.
 async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
-  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
+  const __startedAt = Date.now();
+  if (__entryResult && typeof __entryResult.then === "function") {
+    const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
+      ? globalThis.__nimbusRawSetTimeout
+      : globalThis.setTimeout;
+    const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === "function")
+      ? globalThis.__nimbusRawClearTimeout
+      : globalThis.clearTimeout;
+    const __exit = {};
+    const __late = {};
+    let __timer = null;
+    const __raced = await Promise.race([
+      __entryResult.then(() => null),
+      __nimbusProcessExitPromise.then(() => __exit, () => __exit),
+      new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),
+    ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });
+    if (__raced === __exit) return { passes: 0, pending: 0 };
+    if (__raced === __late) {
+      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });
+      return { passes: 0, pending: __nimbusPendingStartupWork() };
+    }
+  }
   return await __nimbusRunEventLoop(
-    __nimbusPendingStartupWork, __nimbusProcessExitPromise, __deadlineMs, 4,
+    __nimbusPendingStartupWork, __nimbusProcessExitPromise,
+    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,
   );
 }
 `;
