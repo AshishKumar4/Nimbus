@@ -232,3 +232,54 @@ for (const [label, cred, member] of [
 });
 console.log('sqlite-vfs-shared-directory: primary and supplementary group membership agree');
 
+// Every mutation that brings entries into a shared domain must leave the
+// running engine agreeing with the rows it wrote. The fixtures above hold two
+// cache entries, so their reads come back from the rows and cannot see a
+// cache that disagrees. This one keeps the default cache, compares the engine
+// with a fresh one over the same database, and has the other member write.
+{
+  const h = createSqliteVfsTestHarness();
+  const source = createSqliteVfsTestHarness();
+  try {
+    const v = new SqliteVFS(h.sql, h.ctx);
+    const k = v.as(CRED_KERNEL), a = v.as(A), b = v.as(B);
+    k.mkdir('team'); k.chown('team', 0, 1000); k.chmod('team', 0o3775); k.setDefaultAcl('team', 0o775);
+    k.mkdir('private'); k.chown('private', A.uid, A.gid);
+    a.mkdir('team/legacy', { mode: 0o755 }); a.writeFile('team/legacy/f', 'legacy', { mode: 0o644 });
+    v.snapshot('before');
+    v.registerSharedDirectory('team');
+    a.mkdir('private/draft'); a.mkdir('private/draft/sub'); a.writeFile('private/draft/sub/f', 'draft');
+    a.writeFile('private/solo', 'solo');
+    a.mkdir('private/source'); a.writeFile('private/source/f', 'source');
+    a.rename('private/draft', 'team/draft');
+    const held = v.openDescription('private/solo', A, { read: true });
+    a.rename('private/solo', 'team/solo');
+    assert.equal(held.stat().gid, 1000, 'a descriptor open across the move sees the shared group');
+    held.close();
+    a.copyTree('private/source', 'team/copied');
+    a.chmod('team/legacy', 0o700); a.writeFile('team/legacy/f', 'changed'); v.restore('before', { subtree: 'team/legacy' });
+    const other = new SqliteVFS(source.sql, source.ctx), root = other.as(CRED_KERNEL);
+    root.mkdir('tree'); root.writeFile('tree/f', 'imported'); other.snapshot('snap');
+    for (let cursor = null; ;) {
+      const page = other.exportPage({ at: 'snap', root: 'tree', after: cursor, limit: 1 });
+      v.importPage('team/imported', page, other.exportChunks(v.wantChunks(page)).chunks);
+      if ((cursor = page.next) === null) break;
+    }
+    const fresh = new SqliteVFS(h.sql, h.ctx).as(CRED_KERNEL);
+    const meta = (vfs, p) => {
+      const st = vfs.stat(p);
+      return { uid: st.uid, gid: st.gid, mode: st.mode & 0o7777, acl: vfs.getDefaultAcl(p) };
+    };
+    const dirs = ['team/draft', 'team/draft/sub', 'team/copied', 'team/legacy', 'team/imported'];
+    const files = ['team/draft/sub/f', 'team/solo', 'team/copied/f', 'team/legacy/f', 'team/imported/f'];
+    for (const p of [...dirs, ...files]) assert.deepEqual(meta(k, p), meta(fresh, p), `${p}: the running engine agrees with its rows`);
+    for (const p of dirs) assert.equal(meta(k, p).mode, 0o2775, `${p}: shared directory mode`);
+    for (const p of files) {
+      assert.equal(meta(k, p).gid, 1000, `${p}: shared group`);
+      b.writeFile(p, 'the other member writes');
+      assert.equal(k.readFileString(p), 'the other member writes');
+    }
+  } finally { h.db.close(); source.db.close(); }
+}
+console.log('sqlite-vfs-shared-directory: a warm engine agrees with its rows after rename, copy, restore and import');
+

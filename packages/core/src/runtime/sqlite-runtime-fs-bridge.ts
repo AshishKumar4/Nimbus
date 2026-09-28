@@ -483,8 +483,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // `/` has no row (stat answers it with rootStat), but it exists: mkdir of
     // it is EEXIST, as mkdir(2) says, before any permission check on its
     // (nonexistent) parent. `mkdir -p` walks through it on every absolute path.
+    // A recursive mkdir then stats the name, following links, as coreutils and
+    // Node do after EEXIST: a link to a directory is already there.
     if (p === '' || this.vfs.exists(p)) {
-      if (options.recursive && (p === '' || this.vfs.isDirectory(p))) return;
+      if (options.recursive && this.stat(path)?.type === 'directory') return;
       throw fsError('EEXIST', 'mkdir', path);
     }
     this.vfs.mkdir(p, { recursive: !!options.recursive, mode: options.mode });

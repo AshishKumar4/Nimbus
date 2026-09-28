@@ -4052,10 +4052,15 @@ export class SqliteVFS {
             for (const opened of this.openNodes)
                 if (opened.path === entry.path)
                     opened.path = stored.path;
+            // The cache holds what was written: a move into a shared directory
+            // changed the mode, group and default ACL of the rows it published.
             const moved = {
                 ...entry,
                 path: stored.path,
                 parentPath: stored.parentPath,
+                mode: stored.mode,
+                gid: stored.gid,
+                defaultAcl: stored.defaultAcl ?? null,
                 ctime: stored.ctime,
                 gen: stored.gen,
             };

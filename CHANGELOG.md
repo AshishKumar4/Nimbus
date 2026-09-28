@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A directory or file moved into a shared directory is shared at once in the
+  running engine. The move wrote the shared mode, group and default ACL to
+  the database, but the in-memory entry kept the pre-move values. Other
+  members got EACCES on the moved entries until the next boot.
+
+- `mkdir -p` of a symlink to a directory succeeds through `ws.fs`, the shell
+  and a process's bridge, as coreutils and Node do. The bridge checked the
+  link's own entry and answered EEXIST. A plain `mkdir` of the link, and
+  `mkdir -p` of a link to a file or of a dangling link, still fail.
+
 - A process's filesystem read that the session has not answered after 5 s
   is sent again on a fresh stub, and the first success is used. Under
   concurrent sessions some reads left SupervisorRPC and never reached the
