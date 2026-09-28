@@ -8,6 +8,7 @@ import type { SessionProcessSupervisor } from '../runtime/session-process-superv
 import {
   supervisorDeliveredOp,
   supervisorDeliveryAnswer,
+  supervisorJoinedReadOp,
   SUPERVISOR_DELIVER_OP,
   type SupervisorDeliveries,
   type SupervisorDelivery,
@@ -28,6 +29,8 @@ const OpenOptions = z.object({
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
 const Delivery = z.object({ op: z.string(), id: z.string().uuid(), hostIncarnation: z.string().uuid() });
+/** A read id, minted like a delivery id (SupervisorRPC `_fsRead`). */
+const ReadId = z.string().uuid();
 
 /**
  * Identity comes from the supervisor binding, never from facet arguments: a
@@ -52,6 +55,13 @@ export interface SupervisorOpEnvelope {
   readonly stream?: ReadableStream<Uint8Array>;
   /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
   readonly delivery?: SupervisorDelivery;
+  /**
+   * The id every attempt of one read is sent under: a repeat of a read still
+   * being served joins it rather than reading again
+   * (`SupervisorDeliveries.joinRead`). Only on a joined read op. A host that
+   * predates it ignores it and serves each attempt, which a read allows.
+   */
+  readonly readId?: string;
 }
 
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
@@ -502,6 +512,28 @@ export function createSupervisorOpHandler(
     tools.bridge(pid, envelope.cred);
     return deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
   };
+  /**
+   * A read sent under a read id: joined to the same read still being served,
+   * or served, and served plainly by a host that keeps no store.
+   */
+  const read = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): ReturnType<SupervisorOpDispatch> => {
+    const joined = supervisorJoinedReadOp(op);
+    if (joined === undefined) throw new Error(`supervisor op: '${op}' is not a read, so it cannot carry a read id`);
+    const readId = ReadId.safeParse(envelope.readId);
+    if (!readId.success) throw new Error(`supervisor op: '${op}' carries a read id that is not one`);
+    const plain = { ...envelope, readId: undefined };
+    const pid = envelope.pid;
+    const deliveries = deps.deliveries;
+    if (deliveries === undefined || pid === undefined) return (async () => serve(op, plain))();
+    return deliveries.joinRead(
+      pid,
+      readId.data,
+      joined,
+      // A repeat is answered only for the live process that sent the read.
+      () => { tools.bridge(pid, envelope.cred); },
+      async () => serve(op, plain),
+    );
+  };
   return async (envelope) => {
     if (!envelope || typeof envelope.op !== 'string') {
       throw new Error('supervisor op: envelope names no operation');
@@ -510,6 +542,7 @@ export function createSupervisorOpHandler(
     if (op === SUPERVISOR_DELIVER_OP) return deliver(envelope);
     // Only the delivering op dedupes; anywhere else a delivery would be a promise nobody keeps.
     if (envelope.delivery !== undefined) throw new Error(`supervisor op: '${op}' cannot carry a delivery`);
+    if (envelope.readId !== undefined) return read(op, envelope);
     return serve(op, envelope);
   };
 }

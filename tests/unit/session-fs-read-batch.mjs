@@ -36,6 +36,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES — one ranged read
 const dec = new TextDecoder();
@@ -64,13 +65,14 @@ const root = processes.spawn('node', ['root.js'], '/root', { cred: CRED_KERNEL }
  * handler builds bridges lazily and reuses whatever is already registered
  * for the pid, so registering one here is the same object the handler uses.
  */
-function makeHost() {
+function makeHost({ deliveries } = {}) {
   const calls = { stat: 0, readRange: 0 };
   let observeInFlight = null;
   const host = {
     sqliteFs: rawVfs,
     processes,
     ensureSqliteFs() {},
+    supervisorDeliveries: deliveries,
   };
   // The session's bridge store, pre-seeded with instrumented bridges — the
   // same objects the handler serves from, so a read in flight is observable.
@@ -375,6 +377,65 @@ function makeHost() {
     + `claiming the ${requests.length * CHUNK}-byte request would exceed the read reserve outright`,
   );
   console.log(`  ${requests.length} ranges over ${requests.length * CHUNK} requested bytes claimed ${claimed} (returned ${total})`);
+}
+
+// ── a repeat of a read still queued joins it: read once ───────────────────
+// The supervisor re-sends a read the platform dropped and hedges one that
+// has not answered, every attempt under one read id. A batch too big for the
+// read reserve waits here behind the general lane (a vite boot holds it for
+// seconds), and that wait is what fires the hedge — which must not read the
+// same bytes a second time when both arrive.
+{
+  const deliveries = new SupervisorDeliveries();
+  const { host, calls } = makeHost({ deliveries });
+  // The route the session serves fsReadBatch through (NimbusSession._rpcFsReadBatch).
+  host._rpcFsReadBatch = (batch, pid) => _rpcFsReadBatch(host, batch, pid);
+  kernelVfs.writeFile('home/user/many/big.bin', new Uint8Array(32 * CHUNK).fill(9), { mode: 0o644 });
+  const requests = Array.from({ length: 32 }, (_, i) => ({ path: '/home/user/many/big.bin', offset: i * CHUNK, length: CHUNK }));
+  const readId = crypto.randomUUID();
+  const envelope = { op: 'fsReadBatch', args: [requests], pid: user.pid, readId };
+  const held = await acquireSupervisorAllocation(40 * 1024 * 1024);
+  const statsBefore = calls.stat;
+  let first;
+  let hedge;
+  try {
+    first = host.supervisorOp(envelope);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(calls.readRange, 0, 'the batch was not held behind the lane, so this proves nothing');
+    hedge = host.supervisorOp(structuredClone(envelope));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(deliveries.readsServing, 1);
+  } finally {
+    held.release();
+  }
+  const [a, b] = await Promise.all([first, hedge]);
+  assert.equal(calls.readRange, requests.length, `${calls.readRange} ranges read for one batch of ${requests.length}`);
+  assert.equal(calls.stat - statsBefore, requests.length, 'the repeat sized the batch again');
+  assert.equal(a.length, requests.length);
+  assert.deepEqual(b.map((entry) => entry.bytes.byteLength), a.map((entry) => entry.bytes.byteLength));
+  assert.equal(deliveries.readsServing, 0, 'a settled read was kept');
+
+  // Settled, the id joins nothing: an attempt after it reads afresh.
+  await host.supervisorOp(structuredClone(envelope));
+  assert.equal(calls.readRange, 2 * requests.length);
+
+  // Only a read carries a read id, and only a well-formed one; a repeat
+  // naming another op is refused. (That a repeat is admitted only for the
+  // live process that sent it: supervisor-rpc-write-delivery, over the real
+  // bridge store — this harness's bridges ignore the credential.)
+  await assert.rejects(host.supervisorOp({ op: 'writeFile', args: ['/home/user/many/x', 'y'], pid: user.pid, readId }), /not a read/);
+  await assert.rejects(host.supervisorOp({ ...envelope, readId: 'not-a-uuid' }), /not one/);
+  const held2 = await acquireSupervisorAllocation(40 * 1024 * 1024);
+  const queued = host.supervisorOp({ ...envelope, readId: crypto.randomUUID() });
+  const other = { ...envelope, readId: crypto.randomUUID() };
+  const running = host.supervisorOp(other);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(deliveries.readsServing, 2);
+  await assert.rejects(host.supervisorOp({ ...other, op: 'fsReadRange', args: ['/home/user/many/big.bin', 0, CHUNK] }), /EINVAL/);
+  held2.release();
+  await Promise.all([queued, running]);
+  kernelVfs.unlink('home/user/many/big.bin');
+  console.log(`  a repeat of a queued ${requests.length}-range batch joined it: ${requests.length} ranges read, not ${2 * requests.length}`);
 }
 
 console.log('session-fs-read-batch OK: many ranges, one round trip, same authority');

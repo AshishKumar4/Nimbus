@@ -308,18 +308,85 @@ const FAST = { baseDelayMs: 1 };
   assert.equal(await idempotent('last standing', lastStanding.resolve, (s) => s.ping(), HEDGE), 'first');
   assert.equal(lastStanding.stubs.length, 3);
 
-  // A hedge answered with a failure that is not transient: that is the answer.
+  // A hedge refused as overloaded does not preempt the attempt still in
+  // flight: that one's success is the answer, and nothing is repeated after
+  // the refusal.
+  const overloaded = () => Object.assign(new Error('Durable Object is overloaded.'), { retryable: true, overloaded: true });
   const refused = mintKit(async (n) => {
-    if (n === 1) return never;
-    throw Object.assign(new Error('Durable Object is overloaded.'), { retryable: true, overloaded: true });
+    if (n === 1) { await sleep(60); return 'first'; }
+    throw overloaded();
   });
-  await assert.rejects(idempotent('hedge refused', refused.resolve, (s) => s.ping(), HEDGE), /overloaded/);
-  assert.equal(refused.stubs.length, 2, 'an overloaded answer was retried');
+  assert.equal(await idempotent('hedge refused', refused.resolve, (s) => s.ping(), HEDGE), 'first',
+    'an overloaded hedge failed the call while an earlier attempt was still in flight');
+  assert.equal(refused.stubs.length, 2, 'an overloaded answer was repeated');
+
+  // When the attempt still in flight fails too, the last failure is the answer.
+  const bothFail = mintKit(async (n) => {
+    if (n === 1) { await sleep(60); throw new Error('no such row'); }
+    throw overloaded();
+  });
+  await assert.rejects(idempotent('both fail', bothFail.resolve, (s) => s.ping(), HEDGE), /no such row/);
+  assert.equal(bothFail.stubs.length, 2);
 
   // No hedge starts once the retry window has closed.
   const windowed = mintKit(async (n) => (n === 1 ? sleep(60).then(() => 'first') : 'hedge'));
   assert.equal(await idempotent('windowed', windowed.resolve, (s) => s.ping(), { ...HEDGE, retryWindowMs: 10 }), 'first');
   assert.equal(windowed.stubs.length, 1, 'a hedge started past the retry window');
+}
+
+// ── 16. onRetry: its own attempt's number, only when the retry starts, and a
+// throw fails the call instead of hanging it ─────────────────────────────────
+
+{
+  const never = new Promise(() => {});
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const drop = () => Object.assign(new Error('Network connection lost.'), { retryable: true });
+  const realRandom = Math.random;
+  // Backoff is floor(random * 2**attempt * base): a fixed draw fixes the timeline.
+  Math.random = () => 0.5;
+  try {
+    // Attempt 1 fails at 30 ms, after its hedge started attempt 2 at 20 ms;
+    // attempt 2 fails at 35 ms. Attempt 1's retry (after 100 ms) is announced
+    // as attempt 1's, though two attempts had started, and answers.
+    const seen = [];
+    const numbered = mintKit(async (n) => {
+      if (n === 1) { await sleep(30); throw drop(); }
+      if (n === 2) { await sleep(15); throw drop(); }
+      return 'third';
+    });
+    const answer = await idempotent('numbered', numbered.resolve, (s) => s.ping(), {
+      baseDelayMs: 100, hedgeAfterMs: 20, onRetry: (info) => seen.push(info.attempt),
+    });
+    assert.equal(answer, 'third');
+    assert.deepEqual(seen, [1], `onRetry reported ${JSON.stringify(seen)}, not the failed attempt's own number`);
+
+    // Attempt 1 fails at 30 ms; before its retry is due, attempt 2's hedge
+    // started attempt 3, the last, which answers. No retry ran: none is announced.
+    const unannounced = [];
+    const hedgedPast = mintKit(async (n) => {
+      if (n === 1) { await sleep(30); throw drop(); }
+      if (n === 2) return never;
+      return 'from-hedge';
+    });
+    assert.equal(await idempotent('hedged past', hedgedPast.resolve, (s) => s.ping(), {
+      baseDelayMs: 100, hedgeAfterMs: 20, onRetry: (info) => unannounced.push(info.attempt),
+    }), 'from-hedge');
+    assert.deepEqual(unannounced, [], 'a retry that never started was announced');
+  } finally {
+    Math.random = realRandom;
+  }
+
+  // A logging hook that throws fails the call with its error.
+  const flaky = mintKit(async (n) => {
+    if (n === 1) throw drop();
+    return 'unreached';
+  });
+  const sinkDown = new Error('log sink down');
+  await assert.rejects(
+    idempotent('hook throws', flaky.resolve, (s) => s.ping(), { baseDelayMs: 1, onRetry() { throw sinkDown; } }),
+    (error) => error === sinkDown,
+  );
+  assert.equal(flaky.stubs.length, 1, 'the retry ran although its hook failed');
 }
 
 console.log('ok - fabric-do-calls (fresh-stub retry, overloaded refusal, mutating never retries, typed cause)');

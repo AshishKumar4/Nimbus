@@ -6,12 +6,19 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - A process's filesystem read that the session has not answered after 5 s
-  is sent again on a fresh stub, and the first answer is used. Under
+  is sent again on a fresh stub, and the first success is used. Under
   concurrent sessions some reads left SupervisorRPC and never reached the
   session; the program waiting on them hung. The first attempt is left
-  running, and a late answer is disposed. Repeats count against the existing
-  three attempts. `idempotent()` in `@nimbus-sh/fabric/do-calls` takes the
-  new `hedgeAfterMs` policy field. Mutations are not hedged.
+  running, and a late answer is disposed. Every attempt of a read carries one
+  read id (the envelope's `readId`). The session joins a repeat that arrives
+  while that read is still being served, for the same live process, so a
+  read queued behind the read budget is read once. A host that predates the
+  field serves each attempt. Repeats count against the existing three
+  attempts. A failure, even one that is not retried, ends the call only when
+  no attempt is left in flight. `idempotent()` in `@nimbus-sh/fabric/do-calls`
+  takes the new `hedgeAfterMs` policy field; `onRetry` now fires when a retry
+  starts, reports the failed attempt's own number, and a throw from it fails
+  the call instead of leaving it pending. Mutations are not hedged.
 
 - The metadata the node shims learn for each path they refetch now travels
   in the read batch. `fsReadBatch` takes an lstat request (`{ path, lstat:

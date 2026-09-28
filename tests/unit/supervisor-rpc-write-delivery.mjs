@@ -33,6 +33,7 @@ import {
   supervisorDeliveryProps,
 } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+import { _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
@@ -466,6 +467,56 @@ function assertOneDelivery(arrivals, op, attempts) {
   assert.deepEqual(plain.readOnlyWrites, []);
   assert.deepEqual(delivered.sql, plain.sql, 'a delivery changed what the session asked of SQLite');
   console.log(`  ok  a delivery writes nothing to storage (open/seek/close: 0 writes; ${plain.sql.length} statements either way)`);
+}
+
+// ── A repeated read joins the one being served, for its own process only ──
+
+{
+  // SupervisorRPC sends every attempt of a read under one read id: a repeat
+  // arriving while the read is still being served joins it, and the session
+  // reads once. The read here waits on a gate, as one queued behind the
+  // session's read budget does.
+  const w = world();
+  const { pid } = w.process();
+  const { host, files } = w.session;
+  w.session.vfs.as(CRED_KERNEL).writeFile('home/user/joined.txt', 'joined bytes');
+  let gate = Promise.withResolvers();
+  let served = 0;
+  host._rpcFsReadBatch = async (requests, p) => {
+    served++;
+    await gate.promise;
+    return _rpcFsReadBatch(host, requests, p);
+  };
+  const read = () => ({
+    op: 'fsReadBatch', args: [[{ path: '/home/user/joined.txt', offset: 0, length: 64 }]], pid, readId: crypto.randomUUID(),
+  });
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  const envelope = read();
+  const first = host.supervisorOp(envelope);
+  await tick();
+  const repeat = host.supervisorOp(structuredClone(envelope));
+  await tick();
+  assert.equal(served, 1, 'the repeat read again instead of joining');
+  gate.resolve();
+  const [a, b] = await Promise.all([first, repeat]);
+  assert.equal(dec.decode(a[0].bytes), 'joined bytes');
+  assert.equal(dec.decode(b[0].bytes), 'joined bytes');
+  assert.equal(served, 1);
+
+  // A repeat is admitted only for the live process that sent the read: not
+  // with a credential riding the pid, not once the process is released.
+  gate = Promise.withResolvers();
+  const held = read();
+  const heldRead = host.supervisorOp(held).catch((error) => error);
+  await tick();
+  await assert.rejects(host.supervisorOp({ ...held, cred: CRED_KERNEL }), /cred cannot ride a pid/);
+  await files.releaseProcess(pid);
+  await assert.rejects(host.supervisorOp(structuredClone(held)), /ESTALE/);
+  assert.equal(served, 2, 'a refused repeat read');
+  gate.resolve();
+  await heldRead;
+  console.log('  ok  a repeated read id joins the read in flight, and only for its live process');
 }
 
 // ── The receipt store ─────────────────────────────────────────────────────

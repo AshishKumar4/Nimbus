@@ -49,7 +49,11 @@ import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent, type DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { SUPERVISOR_DELIVER_OP, type SupervisorDeliveredOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import {
+  SUPERVISOR_DELIVER_OP,
+  type SupervisorDeliveredOpName,
+  type SupervisorJoinedReadOpName,
+} from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -180,12 +184,21 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * the host, and the program waiting on them never exited
    * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
    * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
-   * stub, the first attempt left running, the first answer taken. A read
-   * answered twice changes nothing. Mutations are not hedged: their repeats
-   * stay bounded by the delivery retry window, unchanged.
+   * stub, the first attempt left running, the first answer taken.
+   *
+   * A read can equally be slow at the session — queued behind the read
+   * budget, a lazy import, a busy input gate — and a hedge must not make it
+   * read again there. So every attempt carries the one read id minted here,
+   * and the session joins a repeat to the read it is still serving
+   * (`SupervisorDeliveries.joinRead`): a hedge that did arrive costs the
+   * session nothing but a second copy of the answer. Mutations are not
+   * hedged: their repeats stay bounded by the delivery retry window.
    */
-  private _fsRead<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
-    return this._resent<T>({ op, args, pid: this._pid() }, { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS });
+  private _fsRead<T>(op: SupervisorJoinedReadOpName, args: readonly unknown[] = []): Promise<T> {
+    return this._resent<T>(
+      { op, args, pid: this._pid(), readId: crypto.randomUUID() },
+      { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS },
+    );
   }
 
   /**
