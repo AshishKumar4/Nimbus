@@ -7,10 +7,9 @@
  * it (budgets.ts). A batch the coordinator's remaining headroom can hold —
  * the limit less the workers it already has in flight (resident processes,
  * the esbuild facet, a git network op) and other fan-outs' claims — runs in
- * the coordinator through IsolatePool, one Dynamic Worker per task. A batch
- * wider than that headroom, or one its caller marks `cpuHeavy` (in-DO
- * Dynamic Workers share the coordinator's thread), is sharded across sibling
- * NimbusSession DOs, each of which spends its own budget.
+ * the coordinator through IsolatePool, one Dynamic Worker per task. Only a
+ * batch wider than that headroom is sharded across sibling NimbusSession
+ * DOs, each of which spends its own budget.
  *
  * Routing is deterministic for a given headroom: each task has a stable key,
  * and the key maps to a sibling DO shard. There is no silent fallback to
@@ -176,16 +175,6 @@ export interface FanoutOptions {
    * FANOUT_PHASE_SIZE⌉ barriers, and each barrier costs a cold sibling start.
    */
   maxPeers?: number;
-  /**
-   * The tasks are long CPU-bound work (a shard of many tarballs to decode
-   * and write). Dynamic Workers usually run on the same thread as the Worker
-   * that created them (https://blog.cloudflare.com/dynamic-workers/), so an
-   * in-DO batch of such work runs on the session's one thread. Measured on a
-   * throwaway (2026-09-28): an 850-package install in 8 in-DO shards left the
-   * session silent past its deadline in 3 of 15 runs, and 0 of 2 on siblings.
-   * Set, the batch runs on sibling DOs whatever the headroom.
-   */
-  cpuHeavy?: boolean;
 }
 
 interface FanoutPeerResult<R> {
@@ -242,7 +231,6 @@ export class Fanout {
    *                               Worker per task, the width claimed on the
    *                               ledger until the batch settles
    *   tasks.length >  headroom -> sibling NimbusSession DOs
-   *   `cpuHeavy`               -> sibling NimbusSession DOs
    *
    * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
    * peers and each peer runs its bucket through its own IsolatePool, as
@@ -262,7 +250,7 @@ export class Fanout {
     if (tasks.length === 0) return [];
 
     const headroom = dynamicWorkerHeadroom(this.ctx);
-    const claim = this.opts.cpuHeavy ? null : claimDynamicWorkers(this.ctx, tasks.length);
+    const claim = claimDynamicWorkers(this.ctx, tasks.length);
     this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
     if (!claim) return this._dispatchPeerDo<A, R>(tasks, fn);
     try {
@@ -275,7 +263,7 @@ export class Fanout {
   /** The topology a task count would take against the headroom right now. */
   topologyFor(taskCount: number): FanoutTopology | 'empty' {
     if (taskCount === 0) return 'empty';
-    return !this.opts.cpuHeavy && taskCount <= dynamicWorkerHeadroom(this.ctx) ? 'in-do' : 'peer-do';
+    return taskCount <= dynamicWorkerHeadroom(this.ctx) ? 'in-do' : 'peer-do';
   }
 
   /**
