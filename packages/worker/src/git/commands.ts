@@ -5,12 +5,14 @@
  * init, clone, status, add, commit, log, branch, checkout, diff,
  * ls-files, rev-parse, remote, fetch, pull, push, merge, reset, tag
  *
- * Uses a VFS→isomorphic-git FS adapter that maps all operations
- * to the SqliteVFS.
+ * Uses a VFS→isomorphic-git FS adapter over the command's view of the
+ * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 
-import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -68,9 +70,9 @@ function wantsUtf8(options: unknown): boolean {
 }
 
 /**
- * Creates an isomorphic-git compatible `fs` object from SqliteVFS.
- * isomorphic-git requires: readFile, writeFile, unlink, readdir,
- * mkdir, rmdir, stat, lstat (all as promises).
+ * Creates an isomorphic-git compatible `fs` object over the repository's
+ * filesystem. isomorphic-git requires: readFile, writeFile, unlink,
+ * readdir, mkdir, rmdir, stat, lstat (all as promises).
  *
  * With a `worktree`, the adapter writes that worktree the way git's checkout
  * does (entry.c create_directories, has_symlink_leading_path): below its top,
@@ -80,7 +82,7 @@ function wantsUtf8(options: unknown): boolean {
  * through it. Components above the top are followed, as git follows them.
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
+function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
   // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -90,8 +92,8 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
   const below = top ? `${top}/` : '';
   const gitdir = `${below}.git`;
 
-  function lstatOrNull(p: string): VfsStat | null {
-    try { return vfs.lstat(p); } catch { return null; }
+  async function lstatOrNull(p: string): Promise<VfsStat | null> {
+    try { return await vfs.lstat(p); } catch { return null; }
   }
 
   /** A path git's checkout owns: inside the worktree, not its top, not in its .git. */
@@ -100,31 +102,31 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
   }
 
   /** `p`'s directories, down to `p` itself when `self`; see createGitFs for the worktree's rule. */
-  function ensureDirectories(p: string, self: boolean) {
+  async function ensureDirectories(p: string, self: boolean) {
     const parts = p.split('/');
     for (let i = 1; i <= (self ? parts.length : parts.length - 1); i++) {
       const dir = parts.slice(0, i).join('/');
       if (!dir) continue;
       if (!checkedOut(dir)) {
-        if (!vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
+        if (!await vfs.exists(dir)) await vfs.mkdir(dir, { recursive: true });
         continue;
       }
-      const st = lstatOrNull(dir);
+      const st = await lstatOrNull(dir);
       if (st?.type === 'directory') continue;
-      if (st) vfs.unlink(dir);
-      vfs.mkdir(dir);
+      if (st) await vfs.unlink(dir);
+      await vfs.mkdir(dir);
     }
   }
 
   // The inode as Node's fs.Stats: git's stat cache compares ctime, ino, uid and gid too.
-  function statsOf(filepath: string, follow: boolean) {
+  async function statsOf(filepath: string, follow: boolean) {
     const p = normalizePath(filepath);
     let st: VfsStat;
     if (!p) {
       const now = Date.now();
       st = { dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, atime: now, ctime: now, mtime: now, mode: 0o755, uid: 0, gid: 0 };
     } else {
-      try { st = follow ? vfs.stat(p) : vfs.lstat(p); }
+      try { st = await (follow ? vfs.stat(p) : vfs.lstat(p)); }
       catch {
         const err: any = new Error(`ENOENT: no such file or directory, ${follow ? 'stat' : 'lstat'} '${filepath}'`);
         err.code = 'ENOENT'; err.errno = -2;
@@ -152,7 +154,7 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
         const p = normalizePath(filepath);
         let data: Uint8Array;
-        try { data = vfs.readFile(p); }
+        try { data = await vfs.readFile(p); }
         catch {
           const err: any = new Error(`ENOENT: no such file or directory, open '${filepath}'`);
           err.code = 'ENOENT'; err.errno = -2;
@@ -163,39 +165,39 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
       },
       async writeFile(filepath: string, data: any, opts?: any): Promise<void> {
         const p = normalizePath(filepath);
-        ensureDirectories(p, false);
+        await ensureDirectories(p, false);
         // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
-        const existing = checkedOut(p) ? lstatOrNull(p)?.type : undefined;
-        if (existing === 'symlink') vfs.unlink(p);
-        else if (existing === 'directory') vfs.removeRecursive(p);
+        const existing = checkedOut(p) ? (await lstatOrNull(p))?.type : undefined;
+        if (existing === 'symlink') await vfs.unlink(p);
+        else if (existing === 'directory') await vfs.removeRecursive(p);
         if (typeof data === 'string') {
-          vfs.writeFile(p, data);
+          await vfs.writeFile(p, data);
         } else {
-          vfs.writeFile(p, data instanceof Uint8Array ? data : new Uint8Array(data));
+          await vfs.writeFile(p, data instanceof Uint8Array ? data : new Uint8Array(data));
         }
       },
       async unlink(filepath: string): Promise<void> {
         const p = normalizePath(filepath);
-        if (lstatOrNull(p)) vfs.unlink(p);
+        if (await lstatOrNull(p)) await vfs.unlink(p);
       },
       async readdir(filepath: string): Promise<string[]> {
         const p = normalizePath(filepath);
         if (!p) return []; // root level — not typically needed by isomorphic-git
-        if (!vfs.exists(p)) return [];
-        return vfs.readdir(p).map(e => e.name);
+        if (!await vfs.exists(p)) return [];
+        return (await vfs.readdir(p)).map(e => e.name);
       },
       async mkdir(filepath: string, opts?: any): Promise<void> {
-        ensureDirectories(normalizePath(filepath), true);
+        await ensureDirectories(normalizePath(filepath), true);
       },
       async rmdir(filepath: string): Promise<void> {
         const p = normalizePath(filepath);
-        const st = lstatOrNull(p);
+        const st = await lstatOrNull(p);
         if (!st) return;
         // rmdir(2) of a link is ENOTDIR: it never removes the directory the link names.
         if (st.type !== 'directory') {
           throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${filepath}'`), { code: 'ENOTDIR', errno: -20 });
         }
-        vfs.rmdir(p);
+        await vfs.rmdir(p);
       },
       async stat(filepath: string): Promise<any> {
         return statsOf(filepath, true);
@@ -206,12 +208,12 @@ function createGitFs(vfs: CredentialedVfs, worktree: string | null = null) {
       async chmod(): Promise<void> { /* no-op */ },
       async symlink(target: string, filepath: string): Promise<void> {
         const p = normalizePath(filepath);
-        ensureDirectories(p, false);
+        await ensureDirectories(p, false);
         // Checkout retargets a link in place, as the clone facet's adapter does.
-        const st = lstatOrNull(p);
-        if (st?.type === 'directory' && checkedOut(p)) vfs.removeRecursive(p);
-        else if (st && st.type !== 'directory') vfs.unlink(p);
-        vfs.symlink(target, p);
+        const st = await lstatOrNull(p);
+        if (st?.type === 'directory' && checkedOut(p)) await vfs.removeRecursive(p);
+        else if (st && st.type !== 'directory') await vfs.unlink(p);
+        await vfs.symlink(target, p);
       },
       async readlink(filepath: string): Promise<string> {
         return vfs.readlink(normalizePath(filepath));
@@ -236,6 +238,8 @@ type Ctx = {
   stderr: OutputStream;
   cwd: string;
   env: Record<string, string>;
+  /** The command's view of the namespace, as its credential. */
+  vfs: ProcessView;
 };
 
 function getDir(ctx: Ctx): string {
@@ -526,18 +530,18 @@ interface GitRepo {
 }
 
 /** setup_git_directory's walk: from the cwd up, a `.git` inside each level, else the level itself as a git directory. */
-function discoverRepo(vfs: CredentialedVfs, cwd: string): GitRepo | null {
-  const isGitDir = (key: string) => {
+async function discoverRepo(vfs: ProjectFs, cwd: string): Promise<GitRepo | null> {
+  const isGitDir = async (key: string) => {
     const sub = (name: string) => (key ? `${key}/${name}` : name);
-    return vfs.isFile(sub('HEAD')) && vfs.isDirectory(sub('objects')) && vfs.isDirectory(sub('refs'));
+    return await vfs.isFile(sub('HEAD')) && await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs'));
   };
   const segments = normalizeVfsPath(cwd).split('/').filter(Boolean);
   for (let depth = segments.length; depth >= 0; depth--) {
     const dir = segments.slice(0, depth).join('/');
     const prefix = segments.slice(depth).join('/');
     const dotGit = dir ? `${dir}/.git` : '.git';
-    if (isGitDir(dotGit)) return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix };
-    if (isGitDir(dir)) return { gitdir: `/${dir}`, worktree: null, prefix };
+    if (await isGitDir(dotGit)) return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix };
+    if (await isGitDir(dir)) return { gitdir: `/${dir}`, worktree: null, prefix };
   }
   return null;
 }
@@ -578,8 +582,8 @@ async function abbreviatedRef(git: CfGit, fs: unknown, gitdir: string, rev: stri
   }
 }
 
-async function revParse(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
-  const repo = discoverRepo(vfs, ctx.cwd);
+async function revParse(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -624,7 +628,7 @@ async function revParse(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs,
       if (verify) return noSingleRevision();
       // A non-revision is echoed as a path, which must then exist.
       out += `${arg}\n`;
-      if (vfs.exists(normalizeVfsPath(arg.startsWith('/') ? arg : `${ctx.cwd}/${arg}`))) continue;
+      if (await vfs.exists(normalizeVfsPath(arg.startsWith('/') ? arg : `${ctx.cwd}/${arg}`))) continue;
       return fail(ambiguousArgument(arg), 128);
     }
     if (verify) verified.push({ rev: arg, oid });
@@ -732,7 +736,7 @@ const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--pa
  * pathspec that matches nothing fails before anything is staged; one that
  * names an ignored path is reported (exit 1) unless -f, the rest still added.
  */
-async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let dryRun = false;
   let verbose = false;
   let force = false;
@@ -770,7 +774,7 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
       }
     }
   }
-  const repo = discoverRepo(vfs, ctx.cwd);
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -810,7 +814,7 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
       return 128;
     }
     let st = null;
-    try { st = vfs.lstat(normalizeVfsPath(`${root}/${spec}`)); } catch { /* absent */ }
+    try { st = await vfs.lstat(normalizeVfsPath(`${root}/${spec}`)); } catch { /* absent */ }
     if (!st) {
       await ctx.stderr.write(`fatal: pathspec '${pathArgs[i]}' did not match any files\n`);
       return 128;
@@ -1154,7 +1158,7 @@ function tagPattern(pattern: string): RegExp {
  * a tag object as git writes it), replace (-f) and delete (-d), with git's
  * messages and exit codes.
  */
-async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let annotate = false;
   let force = false;
   let del = false;
@@ -1204,7 +1208,7 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
       }
     }
   }
-  const repo = discoverRepo(vfs, ctx.cwd);
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -1268,7 +1272,7 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
   }
   if (messageFile !== null) {
     try {
-      messages.push(dec.decode(vfs.readFile(normalizeVfsPath(messageFile.startsWith('/') ? messageFile : `${ctx.cwd}/${messageFile}`))));
+      messages.push(dec.decode(await vfs.readFile(normalizeVfsPath(messageFile.startsWith('/') ? messageFile : `${ctx.cwd}/${messageFile}`))));
     } catch {
       await ctx.stderr.write(`fatal: could not open or read '${messageFile}': No such file or directory\n`);
       return 128;
@@ -1317,7 +1321,7 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVf
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
   + '[--exclude-standard] [-z] [--] [<path>...]\n';
 
-async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let others = false;
   let modified = false;
@@ -1351,7 +1355,7 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, 
   }
   // With no selection ls-files shows the index.
   if (!others && !modified && !deleted) cached = true;
-  const repo = discoverRepo(vfs, ctx.cwd);
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -1397,7 +1401,7 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, 
       return false;
     }
     // A nested repository is listed as the directory, never entered.
-    if (!vfs.exists(normalizeVfsPath(`${root}/${path}/.git`))) return true;
+    if (!await vfs.exists(normalizeVfsPath(`${root}/${path}/.git`))) return true;
     untracked.push(`${path}/`);
     return false;
   });
@@ -1455,11 +1459,11 @@ async function refusal(ctx: Ctx, error: unknown, strategy?: string): Promise<num
 async function checkoutPaths(
   ctx: Ctx,
   git: CfGit,
-  vfs: CredentialedVfs,
+  vfs: ProjectFs,
   source: string | null,
   pathArgs: readonly string[],
 ): Promise<number> {
-  const repo = discoverRepo(vfs, ctx.cwd);
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -1512,7 +1516,7 @@ async function checkoutPaths(
       await fs.promises.symlink(dec.decode(blob), file);
     } else {
       await fs.promises.writeFile(file, blob);
-      vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
+      await vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
     }
   }
   // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
@@ -1616,7 +1620,7 @@ async function writeDiff(ctx: Ctx, pairs: Iterable<() => Promise<DiffPair>>, out
 async function diffNoIndex(
   ctx: Ctx,
   git: CfGit,
-  vfs: CredentialedVfs,
+  vfs: ProjectFs,
   paths: string[],
   output: DiffOutput,
 ): Promise<number> {
@@ -1625,7 +1629,7 @@ async function diffNoIndex(
     return 129;
   }
   const key = (path: string) => normalizeVfsPath(path.startsWith('/') ? path : `${ctx.cwd}/${path}`);
-  const isDir = paths.map((path) => path !== '/dev/null' && vfs.isDirectory(key(path)));
+  const isDir = await Promise.all(paths.map(async (path) => path !== '/dev/null' && await vfs.isDirectory(key(path))));
   if (isDir[0] && isDir[1]) {
     await ctx.stderr.write('error: --no-index between two directories is not supported\n');
     return 129;
@@ -1644,13 +1648,13 @@ async function diffNoIndex(
     }
     let st: VfsStat;
     try {
-      st = vfs.lstat(key(path));
+      st = await vfs.lstat(key(path));
     } catch {
       await ctx.stderr.write(`error: Could not access '${path}'\n`);
       return 1;
     }
     const link = st.type === 'symlink';
-    const data = link ? enc.encode(vfs.readlink(key(path))) : vfs.readFile(key(path));
+    const data = link ? enc.encode(await vfs.readlink(key(path))) : await vfs.readFile(key(path));
     const { oid } = await git.hashBlob({ object: data });
     // canon_mode: the owner's execute bit alone decides 100755.
     const mode = link ? 0o120000 : st.mode & 0o100 ? 0o100755 : 0o100644;
@@ -1667,7 +1671,7 @@ const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
   + '   or: git diff --no-index [--] <path> <path>\n'
   + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 
-async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedVfs, args: readonly string[]): Promise<number> {
+async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let noIndex = false;
   let dashdash = false;
@@ -1736,7 +1740,7 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
     }
     return diffNoIndex(ctx, git, vfs, [...positionals, ...pathArgs], output);
   }
-  const repo = discoverRepo(vfs, ctx.cwd);
+  const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
     return 128;
@@ -1759,7 +1763,7 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
       await ctx.stderr.write(`fatal: bad revision '${arg}'\n`);
       return 128;
     }
-    if (!vfs.exists(normalizeVfsPath(arg.startsWith('/') ? arg : `${ctx.cwd}/${arg}`))) {
+    if (!await vfs.exists(normalizeVfsPath(arg.startsWith('/') ? arg : `${ctx.cwd}/${arg}`))) {
       await ctx.stderr.write(ambiguousArgument(arg));
       return 128;
     }
@@ -1776,7 +1780,7 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: CredentialedV
   const read = async (side: PendingSide): Promise<Uint8Array> => {
     if (!side.worktree) return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
     const key = normalizeVfsPath(`${root}/${side.path}`);
-    return side.mode === 0o120000 ? enc.encode(vfs.readlink(key)) : vfs.readFile(key);
+    return side.mode === 0o120000 ? enc.encode(await vfs.readlink(key)) : vfs.readFile(key);
   };
   const { queue, neededRenameLimit } = minimumScore === null
     ? { queue: pending, neededRenameLimit: 0 }
@@ -1815,8 +1819,6 @@ export async function runGitCommand(
   doCtx?: DurableObjectState,
   doEnv?: any,
 ): Promise<number> {
-  const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
-  const fs = createGitFs(credentialedVfs);
   let globals: ParsedGitGlobals;
   try {
     globals = parseGitGlobals(ctx.args, getDir(ctx));
@@ -1824,7 +1826,12 @@ export async function runGitCommand(
     ctx.stderr.write(`git: ${e?.message}\n`);
     return 129;
   }
-  const { sub, subArgs, dir } = globals;
+  const { sub, subArgs } = globals;
+  // The directory as git's getcwd() sees it, every link resolved: a
+  // worktree reached through a link (a mount's link into SQLite, say) is
+  // the directory it names, whose top is not itself a link.
+  let dir = globals.dir;
+  try { dir = await ctx.vfs.realpath(dir); } catch { /* not there: the subcommand says so */ }
   // Every subcommand below reads `dir` and the clone's `getDir(ctx)`; `-C`
   // moves both, exactly as `git -C <path>` runs the command from <path>.
   ctx = { ...ctx, cwd: dir };
@@ -1854,17 +1861,28 @@ export async function runGitCommand(
     return 1;
   }
 
+  // `git init <path>` works on that path, every other subcommand on the cwd.
+  const initPath = sub === 'init' ? subArgs.find((a: string) => !a.startsWith('-')) : undefined;
+  const initDir = initPath === undefined ? dir : initPath.startsWith('/') ? initPath : dir + '/' + initPath;
+
   try {
+    // The repository through the command's view of the namespace, as its
+    // credential: SQLite paths reach the engine, mounted ones their mount.
+    const repoVfs = projectFs(ctx.vfs);
+    const fs = createGitFs(repoVfs);
+    // The network commands write through the engine's streamed batches, at
+    // the repository's engine key; a mounted repository has none.
+    const onEngine = async (target: string): Promise<string | null> => {
+      const key = await engineKey(ctx.vfs, vfs, target);
+      if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
+      return key === null ? null : '/' + key;
+    };
     switch (sub) {
       case 'init': {
-        // git init [path] — if path given, use it; otherwise use cwd
-        let initDir = dir;
-        const initPath = subArgs.find((a: string) => !a.startsWith('-'));
         if (initPath) {
-          initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
-          // Ensure the target directory exists in VFS
+          // Ensure the target directory exists
           const stripped = initDir.replace(/^\/+/, '');
-          if (!credentialedVfs.exists(stripped)) credentialedVfs.mkdir(stripped, { recursive: true });
+          if (!await repoVfs.exists(stripped)) await repoVfs.mkdir(stripped, { recursive: true });
         }
         await git.init({ fs, dir: initDir });
         if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) {
@@ -1890,6 +1908,8 @@ export async function runGitCommand(
         } else {
           dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
         }
+        const target = await onEngine(dest);
+        if (target === null) return 128;
 
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
@@ -1903,7 +1923,7 @@ export async function runGitCommand(
         // the lease before the facet performs its lstat/readdir emptiness
         // proof; the clone's W7 stream carries the opaque owner capability
         // through the trusted SupervisorRPC binding.
-        const mutationLease = vfs.acquireExclusiveMutation(dest, {
+        const mutationLease = vfs.acquireExclusiveMutation(target, {
           includeMissingAncestors: true,
         });
 
@@ -1914,7 +1934,7 @@ export async function runGitCommand(
             const result = await execGitNetwork(doCtx, doEnv, {
               op: 'clone',
               pid: ctx.pid,
-              dir: dest as string,
+              dir: target,
               url,
               ref: branch,
               depth,
@@ -1976,7 +1996,7 @@ export async function runGitCommand(
       }
 
       case 'add':
-        return await addCommand(ctx, git, fs, credentialedVfs, subArgs);
+        return await addCommand(ctx, git, fs, repoVfs, subArgs);
 
       case 'commit': {
         const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
@@ -2003,10 +2023,10 @@ export async function runGitCommand(
       }
 
       case 'rev-parse':
-        return await revParse(ctx, git, fs, credentialedVfs, subArgs);
+        return await revParse(ctx, git, fs, repoVfs, subArgs);
 
       case 'ls-files':
-        return await lsFiles(ctx, git, fs, credentialedVfs, subArgs);
+        return await lsFiles(ctx, git, fs, repoVfs, subArgs);
 
       case 'log': {
         const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
@@ -2069,14 +2089,14 @@ export async function runGitCommand(
         const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
         if (dashdash >= 0 && dashdash < subArgs.length - 1) {
           const source = options.find(a => !a.startsWith('-'));
-          return await checkoutPaths(ctx, git, credentialedVfs, source ?? null, subArgs.slice(dashdash + 1));
+          return await checkoutPaths(ctx, git, repoVfs, source ?? null, subArgs.slice(dashdash + 1));
         }
         const quiet = options.includes('-q') || options.includes('--quiet');
         const ref = options.find(a => !a.startsWith('-'));
         // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
         if ((!ref || ref === 'HEAD') && !options.includes('-b')) return 0;
         if (!ref) { ctx.stderr.write("error: switch `b' requires a value\n"); return 129; }
-        const worktreeFs = createGitFs(credentialedVfs, dir);
+        const worktreeFs = createGitFs(repoVfs, dir);
         const create = options.includes('-b');
         if (create) await git.branch({ fs, dir, ref });
         try {
@@ -2089,7 +2109,7 @@ export async function runGitCommand(
       }
 
       case 'diff':
-        return await diffCommand(ctx, git, fs, credentialedVfs, subArgs);
+        return await diffCommand(ctx, git, fs, repoVfs, subArgs);
 
       case 'remote': {
         if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
@@ -2108,6 +2128,8 @@ export async function runGitCommand(
       }
 
       case 'fetch': {
+        const target = await onEngine(dir);
+        if (target === null) return 128;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         if (!doCtx || !doEnv) {
@@ -2118,7 +2140,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'fetch',
           pid: ctx.pid,
-          dir,
+          dir: target,
           remote,
           quiet,
           auth: {
@@ -2136,6 +2158,8 @@ export async function runGitCommand(
       }
 
       case 'pull': {
+        const target = await onEngine(dir);
+        if (target === null) return 128;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -2149,7 +2173,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'pull',
           pid: ctx.pid,
-          dir,
+          dir: target,
           remote,
           ref: branch,
           quiet,
@@ -2169,6 +2193,8 @@ export async function runGitCommand(
       }
 
       case 'push': {
+        const target = await onEngine(dir);
+        if (target === null) return 128;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -2180,7 +2206,7 @@ export async function runGitCommand(
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'push',
           pid: ctx.pid,
-          dir,
+          dir: target,
           remote,
           ref: branch,
           quiet,
@@ -2213,7 +2239,7 @@ export async function runGitCommand(
         });
         if (!merged.alreadyMerged) {
           try {
-            await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
+            await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
           } catch (e) {
             return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
           }
@@ -2232,7 +2258,7 @@ export async function runGitCommand(
         if (hard) {
           // The index and worktree become the target's, as a forced checkout from the old index
           // makes them (type changes included), before the branch moves: a failed write leaves it.
-          await git.checkout({ fs: createGitFs(credentialedVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
+          await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
         }
 
         // Move the current branch, or a detached HEAD, to the target OID
@@ -2252,7 +2278,7 @@ export async function runGitCommand(
       }
 
       case 'tag':
-        return await tagCommand(ctx, git, fs, credentialedVfs, subArgs);
+        return await tagCommand(ctx, git, fs, repoVfs, subArgs);
 
       case 'config': {
         const key = subArgs.find(a => !a.startsWith('-'));

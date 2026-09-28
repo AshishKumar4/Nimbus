@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -32,32 +33,32 @@ const kernel = vfs.as(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const user = vfs.as(CRED_SESSION_USER);
+const files = new ProcessFiles(vfs);
 
-// What the command does through the filesystem it is given: index writes, and
+// What the command does through the view it is given: index writes, and
 // worktree files read but not yet written back as objects.
 let indexWrites = 0;
 let filesInFlight = 0;
 let peakFilesInFlight = 0;
-const observed = new Proxy(vfs, {
+const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   get(target, key) {
-    if (key !== 'as') return Reflect.get(target, key, target);
-    return (cred) => {
-      const view = target.as(cred);
-      return {
-        ...view,
-        readFile(path) {
-          // The files being staged; .gitignore lookups are reads too, and write no object.
-          if (/\/f\d+\.txt$/.test(path)) peakFilesInFlight = Math.max(peakFilesInFlight, ++filesInFlight);
-          return view.readFile(path);
-        },
-        writeFile(path, content, options) {
-          const key = path.replace(/^\/+/, '');
-          if (key === `${REPO}/.git/index`) indexWrites++;
-          if (key.startsWith(`${REPO}/.git/objects/`)) filesInFlight--;
-          return view.writeFile(path, content, options);
-        },
+    if (key === 'readFile') {
+      return (path) => {
+        // The files being staged; .gitignore lookups are reads too, and write no object.
+        if (/\/f\d+\.txt$/.test(path)) peakFilesInFlight = Math.max(peakFilesInFlight, ++filesInFlight);
+        return target.readFile(path);
       };
-    };
+    }
+    if (key === 'writeFile') {
+      return (path, content, options) => {
+        const key = path.replace(/^\/+/, '');
+        if (key === `${REPO}/.git/index`) indexWrites++;
+        if (key.startsWith(`${REPO}/.git/objects/`)) filesInFlight--;
+        return target.writeFile(path, content, options);
+      };
+    }
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
   },
 });
 
@@ -72,7 +73,8 @@ async function git(...args) {
     env: { USER: 'a', GIT_AUTHOR_EMAIL: 'a@example.com' },
     stdout: { write(s) { stdout += s; } },
     stderr: { write(s) { stderr += s; } },
-  }, observed);
+    vfs: observed,
+  }, vfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   return stdout;
 }

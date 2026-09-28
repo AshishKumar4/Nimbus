@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -76,15 +77,19 @@ function makeHostAndCtx({ viteConfigSource, buildResult }) {
 
   const stdout = [];
   const stderr = [];
+  const files = new ProcessFiles(sqliteFs);
   const ctx = {
     args: ['build'],
     cwd: CWD,
     env: {},
+    cred: CRED_KERNEL,
+    vfs: files.view({ pid: 1, cred: CRED_KERNEL }),
     stdout: { write: (s) => stdout.push(s) },
     stderr: { write: (s) => stderr.push(s) },
   };
   const host = {
     ensureSqliteFs() {},
+    getFilesystemAuthority() { return files; },
     // No facet pool in this harness: cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return null; },
     sqliteFs,

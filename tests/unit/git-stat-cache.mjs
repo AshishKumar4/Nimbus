@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -35,21 +36,19 @@ const kernel = vfs.as(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const user = vfs.as(CRED_SESSION_USER);
+const files = new ProcessFiles(vfs);
 
 let indexWrites = 0;
-const observed = new Proxy(vfs, {
+const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   get(target, key) {
-    if (key !== 'as') return Reflect.get(target, key, target);
-    return (cred) => {
-      const view = target.as(cred);
-      return {
-        ...view,
-        writeFile(path, content, options) {
-          if (path.endsWith('/.git/index')) indexWrites++;
-          return view.writeFile(path, content, options);
-        },
+    if (key === 'writeFile') {
+      return (path, content, options) => {
+        if (path.endsWith('/.git/index')) indexWrites++;
+        return target.writeFile(path, content, options);
       };
-    };
+    }
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
   },
 });
 
@@ -60,7 +59,8 @@ async function git(cwd, ...args) {
     pid: 1, cred: CRED_SESSION_USER, args, cwd, env: { USER: 'a' },
     stdout: { write(s) { stdout += s; } },
     stderr: { write(s) { stderr += s; } },
-  }, observed);
+    vfs: observed,
+  }, vfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   return stdout;
 }

@@ -25,7 +25,7 @@ import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
-import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { isVfsError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
@@ -961,6 +961,38 @@ export async function withHostView<T>(
     return await use(new ProcessView(lease.fs));
   } finally {
     await lease.dispose();
+  }
+}
+
+/**
+ * Where `path` is on `engine`, as `view` sees the namespace: its engine key
+ * with every link resolved, or null when it is on a mount. A name not there
+ * yet is placed by the nearest directory above it that is, where it would
+ * be made. Host tools read and write a user's tree through `view`; they
+ * take the engine's bulk paths (batched writes, pre-bundling, the dev
+ * servers) only at this key, never at a lexical path a mount may shadow.
+ */
+export async function engineKey(
+  view: Pick<ProcessView, 'realpath' | 'stat'>,
+  engine: Pick<SqliteVFS, 'deviceId'>,
+  path: string,
+): Promise<string | null> {
+  let at = '/' + normalizeVfsPath(path);
+  let below = '';
+  for (;;) {
+    let real: string;
+    try {
+      real = await view.realpath(at);
+    } catch (error) {
+      if (at === '/' || (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR'))) throw error;
+      const cut = at.lastIndexOf('/');
+      below = below === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${below}`;
+      at = at.slice(0, cut) || '/';
+      continue;
+    }
+    // No link is left on `real`, so the device holding it holds the names below it too.
+    if ((await view.stat(real, { follow: false }))?.dev !== engine.deviceId) return null;
+    return normalizeVfsPath(below === '' ? real : `${real}/${below}`);
   }
 }
 

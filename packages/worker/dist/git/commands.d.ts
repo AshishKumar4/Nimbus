@@ -5,11 +5,12 @@
  * init, clone, status, add, commit, log, branch, checkout, diff,
  * ls-files, rev-parse, remote, fetch, pull, push, merge, reset, tag
  *
- * Uses a VFS→isomorphic-git FS adapter that maps all operations
- * to the SqliteVFS.
+ * Uses a VFS→isomorphic-git FS adapter over the command's view of the
+ * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
     /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
@@ -23,6 +24,8 @@ type Ctx = {
     stderr: OutputStream;
     cwd: string;
     env: Record<string, string>;
+    /** The command's view of the namespace, as its credential. */
+    vfs: ProcessView;
 };
 export interface ParsedGitGlobals {
     sub: string | undefined;

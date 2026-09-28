@@ -1,4 +1,4 @@
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { ProjectFs } from '../runtime/project-fs.js';
 import type { ResolvedPackage } from './resolver.js';
 /**
  * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
@@ -23,17 +23,22 @@ export interface NpmBinManifest {
 export interface NpmBinResolution extends NpmBinEntry {
     shimPath: string;
 }
-type VfsLike = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
-type WritableVfsLike = VfsLike & Pick<CredentialedVfs, 'mkdir' | 'writeFile' | 'chmod'>;
+/**
+ * What bins are looked up and linked through: a project's filesystem as the
+ * caller (see runtime/project-fs.ts), each call answered at once by the
+ * engine or awaited through the caller's view of the namespace.
+ */
+type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir'>;
+type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;
 export declare function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string;
 export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[];
-export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): NpmBinResolution | null;
-export declare function resolveNpmBinFromPath(vfs: VfsLike, cwd: string, envPath: string, name: string): NpmBinResolution | null;
+export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null>;
+export declare function resolveNpmBinFromPath(vfs: VfsLike, cwd: string, envPath: string, name: string): Promise<NpmBinResolution | null>;
 /** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
-export declare function resolveNpmBinPath(vfs: VfsLike & Pick<CredentialedVfs, 'stat'>, cwd: string, path: string): NpmBinResolution | null;
-export declare function materializeNpmBinShims(vfs: WritableVfsLike, nodeModulesPath: string, binDir: string): number;
+export declare function resolveNpmBinPath(vfs: VfsLike & Pick<ProjectFs, 'stat'>, cwd: string, path: string): Promise<NpmBinResolution | null>;
+export declare function materializeNpmBinShims(vfs: WritableVfsLike, nodeModulesPath: string, binDir: string): Promise<number>;
 export {};
 //# sourceMappingURL=bin-links.d.ts.map

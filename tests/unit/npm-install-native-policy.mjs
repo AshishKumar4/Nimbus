@@ -33,9 +33,8 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
@@ -85,7 +84,7 @@ function makeInstaller(pkgJson, resultFor) {
   const log = [];
   const env = makeFanoutEnv({ root, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root, harness };
 }
 

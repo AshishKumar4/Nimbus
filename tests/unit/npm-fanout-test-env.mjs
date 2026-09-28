@@ -10,6 +10,19 @@
 // version of a name); `shardsSeen` records package names the write shard
 // was asked to install. Each package is written to the placement the
 // supervisor chose (`pkgDir`), root or nested.
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+
+// The installer over `vfs`, installing as pid 1 with the kernel's credential:
+// these fixtures' trees are root's, so an install reads and writes them as root.
+export function kernelInstaller(vfs, sql, opts) {
+  const installer = new NpmInstaller(new ProcessFiles(vfs), sql, opts);
+  const install = installer.install.bind(installer);
+  installer.install = (dir, options) => install(dir, { pid: 1, cred: CRED_KERNEL, ...options });
+  return installer;
+}
+
 // Synthetic packument cache rows used by the installer fixtures below the RPC seam.
 export function cacheRowForPackage(pkg) {
   return {

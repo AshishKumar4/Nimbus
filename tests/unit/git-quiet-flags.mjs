@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -20,6 +21,7 @@ const kernel = vfs.as(CRED_KERNEL);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const user = vfs.as(CRED_SESSION_USER);
+const files = new ProcessFiles(vfs);
 
 async function git(cwd, args, { onVfs = vfs, doCtx, doEnv } = {}) {
   let stdout = '';
@@ -32,6 +34,7 @@ async function git(cwd, args, { onVfs = vfs, doCtx, doEnv } = {}) {
     env: { USER: 'a' },
     stdout: { write(s) { stdout += s; } },
     stderr: { write(s) { stderr += s; } },
+    vfs: files.view({ pid: 7, cred: CRED_SESSION_USER }),
   }, onVfs, doCtx, doEnv);
   return { code, stdout, stderr };
 }

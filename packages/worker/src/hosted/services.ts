@@ -3,7 +3,7 @@ import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHo
 import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { ProcessFiles } from "@nimbus-sh/core/runtime/process-files.js";
+import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import type { NpmInstaller } from "../npm/installer.js";
@@ -212,7 +212,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           args: payload.args || [],
           env: payload.env || {},
           cwd: payload.cwd || '/home/user',
-          vfs: self.sqliteFs!.as(cred),
+          vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid: payload.processPid, cred })),
           stdout: stdoutStream,
           stderr: stderrStream,
           signal: ac.signal,
@@ -300,7 +300,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           pid,
           cred,
           args, env, cwd,
-          vfs: self.sqliteFs!.as(cred),
+          vfs: new ProcessView(self.getFilesystemAuthority().bind({ pid, cred })),
           stdout: { write: (d: string) => hooks.onStdout(textBytes(String(d))) },
           stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))) },
           signal: ac.signal,
@@ -354,7 +354,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     self.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: self.processes,
-      vfsForProcess: (pid) => self.sqliteFs!.as(self.processes.cred(pid)),
+      vfsForProcess: (pid) => new ProcessView(self.getFilesystemAuthority().bind({ pid, cred: self.processes.cred(pid) })),
       commandRegistry: cmdRegistryAdapter,
       shellExecutor: {
         execute: async (
@@ -544,7 +544,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
       onProgress?.(`[npm] Lazy fetch-proxy: skipped (all facet paths default-on)`);
     }
     self.npmInstaller = new NpmInstaller(
-      self.sqliteFs!,
+      self.getFilesystemAuthority(),
       runtimeContext.ctx.storage.sql,
       {
         esbuild: self.esbuildService,

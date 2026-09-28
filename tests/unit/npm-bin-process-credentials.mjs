@@ -10,6 +10,7 @@ import {
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -43,8 +44,9 @@ const registry = {
 registry.register('node', async () => 0);
 
 const processes = new SessionProcessSupervisor();
+const files = new ProcessFiles(rawVfs);
 installNpmBinFallbackResolver(registry, {
-  vfs,
+  filesystem: files,
   getCwd: () => `/${project}`,
   processes,
   getFacetManager() {
@@ -66,6 +68,8 @@ async function invoke(pid) {
   const before = new Set(processes.getAll().map((process) => process.pid));
   const exitCode = await handler({
     pid,
+    cred: processes.cred(pid),
+    vfs: files.view({ pid, cred: processes.cred(pid) }),
     args: [],
     cwd: `/${project}`,
     env: {},

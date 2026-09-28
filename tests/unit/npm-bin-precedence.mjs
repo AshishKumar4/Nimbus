@@ -21,6 +21,7 @@ import {
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -57,7 +58,7 @@ registry.register('wrangler', async () => BUILTIN);
 registry.register('node', async () => 0);
 
 installNpmBinFallbackResolver(registry, {
-  vfs,
+  filesystem: new ProcessFiles(rawVfs),
   getCwd: () => `/${project}`,
   processes: new SessionProcessSupervisor(),
   getFacetManager() { throw new Error('unexpected staged artifact'); },

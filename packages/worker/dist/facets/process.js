@@ -347,7 +347,7 @@ export class FacetProcessManager {
                     return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
                 }
                 const stdin = typeof req.stdin === 'string' ? req.stdin : '';
-                const commandLine = this._shellCommandLineForPlan(plan, String(req.cwd || '/home/user'), stdin, hooks, shellNameForCommand(req.command), req.processPid);
+                const commandLine = await this._shellCommandLineForPlan(plan, String(req.cwd || '/home/user'), stdin, hooks, shellNameForCommand(req.command), req.processPid);
                 if (commandLine === null)
                     return { exitCode: 127, stdout: stdoutBuf, stderr: stderrBuf };
                 const code = await this._runShellLine(req.processPid, commandLine, childEnv, String(req.cwd || '/home/user'), stdin, hooks);
@@ -450,7 +450,7 @@ export class FacetProcessManager {
         }
         try {
             const stdin = await this._drainStdinForShell(child);
-            const commandLine = this._shellCommandLineForPlan(plan, req.cwd, stdin, hooks, shellNameForCommand(req.command), child.pid);
+            const commandLine = await this._shellCommandLineForPlan(plan, req.cwd, stdin, hooks, shellNameForCommand(req.command), child.pid);
             if (commandLine === null) {
                 this._stampExit(child, 127, null);
                 return;
@@ -473,19 +473,19 @@ export class FacetProcessManager {
         // A shell line's stdin is text; the queue holds bytes.
         return dec.decode(concatBytes(child.stdinChunks));
     }
-    _shellCommandLineForPlan(plan, cwd, stdin, hooks, shellName, processPid) {
+    async _shellCommandLineForPlan(plan, cwd, stdin, hooks, shellName, processPid) {
         if (plan.kind === 'command')
             return plan.commandLine;
         if (plan.kind === 'stdin')
             return stdin;
-        const scriptPath = resolveVfsPath(plan.path, cwd || '/home/user');
+        const scriptPath = '/' + resolveVfsPath(plan.path, cwd || '/home/user');
         try {
             const vfs = this.deps.vfsForProcess(processPid);
-            if (!vfs.exists(scriptPath) || vfs.isDirectory(scriptPath)) {
+            if (!await vfs.exists(scriptPath) || await vfs.isDirectory(scriptPath)) {
                 hooks.onStderr(textBytes(`${shellName}: ${plan.path}: No such file or directory\n`));
                 return null;
             }
-            return vfs.readFileString(scriptPath);
+            return await vfs.readFileString(scriptPath);
         }
         catch (e) {
             hooks.onStderr(textBytes(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`));

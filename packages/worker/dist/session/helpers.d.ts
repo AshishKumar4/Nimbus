@@ -4,7 +4,7 @@
  * All functions here are pure: no class state and no `cloudflare:workers`
  * import. NimbusSession re-exports the public helpers that callers need.
  */
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type VFS } from '@nimbus-sh/core/vfs/vfs.js';
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
  * route. Matches the Nimbus shell MOTD aesthetic (near-black background,
@@ -88,14 +88,15 @@ export declare function filterWranglerFlags(argv: string[]): {
  */
 export declare const WRANGLER_UNSUPPORTED_CONFIG_FIELDS: string[];
 /**
- * Read the user's wrangler config from the VFS and return any field names
- * from WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
+ * Read the user's wrangler config through `vfs` (the command's view of the
+ * namespace) and return any field names from
+ * WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
  *
  * Best-effort: tolerates JSONC comments and syntax errors (returns [] on
  * parse failure). The caller decides whether to warn or block — we only
  * report; nimbus-wrangler itself still runs.
  */
-export declare function detectUnsupportedWranglerConfig(vfs: CredentialedVfs, root: string): string[];
+export declare function detectUnsupportedWranglerConfig(vfs: Pick<VFS, 'stat' | 'readFile'>, root: string): Promise<string[]>;
 /**
  * W8: classify a child_process spawn target by execution kind. Used by
  * the FacetProcessManager to decide between inline pure-builtin vs
@@ -150,7 +151,8 @@ export declare function refusedNextSubcommand(scriptName: string, script: string
  */
 export declare const NEXT_REFUSAL_MESSAGE: string;
 /**
- * Check whether a project directory has installed dependencies.
+ * Check whether a project directory has installed dependencies, read
+ * through `vfs` (the command's view of the namespace).
  *
  * Returns { missing: true, depCount } if package.json declares deps AND
  * node_modules/ doesn't exist. `missing: false` when:
@@ -158,10 +160,10 @@ export declare const NEXT_REFUSAL_MESSAGE: string;
  *   - package.json declares zero deps (no install needed)
  *   - node_modules/ exists (even if stale — caught by runtime error overlay)
  */
-export declare function checkNodeModulesGuard(vfs: CredentialedVfs, projectRoot: string): {
+export declare function checkNodeModulesGuard(vfs: Pick<VFS, 'stat' | 'readFile'>, projectRoot: string): Promise<{
     missing: boolean;
     depCount: number;
-};
+}>;
 /**
  * Bound for the `vite build` esbuild bundle step (init.ts). Demo-app
  * builds take seconds; anything past this is a stall, not a build.

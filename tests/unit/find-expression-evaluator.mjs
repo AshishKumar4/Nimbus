@@ -36,6 +36,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -68,7 +69,7 @@ root.mkdir('home/user/extract/proteus/src', { mode: 0o755 });
 root.writeFile('home/user/extract/proteus/src/a.ts', 'export const a = 1;\n', { mode: 0o644 });
 
 const box = await testBox({ harness, vfs: rawVfs });
-installPathExecResolver(box.commands.registry, root, () => box.shell.getCwd?.() ?? '/home/user');
+installPathExecResolver(box.commands.registry, new ProcessView(box.files.openHost(CRED_KERNEL).fs), () => box.shell.getCwd?.() ?? '/home/user');
 registerUnixCommands(box.commands.registry, rawVfs);
 registerShellEntrypointCommands(
   box.commands.registry,

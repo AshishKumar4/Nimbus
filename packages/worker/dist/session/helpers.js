@@ -4,6 +4,7 @@
  * All functions here are pure: no class state and no `cloudflare:workers`
  * import. NimbusSession re-exports the public helpers that callers need.
  */
+import { exists, readText } from '@nimbus-sh/core/vfs/vfs.js';
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
  * route. Matches the Nimbus shell MOTD aesthetic (near-black background,
@@ -261,20 +262,21 @@ export const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
     'dispatch_namespaces',
 ];
 /**
- * Read the user's wrangler config from the VFS and return any field names
- * from WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
+ * Read the user's wrangler config through `vfs` (the command's view of the
+ * namespace) and return any field names from
+ * WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
  *
  * Best-effort: tolerates JSONC comments and syntax errors (returns [] on
  * parse failure). The caller decides whether to warn or block — we only
  * report; nimbus-wrangler itself still runs.
  */
-export function detectUnsupportedWranglerConfig(vfs, root) {
+export async function detectUnsupportedWranglerConfig(vfs, root) {
     const candidates = [root + '/wrangler.jsonc', root + '/wrangler.json'];
     let text = null;
     for (const p of candidates) {
         try {
-            if (vfs.exists(p)) {
-                text = vfs.readFileString(p);
+            if (await exists(vfs, p)) {
+                text = await readText(vfs, p);
                 break;
             }
         }
@@ -483,7 +485,8 @@ export const NEXT_REFUSAL_MESSAGE = '\x1b[31m✘\x1b[0m \x1b[1mNext.js is not su
     '   Workaround: run the Next.js project outside Nimbus (or a hosted runtime),\n' +
     '   or pass \x1b[36m--allow-next\x1b[0m to bypass at your own risk.\n';
 /**
- * Check whether a project directory has installed dependencies.
+ * Check whether a project directory has installed dependencies, read
+ * through `vfs` (the command's view of the namespace).
  *
  * Returns { missing: true, depCount } if package.json declares deps AND
  * node_modules/ doesn't exist. `missing: false` when:
@@ -491,16 +494,16 @@ export const NEXT_REFUSAL_MESSAGE = '\x1b[31m✘\x1b[0m \x1b[1mNext.js is not su
  *   - package.json declares zero deps (no install needed)
  *   - node_modules/ exists (even if stale — caught by runtime error overlay)
  */
-export function checkNodeModulesGuard(vfs, projectRoot) {
+export async function checkNodeModulesGuard(vfs, projectRoot) {
     try {
         const pkgPath = projectRoot + '/package.json';
-        if (!vfs.exists(pkgPath))
+        if (!await exists(vfs, pkgPath))
             return { missing: false, depCount: 0 };
-        if (vfs.exists(projectRoot + '/node_modules'))
+        if (await exists(vfs, projectRoot + '/node_modules'))
             return { missing: false, depCount: 0 };
         let depCount = 0;
         try {
-            const pkg = JSON.parse(vfs.readFileString(pkgPath));
+            const pkg = JSON.parse(await readText(vfs, pkgPath));
             depCount = Object.keys(pkg.dependencies || {}).length +
                 Object.keys(pkg.devDependencies || {}).length;
         }

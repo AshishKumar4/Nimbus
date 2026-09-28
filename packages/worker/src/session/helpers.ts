@@ -5,7 +5,7 @@
  * import. NimbusSession re-exports the public helpers that callers need.
  */
 
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { exists, readText, type VFS } from '@nimbus-sh/core/vfs/vfs.js';
 
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
@@ -277,19 +277,20 @@ export const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
 ];
 
 /**
- * Read the user's wrangler config from the VFS and return any field names
- * from WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
+ * Read the user's wrangler config through `vfs` (the command's view of the
+ * namespace) and return any field names from
+ * WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
  *
  * Best-effort: tolerates JSONC comments and syntax errors (returns [] on
  * parse failure). The caller decides whether to warn or block — we only
  * report; nimbus-wrangler itself still runs.
  */
-export function detectUnsupportedWranglerConfig(vfs: CredentialedVfs, root: string): string[] {
+export async function detectUnsupportedWranglerConfig(vfs: Pick<VFS, 'stat' | 'readFile'>, root: string): Promise<string[]> {
   const candidates = [root + '/wrangler.jsonc', root + '/wrangler.json'];
   let text: string | null = null;
   for (const p of candidates) {
     try {
-      if (vfs.exists(p)) { text = vfs.readFileString(p); break; }
+      if (await exists(vfs, p)) { text = await readText(vfs, p); break; }
     } catch {}
   }
   if (text == null) return [];
@@ -456,7 +457,8 @@ export const NEXT_REFUSAL_MESSAGE =
   '   or pass \x1b[36m--allow-next\x1b[0m to bypass at your own risk.\n';
 
 /**
- * Check whether a project directory has installed dependencies.
+ * Check whether a project directory has installed dependencies, read
+ * through `vfs` (the command's view of the namespace).
  *
  * Returns { missing: true, depCount } if package.json declares deps AND
  * node_modules/ doesn't exist. `missing: false` when:
@@ -464,17 +466,17 @@ export const NEXT_REFUSAL_MESSAGE =
  *   - package.json declares zero deps (no install needed)
  *   - node_modules/ exists (even if stale — caught by runtime error overlay)
  */
-export function checkNodeModulesGuard(
-  vfs: CredentialedVfs,
+export async function checkNodeModulesGuard(
+  vfs: Pick<VFS, 'stat' | 'readFile'>,
   projectRoot: string,
-): { missing: boolean; depCount: number } {
+): Promise<{ missing: boolean; depCount: number }> {
   try {
     const pkgPath = projectRoot + '/package.json';
-    if (!vfs.exists(pkgPath)) return { missing: false, depCount: 0 };
-    if (vfs.exists(projectRoot + '/node_modules')) return { missing: false, depCount: 0 };
+    if (!await exists(vfs, pkgPath)) return { missing: false, depCount: 0 };
+    if (await exists(vfs, projectRoot + '/node_modules')) return { missing: false, depCount: 0 };
     let depCount = 0;
     try {
-      const pkg = JSON.parse(vfs.readFileString(pkgPath));
+      const pkg = JSON.parse(await readText(vfs, pkgPath));
       depCount = Object.keys(pkg.dependencies || {}).length +
                  Object.keys(pkg.devDependencies || {}).length;
     } catch { /* unreadable package.json */ }

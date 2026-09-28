@@ -24,8 +24,9 @@
 
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { NamespaceFs } from '../runtime/process-files.js';
+import type { ProcessView } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 
 export interface ShebangLine {
   /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
@@ -93,9 +94,33 @@ export function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatch
   return { kind: 'shell-script' };
 }
 
+/** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
+
+/**
+ * What is at a path-shaped name: nothing runnable, a directory, or a file
+ * with its mode and head. The file is run by the name it was invoked by,
+ * unless that name is itself a link, which is run by its target.
+ */
+type Inspected = null | 'directory' | { target: string; mode: number; head: Uint8Array };
+
+async function inspect(fs: ExecInspectionFs, path: string): Promise<Inspected> {
+  try {
+    const stat = await fs.stat(path);
+    if (stat === null) return null;
+    if (stat.type === 'directory') return 'directory';
+    const target = (await fs.stat(path, { follow: false }))?.type === 'symlink' ? await fs.realpath(path) : path;
+    return { target, mode: stat.mode, head: await fs.readRange(target, 0, EXEC_HEAD_BYTES) };
+  } catch (error) {
+    // A missing name, a component that is not a directory, or a link loop: "command not found".
+    if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR') || isVfsError(error, 'ELOOP')) return null;
+    throw error;
+  }
+}
+
 export function installPathExecResolver(
   registry: CommandRegistry,
-  kernelFs: NamespaceFs,
+  fs: ExecInspectionFs,
   getCwd: () => string,
 ): void {
   const originalResolve = registry.resolve.bind(registry);
@@ -106,29 +131,31 @@ export function installPathExecResolver(
       return undefined;
     }
 
-    const resolved = resolveVfsPath(name, normalizeVfsPath(getCwd()));
-    if (!kernelFs.exists(resolved)) return undefined;
-    if (kernelFs.isDirectory(resolved)) {
+    const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(getCwd()));
+    let inspected: Inspected;
+    try {
+      inspected = await inspect(fs, resolved);
+    } catch (error) {
+      // What the namespace cannot answer (an absent mount, a backend's I/O
+      // error) fails this command, as execve's error does; the rest of the
+      // line still runs.
+      const message = error instanceof Error ? error.message : String(error);
+      return async (ctx): Promise<number> => {
+        (await ctx.stderr.write(`${name}: ${message}\n`));
+        return 126;
+      };
+    }
+    if (inspected === null) return undefined;
+    if (inspected === 'directory') {
       return async (ctx): Promise<number> => {
         (await ctx.stderr.write(`${name}: Is a directory\n`));
         return 126;
       };
     }
 
-    const target = kernelFs.isSymlink(resolved) ? kernelFs.resolveSymlink(resolved) : resolved;
-    if (!target || !kernelFs.exists(target) || kernelFs.isDirectory(target)) return undefined;
-
-    let mode: number;
-    let head: Uint8Array;
-    try {
-      mode = kernelFs.stat(target).mode;
-      head = kernelFs.readRange(target, 0, EXEC_HEAD_BYTES);
-    } catch {
-      return undefined;
-    }
-
-    const accessPath = '/' + resolved;
-    const absPath = '/' + target;
+    const { mode, head } = inspected;
+    const accessPath = resolved;
+    const absPath = inspected.target;
     const authorize = (command: Command): Command => async (ctx): Promise<number> => {
       try {
         (await ctx.vfs.access(accessPath, 0o1));

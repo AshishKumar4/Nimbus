@@ -170,6 +170,57 @@ published independently in the `@nimbus-sh` npm scope.
   like the dropped-connection and shed waves already are; its writes are
   keyed by path and identical, so a late answer changes nothing.
 
+- The tools read and write the paths they are given through the namespace
+  as the calling principal, so they work on an asynchronous mount (one with
+  no `sync` face, such as an embedder's drive or container) as they do in the
+  SQLite home. Before, each reached the SQLite engine or a synchronous face.
+  Each tool now reads and writes through the caller's view of the namespace,
+  which routes a SQLite path to the engine; only the engine's bulk paths
+  (npm's batched writes and bin stream, pre-bundling, git's network writes,
+  the dev servers) address the engine, at the path with every link resolved
+  (`engineKey`), so a mount's link into SQLite reaches the project it names.
+  - A script run by its path (`/m/s.sh`, `./s.sh`) runs. The PATH resolver
+    inspected it through the synchronous face, and the mount's EAGAIN ended
+    the whole command line. A mount that fails now fails only that command
+    (exit 126), and a name looked up from a cwd inside one is not found
+    (exit 127) rather than ending the line.
+  - `git` works a repository on a mount, as the command's credential.
+    `git init` tried to create the mount point in the SQLite root and got
+    EACCES. git runs in the directory with its links resolved, as getcwd()
+    gives it. `clone`, `fetch`, `pull` and `push` write through the engine's
+    batches and refuse a mounted repository by name. `runGitCommand` reads
+    `ctx.vfs`.
+  - `npm install` and `npm ci` read the project's package.json and lock as
+    the invoking user, not the kernel. A mounted project's packages are
+    extracted into a staging directory in /tmp, then each is copied beside
+    its place in node_modules and renamed there (on a mount with no rename,
+    written in place with package.json last), so a package is there whole or
+    not at all; one that cannot be put there is reported failed and the next
+    install puts it there. The next install also sweeps what an interrupted
+    one left in /tmp or in node_modules. `npm run`, `ls`, `init`,
+    `uninstall` and `npm-fast` read and write package.json through the
+    command's view. A project's own `node_modules/.bin` programs run bare,
+    from a script and through `npx`, looked up in the project as the running
+    command (`npx` went on to install them into its cache).
+  - `vite build` reads the project, and esbuild every module, through the
+    command's view, and writes dist/ back there (`EsbuildService.build`
+    takes a per-build `fs`). `vite`, `vite preview` and `wrangler dev` serve
+    only projects on SQLite, judged by the root they serve, and say so for a
+    mounted one.
+  - `bun run` finds the package.json script and the file on a mount.
+  - A command run through `child_process` gets its process's view as
+    `ctx.vfs`, and `sh <script>` from `child_process` reads the script
+    through it.
+
+- Tools that wrote part of a user's project as root now act as the user,
+  and hand what earlier releases wrote as root to the project's owner before
+  replacing it: vite build's `dist/`, the `package.json` that `npm init` and
+  npm-fast wrote, and pre-bundling's `node_modules/.nimbus-synthetic`. Only
+  those paths, and only what the owner could already read and replace; a
+  root-only file, or a link, in their place fails the tool. `npm install
+  <pkg>` and `npm uninstall` fail, and say why, when they cannot record the
+  change in package.json; they exited 0 without recording it.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

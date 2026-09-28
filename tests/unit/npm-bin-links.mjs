@@ -9,6 +9,7 @@ import {
   resolveNpmBinFromPath,
 } from '../../packages/worker/src/npm/bin-links.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -94,7 +95,7 @@ const manifestPath = npmBinManifestPath(nm);
     }])),
     [`${nm}/tool-pkg/bin/tool.js`]: 'console.log("ok")',
   });
-  const resolved = resolveNpmBin(vfs, '/home/user/project', 'tool');
+  const resolved = await resolveNpmBin(vfs, '/home/user/project', 'tool');
   assert.equal(resolved?.targetPath, `${nm}/tool-pkg/bin/tool.js`);
   assert.equal(resolved?.packageName, 'tool-pkg');
 }
@@ -110,7 +111,7 @@ const manifestPath = npmBinManifestPath(nm);
     }),
     [`${nm}/@scope/pkg/cli.js`]: 'console.log("ok")',
   });
-  const resolved = resolveNpmBin(vfs, '/home/user/project', 'scanned');
+  const resolved = await resolveNpmBin(vfs, '/home/user/project', 'scanned');
   assert.equal(resolved?.targetPath, `${nm}/@scope/pkg/cli.js`);
   assert.equal(resolved?.packageName, '@scope/pkg');
 }
@@ -119,13 +120,13 @@ const manifestPath = npmBinManifestPath(nm);
   const vfs = new FakeVfs({
     [`${nm}/.bin/direct`]: '#!/usr/bin/env node\nconsole.log("direct")',
   });
-  const resolved = resolveNpmBin(vfs, '/home/user/project', 'direct');
+  const resolved = await resolveNpmBin(vfs, '/home/user/project', 'direct');
   assert.equal(resolved?.targetPath, `${nm}/.bin/direct`);
 }
 
 {
   const vfs = new FakeVfs({});
-  assert.equal(resolveNpmBin(vfs, '/home/user/project', 'missing'), null);
+  assert.equal(await resolveNpmBin(vfs, '/home/user/project', 'missing'), null);
 }
 
 {
@@ -140,7 +141,7 @@ const manifestPath = npmBinManifestPath(nm);
     }])),
     [`${nm}/ancestor-pkg/cli.js`]: 'console.log("ancestor")',
   });
-  const resolved = resolveNpmBin(vfs, '/home/user/project/src/components', 'ancestor');
+  const resolved = await resolveNpmBin(vfs, '/home/user/project/src/components', 'ancestor');
   assert.equal(resolved?.targetPath, `${nm}/ancestor-pkg/cli.js`);
 }
 
@@ -158,7 +159,7 @@ const manifestPath = npmBinManifestPath(nm);
     [`${prefixNm}/@earendil-works/pi-coding-agent/dist/cli.js`]: 'console.log("0.78.1")',
   });
 
-  const linked = materializeNpmBinShims(vfs, prefixNm, 'home/user/.local/bin');
+  const linked = await materializeNpmBinShims(vfs, prefixNm, 'home/user/.local/bin');
   assert.equal(linked, 1);
   assert.equal(vfs.exists('home/user/.local/bin/pi'), true);
   // The on-PATH shim must be executable or the shell rejects it as
@@ -166,7 +167,7 @@ const manifestPath = npmBinManifestPath(nm);
   // successful install.
   assert.equal(vfs.modes.get('home/user/.local/bin/pi'), 0o755, 'materialized shim is executable');
 
-  const resolved = resolveNpmBinFromPath(
+  const resolved = await resolveNpmBinFromPath(
     vfs,
     '/home/user',
     '/home/user/.local/bin:/usr/bin',
@@ -184,7 +185,7 @@ const manifestPath = npmBinManifestPath(nm);
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
-  const installer = new NpmInstaller(rawVfs, harness.sql);
+  const installer = new NpmInstaller(new ProcessFiles(rawVfs), harness.sql);
   vfs.mkdir(`${nm}/sass`, { recursive: true });
   vfs.mkdir(`${nm}/sass-embedded/dist`, { recursive: true });
   vfs.writeFile(`${nm}/sass/sass.js`, '');
@@ -198,9 +199,9 @@ const manifestPath = npmBinManifestPath(nm);
     }],
   ]);
 
-  await installer.linkBins(resolved, nm);
+  await installer.linkBins(resolved, { engine: vfs, nmDir: nm });
 
-  const bin = resolveNpmBin(vfs, '/home/user/project', 'sass');
+  const bin = await resolveNpmBin(vfs, '/home/user/project', 'sass');
   assert.equal(bin?.packageName, 'sass-embedded');
   assert.equal(bin?.targetPath, `${nm}/sass-embedded/dist/cli.js`);
   assert.match(vfs.readFileString(`${nm}/.bin/sass`), /sass-embedded\/dist\/cli\.js/);

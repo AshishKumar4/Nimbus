@@ -15,6 +15,8 @@ export function createNpmInstallPort(self) {
                 production: spec.production,
                 fromLockfile: spec.fromLockfile,
                 pid: spec.pid,
+                // The project is read and written as the running command.
+                cred: self.processes.cred(spec.pid),
                 registry: spec.registry,
                 npmLog: spec.npmLog ?? undefined,
                 onProgress: spec.onProgress,
@@ -25,7 +27,7 @@ export function createNpmInstallPort(self) {
                 // bin linker already skips entries whose target never landed, so
                 // a partial tree safely exposes exactly the bins that installed.
                 const vfs = sqliteFs.as(CRED_KERNEL);
-                linkedBins = materializeNpmBinShims(vfs, `${installCwd}/node_modules`, globalBinDir);
+                linkedBins = await materializeNpmBinShims(vfs, `${installCwd}/node_modules`, globalBinDir);
             }
             return {
                 installed: result.installed,

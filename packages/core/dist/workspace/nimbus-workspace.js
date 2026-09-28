@@ -157,10 +157,6 @@ export class NimbusWorkspace {
         shell = new Shell(options.terminal ?? new HeadlessTerminal(), filesystem, registry, env, kernel.processRegistry, identity);
         if (options.cwd)
             shell.setCwd(options.cwd);
-        // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
-        // to run it, and re-checks the caller's own execute permission at
-        // invocation time — the `authorize` wrapper in exec-dispatch.ts.
-        installPathExecResolver(registry, filesystem.namespaceFs(CRED_KERNEL), () => shell.getCwd());
         // node/curl/wget are bound to THIS workspace's kernel: their localhost
         // traffic resolves through its port registry and loopback router, not the
         // process-wide defaults the lazily-loaded commands would share.
@@ -172,6 +168,12 @@ export class NimbusWorkspace {
         const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
         const kernelFs = vfs.as(CRED_KERNEL);
         const runtimeLease = filesystem.openHost(CRED_KERNEL);
+        // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
+        // to run it, and re-checks the caller's own execute permission at
+        // invocation time — the `authorize` wrapper in exec-dispatch.ts. It
+        // inspects through the namespace's awaiting face, so a script on an
+        // asynchronous mount runs by its path like any other.
+        installPathExecResolver(registry, new ProcessView(runtimeLease.fs), () => shell.getCwd());
         // Everything past the lease can throw — a runtime source that fails to
         // list, a package that will not install. The workspace it would have
         // belonged to is never constructed, so nobody is left to close() it.

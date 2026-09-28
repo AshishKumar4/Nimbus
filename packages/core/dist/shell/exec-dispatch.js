@@ -22,6 +22,7 @@
  * executable until touched. No migration.
  */
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 /** Bytes of head to inspect: covers magic + the longest useful `#!` line. */
 export const EXEC_HEAD_BYTES = 512;
 export function isWasmMagic(head) {
@@ -77,7 +78,24 @@ export function decideExecDispatch(mode, head) {
         return { kind: 'exec-format-error' };
     return { kind: 'shell-script' };
 }
-export function installPathExecResolver(registry, kernelFs, getCwd) {
+async function inspect(fs, path) {
+    try {
+        const stat = await fs.stat(path);
+        if (stat === null)
+            return null;
+        if (stat.type === 'directory')
+            return 'directory';
+        const target = (await fs.stat(path, { follow: false }))?.type === 'symlink' ? await fs.realpath(path) : path;
+        return { target, mode: stat.mode, head: await fs.readRange(target, 0, EXEC_HEAD_BYTES) };
+    }
+    catch (error) {
+        // A missing name, a component that is not a directory, or a link loop: "command not found".
+        if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR') || isVfsError(error, 'ELOOP'))
+            return null;
+        throw error;
+    }
+}
+export function installPathExecResolver(registry, fs, getCwd) {
     const originalResolve = registry.resolve.bind(registry);
     registry.resolve = async (name) => {
         const found = await originalResolve(name);
@@ -86,29 +104,32 @@ export function installPathExecResolver(registry, kernelFs, getCwd) {
         if (!name || (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../'))) {
             return undefined;
         }
-        const resolved = resolveVfsPath(name, normalizeVfsPath(getCwd()));
-        if (!kernelFs.exists(resolved))
+        const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(getCwd()));
+        let inspected;
+        try {
+            inspected = await inspect(fs, resolved);
+        }
+        catch (error) {
+            // What the namespace cannot answer (an absent mount, a backend's I/O
+            // error) fails this command, as execve's error does; the rest of the
+            // line still runs.
+            const message = error instanceof Error ? error.message : String(error);
+            return async (ctx) => {
+                (await ctx.stderr.write(`${name}: ${message}\n`));
+                return 126;
+            };
+        }
+        if (inspected === null)
             return undefined;
-        if (kernelFs.isDirectory(resolved)) {
+        if (inspected === 'directory') {
             return async (ctx) => {
                 (await ctx.stderr.write(`${name}: Is a directory\n`));
                 return 126;
             };
         }
-        const target = kernelFs.isSymlink(resolved) ? kernelFs.resolveSymlink(resolved) : resolved;
-        if (!target || !kernelFs.exists(target) || kernelFs.isDirectory(target))
-            return undefined;
-        let mode;
-        let head;
-        try {
-            mode = kernelFs.stat(target).mode;
-            head = kernelFs.readRange(target, 0, EXEC_HEAD_BYTES);
-        }
-        catch {
-            return undefined;
-        }
-        const accessPath = '/' + resolved;
-        const absPath = '/' + target;
+        const { mode, head } = inspected;
+        const accessPath = resolved;
+        const absPath = inspected.target;
         const authorize = (command) => async (ctx) => {
             try {
                 (await ctx.vfs.access(accessPath, 0o1));

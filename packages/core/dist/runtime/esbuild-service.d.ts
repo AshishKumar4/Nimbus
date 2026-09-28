@@ -8,7 +8,7 @@
  * loader-backed esbuild facet); without them, esbuild runs here. build()'s
  * VFS resolver plugin always runs here, over this service's view.
  */
-import type { NamespaceFs } from './process-files.js';
+import type { Awaitable } from '../vfs/vfs.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -216,6 +216,17 @@ export interface EsbuildServiceOptions {
     /** Where build() runs. Absent: this isolate. */
     buildHost?: EsbuildBuildHost;
 }
+/**
+ * What a build reads modules through: a view of the namespace as some
+ * credential, each call answered at once (the engine, a synchronous
+ * NamespaceFs) or awaited (a command's ProcessView over a mount).
+ */
+export interface EsbuildReadFs {
+    exists(path: string): Awaitable<boolean>;
+    isDirectory(path: string): Awaitable<boolean>;
+    readFile(path: string): Awaitable<Uint8Array>;
+    readFileString(path: string): Awaitable<string>;
+}
 export declare class EsbuildService {
     private vfs;
     private readonly transformHost;
@@ -224,8 +235,8 @@ export declare class EsbuildService {
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
-    /** Build reads use only the caller-supplied view; omit it for transform-only use. */
-    constructor(vfs?: NamespaceFs, options?: EsbuildServiceOptions);
+    /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
+    constructor(vfs?: EsbuildReadFs, options?: EsbuildServiceOptions);
     /** Whether transforms grow this isolate's esbuild heap: true unless a transform host was given. */
     get transformsInIsolate(): boolean;
     /**
@@ -350,11 +361,14 @@ export declare class EsbuildService {
          * semantics — the file is served verbatim, never emitted hashed.
          */
         vitePublicDir?: string;
+        /** The view this build reads through, in place of the service's own (a command's, as its credential). */
+        fs?: EsbuildReadFs;
     }): Promise<BuildResult>;
     private requireVfs;
     /**
      * VFS resolver plugin for esbuild.
-     * Reads through the caller's credentialed view (synchronous, no snapshot needed).
+     * Reads through the build's view, or the service's (a caller's credentialed
+     * view, answered at once or awaited; no snapshot needed).
      * Handles: absolute paths, relative paths, bare specifiers (node_modules),
      * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */

@@ -23,6 +23,7 @@ import { createNpmCommand } from '../../packages/core/src/substrate/lifo/command
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import {
   detectBundlerBin,
   checkNodeModulesGuard,
@@ -81,17 +82,18 @@ import { writeText } from '../../packages/core/src/vfs/vfs.ts';
   const root = vfs.as(CRED_KERNEL);
   const PROJ = 'nx';
 
-  assert.deepEqual(checkNodeModulesGuard(root, PROJ), { missing: false, depCount: 0 });
+  const files = sqliteFiles(vfs, CRED_KERNEL);
+  assert.deepEqual(await checkNodeModulesGuard(files, `/${PROJ}`), { missing: false, depCount: 0 });
 
   root.mkdir(PROJ, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({
     name: 'nx', scripts: { build: 'next build' },
     dependencies: { next: 'latest', react: 'latest' },
   }));
-  assert.deepEqual(checkNodeModulesGuard(root, PROJ), { missing: true, depCount: 2 });
+  assert.deepEqual(await checkNodeModulesGuard(files, `/${PROJ}`), { missing: true, depCount: 2 });
 
   root.mkdir(`${PROJ}/node_modules`, { recursive: true });
-  assert.deepEqual(checkNodeModulesGuard(root, PROJ), { missing: false, depCount: 0 });
+  assert.deepEqual(await checkNodeModulesGuard(files, `/${PROJ}`), { missing: false, depCount: 0 });
 
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'nx', scripts: { build: 'echo hi' } }));
   const vfs2harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -99,7 +101,7 @@ import { writeText } from '../../packages/core/src/vfs/vfs.ts';
   const root2 = vfs2.as(CRED_KERNEL);
   root2.mkdir('plain', { recursive: true });
   root2.writeFile('plain/package.json', JSON.stringify({ name: 'plain', scripts: { build: 'echo hi' } }));
-  assert.deepEqual(checkNodeModulesGuard(root2, 'plain'), { missing: false, depCount: 0 });
+  assert.deepEqual(await checkNodeModulesGuard(sqliteFiles(vfs2, CRED_KERNEL), '/plain'), { missing: false, depCount: 0 });
   console.log('  checkNodeModulesGuard: missing/present/zero-dep cases');
   harness.db.close();
   vfs2harness.db.close();

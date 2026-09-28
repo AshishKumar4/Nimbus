@@ -30,6 +30,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { installCompressionStreams } from './lib/web-compression-streams.mjs';
 
@@ -48,7 +49,7 @@ root.mkdir('tmp', { mode: 0o777 });
 root.chown('tmp', 1000, 1000);
 
 const box = await testBox({ harness, vfs: rawVfs });
-installPathExecResolver(box.commands.registry, root, () => box.shell.getCwd?.() ?? '/home/user');
+installPathExecResolver(box.commands.registry, new ProcessView(box.files.openHost(CRED_KERNEL).fs), () => box.shell.getCwd?.() ?? '/home/user');
 registerUnixCommands(box.commands.registry, rawVfs);
 registerShellEntrypointCommands(
   box.commands.registry,
