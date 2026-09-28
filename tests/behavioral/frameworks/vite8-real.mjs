@@ -122,7 +122,8 @@ try {
   const [viteVersion, rolldownVersion] = [...versions.output.matchAll(/"version":\s*"([^"]+)"/g)].map((m) => m[1]);
   console.log(`[vite8-real] vite@${viteVersion} rolldown@${rolldownVersion}`);
   a.check('the scaffold installed Vite 8 and rolldown', /^8\./.test(viteVersion ?? '') && !!rolldownVersion, tail(versions.output, 6));
-  await run(t, heredocCommand(`${APP}/nimbus-vite.mjs`, LAUNCHER), 15_000);
+  // A heredoc's terminator must stand alone on its line: no exit sentinel.
+  await t.run(heredocCommand(`${APP}/nimbus-vite.mjs`, LAUNCHER), 15_000);
 
   // ── 2. an edit, then build ─────────────────────────────────────────
   const edit = await run(t,
