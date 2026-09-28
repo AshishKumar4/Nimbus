@@ -404,4 +404,59 @@ const FAST = { baseDelayMs: 1 };
   assert.equal(flaky.stubs.length, 1, 'the retry ran although its hook failed');
 }
 
+// ── 17. A traced call says how it was lost and which attempt answered ───────
+// The span a caller hands in is what classifies a lost call after the fact:
+// each attempt a transient or overloaded failure lost is an exception whose
+// code is its class, and the settled call names its attempts, its hedges,
+// the attempt it took the answer from, and how it ended.
+
+{
+  const never = new Promise(() => {});
+  const recorder = () => ({
+    attributes: {},
+    exceptions: [],
+    set(values) { Object.assign(this.attributes, values); },
+    exception(error, code, context = '') { this.exceptions.push({ code, message: context + error.message }); },
+  });
+  const lost = () => Object.assign(new Error('Network connection lost.'), { retryable: true });
+
+  const retried = recorder();
+  const kit = mintKit(async (n) => { if (n === 1) throw lost(); return 'v'; });
+  assert.equal(await idempotent('read', kit.resolve, (s) => s.ping(), { ...FAST, span: retried }), 'v');
+  assert.deepEqual(retried.attributes, {
+    'do_call.attempts': 2, 'do_call.hedges': 0, 'do_call.answered_by': 2, 'do_call.outcome': 'answered',
+  });
+  assert.equal(retried.exceptions.length, 1, 'the lost attempt was not recorded');
+  assert.equal(retried.exceptions[0].code, 'connection_lost', 'the lost attempt was not classified');
+  assert.match(retried.exceptions[0].message, /^attempt 1 of 3: Network connection lost\./);
+
+  const hedged = recorder();
+  const hung = mintKit(async (n) => (n === 1 ? never : 'from-hedge'));
+  await idempotent('stuck', hung.resolve, (s) => s.ping(), { baseDelayMs: 1, hedgeAfterMs: 20, span: hedged });
+  assert.deepEqual(hedged.attributes, {
+    'do_call.attempts': 2, 'do_call.hedges': 1, 'do_call.answered_by': 2, 'do_call.outcome': 'answered',
+  });
+  assert.deepEqual(hedged.exceptions, [], 'an attempt a hedge overtook was recorded as lost');
+
+  const answeredWithError = recorder();
+  const missing = mintKit(async () => { throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }); });
+  await assert.rejects(idempotent('stat', missing.resolve, (s) => s.ping(), { ...FAST, span: answeredWithError }), /ENOENT/);
+  assert.equal(answeredWithError.attributes['do_call.outcome'], 'callee_error');
+  assert.equal(answeredWithError.attributes['do_call.answered_by'], 1);
+  assert.deepEqual(answeredWithError.exceptions, [], "the callee's answer was recorded as a lost attempt");
+
+  const spent = recorder();
+  const down = mintKit(async () => { throw lost(); });
+  await assert.rejects(idempotent('down', down.resolve, (s) => s.ping(), { ...FAST, span: spent }), /connection lost/);
+  assert.equal(spent.attributes['do_call.outcome'], 'exhausted');
+  assert.equal(spent.attributes['do_call.answered_by'], undefined, 'a call no attempt answered names one');
+  assert.equal(spent.exceptions.length, 3, 'not every lost attempt was recorded');
+
+  const shed = recorder();
+  const hot = mintKit(async () => { throw new Error('Durable Object is overloaded.'); });
+  await assert.rejects(idempotent('hot', hot.resolve, (s) => s.ping(), { ...FAST, span: shed }), /overloaded/);
+  assert.equal(shed.attributes['do_call.outcome'], 'overloaded');
+  assert.equal(shed.exceptions[0].code, 'overloaded');
+}
+
 console.log('ok - fabric-do-calls (fresh-stub retry, overloaded refusal, mutating never retries, typed cause)');

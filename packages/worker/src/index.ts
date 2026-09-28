@@ -22,6 +22,7 @@
  * runtime and generated assets in one place.
  */
 
+import { tracing } from 'cloudflare:workers';
 import {
   NimbusSession,
   NimbusAssetsRPC,
@@ -36,6 +37,7 @@ import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
 import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { adoptTracing } from '@nimbus-sh/platform/tracing.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 import { assembleOpencodeFacetConfig, type OpencodeAssetsEnv } from './facets/opencode-staging.js';
 
@@ -138,6 +140,11 @@ composeFabric({
   stagedBootAssembler: (env, stage) =>
     assembleOpencodeFacetConfig(env as Partial<OpencodeAssetsEnv>, stage),
 });
+
+// Custom spans for the modules that cannot import `cloudflare:workers`
+// (core's supervisor-op handler, fabric's DO-call verbs): the session side
+// and the sender side of every supervisor call a platform drop can lose.
+adoptTracing(tracing);
 
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)

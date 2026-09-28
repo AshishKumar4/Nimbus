@@ -53,6 +53,37 @@ published independently in the `@nimbus-sh` npm scope.
   both fixes, so such a deploy fails rather than every process seeing EIO
   where the filesystem said ENOENT.
 
+- A destroyed session no longer keeps a live alarm when an alarm handler was
+  running at the time of the destroy. The alarm dispatcher wrote its reasons
+  map back and re-armed `setAlarm` after destroy's `deleteAll` and
+  `deleteAlarm`. A schedule queued behind it did the same. `Timers.reset()`
+  in `@nimbus-sh/fabric/timers` now voids every schedule and dispatch
+  already requested, and destroy calls it in the same turn as the wipe.
+
+- Workers traces are on for every deployment: every invocation on dev,
+  staging, `apps/probe` and throwaways, 1 in 100 on production
+  (`observability.traces`). A supervisor call the platform drops is now
+  classified by its spans. SupervisorRPC's `nimbus.supervisor.deliver`,
+  `.read` and `.append` spans name the process, writer, operation or read
+  id, the attempts, the hedges and the attempt that answered, with an
+  exception for each lost attempt coded by its failure class. Under a
+  delivery or a read, the session's `nimbus.session.deliver` and `.read`
+  spans record what each arriving attempt met: `nimbus.receipt` (`applied`,
+  `replayed`, `awaited`) or `nimbus.read.joined`, and the refusal (ESTALE,
+  EIO) as an exception. Spans are best-effort. On a runtime from before the
+  2026-09-25 span methods they record attributes only. A span method that
+  throws is ignored, so no span call can change or stall a call's answer.
+  `idempotent()` in `@nimbus-sh/fabric/do-calls` takes a `span` recorder and
+  reports `do_call.outcome` as the new `DoCallOutcome`.
+  `SupervisorDeliveries.deliver` and `joinRead` in
+  `@nimbus-sh/core/workspace/supervisor-delivery` now return
+  `{ receipt, answer }` and `{ joined, answer }` instead of the bare
+  answer. `@nimbus-sh/platform/tracing` carries the Workers span API to core
+  and fabric, which cannot import `cloudflare:workers`; `@nimbus-sh/worker`
+  hands it over at module scope (`adoptTracing`). AGENTS.md now points
+  reset diagnosis at Workers Logs, traces and the GraphQL memory
+  percentiles instead of `wrangler tail`.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

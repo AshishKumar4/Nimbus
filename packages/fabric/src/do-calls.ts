@@ -42,6 +42,7 @@
 
 import { classifyDoCall, isRetryableDoCall, type DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { untraced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 
 /** Total attempts. Two retries is what a dropped connection or a deploy
  *  bounce needs; beyond that the object is not coming back inside this
@@ -88,7 +89,27 @@ export interface DoCallRetryPolicy {
    * its error.
    */
   onRetry?(info: DoCallRetryInfo): void;
+  /**
+   * Where the call's telemetry goes: its span's recorder. Each attempt lost
+   * to a transient or overloaded failure is recorded as an exception whose
+   * `code` is the failure's class, and once the call has settled it gets
+   * `do_call.attempts` (started), `do_call.hedges` (started by a hedge),
+   * `do_call.answered_by` (the attempt whose answer the call took, absent
+   * when none answered) and `do_call.outcome` ({@link DoCallOutcome}).
+   * Nothing recorded can change the call's answer. Records nothing when
+   * absent.
+   */
+  span?: SpanRecorder;
 }
+
+/**
+ * How an `idempotent` call ended: `answered` (an attempt succeeded),
+ * `callee_error` (the callee's own failure, which is an answer),
+ * `exhausted` (the last transient failure, no repeat left), `overloaded`
+ * (shed, nothing repeated after it), or `caller_error` (the resolver or
+ * `onRetry` threw).
+ */
+export type DoCallOutcome = 'answered' | 'callee_error' | 'exhausted' | 'overloaded' | 'caller_error';
 
 /** What one retry is answering: which call, which platform class, which
  *  attempt just failed out of how many. */
@@ -161,7 +182,7 @@ export function idempotent<S, T>(
 ): Promise<T> {
   const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
   const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
-  const { hedgeAfterMs, retryWindowMs } = policy;
+  const { hedgeAfterMs, retryWindowMs, span = untraced } = policy;
   const startedAt = Date.now();
   // The executor form: fabric's library target predates Promise.withResolvers.
   return new Promise<T>((resolve, reject) => {
@@ -173,13 +194,21 @@ export function idempotent<S, T>(
     // An attempt was shed as overloaded: nothing is repeated after it.
     let refused = false;
     let settled = false;
+    // Attempts a hedge started rather than a retry or the first send.
+    let hedged = 0;
 
-    const settle = (answer: () => void): void => {
+    const settle = (outcome: DoCallOutcome, answeredBy: number | undefined, answer: () => void): void => {
       if (settled) return;
       settled = true;
       for (const timer of hedges) clearTimeout(timer);
       hedges.clear();
       answer();
+      span.set({
+        'do_call.attempts': started,
+        'do_call.hedges': hedged,
+        'do_call.answered_by': answeredBy,
+        'do_call.outcome': outcome,
+      });
     };
     /** May another attempt start at `at`? */
     const canRepeat = (at: number): boolean =>
@@ -187,23 +216,25 @@ export function idempotent<S, T>(
       && (retryWindowMs === undefined || at - startedAt <= retryWindowMs);
     /** `error` ended an attempt that will not be repeated: the call's answer, once nothing else is live. */
     const exhausted = <E>(error: E): void => {
-      if (live === 0) settle(() => reject(error));
+      if (live === 0) settle(refused ? 'overloaded' : 'exhausted', undefined, () => reject(error));
     };
 
     /** A failed attempt, numbered: repeat it after its backoff, or let it stand. */
     const failed = async <E>(number: number, error: E): Promise<void> => {
       if (settled) return;
       const classification = classifyDoCall(error);
+      if (!isRetryableDoCall(classification) && classification !== 'overloaded') {
+        // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
+        settle('callee_error', number, () => reject(error));
+        return;
+      }
+      // A lost attempt: the call's span says which, and why.
+      span.exception(error, classification, `attempt ${number} of ${maxAttempts}: `);
       if (classification === 'overloaded') {
         // A shed call is no answer: nothing more is sent, and an attempt
         // still in flight may yet answer.
         refused = true;
         exhausted(error);
-        return;
-      }
-      if (!isRetryableDoCall(classification)) {
-        // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
-        settle(() => reject(error));
         return;
       }
       const delayMs = Math.floor(Math.random() * 2 ** number * baseDelayMs);
@@ -236,7 +267,10 @@ export function idempotent<S, T>(
       }
       const hedge = hedgeAfterMs === undefined ? undefined : setTimeout(() => {
         if (hedge !== undefined) hedges.delete(hedge);
-        if (canRepeat(Date.now())) attempt();
+        if (canRepeat(Date.now())) {
+          hedged++;
+          attempt();
+        }
       }, hedgeAfterMs);
       if (hedge !== undefined) hedges.add(hedge);
       /** This attempt has its answer: it hedges no more, and its stub goes. */
@@ -263,12 +297,12 @@ export function idempotent<S, T>(
         disposeRpcResource(result);
         return;
       }
-      settle(() => resolve(result));
+      settle('answered', number, () => resolve(result));
     };
 
     /** Start an attempt. Whatever it throws outside the call itself fails the call. */
     const attempt = (): void => {
-      run().catch((error) => settle(() => reject(error)));
+      run().catch((error) => settle('caller_error', undefined, () => reject(error)));
     };
 
     attempt();

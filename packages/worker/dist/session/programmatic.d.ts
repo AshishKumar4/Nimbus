@@ -16,6 +16,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
@@ -54,7 +55,7 @@ interface ProgrammaticCirrusServer {
     isRunning: boolean;
     stop(ctx: ProgrammaticContext): void;
 }
-export interface ProgrammaticHost {
+export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
     _w1SessionDestroyed: boolean;

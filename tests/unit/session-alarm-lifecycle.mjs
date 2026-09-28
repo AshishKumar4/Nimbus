@@ -128,11 +128,9 @@ function makeHost() {
   console.log('  [4] a destroyed session never re-arms the janitor');
 }
 
-// ── [5] rpcDestroy deletes the alarm + writes the tombstone ────────────────
-{
-  const storage = makeStorage();
-  storage.setAlarm(Date.now() + 60_000);
-  const host = {
+/** A session host rpcDestroy can run against, over `storage`. */
+function makeDestroyHost(storage) {
+  return {
     ...makeHost(),
     ctx: { storage, getWebSockets: () => [] },
     sqliteFs: null,
@@ -157,6 +155,13 @@ function makeHost() {
     _cirrusHmrWsClients: null,
     _w9PersistWired: true,
   };
+}
+
+// ── [5] rpcDestroy deletes the alarm + writes the tombstone ────────────────
+{
+  const storage = makeStorage();
+  storage.setAlarm(Date.now() + 60_000);
+  const host = makeDestroyHost(storage);
   assumeGeneration(host.ctx, 3);
   const result = await rpcDestroy(host, { reason: 'test' });
   assert.equal(result.ok, true);
@@ -182,6 +187,50 @@ function makeHost() {
   clearDestroyedTombstone(host, { storage: { delete: async (k) => { deletes.push(k); } } });
   assert.equal(deletes.length, 0, 'clear is a no-op when the session was never destroyed');
   console.log('  [5b] a recreated session id lifts the tombstone and can arm the janitor again');
+}
+
+// ── [5c] an alarm dispatch in flight during destroy leaves no alarm behind ──
+// The alarm handler is running (a resident-launch turn) when the session is
+// destroyed. When it returns, the dispatcher must not write its reasons map
+// back or re-arm setAlarm after destroy's deleteAll + deleteAlarm — nor may a
+// schedule requested before the destroy and queued behind the dispatch.
+{
+  const storage = makeStorage();
+  const host = makeDestroyHost(storage);
+  const now = Date.now();
+  await timers(host, host.ctx).schedule('resident-launch', now - 1);
+  assert.equal(storage.alarm, now - 1);
+
+  let started;
+  const running = new Promise((resolve) => { started = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const dispatched = timers(host, host.ctx).dispatch({
+    'resident-launch': async () => {
+      started();
+      await gate;
+      await timers(host, host.ctx).schedule('log-janitor', now + 60_000);
+      return { rearmAt: now + 1_000 };
+    },
+  });
+  await running;
+  const queued = timers(host, host.ctx).schedule('w9-flush', now + 5_000);
+
+  const result = await rpcDestroy(host, { reason: 'test' });
+  assert.equal(result.ok, true);
+  assert.equal(storage.alarm, null, 'destroy deleted the alarm');
+  release();
+  await dispatched;
+  assert.equal(storage.alarm, null, 'the in-flight dispatch re-armed the destroyed session');
+  assert.equal(storage.map.has(TIMER_REASONS_KEY), false,
+    `the in-flight dispatch wrote its reasons back: ${JSON.stringify(storage.map.get(TIMER_REASONS_KEY))}`);
+  assert.equal(await queued, false, 'a schedule queued before the destroy reported an arm');
+  assert.equal(storage.alarm, null, 'a schedule queued before the destroy re-armed it');
+
+  // The recreated session id schedules normally.
+  assert.equal(await timers(host, host.ctx).schedule('log-janitor', now + 60_000), true);
+  assert.equal(storage.alarm, now + 60_000, 'a schedule after the destroy did not arm');
+  console.log('  [5c] a dispatch in flight during destroy neither writes its map back nor re-arms');
 }
 
 // ── [6] broadcast survives a log-store reset/rewire ────────────────────────

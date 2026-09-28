@@ -124,6 +124,25 @@ export type SupervisorDeliveryAnswer =
 
 type Answered = SupervisorDeliveryAnswer | Promise<SupervisorDeliveryAnswer>;
 
+/**
+ * What one attempt of a delivered mutation met: `applied` (it ran the
+ * mutation), `replayed` (answered from the settled receipt of an earlier
+ * attempt), `awaited` (joined an earlier attempt still running).
+ */
+export type DeliveryReceipt = 'applied' | 'replayed' | 'awaited';
+
+/** A delivered mutation's answer, and what this attempt met. */
+export interface Delivered {
+  readonly receipt: DeliveryReceipt;
+  readonly answer: Answered;
+}
+
+/** A joined read's answer, and whether this attempt joined one being served. */
+export interface JoinedRead {
+  readonly joined: boolean;
+  readonly answer: ReturnType<SupervisorOpDispatch>;
+}
+
 function isDeliveryAnswer(value: unknown): value is SupervisorDeliveryAnswer {
   if (value === undefined || value === null) return true;
   switch (typeof value) {
@@ -265,17 +284,20 @@ export class SupervisorDeliveries {
    *
    * The caller has already established that `pid` is a live process of this
    * instance; receipts are its, and are consulted only for it.
+   *
+   * Returns the answer and what this attempt met ({@link DeliveryReceipt}).
    */
-  deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered): Answered {
+  deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered): Delivered {
     const now = Date.now();
     this.age(now);
     const key = `${pid}:${id}`;
-    const found = this.running.get(key) ?? this.current.get(pid)?.get(id) ?? this.previous.get(pid)?.get(id);
+    const running = this.running.get(key);
+    const found = running ?? this.current.get(pid)?.get(id) ?? this.previous.get(pid)?.get(id);
     if (found) {
       if (found.op !== op) {
         throw Object.assign(new Error(`EINVAL: delivery ${id} was ${found.op}, not ${op}`), { code: 'EINVAL' });
       }
-      return found.answer;
+      return { receipt: running ? 'awaited' : 'replayed', answer: found.answer };
     }
     const tombstone = hash53(key);
     if (this.tombstones.has(tombstone) || this.olderTombstones.has(tombstone)) {
@@ -293,7 +315,7 @@ export class SupervisorDeliveries {
     }
     if (!(applied instanceof Promise)) {
       this.record(pid, id, op, applied);
-      return applied;
+      return { receipt: 'applied', answer: applied };
     }
     const answer = applied.then(
       (value) => {
@@ -308,7 +330,7 @@ export class SupervisorDeliveries {
       },
     );
     this.running.set(key, { op, answer });
-    return answer;
+    return { receipt: 'applied', answer };
   }
 
   /**
@@ -321,6 +343,9 @@ export class SupervisorDeliveries {
    * is what keeps that hedge from reading the same bytes again. Nothing is
    * kept once the read settles: an attempt after that reads afresh, which a
    * read may. The map holds only reads in flight.
+   *
+   * Returns the answer, and whether this attempt joined a read already
+   * being served rather than reading.
    */
   joinRead(
     pid: number,
@@ -328,7 +353,7 @@ export class SupervisorDeliveries {
     op: SupervisorJoinedReadOpName,
     admit: () => void,
     read: () => ReturnType<SupervisorOpDispatch>,
-  ): ReturnType<SupervisorOpDispatch> {
+  ): JoinedRead {
     const key = `${pid}:${id}`;
     const running = this.readsInFlight.get(key);
     if (running) {
@@ -336,7 +361,7 @@ export class SupervisorDeliveries {
         throw Object.assign(new Error(`EINVAL: read ${id} is ${running.op}, not ${op}`), { code: 'EINVAL' });
       }
       admit();
-      return running.answer;
+      return { joined: true, answer: running.answer };
     }
     const answer = read();
     this.readsInFlight.set(key, { op, answer });
@@ -344,7 +369,7 @@ export class SupervisorDeliveries {
       if (this.readsInFlight.get(key)?.answer === answer) this.readsInFlight.delete(key);
     };
     answer.then(settled, settled);
-    return answer;
+    return { joined: false, answer };
   }
 
   /** Reads being served, which repeats of them would join. */

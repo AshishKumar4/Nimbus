@@ -117,7 +117,17 @@
   // Isolation is a distinct Worker name — `nimbus-staging` (env.staging),
   // `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway. See AGENTS.md
   // § Staging And Promote.
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Traces (https://developers.cloudflare.com/workers/observability/traces/):
+  // automatic fetch/binding/RPC spans plus Nimbus's own spans on every
+  // supervisor call a platform drop can lose (nimbus.supervisor.* on the
+  // sender, nimbus.session.* on the session). This block is inherited by
+  // env.staging, so dev and staging trace every invocation: they are where a
+  // lost call is diagnosed. env.production declares its own rate.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
   "preview_urls": true,
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
   // [docs](https://developers.cloudflare.com/workers/configuration/placement/),
@@ -416,6 +426,19 @@
     },
     "production": {
       "name": "nimbus",
+      // Production traces 1 invocation in 100 (head sampling, per trace
+      // root: an unsampled invocation pays nothing). From 2026-10-01 each
+      // span is one observability event billed from the same quota as
+      // Workers Logs, which this Worker already spends at a rate of 1: 20 M
+      // events a month included, then $0.60 per million
+      // (https://developers.cloudflare.com/workers/observability/traces/#limits--pricing).
+      // Diagnose a specific lost call on staging or a throwaway, which trace
+      // everything.
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+      },
       "preview_urls": true,
       // Per-port app previews: each exposed session port is served at its own
       // hostname `<port>--<sid>.nimbus-os.dev` so apps that assume a ROOT asset
