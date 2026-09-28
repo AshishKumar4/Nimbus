@@ -26,6 +26,7 @@
  * a permanent answer the sender never repeats — rather than applying the
  * mutation without a receipt for its repeat to find.
  */
+import type { TraceSpan } from '@nimbus-sh/platform/tracing.js';
 import type { SupervisorOpDispatch } from './supervisor-op.js';
 /**
  * The filesystem mutations a process's supervisor delivers exactly once.
@@ -142,8 +143,13 @@ export declare class SupervisorDeliveries {
      *
      * The caller has already established that `pid` is a live process of this
      * instance; receipts are its, and are consulted only for it.
+     *
+     * `span`, the traced call's, gets `nimbus.receipt`: `applied` (this
+     * attempt ran the mutation), `replayed` (answered from a settled
+     * receipt), `awaited` (joined the first attempt, still running),
+     * `tombstoned` (refused EIO) or `mismatched` (the id names another op).
      */
-    deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered): Answered;
+    deliver(pid: number, id: string, op: SupervisorDeliveredOpName, apply: () => Answered, span?: TraceSpan): Answered;
     /**
      * Serve read `id` of process `pid` once, however many of its attempts
      * arrive while it is being served. The first runs `read`; a repeat that
@@ -154,8 +160,11 @@ export declare class SupervisorDeliveries {
      * is what keeps that hedge from reading the same bytes again. Nothing is
      * kept once the read settles: an attempt after that reads afresh, which a
      * read may. The map holds only reads in flight.
+     *
+     * `span`, the traced read's, gets `nimbus.read.joined`: whether this
+     * attempt joined one already being served rather than reading.
      */
-    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>): ReturnType<SupervisorOpDispatch>;
+    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>, span?: TraceSpan): ReturnType<SupervisorOpDispatch>;
     /** Reads being served, which repeats of them would join. */
     get readsServing(): number;
     /** A process ended: its receipts answer nothing more, and their ids stay refused. */

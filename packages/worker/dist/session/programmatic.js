@@ -1081,6 +1081,9 @@ export async function rpcDestroy(self, options = {}) {
         // this, every destroyed session left an alarm behind that kept booting
         // its DO forever (the W1 janitor cycle), and the accumulated zombie
         // fleet's storage churn intermittently reset live session DOs.
+        // Destroy ends the alarm here and keeps the instance: it never calls
+        // `ctx.abort()`, so there is no abort for `{ retryAlarm: false }` to
+        // qualify. An abort added to this path must pass it.
         try {
             await self.ctx.storage.deleteAlarm();
         }

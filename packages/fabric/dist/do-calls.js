@@ -41,6 +41,7 @@
  */
 import { classifyDoCall, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { spanException } from '@nimbus-sh/platform/tracing.js';
 /** Total attempts. Two retries is what a dropped connection or a deploy
  *  bounce needs; beyond that the object is not coming back inside this
  *  request (the consumer's measured bound). */
@@ -87,7 +88,7 @@ export class DoCallError extends Error {
 export function idempotent(operation, stub, call, policy = {}) {
     const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
     const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
-    const { hedgeAfterMs, retryWindowMs } = policy;
+    const { hedgeAfterMs, retryWindowMs, span } = policy;
     const startedAt = Date.now();
     // The executor form: fabric's library target predates Promise.withResolvers.
     return new Promise((resolve, reject) => {
@@ -99,13 +100,21 @@ export function idempotent(operation, stub, call, policy = {}) {
         // An attempt was shed as overloaded: nothing is repeated after it.
         let refused = false;
         let settled = false;
-        const settle = (answer) => {
+        // Attempts a hedge started rather than a retry or the first send.
+        let hedged = 0;
+        const settle = (outcome, answeredBy, answer) => {
             if (settled)
                 return;
             settled = true;
             for (const timer of hedges)
                 clearTimeout(timer);
             hedges.clear();
+            span?.setAttributes({
+                'do_call.attempts': started,
+                'do_call.hedges': hedged,
+                'do_call.answered_by': answeredBy,
+                'do_call.outcome': outcome,
+            });
             answer();
         };
         /** May another attempt start at `at`? */
@@ -114,23 +123,30 @@ export function idempotent(operation, stub, call, policy = {}) {
         /** `error` ended an attempt that will not be repeated: the call's answer, once nothing else is live. */
         const exhausted = (error) => {
             if (live === 0)
-                settle(() => reject(error));
+                settle(refused ? 'overloaded' : 'exhausted', undefined, () => reject(error));
         };
         /** A failed attempt, numbered: repeat it after its backoff, or let it stand. */
         const failed = async (number, error) => {
             if (settled)
                 return;
             const classification = classifyDoCall(error);
+            if (!isRetryableDoCall(classification) && classification !== 'overloaded') {
+                // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
+                settle('callee_error', number, () => reject(error));
+                return;
+            }
+            // A lost attempt: the call's span says which, and why.
+            if (span?.isTraced) {
+                const lost = spanException(error, classification);
+                span.recordException(typeof lost === 'string'
+                    ? lost
+                    : { ...lost, message: `attempt ${number} of ${maxAttempts}: ${lost.message ?? ''}` });
+            }
             if (classification === 'overloaded') {
                 // A shed call is no answer: nothing more is sent, and an attempt
                 // still in flight may yet answer.
                 refused = true;
                 exhausted(error);
-                return;
-            }
-            if (!isRetryableDoCall(classification)) {
-                // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
-                settle(() => reject(error));
                 return;
             }
             const delayMs = Math.floor(Math.random() * 2 ** number * baseDelayMs);
@@ -163,8 +179,10 @@ export function idempotent(operation, stub, call, policy = {}) {
             const hedge = hedgeAfterMs === undefined ? undefined : setTimeout(() => {
                 if (hedge !== undefined)
                     hedges.delete(hedge);
-                if (canRepeat(Date.now()))
+                if (canRepeat(Date.now())) {
+                    hedged++;
                     attempt();
+                }
             }, hedgeAfterMs);
             if (hedge !== undefined)
                 hedges.add(hedge);
@@ -193,11 +211,11 @@ export function idempotent(operation, stub, call, policy = {}) {
                 disposeRpcResource(result);
                 return;
             }
-            settle(() => resolve(result));
+            settle('answered', number, () => resolve(result));
         };
         /** Start an attempt. Whatever it throws outside the call itself fails the call. */
         const attempt = () => {
-            run().catch((error) => settle(() => reject(error)));
+            run().catch((error) => settle('caller_error', undefined, () => reject(error)));
         };
         attempt();
     });

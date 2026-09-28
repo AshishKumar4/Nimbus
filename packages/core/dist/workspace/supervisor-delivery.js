@@ -192,22 +192,32 @@ export class SupervisorDeliveries {
      *
      * The caller has already established that `pid` is a live process of this
      * instance; receipts are its, and are consulted only for it.
+     *
+     * `span`, the traced call's, gets `nimbus.receipt`: `applied` (this
+     * attempt ran the mutation), `replayed` (answered from a settled
+     * receipt), `awaited` (joined the first attempt, still running),
+     * `tombstoned` (refused EIO) or `mismatched` (the id names another op).
      */
-    deliver(pid, id, op, apply) {
+    deliver(pid, id, op, apply, span) {
         const now = Date.now();
         this.age(now);
         const key = `${pid}:${id}`;
-        const found = this.running.get(key) ?? this.current.get(pid)?.get(id) ?? this.previous.get(pid)?.get(id);
+        const running = this.running.get(key);
+        const found = running ?? this.current.get(pid)?.get(id) ?? this.previous.get(pid)?.get(id);
         if (found) {
             if (found.op !== op) {
+                span?.setAttributes({ 'nimbus.receipt': 'mismatched' });
                 throw Object.assign(new Error(`EINVAL: delivery ${id} was ${found.op}, not ${op}`), { code: 'EINVAL' });
             }
+            span?.setAttributes({ 'nimbus.receipt': running ? 'awaited' : 'replayed' });
             return found.answer;
         }
         const tombstone = hash53(key);
         if (this.tombstones.has(tombstone) || this.olderTombstones.has(tombstone)) {
+            span?.setAttributes({ 'nimbus.receipt': 'tombstoned' });
             throw Object.assign(new Error(`EIO: ${op} arrived again after its answer was dropped, so its outcome is unknown`), { code: 'EIO' });
         }
+        span?.setAttributes({ 'nimbus.receipt': 'applied' });
         let applied;
         try {
             applied = apply();
@@ -242,10 +252,14 @@ export class SupervisorDeliveries {
      * is what keeps that hedge from reading the same bytes again. Nothing is
      * kept once the read settles: an attempt after that reads afresh, which a
      * read may. The map holds only reads in flight.
+     *
+     * `span`, the traced read's, gets `nimbus.read.joined`: whether this
+     * attempt joined one already being served rather than reading.
      */
-    joinRead(pid, id, op, admit, read) {
+    joinRead(pid, id, op, admit, read, span) {
         const key = `${pid}:${id}`;
         const running = this.readsInFlight.get(key);
+        span?.setAttributes({ 'nimbus.read.joined': running !== undefined });
         if (running) {
             if (running.op !== op) {
                 throw Object.assign(new Error(`EINVAL: read ${id} is ${running.op}, not ${op}`), { code: 'EINVAL' });

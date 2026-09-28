@@ -21,12 +21,14 @@
  * `@nimbus-sh/sdk/worker`. This implementation package keeps the
  * runtime and generated assets in one place.
  */
+import { tracing } from 'cloudflare:workers';
 import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from './session/nimbus-session.js';
 import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
 import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
+import { adoptTracing } from '@nimbus-sh/platform/tracing.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 import { assembleOpencodeFacetConfig } from './facets/opencode-staging.js';
 // Re-export the composable factory + companion types. The SDK worker
@@ -55,6 +57,10 @@ composeFabric({
     supervisorEntrypoint: 'SupervisorRPC',
     stagedBootAssembler: (env, stage) => assembleOpencodeFacetConfig(env, stage),
 });
+// Custom spans for the modules that cannot import `cloudflare:workers`
+// (core's supervisor-op handler, fabric's DO-call verbs): the session side
+// and the sender side of every supervisor call a platform drop can lose.
+adoptTracing(tracing);
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)
 // land in `wrangler tail` as one JSON line per event. When F-observability

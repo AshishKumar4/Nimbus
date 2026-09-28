@@ -124,7 +124,15 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * may answer from any isolate; the pid still comes from the binding.
      */
     private _fsMutation;
-    /** `envelope`, re-sent as it is on a fresh stub while the platform drops it retryably. */
+    /**
+     * `envelope`, re-sent as it is on a fresh stub while the platform drops it
+     * retryably, in the span that classifies a lost call: which process and
+     * writer sent which operation under which id, how many attempts it took,
+     * whether a hedge fired, which attempt answered, and how each lost one
+     * failed (fabric do-calls `span`). The session's side of the same call is
+     * its `nimbus.session.*` span, under the RPC span of the attempt that
+     * reached it.
+     */
     private _resent;
     private _hostIncarnation;
     private _reportingPid;
