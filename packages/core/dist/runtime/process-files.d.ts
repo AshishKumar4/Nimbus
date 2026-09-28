@@ -33,6 +33,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly awaitedDescriptors;
     private readonly namespaces;
     private readonly retired;
+    /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
+    private readonly listings;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     readonly hydrator: Hydrator | null;
@@ -63,6 +65,18 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Resolves once `path`'s bytes are hydrated (at once, for a path with none pending). */
     hydrated(path: string): Promise<void>;
     gateLaunch(named: readonly string[]): Promise<void>;
+    /**
+     * What a process's launch names — its working directory, program and
+     * arguments, the literal paths its code names, the files its module map
+     * was read from — which is where its listing (`list`) walks mounts without
+     * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT). `names` is
+     * asked only when the process's credential sees a mount beyond SQLite and
+     * the kernel's, so a launch computes nothing for a namespace that is
+     * SQLite alone. Adds to what was named.
+     */
+    nameLaunch({ pid, cred }: NimbusFilesystemBinding, names: () => Iterable<string>): void;
+    /** Where `pid`'s listings of the mounts beyond SQLite stand (made when `create`), or undefined. */
+    private listingOf;
     bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;

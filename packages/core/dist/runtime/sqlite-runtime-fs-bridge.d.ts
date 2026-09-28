@@ -1,6 +1,5 @@
 import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import type { CompositeVFS } from '../vfs/composite.js';
-import type { VfsStat } from '../vfs/vfs.js';
+import { type CompositeVFS } from '../vfs/composite.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
@@ -203,9 +202,6 @@ export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: b
 }): Generator<BeneathLookup, string | null, BeneathAnswer>;
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export declare const BUFFERED_WRITE_BYTES: number;
-/** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
-/** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
-export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
 export declare function modeAllows(stat: {
     mode?: number;

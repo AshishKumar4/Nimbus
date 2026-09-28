@@ -23,6 +23,7 @@ export declare const INODE_CACHE_MAX_ENTRIES = 65536;
 export declare const FS_READ_BATCH_PATH_LIMIT = 1024;
 export declare const FS_READ_BATCH_REQUEST_BYTES: number;
 export declare const FS_LIST_PAGE_LIMIT = 8192;
+export declare const MOUNT_LIST_NAME_LIMIT = 8192;
 export declare const VFS_DELIVERY_RETRY_WINDOW_MS = 5000;
 export declare const VFS_DELIVERY_RECEIPT_RETENTION_MS: number;
 export declare const VFS_DELIVERY_TOMBSTONE_RETENTION_MS: number;

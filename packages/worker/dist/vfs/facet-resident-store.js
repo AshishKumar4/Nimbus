@@ -628,6 +628,8 @@ function __residentTablesOnSql(sql) {
     nsClear() { sql.exec("DELETE FROM ns"); },
     nsKeys() { return [...sql.exec("SELECT parent, name FROM ns")]; },
     nsOfKind(kind) { return [...sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind)]; },
+    // Directories whose entries the listing did not name (__nsUnlisted): their target is the mount point.
+    nsUnlisted() { return [...sql.exec("SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL", __NS_DIR)]; },
     nsChildren(parent) { return [...sql.exec("SELECT name, kind FROM ns WHERE parent = ?", parent)]; },
     nsCount() { const row = first(sql.exec("SELECT count(*) AS n FROM ns")); return row === undefined ? 0 : Number(row.n); },
   };
@@ -856,6 +858,17 @@ function __residentTablesInMemory() {
       for (const parent of [...ns.keys()].sort(byName)) {
         const dir = ns.get(parent);
         for (const name of [...dir.keys()].sort(byName)) if (dir.get(name).kind === Number(kind)) out.push({ parent, name });
+      }
+      return out;
+    },
+    nsUnlisted() {
+      const out = [];
+      for (const parent of [...ns.keys()].sort(byName)) {
+        const dir = ns.get(parent);
+        for (const name of [...dir.keys()].sort(byName)) {
+          const row = dir.get(name);
+          if (row.kind === __NS_DIR && row.target !== null) out.push({ parent, name, target: row.target });
+        }
       }
       return out;
     },
@@ -1406,6 +1419,13 @@ const __NS_LINK = 2;
 const __NS_MAX_HOPS = 40;
 /** Paths of every symlink in the table: resolution walks only past these. */
 let __nsLinks = new Set();
+/**
+ * Directories on a mount whose entries the listing did not name (the launch
+ * did not name them, or they were past its bound), each to the mount point
+ * it is on. A name at or under one is not known absent, only not listed.
+ * Held in the row's \`target\`, which a directory has no other use for.
+ */
+let __nsUnlisted = new Map();
 /** The credential names are judged traversable for. */
 let __nsCred = null;
 
@@ -1426,6 +1446,24 @@ function __nsLoadLinks(t) {
     const parent = String(row.parent);
     __nsLinks.add(parent ? parent + "/" + String(row.name) : String(row.name));
   }
+  __nsUnlisted = new Map();
+  for (const row of t.nsUnlisted()) {
+    const parent = String(row.parent);
+    __nsUnlisted.set(parent ? parent + "/" + String(row.name) : String(row.name), String(row.target));
+  }
+}
+
+/**
+ * The mount a lookup of \`k\` lands on unlisted: the mount point of the
+ * nearest unlisted directory at \`k\` (when \`self\`) or above it, or null.
+ */
+function __nsUnlistedOver(k, self) {
+  if (__nsUnlisted.size === 0) return null;
+  for (let at = self ? k : __nsSplit(k)[0]; at !== ""; at = __nsSplit(at)[0]) {
+    const mount = __nsUnlisted.get(at);
+    if (mount !== undefined) return mount;
+  }
+  return null;
 }
 
 /** Whether the table describes the store's cursor. */
@@ -1467,15 +1505,22 @@ function __nsDescribes(stat) {
   return true;
 }
 
-function __nsPut(t, k, stat, rev, target) {
+/**
+ * \`unlisted\` is what a listing says of a directory: the mount point it is
+ * on when it did not name its entries, null when it did. Undefined (a delta,
+ * a note) keeps what the row says.
+ */
+function __nsPut(t, k, stat, rev, target, unlisted) {
   const [parent, name] = __nsSplit(k);
   const kind = __nsKindCode(stat.type);
+  const mount = kind !== __NS_DIR ? null : unlisted === undefined ? (__nsUnlisted.get(k) ?? null) : unlisted;
   t.nsPut(
     parent, name, kind, Number(stat.size) || 0, Number(stat.mode) || 0, Number(stat.uid) || 0,
     Number(stat.gid) || 0, Number(stat.atime) || 0, Number(stat.mtime) || 0, Number(stat.ctime) || 0,
-    Number(stat.ino) || 0, Number(rev) || 0, kind === __NS_LINK ? String(target ?? "") : null,
+    Number(stat.ino) || 0, Number(rev) || 0, kind === __NS_LINK ? String(target ?? "") : mount,
   );
   if (kind === __NS_LINK) __nsLinks.add(k); else __nsLinks.delete(k);
+  if (mount !== null) __nsUnlisted.set(k, mount); else __nsUnlisted.delete(k);
 }
 
 // The authority operation may succeed while metadata cannot be cached.
@@ -1493,6 +1538,7 @@ function __nsDeleteTree(t, k, self) {
   if (k === "") {
     t.nsClear();
     __nsLinks = new Set();
+    __nsUnlisted = new Map();
     return;
   }
   const prefix = k + "/";
@@ -1503,8 +1549,10 @@ function __nsDeleteTree(t, k, self) {
     const [parent, name] = __nsSplit(k);
     t.nsDelete(parent, name);
     __nsLinks.delete(k);
+    __nsUnlisted.delete(k);
   }
   for (const link of __nsLinks) if (link.startsWith(prefix)) __nsLinks.delete(link);
+  for (const dir of __nsUnlisted.keys()) if (dir.startsWith(prefix)) __nsUnlisted.delete(dir);
 }
 
 /** The row at exactly \`k\` (no symlink resolution), or undefined. */
@@ -1527,12 +1575,12 @@ function __nsJoinTarget(linkPath, target) {
 }
 
 /**
- * Resolve \`k\` through the symlinks the namespace holds: { path, row } for the
- * name it denotes, null when nothing is there, or "ELOOP". The leaf is
- * followed only when \`followLeaf\`. Walks component by component only when a
- * symlink sits on the path; otherwise it is one lookup.
+ * Look \`k\` up through the symlinks the namespace holds: { path, row } for
+ * the name it denotes (row undefined when nothing is there), or "ELOOP".
+ * The leaf is followed only when \`followLeaf\`. Walks component by component
+ * only when a symlink sits on the path; otherwise it is one lookup.
  */
-function __nsResolve(k, followLeaf) {
+function __nsLookup(k, followLeaf) {
   const t = __residentRequire();
   let path = k;
   for (let hops = 0; hops <= __NS_MAX_HOPS; hops++) {
@@ -1553,10 +1601,28 @@ function __nsResolve(k, followLeaf) {
       }
     }
     if (redirected) continue;
-    const row = __nsRowAt(t, path);
-    return row === undefined ? null : { path, row };
+    return { path, row: __nsRowAt(t, path) };
   }
   return "ELOOP";
+}
+
+/** \`__nsLookup\`, with null when nothing is there. */
+function __nsResolve(k, followLeaf) {
+  const found = __nsLookup(k, followLeaf);
+  return found === "ELOOP" || found.row !== undefined ? found : null;
+}
+
+/**
+ * The mount point when the namespace cannot say what \`k\` is: its lookup
+ * misses at or under a directory the listing did not name (or, with
+ * \`listing\`, lands on or under one). Null when it knows.
+ */
+function __nsUnknown(k, followLeaf, listing) {
+  if (__nsUnlisted.size === 0) return null;
+  const found = __nsLookup(k, followLeaf);
+  if (found === "ELOOP") return null;
+  if (found.row === undefined) return __nsUnlistedOver(found.path, false);
+  return listing ? __nsUnlistedOver(found.path, true) : null;
 }
 
 /** The entries directly under directory \`k\` (already resolved): [{ name, kind }]. */
@@ -1600,7 +1666,7 @@ function __nsApplyEntry(t, entry) {
 /**
  * Bring the table to a complete listing: upsert what differs, delete what the
  * listing no longer names. \`entries\` are VfsListEntry (path, stat, rev,
- * linkTarget). Called once per enumeration, after its last page.
+ * linkTarget, unlisted). Called once per enumeration, after its last page.
  */
 function __nsReplace(t, entries) {
   const listed = new Set();
@@ -1610,7 +1676,7 @@ function __nsReplace(t, entries) {
   for (const row of t.nsKeys()) {
     const parent = String(row.parent);
     const k = parent ? parent + "/" + String(row.name) : String(row.name);
-    if (!listed.has(k)) { t.nsDelete(parent, String(row.name)); __nsLinks.delete(k); }
+    if (!listed.has(k)) { t.nsDelete(parent, String(row.name)); __nsLinks.delete(k); __nsUnlisted.delete(k); }
   }
   // Free shrinking text before growing another surviving row; final-state
   // admission must not depend on alphabetical replacement order.
@@ -1620,8 +1686,8 @@ function __nsReplace(t, entries) {
       if (!k) continue;
       const [parent, name] = __nsSplit(k);
       const held = t.nsGet(parent, name);
-      if (held && __namespaceRowBytes(parent, name, held.target) > __namespaceRowBytes(parent, name, entry.linkTarget)) {
-        __nsPut(t, k, entry.stat, entry.rev, entry.linkTarget);
+      if (held && __namespaceRowBytes(parent, name, held.target) > __namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted)) {
+        __nsPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
       }
     }
   }
@@ -1637,8 +1703,8 @@ function __nsReplace(t, entries) {
       && Number(held.gid) === Number(s.gid) && Number(held.mtime) === Number(s.mtime)
       && Number(held.ctime) === Number(s.ctime) && Number(held.ino) === Number(s.ino)
       && Number(held.rev) === Number(entry.rev)
-      && (held.target ?? null) === (entry.linkTarget ?? null)) continue;
-    __nsPut(t, k, s, entry.rev, entry.linkTarget);
+      && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
+    __nsPut(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
   }
 }
 
@@ -1681,7 +1747,7 @@ function __nsNoteLiveStat(k, stat) {
   const held = __nsRowAt(t, k);
   if (held !== undefined && Number(held.rev) >= cursor.rev) return;
   if (stat === null) {
-    if (held !== undefined) { const [parent, name] = __nsSplit(k); t.nsDelete(parent, name); __nsLinks.delete(k); }
+    if (held !== undefined) { const [parent, name] = __nsSplit(k); t.nsDelete(parent, name); __nsLinks.delete(k); __nsUnlisted.delete(k); }
     return;
   }
   if (!__nsDescribes(stat)) return;
@@ -1704,6 +1770,7 @@ function __residentClear() {
   // Held cells go with the rows, but for own writes still in flight.
   for (const [path, held] of [...__residentHeld]) if (held.rev !== __RK_OWN_WRITE) __residentForgetHeld(path);
   __nsLinks = new Set();
+  __nsUnlisted = new Map();
   __nsOk = false;
   __residentSeal("the store was cleared");
 }
@@ -1894,7 +1961,7 @@ async function __nsRelist(supervisor, dir) {
       if (entry.stat) {
         if (__residentInHeap && __residentCap !== null) {
           const [parent, name] = __nsSplit(k);
-          incomingBytes += __namespaceRowBytes(parent, name, entry.linkTarget);
+          incomingBytes += __namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
           if (__residentDbBytes() - replaceBytes + incomingBytes > __residentCap) {
             __nsMarkReady(t, false, "namespace storage budget exceeded (" + __residentCap + " bytes)");
             return;
@@ -1911,7 +1978,7 @@ async function __nsRelist(supervisor, dir) {
   // Exactly what the listing has under the directory: a name it no longer
   // shows (hidden now, or gone) leaves, one it shows is written.
   __nsDeleteTree(t, dir, false);
-  for (const entry of seen) __nsPut(t, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget);
+  for (const entry of seen) __nsPut(t, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
 }
 
 /**
@@ -2006,7 +2073,7 @@ async function __residentEnumerate(supervisor) {
         if (__residentInHeap && __residentCap !== null) {
           const key = String(entry.path).replace(/^\\/+/, "");
           const [parent, name] = __nsSplit(key);
-          if (key) namespaceBytes += __namespaceRowBytes(parent, name, entry.linkTarget);
+          if (key) namespaceBytes += __namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
           if (__residentDbBytes() - __residentT.nsBytes() + namespaceBytes > __residentCap) {
             const cause = "namespace storage budget exceeded (" + __residentCap + " bytes)";
             __nsMarkReady(__residentT, false, cause);
@@ -2279,6 +2346,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // supervisor incarnation: across a restart the clocks are unrelated, and an
   // untouched path lists at rev 0, which would vouch for anything.
   const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
+  // A file listed at revision 0 has none the store can compare: a mounted
+  // file's (its backend keeps no revision on the session's clock; a file
+  // SQLite holds was written at a generation past 0). Its row is never
+  // vouched for, so a reconcile refetches what the mount holds now.
+  const vouches = (entry, rev) => comparable && entry !== undefined && entry.rev > 0 && rev >= entry.rev;
 
   const listed = new Map();
   for (const file of listing.entries) listed.set(file.path, file);
@@ -2301,7 +2373,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
       });
       continue;
     }
-    const keep = (comparable && entry !== undefined && row.rev >= entry.rev) || !judgeable;
+    const keep = vouches(entry, row.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     // The listing names the same bytes (a revision moved, the content did
     // not, or another epoch): kept and dated at the listing. Equal keys are
@@ -2328,7 +2400,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
       own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
       continue;
     }
-    if ((comparable && entry !== undefined && cell.rev >= entry.rev) || !judgeable) { current.add(path); continue; }
+    if (vouches(entry, cell.rev) || !judgeable) { current.add(path); continue; }
     __residentForgetHeld(path);
     dropped.push(path);
   }

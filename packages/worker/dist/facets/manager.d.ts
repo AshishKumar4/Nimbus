@@ -41,16 +41,6 @@ export interface FacetExecResult {
     stdout: string;
     stderr: string;
     /**
-     * Files written by the script (path → content), to be flushed back to VFS.
-     *
-     * binary-fs wave: cells may be string | Uint8Array. After JSON.parse on
-     * the result envelope (NodeProcess.run returns JSON.stringify; the
-     * LOADER.load fallback uses Response.json) Uint8Array becomes a
-     * {"0":n,"1":n,...} object — _reviveVfsWriteCell reconstitutes the
-     * bytes.
-     */
-    vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
-    /**
      * VFS paths whose content the process read synchronously and did not have.
      *
      * The facet cannot serve those reads and cannot recover from them, so the
@@ -1118,8 +1108,9 @@ export declare class FacetManager {
     /**
      * Which contents a resident process holds from its first instruction,
      * beyond its module map: data-plan.ts over this process's view of the
-     * namespace. A path the plan leaves out is still named and stat-able; a
-     * synchronous read of it is the one honest miss.
+     * namespace, mounts included where its launch names them. A path the plan
+     * leaves out is still named and stat-able; a synchronous read of it is the
+     * one honest miss.
      */
     private _planResidentData;
     /**
@@ -1381,8 +1372,6 @@ export declare class FacetManager {
      * the phase.
      */
     private _failLaunch;
-    /** Flush files written by the script back to the supervisor's VFS. */
-    private _flushVfsWrites;
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe and nothing else: env and credentials are never

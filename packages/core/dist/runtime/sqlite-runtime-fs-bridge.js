@@ -1,4 +1,5 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
+import { runtimeStatOf } from '../vfs/composite.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 export function createSqliteDescriptorScope() {
@@ -1046,17 +1047,6 @@ function removeTree(mount, path) {
     else {
         mount.unlink(path);
     }
-}
-/** A VFS stat in this contract's shape. A mounted backend's entries carry no SQLite revision. */
-/** A namespace entry's stat in this contract's shape; its identity (dev, ino) is the namespace's. */
-export function runtimeStatOf(stat) {
-    const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
-    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
-    return {
-        dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
-        ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-        mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: 0,
-    };
 }
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
 export function modeAllows(stat, want, cred) {

@@ -29,7 +29,7 @@
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
 /** The root's inode number, reserved: the allocator starts at 2. */
@@ -1826,6 +1826,14 @@ export declare function pendingChunkError(path: string): Error & {
     nimbusPending: true;
     path: string;
 };
+/**
+ * The byte bound of one listing page (VfsListPage): the page's frame, each
+ * entry's actual encoding (escaping included) and a comma, and the cursor
+ * the last one leaves in `next` (its path in place of `null`). The returned
+ * check admits an entry while the page still fits the RPC frame with it; an
+ * entry that cannot fit a page on its own is E2BIG.
+ */
+export declare function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry) => boolean;
 /** Whether `error` is a read of bytes still being imported. */
 export declare function isPendingChunkError(error: unknown): error is Error & {
     path: string;

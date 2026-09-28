@@ -230,6 +230,15 @@ export interface NimbusFilesystemAuthority {
    * hydration deadline, then fails with EIO naming the first that is not.
    */
   gateLaunch?(named: readonly string[]): Promise<void>;
+  /**
+   * What a process's launch names — its working directory, program and
+   * arguments, the literal paths its code names, the files its module map
+   * was read from: where the process's listing (`bind(...).list`) walks the
+   * mounts beyond SQLite (MOUNT_LIST_NAME_LIMIT). `names` is asked only when
+   * its credential sees such a mount, so a launch computes nothing for SQLite
+   * alone.
+   */
+  nameLaunch?(binding: NimbusFilesystemBinding, names: () => Iterable<string>): void;
 }
 
 /**
@@ -488,6 +497,12 @@ export interface VfsListEntry {
   linkTarget?: string;
   /** Files only: equal keys mean equal bytes (SqliteVFS.contentKey). */
   contentKey?: string;
+  /**
+   * A directory on a mount whose entries this listing does not name (the
+   * launch did not name it, or it was past MOUNT_LIST_NAME_LIMIT): the mount
+   * point it is on. A name under it is not absent, only not listed.
+   */
+  unlisted?: string;
 }
 
 /**

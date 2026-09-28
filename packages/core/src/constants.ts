@@ -131,6 +131,20 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
 
+// Names a process's listing takes from mounted filesystems (an embedder's
+// Drive, container or device), per launch. SQLite is listed whole, because a
+// listing of it is one index scan; a mount is walked through its readdir, one
+// remote call per directory, so a process lists only the parts of a mount its
+// launch names — its working directory, program and arguments, the literal
+// paths its code names, the directories its module map was read from — and
+// every directory on the way down from the mount point. A directory is listed
+// whole or not at all, breadth first, until this many names. A directory left
+// unlisted is marked so (VfsListEntry.unlisted): a synchronous call under it
+// answers the mount's EAGAIN, never ENOENT, and fs.promises reads it. The
+// names are paged like SQLite's (FS_LIST_PAGE_LIMIT), so the supervisor holds
+// at most this many mounted names per listing.
+export const MOUNT_LIST_NAME_LIMIT = 8192;
+
 // Exactly-once delivery of a process's filesystem mutations (SupervisorRPC →
 // session; workspace/supervisor-delivery.ts). The retrier re-sends a mutation
 // under its delivery id only while no more than the RETRY window has passed

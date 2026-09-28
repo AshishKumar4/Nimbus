@@ -1300,7 +1300,7 @@ async function __ocOneShotFetch(request, workerEnv) {
     __supervisor = (workerEnv && workerEnv.SUPERVISOR) || null;
     const __bootFailure = await __ocBootStore();
     if (__bootFailure) {
-      return __ocHostResponse.json({ exitCode: 1, stdout: "", stderr: __bootFailure + "\\n", vfsWrites: {} });
+      return __ocHostResponse.json({ exitCode: 1, stdout: "", stderr: __bootFailure + "\\n" });
     }
     try {
       const __ocBundle = await import("${OPENCODE_BUNDLE_MODULE_NAME}");
@@ -1359,12 +1359,7 @@ async function __ocOneShotFetch(request, workerEnv) {
     }
     await __drainPendingIO();
     await __ocDrainVfsWrites();
-    return __ocHostResponse.json({
-      exitCode,
-      stdout,
-      stderr,
-      vfsWrites: __supervisor ? {} : __vfsWrites,
-    });
+    return __ocHostResponse.json({ exitCode, stdout, stderr });
 }
 `;
 }
