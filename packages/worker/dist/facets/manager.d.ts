@@ -981,13 +981,10 @@ export declare class FacetManager {
      */
     private residencyProfiles;
     /**
-     * Runtime code by content key (commonjs-cell.ts, RUNTIME CODE), least
-     * recently recorded first, at most RUNTIME_CODE_MAX_BYTES of it.
+     * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
+     * kept in the session's storage so an evicted isolate does not forget it.
      */
     private runtimeCode;
-    private runtimeCodeBytes;
-    /** Which runtime code each entry produced, keyed like residencyProfiles. */
-    private runtimeCodeProfiles;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -1208,12 +1205,8 @@ export declare class FacetManager {
     private _dropPrefetchCacheEntry;
     /**
      * Record the code a run produced and could not compile (commonjs-cell.ts,
-     * RUNTIME CODE) for the next launch of the same entry: kept by content key,
-     * the key recomputed here rather than taken from the guest, and the entry's
-     * cached bundle dropped so that launch is built with it. The store is
-     * bounded in bytes, least recently recorded first out; like the residency
-     * profiles it lives as long as this isolate, which is as long as the case
-     * it serves — running the command again — needs.
+     * RUNTIME CODE) for the next launch of the same entry, and drop the entry's
+     * cached bundle when that learned anything, so the launch is built with it.
      */
     private _recordRuntimeCode;
     /**

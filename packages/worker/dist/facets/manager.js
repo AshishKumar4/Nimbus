@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, parseRuntimeCodeEntry, RUNTIME_CODE_MAX_BYTES, runtimeCodeKey, runtimeCodeModuleName, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, runtimeCodeModuleName, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
@@ -48,6 +48,7 @@ import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, } from '@nimbus
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, resolvePackageEntry, parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { RuntimeCodeStore } from './runtime-code-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { ImageStore, } from '@nimbus-sh/fabric/image-store.js';
@@ -3808,13 +3809,10 @@ export class FacetManager {
      */
     residencyProfiles = new Map();
     /**
-     * Runtime code by content key (commonjs-cell.ts, RUNTIME CODE), least
-     * recently recorded first, at most RUNTIME_CODE_MAX_BYTES of it.
+     * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
+     * kept in the session's storage so an evicted isolate does not forget it.
      */
-    runtimeCode = new Map();
-    runtimeCodeBytes = 0;
-    /** Which runtime code each entry produced, keyed like residencyProfiles. */
-    runtimeCodeProfiles = new Map();
+    runtimeCode;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -3871,6 +3869,7 @@ export class FacetManager {
     // is actually loading.
     constructor(ctx, env, processes, portRegistry, host, hooks = {}) {
         this.ctx = ctx;
+        this.runtimeCode = new RuntimeCodeStore(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
         this.portRegistry = portRegistry;
@@ -4393,6 +4392,8 @@ export class FacetManager {
         }
         if (evictedStale)
             setPrefetchCacheBytes(this.prefetchCacheBytes);
+        // A report still being recorded may drop this entry: let it land first.
+        await this.runtimeCode.settled();
         const cached = this.prefetchBundleCache.get(key);
         if (cached && cached.revision === revision) {
             // Refresh LRU recency.
@@ -4512,54 +4513,13 @@ export class FacetManager {
     }
     /**
      * Record the code a run produced and could not compile (commonjs-cell.ts,
-     * RUNTIME CODE) for the next launch of the same entry: kept by content key,
-     * the key recomputed here rather than taken from the guest, and the entry's
-     * cached bundle dropped so that launch is built with it. The store is
-     * bounded in bytes, least recently recorded first out; like the residency
-     * profiles it lives as long as this isolate, which is as long as the case
-     * it serves — running the command again — needs.
+     * RUNTIME CODE) for the next launch of the same entry, and drop the entry's
+     * cached bundle when that learned anything, so the launch is built with it.
      */
-    _recordRuntimeCode(key, reported) {
+    async _recordRuntimeCode(key, reported) {
         if (!key || !Array.isArray(reported) || reported.length === 0)
             return;
-        let profile = this.runtimeCodeProfiles.get(key);
-        if (profile)
-            this.runtimeCodeProfiles.delete(key);
-        else
-            profile = new Set();
-        this.runtimeCodeProfiles.set(key, profile);
-        let learned = 0;
-        for (const raw of reported) {
-            const entry = parseRuntimeCodeEntry(raw);
-            if (entry === null)
-                continue;
-            const bytes = entry.kind === 'module' ? entry.path.length + entry.text.length : entry.params.join(',').length + entry.body.length;
-            if (bytes > RUNTIME_CODE_MAX_BYTES)
-                continue;
-            const codeKey = runtimeCodeKey(entry);
-            const held = this.runtimeCode.get(codeKey);
-            if (held)
-                this.runtimeCode.delete(codeKey);
-            else
-                this.runtimeCodeBytes += bytes;
-            this.runtimeCode.set(codeKey, held ?? { entry, bytes });
-            if (!profile.has(codeKey)) {
-                profile.add(codeKey);
-                learned++;
-            }
-        }
-        for (const [oldest, held] of this.runtimeCode) {
-            if (this.runtimeCodeBytes <= RUNTIME_CODE_MAX_BYTES)
-                break;
-            this.runtimeCode.delete(oldest);
-            this.runtimeCodeBytes -= held.bytes;
-        }
-        for (const oldest of this.runtimeCodeProfiles.keys()) {
-            if (this.runtimeCodeProfiles.size <= FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES)
-                break;
-            this.runtimeCodeProfiles.delete(oldest);
-        }
-        if (learned > 0)
+        if (await this.runtimeCode.record(key, reported))
             this._dropPrefetchCacheEntry(key);
     }
     /**
@@ -4569,15 +4529,8 @@ export class FacetManager {
      * to that cell — it is the file as it is now.
      */
     async _stagedRuntimeCode(key, stagedPaths, pacer) {
-        const profile = this.runtimeCodeProfiles.get(key);
-        if (!profile || profile.size === 0)
-            return undefined;
         const modules = new Map();
-        for (const codeKey of profile) {
-            const held = this.runtimeCode.get(codeKey);
-            if (!held)
-                continue;
-            const entry = held.entry;
+        for (const [codeKey, entry] of await this.runtimeCode.forLaunch(key)) {
             if (entry.kind !== 'module') {
                 modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
                 continue;
@@ -4672,7 +4625,7 @@ export class FacetManager {
     noteProcessReportedExit(pid, exitCode, residencyMisses, evidence, runtimeCode) {
         // Filed before the exit marks the table: the terminal hook forgets the key.
         this._recordResidencyMisses(this.residentBundleKeys.get(pid), residencyMisses);
-        this._recordRuntimeCode(this.residentBundleKeys.get(pid), runtimeCode);
+        this.ctx.waitUntil(this._recordRuntimeCode(this.residentBundleKeys.get(pid), runtimeCode));
         const exiting = this.processes.get(pid);
         const offer = this.residentProfileOffers.get(pid);
         this.residentProfileOffers.delete(pid);
@@ -4830,7 +4783,7 @@ export class FacetManager {
             const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
             this._flushVfsWrites(result, entry.pid);
             this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
-            this._recordRuntimeCode(vfsState.bundleKey, result.runtimeCode);
+            await this._recordRuntimeCode(vfsState.bundleKey, result.runtimeCode);
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
                 this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
