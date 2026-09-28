@@ -14,8 +14,9 @@ published independently in the `@nimbus-sh` npm scope.
   while that read is still being served, for the same live process, so a
   read queued behind the read budget is read once. A host that predates the
   field serves each attempt. Repeats count against the existing three
-  attempts. A failure, even one that is not retried, ends the call only when
-  no attempt is left in flight. `idempotent()` in `@nimbus-sh/fabric/do-calls`
+  attempts. The callee's own error (ENOENT, EACCES) ends the call at once;
+  a dropped or overloaded attempt ends it only when no attempt is left in
+  flight. `idempotent()` in `@nimbus-sh/fabric/do-calls`
   takes the new `hedgeAfterMs` policy field; `onRetry` now fires when a retry
   starts, reports the failed attempt's own number, and a throw from it fails
   the call instead of leaving it pending. Mutations are not hedged.
