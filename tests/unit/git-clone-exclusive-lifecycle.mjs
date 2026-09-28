@@ -19,9 +19,6 @@ function registerCloneHarness() {
   // Device 1: the engine the command's view reports /home/user on (commandContext).
   const vfs = {
     deviceId: 1,
-    as() {
-      return {};
-    },
     acquireExclusiveMutation(path, options) {
       const owner = `owner-${acquiredRoots.length + 1}`;
       acquiredRoots.push(path);
@@ -63,8 +60,11 @@ function commandContext(args) {
     env: {},
     stdout: { write() {} },
     stderr: { write() {} },
-    // The command's view of the namespace: every path is on the engine (device 1).
-    vfs: { async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; } },
+    // The command's view of the namespace: every path is itself, on the engine (device 1).
+    vfs: {
+      async realpath(path) { return path; },
+      async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
+    },
   };
 }
 
@@ -132,7 +132,6 @@ function commandContext(args) {
   };
   const branchVfs = {
     deviceId: 1,
-    as() { return {}; },
     acquireExclusiveMutation(path) {
       return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
     },

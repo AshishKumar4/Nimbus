@@ -24,6 +24,11 @@ root.writeFile('home/user/private.sh', '#!/bin/sh\necho private\n', { mode: 0o70
 root.writeFile('home/user/public.sh', '#!/bin/sh\necho public\n', { mode: 0o755 });
 root.mkdir('home/user/hidden', { mode: 0o700 });
 root.writeFile('home/user/hidden/traversal.sh', '#!/bin/sh\necho traversal\n', { mode: 0o755 });
+// A script reached through a linked directory, and a link to a script.
+root.mkdir('home/user/proj', { mode: 0o755 });
+root.writeFile('home/user/proj/s.sh', '#!/bin/sh\necho s\n', { mode: 0o755 });
+root.symlink('proj', 'home/user/ldir');
+root.symlink('proj/s.sh', 'home/user/sl.sh');
 
 const files = new ProcessFiles(sqlite);
 
@@ -83,5 +88,14 @@ const privateViaSudo = await run('sudo', USER, ['./private.sh']);
 assert.equal(privateViaSudo.exitCode, 23, 'sudo can execute the root-owned 0700 script');
 assert.equal(privateViaSudo.stderr, '');
 assert.match(privateViaSudo.stdout, /ran \/home\/user\/private\.sh/);
+
+// The interpreter gets the name the script was invoked by (its $0), unless
+// that name is itself a link, which it gets resolved.
+const throughLinkedDir = await run('./ldir/s.sh', USER);
+assert.equal(throughLinkedDir.exitCode, 23, throughLinkedDir.stderr);
+assert.equal(throughLinkedDir.stdout, 'ran /home/user/ldir/s.sh\n');
+const throughLink = await run('./sl.sh', USER);
+assert.equal(throughLink.exitCode, 23, throughLink.stderr);
+assert.equal(throughLink.stdout, 'ran /home/user/proj/s.sh\n');
 
 console.log('exec dispatch permissions: ok');

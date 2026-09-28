@@ -199,7 +199,7 @@ const manifestPath = npmBinManifestPath(nm);
     }],
   ]);
 
-  await installer.linkBins(resolved, nm, { fs: vfs, onEngine: true }, CRED_KERNEL);
+  await installer.linkBins(resolved, { engine: vfs, nmDir: nm });
 
   const bin = await resolveNpmBin(vfs, '/home/user/project', 'sass');
   assert.equal(bin?.packageName, 'sass-embedded');

@@ -97,7 +97,11 @@ export function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatch
 /** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
 export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
 
-/** What is at a path-shaped name: nothing runnable, a directory, or a file (links followed) with its mode and head. */
+/**
+ * What is at a path-shaped name: nothing runnable, a directory, or a file
+ * with its mode and head. The file is run by the name it was invoked by,
+ * unless that name is itself a link, which is run by its target.
+ */
 type Inspected = null | 'directory' | { target: string; mode: number; head: Uint8Array };
 
 async function inspect(fs: ExecInspectionFs, path: string): Promise<Inspected> {
@@ -105,7 +109,7 @@ async function inspect(fs: ExecInspectionFs, path: string): Promise<Inspected> {
     const stat = await fs.stat(path);
     if (stat === null) return null;
     if (stat.type === 'directory') return 'directory';
-    const target = await fs.realpath(path);
+    const target = (await fs.stat(path, { follow: false }))?.type === 'symlink' ? await fs.realpath(path) : path;
     return { target, mode: stat.mode, head: await fs.readRange(target, 0, EXEC_HEAD_BYTES) };
   } catch (error) {
     // A missing name, a component that is not a directory, or a link loop: "command not found".

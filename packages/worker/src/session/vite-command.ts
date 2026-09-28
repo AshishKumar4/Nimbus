@@ -16,9 +16,10 @@
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
-import { projectTree } from '../runtime/project-fs.js';
+import { handKernelArtifact, projectFs as viewFs } from '../runtime/project-fs.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
@@ -58,11 +59,9 @@ export function createViteCommand(self: ViteHost) {
     }
 
     self.ensureSqliteFs();
-    // The project as the command's credential: the engine's own view when
-    // the namespace puts the cwd on SQLite, the command's view of the
-    // namespace otherwise (a mount, awaited).
-    const project = await projectTree(self.getFilesystemAuthority(), ctx.vfs, requireVfsCred(ctx.cred, 'vite'), cwd);
-    const projectFs = project.fs;
+    // The project through the command's view of the namespace, as its
+    // credential: SQLite paths reach the engine, mounted ones their mount.
+    const projectFs = viewFs(ctx.vfs);
 
     const viteConfig: ParsedViteConfig = {};
     for (const cfgName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
@@ -216,7 +215,9 @@ export function createViteCommand(self: ViteHost) {
 
         // Vite's emptyOutDir: stale hashed outputs must not accumulate.
         // Only an outDir strictly inside the project root is emptied —
-        // the warning above covered the rest.
+        // the warning above covered the rest. Releases before 0.13.2
+        // built it as root.
+        await handKernelArtifact(self.getFilesystemAuthority(), ctx.vfs, requireVfsCred(ctx.cred, 'vite'), '/' + distDir);
         if (insideRoot && await projectFs.exists(distDir)) {
           await projectFs.removeRecursive(distDir);
         }
@@ -315,19 +316,19 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
-    // The dev server and preview serve the project through the engine, per
-    // request and after this command has returned.
-    if (args[0] !== 'stop' && !project.onEngine) {
-      ctx.stderr.write(`vite: the dev server serves only projects on the workspace filesystem; /${cwd} is on a mounted one\n`);
-      return 1;
-    }
-
     // ── vite preview ──
     if (args[0] === 'preview') {
-      ctx.stdout.write('Serving dist/ — open ' + self.viteBasePath + '/\n');
       // Vite parity: preview serves the resolved outDir wherever it
-      // landed — build wrote there, so preview must read there.
+      // landed — build wrote there, so preview must read there. The server
+      // reads it through the engine, per request and after this command
+      // has returned: at its engine key, which a mount has none of.
       const distRoot = resolveVfsPath(viteConfig.outDir || 'dist', cwd);
+      const servedDist = await engineKey(ctx.vfs, self.sqliteFs!, '/' + distRoot);
+      if (servedDist === null) {
+        ctx.stderr.write(`vite: preview serves only a build on the workspace filesystem; /${distRoot} is on a mounted one\n`);
+        return 1;
+      }
+      ctx.stdout.write('Serving dist/ — open ' + self.viteBasePath + '/\n');
       if (!await projectFs.exists(distRoot)) {
         ctx.stderr.write('dist/ not found. Run vite build first.\n');
         return 1;
@@ -344,7 +345,7 @@ export function createViteCommand(self: ViteHost) {
         { longRunning: true },
       );
       self.viteDevServer = new ViteDevServer({
-        vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: distRoot,
+        vfs: self.sqliteFs!, esbuild: self.esbuildService!, root: servedDist,
         onHmrMessage: () => {},
         sql: self.ctx.storage.sql,
         basePath: previewBasePath,
@@ -365,7 +366,7 @@ export function createViteCommand(self: ViteHost) {
       } catch {}
       try {
         await self.ctx.storage.put(VITE_CONFIG_KEY, {
-          root: distRoot, basePath: previewBasePath, port: previewPort,
+          root: servedDist, basePath: previewBasePath, port: previewPort,
           identity: { cwd: previewProcEntry.cwd, argv: previewProcEntry.argv },
         });
       } catch {}
@@ -416,6 +417,14 @@ export function createViteCommand(self: ViteHost) {
       vfsRoot = resolveVfsPath(viteConfig.root, cwd);
     }
     vfsRoot = normalizeVfsPath(vfsRoot);
+    // The dev server reads the project through the engine, per request and
+    // after this command has returned: at its engine key, which a mount has
+    // none of.
+    const servedRoot = await engineKey(ctx.vfs, self.sqliteFs!, '/' + vfsRoot);
+    if (servedRoot === null) {
+      ctx.stderr.write(`vite: the dev server serves only projects on the workspace filesystem; /${vfsRoot} is on a mounted one\n`);
+      return 1;
+    }
 
     // Argv expansion: package.json scripts commonly write
     // `--port ${PORT:-3000}`. Resolve it once and feed both Vite
@@ -488,7 +497,7 @@ export function createViteCommand(self: ViteHost) {
       // port, and persists the vite-config so a woken session rebuilds the
       // same real-vite server. Only the banner below is command-specific.
       const { cirrusReal, userConfigBundle, cfgPath } = await startRealVite(self, {
-        root: vfsRoot,
+        root: servedRoot,
         port: vitePort,
         basePath: previewBasePath,
         configDir: cwd,
@@ -571,7 +580,7 @@ export function createViteCommand(self: ViteHost) {
     self.viteDevServer = new ViteDevServer({
       vfs: self.sqliteFs!,
       esbuild: self.esbuildService!,
-      root: vfsRoot,
+      root: servedRoot,
       port: resolvedPort,
       aliases: viteConfig.alias,
       define: viteDefine,
@@ -596,7 +605,7 @@ export function createViteCommand(self: ViteHost) {
     self.viteDevServer.start();
     try {
       await self.ctx.storage.put(VITE_CONFIG_KEY, {
-        root: vfsRoot, aliases: viteConfig.alias, define: viteDefine,
+        root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
         injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
         port: resolvedPort,
         identity: { cwd: viteProcEntry.cwd, argv: viteProcEntry.argv },

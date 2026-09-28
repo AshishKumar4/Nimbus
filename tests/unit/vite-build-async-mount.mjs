@@ -6,7 +6,8 @@
 // command read the project from the engine ("Warning: no index.html", then
 // "no entry point"), and the session's esbuild service read modules through a
 // synchronous face a mount without one refuses. The real registered command
-// and a real in-isolate esbuild; nothing of the mounted build lands in SQLite.
+// and a real in-isolate esbuild; nothing of the mounted build lands in SQLite,
+// and a mount's link into SQLite builds the project it names, there.
 
 import assert from 'node:assert/strict';
 import { plugin } from 'bun';
@@ -81,7 +82,7 @@ registry.register('vite', createViteCommand({
 
 /** Kinu's project (index.html naming main.js) at `dir`, then `vite build` there. */
 async function build(dir) {
-  await view.mkdir(dir, { recursive: true });
+  if (!await view.exists(dir)) await view.mkdir(dir, { recursive: true });
   await view.writeFile(`${dir}/index.html`, '<!doctype html><html><body><script type="module" src="/main.js"></script></body></html>');
   await view.writeFile(`${dir}/main.js`, 'import { text } from "./text.js";\ndocument.body.textContent = text;\n');
   await view.writeFile(`${dir}/text.js`, 'export const text = "hi";\n');
@@ -108,4 +109,12 @@ const asset = html.match(/assets\/main-[A-Z0-9]+\.js/)?.[0];
 assert.ok(asset, html);
 assert.match(await view.readFileString(`/m/v/dist/${asset}`), /"hi"/, 'the bundle holds the module read from the mount');
 assert.equal(root.exists('m'), false, 'nothing of the mounted build in SQLite');
+
+// A mount's link into SQLite builds the project it names, in place there.
+await view.mkdir('/home/user/lv', { recursive: true });
+await view.symlink('/home/user/lv', '/m/lv');
+const linked = await build('/m/lv');
+assert.equal(linked.code, 0, linked.stderr);
+assert.equal(linked.stdout.replaceAll('m/lv/', 'home/user/v/'), home.stdout);
+assert.match(vfs.as(CRED_SESSION_USER).readFileString('home/user/lv/dist/index.html'), /assets\/main-[A-Z0-9]+\.js/);
 console.log('vite-build-async-mount: ok');

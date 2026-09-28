@@ -39,19 +39,16 @@ const user = vfs.as(CRED_SESSION_USER);
 const files = new ProcessFiles(vfs);
 
 let indexWrites = 0;
-const observed = new Proxy(vfs, {
+const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   get(target, key) {
-    if (key !== 'as') return Reflect.get(target, key, target);
-    return (cred) => {
-      const view = target.as(cred);
-      return {
-        ...view,
-        writeFile(path, content, options) {
-          if (path.endsWith('/.git/index')) indexWrites++;
-          return view.writeFile(path, content, options);
-        },
+    if (key === 'writeFile') {
+      return (path, content, options) => {
+        if (path.endsWith('/.git/index')) indexWrites++;
+        return target.writeFile(path, content, options);
       };
-    };
+    }
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
   },
 });
 
@@ -62,8 +59,8 @@ async function git(cwd, ...args) {
     pid: 1, cred: CRED_SESSION_USER, args, cwd, env: { USER: 'a' },
     stdout: { write(s) { stdout += s; } },
     stderr: { write(s) { stderr += s; } },
-    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
-  }, observed);
+    vfs: observed,
+  }, vfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   return stdout;
 }

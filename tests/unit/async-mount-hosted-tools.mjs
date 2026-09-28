@@ -7,15 +7,19 @@
 // the same lines in /home/user:
 //   - a script run by its path, absolute and relative, runs, and the rest of
 //     the line runs (it answered EAGAIN and aborted the line); a mount whose
-//     backend fails fails that command, never the line;
+//     backend fails fails that command, never the line, and so does a name
+//     looked up from a cwd inside one (the line ended with status 2);
 //   - git init/config/add/commit/status/log work, and .git lands in the mount
-//     (git created `m` in the SQLite root as root: EACCES);
+//     (git created `m` in the SQLite root as root: EACCES); from a mount's
+//     link into SQLite, git works the repository the link names;
 //   - npm run, npm ls, npm init and npm uninstall read and write the mounted
 //     package.json (npm run answered ENOENT), and the project's own bins
-//     run bare, in a script and through npx (command not found);
+//     run bare, in a script and through npx (command not found); as the
+//     user they now act as, npm uninstall and npm init update a package.json
+//     an earlier release wrote as root, and a root-only one fails them;
 //   - bun run finds the package.json script and the file (Script not found);
 //   - the Worker and vite dev servers, which serve through the engine, refuse
-//     a mounted project by name.
+//     a mounted project by name, judged by the root they serve, not the cwd.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -98,6 +102,13 @@ workspace.filesystem.vfs.mount('/m', bundle.asyncMemoryVfs());
 // A backend that cannot answer at all: its failure is the command's.
 const broken = () => { throw new bundle.VfsError('EIO', 'the device is gone', '/'); };
 workspace.filesystem.vfs.mount('/gone', { stat: broken, readFile: broken, writeFile: broken, readdir: broken, mkdir: broken, unlink: broken });
+// One that answers for its directory `sub` and fails everything under it: a
+// cwd there reaches the mount on every name the shell looks up.
+const sick = async (path) => {
+  if (path === '/' || path === '/sub') return { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 1000, gid: 1000 };
+  broken();
+};
+workspace.filesystem.vfs.mount('/sick', { stat: sick, readFile: broken, writeFile: broken, readdir: broken, mkdir: broken, unlink: broken });
 const runtime = await bundle.composeHostedRuntime({
   workspace, ctx, env,
   ports: new bundle.PortRegistry(),
@@ -127,6 +138,15 @@ try {
     console.log('  [2] a script on the mount runs by its path; nothing aborts the line');
   }
 
+  // ── a cwd inside a failing mount fails only the command it names ───────
+  {
+    const line = await runtime.exec('cd /sick/sub && typo-cmd; echo after=$?; ./s.sh; echo after2=$?');
+    assert.equal(line.stdout, 'after=127\nafter2=126\n', line.stderr);
+    assert.match(line.stderr, /typo-cmd: command not found/);
+    assert.match(line.stderr, /\.\/s\.sh: EIO/);
+    console.log('  a name looked up under a failing mount is not found or fails alone; the line goes on');
+  }
+
   // ── item 3: git ─────────────────────────────────────────────────────────
   {
     const { home, mount } = await both('mkdir -p {dir}/g2 && cd {dir}/g2 && echo x > a.txt && git init -q; echo init=$?; '
@@ -141,6 +161,15 @@ try {
     assert.equal(clone.stdout, 'clone=128\n', 'the network commands refuse a mounted repository by name');
     assert.match(clone.stderr, /writes a repository only on the workspace filesystem; '\/m\/r' is on a mounted one/);
     console.log('  [3] git works a repository on the mount through the namespace, as the caller');
+  }
+
+  // ── a mount's link into SQLite is the project it names ──────────────────
+  {
+    const line = await runtime.exec('mkdir -p /home/user/lk && cd /home/user/lk && echo x > a.txt && git init -q && git config user.email a@b.c && git config user.name n '
+      + '&& git add a.txt && git commit -q -m one && echo y > b.txt; ln -s /home/user/lk /m/link && cd /m/link && pwd && git status --short; echo status=$?; git log --oneline');
+    assert.equal(line.stdout.replace(/[0-9a-f]{7}/g, '<oid>'),
+      'user.email=a@b.c\nuser.name=n\n/m/link\n\x1b[31m?? b.txt\x1b[0m\nstatus=0\n\x1b[33m<oid>\x1b[0m one\n', line.stderr);
+    console.log('  git in a mount\'s link into SQLite works the repository the link names');
   }
 
   // ── item 4: npm run / ls / init / uninstall ─────────────────────────────
@@ -166,6 +195,22 @@ try {
     console.log('  [4] a mounted project\'s node_modules/.bin runs bare, in npm run and through npx');
   }
 
+  // ── a package.json an earlier release wrote as root is the user's to update ──
+  {
+    await runtime.exec('mkdir -p /home/user/o /home/user/oi /home/user/os');
+    const kernel = vfs.as(bundle.CRED_KERNEL);
+    kernel.writeFile('home/user/o/package.json', JSON.stringify({ name: 'o', dependencies: { a: '1.0.0', b: '1.0.0' } }));
+    kernel.writeFile('home/user/oi/package.json', '{}');
+    kernel.writeFile('home/user/os/package.json', JSON.stringify({ name: 'os', dependencies: { a: '1.0.0' } }), { mode: 0o600 });
+    const line = await runtime.exec('cd /home/user/o && npm uninstall a; echo un=$?; cat package.json; '
+      + 'cd /home/user/oi && npm init -y >/dev/null; echo init=$?; grep -c \'"name": "oi"\' package.json; '
+      + 'cd /home/user/os && npm uninstall a; echo root-only=$?');
+    assert.match(line.stdout, /^removed a\nun=0\n\{\n {2}"name": "o",\n {2}"dependencies": \{\n {4}"b": "1\.0\.0"\n {2}\}\n\}\ninit=0\n1\nremoved a\nroot-only=1\n$/, line.stdout + line.stderr);
+    assert.match(line.stderr, /npm ERR! could not update package\.json: EACCES/);
+    assert.equal(kernel.stat('home/user/os/package.json').uid, 0, 'a root-only package.json stays root\'s');
+    console.log('  npm uninstall and init update a package.json an earlier release wrote as root; a root-only one fails them');
+  }
+
   // ── item 6: bun run ─────────────────────────────────────────────────────
   {
     const { home, mount } = await both('mkdir -p {dir}/b && cd {dir}/b && printf \'{"name":"b","scripts":{"hello":"echo hello-bun"}}\' > package.json '
@@ -185,7 +230,14 @@ try {
     assert.equal(dev.stdout, 'wrangler=1\nvite=1\n', dev.stderr);
     assert.match(dev.stderr, /Worker dev server serves only projects on the workspace filesystem; \/m\/w is on a mounted one/);
     assert.match(dev.stderr, /vite: the dev server serves only projects on the workspace filesystem; \/m\/w is on a mounted one/);
-    console.log('  the Worker and vite dev servers refuse a mounted project by name');
+    // What decides is the root the server serves, not the cwd it was started from.
+    const rooted = await runtime.exec('mkdir -p /m/app && cd /home/user && vite --root /m/app; echo vite=$?');
+    assert.equal(rooted.stdout, 'vite=1\n', rooted.stderr);
+    assert.match(rooted.stderr, /vite: the dev server serves only projects on the workspace filesystem; \/m\/app is on a mounted one/);
+    const home = await runtime.exec('mkdir -p /home/user/app && cd /m/w && vite --root /home/user/app; echo vite=$?; vite stop');
+    assert.doesNotMatch(home.stderr, /serves only projects on the workspace filesystem/, home.stderr);
+    assert.match(home.stdout, /Root: {7}home\/user\/app\n[^]*vite=0\n/, home.stdout + home.stderr);
+    console.log('  the Worker and vite dev servers refuse a mounted project by the root they serve');
   }
 } finally {
   await runtime.close();
