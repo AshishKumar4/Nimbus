@@ -139,9 +139,8 @@ export declare class NpmInstaller {
      * installPackagesInFacet task with internal pLimit(3). Fanout routes the
      * shards on the session's Dynamic Worker headroom: shards the headroom
      * holds run on in-DO loaders, one Dynamic Worker each; more shards than
-     * that, or shards holding more than one pLimit wave of tarballs
-     * (`cpuHeavy`), go one per sibling NimbusSession DO. The route taken is
-     * logged with the dispatch line.
+     * that go one per sibling NimbusSession DO. The route taken is logged
+     * with the dispatch line.
      *
      * Sharding strategy: round-robin (`pkgIdx % N`) so every shard
      *   receives roughly equal work. Stable-id router maps each

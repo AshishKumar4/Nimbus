@@ -917,9 +917,8 @@ export class NpmInstaller {
      * installPackagesInFacet task with internal pLimit(3). Fanout routes the
      * shards on the session's Dynamic Worker headroom: shards the headroom
      * holds run on in-DO loaders, one Dynamic Worker each; more shards than
-     * that, or shards holding more than one pLimit wave of tarballs
-     * (`cpuHeavy`), go one per sibling NimbusSession DO. The route taken is
-     * logged with the dispatch line.
+     * that go one per sibling NimbusSession DO. The route taken is logged
+     * with the dispatch line.
      *
      * Sharding strategy: round-robin (`pkgIdx % N`) so every shard
      *   receives roughly equal work. Stable-id router maps each
@@ -983,21 +982,12 @@ export class NpmInstaller {
             shards[idx % shardCount].push(...group);
         });
         const nonEmptyShards = shards.filter((s) => s.length > 0);
-        // Tarballs one shard works on at once (its internal pLimit).
-        const SHARD_CONCURRENCY = 3;
-        // More than one wave of tarballs per shard is long CPU-bound work, which
-        // Fanout keeps off the session's own thread: measured on a throwaway
-        // (2026-09-28), 9 packages in 8 in-DO shards installed in 2.4-5.5 s
-        // against 8.9-13.2 s on siblings, while 850 packages in 8 in-DO shards
-        // left the session silent past its deadline in 3 of 15 runs.
-        const cpuHeavy = byTarball.size > nonEmptyShards.length * SHARD_CONCURRENCY;
         // Logged as Fanout routes the batch, so the line names the route taken.
         const batchRoute = {};
         const onRoute = (route) => {
             batchRoute.taken = route;
             log(`Dispatching ${specs.length} packages across ${route.tasks} ` +
-                `shard${route.tasks === 1 ? '' : 's'} (${route.topology}, dynamic-worker headroom ${route.headroom}` +
-                `${cpuHeavy ? ', cpu-heavy' : ''}, internal pLimit=${SHARD_CONCURRENCY})...`);
+                `shard${route.tasks === 1 ? '' : 's'} (${route.topology}, dynamic-worker headroom ${route.headroom}, internal pLimit=3)...`);
         };
         // Peer shards dispatch in bounded phases and each phase is a barrier, so
         // the phase profile is what distinguishes shard work from barrier count.
@@ -1018,14 +1008,13 @@ export class NpmInstaller {
             supervisorPid: pid,
             onDispatchPhase: (width, elapsedMs) => phaseProfile.push(`${width}@${elapsedMs}ms`),
             onRoute,
-            cpuHeavy,
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across
             // runs. Tests can predict placement via Fanout's
             // `peerSiblingId(key, peerCount)` helper.
             key: `shard-${shardIdx}`,
-            args: { packages: shardSpecs, concurrency: SHARD_CONCURRENCY },
+            args: { packages: shardSpecs, concurrency: 3 },
         }));
         let shardResults;
         try {

@@ -135,13 +135,24 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // (Markflow): one lost wave failed every package that had contributed to
     // it, and the directories that wave carried never landed, so later waves
     // of unrelated packages failed with ENOENT on those parents.
+    // A wave the transport drops without a word never settles at all. Measured
+    // on a throwaway (2026-09-28): a shard held one unanswered writeBatchStream
+    // for 160 s while the session had no stream, credit or transaction in
+    // progress, and the install waited out its 10-minute deadline, in 6 of 47
+    // 850-package installs whose shards ran in-DO (none of 12 on siblings).
+    // An attempt unanswered this long is taken as dropped and re-sent like
+    // the error cases above; a late answer to the abandoned attempt is
+    // ignored.
+    const WAVE_ATTEMPT_DEADLINE_MS = 60_000;
+    const WAVE_UNANSWERED = 'writeBatchStream unanswered';
     const isSheddableWaveError = (message) => {
         const m = message.toLowerCase();
         return m.includes('overloaded')
             || m.includes('reset because its code was updated')
             || m.includes('starting up durable object storage')
             || (m.includes('storage operation') && m.includes('reset'))
-            || m.includes('network connection lost');
+            || m.includes('network connection lost')
+            || message.startsWith(WAVE_UNANSWERED);
     };
     // Mutex: only one flush runs at a time. Concurrent installs awaiting
     // flush() will line up behind this promise and resolve in arrival
@@ -193,7 +204,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                     });
                     // A typed non-ok result is the storage layer's verdict on these
                     // exact bytes, so it is returned as-is: only a shed RPC retries.
-                    return await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {
+                    const answer = __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {
                         if (result.ok)
                             return { ok: true };
                         return {
@@ -202,6 +213,19 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                                 `(${result.committedPathCount} committed paths): ${result.error.message}`,
                         };
                     });
+                    answer.catch(() => { });
+                    let deadline = null;
+                    try {
+                        return await Promise.race([
+                            answer,
+                            new Promise((_, reject) => {
+                                deadline = setTimeout(() => reject(new Error(`${WAVE_UNANSWERED} after ${WAVE_ATTEMPT_DEADLINE_MS} ms`)), WAVE_ATTEMPT_DEADLINE_MS);
+                            }),
+                        ]);
+                    }
+                    finally {
+                        clearTimeout(deadline);
+                    }
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
