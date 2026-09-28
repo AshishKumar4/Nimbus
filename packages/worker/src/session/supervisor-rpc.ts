@@ -25,7 +25,7 @@
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
- *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
+ *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -35,7 +35,9 @@
  *
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
- * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * re-sent on a fresh stub, and hedged: one unanswered after
+ * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
  * Appends are re-sent under the append ledger's identity. Everything else is
@@ -59,7 +61,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FsAcquireArgs, FsReadBatchEntry, FsReadBatchRequest, VfsDeliveredAcquire } from './rpc.js';
+import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
@@ -123,6 +125,18 @@ function _estimateWriteBatchBytes(payload: any): number {
 // worker's composition root (src/index.ts) names this class to the fabric
 // with composeFabric.
 
+// A process's filesystem read (SupervisorRPC → session) still unanswered
+// after this long is sent again on a fresh stub, the first left running and
+// the first answer taken (fabric do-calls `hedgeAfterMs`). Measured on a
+// throwaway under three concurrent sessions, 2026-09-28: none of the 521
+// read batches that answered took more than 5 s at the facet's side, the
+// session served each read it received without waiting on I/O, and the 11
+// attempts that stalled — none of which reached the session — were still
+// pending 110–560 s later. So an attempt past 5 s is one that is not coming
+// back, and a hedge then costs a duplicate read only when that measurement
+// was wrong.
+export const SUPERVISOR_READ_HEDGE_AFTER_MS = 5_000;
+
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
    * A fresh stub for the host, by the route the binding carries, per call.
@@ -160,9 +174,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * dropped on the way to it is repeated on a fresh stub. Measured: the
    * host's `stat` failing with "Network connection lost." (`retryable`) is
    * what failed CPython's start in about one fresh session in twenty.
+   *
+   * A read can also never answer: under concurrent sessions a burst of reads
+   * from one facet left some attempts pending for minutes without reaching
+   * the host, and the program waiting on them never exited
+   * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
+   * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+   * stub, the first attempt left running, the first answer taken. A read
+   * answered twice changes nothing. Mutations are not hedged: their repeats
+   * stay bounded by the delivery retry window, unchanged.
    */
   private _fsRead<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
-    return this._resent<T>({ op, args, pid: this._pid() });
+    return this._resent<T>({ op, args, pid: this._pid() }, { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS });
   }
 
   /**
@@ -492,8 +515,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * A file the caller knows is small is one entry; a large one is a run of
    * entries over the same path.
    *
+   * A request may instead ask for a path's lstat, so a process learning the
+   * metadata of many paths pays one round trip, not one per path.
+   *
    * Entries come back positionally, each carrying exactly what the
-   * equivalent fsReadRange would have returned. The batch is bounded by
+   * equivalent fsReadRange or lstat would have returned. The batch is bounded by
    * FS_READ_BATCH_PATH_LIMIT paths and FS_READ_BATCH_REQUEST_BYTES of
    * requested range, and the supervisor rejects anything past either — never
    * a short result, which a caller could mistake for a short file.
@@ -503,7 +529,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // returns at most the range asked for. Counting it keeps the
     // supervisor's heap estimate honest for the duration of the await, the
     // same accounting writeBatch does for its inbound payload.
-    const payloadBytes = requests.reduce((total, request) => total + request.length, 0);
+    const payloadBytes = requests.reduce((total, request) => total + fsReadBatchRequestBytes(request), 0);
     setLastRpcFrame('fsReadBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {

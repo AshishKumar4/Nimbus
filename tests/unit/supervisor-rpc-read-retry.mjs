@@ -20,7 +20,7 @@ mock.module('cloudflare:workers', () => ({
     constructor(ctx, env) { this.ctx = ctx; this.env = env; }
   },
 }));
-const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+const { SupervisorRPC, SUPERVISOR_READ_HEDGE_AFTER_MS } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 
 const dropped = (extra = {}) => Object.assign(new Error('Network connection lost.'), { retryable: true }, extra);
 
@@ -100,6 +100,54 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
   await assert.rejects(() => rpc.fsReadRange('home/user/x', 0, 10), /Network connection lost/);
   assert.equal(calls.length, 3, `a read that never lands was tried ${calls.length} times`);
   console.log('  ok  a read that keeps dropping fails after a bounded number of attempts');
+}
+
+// A read whose first attempt never answers is hedged; a mutation is not.
+// Measured: under concurrent sessions some reads left SupervisorRPC and were
+// never delivered to the session, and the program waiting on them hung. A
+// read still unanswered after SUPERVISOR_READ_HEDGE_AFTER_MS is sent again
+// on a fresh stub; a mutation keeps only its delivery retries. Real time:
+// the deadline is the production one.
+{
+  const never = new Promise(() => {});
+  const hanging = (answer) => {
+    const calls = [];
+    const env = {
+      NIMBUS_SESSION: {
+        idFromName: (id) => ({ toString: () => id }),
+        idFromString: (id) => ({ toString: () => id }),
+        get() {
+          return {
+            async supervisorOp(envelope) {
+              calls.push(envelope.delivery?.op ?? envelope.op);
+              return calls.length === 1 ? never : answer;
+            },
+          };
+        },
+      },
+    };
+    return { env, calls };
+  };
+  const read = hanging([{ bytes: new Uint8Array([7]) }]);
+  const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7 } }, read.env);
+  const write = hanging(3);
+  const writer = new SupervisorRPC({
+    props: { doId: 'session', pid: 7, hostIncarnation: crypto.randomUUID() },
+  }, write.env);
+  const startedAt = Date.now();
+  const writing = writer.writeFile('/home/user/x', 'y');
+  const entries = await reader.fsReadBatch([{ path: '/home/user/x', offset: 0, length: 1 }]);
+  const tookMs = Date.now() - startedAt;
+  assert.deepEqual(Array.from(entries[0].bytes), [7], 'the read answered with something other than the hedge\'s answer');
+  assert.deepEqual(read.calls, ['fsReadBatch', 'fsReadBatch'], 'the unanswered read was not hedged');
+  assert.ok(tookMs >= SUPERVISOR_READ_HEDGE_AFTER_MS - 50, `the read was hedged after ${tookMs} ms, before its deadline`);
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.deepEqual(write.calls, ['writeFile'], 'a delivered mutation was hedged');
+  let writeSettled = false;
+  writing.then(() => { writeSettled = true; }, () => { writeSettled = true; });
+  await Promise.resolve();
+  assert.equal(writeSettled, false);
+  console.log(`  ok  an unanswered read is hedged after ${tookMs} ms; a delivered mutation is not`);
 }
 
 console.log('supervisor-rpc-read-retry: ok');

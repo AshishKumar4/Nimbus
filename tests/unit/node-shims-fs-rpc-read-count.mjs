@@ -18,7 +18,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES
 
@@ -114,6 +114,49 @@ assert.equal(typeof counter(), 'number',
   assert.equal(counter() - beforeCount, roundTrips,
     'counter missed chunked round trips');
   console.log(`  one ${3 * CHUNK}-byte async read = ${roundTrips} supervisor round trips`);
+}
+
+// ── learns riding the read batch are metadata, not reads ─────────────────
+// A supervisor with fsReadBatch carries both ranged reads and the lstat each
+// async read or write then learns. Only a batch carrying a range is a read
+// round trip.
+{
+  const batches = [];
+  const batching = {
+    ...supervisor,
+    fsReadBatch: async (requests) => {
+      batches.push(requests.map((request) => (request.lstat === true ? 'lstat' : 'range')));
+      const entries = [];
+      for (const request of requests) {
+        entries.push(request.lstat === true
+          ? { stat: (await bridge.stat(request.path, { followSymlinks: false })) ?? null }
+          : { bytes: await bridge.readRange(request.path, request.offset, request.length) });
+      }
+      return entries;
+    },
+  };
+  // A directory this process owns, declared to its view, so it may write.
+  const mine = 'home/user/mine';
+  vfs.mkdir(mine, { recursive: true, mode: 0o755 });
+  vfs.chown(mine, 1000, 1000);
+  declareNamespace({
+    metadata: { [mine]: { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
+    manifest: { 'home/user': ['counted', 'mine'], [mine]: [] },
+  });
+  const batchedShims = factory(
+    {}, {}, batching, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/script.mjs`, dir,
+  );
+  const before = counter();
+  assert.equal(await batchedShims.fs.promises.readFile(`${dir}/small.txt`, 'utf8'), 'x'.repeat(10));
+  const rangeTrips = batches.filter((kinds) => kinds.includes('range')).length;
+  assert.ok(batches.some((kinds) => !kinds.includes('range')), 'the read learned nothing, so this case proves nothing');
+  assert.equal(counter() - before, rangeTrips, `a batch of learns counted as a read: ${JSON.stringify(batches)}`);
+
+  const beforeWrite = counter();
+  const batchesBeforeWrite = batches.length;
+  await batchedShims.fs.promises.writeFile(`/${mine}/written.txt`, 'w');
+  assert.ok(batches.length > batchesBeforeWrite, 'the write learned nothing, so this case proves nothing');
+  assert.equal(counter(), beforeWrite, 'an async write, which reads nothing, moved the read count');
 }
 
 console.log(`node-shims-fs-rpc-read-count OK: counted ${counter()} supervisor fs reads`);

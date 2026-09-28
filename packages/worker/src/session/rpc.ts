@@ -28,7 +28,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
-import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { RuntimeFsBridge, RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import {
@@ -380,16 +380,37 @@ export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: 
 
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
 
-const FsReadBatchArgsSchema = z.array(z.object({
+/** A range of a file: what `fsReadRange` reads. */
+const FsReadBatchRangeSchema = z.object({
   path: z.string().min(1),
   offset: FsRangeOffsetSchema,
   length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
   expectedEpoch: z.string().optional(),
   expectedRevision: FsRangeOffsetSchema.optional(),
-})).min(1).max(FS_READ_BATCH_PATH_LIMIT);
+});
 
-/** One requested range in a batch read. `length` bounds what it may return. */
+/**
+ * A path's own metadata, not followed through a symlink: what `lstat`
+ * answers. Strict, so a request naming a range too is read as the range.
+ */
+const FsReadBatchLstatSchema = z.object({
+  path: z.string().min(1),
+  lstat: z.literal(true),
+}).strict();
+
+const FsReadBatchArgsSchema = z.array(z.union([FsReadBatchLstatSchema, FsReadBatchRangeSchema]))
+  .min(1).max(FS_READ_BATCH_PATH_LIMIT);
+
+/**
+ * One request in a batch read: a range, whose `length` bounds what it may
+ * return, or a path's lstat, which returns no file bytes.
+ */
 export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
+
+/** The file bytes a batch request may return: its range's length; an lstat, none. */
+export function fsReadBatchRequestBytes(request: FsReadBatchRequest): number {
+  return 'length' in request ? request.length : 0;
+}
 
 export interface FsReadBatchEntryError {
   readonly code?: string;
@@ -397,12 +418,15 @@ export interface FsReadBatchEntryError {
 }
 
 /**
- * One range's outcome, positionally matched to its request. `bytes: null`
- * means the path does not exist — the same answer `fsReadRange` gives.
+ * One request's outcome, positionally matched to it. A range answers
+ * `bytes`, `null` when the path does not exist — the same answer
+ * `fsReadRange` gives. An lstat answers `stat`, `null` when the path does not
+ * exist — the same answer the `lstat` op gives.
  */
 export type FsReadBatchEntry =
-  | { bytes: Uint8Array | null; error?: undefined }
-  | { bytes?: undefined; error: FsReadBatchEntryError };
+  | { bytes: Uint8Array | null; stat?: undefined; error?: undefined }
+  | { stat: RuntimeVfsStat | null; bytes?: undefined; error?: undefined }
+  | { bytes?: undefined; stat?: undefined; error: FsReadBatchEntryError };
 
 const FsWriteRangeArgsSchema = z.object({
   path: z.string(),
@@ -666,10 +690,11 @@ export async function _rpcFsReadRange(
 }
 
 /**
- * Read many ranges in ONE round trip.
+ * Read many ranges, and lstat many paths, in ONE round trip.
  *
- * Every entry is the same read `_rpcFsReadRange` performs, through the same
- * process credential and the same live bridge, in request order. A batch is
+ * Every entry is the same read `_rpcFsReadRange` performs, or the same stat
+ * the `lstat` op performs, through the same process credential and the same
+ * live bridge, in request order. A batch is
  * therefore exactly as authoritative as the individual reads it replaces —
  * it takes no snapshot and consults nothing the single-read path would not.
  * What it saves is round trips, which is the whole cost of a read.
@@ -689,7 +714,7 @@ export async function _rpcFsReadBatch(
   pid?: number,
 ): Promise<FsReadBatchEntry[]> {
     const args = FsReadBatchArgsSchema.parse(requests);
-    const requestedBytes = args.reduce((total, request) => total + request.length, 0);
+    const requestedBytes = args.reduce((total, request) => total + fsReadBatchRequestBytes(request), 0);
     if (requestedBytes > FS_READ_BATCH_REQUEST_BYTES) {
       throw new RangeError(
         `filesystem read batch requests ${requestedBytes} bytes across ${args.length} ranges, `
@@ -703,6 +728,7 @@ export async function _rpcFsReadBatch(
     const fs = self.supervisorBridge(pid);
     let residentBytes = 0;
     for (const request of args) {
+      if (!('length' in request)) continue;
       try {
         residentBytes += await rangeReadBytes(fs, request.path, request.offset, request.length);
       } catch { /* the read pass reports this path's error in its own slot */ }
@@ -712,6 +738,12 @@ export async function _rpcFsReadBatch(
       const entries: FsReadBatchEntry[] = [];
       for (const request of args) {
         try {
+          // The lstat op's own call (supervisor-op.ts): the same answer,
+          // `null` for a path that is not there, carried in this trip.
+          if (!('length' in request)) {
+            entries.push({ stat: (await fs.stat(request.path, { followSymlinks: false })) ?? null });
+            continue;
+          }
           // N17: bytes still being imported are waited for, not failed.
           const hydrated = (path: string) => (typeof self.getFilesystemAuthority === 'function' ? self.getFilesystemAuthority().hydrated(path) : Promise.resolve());
           entries.push({ bytes: await readHydrating(hydrated, async () => fs.readRange(request.path, request.offset, request.length, {

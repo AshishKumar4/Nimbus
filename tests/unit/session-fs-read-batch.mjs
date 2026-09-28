@@ -180,6 +180,63 @@ function makeHost() {
     'the batch ignored the calling process credential');
 }
 
+// ── an lstat rides the batch and answers what the lstat op answers ──────
+// The node shims learn a path's metadata after each refetch; a resumption
+// refetches every path a program wrote, so each learn is an lstat request in
+// the batch rather than a round trip of its own. It must be the lstat op's
+// answer exactly: the authority's stat, never followed through a symlink,
+// null for a path that is not there, a denial in its own slot.
+{
+  const { host } = makeHost();
+  kernelVfs.symlink('many/f3.txt', 'home/user/link');
+  const lstatPaths = [
+    '/home/user/many/f3.txt',
+    '/home/user/link',
+    '/home/user/many/absent.txt',
+    '/private/root.txt',
+    '/home/user/many',
+  ];
+  const requests = [
+    { path: '/home/user/many/f4.txt', offset: 0, length: CHUNK },
+    ...lstatPaths.map((path) => ({ path, lstat: true })),
+    { path: '/home/user/many/f5.txt', offset: 0, length: CHUNK },
+  ];
+  const batch = await _rpcFsReadBatch(host, requests, user.pid);
+  assert.equal(batch.length, requests.length);
+  assert.equal(dec.decode(batch[0].bytes), 'file-4-xxxx', 'a range beside the lstats read wrong');
+  assert.equal(dec.decode(batch.at(-1).bytes), 'file-5-xxxxx', 'a range beside the lstats read wrong');
+  for (let i = 0; i < lstatPaths.length; i++) {
+    const entry = batch[i + 1];
+    assert.equal(entry.bytes, undefined, `the lstat of ${lstatPaths[i]} answered bytes`);
+    const single = await host.supervisorOp({ op: 'lstat', args: [lstatPaths[i]], pid: user.pid })
+      .then((stat) => ({ stat: stat ?? null }), (error) => ({ code: error.code }));
+    if (single.code !== undefined) {
+      assert.equal(entry.error?.code, single.code, `the lstat of ${lstatPaths[i]} did not fail as the lstat op does`);
+    } else {
+      assert.equal(entry.error, undefined, `the lstat of ${lstatPaths[i]} failed: ${entry.error?.message}`);
+      assert.deepEqual(entry.stat, single.stat, `the lstat of ${lstatPaths[i]} disagrees with the lstat op`);
+    }
+  }
+  assert.equal(batch[2].stat.type, 'symlink', 'the lstat followed the symlink');
+  assert.equal(batch[3].stat, null, 'an absent path did not answer null');
+  assert.equal(batch[4].error?.code, 'EACCES', 'a path the process cannot reach was not denied');
+
+  // An lstat returns no file bytes, so it spends nothing of the byte bound:
+  // a batch already at that bound still carries it.
+  const full = Array.from({ length: FS_READ_BATCH_REQUEST_BYTES / CHUNK }, () => ({
+    path: '/home/user/many/f0.txt', offset: 0, length: CHUNK,
+  }));
+  const atBound = await _rpcFsReadBatch(host, [...full, { path: '/home/user/many/f0.txt', lstat: true }], user.pid);
+  assert.equal(atBound.at(-1).stat.type, 'file');
+
+  // A request naming a range is a range, lstat or not.
+  const both = await _rpcFsReadBatch(host, [{ path: '/home/user/many/f0.txt', lstat: true, offset: 0, length: CHUNK }], user.pid);
+  assert.equal(dec.decode(both[0].bytes), 'file-0-');
+  assert.equal(both[0].stat, undefined);
+  kernelVfs.unlink('home/user/link');
+  console.log('  lstat requests answer as the lstat op does, beside ranges, outside the byte bound');
+}
+
 // ── bounds are loud, never a short result ───────────────────────────────
 {
   const { host } = makeHost();

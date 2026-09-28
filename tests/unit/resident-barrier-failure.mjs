@@ -350,11 +350,13 @@ await runScenarios(import.meta.path, {
  * Hold every batch read that asks for `suffix` until the test releases it:
  * each one is served at once, and its answer waits on the gate it pushes.
  */
+// Holds each batch that READS a path ending in `suffix`. A batch carrying
+// only a learn's lstat of it (_learnLive) reads no bytes, and passes.
 function holdReadsOf(fault, forward, suffix) {
   const reads = [];
   fault.fsReadBatch = async (requests) => {
     const entries = await forward('fsReadBatch', [requests]);
-    if (requests.some((request) => request.path.endsWith(suffix))) {
+    if (requests.some((request) => request.path.endsWith(suffix) && request.lstat !== true)) {
       const gate = Promise.withResolvers();
       reads.push(gate);
       await gate.promise;
