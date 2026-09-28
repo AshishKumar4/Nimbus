@@ -26,6 +26,13 @@ export interface SupervisorOpEnvelope {
     readonly stream?: ReadableStream<Uint8Array>;
     /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
     readonly delivery?: SupervisorDelivery;
+    /**
+     * The id every attempt of one read is sent under: a repeat of a read still
+     * being served joins it rather than reading again
+     * (`SupervisorDeliveries.joinRead`). Only on a joined read op. A host that
+     * predates it ignores it and serves each attempt, which a read allows.
+     */
+    readonly readId?: string;
 }
 export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: SupervisorOpTools) => unknown;
 export interface SupervisorOpDeps {

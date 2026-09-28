@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { supervisorDeliveredOp, supervisorDeliveryAnswer, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
+import { supervisorDeliveredOp, supervisorDeliveryAnswer, supervisorJoinedReadOp, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
 const FsPath = z.union([
     z.string(),
     z.object({ directory: z.number().int().nonnegative(), path: z.string(), beneath: z.boolean().optional() }),
@@ -19,6 +19,8 @@ const OpenOptions = z.object({
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
 const Delivery = z.object({ op: z.string(), id: z.string().uuid(), hostIncarnation: z.string().uuid() });
+/** A read id, minted like a delivery id (SupervisorRPC `_fsRead`). */
+const ReadId = z.string().uuid();
 function stringArg(envelope, index) {
     const value = envelope.args?.[index];
     if (typeof value !== 'string') {
@@ -363,6 +365,26 @@ export function createSupervisorOpHandler(deps) {
         tools.bridge(pid, envelope.cred);
         return deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
     };
+    /**
+     * A read sent under a read id: joined to the same read still being served,
+     * or served, and served plainly by a host that keeps no store.
+     */
+    const read = (op, envelope) => {
+        const joined = supervisorJoinedReadOp(op);
+        if (joined === undefined)
+            throw new Error(`supervisor op: '${op}' is not a read, so it cannot carry a read id`);
+        const readId = ReadId.safeParse(envelope.readId);
+        if (!readId.success)
+            throw new Error(`supervisor op: '${op}' carries a read id that is not one`);
+        const plain = { ...envelope, readId: undefined };
+        const pid = envelope.pid;
+        const deliveries = deps.deliveries;
+        if (deliveries === undefined || pid === undefined)
+            return (async () => serve(op, plain))();
+        return deliveries.joinRead(pid, readId.data, joined, 
+        // A repeat is answered only for the live process that sent the read.
+        () => { tools.bridge(pid, envelope.cred); }, async () => serve(op, plain));
+    };
     return async (envelope) => {
         if (!envelope || typeof envelope.op !== 'string') {
             throw new Error('supervisor op: envelope names no operation');
@@ -373,6 +395,8 @@ export function createSupervisorOpHandler(deps) {
         // Only the delivering op dedupes; anywhere else a delivery would be a promise nobody keeps.
         if (envelope.delivery !== undefined)
             throw new Error(`supervisor op: '${op}' cannot carry a delivery`);
+        if (envelope.readId !== undefined)
+            return read(op, envelope);
         return serve(op, envelope);
     };
 }

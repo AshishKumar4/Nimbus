@@ -56,6 +56,25 @@ export function supervisorDeliveredOp(op) {
 }
 /** The op a delivered mutation travels under; the mutation's own op rides in {@link SupervisorDelivery}. */
 export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
+/**
+ * The filesystem reads a process's supervisor may send more than once — it
+ * re-sends a dropped one and hedges an unanswered one — each attempt under
+ * the one read id it minted for the read (the envelope's `readId`). A repeat
+ * that reaches the host while the read is still being served joins it
+ * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
+ * attempt carries that answer. A read is not a mutation, so nothing is kept
+ * once it settles, and a host that joins nothing serves each attempt.
+ */
+export const SUPERVISOR_JOINED_READ_OPS = [
+    'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'readFile', 'readFileBytes',
+    'fsRealpath', 'fsRevision', 'fsList', 'fsAcquire', 'fsFstat', 'fsReaddirHandle',
+    'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'hasLegacySymlinkUnder',
+];
+const JOINED_READ_OP_NAMES = new Map(SUPERVISOR_JOINED_READ_OPS.map((op) => [op, op]));
+/** The joined read `op` names, or undefined for any op that is not one. */
+export function supervisorJoinedReadOp(op) {
+    return JOINED_READ_OP_NAMES.get(op);
+}
 function isDeliveryAnswer(value) {
     if (value === undefined || value === null)
         return true;
@@ -135,6 +154,7 @@ export class SupervisorDeliveries {
     previous = new Map();
     rotatedAt = Number.NEGATIVE_INFINITY;
     running = new Map();
+    readsInFlight = new Map();
     tombstones = new Set();
     olderTombstones = new Set();
     tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -211,6 +231,40 @@ export class SupervisorDeliveries {
         });
         this.running.set(key, { op, answer });
         return answer;
+    }
+    /**
+     * Serve read `id` of process `pid` once, however many of its attempts
+     * arrive while it is being served. The first runs `read`; a repeat that
+     * arrives before it settles is admitted (`admit`: the process is live and
+     * is who it says) and answered with the same promise, reading nothing. A
+     * read queued here behind the session's read budget, a lazy import or a
+     * busy input gate is exactly what the sender's hedge fires on, and joining
+     * is what keeps that hedge from reading the same bytes again. Nothing is
+     * kept once the read settles: an attempt after that reads afresh, which a
+     * read may. The map holds only reads in flight.
+     */
+    joinRead(pid, id, op, admit, read) {
+        const key = `${pid}:${id}`;
+        const running = this.readsInFlight.get(key);
+        if (running) {
+            if (running.op !== op) {
+                throw Object.assign(new Error(`EINVAL: read ${id} is ${running.op}, not ${op}`), { code: 'EINVAL' });
+            }
+            admit();
+            return running.answer;
+        }
+        const answer = read();
+        this.readsInFlight.set(key, { op, answer });
+        const settled = () => {
+            if (this.readsInFlight.get(key)?.answer === answer)
+                this.readsInFlight.delete(key);
+        };
+        answer.then(settled, settled);
+        return answer;
+    }
+    /** Reads being served, which repeats of them would join. */
+    get readsServing() {
+        return this.readsInFlight.size;
     }
     /** A process ended: its receipts answer nothing more, and their ids stay refused. */
     forget(pid) {
