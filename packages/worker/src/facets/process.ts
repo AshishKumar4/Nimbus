@@ -37,7 +37,7 @@
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shell-invocation.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -209,7 +209,8 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
   facetMgr: FacetManagerLike;
   processes: SessionProcessSupervisor;
-  vfsForProcess: (pid: number) => Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
+  /** The process's own view of the namespace: where `sh <script>` reads the script, as the process. */
+  vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
   commandRegistry: CommandRegistryLike;
   shellExecutor?: ShellExecutorLike;
   /** Optional: ctx for facets.abort/delete in production. */
@@ -557,7 +558,7 @@ export class FacetProcessManager {
           return { exitCode: 127, stdout: '', stderr: `${req.command}: unsupported shell invocation\n` };
         }
         const stdin = typeof req.stdin === 'string' ? req.stdin : '';
-        const commandLine = this._shellCommandLineForPlan(
+        const commandLine = await this._shellCommandLineForPlan(
           plan,
           String(req.cwd || '/home/user'),
           stdin,
@@ -678,7 +679,7 @@ export class FacetProcessManager {
     }
     try {
       const stdin = await this._drainStdinForShell(child);
-      const commandLine = this._shellCommandLineForPlan(
+      const commandLine = await this._shellCommandLineForPlan(
         plan,
         req.cwd,
         stdin,
@@ -709,25 +710,25 @@ export class FacetProcessManager {
     return dec.decode(concatBytes(child.stdinChunks));
   }
 
-  private _shellCommandLineForPlan(
+  private async _shellCommandLineForPlan(
     plan: ShellSpawnPlan,
     cwd: string,
     stdin: string,
     hooks: OutputHooks,
     shellName: ShellName,
     processPid: number,
-  ): string | null {
+  ): Promise<string | null> {
     if (plan.kind === 'command') return plan.commandLine;
     if (plan.kind === 'stdin') return stdin;
 
-    const scriptPath = resolveVfsPath(plan.path, cwd || '/home/user');
+    const scriptPath = '/' + resolveVfsPath(plan.path, cwd || '/home/user');
     try {
       const vfs = this.deps.vfsForProcess(processPid);
-      if (!vfs.exists(scriptPath) || vfs.isDirectory(scriptPath)) {
+      if (!await vfs.exists(scriptPath) || await vfs.isDirectory(scriptPath)) {
         hooks.onStderr(textBytes(`${shellName}: ${plan.path}: No such file or directory\n`));
         return null;
       }
-      return vfs.readFileString(scriptPath);
+      return await vfs.readFileString(scriptPath);
     } catch (e: any) {
       hooks.onStderr(textBytes(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`));
       return null;

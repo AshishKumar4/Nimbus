@@ -16,7 +16,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import type { SessionInternal } from './internal.js';
 
-type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs'>;
+type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
 
 export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
   return {
@@ -33,6 +33,8 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         production: spec.production,
         fromLockfile: spec.fromLockfile,
         pid: spec.pid,
+        // The project is read and written as the running command.
+        cred: self.processes.cred(spec.pid),
         registry: spec.registry,
         npmLog: spec.npmLog ?? undefined,
         onProgress: spec.onProgress,
@@ -45,7 +47,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         // a partial tree safely exposes exactly the bins that installed.
         const vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'mkdir' | 'writeFile' | 'chmod'> =
           sqliteFs.as(CRED_KERNEL);
-        linkedBins = materializeNpmBinShims(
+        linkedBins = await materializeNpmBinShims(
           vfs,
           `${installCwd}/node_modules`,
           globalBinDir,

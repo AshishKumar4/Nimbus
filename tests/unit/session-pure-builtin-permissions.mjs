@@ -77,7 +77,7 @@ try {
   registerUnixCommands(registry, rawVfs);
   registry.register('node', async (ctx) => {
     try {
-      ctx.stdout.write(ctx.vfs.readFileString(ctx.args[0]));
+      ctx.stdout.write(await ctx.vfs.readFileString(ctx.args[0]));
       return 0;
     } catch (error) {
       ctx.stderr.write(`node: ${error instanceof Error ? error.message : String(error)}\n`);

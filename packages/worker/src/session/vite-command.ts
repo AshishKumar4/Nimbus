@@ -15,9 +15,10 @@
 
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
+import { projectTree } from '../runtime/project-fs.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
@@ -57,14 +58,18 @@ export function createViteCommand(self: ViteHost) {
     }
 
     self.ensureSqliteFs();
-    const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
+    // The project as the command's credential: the engine's own view when
+    // the namespace puts the cwd on SQLite, the command's view of the
+    // namespace otherwise (a mount, awaited).
+    const project = await projectTree(self.getFilesystemAuthority(), ctx.vfs, requireVfsCred(ctx.cred, 'vite'), cwd);
+    const projectFs = project.fs;
 
     const viteConfig: ParsedViteConfig = {};
     for (const cfgName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
       const cfgPath = cwd + '/' + cfgName;
-      if (kernelFs.exists(cfgPath)) {
+      if (await projectFs.exists(cfgPath)) {
         try {
-          const cfgCode = kernelFs.readFileString(cfgPath);
+          const cfgCode = await projectFs.readFileString(cfgPath);
           // A .ts config needs esbuild only when it holds type syntax
           // (parseViteConfigTypeScript); a plain one is read as is, so a
           // fresh session's `vite` does not wait on the esbuild facet.
@@ -115,15 +120,17 @@ export function createViteCommand(self: ViteHost) {
       let entryPoint = cwd + '/src/main.tsx';
       let origHtml = '';
       try {
-        origHtml = kernelFs.readFileString(htmlPath);
+        origHtml = await projectFs.readFileString(htmlPath);
         const htmlEntrypoint = await findHtmlScriptEntrypoint(origHtml);
         if (htmlEntrypoint) entryPoint = cwd + '/' + stripLeadingSlashes(htmlEntrypoint);
       } catch { ctx.stderr.write('Warning: no index.html\n'); }
-      if (!kernelFs.exists(entryPoint)) {
+      if (!await projectFs.exists(entryPoint)) {
         const alts = [cwd+'/src/main.tsx', cwd+'/src/main.ts', cwd+'/src/index.tsx', cwd+'/src/index.ts'];
-        entryPoint = alts.find(p => kernelFs.exists(p)) || entryPoint;
+        let found: string | undefined;
+        for (const alt of alts) if (!found && await projectFs.exists(alt)) found = alt;
+        entryPoint = found || entryPoint;
       }
-      if (!kernelFs.exists(entryPoint)) {
+      if (!await projectFs.exists(entryPoint)) {
         ctx.stderr.write(
           '\x1b[31m✘\x1b[0m vite build: no entry point — index.html declares no <script src> and none of\n' +
           '  src/main.{tsx,ts} or src/index.{tsx,ts} exists. The built-in build server handles plain\n' +
@@ -153,7 +160,7 @@ export function createViteCommand(self: ViteHost) {
           );
         }
         const publicDir = cwd + '/public';
-        const hasPublic = kernelFs.exists(publicDir) && kernelFs.isDirectory(publicDir);
+        const hasPublic = await projectFs.exists(publicDir) && await projectFs.isDirectory(publicDir);
 
         // Detect which packages are installed vs need CDN
         const nmDir = cwd + '/node_modules';
@@ -161,7 +168,7 @@ export function createViteCommand(self: ViteHost) {
         const cdnPackages: string[] = [];
         for (const pkg of ['react', 'react-dom', 'react/jsx-runtime', 'react-dom/client']) {
           const pkgBase = pkg.split('/')[0];
-          if (!kernelFs.exists(nmDir + '/' + pkgBase)) {
+          if (!await projectFs.exists(nmDir + '/' + pkgBase)) {
             externals.push(pkg);
             if (!cdnPackages.includes(pkgBase)) cdnPackages.push(pkgBase);
           }
@@ -185,6 +192,7 @@ export function createViteCommand(self: ViteHost) {
             external: externals.length > 0 ? externals : undefined,
             viteAssets: true,
             vitePublicDir: hasPublic ? publicDir : undefined,
+            fs: projectFs,
           }),
           VITE_BUILD_TIMEOUT_MS,
           `vite build of ${entryPoint}`,
@@ -209,10 +217,10 @@ export function createViteCommand(self: ViteHost) {
         // Vite's emptyOutDir: stale hashed outputs must not accumulate.
         // Only an outDir strictly inside the project root is emptied —
         // the warning above covered the rest.
-        if (insideRoot && kernelFs.exists(distDir)) {
-          kernelFs.removeRecursive(distDir);
+        if (insideRoot && await projectFs.exists(distDir)) {
+          await projectFs.removeRecursive(distDir);
         }
-        kernelFs.mkdir(distDir, { recursive: true });
+        await projectFs.mkdir(distDir, { recursive: true });
 
         // CSS bundled through the entry imports (and its url() assets)
         // arrives as the entry's cssBundle sidecar — esbuild already
@@ -231,18 +239,18 @@ export function createViteCommand(self: ViteHost) {
         // src/ declares, like the pre-asset-pipeline path did.
         let fallbackCss = '';
         if (!cssFilename) {
-          const collectCss = (dir: string) => {
+          const collectCss = async (dir: string) => {
             try {
-              for (const e of kernelFs.readdir(dir)) {
+              for (const e of await projectFs.readdir(dir)) {
                 const fp = dir + '/' + e.name;
-                if (e.type === 'directory') collectCss(fp);
+                if (e.type === 'directory') await collectCss(fp);
                 else if (e.name.endsWith('.css')) {
-                  try { fallbackCss += kernelFs.readFileString(fp) + '\n'; } catch {}
+                  try { fallbackCss += await projectFs.readFileString(fp) + '\n'; } catch {}
                 }
               }
             } catch {}
           };
-          collectCss(cwd + '/src');
+          await collectCss(cwd + '/src');
           if (fallbackCss.trim()) {
             const cssHashNum = fallbackCss.split('').reduce((h: number, c: string) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
             cssFilename = 'index-' + (cssHashNum >>> 0).toString(36).padStart(6, '0') + '.css';
@@ -254,34 +262,34 @@ export function createViteCommand(self: ViteHost) {
         for (const f of result.outputFiles) {
           const outPath = normalizeVfsPath(f.path);
           const parent = parentVfsPath(outPath);
-          if (parent && !kernelFs.exists(parent)) kernelFs.mkdir(parent, { recursive: true });
-          kernelFs.writeFile(outPath, f.bytes);
+          if (parent && !await projectFs.exists(parent)) await projectFs.mkdir(parent, { recursive: true });
+          await projectFs.writeFile(outPath, f.bytes);
           const rel = outPath.slice(cwd.length + 1);
           ctx.stdout.write('  \x1b[2m' + rel + '\x1b[0m  ' + (f.bytes.length / 1024).toFixed(2) + ' kB\n');
         }
         if (fallbackCss.trim() && cssFilename) {
           const cssPath = distDir + '/assets/' + cssFilename;
-          kernelFs.mkdir(distDir + '/assets', { recursive: true });
-          kernelFs.writeFile(cssPath, fallbackCss);
+          await projectFs.mkdir(distDir + '/assets', { recursive: true });
+          await projectFs.writeFile(cssPath, fallbackCss);
           ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + cssFilename + '\x1b[0m  ' + (fallbackCss.length / 1024).toFixed(2) + ' kB\n');
         }
 
         // public/ copies verbatim to dist/ (same `vite build` semantics —
         // the favicon the template references lives there).
         if (hasPublic) {
-          const copyTree = (src: string, dst: string) => {
-            for (const e of kernelFs.readdir(src)) {
+          const copyTree = async (src: string, dst: string) => {
+            for (const e of await projectFs.readdir(src)) {
               const s = src + '/' + e.name;
               const d = dst + '/' + e.name;
-              if (e.type === 'directory') { copyTree(s, d); }
+              if (e.type === 'directory') { await copyTree(s, d); }
               else {
                 const parent = parentVfsPath(d);
-                if (parent && !kernelFs.exists(parent)) kernelFs.mkdir(parent, { recursive: true });
-                kernelFs.writeFile(d, kernelFs.readFile(s));
+                if (parent && !await projectFs.exists(parent)) await projectFs.mkdir(parent, { recursive: true });
+                await projectFs.writeFile(d, await projectFs.readFile(s));
               }
             }
           };
-          copyTree(publicDir, distDir);
+          await copyTree(publicDir, distDir);
         }
 
         // Generate dist/index.html
@@ -292,7 +300,7 @@ export function createViteCommand(self: ViteHost) {
             removeImportMap: cdnPackages.length === 0,
             injectCss: true,
           });
-          kernelFs.writeFile(distDir + '/index.html', distHtml);
+          await projectFs.writeFile(distDir + '/index.html', distHtml);
           ctx.stdout.write('  \x1b[2m' + outDir + '/index.html\x1b[0m  ' + (distHtml.length / 1024).toFixed(2) + ' kB\n');
           if (cdnPackages.length > 0) {
             ctx.stdout.write('  \x1b[33mNote: ' + cdnPackages.join(', ') + ' loaded from CDN (not bundled)\x1b[0m\n');
@@ -307,13 +315,20 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
+    // The dev server and preview serve the project through the engine, per
+    // request and after this command has returned.
+    if (args[0] !== 'stop' && !project.onEngine) {
+      ctx.stderr.write(`vite: the dev server serves only projects on the workspace filesystem; /${cwd} is on a mounted one\n`);
+      return 1;
+    }
+
     // ── vite preview ──
     if (args[0] === 'preview') {
       ctx.stdout.write('Serving dist/ — open ' + self.viteBasePath + '/\n');
       // Vite parity: preview serves the resolved outDir wherever it
       // landed — build wrote there, so preview must read there.
       const distRoot = resolveVfsPath(viteConfig.outDir || 'dist', cwd);
-      if (!kernelFs.exists(distRoot)) {
+      if (!await projectFs.exists(distRoot)) {
         ctx.stderr.write('dist/ not found. Run vite build first.\n');
         return 1;
       }
@@ -420,7 +435,7 @@ export function createViteCommand(self: ViteHost) {
     // confuse the user. --force / --no-install-check bypasses the check.
     const bypassInstallCheck = expandedArgs.includes('--force') || expandedArgs.includes('--no-install-check');
     if (!bypassInstallCheck) {
-      const guard = checkNodeModulesGuard(kernelFs, vfsRoot);
+      const guard = await checkNodeModulesGuard(ctx.vfs, '/' + vfsRoot);
       if (guard.missing) {
         ctx.stderr.write(
           '\x1b[31m\u2718\x1b[0m \x1b[1mnode_modules/ not found\x1b[0m' +
@@ -632,7 +647,8 @@ export function createViteCommand(self: ViteHost) {
     ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Transforms: .ts .tsx .jsx (React JSX automatic)\n');
     if (viteConfig.alias) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Aliases:    ' + Object.keys(viteConfig.alias).join(', ') + '\n');
     if (viteDefine) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Define:     ' + Object.keys(viteDefine).join(', ') + '\n');
-    const twCfg = [vfsRoot + '/tailwind.config.js', vfsRoot + '/tailwind.config.ts'].find(p => kernelFs.exists(p));
+    let twCfg = false;
+    for (const p of [vfsRoot + '/tailwind.config.js', vfsRoot + '/tailwind.config.ts']) twCfg ||= await projectFs.exists(p);
     if (twCfg) ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Tailwind:   edge-vendored Play CDN \x1b[2m(detected)\x1b[0m\n');
     ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mkill ' + viteProcEntry.pid + '\x1b[2m, to stop.\x1b[0m\n\n');
     return 0;

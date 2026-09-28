@@ -19,10 +19,9 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { visiblePlacements } from '../../packages/worker/src/npm/placement.ts';
 import { resolveVersion, satisfiesRange } from '../../packages/worker/src/npm/semver.ts';
-import { makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -69,7 +68,7 @@ async function install(registry, deps) {
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fuzz', dependencies: deps }));
   const env = makeFanoutEnv({ root, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
   const result = await installer.install(PROJ, { pid: 1 });
   return { result, lock: installer.npmCache.readLockfile(PROJ) };
 }

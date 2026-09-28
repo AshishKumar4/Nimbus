@@ -29,7 +29,7 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
 const vfs = ws.vfs.as(CRED_KERNEL);
 registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 installNpmBinFallbackResolver(ws.registry, {
-  vfs,
+  filesystem: ws.filesystem,
   getCwd: () => '/home/user',
   processes: ws.processes,
   getFacetManager() { throw new Error('unexpected staged artifact'); },

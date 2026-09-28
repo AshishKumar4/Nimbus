@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
@@ -52,6 +53,7 @@ const kernel = vfs.as(CRED_KERNEL);
 const user = vfs.as(CRED_SESSION_USER);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+const files = new ProcessFiles(vfs);
 
 function realGit(cwd, args, env = {}) {
   const r = spawnSync('git', args, { cwd, env: { ...GIT_ENV, ...env } });
@@ -111,6 +113,7 @@ async function nimbusGit(cwd, args, env = {}) {
       writeBytes(bytes) { chunks.push(Buffer.from(bytes)); },
     },
     stderr: { write(s) { stderr += s; } },
+    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
   }, vfs);
   return { code, stdout: Buffer.concat(chunks), stderr };
 }
@@ -1243,6 +1246,7 @@ try {
       writeBytes() { throw Object.assign(new Error('EPIPE: pipe reader closed'), { code: 'EPIPE' }); },
     },
     stderr: { write(s) { stderr += s; } },
+    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
   }, vfs);
   assert.deepEqual({ code, stderr }, { code: 141, stderr: '' });
 

@@ -5,6 +5,38 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The tools read and write the paths they are given through the namespace
+  as the calling principal, so they work on an asynchronous mount (one with
+  no `sync` face, such as an embedder's drive or container) as they do in the
+  SQLite home. Before, each reached the SQLite engine or a synchronous face:
+  - A script run by its path (`/m/s.sh`, `./s.sh`) runs. The PATH resolver
+    inspected it through the synchronous face, and the mount's EAGAIN ended
+    the whole command line. A mount that fails now fails only that command
+    (exit 126).
+  - `git` works a repository on a mount through the command's view, as the
+    command's credential; on SQLite it keeps the engine's view. `git init`
+    tried to create the mount point in the SQLite root and got EACCES.
+    `clone`, `fetch`, `pull` and `push` write through the engine's batches
+    and refuse a mounted repository by name. `runGitCommand` reads `ctx.vfs`.
+  - `npm install` and `npm ci` read the project's package.json and lock as
+    the invoking user, not the kernel. A mounted project's packages are
+    extracted into a staging directory in /tmp and copied into its
+    node_modules, bin links included; a project on SQLite keeps the
+    batched writes. `npm run`, `ls`, `init`, `uninstall` and `npm-fast` read
+    and write package.json through the command's view. A project's own
+    `node_modules/.bin` programs run bare, from a script and through `npx`,
+    looked up in the project as the running command (`npx` went on to
+    install them into its cache).
+  - `vite build` reads the project, and esbuild every module, through the
+    project's filesystem, and writes dist/ back there
+    (`EsbuildService.build` takes a per-build `fs`). `vite` and
+    `vite preview`, and `wrangler dev`, serve only projects on SQLite and
+    say so for a mounted one.
+  - `bun run` finds the package.json script and the file on a mount.
+  - A command run through `child_process` gets its process's view as
+    `ctx.vfs`, and `sh <script>` from `child_process` reads the script
+    through it.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

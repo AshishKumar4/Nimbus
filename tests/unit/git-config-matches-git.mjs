@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
@@ -46,6 +47,7 @@ const kernel = rawVfs.as(CRED_KERNEL);
 const user = rawVfs.as(CRED_SESSION_USER);
 kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+const files = new ProcessFiles(rawVfs);
 
 function realGit(cwd, ...args) {
   const r = spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
@@ -68,6 +70,7 @@ async function git(cwd, ...args) {
     pid: 1, cred: CRED_SESSION_USER, args, cwd, env: { USER: 'a' },
     stdout: { write(s) { stdout += s; } },
     stderr: { write(s) { stderr += s; } },
+    vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
   }, rawVfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   return stdout;

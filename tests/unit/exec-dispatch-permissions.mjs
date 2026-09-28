@@ -6,7 +6,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -35,7 +35,7 @@ registry.register('sh', async (ctx) => {
   return 23;
 });
 registerUnixCommands(registry, sqlite);
-installPathExecResolver(registry, root, () => '/home/user');
+installPathExecResolver(registry, new ProcessView(files.openHost(CRED_KERNEL).fs), () => '/home/user');
 
 async function run(path, cred, args = []) {
   const command = await registry.resolve(path);

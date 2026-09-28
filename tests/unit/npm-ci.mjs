@@ -17,8 +17,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -64,7 +63,7 @@ function makeInstaller(pkgJson = PACKAGE_JSON, lock = LOCK, resolve = null) {
     },
   });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, root, resolveAsked, shardsSeen, log };
 }
 

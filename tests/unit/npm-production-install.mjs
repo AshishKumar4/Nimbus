@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { kernelInstaller } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -68,7 +68,7 @@ function makeInstaller(pkgJson) {
     },
   };
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root };
 }
 

@@ -1,4 +1,6 @@
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ProcessView, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectTree, type ProjectFs } from '../runtime/project-fs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
@@ -17,11 +19,14 @@ type Output = { write(data: string): void };
 
 type CommandContext = {
   pid: number;
+  cred: VfsCred;
   args?: string[];
   stdout: Output;
   stderr: Output;
   cwd?: string;
   env?: Record<string, string>;
+  /** The command's view of the namespace, as its credential. */
+  vfs: ProcessView;
   [key: string]: unknown;
 };
 
@@ -51,7 +56,8 @@ type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
 export function installNpmBinFallbackResolver(
   registry: RegistryLike,
   deps: {
-    vfs: CredentialedVfs;
+    /** The session's namespace: bins are found in it, as the running command when one runs. */
+    filesystem: ProcessFiles;
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
@@ -61,24 +67,30 @@ export function installNpmBinFallbackResolver(
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
   },
 ): void {
-  const vfs = deps.vfs;
   const upstreamResolve = registry.resolve.bind(registry);
+  // What `registry.resolve` probes a name with before any command runs (it
+  // has no caller): the namespace as the kernel, for the registry's life.
+  // The command that then runs looks its bin up again as itself.
+  const inspector = new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs);
+  const probeTree = async (cwd: string): Promise<ProjectFs> => (await projectTree(deps.filesystem, inspector, CRED_KERNEL, cwd)).fs;
+  const commandTree = async (ctx: CommandContext): Promise<ProjectFs> =>
+    (await projectTree(deps.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm bin'), ctx.cwd || '/home/user')).fs;
 
   registry.resolve = async function resolveWithNpmBins(name: string): Promise<unknown> {
     // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
     // same program as the bare name: same runtime choice, TTY and lifecycle.
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
       const cwd = deps.getCwd() || '/home/user';
-      const bin = resolveNpmBinPath(vfs, cwd, name);
+      const bin = await resolveNpmBinPath(await probeTree(cwd), cwd, name);
       if (!bin) return await upstreamResolve(name);
-      return binHandler(bin.name, (ctx) => resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+      return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
     }
 
     const upstream = await upstreamResolve(name);
     if (upstream) return upstream;
 
     const cwd = deps.getCwd() || '/home/user';
-    if (!resolveNpmBinForInvocation(vfs, cwd, DEFAULT_PATH, name)) {
+    if (!await resolveNpmBinForInvocation(await probeTree(cwd), cwd, DEFAULT_PATH, name)) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;
@@ -91,7 +103,7 @@ export function installNpmBinFallbackResolver(
       return hintHandler;
     }
 
-    return binHandler(name, (ctx) => resolveNpmBinForInvocation(
+    return binHandler(name, async (ctx, vfs) => await resolveNpmBinForInvocation(
       vfs,
       ctx.cwd || '/home/user',
       ctx.env?.PATH || DEFAULT_PATH,
@@ -101,11 +113,13 @@ export function installNpmBinFallbackResolver(
 
   function binHandler(
     name: string,
-    lookup: (ctx: CommandContext) => NpmBinResolution | null,
+    lookup: (ctx: CommandContext, vfs: ProjectFs) => Promise<NpmBinResolution | null>,
   ): (ctx: CommandContext) => Promise<number> {
     return async (ctx: CommandContext): Promise<number> => {
       const invocationCwd = ctx.cwd || '/home/user';
-      const bin = lookup(ctx);
+      // The bin as this command sees it: its project, as its credential.
+      const vfs = await commandTree(ctx);
+      const bin = await lookup(ctx, vfs);
       if (!bin) {
         ctx.stderr.write(`${name}: command not found\n`);
         return 127;
@@ -126,7 +140,7 @@ export function installNpmBinFallbackResolver(
 
       // A PATH script for another interpreter (`#!/bin/sh`) is not a node
       // program: run it the way a path-shaped invocation of it runs.
-      const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
+      const runtimeName = await npmBinRuntimeForTarget(vfs, bin.targetPath);
       if (runtimeName === null) {
         const execCmd = await upstreamResolve('/' + bin.shimPath);
         if (typeof execCmd !== 'function') {
@@ -137,7 +151,7 @@ export function installNpmBinFallbackResolver(
       }
 
       const bundleProfile = bundleProfileForNpmBin(bin);
-      const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
+      const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
       const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
       const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
       const runtimeCmd = await upstreamResolve(runtimeName);
@@ -206,14 +220,14 @@ export function installNpmBinFallbackResolver(
   }
 }
 
-function resolveNpmBinForInvocation(
-  vfs: CredentialedVfs,
+async function resolveNpmBinForInvocation(
+  vfs: ProjectFs,
   cwd: string,
   envPath: string,
   name: string,
-) {
-  return resolveNpmBinFromPath(vfs, cwd, envPath, name)
-    ?? resolveNpmBin(vfs, cwd, name);
+): Promise<NpmBinResolution | null> {
+  return await resolveNpmBinFromPath(vfs, cwd, envPath, name)
+    ?? await resolveNpmBin(vfs, cwd, name);
 }
 
 async function runStagedArtifact(
@@ -330,15 +344,15 @@ function formatError(error: unknown): string {
 }
 
 /** null when the target's `#!` names an interpreter other than node or bun; no `#!` runs as node. */
-function npmBinRuntimeForTarget(vfs: CredentialedVfs, targetPath: string): 'node' | 'bun' | null {
-  const firstLine = readFirstLine(vfs, targetPath);
+async function npmBinRuntimeForTarget(vfs: ProjectFs, targetPath: string): Promise<'node' | 'bun' | null> {
+  const firstLine = await readFirstLine(vfs, targetPath);
   if (!firstLine?.startsWith('#!')) return 'node';
   return shebangRuntime(firstLine);
 }
 
-function readFirstLine(vfs: CredentialedVfs, path: string): string | null {
+async function readFirstLine(vfs: ProjectFs, path: string): Promise<string | null> {
   try {
-    const text = vfs.readFileString(path);
+    const text = await vfs.readFileString(path);
     const nl = text.indexOf('\n');
     return nl >= 0 ? text.slice(0, nl) : text;
   } catch {
@@ -463,11 +477,11 @@ function isNonInteractiveBinArg(arg: string): boolean {
   return NON_INTERACTIVE_BIN_FLAGS.has(arg.trim().toLowerCase());
 }
 
-function readNpmBinPackageMetadata(vfs: CredentialedVfs, packagePath: string): NpmBinPackageMetadata | null {
+async function readNpmBinPackageMetadata(vfs: ProjectFs, packagePath: string): Promise<NpmBinPackageMetadata | null> {
   try {
     const manifestPath = normalizeVfsPath(`${packagePath}/package.json`);
     const parsed = NpmBinPackageMetadataSchema.safeParse(
-      JSON.parse(vfs.readFileString(manifestPath)),
+      JSON.parse(await vfs.readFileString(manifestPath)),
     );
     return parsed.success ? parsed.data : null;
   } catch {

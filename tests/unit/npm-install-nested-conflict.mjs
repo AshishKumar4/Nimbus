@@ -21,9 +21,8 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { resolveVersion } from '../../packages/worker/src/npm/semver.ts';
-import { makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -74,7 +73,7 @@ function makeInstaller(dependencies = { a: '^1.0.0', b: '^1.0.0' }) {
   const shardsSeen = [];
   const env = makeFanoutEnv({ root, NM, resultFor: resolveFromRegistry, shardsSeen });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
+  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root, shardsSeen };
 }
 
@@ -201,7 +200,7 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   const cycleLog = [];
   const env = makeFanoutEnv({ root: cycleRoot, NM, resultFor: resolveFromRegistry });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const cycleInstaller = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => cycleLog.push(msg) });
+  const cycleInstaller = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => cycleLog.push(msg) });
   const result = await cycleInstaller.install(PROJ, { pid: 1 });
   assert.ok(result.failed.length > 0, `the unsatisfiable edge is a failure: ${cycleLog.join('\n')}`);
   const reason = cycleLog.find((l) => /nest deeper than/.test(l));
