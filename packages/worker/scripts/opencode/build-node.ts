@@ -173,12 +173,9 @@ const sharedConfig = {
     OPENCODE_CHANNEL: `'stable'`,
     OPENCODE_LIBC: `'glibc'`,
     "process.env.OPENTUI_LIBC": JSON.stringify("glibc"),
-    // Nimbus: the bundle rides into the workerd Worker Loader module map as an
-    // ESM module, where `import.meta.url` is undefined — so the top-level
-    // `createRequire(import.meta.url)` throws. Bake a synthetic absolute file
-    // URL so createRequire constructs (the require it produces resolves node:
-    // builtins through nodejs_compat).
-    "import.meta.url": JSON.stringify("file:///opencode/opencode-bundle.js"),
+    // No `import.meta.url` define: the facet runs with new_module_registry
+    // (GUEST_COMPAT_FLAGS), whose modules carry a real `import.meta.url`, so
+    // the bundle's top-level `createRequire(import.meta.url)` constructs.
   },
 }
 

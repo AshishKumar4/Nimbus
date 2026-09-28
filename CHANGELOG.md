@@ -40,7 +40,10 @@ published independently in the `@nimbus-sh` npm scope.
   Map entries named `node:<x>` still shadow the builtin under the new
   registry, so the `node:fs`, `node:http`, `node:os` and `node:sqlite`
   bridges are unchanged. `opencodeBuiltinBridgeModules` now takes the run
-  mode instead of an attached-TTY boolean.
+  mode instead of an attached-TTY boolean. The staged opencode 1.16.2 build
+  no longer defines `import.meta.url` as `"file:///opencode/opencode-bundle.js"`:
+  its modules read their real URL (`file:///bundle/<module>`), so its
+  `createRequire(import.meta.url)` calls construct without a rewrite.
 
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
