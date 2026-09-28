@@ -55,10 +55,11 @@ published independently in the `@nimbus-sh` npm scope.
   its directory, and the direct files of a matching directory (one level); a bare hole under a named directory stages that
   directory's files, minus dependency, VCS and cache directories.
 
-- `vite` reads a `vite.config.ts` without esbuild when erasing its types
+- `vite` reads a `vite.config.ts` without esbuild when esbuild's transform
   cannot change what the config reader sees: the source parses as
-  JavaScript, has no `a<b>(c)` chain (a generic call in TypeScript, a
-  comparison in JavaScript), and every import binding is used and not
+  JavaScript using only syntax esbuild passes through unchanged (no
+  operators, computed keys or template substitutions, so no generic call and
+  nothing esbuild constant-folds), and every import binding is used and not
   shadowed (TypeScript drops an unused import). A fresh session's `vite` no
   longer waits about a second on the esbuild facet's start before serving
   the preview; other configs still go through esbuild. Transforms, builds

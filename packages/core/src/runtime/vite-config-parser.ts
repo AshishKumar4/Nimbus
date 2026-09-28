@@ -1,6 +1,7 @@
 import {
   type AstNode,
   booleanField,
+  isAstNode,
   literalBooleanValue,
   literalStringValue,
   nodeList,
@@ -34,26 +35,27 @@ export interface ParsedViteConfig {
 }
 
 /**
- * Read a `vite.config.ts` without a TypeScript transform where erasing its
- * types cannot change what this reader sees.
+ * Read a `vite.config.ts` without a TypeScript transform where the transform
+ * cannot change what this reader sees.
  *
  * The transform is esbuild, and on a fresh session it is the session's first:
  * it starts the esbuild facet (loading the wasm and initializing esbuild,
  * about a second), and `vite` waits on it before it serves anything. Most
  * configs, the seeded one included, are plain JavaScript under a `.ts` name.
  *
- * A source that parses as a JavaScript module has no annotations, casts,
- * enums or other type-only syntax; each of those is a syntax error there.
- * The one construct both languages accept and read differently is the
- * angle-bracket chain: `f<T>(x)` is a generic call in TypeScript and
- * `(f < T) > (x)` in JavaScript (likewise `f<T>` instantiation expressions).
- * JavaScript reads it as a `>`-family comparison over a `<` comparison. And
- * TypeScript drops an import none of whose bindings is used (esbuild does
- * too), which changes `importsVitePlugin` and so the dev-server choice. A
- * source holding either shape goes through `eraseTypes`, as does one that
- * does not parse; so does one that declares a name an import also binds,
- * since telling a use from a shadowing one needs scope analysis. Everything
- * else reaches the reader as TypeScript would leave it.
+ * The direct read is taken only for a source that parses as a JavaScript
+ * module built solely from PASS_THROUGH_NODES: syntax esbuild's `ts` transform
+ * leaves as it is. That rules out, by construction, the two ways a source can
+ * mean something else to esbuild. Type syntax: annotations, casts and enums do
+ * not parse as JavaScript, and a generic call such as `f<T>(x)` or
+ * `f<A<B>>(x)` parses only as comparisons or shifts, which are not on the
+ * list. And rewriting: esbuild folds constants (`'a' + 'b'`, `!0`,
+ * `+"5173"`, `null || x`, `false && f()`, conditionals, templates with
+ * substitutions), all of them operators that are not on the list either.
+ * TypeScript (and esbuild) also drop an import none of whose bindings is
+ * used, which changes `importsVitePlugin` and so the dev-server choice, so a
+ * source with such an import, or one that declares a name an import binds,
+ * goes through esbuild too. Anything else calls `eraseTypes`.
  */
 export async function parseViteConfigTypeScript(
   source: string,
@@ -65,7 +67,7 @@ export async function parseViteConfigTypeScript(
   } catch {
     // Type syntax, or not a module at all: esbuild decides.
   }
-  if (ast && !hasAngleBracketChain(ast) && everyImportIsUsed(ast)) return readViteConfig(ast);
+  if (ast && onlyPassThroughSyntax(ast) && everyImportIsUsed(ast)) return readViteConfig(ast);
   return parseViteConfigSource(await eraseTypes(source));
 }
 
@@ -112,14 +114,32 @@ function everyImportIsUsed(ast: AstNode): boolean {
   return true;
 }
 
-function hasAngleBracketChain(ast: AstNode): boolean {
-  let found = false;
-  simple(ast, {
-    BinaryExpression(node) {
-      if (node.operator.startsWith('>') && node.left.type === 'BinaryExpression' && node.left.operator === '<') found = true;
-    },
-  });
-  return found;
+/**
+ * Syntax esbuild's `ts` transform passes through unchanged, and that a config
+ * the reader understands is written in. No operator of any kind: every one is
+ * either a candidate for constant folding or how a generic call parses.
+ */
+const PASS_THROUGH_NODES = new Set([
+  'Program', 'ImportDeclaration', 'ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier',
+  'ExportDefaultDeclaration', 'ExportNamedDeclaration', 'ExportSpecifier',
+  'VariableDeclaration', 'VariableDeclarator', 'ExpressionStatement', 'BlockStatement', 'ReturnStatement',
+  'CallExpression', 'NewExpression', 'MemberExpression', 'MetaProperty',
+  'ObjectExpression', 'Property', 'ArrayExpression', 'Literal', 'TemplateLiteral', 'TemplateElement', 'Identifier',
+  'ArrowFunctionExpression', 'FunctionExpression', 'ObjectPattern', 'ArrayPattern', 'AssignmentPattern', 'RestElement',
+]);
+
+function onlyPassThroughSyntax(node: unknown): boolean {
+  if (Array.isArray(node)) return node.every(onlyPassThroughSyntax);
+  if (!isAstNode(node)) return true;
+  if (!PASS_THROUGH_NODES.has(node.type)) return false;
+  // A computed key or member may be folded to a plain one; a template with
+  // substitutions may be folded to a string.
+  if ((node.type === 'Property' || node.type === 'MemberExpression') && node.computed === true) return false;
+  if (node.type === 'TemplateLiteral' && nodeList(node, 'expressions').length > 0) return false;
+  for (const [key, value] of Object.entries(node)) {
+    if (key !== 'type' && typeof value === 'object' && value !== null && !onlyPassThroughSyntax(value)) return false;
+  }
+  return true;
 }
 
 export function parseViteConfigSource(source: string): ParsedViteConfig {

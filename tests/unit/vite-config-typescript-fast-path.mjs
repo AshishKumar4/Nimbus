@@ -56,6 +56,32 @@ const cases = [
   ['side-effect import only', `
     import './setup';
     export default { root: './web' };`, false],
+  ['defineConfig(({ mode }) => ({...})) with new URL(import.meta.url)', `
+    import { defineConfig } from 'vite';
+    import { fileURLToPath } from 'node:url';
+    export default defineConfig(({ mode }) => {
+      return { base: '/m/', resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } } };
+    });`, false],
+  ['template literal without substitutions', `
+    export default { base: \`/plain/\` };`, false],
+  // Generics that parse as JavaScript shifts and comparisons.
+  ['nested generic defineConfig', `
+    import { defineConfig } from 'vite';
+    export default defineConfig<Partial<UserConfig>>({ base: '/g/', server: { port: 5180 } });`, true],
+  ['nested generic plugin call', `
+    import { sveltekit } from '@sveltejs/kit/vite';
+    export default { plugins: [sveltekit<Record<string, string>>({})] };`, true],
+  // Shapes esbuild folds.
+  ['string concatenation', `export default { base: '/app' + '/' };`, true],
+  ['logical not', `export default { nimbusInjectBasename: !0 };`, true],
+  ['unary plus', `export default { server: { port: +"5173" } };`, true],
+  ['nullish-or', `export default { root: null || './web' };`, true],
+  ['false && plugin', `
+    import react from '@vitejs/plugin-react';
+    export default { plugins: [false && react()] };`, true],
+  ['conditional', `export default { server: { port: true ? 5174 : 5175 } };`, true],
+  ['template literal with a substitution', `export default { base: \`/\${'app'}/\` };`, true],
+  ['computed key', `export default { ['base']: '/k/' };`, true],
 ];
 
 for (const [name, source, needsEsbuild] of cases) {

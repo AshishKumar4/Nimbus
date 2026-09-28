@@ -84,7 +84,7 @@ function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
       async get() {
         counts.loaderGets++;
         // A load takes a turn or two, as a real one does, so a transform can
-        // start while the pre-warm is still inside it.
+        // start while another caller is still inside it.
         await new Promise((resolve) => setTimeout(resolve, 5));
         return { getDurableObjectClass: () => EsbuildFacet };
       },
