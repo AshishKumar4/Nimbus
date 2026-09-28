@@ -18,8 +18,12 @@
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
+ *   - The project is read and written as the invoking principal; the bulk
+ *     paths serve a project the namespace puts on SQLite, and a mounted one
+ *     is written through the principal's view (see fetchIntoMount)
  */
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { onEngine } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectTree } from '../runtime/project-fs.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
@@ -49,8 +53,9 @@ import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
+    /** The session's namespace: the project is reached through it as the invoking principal. */
+    filesystem;
     store;
-    vfs;
     cache;
     esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
@@ -72,9 +77,9 @@ export class NpmInstaller {
      * what every caller that didn't pass one gets.
      */
     npmLog = () => { };
-    constructor(vfs, sql, opts) {
-        this.store = vfs;
-        this.vfs = vfs.as(CRED_KERNEL);
+    constructor(filesystem, sql, opts) {
+        this.filesystem = filesystem;
+        this.store = filesystem.engine;
         this.cache = new NpmCache(sql);
         this.esbuild = opts?.esbuild ?? null;
         this.bundlePool = opts?.bundlePool ?? null;
@@ -128,10 +133,15 @@ export class NpmInstaller {
         this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
         let phaseStart = Date.now();
         log('Checking lockfile...');
+        // The project as the invoking principal: the engine's own view when the
+        // namespace puts it on SQLite, the principal's view of the namespace
+        // otherwise (a mount, awaited).
+        const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
+        const project = await projectTree(this.filesystem, view, opts.cred, '/' + projDir);
         // npm ci takes its roots from the lock, not from package.json specs.
         const { specs, devOnly, optionalRoots, advised } = opts?.fromLockfile
             ? { specs: {}, devOnly: new Set(), optionalRoots: new Set(), advised: new Set() }
-            : await this.buildSpecs(projDir, opts?.packages, opts?.production);
+            : await this.buildSpecs(projDir, project.fs, opts?.packages, opts?.production);
         // EBADPLATFORM refusals (os/cpu/libc allowlists on a required
         // package) fail the install like real npm; every refused name was
         // already logged as a [skip] line, name them again with the reason.
@@ -144,7 +154,7 @@ export class NpmInstaller {
             }
         };
         const packageLock = opts?.fromLockfile
-            ? await this.treeFromPackageLock(projDir, opts.production === true, log, registry)
+            ? await this.treeFromPackageLock(projDir, project.fs, opts.production === true, log, registry)
             : null;
         if (packageLock === null && Object.keys(specs).length === 0) {
             log('No dependencies to install.');
@@ -237,9 +247,9 @@ export class NpmInstaller {
             }
             // Check if already installed at the correct path
             const pkgJsonPath = nmDir + '/' + target.placement + '/package.json';
-            if (this.vfs.exists(pkgJsonPath)) {
+            if (await project.fs.exists(pkgJsonPath)) {
                 try {
-                    const existing = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+                    const existing = JSON.parse(await project.fs.readFileString(pkgJsonPath));
                     if (existing.version === pkg.version) {
                         // Already installed at correct version — skip
                         installed.push(`${pkg.name}@${pkg.version}`);
@@ -280,7 +290,9 @@ export class NpmInstaller {
         const commitsBefore = this.storageCommitCount();
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-            const batchResult = await this.fetchViaBatchFacet(toFetch, nmDir, opts?.pid);
+            const batchResult = project.onEngine
+                ? await this.fetchViaBatchFacet(toFetch, nmDir, opts.pid)
+                : await this.fetchIntoMount(toFetch, nmDir, opts, view, project.fs);
             totalFiles += batchResult.filesWritten;
             for (const name of batchResult.installed)
                 installed.push(name);
@@ -292,7 +304,7 @@ export class NpmInstaller {
         // ── Phase 6: Link bins ──────────────────────────────────────────
         phaseStart = Date.now();
         setInstallPhase('link-bins');
-        await this.linkBins(resolved, nmDir);
+        await this.linkBins(resolved, nmDir, project, opts.cred);
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages) {
@@ -300,7 +312,7 @@ export class NpmInstaller {
         }
         // ── Update package.json if explicit packages were added ─────────
         if (opts?.packages && opts.packages.length > 0) {
-            this.updatePackageJson(projDir, opts.packages, resolved);
+            await this.updatePackageJson(projDir, project.fs, opts.packages, resolved);
         }
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
         // The install command resolves IMMEDIATELY. Pre-bundle dispatches
@@ -324,7 +336,10 @@ export class NpmInstaller {
         // phases['bundle'] now reflects DISPATCH time, not bundle-completion
         // time. The total install elapsed reflects user-perceived completion
         // (immediate after fetch+write+link-bins+lockfile).
-        if (this.esbuild) {
+        // Pre-bundling slices node_modules out of the engine for the bundle
+        // pool and warms the dev server's cache, which serves projects on
+        // SQLite only; a mounted project skips it.
+        if (this.esbuild && project.onEngine) {
             phaseStart = Date.now();
             setInstallPhase('bundle');
             // ── Bug 1 (production reliability P4) — late-progress gating ───────────────
@@ -386,7 +401,7 @@ export class NpmInstaller {
             // Fire-and-forget. Capture rejections so the orphan promise
             // never raises an "unhandled rejection" warning. We do NOT
             // await here — see Phase 7 design note above for why.
-            const prebundlePromise = this.prebundleUsedModules(projDir, resolved)
+            const prebundlePromise = this.prebundleUsedModules(projDir, resolved, this.store.as(opts.cred))
                 .catch((e) => {
                 // Routes through the installInvocationActive gate above,
                 // so this is safe to call from after-return: it lands on
@@ -1128,8 +1143,49 @@ export class NpmInstaller {
             throw e instanceof Error ? e : new Error(describeError(e));
         }
     }
+    /**
+     * A mounted project's packages. The batch facet writes only the engine,
+     * so it extracts them into a staging directory in /tmp there, as the
+     * invoking principal whose batch writes it authorizes; each placed
+     * package is then copied into the mounted node_modules through the
+     * principal's view, over whatever an earlier install left there, as the
+     * facet writes over it on SQLite.
+     */
+    async fetchIntoMount(toFetch, nmDir, principal, view, fs) {
+        if (!await onEngine(view, this.store, '/tmp')) {
+            throw new Error(`installing into /${nmDir} stages the packages in /tmp, which is not on the workspace filesystem`);
+        }
+        const staging = this.store.as(principal.cred);
+        const stage = `tmp/.npm-stage-${principal.pid}-${Date.now().toString(36)}`;
+        staging.mkdir(stage, { recursive: true });
+        try {
+            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, principal.pid);
+            const placed = new Set(toFetch.map(({ placement }) => placement));
+            // A nested placement is copied with the package that holds it, when that is placed too.
+            const tops = [...placed].filter((placement) => {
+                for (let at = placement.lastIndexOf('/node_modules/'); at > 0; at = placement.lastIndexOf('/node_modules/', at - 1)) {
+                    if (placed.has(placement.slice(0, at)))
+                        return false;
+                }
+                return true;
+            });
+            this.onProgress?.(`Copying ${tops.length} package${tops.length === 1 ? '' : 's'} into /${nmDir}...`);
+            for (const placement of tops) {
+                const from = `${stage}/node_modules/${placement}`;
+                if (staging.exists(from))
+                    await copyTreeInto(staging, from, fs, `${nmDir}/${placement}`);
+            }
+            return result;
+        }
+        finally {
+            try {
+                staging.removeRecursive(stage);
+            }
+            catch { /* left to /tmp's own cleanup */ }
+        }
+    }
     // ── Spec building ─────────────────────────────────────────────────────
-    async buildSpecs(projDir, explicitPackages, production) {
+    async buildSpecs(projDir, fs, explicitPackages, production) {
         const specs = {};
         // Which names only a devDependency asked for — diagnostics only, so an
         // advisory can say whether anything this project RUNS actually needs
@@ -1152,10 +1208,10 @@ export class NpmInstaller {
         }
         // Read from package.json
         const pkgJsonPath = projDir + '/package.json';
-        if (!this.vfs.exists(pkgJsonPath))
+        if (!await fs.exists(pkgJsonPath))
             return { specs, devOnly, optionalRoots, advised };
         try {
-            const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+            const pkgJson = JSON.parse(await fs.readFileString(pkgJsonPath));
             // Every declared dependency is a spec. What cannot run here is
             // named by the advisory pass below; nothing a project declares is
             // quietly left out of node_modules.
@@ -1283,16 +1339,21 @@ export class NpmInstaller {
      * required one is refused, and a swapped package resolves its swap target
      * at the locked version.
      */
-    async treeFromPackageLock(projDir, production, log, registry) {
-        const lockName = ['npm-shrinkwrap.json', 'package-lock.json']
-            .find((name) => this.vfs.exists(`${projDir}/${name}`));
+    async treeFromPackageLock(projDir, fs, production, log, registry) {
+        let lockName;
+        for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+            if (await fs.exists(`${projDir}/${name}`)) {
+                lockName = name;
+                break;
+            }
+        }
         if (!lockName)
             throw new Error('`npm ci` needs a package-lock.json or npm-shrinkwrap.json');
-        const lock = parsePackageLock(this.vfs.readFileString(`${projDir}/${lockName}`), lockName);
+        const lock = parsePackageLock(await fs.readFileString(`${projDir}/${lockName}`), lockName);
         const pkgJsonPath = `${projDir}/package.json`;
-        if (!this.vfs.exists(pkgJsonPath))
+        if (!await fs.exists(pkgJsonPath))
             throw new Error('`npm ci` needs a package.json');
-        const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+        const pkgJson = JSON.parse(await fs.readFileString(pkgJsonPath));
         const mismatches = packageLockMismatches(pkgJson, lock);
         if (mismatches.length > 0) {
             throw new Error(`\`npm ci\` can only install packages when your package.json and ${lockName} are in sync. ` +
@@ -1304,8 +1365,8 @@ export class NpmInstaller {
             throw new Error(`${lockName} entry "${unsupported}" is a workspace or linked package, which \`npm ci\` here does not install`);
         }
         // Only a lock that will be installed as written clears the old tree.
-        if (this.vfs.exists(`${projDir}/node_modules`))
-            this.vfs.removeRecursive(`${projDir}/node_modules`);
+        if (await fs.exists(`${projDir}/node_modules`))
+            await fs.removeRecursive(`${projDir}/node_modules`);
         const resolved = new Map();
         const nested = new Map();
         const unresolved = new Map();
@@ -1450,9 +1511,11 @@ export class NpmInstaller {
     }
     // ── Bin linking ───────────────────────────────────────────────────────
     /**
-     * Create node_modules/.bin/ entries for packages with "bin" fields.
+     * Create node_modules/.bin/ entries for packages with "bin" fields, as
+     * `cred`: one streamed batch on the engine, or written one by one
+     * through the principal's view for a mounted project.
      */
-    async linkBins(resolved, nmDir) {
+    async linkBins(resolved, nmDir, project, cred) {
         const binDir = nmDir + '/.bin';
         const manifestEntries = [];
         for (const [, pkg] of resolved) {
@@ -1463,35 +1526,28 @@ export class NpmInstaller {
         if (manifestEntries.length === 0)
             return;
         const manifest = createNpmBinManifest(manifestEntries);
-        const binEntries = [];
-        const binChunks = [];
-        const mtime = Date.now();
-        for (const binEntry of Object.values(manifest.bins)) {
-            const data = enc.encode(createNpmBinShim(binEntry, binDir));
-            const linkPath = binDir + '/' + binEntry.name;
-            binEntries.push({
-                path: linkPath,
-                parentPath: binDir,
-                isDir: false,
-                size: data.length,
-                mtime,
-                mode: 0o755,
-                chunkCount: 1,
-            });
-            binChunks.push({ path: linkPath, chunkId: 0, data });
+        const files = Object.values(manifest.bins).map((binEntry) => ({
+            path: binDir + '/' + binEntry.name,
+            data: enc.encode(createNpmBinShim(binEntry, binDir)),
+            mode: 0o755,
+        }));
+        files.push({ path: npmBinManifestPath(nmDir), data: enc.encode(JSON.stringify(manifest, null, 2) + '\n'), mode: 0o644 });
+        if (!project.onEngine) {
+            await project.fs.mkdir(binDir, { recursive: true });
+            for (const file of files)
+                await project.fs.writeFile(file.path, file.data, { mode: file.mode });
+            return;
         }
-        const manifestPath = npmBinManifestPath(nmDir);
-        const manifestData = enc.encode(JSON.stringify(manifest, null, 2) + '\n');
-        binEntries.push({
-            path: manifestPath,
+        const mtime = Date.now();
+        const binEntries = files.map((file) => ({
+            path: file.path,
             parentPath: binDir,
             isDir: false,
-            size: manifestData.length,
+            size: file.data.length,
             mtime,
-            mode: 0o644,
+            mode: file.mode,
             chunkCount: 1,
-        });
-        binChunks.push({ path: manifestPath, chunkId: 0, data: manifestData });
+        }));
         binEntries.push({
             path: binDir,
             parentPath: parentOf(binDir),
@@ -1501,10 +1557,13 @@ export class NpmInstaller {
             mode: 0o755,
             chunkCount: 0,
         });
-        await this.writeStreamPayload({ inodes: binEntries, chunks: binChunks });
+        await this.writeStreamPayload(this.store.as(cred), {
+            inodes: binEntries,
+            chunks: files.map((file) => ({ path: file.path, chunkId: 0, data: file.data })),
+        });
     }
-    async writeStreamPayload(payload) {
-        const result = await this.vfs.writeStream(encodeWriteBatchStream(payload));
+    async writeStreamPayload(vfs, payload) {
+        const result = await vfs.writeStream(encodeWriteBatchStream(payload));
         if (!result.ok) {
             throw new Error(`writeBatchStream failed after group ${result.committedGroupSequence} ` +
                 `(${result.committedPathCount} committed paths): ${result.error.message}`);
@@ -1512,12 +1571,12 @@ export class NpmInstaller {
         return result;
     }
     // ── Package.json update ───────────────────────────────────────────────
-    updatePackageJson(projDir, explicitPackages, resolved) {
+    async updatePackageJson(projDir, fs, explicitPackages, resolved) {
         const pkgJsonPath = projDir + '/package.json';
-        if (!this.vfs.exists(pkgJsonPath))
+        if (!await fs.exists(pkgJsonPath))
             return;
         try {
-            const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+            const pkgJson = JSON.parse(await fs.readFileString(pkgJsonPath));
             if (!pkgJson.dependencies)
                 pkgJson.dependencies = {};
             for (const spec of explicitPackages) {
@@ -1531,7 +1590,7 @@ export class NpmInstaller {
                     pkgJson.dependencies[name] = '^' + pkg.version;
                 }
             }
-            this.vfs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2) + '\n');
+            await fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2) + '\n');
         }
         catch { /* skip if package.json is corrupt */ }
     }
@@ -1547,7 +1606,7 @@ export class NpmInstaller {
      * and jsx-runtime each get their own embedded React copy and cross-bundle
      * JSX elements get rejected as "alien" — silent render failure.
      */
-    async prebundleUsedModules(projDir, installed) {
+    async prebundleUsedModules(projDir, installed, fs) {
         // Pre-bundle now runs in IsolatePool isolates (src/pre-bundle-facet.ts);
         // each facet ships its own bundled esbuild-wasm via the preamble. The
         // supervisor's EsbuildService is no longer on the bundle path — it
@@ -1560,7 +1619,7 @@ export class NpmInstaller {
         // bundle pool must also be present because the facets run in it.
         if (!this.esbuild || !this.bundlePool)
             return;
-        const usedSpecifiers = this.scanBareImports(projDir);
+        const usedSpecifiers = this.scanBareImports(fs, projDir);
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
         // browser — they're invoked server-side by vite's own plugin
         // pipeline. Pre-bundling them as browser modules is wasted work
@@ -1613,10 +1672,10 @@ export class NpmInstaller {
         const nmDir = projDir + '/node_modules';
         const pending = [];
         // Scan once up front; reused across barrel packages.
-        const namedImports = scanNamedImports(this.vfs, projDir);
+        const namedImports = scanNamedImports(fs, projDir);
         for (const specifier of toBuild) {
             const existing = this.cache.getEsmBundle(specifier);
-            const entryPath = this.resolvePackageEntryPath(specifier, nmDir);
+            const entryPath = this.resolvePackageEntryPath(fs, specifier, nmDir);
             if (!entryPath)
                 continue;
             if (/\.(wasm|node)$/i.test(entryPath)) {
@@ -1627,7 +1686,7 @@ export class NpmInstaller {
             // (excluding nested node_modules — those are deps walked
             // separately). Cheap: VFS readdir is sync + chunk-cached.
             const pkgName = packageNameFromSpecifier(specifier);
-            const fileCount = countPackageFiles(this.vfs, nmDir + '/' + pkgName);
+            const fileCount = countPackageFiles(fs, nmDir + '/' + pkgName);
             const isBarrel = fileCount > BARREL_PKG_FILE_THRESHOLD;
             if (isBarrel && specifier === pkgName) {
                 // Top-level barrel import. Synthesize.
@@ -1649,13 +1708,13 @@ export class NpmInstaller {
                     existing.inputHash === inputHash) {
                     continue;
                 }
-                const synth = buildSyntheticEntry(this.vfs, nmDir, pkgName, names);
+                const synth = buildSyntheticEntry(fs, nmDir, pkgName, names);
                 if (!synth)
                     continue;
                 const entryPath = syntheticEntryPath(projDir, pkgName);
                 try {
-                    this.vfs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
-                    this.vfs.writeFile(entryPath, synth.code);
+                    fs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
+                    fs.writeFile(entryPath, synth.code);
                 }
                 catch (e) {
                     this.onProgress?.(`  failed to write synthetic entry for ${specifier}: ${e?.message || e}`);
@@ -1858,11 +1917,11 @@ export class NpmInstaller {
                             // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
                             // 3940 files; full walk hits cap on Mossaic-scale projects
                             // with 70+ imported icons.)
-                            const scoped = buildScopedSliceForSynthetic(this.vfs, nmDir, packageNameFromSpecifier(next.specifier), next.syntheticReferencedFiles);
+                            const scoped = buildScopedSliceForSynthetic(fs, nmDir, packageNameFromSpecifier(next.specifier), next.syntheticReferencedFiles);
                             const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
                             // Append the synthetic entry file itself (lives outside
                             // the package dir; the scoped walker doesn't pick it up).
-                            const bytes = this.vfs.readFile(next.entryPath);
+                            const bytes = fs.readFile(next.entryPath);
                             const parentDir = next.entryPath.substring(0, next.entryPath.lastIndexOf('/'));
                             built.slice.push({
                                 path: '/' + parentDir.replace(/^\/+/, ''),
@@ -1877,7 +1936,7 @@ export class NpmInstaller {
                             slice = built;
                         }
                         else {
-                            slice = buildSliceForSpecifierWithCap(this.vfs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+                            slice = buildSliceForSpecifierWithCap(fs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
                         }
                     }
                     catch (e) {
@@ -2055,7 +2114,7 @@ export class NpmInstaller {
      * and `react/jsx-dev-runtime` because the compiled JSX output imports from
      * them even if the source never wrote `import ... from "react/jsx-runtime"`.
      */
-    scanBareImports(projDir) {
+    scanBareImports(fs, projDir) {
         const imports = new Set();
         const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
         // Files we deliberately skip at the project root: their imports run
@@ -2079,7 +2138,7 @@ export class NpmInstaller {
             if (depth > 5)
                 return;
             try {
-                for (const entry of this.vfs.readdir(dir)) {
+                for (const entry of fs.readdir(dir)) {
                     if (entry.name === 'node_modules' || entry.name === '.git' ||
                         entry.name === 'dist' || entry.name === 'build')
                         continue;
@@ -2099,7 +2158,7 @@ export class NpmInstaller {
                     if (!scanExts.has(ext))
                         continue;
                     try {
-                        const code = this.vfs.readFileString(path);
+                        const code = fs.readFileString(path);
                         const re = /(?:from\s+|import\s*\(?\s*)["']([^./][^"']*?)["']/g;
                         let m;
                         while ((m = re.exec(code)) !== null) {
@@ -2152,7 +2211,7 @@ export class NpmInstaller {
      *      with ESM conditions
      *   4. Try extensions and index-file fallbacks
      */
-    resolvePackageEntryPath(specifier, nmDir) {
+    resolvePackageEntryPath(fs, specifier, nmDir) {
         // Parse out pkgName and subpath
         let pkgName;
         let subpath;
@@ -2168,10 +2227,10 @@ export class NpmInstaller {
         }
         const pkgDir = nmDir + '/' + pkgName;
         const pkgJsonPath = pkgDir + '/package.json';
-        if (!this.vfs.exists(pkgJsonPath))
+        if (!fs.exists(pkgJsonPath))
             return null;
         try {
-            const pkg = JSON.parse(this.vfs.readFileString(pkgJsonPath));
+            const pkg = JSON.parse(fs.readFileString(pkgJsonPath));
             // Use the full exports-field resolution with ESM browser conditions.
             // For subpath imports like "react/jsx-runtime", pass './jsx-runtime'.
             const subpathKey = subpath ? './' + subpath : '.';
@@ -2188,14 +2247,14 @@ export class NpmInstaller {
             // Try with extensions
             const exts = ['', '.js', '.mjs', '.ts', '.tsx', '.cjs'];
             for (const ext of exts) {
-                if (this.vfs.exists(entryPath + ext) && !this.vfs.isDirectory(entryPath + ext)) {
+                if (fs.exists(entryPath + ext) && !fs.isDirectory(entryPath + ext)) {
                     return entryPath + ext;
                 }
             }
             // Try index files
-            if (this.vfs.isDirectory(entryPath)) {
+            if (fs.isDirectory(entryPath)) {
                 for (const idx of ['index.js', 'index.mjs', 'index.ts', 'index.cjs']) {
-                    if (this.vfs.exists(entryPath + '/' + idx))
+                    if (fs.exists(entryPath + '/' + idx))
                         return entryPath + '/' + idx;
                 }
             }
@@ -2256,6 +2315,27 @@ export class NpmInstaller {
 // NpmInstaller._estimateSupervisorHeapMiB.
 function parentOf(path) {
     return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+}
+/** `src`'s tree on the engine written into `dst` through `to`, over what is there: directories made, files and links replaced. */
+async function copyTreeInto(from, src, to, dst) {
+    await to.mkdir(dst, { recursive: true });
+    for (const entry of from.readdir(src)) {
+        const source = `${src}/${entry.name}`;
+        const target = `${dst}/${entry.name}`;
+        if (entry.type === 'directory') {
+            await copyTreeInto(from, source, to, target);
+        }
+        else if (entry.type === 'symlink') {
+            try {
+                await to.unlink(target);
+            }
+            catch { /* nothing there yet */ }
+            await to.symlink(from.readlink(source), target);
+        }
+        else {
+            await to.writeFile(target, from.readFile(source), { mode: from.stat(source).mode & 0o7777 });
+        }
+    }
 }
 function parseExplicitPackageSpec(spec) {
     const aliasMarker = spec.indexOf('@npm:');

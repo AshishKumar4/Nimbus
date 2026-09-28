@@ -18,8 +18,12 @@
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
+ *   - The project is read and written as the invoking principal; the bulk
+ *     paths serve a project the namespace puts on SQLite, and a mounted one
+ *     is written through the principal's view (see fetchIntoMount)
  */
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
@@ -46,8 +50,9 @@ export interface NpmInstallResult {
     phases: Record<string, number>;
 }
 export declare class NpmInstaller {
+    /** The session's namespace: the project is reached through it as the invoking principal. */
+    private readonly filesystem;
     private readonly store;
-    private readonly vfs;
     private cache;
     private esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
@@ -69,7 +74,7 @@ export declare class NpmInstaller {
      * what every caller that didn't pass one gets.
      */
     private npmLog;
-    constructor(vfs: SqliteVFS, sql: SqlStorage, opts?: {
+    constructor(filesystem: ProcessFiles, sql: SqlStorage, opts?: {
         esbuild?: EsbuildService;
         bundlePool?: BundlePoolProvider;
         ctx?: DurableObjectState;
@@ -85,11 +90,12 @@ export declare class NpmInstaller {
      * - Full resolution + fetch + write pipeline
      * - Incremental: only fetches/writes what changed
      */
-    install(projectDir: string, opts?: {
+    install(projectDir: string, opts: {
         packages?: string[];
         production?: boolean;
         fromLockfile?: boolean;
-        pid?: number;
+        pid: number;
+        cred: VfsCred;
         npmLog?: NpmLogEmitter;
         onProgress?: (msg: string) => void;
         registry?: string;
@@ -157,6 +163,15 @@ export declare class NpmInstaller {
      *   the V8 cap risk.
      */
     private fetchViaBatchFacet;
+    /**
+     * A mounted project's packages. The batch facet writes only the engine,
+     * so it extracts them into a staging directory in /tmp there, as the
+     * invoking principal whose batch writes it authorizes; each placed
+     * package is then copied into the mounted node_modules through the
+     * principal's view, over whatever an earlier install left there, as the
+     * facet writes over it on SQLite.
+     */
+    private fetchIntoMount;
     private buildSpecs;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
@@ -199,7 +214,9 @@ export declare class NpmInstaller {
      */
     private writeLockfile;
     /**
-     * Create node_modules/.bin/ entries for packages with "bin" fields.
+     * Create node_modules/.bin/ entries for packages with "bin" fields, as
+     * `cred`: one streamed batch on the engine, or written one by one
+     * through the principal's view for a mounted project.
      */
     private linkBins;
     private writeStreamPayload;

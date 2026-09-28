@@ -105,6 +105,15 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
 export declare function bindProcessView(authority: NimbusFilesystemAuthority, binding: NimbusFilesystemBinding): ProcessView;
 /** Host-side work through a credentialed view whose lease is released when the work settles. */
 export declare function withHostView<T>(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, use: (view: ProcessView) => Promise<T>): Promise<T>;
+/**
+ * Whether `path` is on `engine` as `view` sees the namespace: its st_dev,
+ * links followed, is the engine's. A name that is not there yet is judged
+ * by the nearest directory above it that is, where it would be made. A
+ * host tool asks this once for the tree it works on, then takes the
+ * engine's bulk paths for a SQLite tree and `view` for anything else (a
+ * mount, awaited), so the namespace alone decides which.
+ */
+export declare function onEngine(view: Pick<VFS, 'stat'>, engine: Pick<SqliteVFS, 'deviceId'>, path: string): Promise<boolean>;
 /** POSIX access(2) modes. */
 export declare const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
 /**

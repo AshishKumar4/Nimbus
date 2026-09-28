@@ -34,7 +34,7 @@
  *     idempotent guard).
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -180,7 +180,8 @@ export interface ShellExecutorLike {
 export interface FacetProcessManagerDeps {
     facetMgr: FacetManagerLike;
     processes: SessionProcessSupervisor;
-    vfsForProcess: (pid: number) => Pick<CredentialedVfs, 'exists' | 'readFileString' | 'isDirectory'>;
+    /** The process's own view of the namespace: where `sh <script>` reads the script, as the process. */
+    vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
     commandRegistry: CommandRegistryLike;
     shellExecutor?: ShellExecutorLike;
     /** Optional: ctx for facets.abort/delete in production. */

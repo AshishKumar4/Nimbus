@@ -1,3 +1,6 @@
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectTree } from '../runtime/project-fs.js';
 import { resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
@@ -15,23 +18,28 @@ const NpmBinPackageMetadataSchema = z.object({
     }).optional(),
 }).passthrough();
 export function installNpmBinFallbackResolver(registry, deps) {
-    const vfs = deps.vfs;
     const upstreamResolve = registry.resolve.bind(registry);
+    // What `registry.resolve` probes a name with before any command runs (it
+    // has no caller): the namespace as the kernel, for the registry's life.
+    // The command that then runs looks its bin up again as itself.
+    const inspector = new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs);
+    const probeTree = async (cwd) => (await projectTree(deps.filesystem, inspector, CRED_KERNEL, cwd)).fs;
+    const commandTree = async (ctx) => (await projectTree(deps.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm bin'), ctx.cwd || '/home/user')).fs;
     registry.resolve = async function resolveWithNpmBins(name) {
         // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
         // same program as the bare name: same runtime choice, TTY and lifecycle.
         if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
             const cwd = deps.getCwd() || '/home/user';
-            const bin = resolveNpmBinPath(vfs, cwd, name);
+            const bin = await resolveNpmBinPath(await probeTree(cwd), cwd, name);
             if (!bin)
                 return await upstreamResolve(name);
-            return binHandler(bin.name, (ctx) => resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
+            return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
         }
         const upstream = await upstreamResolve(name);
         if (upstream)
             return upstream;
         const cwd = deps.getCwd() || '/home/user';
-        if (!resolveNpmBinForInvocation(vfs, cwd, DEFAULT_PATH, name)) {
+        if (!await resolveNpmBinForInvocation(await probeTree(cwd), cwd, DEFAULT_PATH, name)) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -49,12 +57,14 @@ export function installNpmBinFallbackResolver(registry, deps) {
             hintHandler.__nimbusRuntimeInstallHint = true;
             return hintHandler;
         }
-        return binHandler(name, (ctx) => resolveNpmBinForInvocation(vfs, ctx.cwd || '/home/user', ctx.env?.PATH || DEFAULT_PATH, name));
+        return binHandler(name, async (ctx, vfs) => await resolveNpmBinForInvocation(vfs, ctx.cwd || '/home/user', ctx.env?.PATH || DEFAULT_PATH, name));
     };
     function binHandler(name, lookup) {
         return async (ctx) => {
             const invocationCwd = ctx.cwd || '/home/user';
-            const bin = lookup(ctx);
+            // The bin as this command sees it: its project, as its credential.
+            const vfs = await commandTree(ctx);
+            const bin = await lookup(ctx, vfs);
             if (!bin) {
                 ctx.stderr.write(`${name}: command not found\n`);
                 return 127;
@@ -70,7 +80,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             // A PATH script for another interpreter (`#!/bin/sh`) is not a node
             // program: run it the way a path-shaped invocation of it runs.
-            const runtimeName = npmBinRuntimeForTarget(vfs, bin.targetPath);
+            const runtimeName = await npmBinRuntimeForTarget(vfs, bin.targetPath);
             if (runtimeName === null) {
                 const execCmd = await upstreamResolve('/' + bin.shimPath);
                 if (typeof execCmd !== 'function') {
@@ -80,7 +90,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 return await execCmd(ctx);
             }
             const bundleProfile = bundleProfileForNpmBin(bin);
-            const metadata = readNpmBinPackageMetadata(vfs, bin.packagePath);
+            const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
             const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
             const runtimeCmd = await upstreamResolve(runtimeName);
@@ -155,9 +165,9 @@ export function installNpmBinFallbackResolver(registry, deps) {
         };
     }
 }
-function resolveNpmBinForInvocation(vfs, cwd, envPath, name) {
-    return resolveNpmBinFromPath(vfs, cwd, envPath, name)
-        ?? resolveNpmBin(vfs, cwd, name);
+async function resolveNpmBinForInvocation(vfs, cwd, envPath, name) {
+    return await resolveNpmBinFromPath(vfs, cwd, envPath, name)
+        ?? await resolveNpmBin(vfs, cwd, name);
 }
 async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, disposition) {
     const shellLine = `${name} ${argv.join(' ')}`.trim();
@@ -239,15 +249,15 @@ function formatError(error) {
     return String(error);
 }
 /** null when the target's `#!` names an interpreter other than node or bun; no `#!` runs as node. */
-function npmBinRuntimeForTarget(vfs, targetPath) {
-    const firstLine = readFirstLine(vfs, targetPath);
+async function npmBinRuntimeForTarget(vfs, targetPath) {
+    const firstLine = await readFirstLine(vfs, targetPath);
     if (!firstLine?.startsWith('#!'))
         return 'node';
     return shebangRuntime(firstLine);
 }
-function readFirstLine(vfs, path) {
+async function readFirstLine(vfs, path) {
     try {
-        const text = vfs.readFileString(path);
+        const text = await vfs.readFileString(path);
         const nl = text.indexOf('\n');
         return nl >= 0 ? text.slice(0, nl) : text;
     }
@@ -368,10 +378,10 @@ function looksAttachedTtyNpmBin(metadata, argv, env) {
 function isNonInteractiveBinArg(arg) {
     return NON_INTERACTIVE_BIN_FLAGS.has(arg.trim().toLowerCase());
 }
-function readNpmBinPackageMetadata(vfs, packagePath) {
+async function readNpmBinPackageMetadata(vfs, packagePath) {
     try {
         const manifestPath = normalizeVfsPath(`${packagePath}/package.json`);
-        const parsed = NpmBinPackageMetadataSchema.safeParse(JSON.parse(vfs.readFileString(manifestPath)));
+        const parsed = NpmBinPackageMetadataSchema.safeParse(JSON.parse(await vfs.readFileString(manifestPath)));
         return parsed.success ? parsed.data : null;
     }
     catch {

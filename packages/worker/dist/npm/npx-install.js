@@ -166,15 +166,15 @@ function splitSpec(spec) {
  * Returns the resolved absolute path (rooted at packageDir) if a
  * matching bin name is found, else null.
  */
-function findBinInPackage(vfs, packageDir, binName) {
+async function findBinInPackage(vfs, packageDir, binName) {
     const pkgJsonPath = `${packageDir}/package.json`;
     // SqliteVFS stores keys without leading slash. Check via the stripped
     // key form to match the installer's write convention.
-    if (!vfs.exists(_vfsKey(pkgJsonPath)))
+    if (!await vfs.exists(_vfsKey(pkgJsonPath)))
         return null;
     let pkgJson;
     try {
-        pkgJson = JSON.parse(vfs.readFileString(_vfsKey(pkgJsonPath)));
+        pkgJson = JSON.parse(await vfs.readFileString(_vfsKey(pkgJsonPath)));
     }
     catch {
         return null;
@@ -213,21 +213,22 @@ function findBinInPackage(vfs, packageDir, binName) {
 }
 /**
  * Locate a binary by name across the standard search paths npx uses:
- *   1. cwd/node_modules/.bin/<binName>    (project-local install)
- *   2. NPX_CACHE_NM/<pkgName>/...         (npx-cache install)
+ *   1. cwd/node_modules/.bin/<binName>    (project-local install, read
+ *      through the project's filesystem as the caller)
+ *   2. NPX_CACHE_NM/<pkgName>/...         (npx-cache install, on the engine)
  *
  * Returns the absolute path on hit, null on miss.
  */
-function locateBinary(vfs, cwd, pkgName, binName) {
+async function locateBinary(project, cache, cwd, pkgName, binName) {
     // 1. Project-local node_modules. The packageDir is cwd/node_modules/<pkgName>.
     const projPkgDir = `${cwd}/node_modules/${pkgName}`;
-    const projHit = findBinInPackage(vfs, projPkgDir, binName);
-    if (projHit && vfs.exists(_vfsKey(projHit)))
+    const projHit = await findBinInPackage(project, projPkgDir, binName);
+    if (projHit && await project.exists(_vfsKey(projHit)))
         return projHit;
     // 2. NPX cache.
     const npxPkgDir = `${NPX_CACHE_NM}/${pkgName}`;
-    const npxHit = findBinInPackage(vfs, npxPkgDir, binName);
-    if (npxHit && vfs.exists(_vfsKey(npxHit)))
+    const npxHit = await findBinInPackage(cache, npxPkgDir, binName);
+    if (npxHit && cache.exists(_vfsKey(npxHit)))
         return npxHit;
     return null;
 }
@@ -281,7 +282,11 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export async function resolveNpxBinary(installer, vfs, cwd, rawArgs, log, pid, 
+export async function resolveNpxBinary(installer, 
+/** The npx cache's filesystem: the engine as the caller. */
+vfs, 
+/** The cwd's project as the caller (runtime/project-fs.ts). */
+project, cwd, rawArgs, log, pid, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
 registry) {
     const parsed = parseNpxArgs(rawArgs);
@@ -289,7 +294,7 @@ registry) {
         return { ok: false, error: parsed.error };
     }
     // 1. Check project + NPX cache for pre-installed bin.
-    const existing = locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+    const existing = await locateBinary(project, vfs, cwd, parsed.pkgName, parsed.binName);
     if (existing) {
         return {
             ok: true,
@@ -312,6 +317,7 @@ registry) {
         const result = await installer.install(NPX_CACHE_DIR, {
             packages: [installSpec],
             pid,
+            cred: vfs.cred,
             registry,
         });
         if ((result.failed?.length || 0) > 0) {
@@ -332,7 +338,7 @@ registry) {
         };
     }
     // 3. Re-check NPX cache after install.
-    const installed = locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+    const installed = await locateBinary(project, vfs, cwd, parsed.pkgName, parsed.binName);
     if (installed) {
         return {
             ok: true,

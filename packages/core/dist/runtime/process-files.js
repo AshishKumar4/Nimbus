@@ -20,7 +20,7 @@ import { CompositeVFS, isAsyncMountRefusal } from '../vfs/composite.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
-import { toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { isVfsError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
@@ -787,6 +787,31 @@ export async function withHostView(authority, cred, use) {
     }
     finally {
         await lease.dispose();
+    }
+}
+/**
+ * Whether `path` is on `engine` as `view` sees the namespace: its st_dev,
+ * links followed, is the engine's. A name that is not there yet is judged
+ * by the nearest directory above it that is, where it would be made. A
+ * host tool asks this once for the tree it works on, then takes the
+ * engine's bulk paths for a SQLite tree and `view` for anything else (a
+ * mount, awaited), so the namespace alone decides which.
+ */
+export async function onEngine(view, engine, path) {
+    for (let at = '/' + normalizeVfsPath(path);; at = at.slice(0, at.lastIndexOf('/')) || '/') {
+        let stat;
+        try {
+            stat = await view.stat(at);
+        }
+        catch (error) {
+            if (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR'))
+                throw error;
+            stat = null;
+        }
+        if (stat !== null)
+            return stat.dev === engine.deviceId;
+        if (at === '/')
+            return true;
     }
 }
 /** POSIX access(2) modes. */

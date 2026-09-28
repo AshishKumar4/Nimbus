@@ -3,7 +3,8 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { onEngine, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectTree } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -357,10 +358,10 @@ export async function registerHostedCommands(self, workspace) {
     // chain doesn't share PID state with the .bin handler — the .bin
     // handler always dispatches through `node`, not `bun`). So
     // supportsBinSpawn=false (default).
-    /** `scripts` from the cwd's package.json; empty when there is none. */
-    const readPackageScripts = (cwd) => {
+    /** `scripts` from the cwd's package.json, read as the command's own view; empty when there is none. */
+    const readPackageScripts = async (vfs, cwd) => {
         try {
-            const pkg = JSON.parse(kernelFs.readFileString(cwd + '/package.json'));
+            const pkg = JSON.parse(await vfs.readFileString(`/${cwd}/package.json`));
             const scripts = pkg?.scripts;
             return scripts && typeof scripts === 'object' ? scripts : {};
         }
@@ -423,7 +424,7 @@ export async function registerHostedCommands(self, workspace) {
                     targetIdx++;
                 const target = args[targetIdx];
                 const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
-                const scripts = readPackageScripts(cwd);
+                const scripts = await readPackageScripts(ctx.vfs, cwd);
                 if (!target) {
                     ctx.stdout.write('Usage: bun run [flags] <file or script>\n');
                     const names = Object.keys(scripts);
@@ -457,7 +458,7 @@ export async function registerHostedCommands(self, workspace) {
                         return 1;
                     }
                 }
-                const resolved = (await resolveRuntimeScriptPath(kernelFs, cwd, target, {
+                const resolved = (await resolveRuntimeScriptPath(ctx.vfs, cwd, target, {
                     preferModuleField: true,
                 }));
                 if (resolved === null) {
@@ -610,15 +611,22 @@ export async function registerHostedCommands(self, workspace) {
             if (args[i] === '--root' && args[i + 1])
                 root = args[i + 1];
         }
+        const vfsRoot = resolveVfsPath(root, ctx.cwd || '/home/user');
+        // The dev server reads the Worker, and its KV/R2/D1 emulators keep
+        // their data, through the engine, per request and after this command
+        // has returned.
+        if (!await onEngine(ctx.vfs, sqliteFs, `/${vfsRoot}`)) {
+            ctx.stderr.write(`${invokedAs}: the Worker dev server serves only projects on the workspace filesystem; /${vfsRoot} is on a mounted one\n`);
+            return 1;
+        }
         // Stop existing
         if (self.nimbusWrangler?.isRunning)
             self.nimbusWrangler.stop();
-        const vfsRoot = resolveVfsPath(root, ctx.cwd || '/home/user');
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
         // Worker may fail when it tries to access a missing binding.
-        const unsupportedFields = detectUnsupportedWranglerConfig(kernelFs, vfsRoot);
+        const unsupportedFields = await detectUnsupportedWranglerConfig(ctx.vfs, `/${vfsRoot}`);
         ctx.stdout.write('\n');
         ctx.stdout.write('\x1b[1;35m  ' + (invokedAs === 'wrangler' ? 'Wrangler' : 'Nimbus Wrangler') + ' Dev\x1b[0m\n\n');
         if (unsupportedFields.length > 0) {
@@ -699,15 +707,15 @@ export async function registerHostedCommands(self, workspace) {
         self.ensureSqliteFs();
         const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
         // Ensure package.json exists
-        const pkgJsonPath = cwd + '/package.json';
-        if (!kernelFs.exists(pkgJsonPath)) {
-            kernelFs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
+        const pkgJsonPath = `/${cwd}/package.json`;
+        if (!await ctx.vfs.exists(pkgJsonPath)) {
+            await ctx.vfs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
         }
         ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
         await self.ensureNpmInstaller((msg) => {
             ctx.stdout.write('[npm] ' + msg + '\n');
         });
-        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid, registry: ctx.env?.NPM_REGISTRY });
+        const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
         if (result.failed.length > 0) {
             ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
         }
@@ -916,7 +924,7 @@ export async function registerHostedCommands(self, workspace) {
     };
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
-        vfs: kernelFs,
+        filesystem: workspace.filesystem,
         getCwd: () => shell?.cwd || '/home/user',
         processes: self.processes,
         getFacetManager: () => {
@@ -947,9 +955,9 @@ export async function registerHostedCommands(self, workspace) {
             const scriptName = sub === 'test' ? 'test' : sub === 'start' ? 'start' : args[1];
             if (!scriptName) {
                 // npm run (no script) — list available scripts
-                const pkgPath = cwdKey + '/package.json';
+                const pkgPath = `/${cwdKey}/package.json`;
                 try {
-                    const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
+                    const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
                     if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
                         ctx.stdout.write('Lifecycle scripts:\n');
                         for (const [name, cmd] of Object.entries(pkg.scripts)) {
@@ -966,9 +974,9 @@ export async function registerHostedCommands(self, workspace) {
                 }
                 return 0;
             }
-            const pkgPath = cwdKey + '/package.json';
+            const pkgPath = `/${cwdKey}/package.json`;
             try {
-                const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
+                const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
                 const script = pkg.scripts?.[scriptName];
                 if (!script) {
                     ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
@@ -993,7 +1001,7 @@ export async function registerHostedCommands(self, workspace) {
                     scriptArgs.includes('--no-install-check') ||
                     ctx.env?.NIMBUS_SKIP_INSTALL_CHECK === '1';
                 if (!bypassRunCheck) {
-                    const guard = checkNodeModulesGuard(kernelFs, cwdKey);
+                    const guard = await checkNodeModulesGuard(ctx.vfs, `/${cwdKey}`);
                     if (guard.missing) {
                         const bundler = detectBundlerBin(script);
                         if (bundler) {
@@ -1049,10 +1057,10 @@ export async function registerHostedCommands(self, workspace) {
         }
         // npm ls — list installed packages
         if (sub === 'ls' || sub === 'list') {
-            const pkgPath = cwdKey + '/package.json';
-            const nmDir = cwdKey + '/node_modules';
+            const pkgPath = `/${cwdKey}/package.json`;
+            const nmDir = `/${cwdKey}/node_modules`;
             try {
-                const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
+                const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
                 ctx.stdout.write(`${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${ctx.cwd}\n`);
                 const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
                 const names = Object.keys(deps);
@@ -1063,7 +1071,7 @@ export async function registerHostedCommands(self, workspace) {
                     let version = deps[name];
                     // Try to read actual installed version
                     try {
-                        const installed = JSON.parse(kernelFs.readFileString(nmDir + '/' + name + '/package.json'));
+                        const installed = JSON.parse(await ctx.vfs.readFileString(nmDir + '/' + name + '/package.json'));
                         version = installed.version;
                     }
                     catch { }
@@ -1080,7 +1088,7 @@ export async function registerHostedCommands(self, workspace) {
         if (sub === 'init') {
             const cwd = cwdKey;
             const pkgPath = cwd + '/package.json';
-            if (kernelFs.exists(pkgPath) && !args.includes('-y') && !args.includes('--yes')) {
+            if (await ctx.vfs.exists(`/${pkgPath}`) && !args.includes('-y') && !args.includes('--yes')) {
                 ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
                 return 1;
             }
@@ -1091,7 +1099,7 @@ export async function registerHostedCommands(self, workspace) {
                 scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
                 keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
             };
-            kernelFs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+            await ctx.vfs.writeFile(`/${pkgPath}`, JSON.stringify(pkg, null, 2) + '\n');
             ctx.stdout.write('Wrote to ' + pkgPath + '\n');
             return 0;
         }
@@ -1102,41 +1110,23 @@ export async function registerHostedCommands(self, workspace) {
                 ctx.stderr.write('Usage: npm uninstall <pkg>\n');
                 return 1;
             }
-            const nmDir = cwdKey + '/node_modules';
+            const nmDir = `/${cwdKey}/node_modules`;
             for (const pkg of packages) {
-                const pkgDir = nmDir + '/' + pkg;
-                // Recursively delete package directory
-                const deleteRecursive = (dir) => {
-                    try {
-                        for (const e of kernelFs.readdir(dir)) {
-                            const fp = dir + '/' + e.name;
-                            if (e.type === 'directory')
-                                deleteRecursive(fp);
-                            else
-                                try {
-                                    kernelFs.unlink(fp);
-                                }
-                                catch { }
-                        }
-                        try {
-                            kernelFs.rmdir(dir);
-                        }
-                        catch { }
-                    }
-                    catch { }
-                };
-                deleteRecursive(pkgDir);
+                try {
+                    await ctx.vfs.remove(nmDir + '/' + pkg, { recursive: true, force: true });
+                }
+                catch { }
                 ctx.stdout.write('removed ' + pkg + '\n');
             }
             // Update package.json
-            const pkgPath = cwdKey + '/package.json';
+            const pkgPath = `/${cwdKey}/package.json`;
             try {
-                const pkgJson = JSON.parse(kernelFs.readFileString(pkgPath));
+                const pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath));
                 for (const pkg of packages) {
                     delete pkgJson.dependencies?.[pkg];
                     delete pkgJson.devDependencies?.[pkg];
                 }
-                kernelFs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
+                await ctx.vfs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
             }
             catch { }
             return 0;
@@ -1261,7 +1251,8 @@ export async function registerHostedCommands(self, workspace) {
         await self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
-        const resolveResult = await resolveNpxBinary(installer, sqliteFs.as(requireVfsCred(ctx.cred, 'npx')), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY);
+        const npxCred = requireVfsCred(ctx.cred, 'npx');
+        const resolveResult = await resolveNpxBinary(installer, sqliteFs.as(npxCred), (await projectTree(workspace.filesystem, ctx.vfs, npxCred, ctx.cwd || '/home/user')).fs, ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');
             if (nodeCmd) {

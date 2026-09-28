@@ -12,7 +12,7 @@
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { SessionInternal } from './internal.js';
-type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs'>;
+type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
 export declare function createNpmInstallPort(self: InstallHost): NpmInstallPort;
 export {};
 //# sourceMappingURL=npm-install-port.d.ts.map

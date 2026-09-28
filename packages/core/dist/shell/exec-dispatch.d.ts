@@ -22,7 +22,7 @@
  * executable until touched. No migration.
  */
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import type { NamespaceFs } from '../runtime/process-files.js';
+import type { ProcessView } from '../runtime/process-files.js';
 export interface ShebangLine {
     /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
     interpreter: string;
@@ -53,5 +53,7 @@ export declare function isExecutableMode(mode: number, wasmMagic: boolean): bool
 export declare function parseShebang(head: Uint8Array): ShebangLine | null;
 export declare function basename(path: string): string;
 export declare function decideExecDispatch(mode: number, head: Uint8Array): ExecDispatchDecision;
-export declare function installPathExecResolver(registry: CommandRegistry, kernelFs: NamespaceFs, getCwd: () => string): void;
+/** What the resolver inspects a path with: a view of the namespace that awaits an asynchronous mount. */
+export type ExecInspectionFs = Pick<ProcessView, 'stat' | 'readRange' | 'realpath'>;
+export declare function installPathExecResolver(registry: CommandRegistry, fs: ExecInspectionFs, getCwd: () => string): void;
 //# sourceMappingURL=exec-dispatch.d.ts.map

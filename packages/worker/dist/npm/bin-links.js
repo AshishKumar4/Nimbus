@@ -88,25 +88,25 @@ export function packageBinEntries(pkg, nodeModulesPath) {
     }
     return entries;
 }
-export function resolveNpmBin(vfs, cwd, name) {
+export async function resolveNpmBin(vfs, cwd, name) {
     const root = normalizeVfsPath(cwd || '/home/user');
     for (const nodeModulesPath of candidateNodeModulesPaths(root)) {
-        const resolved = resolveNpmBinAt(vfs, nodeModulesPath, name);
+        const resolved = await resolveNpmBinAt(vfs, nodeModulesPath, name);
         if (resolved)
             return resolved;
     }
     return null;
 }
-export function resolveNpmBinFromPath(vfs, cwd, envPath, name) {
+export async function resolveNpmBinFromPath(vfs, cwd, envPath, name) {
     for (const binDir of candidatePathDirs(cwd, envPath)) {
-        const resolved = resolveNpmBinInBinDir(vfs, binDir, name);
+        const resolved = await resolveNpmBinInBinDir(vfs, binDir, name);
         if (resolved)
             return resolved;
     }
     return null;
 }
 /** A path-shaped invocation of an executable entry in a `node_modules/.bin` directory; null otherwise. */
-export function resolveNpmBinPath(vfs, cwd, path) {
+export async function resolveNpmBinPath(vfs, cwd, path) {
     const shimPath = resolveVfsPath(path, cwd || '/home/user');
     const slash = shimPath.lastIndexOf('/');
     if (slash < 0)
@@ -115,41 +115,41 @@ export function resolveNpmBinPath(vfs, cwd, path) {
     if (!binDir.endsWith('/node_modules/.bin'))
         return null;
     try {
-        if ((vfs.stat(shimPath).mode & 0o111) === 0)
+        if (((await vfs.stat(shimPath)).mode & 0o111) === 0)
             return null;
     }
     catch {
         return null;
     }
-    return resolveNpmBinInBinDir(vfs, binDir, shimPath.slice(slash + 1));
+    return await resolveNpmBinInBinDir(vfs, binDir, shimPath.slice(slash + 1));
 }
-export function materializeNpmBinShims(vfs, nodeModulesPath, binDir) {
-    const entries = listNpmBinEntries(vfs, normalizeVfsPath(nodeModulesPath));
+export async function materializeNpmBinShims(vfs, nodeModulesPath, binDir) {
+    const entries = await listNpmBinEntries(vfs, normalizeVfsPath(nodeModulesPath));
     if (entries.length === 0)
         return 0;
     const targetBinDir = normalizeVfsPath(binDir);
-    vfs.mkdir(targetBinDir, { recursive: true });
+    await vfs.mkdir(targetBinDir, { recursive: true });
     for (const entry of entries) {
         const shimPath = `${targetBinDir}/${entry.name}`;
-        vfs.writeFile(shimPath, createNpmBinShim(entry, targetBinDir));
+        await vfs.writeFile(shimPath, createNpmBinShim(entry, targetBinDir));
         // writeFile creates files 0o644; a bin shim on PATH must be executable
         // or the shell rejects it ("command not found"). Match the 0o755 the
         // Phase-6 .bin linker uses. chmod (not a mode arg) so a re-install over
         // an existing 0o644 shim is corrected too.
-        vfs.chmod(shimPath, 0o755);
+        await vfs.chmod(shimPath, 0o755);
     }
-    vfs.writeFile(`${targetBinDir}/${NPM_BIN_MANIFEST_NAME}`, JSON.stringify(createNpmBinManifest(entries), null, 2) + '\n');
+    await vfs.writeFile(`${targetBinDir}/${NPM_BIN_MANIFEST_NAME}`, JSON.stringify(createNpmBinManifest(entries), null, 2) + '\n');
     return entries.length;
 }
-function resolveNpmBinAt(vfs, nodeModulesPath, name) {
+async function resolveNpmBinAt(vfs, nodeModulesPath, name) {
     const binDir = npmBinDirPath(nodeModulesPath);
     const shimPath = `${binDir}/${name}`;
-    if (!vfs.exists(shimPath) || safeIsDirectory(vfs, shimPath))
+    if (!await vfs.exists(shimPath) || await safeIsDirectory(vfs, shimPath))
         return null;
-    const manifestEntry = resolveFromManifest(vfs, nodeModulesPath, name);
+    const manifestEntry = await resolveFromManifest(vfs, nodeModulesPath, name);
     if (manifestEntry)
         return { ...manifestEntry, shimPath };
-    const packageEntry = resolveFromPackageTree(vfs, nodeModulesPath, name);
+    const packageEntry = await resolveFromPackageTree(vfs, nodeModulesPath, name);
     if (packageEntry)
         return { ...packageEntry, shimPath };
     return {
@@ -161,20 +161,20 @@ function resolveNpmBinAt(vfs, nodeModulesPath, name) {
         shimPath,
     };
 }
-function resolveNpmBinInBinDir(vfs, binDir, name) {
+async function resolveNpmBinInBinDir(vfs, binDir, name) {
     const cleanBinDir = normalizeVfsPath(binDir);
     if (!cleanBinDir)
         return null;
     const shimPath = `${cleanBinDir}/${name}`;
-    if (!vfs.exists(shimPath) || safeIsDirectory(vfs, shimPath))
+    if (!await vfs.exists(shimPath) || await safeIsDirectory(vfs, shimPath))
         return null;
     const nodeModulesPath = nodeModulesPathForBinDir(cleanBinDir);
     if (nodeModulesPath) {
-        const resolved = resolveNpmBinAt(vfs, nodeModulesPath, name);
+        const resolved = await resolveNpmBinAt(vfs, nodeModulesPath, name);
         if (resolved)
             return resolved;
     }
-    const manifestEntry = resolveFromBinDirManifest(vfs, cleanBinDir, name);
+    const manifestEntry = await resolveFromBinDirManifest(vfs, cleanBinDir, name);
     if (manifestEntry)
         return { ...manifestEntry, shimPath };
     return {
@@ -220,76 +220,76 @@ function nodeModulesPathForBinDir(binDir) {
         return null;
     return binDir.slice(0, -suffix.length);
 }
-function resolveFromManifest(vfs, nodeModulesPath, name) {
+async function resolveFromManifest(vfs, nodeModulesPath, name) {
     const manifestPath = npmBinManifestPath(nodeModulesPath);
-    if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath))
+    if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
         return null;
     try {
-        const manifest = JSON.parse(vfs.readFileString(manifestPath));
+        const manifest = JSON.parse(await vfs.readFileString(manifestPath));
         if (manifest.version !== NPM_BIN_MANIFEST_VERSION || !manifest.bins || typeof manifest.bins !== 'object') {
             return null;
         }
-        return validateEntry(vfs, manifest.bins[name]);
+        return await validateEntry(vfs, manifest.bins[name]);
     }
     catch {
         return null;
     }
 }
-function resolveFromBinDirManifest(vfs, binDir, name) {
+async function resolveFromBinDirManifest(vfs, binDir, name) {
     const manifestPath = `${binDir}/${NPM_BIN_MANIFEST_NAME}`;
-    if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath))
+    if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
         return null;
-    return resolveManifestEntry(vfs, manifestPath, name);
+    return await resolveManifestEntry(vfs, manifestPath, name);
 }
-function listNpmBinEntries(vfs, nodeModulesPath) {
+async function listNpmBinEntries(vfs, nodeModulesPath) {
     const manifestPath = npmBinManifestPath(nodeModulesPath);
-    const manifestEntries = readManifestEntries(vfs, manifestPath);
+    const manifestEntries = await readManifestEntries(vfs, manifestPath);
     if (manifestEntries)
         return manifestEntries;
     const entries = [];
-    if (!vfs.exists(nodeModulesPath) || !safeIsDirectory(vfs, nodeModulesPath))
+    if (!await vfs.exists(nodeModulesPath) || !await safeIsDirectory(vfs, nodeModulesPath))
         return entries;
-    for (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
-        const pkg = readPackageJson(vfs, `${packagePath}/package.json`);
+    for await (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
+        const pkg = await readPackageJson(vfs, `${packagePath}/package.json`);
         if (!pkg)
             continue;
-        entries.push(...packageJsonBinEntry(vfs, packagePath, pkg));
+        entries.push(...await packageJsonBinEntry(vfs, packagePath, pkg));
     }
     return entries;
 }
-function readManifestEntries(vfs, manifestPath) {
-    const manifest = readNpmBinManifest(vfs, manifestPath);
+async function readManifestEntries(vfs, manifestPath) {
+    const manifest = await readNpmBinManifest(vfs, manifestPath);
     if (!manifest)
         return null;
     const entries = [];
     for (const entry of Object.values(manifest.bins)) {
-        const valid = validateEntry(vfs, entry);
+        const valid = await validateEntry(vfs, entry);
         if (valid)
             entries.push(valid);
     }
     return entries;
 }
-function resolveManifestEntry(vfs, manifestPath, name) {
-    const manifest = readNpmBinManifest(vfs, manifestPath);
-    return manifest ? validateEntry(vfs, manifest.bins[name]) : null;
+async function resolveManifestEntry(vfs, manifestPath, name) {
+    const manifest = await readNpmBinManifest(vfs, manifestPath);
+    return manifest ? await validateEntry(vfs, manifest.bins[name]) : null;
 }
-function resolveFromPackageTree(vfs, nodeModulesPath, name) {
-    if (!vfs.exists(nodeModulesPath) || !safeIsDirectory(vfs, nodeModulesPath))
+async function resolveFromPackageTree(vfs, nodeModulesPath, name) {
+    if (!await vfs.exists(nodeModulesPath) || !await safeIsDirectory(vfs, nodeModulesPath))
         return null;
-    for (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
-        const pkg = readPackageJson(vfs, `${packagePath}/package.json`);
+    for await (const packagePath of listPackagePaths(vfs, nodeModulesPath)) {
+        const pkg = await readPackageJson(vfs, `${packagePath}/package.json`);
         if (!pkg)
             continue;
-        const entry = packageJsonBinEntry(vfs, packagePath, pkg, name)[0];
+        const entry = (await packageJsonBinEntry(vfs, packagePath, pkg, name))[0];
         if (entry)
             return entry;
     }
     return null;
 }
-function* listPackagePaths(vfs, nodeModulesPath) {
+async function* listPackagePaths(vfs, nodeModulesPath) {
     let entries = [];
     try {
-        entries = vfs.readdir(nodeModulesPath);
+        entries = await vfs.readdir(nodeModulesPath);
     }
     catch {
         return;
@@ -304,7 +304,7 @@ function* listPackagePaths(vfs, nodeModulesPath) {
         }
         let scopedEntries = [];
         try {
-            scopedEntries = vfs.readdir(path);
+            scopedEntries = await vfs.readdir(path);
         }
         catch {
             continue;
@@ -315,7 +315,7 @@ function* listPackagePaths(vfs, nodeModulesPath) {
         }
     }
 }
-function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
+async function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
     const packageName = pkg.name;
     const packageVersion = pkg.version || '';
     const bin = pkg.bin;
@@ -323,7 +323,7 @@ function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
         const name = defaultBinName(packageName);
         if (requestedName && requestedName !== name)
             return [];
-        const entry = validateEntry(vfs, {
+        const entry = await validateEntry(vfs, {
             name,
             packageName,
             packageVersion,
@@ -340,7 +340,7 @@ function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
             continue;
         if (typeof rawTarget !== 'string')
             continue;
-        const entry = validateEntry(vfs, {
+        const entry = await validateEntry(vfs, {
             name,
             packageName,
             packageVersion,
@@ -352,7 +352,7 @@ function packageJsonBinEntry(vfs, packagePath, pkg, requestedName) {
     }
     return entries;
 }
-function validateEntry(vfs, entry) {
+async function validateEntry(vfs, entry) {
     const parsed = NpmBinEntrySchema.safeParse(entry);
     if (!parsed.success)
         return null;
@@ -370,7 +370,7 @@ function validateEntry(vfs, entry) {
         };
     }
     const targetPath = normalizeVfsPath(candidate.targetPath);
-    const resolvedTarget = resolveExistingTarget(vfs, targetPath);
+    const resolvedTarget = await resolveExistingTarget(vfs, targetPath);
     if (!resolvedTarget)
         return null;
     return {
@@ -381,39 +381,39 @@ function validateEntry(vfs, entry) {
         targetPath: resolvedTarget,
     };
 }
-function resolveExistingTarget(vfs, targetPath) {
-    if (vfs.exists(targetPath) && !safeIsDirectory(vfs, targetPath))
+async function resolveExistingTarget(vfs, targetPath) {
+    if (await vfs.exists(targetPath) && !await safeIsDirectory(vfs, targetPath))
         return targetPath;
     for (const ext of ['.js', '.cjs', '.mjs']) {
         const withExt = targetPath + ext;
-        if (vfs.exists(withExt) && !safeIsDirectory(vfs, withExt))
+        if (await vfs.exists(withExt) && !await safeIsDirectory(vfs, withExt))
             return withExt;
     }
     return null;
 }
-function readPackageJson(vfs, path) {
+async function readPackageJson(vfs, path) {
     try {
-        const parsed = PackageJsonSchema.safeParse(JSON.parse(vfs.readFileString(path)));
+        const parsed = PackageJsonSchema.safeParse(JSON.parse(await vfs.readFileString(path)));
         return parsed.success ? parsed.data : null;
     }
     catch {
         return null;
     }
 }
-function readNpmBinManifest(vfs, manifestPath) {
-    if (!vfs.exists(manifestPath) || safeIsDirectory(vfs, manifestPath))
+async function readNpmBinManifest(vfs, manifestPath) {
+    if (!await vfs.exists(manifestPath) || await safeIsDirectory(vfs, manifestPath))
         return null;
     try {
-        const parsed = NpmBinManifestSchema.safeParse(JSON.parse(vfs.readFileString(manifestPath)));
+        const parsed = NpmBinManifestSchema.safeParse(JSON.parse(await vfs.readFileString(manifestPath)));
         return parsed.success ? parsed.data : null;
     }
     catch {
         return null;
     }
 }
-function safeIsDirectory(vfs, path) {
+async function safeIsDirectory(vfs, path) {
     try {
-        return vfs.isDirectory(path);
+        return await vfs.isDirectory(path);
     }
     catch {
         return false;

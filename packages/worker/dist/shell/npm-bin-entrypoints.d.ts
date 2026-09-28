@@ -1,4 +1,4 @@
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
 type Output = {
@@ -11,7 +11,8 @@ type RuntimeCommandHint = {
     installSpec: string;
 } | null;
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
-    vfs: CredentialedVfs;
+    /** The session's namespace: bins are found in it, as the running command when one runs. */
+    filesystem: ProcessFiles;
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;

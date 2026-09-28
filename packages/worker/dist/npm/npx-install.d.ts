@@ -29,6 +29,7 @@
  */
 import type { NpmInstaller } from './installer.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { ProjectFs } from '../runtime/project-fs.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
@@ -73,7 +74,11 @@ export interface NpxResolveResult {
  * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
-export declare function resolveNpxBinary(installer: NpmInstaller, vfs: CredentialedVfs, cwd: string, rawArgs: string[], log: (msg: string) => void, pid?: number, 
+export declare function resolveNpxBinary(installer: NpmInstaller, 
+/** The npx cache's filesystem: the engine as the caller. */
+vfs: CredentialedVfs, 
+/** The cwd's project as the caller (runtime/project-fs.ts). */
+project: Pick<ProjectFs, 'exists' | 'readFileString'>, cwd: string, rawArgs: string[], log: (msg: string) => void, pid: number, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
 registry?: string): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map

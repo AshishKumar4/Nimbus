@@ -1255,7 +1255,7 @@ export class EsbuildService {
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     _esbuild = null;
-    /** Build reads use only the caller-supplied view; omit it for transform-only use. */
+    /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs, options = {}) {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
@@ -1480,6 +1480,7 @@ export class EsbuildService {
         const plugin = await remotePlugin(this.makeVfsPlugin({
             viteAssets: options?.viteAssets,
             vitePublicDir: options?.vitePublicDir,
+            fs: options?.fs,
         }), buildOptions);
         let outcome;
         if (this.buildHost) {
@@ -1512,12 +1513,13 @@ export class EsbuildService {
     }
     /**
      * VFS resolver plugin for esbuild.
-     * Reads through the caller's credentialed view (synchronous, no snapshot needed).
+     * Reads through the build's view, or the service's (a caller's credentialed
+     * view, answered at once or awaited; no snapshot needed).
      * Handles: absolute paths, relative paths, bare specifiers (node_modules),
      * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
     makeVfsPlugin(opts) {
-        const vfs = this.requireVfs();
+        const vfs = opts?.fs ?? this.requireVfs();
         const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
         const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
         // Path helpers shared with git/commands.ts via vfs/path.ts.
@@ -1548,11 +1550,11 @@ export class EsbuildService {
          *      a `.ts` is canonical when a `.js` actually exists.
          *   4. Directory index files (e.g. `./foo/index.ts`) as a last step.
          */
-        function tryResolve(base) {
+        async function tryResolve(base) {
             const norm = normalize(base);
             for (const ext of EXTS) {
                 const candidate = norm + ext;
-                if (vfs.exists(strip(candidate)) && !vfs.isDirectory(strip(candidate))) {
+                if (await vfs.exists(strip(candidate)) && !await vfs.isDirectory(strip(candidate))) {
                     return '/' + strip(candidate);
                 }
             }
@@ -1571,16 +1573,16 @@ export class EsbuildService {
                 const swaps = swapMap[jsExtMatch[1]] || [];
                 for (const tsExt of swaps) {
                     const candidate = withoutExt + tsExt;
-                    if (vfs.exists(strip(candidate)) && !vfs.isDirectory(strip(candidate))) {
+                    if (await vfs.exists(strip(candidate)) && !await vfs.isDirectory(strip(candidate))) {
                         return '/' + strip(candidate);
                     }
                 }
             }
             // Step 4: directory index fallback.
-            if (vfs.exists(strip(norm)) && vfs.isDirectory(strip(norm))) {
+            if (await vfs.exists(strip(norm)) && await vfs.isDirectory(strip(norm))) {
                 for (const idx of INDEX_FILES) {
                     const candidate = norm + '/' + idx;
-                    if (vfs.exists(strip(candidate)))
+                    if (await vfs.exists(strip(candidate)))
                         return '/' + strip(candidate);
                 }
             }
@@ -1609,15 +1611,15 @@ export class EsbuildService {
          * The resolved value is a path relative to the owning package root, which
          * we turn back into a VFS path for esbuild to load.
          */
-        function resolvePackageImport(specifier, fromDir) {
+        async function resolvePackageImport(specifier, fromDir) {
             let dir = strip(fromDir);
             const visited = new Set();
             while (dir && !visited.has(dir)) {
                 visited.add(dir);
                 const pkgJsonPath = dir + '/package.json';
-                if (vfs.exists(strip(pkgJsonPath))) {
+                if (await vfs.exists(strip(pkgJsonPath))) {
                     try {
-                        const pkgJson = JSON.parse(vfs.readFileString(strip(pkgJsonPath)));
+                        const pkgJson = JSON.parse(await vfs.readFileString(strip(pkgJsonPath)));
                         if (pkgJson.imports) {
                             // resolveExports happens to work for the imports field too —
                             // both are subpath→condition maps using the same format. We
@@ -1627,7 +1629,7 @@ export class EsbuildService {
                                 // Resolved value is relative to the owning package root
                                 const pkgRoot = dir;
                                 const absPath = pkgRoot + '/' + resolved.replace(/^\.\//, '');
-                                const finalPath = tryResolve(absPath);
+                                const finalPath = await tryResolve(absPath);
                                 if (finalPath)
                                     return finalPath;
                             }
@@ -1670,7 +1672,7 @@ export class EsbuildService {
          * passed through so caller can request CJS-flavoured resolution
          * (for `require()` calls in bundled CJS code).
          */
-        function resolveBarePkg(specifier, fromDir, conditions) {
+        async function resolveBarePkg(specifier, fromDir, conditions) {
             // Split scoped packages: @scope/pkg → ["@scope/pkg"]
             // Split subpath imports: pkg/sub/path → pkg, sub/path
             let pkgName;
@@ -1691,13 +1693,13 @@ export class EsbuildService {
             while (dir && !visited.has(dir)) {
                 visited.add(dir);
                 const nmDir = dir + '/node_modules/' + pkgName;
-                if (vfs.exists(strip(nmDir)) && vfs.isDirectory(strip(nmDir))) {
+                if (await vfs.exists(strip(nmDir)) && await vfs.isDirectory(strip(nmDir))) {
                     // Read package.json so we can consult the exports field.
                     const pkgJsonPath = nmDir + '/package.json';
                     let pkgJson = null;
-                    if (vfs.exists(strip(pkgJsonPath))) {
+                    if (await vfs.exists(strip(pkgJsonPath))) {
                         try {
-                            pkgJson = JSON.parse(vfs.readFileString(strip(pkgJsonPath)));
+                            pkgJson = JSON.parse(await vfs.readFileString(strip(pkgJsonPath)));
                         }
                         catch { }
                     }
@@ -1708,19 +1710,19 @@ export class EsbuildService {
                         const subpathKey = subpath ? './' + subpath : '.';
                         const entry = resolvePackageEntry(pkgJson, subpathKey, conditions);
                         if (entry) {
-                            const resolved = tryResolve(nmDir + '/' + entry.replace(/^\.\//, ''));
+                            const resolved = await tryResolve(nmDir + '/' + entry.replace(/^\.\//, ''));
                             if (resolved)
                                 return resolved;
                         }
                     }
                     // Fallback for subpath: try direct file resolution (e.g. pkg/lib/foo).
                     if (subpath) {
-                        const resolved = tryResolve(nmDir + '/' + subpath);
+                        const resolved = await tryResolve(nmDir + '/' + subpath);
                         if (resolved)
                             return resolved;
                     }
                     // Fallback for root: try index files directly
-                    const resolved = tryResolve(nmDir + '/index');
+                    const resolved = await tryResolve(nmDir + '/index');
                     if (resolved)
                         return resolved;
                 }
@@ -1789,7 +1791,7 @@ export class EsbuildService {
                  * reports a proper "Could not resolve" diagnostic — never silently
                  * marked external (that would ship a broken import).
                  */
-                const resolveModulePath = (spec, resolveDir, kind) => {
+                const resolveModulePath = async (spec, resolveDir, kind) => {
                     // 1. Subpath imports (#foo) — Node.js package.json `imports` field.
                     // These MUST be resolved against the owning package's package.json,
                     // not node_modules. Used by vfile, unified, and others to switch
@@ -1823,7 +1825,7 @@ export class EsbuildService {
                     }
                     return null;
                 };
-                build.onResolve({ filter: /.*/ }, (args) => {
+                build.onResolve({ filter: /.*/ }, async (args) => {
                     let spec = args.path;
                     let suffix = '';
                     if (viteAssets) {
@@ -1852,7 +1854,7 @@ export class EsbuildService {
                         if (isExternal(spec))
                             return { external: true };
                     }
-                    let resolved = resolveModulePath(spec, args.resolveDir, args.kind);
+                    let resolved = await resolveModulePath(spec, args.resolveDir, args.kind);
                     let publicImport = false;
                     // Vite public/ fallback: `import '/vite.svg'` names a file the
                     // dev server serves verbatim from publicDir — it resolves to the
@@ -1860,7 +1862,7 @@ export class EsbuildService {
                     // `?` modifier still applies to the public FILE's contents.
                     if (viteAssets && !resolved && publicDir && spec.startsWith('/')) {
                         const pubPath = publicDir + spec;
-                        if (vfs.exists(strip(pubPath)) && !vfs.isDirectory(strip(pubPath))) {
+                        if (await vfs.exists(strip(pubPath)) && !await vfs.isDirectory(strip(pubPath))) {
                             resolved = pubPath;
                             publicImport = true;
                         }
@@ -1885,7 +1887,7 @@ export class EsbuildService {
                     }
                     return null; // esbuild reports "Could not resolve '<spec>'"
                 });
-                const loadVfsFile = (path, loader) => {
+                const loadVfsFile = async (path, loader) => {
                     const stripped = strip(path);
                     try {
                         const lastSlash = stripped.lastIndexOf('/');
@@ -1895,9 +1897,9 @@ export class EsbuildService {
                         // of the raw bytes) must receive raw bytes. TextDecoder would
                         // corrupt them with U+FFFD replacement chars.
                         if (loader === 'binary' || loader === 'file' || loader === 'dataurl' || loader === 'base64') {
-                            return { contents: vfs.readFile(stripped), loader, resolveDir };
+                            return { contents: await vfs.readFile(stripped), loader, resolveDir };
                         }
-                        return { contents: vfs.readFileString(stripped), loader, resolveDir };
+                        return { contents: await vfs.readFileString(stripped), loader, resolveDir };
                     }
                     catch {
                         return { errors: [{ text: 'File not found in VFS: ' + path }] };
