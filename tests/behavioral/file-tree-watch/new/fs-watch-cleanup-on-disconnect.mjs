@@ -67,13 +67,18 @@ await t.waitForPrompt(30_000);
 
 const fileName = 'cleanup-' + Math.random().toString(36).slice(2, 8) + '.txt';
 const before2 = received2.length;
-await t.run(`touch /home/user/${fileName}`, 10_000);
-{ const t0 = Date.now(); while (received2.length === before2 && Date.now() - t0 < 1500) await sleep(25); }
-
-const newEvents = received2.slice(before2).flatMap((f) => f.events || []);
-const hits = newEvents.filter((ev) =>
+const hitsSince = () => received2.slice(before2).flatMap((f) => f.events || []).filter((ev) =>
   ev && (ev.type === 'add' || ev.type === 'change')
   && typeof ev.path === 'string' && ev.path.endsWith(fileName));
+await t.run(`touch /home/user/${fileName}`, 10_000);
+// Wait for this file's own event, not for any frame: the starter project is
+// seeded while the session starts, and its addDir frames can arrive first.
+{ const t0 = Date.now(); while (hitsSince().length === 0 && Date.now() - t0 < 1500) await sleep(25); }
+// Keep listening briefly so a duplicate delivered right after it is counted.
+if (hitsSince().length > 0) await sleep(500);
+
+const newEvents = received2.slice(before2).flatMap((f) => f.events || []);
+const hits = hitsSince();
 
 // We expect EXACTLY one add and possibly some path adjacent events.
 // The leak signature would be the first (closed) subscriber's frames
