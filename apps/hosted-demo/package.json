@@ -17,6 +17,6 @@
     "@nimbus-sh/worker": "workspace:^"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.143.0"
   }
 }

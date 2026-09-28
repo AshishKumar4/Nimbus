@@ -18,6 +18,7 @@ import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
@@ -463,7 +464,7 @@ export class NimbusWrangler {
       // workerd caches by content hash, so the second load is cheap —
       // it reuses the same compiled isolate and just swaps env.
 
-      const wrangCompatDate = this.config.compatibility_date || '2026-04-01';
+      const wrangCompatDate = this.config.compatibility_date || CF_COMPAT_DATE;
       // Filter flags that workerd refuses on dynamic-worker LOADER.load().
       // `experimental` gates behind the parent process's --experimental
       // CLI flag; dynamic workers can't inherit that, so workerd rejects
