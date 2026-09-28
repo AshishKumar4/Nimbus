@@ -62,7 +62,7 @@ import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHO
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { wasmImageDigest } from './wasm-image-digest.js';
@@ -76,52 +76,32 @@ function filesOf(fs) {
     }
     return files;
 }
+/**
+ * What a launch names, which is where its process's listing walks the
+ * mounts beyond SQLite (NimbusFilesystemAuthority.nameLaunch): its working
+ * directory, its program and that program's directory, its arguments, the
+ * files its module map holds, and the paths its code names statically.
+ */
+function* launchNames(cwd, program, argv, modules, refs) {
+    const script = program !== undefined && program.startsWith('/') ? program : null;
+    yield cwd;
+    if (script !== null)
+        yield script.slice(0, script.lastIndexOf('/')) || '/';
+    yield* launchNamedPaths(cwd, script, argv);
+    for (const path of modules)
+        yield path;
+    for (const found of refs) {
+        for (const ref of found.exact)
+            yield ref.path;
+        for (const ref of found.cwdRelative)
+            yield `${cwd}/${ref.path}`;
+        yield* found.listed;
+        for (const pattern of found.patterns)
+            yield pattern.dir;
+    }
+}
 /** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
 const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
-/**
- * Detect & restore a Uint8Array that's been JSON-mangled to a
- * {"0":n,"1":n,...} object during the result-envelope round-trip.
- * String inputs and already-Uint8Array inputs pass through unchanged.
- *
- * Heuristic: a plain object whose keys are dense non-negative integers
- * starting at 0 and whose values are byte-sized integers is treated as
- * a serialized Uint8Array. False-positive risk is negligible because
- * (a) only `__vfsWrites` cells reach this path and (b) the only types
- * that ever land in `__vfsWrites` are string and Uint8Array.
- */
-function _reviveVfsWriteCell(v) {
-    if (typeof v === 'string')
-        return v;
-    if (v instanceof Uint8Array)
-        return v;
-    if (v && typeof v === 'object') {
-        const o = v;
-        const keys = Object.keys(o);
-        if (keys.length === 0)
-            return new Uint8Array(0);
-        // Quick bail-out: not all keys are non-negative integers.
-        let maxIdx = -1;
-        for (const k of keys) {
-            const n = Number(k);
-            if (!Number.isInteger(n) || n < 0)
-                return String(v);
-            if (n > maxIdx)
-                maxIdx = n;
-        }
-        // Dense check: keys.length === maxIdx + 1
-        if (keys.length !== maxIdx + 1)
-            return String(v);
-        const out = new Uint8Array(keys.length);
-        for (let i = 0; i < keys.length; i++) {
-            const b = o[String(i)];
-            if (typeof b !== 'number' || b < 0 || b > 255)
-                return String(v);
-            out[i] = b;
-        }
-        return out;
-    }
-    return String(v);
-}
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -475,7 +455,7 @@ ${sources.residentStore}
     // synchronous stat, exists and readdir reads (CUTOVER #13).
     const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) {
-      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", vfsWrites: {}, residencyMisses: [] });
+      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
@@ -637,7 +617,6 @@ ${RESIDENCY_MISS_REPORT}
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
-      vfsWrites: __supervisor ? {} : __vfsWrites,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -4167,10 +4146,13 @@ export class FacetManager {
     /**
      * Which contents a resident process holds from its first instruction,
      * beyond its module map: data-plan.ts over this process's view of the
-     * namespace. A path the plan leaves out is still named and stat-able; a
-     * synchronous read of it is the one honest miss.
+     * namespace, mounts included where its launch names them. A path the plan
+     * leaves out is still named and stat-able; a synchronous read of it is the
+     * one honest miss.
      */
-    async _planResidentData(entry, vfsState, cwd, home, pacer) {
+    async _planResidentData(entry, vfsState, cwd, home, pacer, 
+    /** The program's path, which its listing walks mounts for (nameLaunch). */
+    program) {
         if (!this.vfs || !this.filesystem)
             return { paths: [], storageBytes: 0 };
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -4183,6 +4165,9 @@ export class FacetManager {
         trace('static references');
         const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
         trace(`${refs.length} modules name paths; learned reads`);
+        // Where this process's listing walks mounts, the plan's below and its own
+        // at boot: what its launch names.
+        this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
         const learned = await this._learnedReads(vfsState, entry.cred);
         trace(`${learned.length} learned; listing`);
         let pages = 0;
@@ -4696,6 +4681,10 @@ export class FacetManager {
             }
             throw err;
         }
+        // Where the one-shot's listing of its namespace walks mounts: what its
+        // launch names, the literal paths of its own code included.
+        const cwd = opts.cwd || '/home/user';
+        this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [], [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn
             ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
@@ -4714,7 +4703,6 @@ export class FacetManager {
             // a listing of the namespace, and a one-shot takes no listing of its own
             // (§2.8: the principal's image is where that comes from).
             const result = await this._execViaLoader(code, opts, entry, vfsState, [], abortController.signal, diagSink);
-            this._flushVfsWrites(result, entry.pid);
             this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
@@ -4939,7 +4927,6 @@ export class FacetManager {
             const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST' }));
             try {
                 const result = await response.json();
-                this._flushVfsWrites(result, staged.pid);
                 this.processes.exit(staged.pid, result.exitCode);
                 return { ...result, pid: staged.pid };
             }
@@ -5078,7 +5065,7 @@ export class FacetManager {
                 .finally(() => {
                 this.releaseProcessRpcResources(pid);
             }));
-            return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+            return { pid, exitCode: 0, stdout: '', stderr: '' };
         }
         catch (e) {
             this.releaseProcessRpcResources(pid);
@@ -5215,7 +5202,7 @@ export class FacetManager {
             }));
             await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
             this.portRegistry.register(port, pid);
-            return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
+            return { pid, exitCode: 0, stdout: '', stderr: '' };
         }
         catch (e) {
             this.portRegistry.unregisterByPid(pid);
@@ -5453,25 +5440,6 @@ export class FacetManager {
             this.hooks.onExternalExit?.(pid, 1, reason);
         }
         catch { }
-    }
-    /** Flush files written by the script back to the supervisor's VFS. */
-    _flushVfsWrites(result, pid) {
-        if (!this.vfs || !result.vfsWrites)
-            return;
-        const vfs = this.vfs.as(this.processes.cred(pid));
-        for (const [path, content] of Object.entries(result.vfsWrites)) {
-            const parts = path.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                const dir = parts.slice(0, i).join('/');
-                if (dir && !vfs.exists(dir))
-                    vfs.mkdir(dir, { recursive: true });
-            }
-            // No-supervisor fallback: these are full sync-write cells, not failed
-            // append residues. A write-back error is the command's error and must
-            // propagate before a successful process exit is recorded.
-            const restored = _reviveVfsWriteCell(content);
-            vfs.writeFile(path, restored);
-        }
     }
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
@@ -5716,7 +5684,7 @@ export class FacetManager {
             this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
         const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
         const planStart = Date.now();
-        const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
+        const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
         if (this.debugEnabled) {
             this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
         }

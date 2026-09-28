@@ -1,4 +1,41 @@
 import { VfsError, isVfsError } from './vfs-error.js';
+/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
+export function comparePaths(a, b) {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+        const x = a.charCodeAt(i), y = b.charCodeAt(i);
+        if (x === y)
+            continue;
+        // A surrogate half (a code point past U+FFFF) sorts after U+E000..U+FFFF.
+        if (x >= 0xd800 && x <= 0xdfff && y >= 0xe000)
+            return 1;
+        if (y >= 0xd800 && y <= 0xdfff && x >= 0xe000)
+            return -1;
+        return x - y;
+    }
+    return a.length - b.length;
+}
+/** `entries` in path order: as given when they already are (a backend's listing is), else sorted. */
+function inPathOrder(entries) {
+    for (let i = 1; i < entries.length; i++) {
+        if (comparePaths(entries[i - 1].path, entries[i].path) > 0)
+            return [...entries].sort((a, b) => comparePaths(a.path, b.path));
+    }
+    return entries;
+}
+/** The first `limit` entries of two runs in path order, in path order. */
+function mergeByPath(a, b, limit) {
+    const out = [];
+    for (let i = 0, j = 0; out.length < limit && (i < a.length || j < b.length);) {
+        if (j >= b.length || (i < a.length && comparePaths(a[i].path, b[j].path) <= 0))
+            out.push(a[i++]);
+        else
+            out.push(b[j++]);
+    }
+    return out;
+}
+/** Directories a walk (or a readdir's stats) reads at once. */
+const WALK_CONCURRENCY = 8;
 /** Identity of a mount's source object, for the table signature. */
 const sourceIds = new WeakMap();
 let nextSourceId = 1;
@@ -13,6 +50,20 @@ function sourceId(found) {
 const SYNTH_RUNTIME_STAT = {
     dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
 };
+/**
+ * A namespace entry's stat in the runtime contract's shape: its identity
+ * (dev, ino) is the namespace's, and a mounted backend's entries carry no
+ * SQLite revision.
+ */
+export function runtimeStatOf(stat) {
+    const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
+    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
+    return {
+        dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
+        ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
+        mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: 0,
+    };
+}
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
 /** Where the namespace's own device numbers for mounts start (see Mount.dev). */
@@ -90,7 +141,8 @@ export class CompositeVFS {
         return {
             position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
             since: (position, options) => this.feedSince(position, options),
-            list: (after, limit) => this.feedList(after, limit),
+            list: (after, limit, walked) => this.feedList(after, limit, walked),
+            walk: (named, limit) => this.walkUnfed(named, limit),
         };
     }
     /**
@@ -177,28 +229,32 @@ export class CompositeVFS {
     /**
      * One page of every name the namespace shows, in path order: each feed's
      * listing re-rooted and filtered, merged with the directories the
-     * namespace makes (mount points and their ancestors). A mount without a
-     * feed shows only its point. Take `position()` before the first page.
+     * namespace makes (mount points and their ancestors) and with `walked`
+     * (the names a walk of the mounts without a feed found, which stand for
+     * those mounts). A mount without a feed shows only its point otherwise.
+     * Take `position()` before the first page.
      */
-    feedList(after, limit) {
+    feedList(after, limit, walked = []) {
         const want = Math.max(1, limit);
+        const past = (path) => after === null || comparePaths(path, after) > 0;
         const streams = [];
+        const walkedPaths = new Set(walked.map((entry) => entry.path));
         const made = [];
         for (const point of [...this.table.mounts.keys(), ...this.table.synthesized.keys()]) {
-            if (point === ROOT_POINT || !this.isStructural(point) || (after !== null && point <= after))
+            if (point === ROOT_POINT || !this.isStructural(point) || !past(point) || walkedPaths.has(point))
                 continue;
             if (made.some((entry) => entry.path === point))
                 continue;
             made.push({ path: point, kind: 'directory', size: 0, rev: 0, stat: this.madeStat(point) });
         }
-        made.sort((a, b) => (a.path < b.path ? -1 : 1));
         streams.push({ entries: made, more: false });
+        streams.push({ entries: walked.filter((entry) => past(entry.path)), more: false });
         for (const { mount, changes } of this.feedSources()) {
             if (!changes)
                 continue;
             const point = mount.point;
             let from;
-            if (point === ROOT_POINT || after === null || after < `${point}/`)
+            if (point === ROOT_POINT || after === null || comparePaths(after, `${point}/`) < 0)
                 from = point === ROOT_POINT ? after : null;
             else if (after.startsWith(`${point}/`))
                 from = after.slice(point.length);
@@ -210,7 +266,7 @@ export class CompositeVFS {
                 const page = changes.list(from, want);
                 for (const entry of page.entries) {
                     const at = CompositeVFS.reroot(point, entry.path);
-                    if ((after === null || at > after) && this.feedShows(at, mount) && at !== point) {
+                    if (past(at) && this.feedShows(at, mount) && at !== point) {
                         entries.push(at === entry.path ? entry : { ...entry, path: at });
                     }
                 }
@@ -219,29 +275,130 @@ export class CompositeVFS {
             }
             streams.push({ entries, more });
         }
-        const merged = streams.flatMap((stream) => stream.entries).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+        // Each stream is in path order already (a backend's listing is, the
+        // directories made and the walk are sorted): merged, not sorted whole.
+        let merged = [];
+        for (const stream of streams)
+            merged = mergeByPath(merged, inPathOrder(stream.entries), want + 1);
         const entries = merged.slice(0, want);
         const more = merged.length > want || streams.some((stream) => stream.more);
         return { entries, next: more && entries.length > 0 ? entries[entries.length - 1].path : null };
     }
-    /** A directory the namespace makes, as a listing entry: the mounted root's own stat where it answers one. */
+    /**
+     * A directory the namespace makes, as a listing entry: its stat as `stat`
+     * answers it (the mounted root's own, or the directory the backend beneath
+     * holds there), where that can be answered without waiting.
+     */
     madeStat(point) {
-        const mount = this.table.mounts.get(point);
-        if (mount === undefined)
-            return SYNTH_RUNTIME_STAT;
         try {
             const stat = this.statAt(point, false, true);
             if (stat === null || isPromise(stat) || stat.type !== 'directory')
                 return SYNTH_RUNTIME_STAT;
-            return {
-                ...SYNTH_RUNTIME_STAT,
-                mode: stat.mode ?? SYNTH_RUNTIME_STAT.mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0,
-                mtime: stat.mtimeMs ?? 0, atime: stat.atimeMs ?? stat.mtimeMs ?? 0, ctime: stat.ctimeMs ?? stat.mtimeMs ?? 0,
-            };
+            return runtimeStatOf(stat);
         }
         catch {
             return SYNTH_RUNTIME_STAT;
         }
+    }
+    /** The mounts without a feed that this principal reaches: a point under a directory it cannot search is left out, as a listing leaves out a name there. */
+    async unfedPoints() {
+        const reached = new Map();
+        await Promise.all([...this.table.mounts.values()].map(async (mount) => {
+            if (mount.point === ROOT_POINT || !this.live(mount) || this.backend(mount)?.changes !== undefined)
+                return;
+            const stat = await (async () => this.statAt(mount.point, true, false))().catch(() => null);
+            if (stat !== null && stat.type === 'directory')
+                reached.set(mount.point, stat);
+        }));
+        return reached;
+    }
+    /** CompositeFeed.walk. */
+    async walkUnfed(named, limit) {
+        const found = new Map();
+        const stats = new Map();
+        const put = (path, stat, linkTarget) => {
+            stats.set(path, stat);
+            found.set(path, {
+                path, kind: stat.type, size: stat.size, rev: 0, stat: runtimeStatOf(stat),
+                ...(linkTarget === undefined ? {} : { linkTarget }),
+            });
+        };
+        const points = await this.unfedPoints();
+        for (const [point, stat] of points)
+            put(point, stat);
+        // Where the names lead: each one's directory and those above it, down
+        // from its mount point; a name the listings show as a directory, whole.
+        const levels = new Set();
+        const wanted = new Set();
+        for (const name of named) {
+            const path = normalizePath(name);
+            const point = this.route(path).mount.point;
+            if (!points.has(point))
+                continue;
+            wanted.add(path);
+            if (path === point)
+                continue;
+            for (let dir = parentOf(path);; dir = parentOf(dir)) {
+                levels.add(dir);
+                if (dir === point)
+                    break;
+            }
+        }
+        let room = limit;
+        const listed = new Set();
+        const tried = new Set();
+        /** One directory, whole, when this principal may search it and its names fit: its child directories. */
+        const list = async (dir) => {
+            if (tried.has(dir))
+                return [];
+            tried.add(dir);
+            const held = stats.get(dir);
+            if (room <= 0 || held === undefined || held.type !== 'directory' || !this.permits(held, 1))
+                return [];
+            let entries;
+            try {
+                entries = await this.statEntries(dir);
+            }
+            catch {
+                return [];
+            }
+            const fresh = entries.filter(({ name }) => !found.has(`${dir}/${name}`));
+            if (fresh.length > room)
+                return [];
+            room -= fresh.length;
+            const links = fresh.filter(({ stat }) => stat.type === 'symlink');
+            for (const { name, stat } of fresh)
+                if (stat.type !== 'symlink')
+                    put(`${dir}/${name}`, stat);
+            for (let i = 0; i < links.length; i += WALK_CONCURRENCY) {
+                await Promise.all(links.slice(i, i + WALK_CONCURRENCY).map(async ({ name, stat }) => {
+                    const target = await this.readlink(`${dir}/${name}`).catch(() => null);
+                    if (target !== null)
+                        put(`${dir}/${name}`, stat, target);
+                }));
+            }
+            listed.add(dir);
+            return entries.filter(({ stat }) => stat.type === 'directory').map(({ name }) => `${dir}/${name}`);
+        };
+        // Top down, a depth at a time: each directory is named by its parent's listing before its own.
+        const depth = (path) => path.split('/').length;
+        const ordered = [...levels].sort((a, b) => depth(a) - depth(b) || comparePaths(a, b));
+        for (let i = 0; i < ordered.length;) {
+            const batch = [ordered[i++]];
+            while (i < ordered.length && batch.length < WALK_CONCURRENCY && depth(ordered[i]) === depth(batch[0]))
+                batch.push(ordered[i++]);
+            await Promise.all(batch.map(list));
+        }
+        const queue = [...wanted].filter((path) => found.get(path)?.kind === 'directory').sort(comparePaths);
+        while (queue.length > 0 && room > 0) {
+            for (const dirs of await Promise.all(queue.splice(0, WALK_CONCURRENCY).map(list)))
+                queue.push(...dirs);
+        }
+        for (const entry of found.values()) {
+            if (entry.kind === 'directory' && !listed.has(entry.path))
+                entry.unlisted = this.route(entry.path).mount.point;
+        }
+        return [...found.values()].sort((a, b) => comparePaths(a.path, b.path));
     }
     // ── the table ──────────────────────────────────────────────────────────
     mount(point, source, options = {}) {
@@ -797,58 +954,60 @@ export class CompositeVFS {
         return [...names].filter((name) => this.isStructural(prefix + name));
     }
     readdirAt(input, sync) {
-        return then(this.resolve(input, true, sync), (path) => {
-            this.present(path);
-            const prefix = path === ROOT_POINT ? '/' : `${path}/`;
-            const extra = this.liveNamesIn(path);
-            const finish = (entries) => {
-                // A mount point covers whatever its parent holds under that name, and
-                // a name absent for this view is not listed (rule 1).
-                const merged = entries.filter((entry) => !extra.includes(entry.name) && this.absentOn(prefix + entry.name) === null);
-                for (const name of extra)
-                    merged.push({ name, type: 'directory' });
-                return merged;
-            };
-            if (this.isStructural(path) && this.table.mounts.get(path) === undefined) {
-                // A directory above a live mount: the backend's own entries if it
-                // holds a directory there, else only the mount points.
-                const route = this.route(path);
-                const listed = () => then(this.heldDirectory(path, sync), (held) => {
-                    if (held === null)
-                        return [];
-                    try {
-                        const out = this.ops(route, sync).readdir(route.rel);
-                        return isPromise(out) ? out.catch((e) => this.emptyIfMissing(e)) : out;
-                    }
-                    catch (e) {
-                        return this.emptyIfMissing(e);
-                    }
-                });
-                return then(this.reachable(path, sync), () => then(listed(), finish));
-            }
+        return then(this.resolve(input, true, sync), (path) => this.readdirOf(path, sync));
+    }
+    /** readdir of a path already resolved in this namespace. */
+    readdirOf(path, sync) {
+        this.present(path);
+        const prefix = path === ROOT_POINT ? '/' : `${path}/`;
+        const extra = this.liveNamesIn(path);
+        const finish = (entries) => {
+            // A mount point covers whatever its parent holds under that name, and
+            // a name absent for this view is not listed (rule 1).
+            const merged = entries.filter((entry) => !extra.includes(entry.name) && this.absentOn(prefix + entry.name) === null);
+            for (const name of extra)
+                merged.push({ name, type: 'directory' });
+            return merged;
+        };
+        if (this.isStructural(path) && this.table.mounts.get(path) === undefined) {
+            // A directory above a live mount: the backend's own entries if it
+            // holds a directory there, else only the mount points.
             const route = this.route(path);
-            const ops = this.ops(route, sync);
-            // opendir(O_DIRECTORY) answers ENOTDIR before a permission check.
-            const notDirectoryFirst = (error) => {
-                if (!isVfsError(error, 'EACCES'))
-                    throw error;
-                return then(this.softStat(ops, route.rel, true), (stat) => {
-                    if (stat !== null && stat.type !== 'directory')
-                        throw new VfsError('ENOTDIR', 'not a directory', path);
-                    throw error;
-                });
-            };
-            const listed = () => {
+            const listed = () => then(this.heldDirectory(path, sync), (held) => {
+                if (held === null)
+                    return [];
                 try {
-                    const out = ops.readdir(route.rel);
-                    return isPromise(out) ? out.catch(notDirectoryFirst) : out;
+                    const out = this.ops(route, sync).readdir(route.rel);
+                    return isPromise(out) ? out.catch((e) => this.emptyIfMissing(e)) : out;
                 }
-                catch (error) {
-                    return notDirectoryFirst(error);
+                catch (e) {
+                    return this.emptyIfMissing(e);
                 }
-            };
+            });
             return then(this.reachable(path, sync), () => then(listed(), finish));
-        });
+        }
+        const route = this.route(path);
+        const ops = this.ops(route, sync);
+        // opendir(O_DIRECTORY) answers ENOTDIR before a permission check.
+        const notDirectoryFirst = (error) => {
+            if (!isVfsError(error, 'EACCES'))
+                throw error;
+            return then(this.softStat(ops, route.rel, true), (stat) => {
+                if (stat !== null && stat.type !== 'directory')
+                    throw new VfsError('ENOTDIR', 'not a directory', path);
+                throw error;
+            });
+        };
+        const listed = () => {
+            try {
+                const out = ops.readdir(route.rel);
+                return isPromise(out) ? out.catch(notDirectoryFirst) : out;
+            }
+            catch (error) {
+                return notDirectoryFirst(error);
+            }
+        };
+        return then(this.reachable(path, sync), () => then(listed(), finish));
     }
     emptyIfMissing(error) {
         if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
@@ -1166,6 +1325,46 @@ export class CompositeVFS {
     }
     async readdir(path) {
         return this.readdirAt(path, false);
+    }
+    /**
+     * `readdir` with each entry's own stat (links not followed), identified as
+     * `stat` identifies it: the stat the backend's listing carries, else one
+     * asked of the backend that holds the name. A name gone between the two
+     * is left out.
+     */
+    async readdirStat(path) {
+        return this.statEntries(await this.resolve(path, true, false));
+    }
+    /**
+     * readdirStat of a directory already resolved in this namespace: the
+     * directory is looked up once, and each entry's stat (when its listing
+     * does not carry one) is one call to the backend that holds it, a few at
+     * a time.
+     */
+    async statEntries(dir) {
+        const prefix = dir === ROOT_POINT ? '/' : `${dir}/`;
+        const entries = await this.readdirOf(dir, false);
+        const out = entries.map(() => null);
+        const statOne = async (i) => {
+            const entry = entries[i];
+            const at = prefix + entry.name;
+            let stat = entry.stat ?? null;
+            if (stat === null) {
+                // A mount point, or a directory above one, is the namespace's.
+                if (this.isStructural(at))
+                    stat = await this.statAt(at, false, false);
+                else {
+                    const route = this.route(at);
+                    stat = await this.softStat(this.ops(route, false), route.rel, false);
+                }
+            }
+            if (stat !== null)
+                out[i] = { name: entry.name, stat: this.identify(at, stat) };
+        };
+        for (let i = 0; i < entries.length; i += WALK_CONCURRENCY) {
+            await Promise.all(entries.slice(i, i + WALK_CONCURRENCY).map((_, j) => statOne(i + j)));
+        }
+        return out.filter((entry) => entry !== null);
     }
     async mkdir(path, options) {
         return this.mkdirAt(path, options, false);

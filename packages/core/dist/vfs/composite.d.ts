@@ -21,7 +21,7 @@
  * would change what the operation means.
  */
 import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
-import type { VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
@@ -40,20 +40,49 @@ export interface FeedAnswer {
     readonly paths: VfsInvalidatedPath[];
 }
 /**
+ * The names a principal sees on the mounts that keep no change feed, walked
+ * through their readdir where a listing is told to look (`CompositeFeed.walk`):
+ * listing entries in path order (`comparePaths`), absolute. A directory the
+ * walk did not list carries `unlisted`, its mount point: what is under it is
+ * not absent, only not named.
+ */
+export type MountWalk = readonly VfsListEntry[];
+/**
  * The change feed of a principal's namespace (FormalModelsLane
  * `Vfs/CompositeFeed`): each backend's feed re-rooted under its mount point
  * and filtered to the paths the namespace routes to it, so a root row a
  * mount covers is never staged. A reader takes `position()`, then lists,
  * then asks `since` at every barrier. Entries carry their backend's `rev`.
+ * A mount without a feed shows its point, and, when the listing is given a
+ * `walk` of it, what the walk named.
  */
 export interface CompositeFeed {
     position(): FeedPosition;
     since(position: FeedPosition, options?: VfsAcquireOptions): FeedAnswer;
-    list(after: string | null, limit: number): {
+    list(after: string | null, limit: number, walked?: MountWalk): {
         entries: VfsListEntry[];
         next: string | null;
     };
+    /**
+     * What the mounts without a feed hold where `named` points into them, as
+     * this principal: each such mount point that it can reach, and, on it, the
+     * directory of each named path and every directory from the mount point
+     * down to it (one level each), and each named directory whole, breadth
+     * first. A directory is listed whole or not at all, only where the
+     * principal may search it, and only while the names so far leave room
+     * under `limit`. One readdir per directory listed, stats taken from the
+     * listings; nothing is stat-ed per named path.
+     */
+    walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
+/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
+export declare function comparePaths(a: string, b: string): number;
+/**
+ * A namespace entry's stat in the runtime contract's shape: its identity
+ * (dev, ino) is the namespace's, and a mounted backend's entries carry no
+ * SQLite revision.
+ */
+export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
  * a principal finer than its uid: two agents (or a node and its origin) that
@@ -144,12 +173,22 @@ export declare class CompositeVFS implements VFS {
     /**
      * One page of every name the namespace shows, in path order: each feed's
      * listing re-rooted and filtered, merged with the directories the
-     * namespace makes (mount points and their ancestors). A mount without a
-     * feed shows only its point. Take `position()` before the first page.
+     * namespace makes (mount points and their ancestors) and with `walked`
+     * (the names a walk of the mounts without a feed found, which stand for
+     * those mounts). A mount without a feed shows only its point otherwise.
+     * Take `position()` before the first page.
      */
     private feedList;
-    /** A directory the namespace makes, as a listing entry: the mounted root's own stat where it answers one. */
+    /**
+     * A directory the namespace makes, as a listing entry: its stat as `stat`
+     * answers it (the mounted root's own, or the directory the backend beneath
+     * holds there), where that can be answered without waiting.
+     */
     private madeStat;
+    /** The mounts without a feed that this principal reaches: a point under a directory it cannot search is left out, as a listing leaves out a name there. */
+    private unfedPoints;
+    /** CompositeFeed.walk. */
+    private walkUnfed;
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     unmount(point: string): void;
     /** The mounts this view's principal has now, root first, in mount order. */
@@ -255,6 +294,8 @@ export declare class CompositeVFS implements VFS {
     /** Mount points (and directories above live ones) directly in `dir` that this view reaches. */
     private liveNamesIn;
     private readdirAt;
+    /** readdir of a path already resolved in this namespace. */
+    private readdirOf;
     private emptyIfMissing;
     private onFile;
     private onMutation;
@@ -297,6 +338,23 @@ export declare class CompositeVFS implements VFS {
     writeRange(path: string, offset: number, bytes: Uint8Array): Promise<void>;
     truncate(path: string, size: number): Promise<void>;
     readdir(path: string): Promise<VfsDirent[]>;
+    /**
+     * `readdir` with each entry's own stat (links not followed), identified as
+     * `stat` identifies it: the stat the backend's listing carries, else one
+     * asked of the backend that holds the name. A name gone between the two
+     * is left out.
+     */
+    readdirStat(path: string): Promise<Array<{
+        name: string;
+        stat: VfsStat;
+    }>>;
+    /**
+     * readdirStat of a directory already resolved in this namespace: the
+     * directory is looked up once, and each entry's stat (when its listing
+     * does not carry one) is one call to the backend that holds it, a few at
+     * a time.
+     */
+    private statEntries;
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;

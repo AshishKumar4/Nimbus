@@ -869,6 +869,33 @@ const __fsMod = (() => {
       + (_supervisor() ? "; use " + asyncForm : "");
     throw err;
   }
+  /**
+   * The mount point when the namespace cannot say whether \`absPath\` is there:
+   * it is on a mount, in a directory the launch did not list (not named by
+   * it, or past its bound). With \`listing\`, also when \`absPath\` is such a
+   * directory, whose entries are not known. Null when the namespace knows.
+   */
+  function _nsUnlisted(absPath, follow, listing) {
+    return _nsActive() && typeof __nsUnknown === "function" ? __nsUnknown(_strip(absPath), follow !== false, !!listing) : null;
+  }
+  /**
+   * What a synchronous call answers on a mounted path its launch did not
+   * list: the refusal the namespace gives any caller that cannot wait on an
+   * asynchronous mount, and the asynchronous form that answers.
+   */
+  function _nsUnlistedErr(mount, syscall, displayPath, asyncForm) {
+    _stats.namespaceRefusals++;
+    const err = _fsErr("EAGAIN", syscall, displayPath);
+    err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': " + mount
+      + " is an asynchronous mount; this caller cannot wait for it"
+      + (_supervisor() ? "; " + asyncForm + " reads it" : "");
+    return err;
+  }
+  /** ENOENT for a name the namespace knows is not there; its refusal for one on a mount it did not list. */
+  function _absentErr(absPath, syscall, displayPath, asyncForm, follow) {
+    const mount = _nsUnlisted(absPath, follow, false);
+    return mount === null ? _fsErr("ENOENT", syscall, displayPath) : _nsUnlistedErr(mount, syscall, displayPath, asyncForm);
+  }
   const _nsOwn = new Map();
   let _nsFresh = [];
   let _barrierBegins = 0;
@@ -1083,7 +1110,7 @@ const __fsMod = (() => {
    */
   function _notResidentError(absPath, displayPath, syscall, asyncForm) {
     const st = _statLadder(absPath);
-    if (st === undefined) return _fsErr("ENOENT", syscall, displayPath);
+    if (st === undefined) return _absentErr(absPath, syscall, displayPath, asyncForm);
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
     // Unreadable to this credential: the namespace's mode says so, and no
     // bytes could have been staged for it.
@@ -3016,7 +3043,7 @@ const __fsMod = (() => {
   async function _mkdirAsync(p, opts) { await _mkdirQueued(p, opts); }
   async function _unlinkAsync(p) { await _unlinkQueued(p); }
   async function _rmdirAsync(p) { await _rmdirQueued(p); }
-  async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP); }
+  async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP, true); }
 
   async function _truncateAsync(p, len) {
     const absPath = _resolve(p);
@@ -3075,13 +3102,13 @@ const __fsMod = (() => {
   }
 
   function utimesSync(p, atime, mtime) {
-    if (!existsSync(p)) throw _fsErr("ENOENT", "utimes", p);
+    if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
     const absPath = _resolve(p);
     _recordLocalTimes(absPath, atime, mtime, "utimes", p);
   }
 
   function lutimesSync(p, atime, mtime) {
-    if (!existsSync(p)) throw _fsErr("ENOENT", "lutimes", p);
+    if (!existsSync(p)) throw _absentErr(_resolve(p), "lutimes", p, "fs.promises.lutimes", false);
     const absPath = _resolve(p);
     _recordLocalTimes(absPath, atime, mtime, "lutimes", p);
   }
@@ -3124,12 +3151,12 @@ const __fsMod = (() => {
   function _ensureModeOwner(absPath, syscall, p) {
     if (Number(cred.uid) === 0) return;
     const stat = _statLadder(absPath);
-    if (stat === undefined) throw _fsErr("ENOENT", syscall, p);
+    if (stat === undefined) throw _absentErr(absPath, syscall, p, "fs.promises.chmod");
     if (Number(stat.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
   }
 
   function chmodSync(p, mode) {
-    if (!existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
+    if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
     _ensureModeOwner(_resolve(p), "chmod", p);
     // Local-visible immediately (statSync overlay); the live write-through
     // rides the next flush of the same path — same fidelity as utimesSync.
@@ -3206,7 +3233,7 @@ const __fsMod = (() => {
     // row changes: that row is what the local permission checks read.
     if (Number(cred.uid) !== 0) {
       const stat = _statLadder(absPath);
-      if (stat === undefined) throw _fsErr("ENOENT", syscall, p);
+      if (stat === undefined) throw _absentErr(absPath, syscall, p, "fs.promises.chown", followSymlinks);
       const groups = [Number(cred.gid), ...cred.groups.map(Number)];
       if (Number(stat.uid) !== Number(cred.uid) || nextUid !== Number(stat.uid)
         || (nextGid !== Number(stat.gid) && !groups.includes(nextGid))) {
@@ -3258,7 +3285,8 @@ const __fsMod = (() => {
     }
   }
 
-  function _ensureWritable(absPath, syscall, p) {
+  /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
+  function _ensureWritable(absPath, syscall, p, live) {
     _ensureAncestorsTraversable(absPath, syscall, p);
     const cell = _bundleLookup(absPath);
     const denial = _denialCode(cell);
@@ -3269,6 +3297,12 @@ const __fsMod = (() => {
     if (stat !== undefined) {
       if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p);
       return;
+    }
+    // Not known to be absent: on a mount, in a directory the launch did not list.
+    const mount = _nsUnlisted(absPath, true, false);
+    if (mount !== null) {
+      if (live) return;
+      throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall));
     }
     // Nothing there: a create, judged by the parent the namespace describes.
 
@@ -3288,7 +3322,7 @@ const __fsMod = (() => {
     _nsRequire("access", p, "fs.promises.access");
     const cell = _bundleLookup(absPath);
     const meta = _metadata(absPath);
-    if (cell === undefined && meta === undefined && !existsSync(p)) throw _fsErr("ENOENT", "access", p);
+    if (cell === undefined && meta === undefined && !existsSync(p)) throw _absentErr(absPath, "access", p, "fs.promises.access");
     const requested = mode === undefined ? 0 : Number(mode);
     if (!Number.isInteger(requested) || requested < 0 || (requested & ~7) !== 0) {
       throw _fsErr("EINVAL", "access", p);
@@ -3298,7 +3332,7 @@ const __fsMod = (() => {
     if ((requested & 4) !== 0 && denial) throw _fsErr(denial, "access", p);
     if (requested === 0) return;
     const stat = _statLadder(absPath);
-    if (stat === undefined) throw _fsErr("ENOENT", "access", p);
+    if (stat === undefined) throw _absentErr(absPath, "access", p, "fs.promises.access");
     if (!_modeAllows(stat, requested)) throw _fsErr("EACCES", "access", p);
   }
 
@@ -3430,6 +3464,11 @@ const __fsMod = (() => {
   function _statResolved(absPath, p, opts) {
     _nsRequire("stat", p, "fs.promises.stat");
     const stat = _statLadder(absPath);
+    if (stat === undefined) {
+      // Not known to be absent: on a mount, in a directory the launch did not list.
+      const mount = _nsUnlisted(absPath, true, false);
+      if (mount !== null) throw _nsUnlistedErr(mount, "stat", p, "fs.promises.stat");
+    }
     // An answer settles the path, including the honest "not there": the
     // namespace names every path this credential can see.
     _residencySatisfied(absPath);
@@ -3463,6 +3502,8 @@ const __fsMod = (() => {
     _ensureAncestorsTraversable(absPath, "lstat", p);
     const stat = _statLadder(absPath, true);
     if (stat !== undefined) return stat;
+    const mount = _nsUnlisted(absPath, false, false);
+    if (mount !== null) throw _nsUnlistedErr(mount, "lstat", p, "fs.promises.lstat");
     if (opts && opts.throwIfNoEntry === false) return undefined;
     throw _fsErr("ENOENT", "lstat", p);
   }
@@ -3478,8 +3519,13 @@ const __fsMod = (() => {
     if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
     const st = _statLadder(absPath);
-    if (st === undefined) throw _fsErr("ENOENT", "scandir", p);
+    if (st === undefined) throw _absentErr(absPath, "scandir", p, "fs.promises.readdir");
     if (!st.isDirectory()) throw _fsErr("ENOTDIR", "scandir", p);
+    // A directory on a mount the launch did not list: its entries are not known.
+    if (!_nsOwnView(k)?.dir) {
+      const mount = _nsUnlisted(absPath, true, true);
+      if (mount !== null) throw _nsUnlistedErr(mount, "scandir", p, "fs.promises.readdir");
+    }
     _residencySatisfied(absPath);
     const listed = _nsList(k);
     const sorted = [...listed.keys()].sort();
@@ -3564,14 +3610,15 @@ const __fsMod = (() => {
   function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p)); }
 
   // ── renameSync ──
-  function _renameQueued(oldP, newP) {
+  /** \`live\`: the async form, which the authority answers for a destination the namespace cannot judge. */
+  function _renameQueued(oldP, newP, live) {
     const oldAbs = _resolve(oldP);
     const newAbs = _resolve(newP);
     // The name leaves its directory and lands in another (replacing what is
     // there): both are removals by POSIX's rule.
     _ensureRemovable(oldAbs, "rename", oldP);
     if (_statLadder(newAbs, true) !== undefined) _ensureRemovable(newAbs, "rename", newP);
-    else _ensureWritable(newAbs, "rename", newP);
+    else _ensureWritable(newAbs, "rename", newP, live);
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     // The table still holds the old name until the rename is reported, so the
@@ -3648,7 +3695,12 @@ const __fsMod = (() => {
     const o = opts || {};
     const absPath = _resolve(p);
     const k = _strip(absPath);
-    const st = statSync(p, { throwIfNoEntry: false });
+    let st;
+    try { st = statSync(p, { throwIfNoEntry: false }); }
+    catch (error) {
+      // A mounted path the launch did not list: the async form asks the authority.
+      if (sync || error?.code !== "EAGAIN") throw error;
+    }
     const supervisor = _supervisor();
     const canRemove = !!supervisor && typeof supervisor.fsRemove === "function";
     if (st === undefined) {
@@ -3786,7 +3838,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
-    if (meta === "absent") throw _fsErr("ENOENT", "realpath", p);
+    if (meta === "absent") throw _absentErr(absPath, "realpath", p, "fs.promises.realpath");
     const real = _nsRealKey(k);
     return real === null ? absPath : "/" + real;
   }
@@ -8415,8 +8467,13 @@ function __readFileOr(path, fallback) {
 }
 function __fileExists(path) {
   const k = path.replace(/^\\/+/, "");
-  // The namespace answers exactly (vfs/facet-resident-store.ts).
-  return __fsMod.existsSync("/" + k);
+  // The namespace answers exactly (vfs/facet-resident-store.ts), except on a
+  // mounted directory the launch did not list: asked only when the namespace
+  // holds such a directory, statSync's refusal says so, and resolution
+  // reports it rather than "Cannot find module".
+  if (__fsMod.existsSync("/" + k)) return true;
+  if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
+  return false;
 }
 // W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
 // directories (it has to — __resolveNodeModule and __resolveImportsField call

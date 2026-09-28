@@ -14,9 +14,10 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
-import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
 import { Hydrator } from './hydration.js';
-import { CompositeVFS, isAsyncMountRefusal } from '../vfs/composite.js';
+import { CompositeVFS, isAsyncMountRefusal, normalizePath, runtimeStatOf } from '../vfs/composite.js';
+import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
@@ -25,7 +26,7 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
-import { createSqliteDescriptorScope, fsError, modeAllows, runtimeStatOf, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
+import { createSqliteDescriptorScope, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, } from './sqlite-runtime-fs-bridge.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -204,6 +205,8 @@ export class ProcessFiles {
     awaitedDescriptors = new WeakMap();
     namespaces = new Map();
     retired = new Set();
+    /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
+    listings = new Map();
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     hydrator;
@@ -246,6 +249,39 @@ export class ProcessFiles {
     }
     gateLaunch(named) {
         return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
+    }
+    /**
+     * What a process's launch names — its working directory, program and
+     * arguments, the literal paths its code names, the files its module map
+     * was read from — which is where its listing (`list`) walks mounts without
+     * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT). `names` is
+     * asked only when the process's credential sees a mount beyond SQLite and
+     * the kernel's, so a launch computes nothing for a namespace that is
+     * SQLite alone. Adds to what was named.
+     */
+    nameLaunch({ pid, cred }, names) {
+        if (this.retired.has(pid))
+            return;
+        const view = this.vfs.as(immutableCredential(cred));
+        if (!mountsBeyondSqlite(view))
+            return;
+        const { named } = this.listingOf(pid, true);
+        for (const name of names()) {
+            if (name === '')
+                continue;
+            const path = normalizePath(name.startsWith('/') ? name : `/${name}`);
+            if (isEmbedderMount(view.mountOf(path)))
+                named.add(path);
+        }
+    }
+    /** Where `pid`'s listings of the mounts beyond SQLite stand (made when `create`), or undefined. */
+    listingOf(pid, create) {
+        let listing = this.listings.get(pid);
+        if (listing === undefined && create && !this.retired.has(pid)) {
+            listing = { named: new Set(), table: null, held: null };
+            this.listings.set(pid, listing);
+        }
+        return listing;
     }
     bind({ pid, cred, signal }) {
         if (!Number.isSafeInteger(pid) || pid <= 0)
@@ -302,6 +338,7 @@ export class ProcessFiles {
     }
     async releaseProcess(pid) {
         this.retired.add(pid);
+        this.listings.delete(pid);
         const scope = this.processes.get(pid);
         if (scope)
             this.closeScope(scope);
@@ -315,6 +352,7 @@ export class ProcessFiles {
      */
     killProcess(pid) {
         this.retired.add(pid);
+        this.listings.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
         this.engine.revokeAppendWriters(pid);
@@ -377,7 +415,8 @@ export class ProcessFiles {
         scope.abort.abort();
     }
     bridgeFor(scope, cred, signal, pid) {
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, this.vfs.as(cred), this.bufferedWriteBytes);
+        const view = this.vfs.as(cred);
+        const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, view, this.bufferedWriteBytes);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
         // Every other method is the guarded bridge's own (forwarded by the proxy below).
         let awaited = this.awaitedDescriptors.get(scope);
@@ -385,8 +424,24 @@ export class ProcessFiles {
             awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE };
             this.awaitedDescriptors.set(scope, awaited);
         }
-        return new AwaitingProcessBridge(guarded, this.vfs.as(cred), () => this.engine.revision(), cred, awaited, scope, signal);
+        const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
+        return new AwaitingProcessBridge(guarded, view, () => this.engine.revision(), cred, awaited, scope, listing, signal);
     }
+}
+/** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
+const KERNEL_MOUNT_POINTS = { '/proc': true, '/dev': true };
+/** A mount an embedder made (a Drive, a container, a device). */
+function isEmbedderMount(point) {
+    return point !== '/' && KERNEL_MOUNT_POINTS[point] !== true;
+}
+/** Whether `path` (absolute) is at or under /proc or /dev. */
+function underKernelMount(path) {
+    const end = path.indexOf('/', 1);
+    return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
+}
+/** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
+function mountsBeyondSqlite(view) {
+    return view.mounts().some((mount) => isEmbedderMount(mount.point));
 }
 /**
  * A process's asynchronous face (ProcessView, supervisor ops, RPC,
@@ -405,14 +460,18 @@ class AwaitingProcessBridge {
     cred;
     descriptors;
     scope;
+    listing;
     signal;
-    constructor(bridge, namespace, clock, cred, descriptors, scope, signal) {
+    constructor(bridge, namespace, clock, cred, descriptors, scope, 
+    /** Where this process's listings of mounts beyond SQLite stand (made when `create`); undefined for a host lease. */
+    listing, signal) {
         this.bridge = bridge;
         this.namespace = namespace;
         this.clock = clock;
         this.cred = cred;
         this.descriptors = descriptors;
         this.scope = scope;
+        this.listing = listing;
         this.signal = signal;
         return new Proxy(this, {
             get(target, key, receiver) {
@@ -429,6 +488,87 @@ class AwaitingProcessBridge {
         this.signal?.throwIfAborted();
         if (this.scope.closed)
             throw fsError('EBADF', 'fd', 'filesystem scope closed');
+    }
+    /**
+     * One page of every name the process's view shows, in path order. SQLite
+     * alone (no mount an embedder made): SQLite's own page, answered at once.
+     * Otherwise the namespace's feed (CompositeFeed.list): SQLite's names less
+     * what a mount covers, the directories the namespace makes, and each
+     * mount's names where the process's launch named them (CompositeFeed.walk),
+     * cut to a page by SQLite's own bound (listPageBudget). The kernel's /proc
+     * and /dev are left out, as SQLite's page leaves them out. A mounted entry
+     * carries revision 0: a mount never moves the SQLite clock.
+     */
+    list(after, limit) {
+        if (!mountsBeyondSqlite(this.namespace)) {
+            // A listing of SQLite alone from the start begins at no mount table.
+            const listing = after === null || after === undefined ? this.listing(false) : undefined;
+            if (listing)
+                listing.table = null;
+            return this.bridge.list(after, limit);
+        }
+        this.live();
+        return this.listMounted(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT));
+    }
+    async listMounted(after, want) {
+        const listing = this.listing(true);
+        const feed = this.namespace.feed;
+        // A page continuing a listing reuses the walk its earlier pages took; any other walks afresh.
+        const held = listing?.held;
+        const walk = after !== null && held && held.next === after
+            ? held.walk
+            : await feed.walk(listing?.named ?? [], MOUNT_LIST_NAME_LIMIT);
+        this.live();
+        // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
+        const position = feed.position();
+        const root = position.feeds['/'];
+        if (after === null && listing)
+            listing.table = position.table;
+        const page = feed.list(after === null ? null : `/${after}`, want, walk);
+        const fits = listPageBudget(root.epoch, root.cursor);
+        const entries = [];
+        let next = page.next === null ? null : page.next.slice(1);
+        for (const entry of page.entries) {
+            if (underKernelMount(entry.path))
+                continue;
+            const listed = { ...entry, path: entry.path.slice(1) };
+            if (!fits(listed)) {
+                next = entries[entries.length - 1].path;
+                break;
+            }
+            entries.push(listed);
+        }
+        if (listing)
+            listing.held = next === null ? null : { walk, next };
+        return { epoch: root.epoch, rev: root.cursor, entries, next };
+    }
+    /**
+     * What changed since the process's cursor. SQLite alone: SQLite's own
+     * answer. Otherwise the namespace's feed (CompositeFeed.since), which
+     * reports only what the namespace routes to SQLite (a write SQLite takes
+     * under a mount point is none of the process's), and is a poison when the
+     * mount table is not the one the process's last listing began at.
+     */
+    acquire(epoch, cursor, options) {
+        const listing = this.listing(false);
+        if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
+            return this.bridge.acquire(epoch, cursor, options);
+        this.live();
+        const feed = this.namespace.feed;
+        const table = listing?.table ?? feed.position().table;
+        // A null epoch (a caller with no cursor) is SQLite's poison, as ever.
+        const answer = feed.since({ table, feeds: { '/': { epoch: epoch, cursor } } }, options);
+        const root = answer.position.feeds['/'];
+        const paths = [];
+        for (const entry of answer.paths) {
+            if (underKernelMount(entry.path))
+                continue;
+            paths.push({ ...entry, path: entry.path.slice(1) });
+        }
+        return {
+            epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
+            ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
+        };
     }
     /**
      * The guarded bridge's answer, as it gives it (synchronously when it can),
