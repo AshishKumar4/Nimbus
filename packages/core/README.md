@@ -137,7 +137,8 @@ The workspace is a tenant in a database you own:
   `content_lifecycle`) opens empty, and those tables are deleted in bounded
   pages once their columns show they are Nimbus's.
 - Core hashes file content with `node:crypto`'s synchronous sha256, so a
-  workerd host needs the `nodejs_compat` flag.
+  workerd host needs `nodejs_compat`: a compatibility date of 2026-08-04 or
+  later enables it, an earlier one must list the flag.
 - `destroy()` drops those tables and does not call `deleteAll()`.
 - `transactionSync` must be a real transaction. An implementation that only
   calls the callback turns every atomic write into a torn one.

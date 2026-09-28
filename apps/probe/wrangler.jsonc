@@ -7,8 +7,10 @@
   // tokens with `tests/behavioral/_mint-probe-token.mjs`.
   "name": "nimbus-probe",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // Same date as apps/hosted-demo, for the same reasons: the newest the
+  // pinned workerd accepts, past `enhanced_error_serialization` (2026-04-21),
+  // and past `nodejs_compat` becoming the default (2026-08-04).
+  "compatibility_date": "2026-09-26",
   // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
   "limits": { "cpu_ms": 300000 },
   "observability": { "enabled": true, "head_sampling_rate": 1 },

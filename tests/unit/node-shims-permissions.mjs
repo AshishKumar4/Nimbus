@@ -94,9 +94,10 @@ function callbackResult(invoke) {
 }
 
 {
+  // The authority's error as it arrives across RPC: its code is an own property.
   const denied = createShim({
     supervisor: {
-      access: async () => { throw new Error('EACCES: permission denied'); },
+      access: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); },
     },
   });
   await assert.rejects(
@@ -112,7 +113,7 @@ function callbackResult(invoke) {
 
   const forbiddenChown = createShim({
     supervisor: {
-      chown: async () => { throw new Error('EPERM: operation not permitted'); },
+      chown: async () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); },
     },
   });
   await assert.rejects(

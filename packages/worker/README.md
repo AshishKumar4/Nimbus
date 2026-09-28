@@ -80,8 +80,7 @@ export default createNimbusHandler({
 {
   "name": "my-nimbus",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2026-09-26",
   "placement": { "mode": "smart" },
   // Shell commands run in the session DO. The 30 s default kills long ones.
   "limits": { "cpu_ms": 300000 },
@@ -113,6 +112,12 @@ export default createNimbusHandler({
   ]
 }
 ```
+
+The compatibility date must be 2026-04-21 or later. A process's filesystem
+errors reach it across workerd RPC, and only `enhanced_error_serialization`
+(on by date from 2026-04-21) carries their `code` across. Below it the Worker
+throws at startup, so `wrangler deploy` fails with that reason. From
+2026-08-04 the date also enables `nodejs_compat`, so no flag is listed.
 
 Then:
 

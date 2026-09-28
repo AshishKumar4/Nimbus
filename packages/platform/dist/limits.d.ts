@@ -94,7 +94,7 @@ export declare const RESIDENT_KEEPALIVE_MS = 5000;
 export declare const RESIDENT_KEEPALIVE_DETACHED_MS = 60000;
 /**
  * Bytes one hibernatable WebSocket attachment may serialize to. Verified in
- * workerd source at the pinned version (v1.20260603.1,
+ * workerd source at the pinned version (v1.20260926.1,
  * src/workerd/api/web-socket.h: `MAX_ATTACHMENT_SIZE = 1024 * 16`). The
  * bound is on the SERIALIZED bytes — workerd re-serializes on every
  * `serializeAttachment` call to check it — not on UTF-8 JSON text, so a

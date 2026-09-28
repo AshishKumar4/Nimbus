@@ -12,7 +12,7 @@
  *
  * const config = buildNimbusWranglerConfig({
  *   name: 'my-nimbus',
- *   compatibilityDate: '2026-04-01',
+ *   compatibilityDate: '2026-09-26',
  *   r2BucketPrefix: 'my-nimbus',
  *   runtimeCache: 'shared',
  * });
@@ -70,7 +70,11 @@ export function defineNimbusConfig<T extends NimbusConfig>(config: T): T {
 export interface BuildWranglerOptions {
   /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
   name: string;
-  /** Compatibility date. Default `2026-04-01`. */
+  /**
+   * Compatibility date. Default `2026-09-26`. Nimbus needs 2026-04-21 or
+   * later (`enhanced_error_serialization`); `nodejs_compat` is listed only
+   * for a date before 2026-08-04, from which the date enables it.
+   */
   compatibilityDate?: string;
   /** Smart placement on/off. Default `true`. */
   placement?: 'smart' | undefined;
@@ -167,6 +171,14 @@ export const NIMBUS_REQUIRED_ALIASES: Readonly<Record<string, string>> = Object.
 });
 
 /**
+ * From this compatibility date workerd enables `nodejs_compat` (and
+ * `nodejs_compat_v2`) by date, so a config at or past it names neither:
+ * src/workerd/io/compatibility-date.capnp, `nodeJsCompat @21
+ * $compatEnableDate("2026-08-04")`.
+ */
+const NODEJS_COMPAT_DEFAULT_DATE = '2026-08-04';
+
+/**
  * Build a wrangler.jsonc-shaped object for a Nimbus embedder.
  *
  * The returned object is JSON-serializable and ready to write to disk
@@ -179,7 +191,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
   if (!opts.name || typeof opts.name !== 'string') {
     throw new Error('@nimbus-sh/config: `name` is required');
   }
-  const compatDate = opts.compatibilityDate ?? '2026-04-01';
+  const compatDate = opts.compatibilityDate ?? '2026-09-26';
   const prefix = opts.r2BucketPrefix ?? opts.name;
   const runtimeCache = opts.runtimeCache ?? 'shared';
   const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
@@ -194,7 +206,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
     name: opts.name,
     main: 'src/index.ts',
     compatibility_date: compatDate,
-    compatibility_flags: ['nodejs_compat'],
+    compatibility_flags: compatDate < NODEJS_COMPAT_DEFAULT_DATE ? ['nodejs_compat'] : [],
     // Shell commands run in the session DO; the platform's 30 s default kills long ones.
     limits: { cpu_ms: 300_000 },
     assets: {

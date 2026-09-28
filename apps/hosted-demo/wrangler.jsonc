@@ -28,7 +28,11 @@
   // The small src/index.ts here re-exports from @nimbus-sh/sdk/worker
   // — exactly the shape a third-party embedder ships.
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-01",
+  // The newest date the pinned workerd accepts (1.20260926.1, via wrangler
+  // 4.143.0). It must stay at or past 2026-04-21: Nimbus refuses to compose
+  // below `enhanced_error_serialization` (packages/platform/src/composition.ts).
+  // `nodejs_compat` is on by date from 2026-08-04, so no flag is listed.
+  "compatibility_date": "2026-09-26",
   // [DEPLOY-FLAG-FIX 2026-05-08] Removed `experimental` and `replica_routing`.
   //
   // Both flags are tagged `$experimental` in workerd
@@ -53,7 +57,7 @@
   //   for type-shape parity with the upstream cloudflare-parallel
   //   library, never sets it. The ctx.exports loopback bindings
   //   (NimbusLoaderRPC, NimbusAssetsRPC, etc.) work via
-  //   `enable_ctx_exports` which is implied by the 2026-04-01
+  //   `enable_ctx_exports` which is implied by the
   //   compatibility_date.
   //
   //   `replica_routing`: enables a runtime-side opt-in for DO read
@@ -67,18 +71,18 @@
   //   fallback: DOs continue serving requests through the single-primary
   //   storage path.
   //
-  // Both top-level and
-  // env.production now carry the same `compatibility_flags`.
+  // No block (top level, env.staging, env.production) lists
+  // `compatibility_flags`.
   // Note (pyodide-v2): the `allow_eval_during_startup` flag — which
   // relaxes the CSP blocking `new WebAssembly.Module(rawBytes)` at
   // module-init time and is required by Pyodide's convertJsFunctionToWasm
   // (called from addFunction → reportUndefinedSymbols → loadDylibs →
-  // receiveInstance) — became the default as of 2025-06-01. Our
-  // compatibility_date above (2026-04-01) is past that, so the flag is
-  // implicitly enabled and MUST NOT be listed here (wrangler validator
-  // rejects redundant flags). See smoketest-result.md for the
-  // empirical chain that established this.
-  "compatibility_flags": ["nodejs_compat"],
+  // receiveInstance) — became the default as of 2025-06-01, and
+  // `nodejs_compat` as of 2026-08-04. The compatibility_date above is past
+  // both, so neither is listed: naming a flag the date already enables is
+  // a warning in workerd since 2026-08-19 (cloudflare/workerd#6980) and was
+  // a deploy error before it. See smoketest-result.md for the empirical
+  // chain that established the Pyodide requirement.
   // BUILD NOTHING ON VERSIONED PREVIEW URLS until someone produces one
   // that resolves. Measured 2026-08-05, wrangler 4.98.0, on
   // `nimbus-staging` — `preview_urls` and `workers_dev` both on, the most
@@ -347,7 +351,6 @@
     //   on prod's zone or a throwaway with a zone route, not here.
     "staging": {
       "name": "nimbus-staging",
-      "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
       "workers_dev": true,
       "vars": {
@@ -413,7 +416,6 @@
     },
     "production": {
       "name": "nimbus",
-      "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
       // Per-port app previews: each exposed session port is served at its own
       // hostname `<port>--<sid>.nimbus-os.dev` so apps that assume a ROOT asset

@@ -12,7 +12,7 @@
  *
  * const config = buildNimbusWranglerConfig({
  *   name: 'my-nimbus',
- *   compatibilityDate: '2026-04-01',
+ *   compatibilityDate: '2026-09-26',
  *   r2BucketPrefix: 'my-nimbus',
  *   runtimeCache: 'shared',
  * });
@@ -57,7 +57,11 @@ export declare function defineNimbusConfig<T extends NimbusConfig>(config: T): T
 export interface BuildWranglerOptions {
     /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
     name: string;
-    /** Compatibility date. Default `2026-04-01`. */
+    /**
+     * Compatibility date. Default `2026-09-26`. Nimbus needs 2026-04-21 or
+     * later (`enhanced_error_serialization`); `nodejs_compat` is listed only
+     * for a date before 2026-08-04, from which the date enables it.
+     */
     compatibilityDate?: string;
     /** Smart placement on/off. Default `true`. */
     placement?: 'smart' | undefined;

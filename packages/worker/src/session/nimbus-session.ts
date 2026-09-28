@@ -519,7 +519,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     // and facets get `env.SUPERVISOR === undefined` → writeBatch throws.
     //
     // DurableObjectState.exports is exposed at compat date ≥ 2025-11-17.
-    // We're on 2026-04-01, so `ctx.exports` is present. Capture it here
+    // Every host is past it (composeFabric requires 2026-04-21), so `ctx.exports` is present. Capture it here
     // so the DO's own loopback bindings are available to the facet-pool
     // and facet-manager in prod as well as dev.
     const ctxExports = (ctx as any)?.exports;

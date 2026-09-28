@@ -13,8 +13,11 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
   const c = buildNimbusWranglerConfig({ name: 'my-nimbus' });
   a.check('name set', c.name === 'my-nimbus');
   a.check('main = src/index.ts', c.main === 'src/index.ts');
-  a.check('compat date default', c.compatibility_date === '2026-04-01');
-  a.check('compat flag nodejs_compat', c.compatibility_flags.includes('nodejs_compat'));
+  // workerd turns enhanced_error_serialization on by date from 2026-04-21 and
+  // nodejs_compat from 2026-08-04 (src/workerd/io/compatibility-date.capnp).
+  a.check('default date carries enhanced_error_serialization', c.compatibility_date >= '2026-04-21');
+  a.check('default date enables nodejs_compat and does not also name it',
+    c.compatibility_date >= '2026-08-04' && !c.compatibility_flags.includes('nodejs_compat'));
   a.check('NIMBUS_SESSION DO binding', c.durable_objects.bindings.length === 1
     && c.durable_objects.bindings[0].name === 'NIMBUS_SESSION'
     && c.durable_objects.bindings[0].class_name === 'NimbusSession');
@@ -38,6 +41,13 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
   a.check('session DO CPU limit raised to 5 min', c.limits?.cpu_ms === 300_000);
   a.check('no public-directory binding by default',
     !c.durable_objects.bindings.find((b) => b.name === 'NIMBUS_PUBLIC_DIRECTORY'));
+}
+
+// 1a. A date before nodejs_compat is on by date names the flag.
+{
+  const c = buildNimbusWranglerConfig({ name: 'older', compatibilityDate: '2026-05-01' });
+  a.check('compat date passed through', c.compatibility_date === '2026-05-01');
+  a.check('nodejs_compat named before 2026-08-04', c.compatibility_flags.includes('nodejs_compat'));
 }
 
 // 1b. nimbusPublicDirectory opts the public routing directory in.

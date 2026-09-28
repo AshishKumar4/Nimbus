@@ -243,7 +243,11 @@ export const DEFAULT_VITE_PORT = 5173;
 // unreachable through /port/<n> or a shareable preview hostname.
 export const NIMBUS_AI_GATEWAY_PORT = 8790;
 // ── Compatibility ───────────────────────────────────────────────────────
-export const CF_COMPAT_DATE = '2026-04-01';
+// Every Worker Loader guest runs at this date. The newest the pinned workerd
+// (1.20260926.1, via wrangler 4.143.0) accepts; nodejs_compat is on by date
+// from 2026-08-04 and enhanced_error_serialization from 2026-04-21
+// (src/workerd/io/compatibility-date.capnp).
+export const CF_COMPAT_DATE = '2026-09-26';
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';

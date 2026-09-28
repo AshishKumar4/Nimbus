@@ -59,7 +59,7 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 | Option | Type | Default | What |
 |---|---|---|---|
 | `name` | `string` | (required) | Worker name + R2 bucket prefix. |
-| `compatibilityDate` | `string` | `'2026-04-01'` | Wrangler compat date. |
+| `compatibilityDate` | `string` | `'2026-09-26'` | Wrangler compat date. Nimbus needs 2026-04-21 or later. `nodejs_compat` is listed only before 2026-08-04, from which the date enables it. |
 | `placement` | `'smart' \| undefined` | `'smart'` | Cloudflare Smart Placement. |
 | `r2BucketPrefix` | `string` | `name` | Prefix for `${prefix}-npm-cache`, etc. |
 | `runtimeCache` | `'shared' \| 'byoa' \| { mode, bucket? }` | `'shared'` | Bind `NIMBUS_RUNTIME_CACHE` to the standard account-local bucket `nimbus-runtime-cache-public`, `${prefix}-runtime-cache`, or an explicit bucket. Seed the bucket with `nimbus setup cloudflare` or `nimbus runtime sync`. |

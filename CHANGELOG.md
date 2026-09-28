@@ -12,6 +12,47 @@ published independently in the `@nimbus-sh` npm scope.
   assets during `dist-integrity`. Without the variable, the committed assets
   are re-derived as before.
 
+- The Cloudflare toolchain is current: wrangler 4.98.0 → 4.143.0, which
+  pins workerd 1.20260603.1 → 1.20260926.1 and miniflare 4.20260603.0 →
+  5.20260926.0-alpha, and `@cloudflare/workers-types` 4.20260605.1 →
+  5.20260928.1. `nimbus init` (and `create-nimbus-app`) emits the same ranges.
+- The compatibility date moves from 2026-04-01 to 2026-09-26, the newest
+  that workerd accepts: `CF_COMPAT_DATE` (every Worker Loader guest), the
+  hosted demo (all three tiers), the probe target, the library-host fixture,
+  `nimbus init`, the `@nimbus-sh/config` default, and the default for a
+  sandboxed project's `wrangler dev` without a date. `nodejs_compat` is on by
+  date from 2026-08-04, so the Worker configs no longer list it.
+  `@nimbus-sh/config` still lists it for an earlier `compatibilityDate`.
+  These flags become the default on the way: `web_socket_auto_reply_to_close`
+  (a received Close is answered and `readyState` is CLOSED in the close
+  event; Nimbus only compares against OPEN),
+  `enhanced_error_serialization` (below),
+  `diagnostics_channel_has_subscribers_getter` and
+  `throw_on_not_implemented_tls_options` (Node conformance for programs:
+  `hasSubscribers` becomes a getter; `tls.connect` with `checkServerIdentity`
+  throws `ERR_OPTION_NOT_IMPLEMENTED` instead of ignoring it),
+  `nodejs_compat` and `nodejs_compat_v2` (already listed), and
+  `spec_compliant_dispatch_exceptions` (listener exceptions are reported and
+  the dispatch continues). The Python Workers and Workflows flags
+  (`enable_python_external_sdk`, `python_process_pth_files`,
+  `python_workers_314`, `workflows_preserve_non_retryable_error_message`,
+  `workflows_enable_fast_engine_creation`) change nothing here.
+- A filesystem error's `code` now reaches a process as the error's own
+  property. workerd's `enhanced_error_serialization` carries it across RPC
+  when both isolates have it. The process's side no longer parses the code
+  out of the message: `restoreCode` in `vfs-supervisor.ts` and the prefix
+  fallback in the node shims are gone. `fsReadBatch` answers a failed entry
+  with the error itself instead of a `{ code, message }` copy. Filesystem
+  errors that carried the code only in their message (the VFS's integrity
+  and batch-validation errors, EBUSY on destroy, the facet-ownership EPERM,
+  the hosted session's EPERM) now set `code` too. **Embedders must** run
+  their Worker with `enhanced_error_serialization`: add it to
+  `compatibility_flags`, which keeps every other behavior of an older
+  compatibility date, or set `compatibility_date` to 2026-04-21 or later.
+  `composeFabric` throws at startup on a workerd host without it, naming
+  both fixes, so such a deploy fails rather than every process seeing EIO
+  where the filesystem said ENOENT.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

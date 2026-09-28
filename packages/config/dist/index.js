@@ -12,7 +12,7 @@
  *
  * const config = buildNimbusWranglerConfig({
  *   name: 'my-nimbus',
- *   compatibilityDate: '2026-04-01',
+ *   compatibilityDate: '2026-09-26',
  *   r2BucketPrefix: 'my-nimbus',
  *   runtimeCache: 'shared',
  * });
@@ -42,6 +42,13 @@ export const NIMBUS_REQUIRED_ALIASES = Object.freeze({
     minimisted: 'minimisted',
 });
 /**
+ * From this compatibility date workerd enables `nodejs_compat` (and
+ * `nodejs_compat_v2`) by date, so a config at or past it names neither:
+ * src/workerd/io/compatibility-date.capnp, `nodeJsCompat @21
+ * $compatEnableDate("2026-08-04")`.
+ */
+const NODEJS_COMPAT_DEFAULT_DATE = '2026-08-04';
+/**
  * Build a wrangler.jsonc-shaped object for a Nimbus embedder.
  *
  * The returned object is JSON-serializable and ready to write to disk
@@ -54,7 +61,7 @@ export function buildNimbusWranglerConfig(opts) {
     if (!opts.name || typeof opts.name !== 'string') {
         throw new Error('@nimbus-sh/config: `name` is required');
     }
-    const compatDate = opts.compatibilityDate ?? '2026-04-01';
+    const compatDate = opts.compatibilityDate ?? '2026-09-26';
     const prefix = opts.r2BucketPrefix ?? opts.name;
     const runtimeCache = opts.runtimeCache ?? 'shared';
     const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
@@ -68,7 +75,7 @@ export function buildNimbusWranglerConfig(opts) {
         name: opts.name,
         main: 'src/index.ts',
         compatibility_date: compatDate,
-        compatibility_flags: ['nodejs_compat'],
+        compatibility_flags: compatDate < NODEJS_COMPAT_DEFAULT_DATE ? ['nodejs_compat'] : [],
         // Shell commands run in the session DO; the platform's 30 s default kills long ones.
         limits: { cpu_ms: 300_000 },
         assets: {

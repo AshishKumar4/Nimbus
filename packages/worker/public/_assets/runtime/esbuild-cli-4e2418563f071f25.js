@@ -569,20 +569,13 @@ return globalThis.Go;
     return (typeof result === "object" || typeof result === "function") && result !== null && typeof result.then === "function";
   }
   function hop(result) {
-    return pending(result) ? Promise.resolve(result).catch(restoreCode) : result;
+    return pending(result) ? Promise.resolve(result) : result;
   }
   function bytes(result) {
-    return pending(result) ? Promise.resolve(result).catch(restoreCode).then(asBytes) : asBytes(result);
+    return pending(result) ? Promise.resolve(result).then(asBytes) : asBytes(result);
   }
   function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
-  }
-  function restoreCode(error) {
-    if (error instanceof Error && !("code" in error)) {
-      const code = /^([A-Z]+):/.exec(error.message)?.[1];
-      if (code) throw Object.assign(error, { code });
-    }
-    throw error;
   }
   function supervisorFilesystem(supervisor, local) {
     return {
@@ -628,7 +621,7 @@ return globalThis.Go;
       appendOnce: (...args) => hop(supervisor.fsAppend(...args)),
       acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
       writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
-      writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)).catch(restoreCode),
+      writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)),
       acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
       releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args))
     };

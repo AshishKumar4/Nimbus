@@ -121,9 +121,10 @@ interface FacetContainer {
   abort(name: string, reason?: unknown): void;
   delete(name: string): void;
   /**
-   * Present on deployed Cloudflare workerd, absent from the pinned
-   * `@cloudflare/workers-types` and from local workerd ≤ 1.20260603.1 — see
-   * {@link cloneStorage}, the one way the fabric calls it.
+   * Declared by `@cloudflare/workers-types` 5 and present in workerd
+   * ≥ 1.20260926.1 and in production; an embedder's older local workerd
+   * (≤ 1.20260603.1) lacks it — see {@link cloneStorage}, the one way the
+   * fabric calls it.
    */
   clone?(src: string, dst: string): void;
 }
@@ -212,7 +213,7 @@ export async function cloneStorage(
   if (typeof facets.clone !== 'function') {
     throw new Error(
       'Nimbus: ctx.facets.clone is unavailable in this runtime; the reflink image '
-        + 'path needs deployed Cloudflare workerd (local workerd <= 1.20260603.1 lacks it)',
+        + 'path needs workerd 1.20260926.1 or later, or deployed Cloudflare workerd',
     );
   }
   const { src, dst } = clone;

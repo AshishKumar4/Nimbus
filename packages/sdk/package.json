@@ -76,7 +76,7 @@
     "@nimbus-sh/worker": "^0.11.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250327.0",
+    "@cloudflare/workers-types": "^5.20260928.1",
     "@nimbus-sh/worker": "^0.11.0",
     "typescript": "^5.7.0"
   },

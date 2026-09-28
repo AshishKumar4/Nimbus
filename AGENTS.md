@@ -539,8 +539,13 @@ subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
 
 - Use Bun for workspace package management.
 - Use `apps/hosted-demo` as the canonical embedder.
-- Do not add `allow_eval_during_startup`; Wrangler rejects redundant flags for
-  the current compat date.
+- The compat date (`2026-09-26`: `CF_COMPAT_DATE` for every Loader guest, and
+  both `wrangler.jsonc`) already enables `nodejs_compat` and
+  `allow_eval_during_startup`; list neither. workerd warns on a flag the date
+  enables (an error before workerd#6980, 2026-08-19). Keep every host at
+  2026-04-21 or later: `composeFabric` refuses a Worker without
+  `enhanced_error_serialization`, which is what carries a filesystem error's
+  `code` across RPC to a process.
 - `@nimbus-sh/sdk/worker` is the public Worker embedder import. `@nimbus-sh/worker`
   carries runtime assets and implementation.
 - `R2` runtime catalog state is external. Correct code can still fail runtime
