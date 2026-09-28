@@ -1,20 +1,21 @@
 #!/usr/bin/env bun
-// A resumption that refetches every path a program wrote keeps its supervisor
-// calls under the write ledger's in-flight cap.
+// A resumption that refetches every path a program wrote pays a round trip
+// per batch, not per path — its metadata learns included.
 //
 // preview/new/lucide-barrel-cache-widens runs `node setup.js`, which writes
 // 1,600 files with writeFileSync and exits. At the resumption barrier every
-// written path was refetched at once, and each refetch learns that path's
-// metadata with its own lstat, so one facet had 1,601 lstat calls in flight.
-// In a run that hung under concurrent sessions those calls stayed pending
-// and never reached the session. The write ledger caps its own write-backs
-// at 6 because of the same stall (vfs-write-ledger.ts), and the learn now
-// takes a slot under that cap.
+// written path is refetched at once (_acquireAndRefetch), and each refetch
+// learns the path's metadata (_learnLive). The reads travelled in batches;
+// the learns were one lstat call each — 1,599 lstat calls from one facet, and
+// in runs that hung under concurrent sessions those calls stayed pending and
+// never reached the session. A learn now rides fsReadBatch as an lstat
+// request, so the whole refetch costs about one round trip per batch.
 //
-// Real code end to end: FacetManager's one-shot runner (the ledger and the
-// shims as spliced into it), SupervisorRPC, the session's supervisor ops and
-// SqliteVFS. Only the platform's stub is simulated: it copies the envelope as
-// the wire does and counts the calls it is carrying at once.
+// Real code end to end: FacetManager's one-shot runner with the node shims
+// and write ledger it splices in (the staged node-shims asset, so the worker
+// dist and bundle-node-shims.mjs must be current), SupervisorRPC, the
+// session's supervisor ops and SqliteVFS. Only the platform's stub is
+// simulated: it copies the envelope as the wire does and records each call.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -22,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mock } from 'bun:test';
+import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../packages/core/src/constants.ts';
 
 mock.module('cloudflare:workers', () => ({
   WorkerEntrypoint: class { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
@@ -44,19 +46,19 @@ const realBuffer = globalThis.Buffer;
 const realSetTimeout = globalThis.setTimeout.bind(globalThis);
 
 const FILES = 1600;
-// vfs-write-ledger.ts __NIMBUS_VFS_RPC_MAX_IN_FLIGHT.
-const LEDGER_IN_FLIGHT_CAP = 6;
-// The calls the ledger's cap governs: its write-backs and the shims' learns.
-const CAPPED = new Set(['writeFile', 'lstat']);
+// node-shims.ts READ_STREAM_CHUNK_BYTES: what one refetch read asks for.
+const CHUNK_BYTES = 65536;
+// Requests one fsReadBatch round trip can carry: its path bound, or as many
+// chunk reads as its byte bound admits.
+const PER_BATCH = Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / CHUNK_BYTES));
 
 const { host, rawVfs, kfs } = createAuthority();
-const ctx = createFacetCtx(createFacetWorld(() => ({})), 'refetch-cap');
+const ctx = createFacetCtx(createFacetWorld(() => ({})), 'refetch-batch');
 
-const inFlight = new Map();
-const peak = new Map();
-let cappedInFlight = 0;
-let cappedPeak = 0;
 const calls = new Map();
+const batched = { ranges: 0, lstats: 0 };
+let batchesInFlight = 0;
+let batchesPeak = 0;
 const hostEnv = {
   NIMBUS_SESSION: {
     idFromName: (id) => ({ toString: () => id }),
@@ -67,16 +69,19 @@ const hostEnv = {
           const op = envelope.delivery?.op ?? envelope.op;
           calls.set(op, (calls.get(op) ?? 0) + 1);
           if (op === 'stdout' || op === 'stderr' || op === 'reportExit') return undefined;
-          inFlight.set(op, (inFlight.get(op) ?? 0) + 1);
-          peak.set(op, Math.max(peak.get(op) ?? 0, inFlight.get(op)));
-          if (CAPPED.has(op)) cappedPeak = Math.max(cappedPeak, ++cappedInFlight);
+          if (op === 'fsReadBatch') {
+            for (const request of envelope.args[0]) {
+              if (request.lstat === true) batched.lstats++;
+              else batched.ranges++;
+            }
+            batchesPeak = Math.max(batchesPeak, ++batchesInFlight);
+          }
           try {
             // A round trip takes time: calls issued together overlap.
             await new Promise((resolve) => realSetTimeout(resolve, 1));
             return structuredClone(await host.supervisorOp(structuredClone(envelope)));
           } finally {
-            inFlight.set(op, inFlight.get(op) - 1);
-            if (CAPPED.has(op)) cappedInFlight--;
+            if (op === 'fsReadBatch') batchesInFlight--;
           }
         },
         [Symbol.dispose]() {},
@@ -86,7 +91,7 @@ const hostEnv = {
 };
 adoptCtxExports({ SupervisorRPC: ({ props }) => new SupervisorRPC({ props }, hostEnv) });
 
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-refetch-cap-'));
+const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-refetch-batch-'));
 let runners = 0;
 const env = {
   LOADER: {
@@ -132,22 +137,23 @@ fs.writeFileSync('/home/user/probe/done.txt', 'ok');
   assert.equal(result.exitCode, 0, `setup.js failed: ${result.stderr}`);
   assert.equal([...kfs.readdir('home/user/probe/node_modules/lucide-react/dist/esm/icons')].length, FILES);
   assert.equal(new TextDecoder().decode(kfs.readFile('home/user/probe/done.txt')), 'ok');
-  // The shape that stalled: the resumption learned the written paths in one
-  // burst. Without it the bounds below would hold vacuously.
-  assert.ok((calls.get('lstat') ?? 0) >= FILES / 2, `the refetch learned only ${calls.get('lstat') ?? 0} of ${FILES} written paths`);
+
+  // The refetch did learn what it read — the bound below is not vacuous.
+  const learns = batched.lstats + (calls.get('lstat') ?? 0);
+  assert.ok(learns >= FILES / 2, `the refetch learned only ${learns} of ${FILES} written paths`);
+  assert.equal(calls.get('lstat') ?? 0, 0, `${calls.get('lstat')} learns each cost an lstat round trip of their own`);
+  // Every read-side round trip is a full batch, bar the last of each kind.
+  const trips = (calls.get('fsReadBatch') ?? 0) + (calls.get('lstat') ?? 0);
+  const bound = Math.ceil((batched.ranges + learns) / PER_BATCH) + 2;
   assert.ok(
-    (peak.get('lstat') ?? 0) <= LEDGER_IN_FLIGHT_CAP,
-    `${peak.get('lstat')} lstat calls were in flight at once; the ledger's cap is ${LEDGER_IN_FLIGHT_CAP}`,
+    trips <= bound,
+    `the refetch took ${trips} round trips for ${batched.ranges} reads and ${learns} learns; ${bound} batches carry them`,
   );
-  assert.ok(
-    cappedPeak <= LEDGER_IN_FLIGHT_CAP,
-    `${cappedPeak} write-backs and learns were in flight at once; they share the ledger's cap of ${LEDGER_IN_FLIGHT_CAP}`,
-  );
-  console.log(`  ok  ${calls.get('lstat')} learns after ${FILES} writes, at most ${cappedPeak} capped calls in flight`);
+  console.log(`  ok  ${batched.ranges} reads and ${learns} learns in ${trips} round trips (at most ${batchesPeak} in flight)`);
 } finally {
   globalThis.console = realConsole;
   globalThis.process = realProcess;
   globalThis.Buffer = realBuffer;
   rmSync(runnerDir, { recursive: true, force: true });
 }
-console.log('node-refetch-in-flight-cap: ok');
+console.log('node-refetch-batched-learn: ok');

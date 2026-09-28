@@ -303,12 +303,15 @@ await runScenarios(import.meta.path, {
     const files = {};
     for (let i = 0; i < N; i++) files[`many-${i}.txt`] = `old-${i}`;
     const paths = Object.keys(files).map((name) => `${APP}/${name}`);
-    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers(), reads: 0 };
+    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers(), reads: 0, learns: 0 };
     const { authority, log, probe } = await boot(files, (auth) => ({
       async fsReadBatch(requests) {
         const entries = await _rpcFsReadBatch(auth.host, requests);
         if (hold.armed) {
-          hold.reads += requests.filter((request) => request.path.includes('/many-')).length;
+          // A learn (_learnLive) rides the batch as an lstat request: not a read.
+          const many = requests.filter((request) => request.path.includes('/many-'));
+          hold.reads += many.filter((request) => request.lstat !== true).length;
+          hold.learns += many.filter((request) => request.lstat === true).length;
           if (!hold.held) {
             hold.held = true;
             hold.served.resolve();
@@ -334,6 +337,7 @@ await runScenarios(import.meta.path, {
       assert.deepEqual(seen, expected, 'every resumption reads the peer bytes');
     }
     assert.equal(hold.reads, N, `one read per changed file, not one per resumption (was ${hold.reads})`);
+    assert.equal(hold.learns, N, `one learn per changed file, not one per resumption (was ${hold.learns})`);
   },
 
   async 'a refetch in flight that a later write outdates'() {

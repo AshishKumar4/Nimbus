@@ -25,7 +25,7 @@
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
- *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
+ *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -59,7 +59,7 @@ import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FsAcquireArgs, FsReadBatchEntry, FsReadBatchRequest, VfsDeliveredAcquire } from './rpc.js';
+import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 // cache metrics support: per-tier hit/miss counters.
 //
@@ -492,8 +492,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * A file the caller knows is small is one entry; a large one is a run of
    * entries over the same path.
    *
+   * A request may instead ask for a path's lstat, so a process learning the
+   * metadata of many paths pays one round trip, not one per path.
+   *
    * Entries come back positionally, each carrying exactly what the
-   * equivalent fsReadRange would have returned. The batch is bounded by
+   * equivalent fsReadRange or lstat would have returned. The batch is bounded by
    * FS_READ_BATCH_PATH_LIMIT paths and FS_READ_BATCH_REQUEST_BYTES of
    * requested range, and the supervisor rejects anything past either — never
    * a short result, which a caller could mistake for a short file.
@@ -503,7 +506,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // returns at most the range asked for. Counting it keeps the
     // supervisor's heap estimate honest for the duration of the await, the
     // same accounting writeBatch does for its inbound payload.
-    const payloadBytes = requests.reduce((total, request) => total + request.length, 0);
+    const payloadBytes = requests.reduce((total, request) => total + fsReadBatchRequestBytes(request), 0);
     setLastRpcFrame('fsReadBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {

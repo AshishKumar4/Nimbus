@@ -1296,26 +1296,19 @@ const __fsMod = (() => {
   // (a stat, read or accepted write) is what the sync view answers for it
   // from then on, as it would after the delta that reports it
   // (facet-resident-store's __nsNoteLiveStat).
+  //
+  // The lstat rides the read batch (_queueBatchRequest) rather than a call
+  // of its own: a resumption refetches every path it owes at once
+  // (_acquireAndRefetch), and a learn per path made that one lstat call per
+  // path — 1,601 in flight from one facet after a program wrote 1,600 files,
+  // some of which stayed pending and never reached the session
+  // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
+  // the learns cost a round trip per batch, as the reads before them do.
   async function _learnLive(absPath, supervisor) {
-    if (!supervisor || typeof supervisor.lstat !== "function") return;
+    if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
     let stat;
-    // Counted as every supervisor call a program waits on is (__nimbusUseRpcResult):
-    // an uncounted round trip reads as an idle loop, and the program ends.
-    try { stat = await __nimbusUseRpcResult(_cappedOwnCall(() => supervisor.lstat(absPath)), (result) => result); } catch { return; }
+    try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
     __nsNoteLiveStat(_strip(absPath), stat ?? null);
-  }
-
-  // A learn is one lstat per path, and a resumption refetches every path it
-  // owes at once (_acquireAndRefetch): after a program wrote 1,600 files
-  // that was 1,600 lstat calls in flight. In a program that hung under
-  // concurrent sessions (preview/new/lucide-barrel-cache-widens, measured
-  // 2026-09-28), those calls sat pending for over 30 s and never reached the
-  // session. The write ledger measured the same stall for its own
-  // write-backs, so the learn waits for a slot under the ledger's in-flight
-  // cap (__nimbusVfsRpc), which the write-backs share. A harness that
-  // evaluates the shims without the ledger issues it directly.
-  function _cappedOwnCall(issue) {
-    return _hasVfsMutationQueue() ? __nimbusVfsRpc(issue) : issue();
   }
 
   /**
@@ -2669,24 +2662,32 @@ const __fsMod = (() => {
   // multi-MB file for one RPC frame.
   const READ_STREAM_CHUNK_BYTES = 65536;
 
-  // Ranged reads issued in the same microtask turn travel as ONE batch.
+  // Ranged reads issued in the same microtask turn travel as ONE batch, and
+  // so do lstats (_learnLive): one request kind each, one round trip.
   //
   // A round trip costs an order of magnitude more than the read behind it,
   // so a program awaiting reads one at a time pays for round trips and
   // nothing else. Nothing here changes what a read sees: every request is
-  // the same live ranged read, executed in order, in the caller's turn. The
-  // gather window is one microtask, so it can only capture reads the program
-  // had already issued concurrently — a sequential loop batches nothing
-  // because it has issued nothing else to batch.
+  // the same live ranged read or lstat, executed in order, in the caller's
+  // turn. The gather window is one microtask, so it can only capture
+  // requests the program had already issued concurrently — a sequential
+  // loop batches nothing because it has issued nothing else to batch.
   const READ_BATCH_PATH_LIMIT = ${FS_READ_BATCH_PATH_LIMIT};
   const READ_BATCH_REQUEST_BYTES = ${FS_READ_BATCH_REQUEST_BYTES};
   let _openReadBatch = null;
 
   function _queueRangeRead(supervisor, absPath, pos, want) {
+    return _queueBatchRequest(supervisor, { path: absPath, offset: pos, length: want }, want);
+  }
+
+  // \`request\` in the open batch, \`bytes\` of file content counted against the
+  // batch's bound. Settles with the entry's bytes for a range, its stat for
+  // an lstat.
+  function _queueBatchRequest(supervisor, request, bytes) {
     let batch = _openReadBatch;
     if (batch && (
       batch.requests.length >= READ_BATCH_PATH_LIMIT
-      || batch.bytes + want > READ_BATCH_REQUEST_BYTES
+      || batch.bytes + bytes > READ_BATCH_REQUEST_BYTES
     )) {
       _openReadBatch = null;
       _flushReadBatch(batch);
@@ -2700,9 +2701,11 @@ const __fsMod = (() => {
         _flushReadBatch(batch);
       });
     }
-    batch.bytes += want;
-    batch.requests.push({ path: absPath, offset: pos, length: want });
-    return new Promise((resolve, reject) => { batch.settlers.push({ resolve, reject }); });
+    batch.bytes += bytes;
+    batch.requests.push(request);
+    const settler = Promise.withResolvers();
+    batch.settlers.push(settler);
+    return settler.promise;
   }
 
   async function _flushReadBatch(batch) {
@@ -2717,6 +2720,8 @@ const __fsMod = (() => {
           const err = new Error(entry.error.message);
           if (entry.error.code) err.code = entry.error.code;
           batch.settlers[i].reject(err);
+        } else if (batch.requests[i].lstat === true) {
+          batch.settlers[i].resolve(entry ? entry.stat : null);
         } else {
           batch.settlers[i].resolve(entry ? entry.bytes : null);
         }

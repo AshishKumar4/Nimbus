@@ -5,14 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- The metadata `lstat` that the node shims send for each path they refetch
-  now counts toward the write ledger's in-flight cap of 6, which it shares
-  with the write-backs. At a resumption the shims refetch every path the
-  program wrote, so after 1,600 `writeFileSync` calls a single facet had
-  1,600 of these `lstat` calls in flight. The ledger capped its write-backs
-  because an unbounded burst of calls stalled undelivered. With concurrent
-  sessions, some of these `lstat` calls stayed pending for more than 30 s
-  and never reached the session.
+- The metadata the node shims learn for each path they refetch now travels
+  in the read batch. `fsReadBatch` takes an lstat request (`{ path, lstat:
+  true }`) and answers it as the `lstat` op does. Before, each learn was its
+  own `lstat` call, and a resumption refetches every path the program wrote:
+  after 1,600 `writeFileSync` calls one facet sent 1,599 `lstat` calls at
+  once. With concurrent sessions some of them stayed pending for more than
+  30 s and never reached the session, and the program never exited. The same
+  refetch now takes 74 round trips (49 read batches and 25 lstat batches).
 
 - `DELETE /s/<id>/` no longer answers with the session shell. The core
   router served the UI HTML for the session root whatever the method, so a
