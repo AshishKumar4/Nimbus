@@ -1,6 +1,7 @@
 /**
  * tracing.ts — Workers custom spans, for modules that cannot import
- * `cloudflare:workers`.
+ * `cloudflare:workers`, as best-effort telemetry that never changes an
+ * outcome.
  *
  * The span API is `tracing` from `cloudflare:workers`
  * (https://developers.cloudflare.com/workers/observability/traces/custom-spans/):
@@ -8,35 +9,53 @@
  * parent of every span and platform call made inside it — automatic RPC
  * spans included — and ends it when the callback returns or its promise
  * settles. A span records nothing unless the invocation was head-sampled
- * (`observability.traces.head_sampling_rate`), so an unsampled call pays for
- * the callback frame and nothing else.
+ * (`observability.traces.head_sampling_rate`).
+ *
+ * `setAttributes` and `recordException` shipped on 2026-09-25
+ * (https://developers.cloudflare.com/changelog/post/2026-09-25-custom-span-apis/);
+ * a runtime from before then has `isTraced` and `setAttribute` only. So the
+ * code being traced never touches the runtime's span. It gets a
+ * {@link SpanRecorder}, which records only while the span is traced, uses
+ * whichever methods the runtime has, and swallows anything a span method
+ * throws.
  *
  * Core and fabric stay importable outside workerd, so they reach the API
  * through this leaf: the Worker's composition root hands it over once, at
  * module scope, with {@link adoptTracing}, exactly as it does `ctx.exports`
  * (./composition.ts). With nothing adopted — unit tests, an embedder that
- * never adopts — {@link traced} runs its callback with no span.
+ * never adopts — {@link traced} runs its callback with {@link untraced}.
  */
 
-/** Attribute values a span holds; `undefined` entries are ignored by the runtime. */
+/** Attribute values a span holds; `undefined` entries are ignored. */
 export type SpanAttributes = Record<string, string | number | boolean | undefined>;
 
-/** What `span.recordException` accepts: a message, or an error's parts. */
-export type SpanException =
-  | string
-  | { code?: string | number; name?: string; message?: string; stack?: string };
-
-/** The part of the runtime's `Span` Nimbus uses. */
-export interface TraceSpan {
+/** The runtime's `Span`, as any Workers runtime with `tracing` may have it. */
+export interface RuntimeSpan {
   readonly isTraced: boolean;
-  setAttributes(attributes: SpanAttributes): unknown;
-  recordException(exception: SpanException): void;
+  setAttribute?(key: string, value?: string | number | boolean): unknown;
+  setAttributes?(attributes: SpanAttributes): unknown;
+  recordException?(
+    exception: string | { code?: string | number; name?: string; message?: string; stack?: string },
+  ): void;
 }
 
 /** The part of `cloudflare:workers`'s `tracing` Nimbus uses. */
 export interface Tracer {
-  enterSpan<T>(name: string, callback: (span: TraceSpan) => T): T;
+  enterSpan<T>(name: string, callback: (span: RuntimeSpan) => T): T;
 }
+
+/** What traced code records on its span. Never throws; records nothing unless the span is traced. */
+export interface SpanRecorder {
+  set(attributes: SpanAttributes): void;
+  /**
+   * Record `error` as an exception event. `code`, when given, replaces the
+   * error's own; `context` is prefixed to its message.
+   */
+  exception(error: unknown, code?: string, context?: string): void;
+}
+
+/** The recorder of a span that is not traced, or of no span at all. */
+export const untraced: SpanRecorder = Object.freeze({ set() {}, exception() {} });
 
 let tracer: Tracer | null = null;
 
@@ -45,43 +64,66 @@ export function adoptTracing(value: Tracer): void {
   tracer ??= value;
 }
 
-/**
- * `error` as a span exception. Every exception carries the parts the
- * runtime records, `code` included: the errno a callee answered with
- * (ESTALE, EIO) or the platform class a caller gave a failed attempt.
- */
-export function spanException(error: unknown, code?: string): SpanException {
-  if (error instanceof Error) {
-    const own = 'code' in error ? error.code : undefined;
-    return {
-      code: code ?? (typeof own === 'string' || typeof own === 'number' ? own : undefined),
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-    };
+function recorderFor(span: RuntimeSpan): SpanRecorder {
+  try {
+    if (!span.isTraced) return untraced;
+  } catch {
+    return untraced;
   }
-  return code === undefined ? String(error) : { code, message: String(error) };
+  return {
+    set(attributes) {
+      try {
+        if (typeof span.setAttributes === 'function') {
+          span.setAttributes(attributes);
+        } else if (typeof span.setAttribute === 'function') {
+          for (const [key, value] of Object.entries(attributes)) {
+            if (value !== undefined) span.setAttribute(key, value);
+          }
+        }
+      } catch { /* telemetry is best-effort */ }
+    },
+    exception(error, code, context = '') {
+      try {
+        if (typeof span.recordException !== 'function') return;
+        if (error instanceof Error) {
+          const own = 'code' in error ? error.code : undefined;
+          span.recordException({
+            code: code ?? (typeof own === 'string' || typeof own === 'number' ? own : undefined),
+            name: error.name,
+            message: context + error.message,
+            stack: error.stack,
+          });
+        } else {
+          span.recordException(code === undefined && !context
+            ? String(error)
+            : { code, message: context + String(error) });
+        }
+      } catch { /* telemetry is best-effort */ }
+    },
+  };
 }
 
 /**
  * Run `fn` in a span named `name` carrying `attributes`, and record on it the
- * exception `fn` throws or its promise rejects with, which still reaches the
- * caller unchanged. Without an adopted tracer, `fn` runs with no span.
+ * exception `fn` throws or its promise rejects with. What `fn` returns or
+ * throws reaches the caller unchanged, whatever the span does.
  */
-export function traced<T>(name: string, attributes: SpanAttributes, fn: (span: TraceSpan | undefined) => T): T {
-  if (!tracer) return fn(undefined);
-  return tracer.enterSpan(name, (span) => {
-    if (span.isTraced) span.setAttributes(attributes);
-    const failed = (error: unknown): never => {
-      span.recordException(spanException(error));
-      throw error;
-    };
+export function traced<T>(name: string, attributes: SpanAttributes, fn: (span: SpanRecorder) => T): T {
+  if (!tracer) return fn(untraced);
+  return tracer.enterSpan(name, (runtimeSpan) => {
+    const span = recorderFor(runtimeSpan);
+    span.set(attributes);
     let result: T;
     try {
       result = fn(span);
     } catch (error) {
-      return failed(error);
+      span.exception(error);
+      throw error;
     }
-    return (result instanceof Promise ? result.catch(failed) : result) as T;
+    if (!(result instanceof Promise)) return result;
+    return result.catch((error: unknown) => {
+      span.exception(error);
+      throw error;
+    }) as T;
   });
 }

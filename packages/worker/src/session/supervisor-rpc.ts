@@ -198,6 +198,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   private _fsRead<T>(op: SupervisorJoinedReadOpName, args: readonly unknown[] = []): Promise<T> {
     return this._resent<T>(
       { op, args, pid: this._pid(), readId: crypto.randomUUID() },
+      { kind: 'read' },
       { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS },
     );
   }
@@ -227,35 +228,37 @@ export class SupervisorRPC extends WorkerEntrypoint {
   private _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
     const hostIncarnation = this._hostIncarnation();
     if (hostIncarnation === undefined) return this._fsOp<T>(op, args);
+    const id = crypto.randomUUID();
     return this._resent<T>(
-      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id: crypto.randomUUID(), hostIncarnation } },
+      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id, hostIncarnation } },
+      { kind: 'deliver', operationId: id },
       { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS },
     );
   }
 
   /**
    * `envelope`, re-sent as it is on a fresh stub while the platform drops it
-   * retryably, in the span that classifies a lost call: which process and
-   * writer sent which operation under which id, how many attempts it took,
-   * whether a hedge fired, which attempt answered, and how each lost one
-   * failed (fabric do-calls `span`). The session's side of the same call is
-   * its `nimbus.session.*` span, under the RPC span of the attempt that
-   * reached it.
+   * retryably, in the span that classifies a lost call: `nimbus.supervisor.`
+   * `trace.kind`, naming which process and writer sent which operation under
+   * which id, how many attempts it took, whether a hedge fired, which
+   * attempt answered, and how each lost one failed (fabric do-calls `span`).
+   * The session's side of a delivery or a read is its `nimbus.session.*`
+   * span, under the RPC span of the attempt that reached it.
    */
-  private _resent<T>(envelope: SupervisorOpEnvelope, policy?: DoCallRetryPolicy): Promise<T> {
+  private _resent<T>(
+    envelope: SupervisorOpEnvelope,
+    trace: { kind: 'deliver' | 'read' | 'append'; operationId?: string },
+    policy?: DoCallRetryPolicy,
+  ): Promise<T> {
     const operation = envelope.delivery?.op ?? envelope.op;
     // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
     const props = this.ctx.props as { doId?: string; writerId?: string } | undefined;
-    const kind = envelope.delivery ? 'deliver' : envelope.readId ? 'read' : 'append';
-    // An append and its acknowledgement repeat under the append ledger's operation id.
-    const appendOperation = envelope.op === 'fsAppend' ? envelope.args?.[2]
-      : envelope.op === 'fsAppendAck' ? envelope.args?.[1] : undefined;
-    return traced(`nimbus.supervisor.${kind}`, {
+    return traced(`nimbus.supervisor.${trace.kind}`, {
       'nimbus.op': operation,
       'nimbus.pid': envelope.pid,
       'nimbus.session_do': props?.doId,
       'nimbus.writer_id': envelope.writerId ?? props?.writerId,
-      'nimbus.operation_id': envelope.delivery?.id ?? (typeof appendOperation === 'string' ? appendOperation : undefined),
+      'nimbus.operation_id': trace.operationId,
       'nimbus.host_incarnation': envelope.delivery?.hostIncarnation,
       'nimbus.read_id': envelope.readId,
     }, (span) => idempotent(
@@ -593,13 +596,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<number> {
     return this._call(
-      this._resent({ op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() }),
+      this._resent(
+        { op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() },
+        { kind: 'append', operationId },
+      ),
     );
   }
 
   async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
     return this._call(
-      this._resent({ op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() }),
+      this._resent(
+        { op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() },
+        { kind: 'append', operationId },
+      ),
     );
   }
 

@@ -42,7 +42,7 @@
 
 import { classifyDoCall, isRetryableDoCall, type DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { spanException, type TraceSpan } from '@nimbus-sh/platform/tracing.js';
+import { untraced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 
 /** Total attempts. Two retries is what a dropped connection or a deploy
  *  bounce needs; beyond that the object is not coming back inside this
@@ -90,18 +90,26 @@ export interface DoCallRetryPolicy {
    */
   onRetry?(info: DoCallRetryInfo): void;
   /**
-   * The span the call runs in, when it is traced. Each attempt lost to a
-   * transient or overloaded failure is recorded on it as an exception whose
-   * `code` is the failure's class, and when the call settles it gets
+   * Where the call's telemetry goes: its span's recorder. Each attempt lost
+   * to a transient or overloaded failure is recorded as an exception whose
+   * `code` is the failure's class, and once the call has settled it gets
    * `do_call.attempts` (started), `do_call.hedges` (started by a hedge),
    * `do_call.answered_by` (the attempt whose answer the call took, absent
-   * when none answered) and `do_call.outcome`: `answered`, `callee_error`
-   * (the callee's own failure, which is an answer), `exhausted` (the last
-   * transient failure, no repeat left), `overloaded`, or `caller_error` (the
-   * resolver or `onRetry` threw).
+   * when none answered) and `do_call.outcome` ({@link DoCallOutcome}).
+   * Nothing recorded can change the call's answer. Records nothing when
+   * absent.
    */
-  span?: TraceSpan;
+  span?: SpanRecorder;
 }
+
+/**
+ * How an `idempotent` call ended: `answered` (an attempt succeeded),
+ * `callee_error` (the callee's own failure, which is an answer),
+ * `exhausted` (the last transient failure, no repeat left), `overloaded`
+ * (shed, nothing repeated after it), or `caller_error` (the resolver or
+ * `onRetry` threw).
+ */
+export type DoCallOutcome = 'answered' | 'callee_error' | 'exhausted' | 'overloaded' | 'caller_error';
 
 /** What one retry is answering: which call, which platform class, which
  *  attempt just failed out of how many. */
@@ -174,7 +182,7 @@ export function idempotent<S, T>(
 ): Promise<T> {
   const maxAttempts = policy.maxAttempts ?? MAX_ATTEMPTS;
   const baseDelayMs = policy.baseDelayMs ?? BASE_DELAY_MS;
-  const { hedgeAfterMs, retryWindowMs, span } = policy;
+  const { hedgeAfterMs, retryWindowMs, span = untraced } = policy;
   const startedAt = Date.now();
   // The executor form: fabric's library target predates Promise.withResolvers.
   return new Promise<T>((resolve, reject) => {
@@ -189,18 +197,18 @@ export function idempotent<S, T>(
     // Attempts a hedge started rather than a retry or the first send.
     let hedged = 0;
 
-    const settle = (outcome: string, answeredBy: number | undefined, answer: () => void): void => {
+    const settle = (outcome: DoCallOutcome, answeredBy: number | undefined, answer: () => void): void => {
       if (settled) return;
       settled = true;
       for (const timer of hedges) clearTimeout(timer);
       hedges.clear();
-      span?.setAttributes({
+      answer();
+      span.set({
         'do_call.attempts': started,
         'do_call.hedges': hedged,
         'do_call.answered_by': answeredBy,
         'do_call.outcome': outcome,
       });
-      answer();
     };
     /** May another attempt start at `at`? */
     const canRepeat = (at: number): boolean =>
@@ -221,12 +229,7 @@ export function idempotent<S, T>(
         return;
       }
       // A lost attempt: the call's span says which, and why.
-      if (span?.isTraced) {
-        const lost = spanException(error, classification);
-        span.recordException(typeof lost === 'string'
-          ? lost
-          : { ...lost, message: `attempt ${number} of ${maxAttempts}: ${lost.message ?? ''}` });
-      }
+      span.exception(error, classification, `attempt ${number} of ${maxAttempts}: `);
       if (classification === 'overloaded') {
         // A shed call is no answer: nothing more is sent, and an attempt
         // still in flight may yet answer.

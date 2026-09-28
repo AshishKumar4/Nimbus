@@ -381,12 +381,17 @@ it showed is persisted without one, and reading it touches no session:
   its own spans: `nimbus.supervisor.deliver` / `.read` / `.append` on the
   sender (`nimbus.pid`, `nimbus.writer_id`, `nimbus.operation_id` or
   `nimbus.read_id`, `do_call.attempts`, `do_call.hedges`,
-  `do_call.answered_by`, `do_call.outcome`, one exception per lost attempt
-  whose code is its class), and under it `nimbus.session.deliver` /
-  `.read` per attempt that arrived (`nimbus.receipt`: `applied`,
-  `replayed`, `awaited`, `tombstoned`; `nimbus.read.joined`). An attempt
-  with a caller-side exception and no session span never reached the
-  session. Query them with the observability telemetry API
+  `do_call.answered_by`, `do_call.outcome`; an exception per lost attempt
+  whose code is its failure class, plus one for the call's own rejection
+  when it fails). A delivery or a read has, under it, one
+  `nimbus.session.deliver` / `.read` span per attempt that arrived
+  (`nimbus.receipt`: `applied`, `replayed`, `awaited`;
+  `nimbus.read.joined`; a refusal such as ESTALE or EIO as an exception).
+  For those two, an attempt with a caller-side exception and no session
+  span never reached the session. Appends have no session span, so the
+  rule does not apply to them. Spans are best-effort: a runtime without
+  the 2026-09-25 span methods records attributes only, and no span call
+  can change a call's answer. Query them with the observability telemetry API
   (`POST /accounts/<id>/workers/observability/telemetry/query`, filter on
   `$metadata.service` and the attribute). It needs an API token with the
   account permission Workers Observability Write; wrangler's OAuth login

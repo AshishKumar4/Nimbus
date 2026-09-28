@@ -1,6 +1,6 @@
 import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
-import { traced, type TraceSpan } from '@nimbus-sh/platform/tracing.js';
+import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath } from '../runtime/os-contracts.js';
@@ -491,7 +491,7 @@ export function createSupervisorOpHandler(
    * and is who it says, before any receipt answers for it, and only then the
    * receipt, or the mutation.
    */
-  const deliver = (envelope: SupervisorOpEnvelope, span: TraceSpan | undefined) => {
+  const deliver = (envelope: SupervisorOpEnvelope, span: SpanRecorder) => {
     const deliveries = deps.deliveries;
     // Exactly what a host that predates delivery answers: the op is not served.
     if (!deliveries) throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' is not served by this host`);
@@ -500,7 +500,7 @@ export function createSupervisorOpHandler(
     if (!delivery.success || op === undefined) {
       throw new Error(`supervisor op: '${SUPERVISOR_DELIVER_OP}' names no mutation it can deliver once`);
     }
-    span?.setAttributes({
+    span.set({
       'nimbus.op': op,
       'nimbus.operation_id': delivery.data.id,
       'nimbus.host_incarnation': delivery.data.hostIncarnation,
@@ -516,32 +516,37 @@ export function createSupervisorOpHandler(
     // The process's own bridge, which is what refuses a pid that does not
     // exist or has been released (ESTALE), and a cred riding a pid.
     tools.bridge(pid, envelope.cred);
-    span?.setAttributes({ 'nimbus.pid': pid });
-    return deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })), span);
+    span.set({ 'nimbus.pid': pid });
+    const { receipt, answer } = deliveries.deliver(
+      pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })),
+    );
+    span.set({ 'nimbus.receipt': receipt });
+    return answer;
   };
   /**
    * A read sent under a read id: joined to the same read still being served,
    * or served, and served plainly by a host that keeps no store.
    */
-  const read = (op: SupervisorOpName, envelope: SupervisorOpEnvelope, span: TraceSpan | undefined): ReturnType<SupervisorOpDispatch> => {
+  const read = (op: SupervisorOpName, envelope: SupervisorOpEnvelope, span: SpanRecorder): ReturnType<SupervisorOpDispatch> => {
     const joined = supervisorJoinedReadOp(op);
     if (joined === undefined) throw new Error(`supervisor op: '${op}' is not a read, so it cannot carry a read id`);
     const readId = ReadId.safeParse(envelope.readId);
     if (!readId.success) throw new Error(`supervisor op: '${op}' carries a read id that is not one`);
     const plain = { ...envelope, readId: undefined };
-    span?.setAttributes({ 'nimbus.op': op, 'nimbus.read_id': readId.data });
+    span.set({ 'nimbus.op': op, 'nimbus.read_id': readId.data });
     const pid = envelope.pid;
     const deliveries = deps.deliveries;
     if (deliveries === undefined || pid === undefined) return (async () => serve(op, plain))();
-    return deliveries.joinRead(
+    const { joined: repeat, answer } = deliveries.joinRead(
       pid,
       readId.data,
       joined,
       // A repeat is answered only for the live process that sent the read.
       () => { tools.bridge(pid, envelope.cred); },
       async () => serve(op, plain),
-      span,
     );
+    span.set({ 'nimbus.read.joined': repeat });
+    return answer;
   };
   /**
    * The session's side of a call the sender repeats is traced

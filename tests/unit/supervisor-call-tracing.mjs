@@ -42,20 +42,28 @@ Math.random = () => 0;
 
 const spans = [];
 const active = new AsyncLocalStorage();
+// The span shape the adopted tracer hands out: a current runtime's, one from
+// before 2026-09-25 (`isTraced` and `setAttribute` only — the pinned
+// workerd), or one whose every method throws.
+let runtime = 'current';
 adoptTracing({
   enterSpan(name, callback) {
-    const span = {
-      name,
-      parent: active.getStore(),
-      attributes: {},
-      exceptions: [],
-      isTraced: true,
-      setAttributes(values) {
-        for (const [key, value] of Object.entries(values)) if (value !== undefined) this.attributes[key] = value;
-        return this;
-      },
-      recordException(exception) { this.exceptions.push(exception); },
-    };
+    const span = { name, parent: active.getStore(), attributes: {}, exceptions: [] };
+    if (runtime === 'current') {
+      Object.assign(span, {
+        isTraced: true,
+        setAttributes(values) {
+          for (const [key, value] of Object.entries(values)) if (value !== undefined) this.attributes[key] = value;
+          return this;
+        },
+        recordException(exception) { this.exceptions.push(exception); },
+      });
+    } else if (runtime === 'before-2026-09-25') {
+      Object.assign(span, { isTraced: true, setAttribute(key, value) { this.attributes[key] = value; } });
+    } else {
+      const broken = () => { throw new TypeError('span method broken'); };
+      Object.assign(span, { isTraced: true, setAttribute: broken, setAttributes: broken, recordException: broken });
+    }
     spans.push(span);
     return active.run(span, () => callback(span));
   },
@@ -184,5 +192,57 @@ function world() {
   assert.equal(childrenOf(call)[0]?.attributes['nimbus.read_id'], call.attributes['nimbus.read_id']);
   console.log('  ok  reads: a repeat joins the read in flight; both sides name one read id');
 }
+
+// ── Telemetry never changes an outcome ──
+// Under a runtime whose span lacks the 2026-09-25 methods, and one whose span
+// methods throw, every call answers exactly as it does untraced: the value,
+// the refusal's code, the receipt that stops a repeat applying twice, and
+// the mutation's effect — and nothing is left pending.
+
+/** `promise`, or a loud failure if it has not settled in 2 s: a hang is the bug. */
+async function settles(promise, label) {
+  let timer;
+  const hung = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}: still pending after 2 s`)), 2000);
+  });
+  try { return await Promise.race([promise, hung]); } finally { clearTimeout(timer); }
+}
+
+for (const shape of ['before-2026-09-25', 'throwing']) {
+  runtime = shape;
+  spans.length = 0;
+  const w = world();
+  const kernel = () => w.session.host.sqliteFs.as(CRED_KERNEL);
+
+  // A lost reply: the repeat is answered from the receipt, and the write applied once.
+  w.faults.push('lost-reply');
+  const revision = await settles(w.rpc.writeFile('/home/user/once.txt', 'hello'), `${shape}: writeFile`);
+  assert.equal(revision, w.session.host.sqliteFs.revision('home/user/once.txt'), `${shape}: the answer is not the write's revision`);
+  assert.equal(new TextDecoder().decode(kernel().readFile('home/user/once.txt')), 'hello');
+  const writes = spans.filter((span) => span.name === 'nimbus.session.deliver');
+  assert.equal(writes.length, 2, `${shape}: the session did not see both attempts`);
+
+  // Reads answer their value.
+  assert.equal(await settles(w.rpc.readFile('/home/user/once.txt'), `${shape}: readFile`), 'hello');
+  assert.equal(await settles(w.rpc.exists('/home/user/missing'), `${shape}: exists`), false);
+
+  // A refusal keeps its code; nothing is applied.
+  w.restart();
+  await assert.rejects(
+    settles(w.rpc.writeFile('/home/user/refused.txt', 'x'), `${shape}: refused write`),
+    (error) => error.code === 'ESTALE',
+  );
+  assert.equal(kernel().exists('home/user/refused.txt'), false);
+
+  if (shape === 'before-2026-09-25') {
+    // What such a runtime can record, it still does, through setAttribute.
+    const [call] = spans.filter((span) => span.name === 'nimbus.supervisor.deliver');
+    assert.equal(call.attributes['nimbus.op'], 'writeFile');
+    assert.equal(call.attributes['do_call.attempts'], 2);
+    assert.deepEqual(writes.map((span) => span.attributes['nimbus.receipt']), ['applied', 'replayed']);
+  }
+  console.log(`  ok  ${shape} span: answers, refusals, receipts and effects unchanged; nothing hangs`);
+}
+runtime = 'current';
 
 console.log('ok - supervisor-call-tracing');

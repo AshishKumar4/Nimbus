@@ -529,31 +529,33 @@ function assertOneDelivery(arrivals, op, attempts) {
   const id = crypto.randomUUID();
   const running = Promise.withResolvers();
   let applied = 0;
-  const answer = store.deliver(7, id, 'fsCopyTree', () => { applied++; return running.promise; });
+  const first = store.deliver(7, id, 'fsCopyTree', () => { applied++; return running.promise; });
   const repeat = store.deliver(7, id, 'fsCopyTree', () => { applied++; return 0; });
+  assert.deepEqual([first.receipt, repeat.receipt], ['applied', 'awaited']);
   running.resolve(12);
-  assert.equal(await answer, 12);
-  assert.equal(await repeat, 12, 'the repeat did not join the running mutation');
-  assert.equal(store.deliver(7, id, 'fsCopyTree', () => { applied++; return 0; }), 12);
+  assert.equal(await first.answer, 12);
+  assert.equal(await repeat.answer, 12, 'the repeat did not join the running mutation');
+  const settled = store.deliver(7, id, 'fsCopyTree', () => { applied++; return 0; });
+  assert.deepEqual(settled, { receipt: 'replayed', answer: 12 });
   assert.equal(applied, 1);
 
   for (const fail of [() => Promise.reject(new Error('ENOSPC: full')), () => { throw new Error('ENOSPC: full'); }]) {
     const failing = crypto.randomUUID();
     let tries = 0;
     const attempt = () => { tries++; return fail(); };
-    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt), /ENOSPC/);
-    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt), /ENOSPC/);
+    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt).answer, /ENOSPC/);
+    await assert.rejects(async () => store.deliver(7, failing, 'fsCopyTree', attempt).answer, /ENOSPC/);
     assert.equal(tries, 1, 'a repeat of a failed mutation applied it again');
   }
-  assert.equal(store.deliver(8, id, 'fsCopyTree', () => 5), 5, 'another pid\'s id was answered from this one\'s receipt');
+  assert.equal(store.deliver(8, id, 'fsCopyTree', () => 5).answer, 5, 'another pid\'s id was answered from this one\'s receipt');
   assert.notEqual(new SupervisorDeliveries().incarnation, store.incarnation);
   assert.equal(store.incarnation, store.incarnation);
 
   // A repeat is answered with the very value the first delivery answered.
   const handle = { id: 3, path: 'home/user/f', flags: { write: true }, position: 0, closed: false };
   const opened = crypto.randomUUID();
-  assert.equal(store.deliver(9, opened, 'fsOpen', () => handle), handle);
-  assert.equal(store.deliver(9, opened, 'fsOpen', () => ({ ...handle, id: 4 })), handle);
+  assert.equal(store.deliver(9, opened, 'fsOpen', () => handle).answer, handle);
+  assert.equal(store.deliver(9, opened, 'fsOpen', () => ({ ...handle, id: 4 })).answer, handle);
   console.log('  ok  a running delivery is joined; a failure answers its repeat; receipts are per process');
 }
 
@@ -701,7 +703,7 @@ function assertOneDelivery(arrivals, op, attempts) {
   let applied = 0;
   const live = () => { applied++; return supervisorDeliveryAnswer({ id: 3, stream: new Map() }); };
   assert.throws(() => store.deliver(9, id, 'fsOpen', live), /plain data/);
-  await assert.rejects(async () => store.deliver(9, id, 'fsOpen', live), /plain data/);
+  await assert.rejects(async () => store.deliver(9, id, 'fsOpen', live).answer, /plain data/);
   assert.equal(applied, 1);
   assert.deepEqual(await supervisorDeliveryAnswer(Promise.resolve({ before: 1, after: 2 })), { before: 1, after: 2 });
   await assert.rejects(async () => supervisorDeliveryAnswer(Promise.resolve(() => {})), /plain data/);

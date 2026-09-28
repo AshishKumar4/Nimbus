@@ -17,17 +17,24 @@ published independently in the `@nimbus-sh` npm scope.
   (`observability.traces`). A supervisor call the platform drops is now
   classified by its spans. SupervisorRPC's `nimbus.supervisor.deliver`,
   `.read` and `.append` spans name the process, writer, operation or read
-  id, the attempts, the hedges and the attempt that answered, with one
-  exception per lost attempt coded by its failure class. Under them, the
-  session's `nimbus.session.deliver` and `.read` spans record what each
-  arriving attempt met: `nimbus.receipt` (`applied`, `replayed`, `awaited`,
-  `tombstoned`) or `nimbus.read.joined`, and the refusal (ESTALE, EIO) as an
-  exception. `idempotent()` in `@nimbus-sh/fabric/do-calls` takes a `span`
-  policy field for this. `@nimbus-sh/platform/tracing` carries the Workers
-  span API to core and fabric, which cannot import `cloudflare:workers`;
-  `@nimbus-sh/worker` hands it over at module scope (`adoptTracing`).
-  AGENTS.md now points reset diagnosis at Workers Logs, traces and the
-  GraphQL memory percentiles instead of `wrangler tail`.
+  id, the attempts, the hedges and the attempt that answered, with an
+  exception for each lost attempt coded by its failure class. Under a
+  delivery or a read, the session's `nimbus.session.deliver` and `.read`
+  spans record what each arriving attempt met: `nimbus.receipt` (`applied`,
+  `replayed`, `awaited`) or `nimbus.read.joined`, and the refusal (ESTALE,
+  EIO) as an exception. Spans are best-effort. On a runtime from before the
+  2026-09-25 span methods they record attributes only. A span method that
+  throws is ignored, so no span call can change or stall a call's answer.
+  `idempotent()` in `@nimbus-sh/fabric/do-calls` takes a `span` recorder and
+  reports `do_call.outcome` as the new `DoCallOutcome`.
+  `SupervisorDeliveries.deliver` and `joinRead` in
+  `@nimbus-sh/core/workspace/supervisor-delivery` now return
+  `{ receipt, answer }` and `{ joined, answer }` instead of the bare
+  answer. `@nimbus-sh/platform/tracing` carries the Workers span API to core
+  and fabric, which cannot import `cloudflare:workers`; `@nimbus-sh/worker`
+  hands it over at module scope (`adoptTracing`). AGENTS.md now points
+  reset diagnosis at Workers Logs, traces and the GraphQL memory
+  percentiles instead of `wrangler tail`.
 
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to

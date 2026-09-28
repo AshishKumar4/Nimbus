@@ -413,11 +413,10 @@ const FAST = { baseDelayMs: 1 };
 {
   const never = new Promise(() => {});
   const recorder = () => ({
-    isTraced: true,
     attributes: {},
     exceptions: [],
-    setAttributes(values) { Object.assign(this.attributes, values); return this; },
-    recordException(exception) { this.exceptions.push(exception); },
+    set(values) { Object.assign(this.attributes, values); },
+    exception(error, code, context = '') { this.exceptions.push({ code, message: context + error.message }); },
   });
   const lost = () => Object.assign(new Error('Network connection lost.'), { retryable: true });
 
