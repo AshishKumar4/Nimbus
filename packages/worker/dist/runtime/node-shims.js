@@ -1328,16 +1328,11 @@ const __fsMod = (() => {
    * errno, because that is the shape everything written against node:fs
    * expects — \`err.code === 'ENOENT'\` is how programs make decisions.
    *
-   * An error does not cross the RPC boundary intact. Structured clone carries
-   * an Error's name, message and stack and drops every own property, so the
-   * code the authority set is already gone by the time this sees it; the
-   * message is the only thing that survived. Recovering the code from its
-   * \`CODE:\` prefix is therefore not a fallback beside a better path, it IS
-   * the transport — every authority-side error carries that prefix by
-   * construction (_fsErr here, fsError in the runtime-fs bridge, vfsError in
-   * the VFS all format it). Carrying the fields in the RPC payload instead
-   * would be the real repair; that needs the supervisor surface to return a
-   * failure envelope rather than throw, and is noted for whoever owns it.
+   * The code arrives as the error's own property. Both ends of the RPC run
+   * with workerd's \`enhanced_error_serialization\`, which carries an error's
+   * own properties across (the host refuses to compose without it), so the
+   * code the authority set (_fsErr here, fsError in the runtime-fs bridge,
+   * vfsError and VfsError in the VFS) is the code seen here.
    *
    * What this does fix: a failure with no errno spelling at all — the object
    * was reset, the RPC disconnected, a quota was hit — used to be returned
@@ -1349,9 +1344,7 @@ const __fsMod = (() => {
    */
   function _mapSupervisorError(error, syscall, p) {
     const message = error && typeof error.message === "string" ? error.message : String(error);
-    const declared = error && typeof error === "object" && typeof error.code === "string"
-      ? error.code
-      : (/^([A-Z][A-Z0-9]+):/.exec(message) || [])[1];
+    const declared = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
     const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
     const mapped = _fsErr(known ? declared : "EIO", syscall, p);
     if (!known && message) mapped.message += " — " + message;
@@ -2708,9 +2701,7 @@ const __fsMod = (() => {
       for (let i = 0; i < batch.settlers.length; i++) {
         const entry = entries[i];
         if (entry && entry.error) {
-          const err = new Error(entry.error.message);
-          if (entry.error.code) err.code = entry.error.code;
-          batch.settlers[i].reject(err);
+          batch.settlers[i].reject(entry.error);
         } else if (batch.requests[i].lstat === true) {
           batch.settlers[i].resolve(entry ? entry.stat : null);
         } else {

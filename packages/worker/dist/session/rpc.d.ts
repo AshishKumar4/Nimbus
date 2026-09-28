@@ -111,15 +111,13 @@ declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodObject
 export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
 /** The file bytes a batch request may return: its range's length; an lstat, none. */
 export declare function fsReadBatchRequestBytes(request: FsReadBatchRequest): number;
-export interface FsReadBatchEntryError {
-    readonly code?: string;
-    readonly message: string;
-}
 /**
  * One request's outcome, positionally matched to it. A range answers
  * `bytes`, `null` when the path does not exist — the same answer
  * `fsReadRange` gives. An lstat answers `stat`, `null` when the path does not
- * exist — the same answer the `lstat` op gives.
+ * exist — the same answer the `lstat` op gives. A request that failed answers
+ * the error itself: with `enhanced_error_serialization` on both ends, workerd
+ * clones an Error with its own properties, so its `code` arrives with it.
  */
 export type FsReadBatchEntry = {
     bytes: Uint8Array | null;
@@ -132,7 +130,7 @@ export type FsReadBatchEntry = {
 } | {
     bytes?: undefined;
     stat?: undefined;
-    error: FsReadBatchEntryError;
+    error: Error;
 };
 declare const FsAcquireArgsSchema: z.ZodObject<{
     epoch: z.ZodNullable<z.ZodString>;

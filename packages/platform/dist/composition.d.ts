@@ -66,7 +66,8 @@ export declare const DEFAULT_HOST_DISPATCH_METHOD = "supervisorOp";
  * Compose once per isolate. A second call with the same values is a no-op;
  * a second call with different values throws, naming both, so an embedder
  * whose composition lost to an earlier import learns it at startup rather
- * than from a facet that reached the wrong host.
+ * than from a facet that reached the wrong host. A host without
+ * `enhanced_error_serialization` is refused.
  */
 export declare function composeFabric(value: FabricComposition): void;
 export declare function adoptCtxExports(value: CtxExports): void;

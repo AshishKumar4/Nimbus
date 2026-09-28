@@ -131,9 +131,9 @@ function renderPackageJson(name) {
             '@nimbus-sh/sdk': manifest.dependencies['@nimbus-sh/sdk'],
         },
         devDependencies: {
-            '@cloudflare/workers-types': '^4.20250327.0',
+            '@cloudflare/workers-types': '^5.20260928.1',
             typescript: '^5.7.0',
-            wrangler: '^4.0.0',
+            wrangler: '^4.143.0',
         },
     }, null, 2) + '\n';
 }
@@ -142,8 +142,7 @@ function renderWranglerJsonc(name) {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "${name}",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2026-09-26",
   "placement": { "mode": "smart" },
   "vars": {
     "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",

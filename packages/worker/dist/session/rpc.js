@@ -413,7 +413,7 @@ export async function _rpcFsStorageGrant(self, facet, bytes, databaseSize, pid) 
     const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
     const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
     if (owner !== undefined && owner !== args.facet) {
-        throw new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`);
+        throw Object.assign(new Error(`EPERM: process ${pid} lives in facet ${owner}, not ${args.facet}`), { code: 'EPERM' });
     }
     const ledger = self.sqliteFs?.ledger;
     if (ledger === undefined)
@@ -555,27 +555,11 @@ export async function _rpcFsReadBatch(self, requests, pid) {
                     })) });
             }
             catch (error) {
-                entries.push({ error: readBatchEntryError(error) });
+                entries.push({ error: error instanceof Error ? error : new Error(String(error)) });
             }
         }
         return entries;
     });
-}
-/**
- * Errors cross an RPC boundary as `name`/`message` only, so the code a
- * caller needs to map to an errno travels as data.
- */
-function readBatchEntryError(error) {
-    if (typeof error === 'object' && error !== null) {
-        const code = Reflect.get(error, 'code');
-        const message = Reflect.get(error, 'message');
-        if (typeof code === 'string') {
-            return { code, message: typeof message === 'string' ? message : code };
-        }
-        if (typeof message === 'string')
-            return { message };
-    }
-    return { message: String(error) };
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });

@@ -63,13 +63,15 @@ export function vfsSupervisor(fs) {
     };
 }
 /**
- * A workerd RPC hop keeps an error's message but not its own properties, and
- * bytes come back as an ArrayBuffer. Every filesystem error names its code as
- * the message prefix, so the boundary restores both before the codec looks.
- * A same-isolate supervisor answers synchronously and is handed back as is: a
- * guest that cannot park reads the value straight off the import. What the
- * stub returns is a thenable of its own class, not a Promise, so the test is
- * for `then` and the repaired result is a real Promise.
+ * A workerd RPC hop hands bytes back as an ArrayBuffer; the boundary makes
+ * them a Uint8Array again before the codec looks. An error needs no repair:
+ * both ends run with `enhanced_error_serialization` (the host refuses to
+ * compose without it, @nimbus-sh/platform composition.ts), so the `code` the
+ * authority set arrives as its own property. A same-isolate supervisor
+ * answers synchronously and is handed back as is: a guest that cannot park
+ * reads the value straight off the import. What the stub returns is a
+ * thenable of its own class, not a Promise, so the test is for `then` and the
+ * result handed on is a real Promise.
  */
 function pending(result) {
     // workerd's RPC promise is a callable proxy (pipelined calls), so its type is 'function'.
@@ -77,21 +79,13 @@ function pending(result) {
         && typeof result.then === 'function';
 }
 function hop(result) {
-    return pending(result) ? Promise.resolve(result).catch(restoreCode) : result;
+    return pending(result) ? Promise.resolve(result) : result;
 }
 function bytes(result) {
-    return pending(result) ? Promise.resolve(result).catch(restoreCode).then(asBytes) : asBytes(result);
+    return pending(result) ? Promise.resolve(result).then(asBytes) : asBytes(result);
 }
 function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
-}
-function restoreCode(error) {
-    if (error instanceof Error && !('code' in error)) {
-        const code = /^([A-Z]+):/.exec(error.message)?.[1];
-        if (code)
-            throw Object.assign(error, { code });
-    }
-    throw error;
 }
 /**
  * Remote facets use the same typed supervisor RPC methods. A synchronous view
@@ -143,7 +137,7 @@ export function supervisorFilesystem(supervisor, local) {
         appendOnce: (...args) => hop(supervisor.fsAppend(...args)),
         acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
         writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
-        writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)).catch(restoreCode),
+        writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)),
         acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
         releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args)),
     };

@@ -45,7 +45,7 @@ export declare const WASI_RESIDENT_FILE_CAP_BYTES: number;
 export declare const NPM_REGISTRY = "https://registry.npmjs.org";
 export declare const DEFAULT_VITE_PORT = 5173;
 export declare const NIMBUS_AI_GATEWAY_PORT = 8790;
-export declare const CF_COMPAT_DATE = "2026-04-01";
+export declare const CF_COMPAT_DATE = "2026-09-26";
 export declare const DEFAULT_HOSTNAME = "nimbus";
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";
