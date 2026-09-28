@@ -7,9 +7,10 @@
  * it (budgets.ts). A batch the coordinator's remaining headroom can hold —
  * the limit less the workers it already has in flight (resident processes,
  * the esbuild facet, a git network op) and other fan-outs' claims — runs in
- * the coordinator through IsolatePool, one Dynamic Worker per task. Only a
- * batch wider than that headroom is sharded across sibling NimbusSession
- * DOs, each of which spends its own budget.
+ * the coordinator through IsolatePool, one Dynamic Worker per task. A batch
+ * wider than that headroom, or one its caller marks `cpuHeavy` (in-DO
+ * Dynamic Workers share the coordinator's thread), is sharded across sibling
+ * NimbusSession DOs, each of which spends its own budget.
  *
  * Routing is deterministic for a given headroom: each task has a stable key,
  * and the key maps to a sibling DO shard. There is no silent fallback to
@@ -114,6 +115,7 @@ export class Fanout {
      *                               Worker per task, the width claimed on the
      *                               ledger until the batch settles
      *   tasks.length >  headroom -> sibling NimbusSession DOs
+     *   `cpuHeavy`               -> sibling NimbusSession DOs
      *
      * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
      * peers and each peer runs its bucket through its own IsolatePool, as
@@ -130,7 +132,7 @@ export class Fanout {
         if (tasks.length === 0)
             return [];
         const headroom = dynamicWorkerHeadroom(this.ctx);
-        const claim = claimDynamicWorkers(this.ctx, tasks.length);
+        const claim = this.opts.cpuHeavy ? null : claimDynamicWorkers(this.ctx, tasks.length);
         this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
         if (!claim)
             return this._dispatchPeerDo(tasks, fn);
@@ -145,7 +147,7 @@ export class Fanout {
     topologyFor(taskCount) {
         if (taskCount === 0)
             return 'empty';
-        return taskCount <= dynamicWorkerHeadroom(this.ctx) ? 'in-do' : 'peer-do';
+        return !this.opts.cpuHeavy && taskCount <= dynamicWorkerHeadroom(this.ctx) ? 'in-do' : 'peer-do';
     }
     /**
      * Compute the deterministic peer-DO id for a task key and peer count.
