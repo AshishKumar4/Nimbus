@@ -126,6 +126,33 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.equal(aborted, 1);
 }
 
+// ── SIGKILL always ends a running process ────────────────────────────
+// A program that reads its signals, a background job that never reads its
+// channel, and a launch with no channel at all (stuck in a top-level await
+// before it opened one) all end with 137 and have their work stopped.
+{
+  const processes = new SessionProcessSupervisor();
+  const ended = [];
+  processes.setDefaultSignalAction((pid, code, signal) => {
+    ended.push([pid, code, signal]);
+    processes.exit(pid, code);
+  });
+  const reading = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
+  processes.openInput(reading.pid);
+  void processes.readInput(reading.pid, 60_000);
+  const job = processes.spawn('tail -f log', ['tail -f log'], '/home/user', { longRunning: true });
+  processes.openInput(job.pid);
+  const booting = processes.spawn('node server.mjs', ['server.mjs'], '/home/user', { longRunning: true });
+  const stopped = [];
+  for (const entry of [reading, job, booting]) {
+    processes.setTerminator(entry.pid, () => { stopped.push(entry.pid); });
+    assert.deepEqual(processes.signal(entry.pid, 'SIGKILL'), { ok: true });
+    assert.notEqual(processes.get(entry.pid)?.state, 'running', `pid ${entry.pid} is no longer running`);
+  }
+  assert.deepEqual(ended, [[reading.pid, 137, 'SIGKILL'], [job.pid, 137, 'SIGKILL'], [booting.pid, 137, 'SIGKILL']]);
+  assert.deepEqual(stopped, [reading.pid, job.pid, booting.pid], 'the work behind every pid is stopped');
+}
+
 // ── output / exit ordering ───────────────────────────────────────────
 {
   const processes = new SessionProcessSupervisor();
