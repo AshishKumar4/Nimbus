@@ -9,7 +9,7 @@
  *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
  *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
- *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
+ *      the supervisor worker), compatibilityFlags = GUEST_COMPAT_FLAGS,
  *      globalOutbound = undefined (inherit parent network so the facet can
  *      reach https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's

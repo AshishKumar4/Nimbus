@@ -6,7 +6,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contr
 import { ProcessFiles } from "@nimbus-sh/core/runtime/process-files.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
-import { CF_COMPAT_DATE } from "@nimbus-sh/core/constants.js";
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -411,7 +411,7 @@ export function ensureFetchProxy(self, runtimeContext, log) {
         ].join('\n');
         const worker = env.LOADER.load({
             compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: ['nodejs_compat'],
+            compatibilityFlags: [...GUEST_COMPAT_FLAGS],
             mainModule: 'fetch-proxy.js',
             modules: { 'fetch-proxy.js': proxyCode },
         });

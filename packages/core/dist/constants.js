@@ -251,6 +251,33 @@ export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';
 export const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin';
 export const SEEDED_TOP_LEVEL_DIRS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];
+// ── Worker Loader guests ────────────────────────────────────────────────
+//
+// The compatibility flags of every Worker Loader guest Nimbus generates
+// itself — never a user's own Worker, which runs on the flags its wrangler
+// config names.
+//
+// `new_module_registry` is opt-in with no default date
+// (https://blog.cloudflare.com/workers-module-registry-nodejs/; behavior
+// reference: workerd docs/reference/detail/new-module-registry.md). What the
+// guests rely on from it, verified against workerd 1.20260928.1:
+//   - `require("process")` / `createRequire(url)("process")` resolves to the
+//     global process. The legacy registry answers `No such module
+//     "node:process"`, which is why opencode carried a node:process bridge
+//     module even where it only re-exported the global.
+//   - `import.meta.url` / `import.meta.resolve` exist; the legacy registry
+//     leaves `import.meta.url` undefined.
+//   - Modules compile on first import rather than all at startup, so a map
+//     entry nothing imports costs its bytes and no compile.
+// And what it keeps: a map entry named `node:<x>` still shadows the builtin
+// for guest code — `node:` is not a reserved protocol for bundle names and
+// bundle modules are searched before builtins, `node:process` included
+// (workerd src/workerd/jsg/modules-new.c++ isValidBundleModuleUrl and
+// IsolateModuleRegistry::resolve) — so the builtin bridges keep working.
+//
+// `nodejs_compat` implies `nodejs_compat_v2` at every date after 2024-09-23
+// (workerd src/workerd/io/compatibility-date.capnp, nodeJsCompatV2).
+export const GUEST_COMPAT_FLAGS = ['nodejs_compat', 'new_module_registry'];
 // ── npm packages the facet runtime provides itself ──────────────────────
 //
 // A package listed here is registered in node-shims' `builtins` table, so a

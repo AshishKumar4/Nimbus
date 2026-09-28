@@ -1,4 +1,4 @@
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -83,7 +83,7 @@ export function esbuildFacetWorkerCode(wasmBytes, jsFnBody, cliRunner) {
     ].join('\n');
     return {
         compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: ['nodejs_compat'],
+        compatibilityFlags: [...GUEST_COMPAT_FLAGS],
         mainModule: 'worker.js',
         modules: {
             'worker.js': source,
