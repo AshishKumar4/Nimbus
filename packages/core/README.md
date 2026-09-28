@@ -313,6 +313,17 @@ a write past that fails with `EFBIG`) and writes the whole file back on
 wrote reads and stats its own writes at once. Another process sees the
 mount's content, and so the writes only after that write-back.
 
+A node process's synchronous `fs` and `require` see a mount, one without a
+`sync` face included, where its launch names it: its working directory, its
+program's directory and arguments, the literal paths its code names, and the
+files its module map was read from. A directory named there is listed whole,
+breadth first, up to 8192 names per launch (`MOUNT_LIST_NAME_LIMIT`), and so
+is every directory from the mount point down to it. A mount the launch does
+not name is not walked, and a name past the bound is not in the process's
+synchronous view; `fs.promises` reads it. The process holds the mount's
+names and content as of its launch, plus its own writes, which reach the
+mount through its write-back.
+
 ## What the worker package adds
 
 Resident processes (long-running servers, attached TUIs), the session

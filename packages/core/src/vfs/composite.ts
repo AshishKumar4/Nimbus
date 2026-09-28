@@ -1250,6 +1250,23 @@ export class CompositeVFS implements VFS {
     return this.readdirAt(path, false);
   }
 
+  /**
+   * `readdir` with each entry's own stat (links not followed), identified as
+   * `stat` identifies it: the stat the backend's listing carries, else one
+   * asked for the entry. A name gone between the two is left out.
+   */
+  async readdirStat(path: string): Promise<Array<{ name: string; stat: VfsStat }>> {
+    const dir = await this.resolve(path, true, false);
+    const prefix = dir === ROOT_POINT ? '/' : `${dir}/`;
+    const out: Array<{ name: string; stat: VfsStat }> = [];
+    for (const entry of await this.readdirAt(dir, false)) {
+      const at = prefix + entry.name;
+      const stat = entry.stat ?? await this.statAt(at, false, false);
+      if (stat !== null) out.push({ name: entry.name, stat: this.identify(at, stat)! });
+    }
+    return out;
+  }
+
   async mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void> {
     return this.mkdirAt(path, options, false);
   }

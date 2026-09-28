@@ -2287,6 +2287,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // supervisor incarnation: across a restart the clocks are unrelated, and an
   // untouched path lists at rev 0, which would vouch for anything.
   const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
+  // A file listed at revision 0 has none the store can compare: a mounted
+  // file's (its backend keeps no revision on the session's clock; a file
+  // SQLite holds was written at a generation past 0). Its row is never
+  // vouched for, so a reconcile refetches what the mount holds now.
+  const vouches = (entry, rev) => comparable && entry !== undefined && entry.rev > 0 && rev >= entry.rev;
 
   const listed = new Map();
   for (const file of listing.entries) listed.set(file.path, file);
@@ -2309,7 +2314,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
       });
       continue;
     }
-    const keep = (comparable && entry !== undefined && row.rev >= entry.rev) || !judgeable;
+    const keep = vouches(entry, row.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     // The listing names the same bytes (a revision moved, the content did
     // not, or another epoch): kept and dated at the listing. Equal keys are
@@ -2336,7 +2341,7 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
       own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
       continue;
     }
-    if ((comparable && entry !== undefined && cell.rev >= entry.rev) || !judgeable) { current.add(path); continue; }
+    if (vouches(entry, cell.rev) || !judgeable) { current.add(path); continue; }
     __residentForgetHeld(path);
     dropped.push(path);
   }

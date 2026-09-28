@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Hosted node's synchronous `fs` and `require` see a mounted filesystem
+  again, an asynchronous one (no `sync` face: a Drive, a container, a
+  device) included. 0.13 listed a process's namespace from SQLite alone, so
+  `readFileSync`, `existsSync`, `statSync`, `readdirSync`, `writeFileSync`
+  and `require` of a path on `ws.filesystem.vfs.mount(...)` answered ENOENT
+  or "Cannot find module" while `fs.promises` read it. A process's listing
+  (`bind(...).list`, the supervisor's `fsList`) now comes from its view of
+  the namespace: SQLite's names, less what a mount covers, and each mount
+  point with the parts of the mount its launch names — its working
+  directory, program directory and arguments, the literal paths its code
+  names, and the files its module map was read from — walked through the
+  mount as the process's credential. A named directory is listed whole,
+  breadth first, up to `MOUNT_LIST_NAME_LIMIT` (8192) names per launch, with
+  every directory from the mount point down to it; a mount the launch does
+  not name is not walked, and a name past the bound is not in the
+  synchronous view (`fs.promises` still reads it). Contents follow the
+  existing data plan and store budget. A synchronous write reaches the mount
+  through the process's write-back, once. A kept resident store never
+  vouches for a mounted file's bytes (a mount keeps no revision on the
+  session's clock), so a relaunch reads what the mount holds.
+  `NimbusFilesystemAuthority.nameLaunch` is how a launch names those paths.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

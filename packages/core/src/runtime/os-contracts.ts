@@ -230,6 +230,15 @@ export interface NimbusFilesystemAuthority {
    * hydration deadline, then fails with EIO naming the first that is not.
    */
   gateLaunch?(named: readonly string[]): Promise<void>;
+  /**
+   * What a process's launch names — its working directory, program and
+   * arguments, the literal paths its code names, the files its module map
+   * was read from: where the process's listing (`bind(...).list`) walks the
+   * mounts beyond SQLite (MOUNT_LIST_NAME_LIMIT). `names` is asked only when
+   * its credential sees such a mount, so a launch computes nothing for SQLite
+   * alone.
+   */
+  nameLaunch?(binding: NimbusFilesystemBinding, names: () => Iterable<string>): void;
 }
 
 /**

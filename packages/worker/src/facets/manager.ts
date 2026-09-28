@@ -137,7 +137,7 @@ import {
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
@@ -159,6 +159,32 @@ function filesOf(fs: LaunchFs): BridgeRequireFs {
   let files = launchAdapters.get(fs);
   if (files === undefined) { files = requireFsOverBridge(fs); launchAdapters.set(fs, files); }
   return files;
+}
+
+/**
+ * What a launch names, which is where its process's listing walks the
+ * mounts beyond SQLite (NimbusFilesystemAuthority.nameLaunch): its working
+ * directory, its program and that program's directory, its arguments, the
+ * files its module map holds, and the paths its code names statically.
+ */
+function* launchNames(
+  cwd: string,
+  program: string | undefined,
+  argv: readonly string[],
+  modules: readonly string[],
+  refs: readonly StaticFsRefs[],
+): Iterable<string> {
+  const script = program !== undefined && program.startsWith('/') ? program : null;
+  yield cwd;
+  if (script !== null) yield script.slice(0, script.lastIndexOf('/')) || '/';
+  yield* launchNamedPaths(cwd, script, argv);
+  for (const path of modules) yield path;
+  for (const found of refs) {
+    for (const ref of found.exact) yield ref.path;
+    for (const ref of found.cwdRelative) yield `${cwd}/${ref.path}`;
+    yield* found.listed;
+    for (const pattern of found.patterns) yield pattern.dir;
+  }
 }
 
 /** A bundled ESM file this large is rewritten to CJS without esbuild when its shape allows. */
@@ -4788,13 +4814,15 @@ export class FacetManager {
   /**
    * Which contents a resident process holds from its first instruction,
    * beyond its module map: data-plan.ts over this process's view of the
-   * namespace. A path the plan leaves out is still named and stat-able; a
-   * synchronous read of it is the one honest miss.
+   * namespace, mounts included where its launch names them. A path the plan
+   * leaves out is still named and stat-able; a synchronous read of it is the
+   * one honest miss.
    */
   private async _planResidentData(
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     cwd: string,
+    program: string | undefined,
     home: string | undefined,
     pacer: TurnBudget,
   ): Promise<{ paths: string[]; storageBytes: number }> {
@@ -4808,6 +4836,9 @@ export class FacetManager {
     trace('static references');
     const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
     trace(`${refs.length} modules name paths; learned reads`);
+    // Where this process's listing walks mounts, the plan's below and its own
+    // at boot: what its launch names.
+    this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
     const learned = await this._learnedReads(vfsState, entry.cred);
     trace(`${learned.length} learned; listing`);
     let pages = 0;
@@ -5349,6 +5380,11 @@ export class FacetManager {
       }
       throw err;
     }
+    // Where the one-shot's listing of its namespace walks mounts: what its
+    // launch names, the literal paths of its own code included.
+    const cwd = opts.cwd || '/home/user';
+    this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [],
+      [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const diagSink: ExecDiagSink | undefined = diagOn
       ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
@@ -6434,7 +6470,7 @@ export class FacetManager {
       pacer,
     );
     const planStart = Date.now();
-    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer);
+    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.filename, opts.env?.HOME, pacer);
     if (this.debugEnabled) {
       this.processes.appendOutput(entry.pid, 'stderr',
         `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
