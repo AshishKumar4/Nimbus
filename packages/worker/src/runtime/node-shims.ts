@@ -1301,8 +1301,21 @@ const __fsMod = (() => {
     let stat;
     // Counted as every supervisor call a program waits on is (__nimbusUseRpcResult):
     // an uncounted round trip reads as an idle loop, and the program ends.
-    try { stat = await __nimbusUseRpcResult(supervisor.lstat(absPath), (result) => result); } catch { return; }
+    try { stat = await __nimbusUseRpcResult(_cappedOwnCall(() => supervisor.lstat(absPath)), (result) => result); } catch { return; }
     __nsNoteLiveStat(_strip(absPath), stat ?? null);
+  }
+
+  // A learn is one lstat per path, and a resumption refetches every path it
+  // owes at once (_acquireAndRefetch): after a program wrote 1,600 files
+  // that was 1,600 lstat calls in flight. In a program that hung under
+  // concurrent sessions (preview/new/lucide-barrel-cache-widens, measured
+  // 2026-09-28), those calls sat pending for over 30 s and never reached the
+  // session. The write ledger measured the same stall for its own
+  // write-backs, so the learn waits for a slot under the ledger's in-flight
+  // cap (__nimbusVfsRpc), which the write-backs share. A harness that
+  // evaluates the shims without the ledger issues it directly.
+  function _cappedOwnCall(issue) {
+    return _hasVfsMutationQueue() ? __nimbusVfsRpc(issue) : issue();
   }
 
   /**
