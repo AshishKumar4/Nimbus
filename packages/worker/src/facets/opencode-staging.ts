@@ -48,7 +48,7 @@ import {
   YOGA_WASM_MODULE_NAME,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 
 export interface OpencodeAssetsEnv {
   ASSETS: { fetch(req: Request): Promise<Response> };
@@ -262,7 +262,7 @@ export async function assembleOpencodeFacetConfig(
 
   return {
     compatibilityDate: CF_COMPAT_DATE,
-    compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+    compatibilityFlags: [...GUEST_COMPAT_FLAGS],
     mainModule: 'runner.js',
     modules: {
       'runner.js': runnerCode,
@@ -273,7 +273,7 @@ export async function assembleOpencodeFacetConfig(
       ...chunkModules,
       ...workerModules,
       ...yogaModules,
-      ...opencodeBuiltinBridgeModules(attached),
+      ...opencodeBuiltinBridgeModules(spec.mode),
     },
   };
 }

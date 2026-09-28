@@ -1,6 +1,6 @@
 /**
- * opencode-http-bridge.mjs — pins the node:http builtin bridge for opencode
- * facets.
+ * opencode-http-bridge.mjs — the builtin bridges an opencode facet's module
+ * map carries, per mode.
  *
  * Root cause this guards against (live-diagnosed 2026-07-16): the opencode
  * bundle's server stack (`import { createServer } from "node:http"` in the
@@ -12,54 +12,48 @@
  * serve facet was killed at the 20s readiness timeout — the TUI never
  * launched.
  *
- * The bridge must (a) exist in the module map for every opencode mode, and
- * (b) re-export the SHIM http surface (server-capable, registry-registering),
- * not nodejs_compat's.
+ * Every mode shadows node:http/fs/os/sqlite with the shim. node:process is
+ * shadowed where the shim process is the global (the resident modes), and
+ * node:console only for the attached TUI, which needs the shim's Console.
  */
 import assert from 'node:assert/strict';
 import { opencodeBuiltinBridgeModules } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
-// 1. node:http bridge present in both modes.
-for (const attached of [false, true]) {
-  const mods = opencodeBuiltinBridgeModules(attached);
-  assert.ok(mods['node:http'], `node:http bridge missing (attached=${attached})`);
-  const js = mods['node:http'].js;
-  // Re-exports from the parked shim builtins global, not a nodejs_compat import.
-  assert.match(js, /__nimbusOpencodeBuiltins/, 'bridge must read the shim builtins global');
-  assert.doesNotMatch(js, /from\s*["']node:http["']/, 'bridge must not re-import nodejs_compat http');
-  // The server surface the serve chunk needs.
-  for (const name of ['createServer', 'Server', 'IncomingMessage', 'ServerResponse']) {
-    assert.match(js, new RegExp(`export const ${name} `), `bridge must export ${name}`);
-  }
-  // Default export for esbuild interop (`import http from "node:http"`).
-  assert.match(js, /export default __m/, 'bridge must have a default export');
-}
-
-// 2. The fs/os/sqlite bridges that were already load-bearing stay present.
-{
-  const mods = opencodeBuiltinBridgeModules(false);
-  for (const spec of ['node:fs', 'node:fs/promises', 'node:os', 'node:sqlite', 'node:process']) {
-    assert.ok(mods[spec], `${spec} bridge missing`);
-  }
-}
-
-// 3. Executable check: evaluating the bridge against a stub builtins global
-// yields the shim's functions by identity.
-{
-  const mods = opencodeBuiltinBridgeModules(false);
-  const js = mods['node:http'].js;
-  const fakeCreateServer = () => 'shim-server';
-  globalThis.__nimbusOpencodeBuiltins = { http: { createServer: fakeCreateServer } };
-  // Convert the ESM bridge text to an evaluable CJS-ish harness: capture the
-  // exported consts by rewriting `export const X = expr;` → `out.X = expr;`.
+/** Evaluate a bridge module's ESM text and return what it exports. */
+function evaluateBridge(js) {
   const body = js
     .replace(/export default __m;/, 'out.default = __m;')
     .replace(/export const (\w+) = /g, 'out.$1 = ');
   const out = {};
   new Function('out', body)(out);
-  assert.equal(out.createServer, fakeCreateServer, 'bridge must re-export the shim createServer by identity');
-  assert.equal(out.default.createServer, fakeCreateServer, 'default export must be the shim http object');
-  delete globalThis.__nimbusOpencodeBuiltins;
+  return out;
+}
+
+const SHIMMED_EVERYWHERE = ['node:http', 'node:fs', 'node:fs/promises', 'node:os', 'node:sqlite'];
+
+for (const mode of ['oneshot', 'server', 'attached']) {
+  const mods = opencodeBuiltinBridgeModules(mode);
+  for (const spec of SHIMMED_EVERYWHERE) assert.ok(mods[spec], `${spec} bridge missing (${mode})`);
+  assert.equal('node:process' in mods, mode !== 'oneshot', `node:process bridge (${mode})`);
+  assert.equal('node:console' in mods, mode === 'attached', `node:console bridge (${mode})`);
+
+  // The http bridge re-exports the SHIM server surface by identity, named and default.
+  const fakeCreateServer = () => 'shim-server';
+  globalThis.__nimbusOpencodeBuiltins = { http: { createServer: fakeCreateServer } };
+  try {
+    const http = evaluateBridge(mods['node:http'].js);
+    assert.equal(http.createServer, fakeCreateServer, `bridge must re-export the shim createServer (${mode})`);
+    assert.equal(http.default.createServer, fakeCreateServer, `default export must be the shim http object (${mode})`);
+  } finally {
+    delete globalThis.__nimbusOpencodeBuiltins;
+  }
+
+  // A resident mode's node:process is whatever the boot block made the global.
+  if (mode !== 'oneshot') {
+    const proc = evaluateBridge(mods['node:process'].js);
+    assert.equal(proc.default, globalThis.process, `node:process bridge must be the global process (${mode})`);
+    assert.equal(proc.cwd, globalThis.process.cwd, `node:process named exports read the global (${mode})`);
+  }
 }
 
 console.log('opencode-http-bridge: ok');

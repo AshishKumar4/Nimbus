@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The Worker Loader guests Nimbus generates — the opencode facets, the
+  esbuild transform facet, the git network facet, the hosted fetch proxy and
+  every `IsolatePool` isolate (pre-bundle, npm resolve, child-process spawn)
+  — run with `new_module_registry`, from one list, `GUEST_COMPAT_FLAGS` in
+  `@nimbus-sh/core/constants`. Under it `require("process")` resolves to the
+  global process, so a one-shot opencode run no longer carries a
+  `node:process` bridge module, and only the attached TUI carries a
+  `node:console` one. The resident modes keep their `node:process` bridge: it
+  is how their bundle's `import "node:process"` reaches the shim process.
+  Map entries named `node:<x>` still shadow the builtin under the new
+  registry, so the `node:fs`, `node:http`, `node:os` and `node:sqlite`
+  bridges are unchanged. `opencodeBuiltinBridgeModules` now takes the run
+  mode instead of an attached-TTY boolean.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other
