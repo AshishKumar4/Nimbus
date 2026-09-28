@@ -101,9 +101,9 @@ The same sandbox handle API works in three modes:
   in its named shell and acts only as its identity (the session user when the
   scope names none), so open the sandbox with `sandbox(id, { shellId })`; a
   scope without a shell runs no command, only file calls. It cannot `destroy`
-  the workspace or use the `apps` and durable-application verbs. Processes,
-  ports and logs are not confined: those verbs are workspace-wide, as the
-  shell's own `ps`, `kill` and `logs` are.
+  the workspace. Processes, ports, logs and applications are not confined:
+  those verbs are workspace-wide, as the shell's own `ps`, `kill`, `logs` and
+  `nimbus expose`/`app` are.
 
 ```ts
 import { Nimbus } from '@nimbus-sh/sdk';

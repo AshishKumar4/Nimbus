@@ -15,8 +15,7 @@
 //     shell-only scope acts as the session user, never the kernel;
 //   - a scope that names no shell runs no command, so it can neither read
 //     nor plant the embedder's workspace shell environment, yet reads files;
-//   - a scoped session cannot destroy the workspace or manage its
-//     applications.
+//   - a scoped session cannot destroy the workspace.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -169,12 +168,10 @@ try {
   assert.equal(await shellless.files.read('/tmp/shared.txt'), 'one plane', 'its files still answer');
   console.log('  [4] a scope that names no shell runs no command');
 
-  // ── the embedder owns the workspace's life and its applications ─────────
+  // ── the embedder owns the workspace's life ──────────────────────────────
   await assert.rejects(a.destroy(), /EPERM/, 'a session cannot destroy the workspace');
   assert.equal(await runtime.files.readFileString('/tmp/shared.txt'), 'one plane', 'and the workspace is intact');
-  await assert.rejects(a.apps.expose(3000), /EPERM/, 'the application verbs are the embedder\'s');
-  await assert.rejects(a.ports.removeDurableApp('anyone'), /EPERM/, 'durable applications too');
-  console.log('  [5] a scoped session cannot destroy the workspace or manage its applications');
+  console.log('  [5] a scoped session cannot destroy the workspace');
 } finally {
   await runtime.close();
 }

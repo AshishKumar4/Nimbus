@@ -13,10 +13,9 @@
  * runs as. The stub is the capability, so a caller that names another shell
  * or identity is refused rather than obeyed; a scope that names no shell
  * runs no command, since the only shell left to it is the embedder's own.
- * The application verbs, which address launches by owner, and the
- * workspace's destruction stay with the embedder. Processes, ports and logs
- * are not confined: they are workspace-wide, as they are to the shell's own
- * `ps`, `kill` and `logs`.
+ * The workspace's destruction stays with the embedder. Processes, ports,
+ * logs and applications are not confined: they are workspace-wide, as they
+ * are to the shell's own `ps`, `kill`, `logs` and `nimbus expose`/`app`.
  */
 
 import { RpcTarget } from 'cloudflare:workers';
@@ -89,12 +88,6 @@ export class HostedSession extends RpcTarget {
     return { ...options, ...(cred === undefined ? {} : { cred }) } as T;
   }
 
-  /** Applications are addressed by owner, across every shell's launches: the embedder's to manage. */
-  private apps(): HostedSessionOwner {
-    if (this.scope !== null) throw new Error('EPERM: a scoped session cannot manage the workspace\'s applications');
-    return this.client();
-  }
-
   _rpcReady(options?: operations.ProgrammaticReadyOptions) { return operations.ensureProgrammaticReady(this.client(), options); }
   async _rpcExecStream(command: string, options?: operations.ProgrammaticExecOptions): Promise<ReadableStream<Uint8Array>> {
     return encodeExecStream(await operations.rpcExecStream(this.client(), command, this.exec(options)));
@@ -150,13 +143,13 @@ export class HostedSession extends RpcTarget {
   _rpcExposePort(port: number, options?: Visibility) { return operations.rpcExposePort(this.client(), port, options); }
   _rpcUnexposePort(port: number) { return operations.rpcUnexposePort(this.client(), port); }
   _rpcListApps() { return operations.rpcListApps(this.client()); }
-  async _rpcExposeApp(target: operations.AppTarget, options?: Visibility) { return operations.rpcExposeApp(this.apps(), target, options); }
-  async _rpcRotateLink(target: operations.AppTarget) { return operations.rpcRotateLink(this.apps(), target); }
-  async _rpcRemoveApp(target: operations.AppTarget) { return operations.rpcRemoveApp(this.apps(), target); }
-  async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }) {
-    return operations.rpcEnsureDurableApp(this.apps(), input);
+  _rpcExposeApp(target: operations.AppTarget, options?: Visibility) { return operations.rpcExposeApp(this.client(), target, options); }
+  _rpcRotateLink(target: operations.AppTarget) { return operations.rpcRotateLink(this.client(), target); }
+  _rpcRemoveApp(target: operations.AppTarget) { return operations.rpcRemoveApp(this.client(), target); }
+  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }) {
+    return operations.rpcEnsureDurableApp(this.client(), input);
   }
-  async _rpcRemoveDurableApp(owner: string) { return operations.rpcRemoveDurableApp(this.apps(), owner); }
+  _rpcRemoveDurableApp(owner: string) { return operations.rpcRemoveDurableApp(this.client(), owner); }
 
   /** The embedder owns the workspace's life; a session it handed out cannot end it. */
   async _rpcDestroy(): Promise<never> {

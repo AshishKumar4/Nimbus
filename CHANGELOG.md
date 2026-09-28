@@ -655,10 +655,10 @@ kernel credential, because Nimbus follows POSIX here:
   another shell or no shell, and any call that names another identity, is
   refused with `EPERM`; a scope without a `shellId` runs no command at all,
   so it can never reach the embedder's workspace shell, but its file calls
-  work. A scoped session cannot `destroy` the workspace or use the `apps`
-  and durable-application verbs (`EPERM`). It does not confine processes,
-  ports or logs: those verbs are workspace-wide, as they are to the shell's
-  own `ps`, `kill` and `logs`.
+  work. A scoped session cannot `destroy` the workspace (`EPERM`). It does
+  not confine processes, ports, logs or applications: those verbs are
+  workspace-wide, as they are to the shell's own `ps`, `kill`, `logs` and
+  `nimbus expose`/`app`.
 - `sandbox(id, { shellId })` runs every command in that named shell unless
   the call names another.
 
