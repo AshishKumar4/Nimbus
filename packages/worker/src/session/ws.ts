@@ -91,8 +91,6 @@ export interface WsHost {
   initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
   _w5PersistRing(): Promise<void> | null;
   _w9FlushOnClose(): void;
-  /** Boot the esbuild facet in the background for an attaching terminal (once per activation). */
-  prewarmEsbuildFacet(): void;
 }
 
 /**
@@ -151,12 +149,7 @@ export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<bool
     }
     return true;
   }
-  if (self.terminal.ws !== ws) {
-    self.terminal.attach(ws, shellTerminalTee(self));
-    // An activation the SDK built (initSession(null)) did not pre-warm: this
-    // is its first terminal.
-    self.prewarmEsbuildFacet();
-  }
+  if (self.terminal.ws !== ws) self.terminal.attach(ws, shellTerminalTee(self));
   return true;
 }
 

@@ -55,18 +55,17 @@ published independently in the `@nimbus-sh` npm scope.
   its directory, and the direct files of a matching directory (one level); a bare hole under a named directory stages that
   directory's files, minus dependency, VCS and cache directories.
 
-- A session starts its esbuild facet in the background once the shell
-  prompt is up, so the first transform (`vite` reading `vite.config.ts`, a
-  TypeScript entry's launch) no longer pays the facet's cold start (about a
-  second). The pre-warm and the transforms share one facet stub and one
-  esbuild initialization; a failed pre-warm is logged once and the first
-  transform starts the facet as before. Only activations with an
-  interactive terminal pre-warm; the SDK path does not until a terminal
-  attaches to it (warm rejoin or a woken socket). Transforms, builds,
-  `esbuild` commands and the pre-warm share one facet stub, dropped when a
-  call on it throws. A failed esbuild initialization inside the facet is no
-  longer kept, so the next call retries it. `/api/_diag/session` reports
-  the pre-warm as `esbuildPrewarm`.
+- `vite` reads a `vite.config.ts` without esbuild when erasing its types
+  cannot change what the config reader sees: the source parses as
+  JavaScript, has no `a<b>(c)` chain (a generic call in TypeScript, a
+  comparison in JavaScript), and every import binding is used and not
+  shadowed (TypeScript drops an unused import). A fresh session's `vite` no
+  longer waits about a second on the esbuild facet's start before serving
+  the preview; other configs still go through esbuild. Transforms, builds
+  and `esbuild` commands share one esbuild facet stub, dropped when a call on
+  it throws, and a failed esbuild initialization inside the facet is retried
+  instead of kept. (This replaces a background pre-warm of the facet at the
+  first prompt, which slowed the session's first command.)
 
 - The Worker bundle is back under its 7 MiB size gate (`-e production`
   dry run: 7,704,433 to 7,289,911 bytes). The git network facet's copy of

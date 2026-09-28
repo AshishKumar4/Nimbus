@@ -9,6 +9,8 @@ import {
   parseJavaScriptModule,
   stringField,
 } from './javascript-ast.js';
+import type { Pattern } from 'acorn';
+import { simple } from 'acorn-walk';
 
 export interface ParsedViteConfig {
   root?: string;
@@ -31,8 +33,100 @@ export interface ParsedViteConfig {
   plugins?: string[];
 }
 
+/**
+ * Read a `vite.config.ts` without a TypeScript transform where erasing its
+ * types cannot change what this reader sees.
+ *
+ * The transform is esbuild, and on a fresh session it is the session's first:
+ * it starts the esbuild facet (loading the wasm and initializing esbuild,
+ * about a second), and `vite` waits on it before it serves anything. Most
+ * configs, the seeded one included, are plain JavaScript under a `.ts` name.
+ *
+ * A source that parses as a JavaScript module has no annotations, casts,
+ * enums or other type-only syntax; each of those is a syntax error there.
+ * The one construct both languages accept and read differently is the
+ * angle-bracket chain: `f<T>(x)` is a generic call in TypeScript and
+ * `(f < T) > (x)` in JavaScript (likewise `f<T>` instantiation expressions).
+ * JavaScript reads it as a `>`-family comparison over a `<` comparison. And
+ * TypeScript drops an import none of whose bindings is used (esbuild does
+ * too), which changes `importsVitePlugin` and so the dev-server choice. A
+ * source holding either shape goes through `eraseTypes`, as does one that
+ * does not parse; so does one that declares a name an import also binds,
+ * since telling a use from a shadowing one needs scope analysis. Everything
+ * else reaches the reader as TypeScript would leave it.
+ */
+export async function parseViteConfigTypeScript(
+  source: string,
+  eraseTypes: (source: string) => Promise<string>,
+): Promise<ParsedViteConfig> {
+  let ast: AstNode | null = null;
+  try {
+    ast = parseJavaScriptModule(source);
+  } catch {
+    // Type syntax, or not a module at all: esbuild decides.
+  }
+  if (ast && !hasAngleBracketChain(ast) && everyImportIsUsed(ast)) return readViteConfig(ast);
+  return parseViteConfigSource(await eraseTypes(source));
+}
+
+/**
+ * Every import binding is referenced, and no declaration reuses its name. A
+ * side-effect-only `import 'x'` binds nothing and is kept either way.
+ */
+function everyImportIsUsed(ast: AstNode): boolean {
+  const imported = new Set<string>();
+  for (const statement of nodeList(ast, 'body')) {
+    if (statement.type !== 'ImportDeclaration') continue;
+    for (const specifier of nodeList(statement, 'specifiers')) {
+      const local = nodeName(nodeProp(specifier, 'local'));
+      if (local) imported.add(local);
+    }
+  }
+  if (imported.size === 0) return true;
+  const referenced = new Set<string>();
+  const declared = new Set<string>();
+  const declare = (pattern: Pattern | null | undefined): void => {
+    if (!pattern) return;
+    if (pattern.type === 'Identifier') declared.add(pattern.name);
+    else if (pattern.type === 'ObjectPattern') {
+      for (const property of pattern.properties) declare(property.type === 'RestElement' ? property.argument : property.value);
+    } else if (pattern.type === 'ArrayPattern') for (const element of pattern.elements) declare(element);
+    else if (pattern.type === 'RestElement') declare(pattern.argument);
+    else if (pattern.type === 'AssignmentPattern') declare(pattern.left);
+  };
+  simple(ast, {
+    // Identifiers the walker visits: references and declaration patterns;
+    // import specifiers, non-computed keys and member names are not visited.
+    Identifier(node) { referenced.add(node.name); },
+    VariableDeclarator(node) { declare(node.id); },
+    Function(node) {
+      if (node.id) declared.add(node.id.name);
+      for (const param of node.params) declare(param);
+    },
+    Class(node) { if (node.id) declared.add(node.id.name); },
+    CatchClause(node) { declare(node.param); },
+  });
+  for (const name of imported) {
+    if (!referenced.has(name) || declared.has(name)) return false;
+  }
+  return true;
+}
+
+function hasAngleBracketChain(ast: AstNode): boolean {
+  let found = false;
+  simple(ast, {
+    BinaryExpression(node) {
+      if (node.operator.startsWith('>') && node.left.type === 'BinaryExpression' && node.left.operator === '<') found = true;
+    },
+  });
+  return found;
+}
+
 export function parseViteConfigSource(source: string): ParsedViteConfig {
-  const ast = parseJavaScriptModule(source);
+  return readViteConfig(parseJavaScriptModule(source));
+}
+
+function readViteConfig(ast: AstNode): ParsedViteConfig {
   const bindings = collectTopLevelBindings(ast);
   const configExpr = findExportedConfigExpression(ast, bindings);
   const configObject = configExpr ? unwrapConfigExpression(configExpr, bindings) : null;
