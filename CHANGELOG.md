@@ -64,7 +64,11 @@ published independently in the `@nimbus-sh` npm scope.
   compatibility date, or set `compatibility_date` to 2026-04-21 or later.
   `composeFabric` throws at startup on a workerd host without it, naming
   both fixes, so such a deploy fails rather than every process seeing EIO
-  where the filesystem said ENOENT.
+  where the filesystem said ENOENT. Verified on local workerd: a host at
+  2025-12-01 with only the flag added starts, and its processes get
+  ENOENT/ENOTDIR/ENOTEMPTY; without it the host refuses to start.
+  `@nimbus-sh/config` lists the flag for a `compatibilityDate` before
+  2026-04-21, as it lists `nodejs_compat` before 2026-08-04.
 
 - A destroyed session no longer keeps a live alarm when an alarm handler was
   running at the time of the destroy. The alarm dispatcher wrote its reasons

@@ -576,10 +576,11 @@ subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
 - The compat date (`2026-09-26`: `CF_COMPAT_DATE` for every Loader guest, and
   both `wrangler.jsonc`) already enables `nodejs_compat` and
   `allow_eval_during_startup`; list neither. workerd warns on a flag the date
-  enables (an error before workerd#6980, 2026-08-19). Keep every host at
-  2026-04-21 or later: `composeFabric` refuses a Worker without
-  `enhanced_error_serialization`, which is what carries a filesystem error's
-  `code` across RPC to a process.
+  enables (an error before workerd#6980, 2026-08-19). Every host needs
+  `enhanced_error_serialization` (on by date from 2026-04-21, or listed as a
+  flag on an older date, as Kinu's 2025-12-01 must): `composeFabric` refuses a
+  Worker without it, since it is what carries a filesystem error's `code`
+  across RPC to a process.
 - `@nimbus-sh/sdk/worker` is the public Worker embedder import. `@nimbus-sh/worker`
   carries runtime assets and implementation.
 - `R2` runtime catalog state is external. Correct code can still fail runtime
