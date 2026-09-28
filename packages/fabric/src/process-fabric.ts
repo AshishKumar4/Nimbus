@@ -428,17 +428,14 @@ export interface ProcessImageDelivery {
    *   across one. A peer-hosted process can only ever receive an image
    *   through `moduleCeilingBytes` below, or by streaming it.
    *
-   * Reachable in PRODUCTION but not from a type checker or `wrangler dev`, and
-   * the difference is worth stating precisely because inferring one from the
-   * other is how a wrong claim gets written down. `@cloudflare/workers-types`
-   * 4.20260605.1 declares `get`/`abort`/`delete` and no `clone`, and the pinned
-   * workerd is 1.20260603.1 — but the deployed runtime is Cloudflare's, not the
-   * one wrangler bundles, and there it is present and works: enumerating the
-   * binding on a live Worker at this repo's own compatibility_date returns
-   * `["abort","clone","constructor","delete","get"]`, and a clone into a
-   * destination of a DIFFERENT class had all 500 seeded files readable from the
-   * destination's CONSTRUCTOR. No compat-date gate. So calling it is a
-   * lockfile-and-types problem, not a platform one.
+   * Present in production, and since the pins moved to
+   * `@cloudflare/workers-types` 5.20260928.1 and workerd 1.20260926.1 also in
+   * the type checker and `wrangler dev` (DurableObjectFacets.clone;
+   * src/workerd/api/actor-state.h). Before that the types declared no `clone`
+   * and the pinned workerd 1.20260603.1 lacked it, while on a live Worker the
+   * binding enumerated `["abort","clone","constructor","delete","get"]` and a
+   * clone into a destination of a DIFFERENT class had all 500 seeded files
+   * readable from the destination's CONSTRUCTOR. No compat-date gate.
    *
    * The hazard that comes with it, measured rather than assumed: ANY `src`
    * that does not resolve to a populated facet — a typo, a name not created
