@@ -185,6 +185,33 @@ function returns(promise, what) {
   assert.equal(evaluated, true, 'the entry module evaluation was abandoned');
 }
 
+// ── 7. A resident's boot does not wait forever on its module's evaluation ───
+// A server entry ending in a top-level await that never settles is a running
+// program in Node. Its boot is bounded by the settle budget (requests routed
+// to the facet wait for boot, so an unbounded wait hung them all), a module
+// that finishes first is still waited for, and a rejection that lands after
+// the budget still surfaces as an uncaught error.
+{
+  const l = freshLoop();
+  globalThis.__portRegistry.set(5173, {});
+  const t0 = Date.now();
+  await returns(l.settleEntrypointStartup(new Promise(() => {}), 300), 'a resident boot waited on a never-settling top-level await');
+  const waited = Date.now() - t0;
+  assert.ok(waited >= 250 && waited < 5_000, `bounded by the settle budget (waited ${waited} ms)`);
+
+  const l2 = freshLoop();
+  let evaluated = false;
+  await l2.settleEntrypointStartup(new Promise((r) => setTimeout(() => { evaluated = true; r(); }, 100)), 2_000);
+  assert.equal(evaluated, true, 'an evaluation that settles inside the budget is waited for');
+
+  const l3 = freshLoop();
+  const uncaught = new Promise((resolve) => process.once('uncaughtException', resolve));
+  let rejectLate;
+  await l3.settleEntrypointStartup(new Promise((_, reject) => { rejectLate = reject; }), 50);
+  rejectLate(new Error('listen EADDRINUSE'));
+  assert.equal((await uncaught).message, 'listen EADDRINUSE', 'a late rejection surfaces as an uncaught error');
+}
+
 globalThis.__nimbusPendingTimers = 0;
 globalThis.__nimbusPendingOps = 0;
 globalThis.__portRegistry = new Map();
