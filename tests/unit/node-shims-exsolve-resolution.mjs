@@ -70,8 +70,7 @@ const manifest = {
 const NativeURL = globalThis.URL;
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
-    + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
 );
 // Every staged file and listed directory comes with its record, as
 // the namespace lists them: the stat ladder answers from these.

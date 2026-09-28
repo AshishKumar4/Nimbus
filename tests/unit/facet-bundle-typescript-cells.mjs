@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 // facet-bundle-typescript-cells — a TypeScript file in a facet bundle reaches
-// the facet as the bytes on disk, and runs from a compiled cell beside it.
+// the facet as the bytes on disk, and runs from its emit as its module cell.
 //
-// A bundle cell is two things to the facet: what `readFileSync` returns for
-// the path, and what the startup pre-compile loop turns into the function
-// `require` runs. For JavaScript those are the same bytes. For a TypeScript
-// source they are not, and the ESM→CJS pass used to rewrite the cell in
-// place with esbuild's emit. Two things broke, both on `tsc`:
+// A bundle file is two things to the facet: what `readFileSync` returns for
+// the path, and the module cell `require` runs. For JavaScript those are the
+// same bytes. For a TypeScript source they are not, and the ESM→CJS pass used
+// to rewrite the cell in place with esbuild's emit. Two things broke, both on
+// `tsc`:
 //
 //   - `tsc -p .` read its project's `src/index.ts` and got esbuild's
 //     CommonJS rendering of it — `__toCommonJS`, `module.exports` — so it
@@ -16,31 +16,30 @@
 //     811-byte license comment, since esbuild's output for a declaration
 //     file is empty by construction.
 //
-// And the rewrite bought nothing: the facet's pre-compile loop only ever
-// compiled `.js`/`.mjs`/`.cjs`/extensionless cells, so a `require('./x.ts')`
-// still died at request time with "not in this launch's module map".
-//
-// Now the source cell stays verbatim, the emit travels under a compiled-cell
-// key no path can collide with, declaration files are never transformed, and
-// the shared pre-compile loop both facets run registers the emit under the
-// real path and drops the key before any read can see it.
+// Now the source stays verbatim as the file the store holds, the emit is the
+// path's `{ cjs }` module (and never also data), declaration files are never
+// transformed, and a JavaScript cell's file is its own module's text.
 
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  BUNDLE_PRECOMPILE_LOOP,
+  buildFacetVfsBundleSource,
   buildPrefetchBundle,
   bundleTypescriptLoader,
-  compiledCellKey,
-  compiledCellPath,
   generateEntrypointCode,
-  generateLongRunningNodeCode,
   isBundleModuleCandidate,
   isTypescriptDeclarationFile,
 } from '../../packages/worker/src/facets/manager.ts';
-import { MK_COMPILED_FN_SOURCE } from '../../packages/core/src/_shared/compiled-fn.ts';
+import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
+import { generatedModuleSet, moduleMapBundle, moduleMapCodeCells, writeModuleSet } from './lib/module-map-bundle.mjs';
+
+const dir = mkdtempSync(join(tmpdir(), 'facet-ts-cells-'));
+process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 
 
 // ── Classification ──────────────────────────────────────────────────────
@@ -60,10 +59,6 @@ for (const [path, loader] of [
   assert.equal(bundleTypescriptLoader(path), loader, `loader for ${path}`);
   assert.ok(isBundleModuleCandidate(path), `${path} reaches the transform`);
 }
-// The compiled-cell key round-trips and can never be a path: it contains NUL.
-assert.equal(compiledCellPath(compiledCellKey('home/user/a.ts')), 'home/user/a.ts');
-assert.equal(compiledCellPath('home/user/a.ts'), null);
-assert.ok(compiledCellKey('x').includes('\0'));
 
 // ── Through the bundle builder ──────────────────────────────────────────
 // A typescript@5-shaped tree next to a project: the CommonJS compiler, the
@@ -120,74 +115,61 @@ const { bundle } = state;
 
 // The project source is staged as the bytes on disk — what `tsc` reads.
 assert.equal(bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'src/index.ts reaches the facet verbatim');
-// Its emit rides beside it under the compiled-cell key.
-const compiledKey = compiledCellKey(`${PROJ}/src/index.ts`);
-assert.ok(typeof bundle[compiledKey] === 'string', 'the compiled cell exists');
-assert.match(bundle[compiledKey], /^\/\* emit:ts \*\//, 'the compiled cell is the esbuild emit');
+// Its emit is kept beside it for the module cell.
+assert.match(state.emits?.get(`${PROJ}/src/index.ts`) ?? '', /^\/\* emit:ts \*\//, 'the emit is the esbuild output');
 // Declaration files were staged and never transformed — including the one
 // with `export` statements, which a content sniff would call ESM.
 assert.equal(bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'lib.es5.d.ts reaches the facet verbatim');
 assert.equal(bundle[`${TS}/lib/typescript.d.ts`], TYPESCRIPT_DTS, 'typescript.d.ts reaches the facet verbatim');
-assert.equal(compiledKey in bundle && compiledCellKey(`${TS}/lib/lib.es5.d.ts`) in bundle, false,
-  'a declaration file gets no compiled cell');
+assert.equal(state.emits?.has(`${TS}/lib/lib.es5.d.ts`), false, 'a declaration file gets no emit');
 assert.deepEqual(touched, ['ts'], 'esbuild ran once, for the one source; never for a declaration file');
 // The CommonJS compiler cells are as staged.
 assert.equal(bundle[`${TS}/lib/_tsc.js`], files[`${TS}/lib/_tsc.js`]);
 assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
 
-// ── The facet-side pre-compile loop, exactly as generated ───────────────
-// Both generated facets splice the same loop, so one evaluation covers both.
+// ── The facet's module map, as a launch generates it ─────────────────────
 const SHIMS = '/* __SHIMS_MARKER__ */';
-const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const oneShot = (await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS))).code;
-const resident = (await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources(SHIMS))).code;
-for (const [label, source] of [['one-shot node facet', oneShot], ['long-running node facet', resident]]) {
-  assert.ok(source.includes(BUNDLE_PRECOMPILE_LOOP.trim()), `${label}: splices the shared pre-compile loop`);
-  assert.ok(source.includes(MK_COMPILED_FN_SOURCE.trim()), `${label}: splices the shared compile helper`);
-  assert.equal(source.split('function __mkCompiledFn(').length, 2, `${label}: defines the helper once`);
-}
+const set = generatedModuleSet(await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS)), 'runner.js');
 
-// Run the loop the way the facet does: at module evaluation, over the parsed
-// bundle, with the facet's own compile helper. A required module that keeps
-// its shebang (pi 0.87.0's cli-runtime.js, loaded through createRequire from
-// the bin) must compile like the bin itself does; before the helper was
-// shared, only the one-shot facet stripped it.
-const facetBundle = {
-  ...Object.fromEntries(Object.entries(bundle).filter(([, cell]) => typeof cell === 'string')),
-  [`${TS}/LICENSE`]: 'Apache License 2.0\n',
-  [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
+// What the process's store holds: every file as the program reads it.
+const held = moduleMapBundle(set);
+assert.equal(held[`${PROJ}/src/index.ts`], INDEX_TS, 'the store holds the TypeScript source, not its emit');
+assert.equal(held[`${TS}/lib/lib.es5.d.ts`], LIB_ES5);
+assert.equal(held[`${TS}/lib/_tsc.js`], files[`${TS}/lib/_tsc.js`], 'a JavaScript file is read back from its module');
+assert.equal(held[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`], 'a shebang survives the read-back');
+
+// What the program runs: a module per code file, the emit for the source.
+const cells = new Map(moduleMapCodeCells(set).map((row) => [row[0], row]));
+assert.equal(cells.get(`${PROJ}/src/index.ts`)?.[4], 0, 'the emit is not adopted as the file');
+assert.equal(cells.has(`${TS}/lib/lib.es5.d.ts`), false, 'a declaration file is no module');
+assert.equal(cells.has(`${PROJ}/package.json`), false, 'data is no module');
+const main = writeModuleSet(join(dir, 'one-shot'), set, 'runner.js');
+const requireCell = globalThis.__nimbusTestCreateRequire(new URL(`file://${main}`).href);
+const call = (key, require = () => { throw new Error('no require expected'); }) => {
+  const mod = { exports: {} };
+  requireCell('./' + commonJsCellModuleName(key))(mod.exports, require, mod, '/x', '/');
+  return mod.exports;
 };
-const __compiledModules = new Map();
-const __compileFailures = new Map();
-const __mkCompiledFn = new Function(`${MK_COMPILED_FN_SOURCE}; return __mkCompiledFn;`)();
-new Function('__MODULE_VFS_BUNDLE', '__compiledModules', '__compileFailures', '__mkCompiledFn', BUNDLE_PRECOMPILE_LOOP)(
-  facetBundle, __compiledModules, __compileFailures, __mkCompiledFn,
-);
-{
-  const runtime = __compiledModules.get(`${TS}/lib/runtime.js`);
-  assert.equal(typeof runtime, 'function', `a required module with a shebang compiles: ${__compileFailures.get(`${TS}/lib/runtime.js`)}`);
-  const m = { exports: {} };
-  runtime(m.exports, () => { throw new Error('no require expected'); }, m, '/x', '/');
-  assert.deepEqual(m.exports, { shebang: 'stripped' }, 'and its own `require` declaration wins over the parameter');
-}
+assert.equal(call(`${PROJ}/src/index.ts`).greet('ok'), 'NIMBUS-TSC-EMIT:ok', 'the source runs its emit, under its own path');
+assert.deepEqual(call(`${TS}/lib/tsc.js`, (id) => `required:${id}`), 'required:./_tsc.js', 'a JavaScript cell runs its own bytes');
 
-// The TypeScript source is now runnable under its real path, from the emit.
-const compiled = __compiledModules.get(`${PROJ}/src/index.ts`);
-assert.equal(typeof compiled, 'function', 'src/index.ts is registered under its own path');
-const mod = { exports: {} };
-compiled(mod.exports, () => { throw new Error('no require expected'); }, mod, '/x', '/');
-assert.equal(mod.exports.greet('ok'), 'NIMBUS-TSC-EMIT:ok', 'and it runs the emit');
-// The key is gone from the bundle; the source is still there for readers.
-assert.equal(compiledKey in facetBundle, false, 'the compiled key is removed before any read');
-assert.equal(facetBundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the source cell is untouched');
-// JavaScript cells compile from their own bytes, as before.
-assert.equal(typeof __compiledModules.get(`${TS}/lib/_tsc.js`), 'function');
-assert.equal(typeof __compiledModules.get(`${TS}/bin/tsc`), 'function', 'an extensionless bin script compiles');
-// Declaration files and data are not compiled; a non-JS extensionless file
-// records its failure rather than crashing the facet.
-assert.equal(__compiledModules.has(`${TS}/lib/lib.es5.d.ts`), false);
-assert.equal(__compiledModules.has(`${PROJ}/package.json`), false);
-assert.ok(__compileFailures.has(`${TS}/LICENSE`), 'LICENSE is recorded as a compile failure, not thrown');
-assert.equal(__compileFailures.has(`${PROJ}/src/index.ts`), false);
+// A required module that keeps its shebang and declares its own `require`
+// (pi 0.87.0's cli-runtime.js, loaded through createRequire from the bin)
+// runs; a non-JavaScript extensionless file is a module nothing compiles
+// until something requires it, and still reads as the file it is.
+const extra = await buildFacetVfsBundleSource({
+  [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
+  [`${TS}/LICENSE`]: 'Apache License 2.0\n',
+});
+const extraSet = { 'runner.js': `const __NIMBUS_CODE_CELLS = ${extra.codeCells};\nconst __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${extra.expression});\n` };
+for (const [name, text] of Object.entries(extra.codeModules)) extraSet[name] = { cjs: text };
+const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');
+const extraRequire = globalThis.__nimbusTestCreateRequire(new URL(`file://${extraMain}`).href);
+{
+  const m = { exports: {} };
+  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/runtime.js`))(m.exports, () => { throw new Error('the wrapper require'); }, m, '/x', '/');
+  assert.deepEqual(m.exports, { shebang: 'stripped' }, 'the module\'s own `require` declaration wins over the parameter');
+}
+assert.equal(moduleMapBundle(extraSet)[`${TS}/LICENSE`], 'Apache License 2.0\n', 'LICENSE reads back as the file it is');
 
 console.log('facet-bundle-typescript-cells: ok');

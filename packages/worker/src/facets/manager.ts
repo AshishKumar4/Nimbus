@@ -16,7 +16,15 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 
-import { MK_COMPILED_FN_SOURCE } from '@nimbus-sh/core/_shared/compiled-fn.js';
+import {
+  COMMONJS_CELL_IMPORTS,
+  COMMONJS_CELL_RUNTIME_SOURCE,
+  commonJsCellModuleName,
+  commonJsCellReadsBack,
+  commonJsEntryModuleName,
+  wrapCommonJsCell,
+  type CommonJsCellRow,
+} from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -91,6 +99,7 @@ import {
   type ImageBlobStore,
 } from '@nimbus-sh/fabric/image-store.js';
 import {
+  encodeCommonJsPack,
   ProcessFabric,
   ResidentProcessHandle,
   type ProcessHost,
@@ -128,6 +137,7 @@ import {
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
   CF_COMPAT_DATE,
+  GUEST_COMPAT_FLAGS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
@@ -590,16 +600,31 @@ const SQLITE_FACET_IMPORT =
   generateSqliteFacetPreamble();
 
 /**
- * A generated facet's module map: its main module plus whatever side modules
- * the VFS bundle had to be partitioned across.
+ * A generated facet's module map: its main module, the side modules the VFS
+ * bundle's data was partitioned across, and the `{ cjs }` modules of the
+ * process's code — every cell of its closure and its entry
+ * (core/_shared/commonjs-cell.ts).
  */
 interface GeneratedNodeFacetCode {
   code: string;
   modules: Record<string, string>;
+  codeModules: Record<string, string>;
 }
 
 /**
- * Generate one-shot runtime code with a plain fetch handler.
+ * The entry code as a module of the map, named for the script it came from so
+ * its stack frames carry that path; `-e` code is `[eval]`.
+ */
+function entryModule(userCode: string, filename: string | undefined): { name: string; text: string } {
+  return {
+    name: commonJsEntryModuleName(filename || '[eval]'),
+    text: wrapCommonJsCell(rewriteProvidedCommonJsModules(userCode)).text,
+  };
+}
+
+/**
+ * Generate one-shot runtime code with a plain fetch handler. `filename`
+ * names the entry's module, and so its stack frames.
  */
 export async function generateEntrypointCode(
   userCode: string,
@@ -607,36 +632,26 @@ export async function generateEntrypointCode(
   usesSqlite: boolean,
   sources: NodeFacetSources,
   wasmImports: readonly FacetWasmImport[] = [],
+  filename?: string,
 ): Promise<GeneratedNodeFacetCode> {
-  const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
+  const entry = entryModule(userCode, filename);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   return {
     code: `
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
+${COMMONJS_CELL_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${facetWasmImportsSource(wasmImports)}
-const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
-${MK_COMPILED_FN_SOURCE}
+// The process's code: a module per cell, compiled when first required.
+const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
+${COMMONJS_CELL_RUNTIME_SOURCE}
 
-let __compiledFn = null;
-let __entryCompileFailure = null;
-try {
-  __compiledFn = __mkCompiledFn(USER_CODE);
-} catch (__e) {
-  __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
-}
-
-// The module bundle and its pre-compiled modules, at module level (startup time).
-const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __compiledModules = new Map();
-const __compileFailures = new Map();
-// Precompile JS modules AND extensionless CJS entries (bin scripts and
-// shims). workerd forbids new Function at request time, so anything not
-// precompiled here surfaces the misleading "not in this launch's module map".
-${BUNDLE_PRECOMPILE_LOOP}
+// The module bundle, at module level (startup time); the code cells the store
+// adopts are getters over the map's own text.
+const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -669,7 +684,7 @@ ${sources.residentStore}
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor);
+    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
@@ -746,9 +761,9 @@ ${RESIDENCY_MISS_REPORT}
     // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
     __require.main = mod;
     try {
-      if (__entryCompileFailure) throw new Error(__entryCompileFailure);
-      if (!__compiledFn) throw new Error("entrypoint compile failed");
-      const __entryResult = __compiledFn(
+      // Compiled here, by the registry, the first time; a syntax error in
+      // the entry is this run's error, with the entry's own line numbers.
+      const __entryResult = __nimbusRegistryRequire(${JSON.stringify('./' + entry.name)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
@@ -853,6 +868,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
     modules: bundleSource.modules,
+    codeModules: { ...bundleSource.codeModules, [entry.name]: entry.text },
   };
 }
 
@@ -878,6 +894,13 @@ function* drainSources(sources: Record<string, string>): Generator<readonly [str
     yield [name, source];
   }
 }
+
+/**
+ * The image-store name a resident launch's code pack is materialized under.
+ * Not a module name — the pack's own index names its modules — so it can
+ * never collide with one of the main module's.
+ */
+const CODE_PACK_IMAGE = 'code pack';
 
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
@@ -955,7 +978,7 @@ export async function generateLongRunningNodeCode(
   sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
+  const entry = entryModule(userCode, opts.filename);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     env: opts.env || {},
@@ -972,34 +995,23 @@ export async function generateLongRunningNodeCode(
 ${bundleSource.imports}
 import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
+${COMMONJS_CELL_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${facetWasmImportsSource(opts.wasmImports ?? [])}
-const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
 
-${MK_COMPILED_FN_SOURCE}
-
-let __compiledFn = null;
-let __entryCompileFailure = null;
-try {
-  __compiledFn = __mkCompiledFn(USER_CODE);
-} catch (__e) {
-  __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
-}
+// The process's code: a module per cell, compiled when first required. The
+// only other way a string becomes code in a Worker is \`new Function\` at
+// module evaluation, which compiled the whole closure before the program ran.
+const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
+${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
-// and this object are the same bytes twice, and for pi that is the largest
-// single allocation in the facet before the program starts.
-let __MODULE_VFS_BUNDLE = ${bundleSource.expression};
-const __compiledModules = new Map();
-const __compileFailures = new Map();
-// Module evaluation is the ONLY place workerd allows a string to become code —
-// \`new Function\` throws "Code generation from strings disallowed" in the DO
-// constructor and at request time — so the require closure must be compiled
-// here, off the module map. That is why code cannot come from the store.
-${BUNDLE_PRECOMPILE_LOOP}
+// and this object are the same bytes twice. The code cells the store adopts
+// are getters over the map's own module text.
+let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
 ${sources.residentStore}
 
@@ -1106,6 +1118,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
       __supervisor,
+      ${bundleSource.storageBytes},
     );
     if (__startArgs && __startArgs.diag && __supervisor) {
       // NIMBUS_DEBUG only: what this process holds, for per-process storage measurement.
@@ -1196,9 +1209,9 @@ ${RESIDENCY_MISS_REPORT}
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     try {
-      if (__entryCompileFailure) throw new Error(__entryCompileFailure);
-      if (!__compiledFn) throw new Error("entrypoint compile failed");
-      const __entryResult = __compiledFn(
+      // Compiled here, by the registry, the first time; a syntax error in
+      // the entry is this launch's error, with the entry's own line numbers.
+      const __entryResult = __nimbusRegistryRequire(${JSON.stringify('./' + entry.name)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       if (attachedTty) {
@@ -1367,6 +1380,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
     modules: bundleSource.modules,
+    codeModules: { ...bundleSource.codeModules, [entry.name]: entry.text },
   };
 }
 
@@ -1420,6 +1434,13 @@ interface FacetVfsState {
   // read returned 3× the original byte count. See
   // for the canonical 256→512 byte demo.
   bundle: FacetVfsBundle;
+  /**
+   * The executable form of each TypeScript source in `bundle`, by the
+   * source's path: esbuild's emit, which becomes the path's module cell while
+   * `bundle` keeps the source a program reads. A JavaScript cell needs none —
+   * its transformed text replaces it in `bundle` and serves both.
+   */
+  emits?: Map<string, string>;
   /** What the module map costs the facet's store, taken before its cells are released (N18). */
   moduleStorageBytes?: number;
   /**
@@ -1510,7 +1531,9 @@ interface ProcessBundleSpec {
  * (`assertStagedBundleFitsRpcPayload`); it does not go through here.
  */
 export function releaseSerializedSources(vfsState: FacetVfsState): void {
-  if (vfsState.bundleSource) vfsState.bundle = {};
+  if (!vfsState.bundleSource) return;
+  vfsState.bundle = {};
+  vfsState.emits = undefined;
 }
 
 /**
@@ -1557,14 +1580,24 @@ async function facetVfsBundleSourceFor(
   }
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
-      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
+      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { emits: vfsState.emits },
     );
 }
 
 interface FacetVfsBundleSource {
+  /** The data cells: an inline expression, or one joining the side modules. */
   expression: string;
   imports: string;
   modules: Record<string, string>;
+  /** The code cells as `{ cjs }` module texts, by module name. */
+  codeModules: Record<string, string>;
+  /** The JSON of the launch's CommonJsCellRow table. */
+  codeCells: string;
+  /**
+   * What the process's store charges itself to adopt the data cells and the
+   * code cells it reads back (facet-resident-store's __residentCellCost).
+   */
+  storageBytes: number;
 }
 
 /**
@@ -1657,10 +1690,12 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     bytes += path.length;
     if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
   }
+  for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
   const source = state.bundleSource;
   if (source) {
-    bytes += source.expression.length + source.imports.length;
+    bytes += source.expression.length + source.imports.length + source.codeCells.length;
     for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
+    for (const [name, text] of Object.entries(source.codeModules)) bytes += name.length + text.length;
   }
   return bytes;
 }
@@ -1776,10 +1811,7 @@ export function encodedBundleSize(bundle: FacetVfsBundle) {
 function describeBundleCells(cells: BundleCellSize[], limit = 8): string {
   const shown = [...cells].sort((a, b) => b[1] - a[1]).slice(0, limit);
   const rest = cells.length - shown.length;
-  return shown.map(([path, bytes]) => {
-    const source = compiledCellPath(path);
-    return source === null ? `${path} (${bytes} bytes)` : `${source} [compiled] (${bytes} bytes)`;
-  }).join(', ') + (rest > 0 ? `, +${rest} more` : '');
+  return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 
 /**
@@ -1909,24 +1941,78 @@ function _inlineBundleSourceBytes(bundle: FacetVfsBundle): number {
 }
 
 /**
+ * Whether a bundle cell at `path` is one the process can require as code:
+ * `.js`, `.mjs`, `.cjs`, and extensionless files — the shape of nearly every
+ * npm `bin` script. A TypeScript source is code through its emit instead.
+ */
+function isCodeCellPath(path: string): boolean {
+  const ext = vfsPathExtension(path);
+  return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '';
+}
+
+/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
- * Small bundles remain inline. Large bundles are partitioned into side
- * modules below the existing per-module encoded ceiling and merged during
- * module evaluation. A single oversized cell is split into ordered fragments;
- * the merge expression concatenates those fragments back to the original
- * string or Uint8Array before module precompilation begins.
+ * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
+ * the guest's registry compiles the first time the program requires it. Its
+ * text is the one copy the map carries: the process's store adopts the file
+ * by reading that module back, so a cell is never also data — except where
+ * the read-back cannot name it (commonJsCellReadsBack) and for a TypeScript
+ * source, whose file is the source and whose module is the emit.
+ *
+ * The data cells stay one bundle. Small bundles remain inline. Large bundles
+ * are partitioned into side modules below the existing per-module encoded
+ * ceiling and merged during module evaluation. A single oversized cell is
+ * split into ordered fragments; the merge expression concatenates those
+ * fragments back to the original string or Uint8Array.
  */
 export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
   pacer?: TurnBudget,
-  { consume = false }: { consume?: boolean } = {},
+  { consume = false, emits }: { consume?: boolean; emits?: ReadonlyMap<string, string> } = {},
 ): Promise<FacetVfsBundleSource> {
-  // \`consume\`: the caller releases the raw cells right after (a launch's
-  // build), so each is taken as its side module is serialized and the map is
-  // never held twice. Side modules always: an inline expression is copied
-  // again into the runner's own source.
+  const storageBytes = moduleMapStorageBytes(bundle);
+  const codeModules: Record<string, string> = {};
+  const rows: CommonJsCellRow[] = [];
+  // `consume`: the caller releases the raw cells right after (a launch's
+  // build), so each is taken as its module is written and the map is never
+  // held twice. Otherwise the caller's bundle is left as it was.
+  const data: FacetVfsBundle = consume ? bundle : {};
+  for (const path of Object.keys(bundle)) {
+    const cell = bundle[path];
+    const emit = emits?.get(path);
+    const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
+    const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
+    if (code !== undefined) {
+      const wrapped = wrapCommonJsCell(code);
+      const name = commonJsCellModuleName(path);
+      codeModules[name] = wrapped.text;
+      rows.push([path, name, wrapped.head, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0]);
+      if (pacer) await pacer.spend(code.length);
+    }
+    if (adopt) {
+      if (consume) delete bundle[path];
+    } else if (!consume) {
+      data[path] = cell;
+    }
+  }
+  return {
+    ...await serializeFacetVfsData(data, forceSideModules, pacer, consume),
+    codeModules,
+    codeCells: JSON.stringify(rows),
+    storageBytes,
+  };
+}
+
+async function serializeFacetVfsData(
+  bundle: FacetVfsBundle,
+  forceSideModules: boolean,
+  pacer: TurnBudget | undefined,
+  consume: boolean,
+): Promise<Pick<FacetVfsBundleSource, 'expression' | 'imports' | 'modules'>> {
+  // Consumed, side modules always: an inline expression is copied again into
+  // the runner's own source.
   if (consume) forceSideModules = true;
   // Size the inline form before building it. A bundle that will be split has
   // no use for the whole-bundle expression, and building one to read its
@@ -3285,8 +3371,8 @@ function looksLikeEsm(path: string, src: string): boolean {
  * W3.5 Fix B — module-level cache for ESM→CJS transform results, keyed
  * by content hash. A cheap FNV-1a 32-bit hash is enough (collisions are
  * astronomically rare for the size of bundles we ship; on collision the
- * pre-compile would still succeed because the cached result is a valid
- * CJS rebuild of an equally-valid ESM input).
+ * cell would still load because the cached result is a valid CJS rebuild
+ * of an equally-valid ESM input).
  *
  * Lives at module scope so warm exec invocations hit the cache without
  * paying the wasm cold-start cost again.
@@ -3348,23 +3434,21 @@ function __cacheKey(src: string): string {
  * surface regardless of whether transform failed for the whole batch
  * or for one file.
  *
- * Does NOT touch non-ESM files (which the pre-compile loop handles
- * fine as-is).
+ * Does NOT touch non-ESM files, which run as the CommonJS they are.
  */
 function _markBundleEsmAsFailed(
   bundle: Record<string, string | Uint8Array>,
+  emits: Map<string, string>,
   reason: string,
 ): void {
   for (const path of Object.keys(bundle)) {
-    if (compiledCellPath(path) !== null) continue;
     if (!isBundleModuleCandidate(path)) continue;
     const src = bundle[path];
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    const typescript = bundleTypescriptLoader(path) !== null;
-    if (!typescript && !looksLikeEsm(path, src)) continue;
-    bundle[typescript ? compiledCellKey(path) : path] = esbuildDiagnosticShim(path, reason);
+    if (bundleTypescriptLoader(path) !== null) emits.set(path, esbuildDiagnosticShim(path, reason));
+    else if (looksLikeEsm(path, src)) bundle[path] = esbuildDiagnosticShim(path, reason);
   }
 }
 
@@ -3380,17 +3464,17 @@ function esbuildDiagnosticShim(path: string, reason: string): string {
 }
 
 /**
- * The set of bundle entries the facet's startup pre-compile loop turns into
- * functions, minus the ones already in the right format. Everything the loop
- * compiles must pass through the ESM→CJS transform first: a file the loop
- * compiles but this pass skipped reaches `new Function` as ESM source and
- * dies there, and request-time codegen is blocked so nothing can recover it.
+ * The bundle entries that may need the ESM→CJS transform before they can run
+ * as module cells. Every cell a process can require is CommonJS by the time
+ * it is wrapped (commonjs-cell.ts): the guest's registry could compile an ES
+ * module, but cannot resolve its package imports, give it its own file URL,
+ * or import names from the CommonJS it depends on.
  *
- * Extensionless entries are in the set for the same reason the pre-compile
- * loop takes them — that is the shape of nearly every npm `bin` script.
- * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
- * transform. Content decides from here: `looksLikeEsm` sniffs module syntax,
- * and parses an extensionless file, which may be data rather than a script.
+ * Extensionless entries are in the set because that is the shape of nearly
+ * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
+ * definition; neither needs the transform. Content decides from here:
+ * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
+ * which may be data rather than a script.
  */
 export function isBundleModuleCandidate(path: string): boolean {
   const ext = vfsPathExtension(path);
@@ -3403,7 +3487,7 @@ export function isBundleModuleCandidate(path: string): boolean {
  * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
- * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
+ * JavaScript: compiling a type annotation is a SyntaxError whether or
  * not the file has a single import in it. So these transform on their
  * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
  * the right question for a file that is already valid JS either way, and the
@@ -3429,71 +3513,6 @@ export function isTypescriptDeclarationFile(path: string): boolean {
 }
 
 /**
- * Where a bundle carries the EXECUTABLE form of a cell whose staged bytes are
- * not JavaScript — a TypeScript source.
- *
- * A bundle cell is two things to the facet: what `readFileSync` returns for
- * the path, and what the startup pre-compile loop turns into the function
- * `require` runs. For a JavaScript file those are the same bytes, so the
- * ESM→CJS pass rewrites the cell in place and both readers see JavaScript.
- * For a TypeScript source they are NOT the same: the bytes a program reads
- * are the source (tsc compiling its project, a test runner, a linter), and
- * the bytes `require` needs are esbuild's emit. Rewriting the cell in place
- * handed tsc esbuild's CommonJS rendering of its own `src/index.ts` — it
- * compiled that, and reported errors on lines the file never had.
- *
- * So the source cell stays exactly as staged, and the compiled form travels
- * under this key: a NUL-framed prefix no filesystem path can contain, in the
- * same map, so it is sized, split, cached, released and shipped by every
- * mechanism the bundle already has. The facet's pre-compile loop takes these
- * cells OFF the map as it compiles them, keyed by the real path, before any
- * read can see them.
- */
-const COMPILED_CELL_KEY_PREFIX = '\0compiled\0';
-
-export function compiledCellKey(path: string): string {
-  return COMPILED_CELL_KEY_PREFIX + path;
-}
-
-/** The source path a compiled-cell key stands for, or null for a plain path. */
-export function compiledCellPath(key: string): string | null {
-  return key.startsWith(COMPILED_CELL_KEY_PREFIX) ? key.slice(COMPILED_CELL_KEY_PREFIX.length) : null;
-}
-
-
-/**
- * The pre-compile loop both generated facets run at module evaluation, the
- * only moment workerd lets a string become code. One definition so the two
- * facets cannot drift on what they compile: every JavaScript-shaped cell
- * (`.js`, `.mjs`, `.cjs` and the extensionless bin scripts) from its own
- * bytes, and every TypeScript source from its compiled cell — which is
- * removed from the bundle here, so a `readFileSync` of the source path
- * returns the source and a directory listing never shows the key.
- */
-export const BUNDLE_PRECOMPILE_LOOP = `
-const __NIMBUS_COMPILED_PREFIX = ${JSON.stringify(COMPILED_CELL_KEY_PREFIX)};
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  let __modulePath = __p;
-  if (__p.startsWith(__NIMBUS_COMPILED_PREFIX)) {
-    __modulePath = __p.slice(__NIMBUS_COMPILED_PREFIX.length);
-    delete __MODULE_VFS_BUNDLE[__p];
-  } else {
-    // .json is data; skip it (it loads via JSON.parse, not as a function).
-    const __base = __p.slice(__p.lastIndexOf("/") + 1);
-    const __dot = __base.lastIndexOf(".");
-    const __ext = __dot > 0 ? __base.slice(__dot) : "";
-    if (__ext !== ".js" && __ext !== ".mjs" && __ext !== ".cjs" && __ext !== "") continue;
-  }
-  if (typeof __c !== "string") continue;
-  try {
-    __compiledModules.set(__modulePath, __mkCompiledFn(__c));
-  } catch (__e) {
-    __compileFailures.set(__modulePath, __e && __e.message ? __e.message : String(__e));
-  }
-}
-`;
-
-/**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
  * Mutates `bundle` in place. A module esbuild rejects becomes a diagnostic
  * shim that throws the reason when required (`esbuildDiagnosticShim`).
@@ -3502,7 +3521,8 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
  * including .cjs, also visit the rewrite-only path for dynamic import().
  *
  * A JavaScript cell is rewritten in place. A TypeScript source keeps its
- * bytes and gets a compiled cell beside it — see `compiledCellKey`.
+ * bytes — they are what a program reads, tsc compiling its own project — and
+ * its emit goes to `emits`, to become the path's module cell.
  *
  * When the service transforms in another isolate every cell goes in one
  * `transformMany`, so a launch costs one round trip and this isolate never
@@ -3512,6 +3532,7 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
+  emits: Map<string, string>,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
 ): Promise<{ transformed: number; failed: number }> {
@@ -3520,7 +3541,6 @@ async function transformEsmInBundle(
   // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
   const candidates: string[] = [];
   for (const path of Object.keys(bundle)) {
-    if (compiledCellPath(path) !== null) continue;
     if (!isBundleModuleCandidate(path) && !path.endsWith('.cjs')) continue;
     const src = bundle[path];
     // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
@@ -3531,7 +3551,11 @@ async function transformEsmInBundle(
     } else if (bundleTypescriptLoader(path) === null && !looksLikeEsm(path, src) && !mayHaveDynamicImport(src)) continue;
     candidates.push(path);
   }
-  interface EsmCell { path: string; target: string; key: string; absUrl: string; request: EsbuildTransformRequest }
+  interface EsmCell { path: string; typescript: boolean; key: string; absUrl: string; request: EsbuildTransformRequest }
+  const place = (cell: Pick<EsmCell, 'path' | 'typescript'>, code: string): void => {
+    if (cell.typescript) emits.set(cell.path, code);
+    else bundle[cell.path] = code;
+  };
   const settle = (cell: EsmCell, outcome: EsbuildTransformOutcome): void => {
     if ('error' in outcome) {
       // Infrastructure failure is not source code. Abort before the bundle
@@ -3540,13 +3564,13 @@ async function transformEsmInBundle(
       // esbuild's verdict on this source is cached with it; a host that could
       // not run the transform this time has no verdict to cache.
       const shim = esbuildDiagnosticShim(cell.path, outcome.error);
-      bundle[cell.target] = shim;
+      place(cell, shim);
       __esmTransformCacheSet(cell.key, shim);
       failed++;
       return;
     }
     const code = bindImportMetaResolve(outcome.code, cell.absUrl);
-    bundle[cell.target] = code;
+    place(cell, code);
     __esmTransformCacheSet(cell.key, code);
     transformed++;
   };
@@ -3566,8 +3590,7 @@ async function transformEsmInBundle(
     const original = bundle[path];
     if (typeof original !== 'string') continue;
     const loader = bundleTypescriptLoader(path);
-    // A TypeScript source keeps its bytes; its emit lands beside it.
-    const target = loader === null ? path : compiledCellKey(path);
+    const typescript = loader !== null;
     // Source is transformed once per path; import.meta reads metadata from
     // each evaluation's module object, including its query and fragment.
     // The source URL still keys transforms and supplies the static parent
@@ -3577,7 +3600,7 @@ async function transformEsmInBundle(
     const key = __cacheKey(original + '\0' + absUrl);
     const cached = __esmTransformCacheGet(key);
     if (cached !== undefined) {
-      bundle[target] = cached;
+      place({ path, typescript }, cached);
       transformed++;
       continue;
     }
@@ -3586,7 +3609,7 @@ async function transformEsmInBundle(
     const moduleMetadata = !path.endsWith('.cjs') && (loader !== null || looksLikeEsm(path, original));
     const cellFor = (code: string, rewriteOnly = false): EsmCell => ({
       path,
-      target,
+      typescript,
       key,
       absUrl,
       request: {
@@ -3846,23 +3869,22 @@ async function _buildPrefetchBundle(
 
   // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
   //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
-  //     on the matches, and replaces the value in-place. Without this,
-  //     ESM files (e.g. tldts/dist/es6/index.js, @remix-run/react/dist/esm,
-  //     @tailwindcss/vite, react-remove-scroll, astro) silently fail
-  //     `new Function` at facet startup and surface as the misleading
-  //     "not in this launch's module map" at request time.
+  //     on the matches, and replaces the value in-place. Every cell reaches
+  //     the guest as CommonJS (commonjs-cell.ts says why the registry cannot
+  //     take the ES module itself).
+  const emits = new Map<string, string>();
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    await transformEsmInBundle(bundle, esbuild, pacer);
+    await transformEsmInBundle(bundle, emits, esbuild, pacer);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
-    // say so, rather than as source `new Function` rejects without a reason.
-    _markBundleEsmAsFailed(bundle, 'no esbuild service was given to this launch');
+    // say so, rather than as source the registry rejects without a reason.
+    _markBundleEsmAsFailed(bundle, emits, 'no esbuild service was given to this launch');
   }
   for (const path of Object.keys(bundle)) {
-    if (compiledCellPath(path) === null && (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null)) continue;
+    if (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null) continue;
     const source = bundle[path];
     if (typeof source !== 'string') continue;
     await pacer?.spend(source.length);
@@ -3870,6 +3892,14 @@ async function _buildPrefetchBundle(
       bundle[path] = rewriteProvidedCommonJsModules(source);
     } catch {
       // Unparseable, so not a module and no bundled records to bind: data such as a LICENSE.
+    }
+  }
+  for (const [path, emit] of emits) {
+    await pacer?.spend(emit.length);
+    try {
+      emits.set(path, rewriteProvidedCommonJsModules(emit));
+    } catch {
+      // Unparseable: it stays as esbuild wrote it, and its require says why.
     }
   }
   await paceAfterPass();
@@ -3892,13 +3922,19 @@ async function _buildPrefetchBundle(
     rawBytes.set(path, bytes);
     rawTotal += bytes;
   }
+  // A TypeScript source's emit is part of what it costs.
+  for (const [path, emit] of emits) {
+    const bytes = _encodedSourceBytes(emit);
+    rawBytes.set(path, (rawBytes.get(path) ?? 0) + bytes);
+    rawTotal += bytes;
+  }
   if (rawTotal > maxBundleBytes) {
     // Only the walk's closure can fail a launch, and the path it names is the
-    // one whose bytes (with its compiled cell) crossed the bound, in walk order.
+    // one whose bytes (with its emit) crossed the bound, in walk order.
     let closureBytes = 0;
     let crossedAt: string | null = null;
     for (const path of closurePaths) {
-      closureBytes += (rawBytes.get(path) ?? 0) + (rawBytes.get(compiledCellKey(path)) ?? 0);
+      closureBytes += rawBytes.get(path) ?? 0;
       if (crossedAt === null && closureBytes > maxBundleBytes) crossedAt = path;
     }
     if (crossedAt !== null) {
@@ -3910,7 +3946,7 @@ async function _buildPrefetchBundle(
         lastPath: crossedAt,
       });
     }
-    // A compiled cell goes with its source: required when the source is.
+    // An emit goes with its source: required when the source is.
     //
     // Order matters as much as the bound. Largest-first alone ranks a cell by
     // what it costs and never by what losing it costs: an admitted module and
@@ -3923,20 +3959,16 @@ async function _buildPrefetchBundle(
     // subtrees last-discovered first, so a CLI's own `import()` deferral is shed last.
     const speculativeRank = new Map<string, number>();
     for (const path of prefetch.speculative) speculativeRank.set(path, speculativeRank.size);
-    const rankOf = (path: string): number =>
-      speculativeRank.get(compiledCellPath(path) ?? path) ?? -1;
+    const rankOf = (path: string): number => speculativeRank.get(path) ?? -1;
     // Evidence goes after all enrichment: what others learned before this
     // session's own misses, each tier last-admitted first.
-    const tierOf = (path: string): number => {
-      const source = compiledCellPath(path) ?? path;
-      return closurePaths.has(source) ? 3 : observedPaths.has(source) ? 2 : learnedPaths.has(source) ? 1 : 0;
-    };
+    const tierOf = (path: string): number =>
+      closurePaths.has(path) ? 3 : observedPaths.has(path) ? 2 : learnedPaths.has(path) ? 1 : 0;
     const members = new Set<string>();
     for (const group of greedy.groups) for (const path of group.members) members.add(path);
-    const sources = new Set(Object.keys(bundle).map(path => compiledCellPath(path) ?? path));
-    const independent = new Set([...sources].filter(path => !members.has(path) || independentBeforeGroups.has(path)));
+    const independent = new Set(Object.keys(bundle).filter(path => !members.has(path) || independentBeforeGroups.has(path)));
     const keptGroups = new Set(greedy.groups);
-    const weight = (path: string) => (rawBytes.get(path) ?? 0) + (rawBytes.get(compiledCellKey(path)) ?? 0);
+    const weight = (path: string) => rawBytes.get(path) ?? 0;
     const unitBytes = new Map<string, number>();
     for (const group of greedy.groups) {
       let total = 0;
@@ -3963,10 +3995,6 @@ async function _buildPrefetchBundle(
         for (const path of group.members) { retained.add(path); work += path.length + 256; }
         if (pacer) await pacer.spend(work);
       }
-      for (const source of [...retained]) {
-        const compiled = compiledCellKey(source);
-        if (bundle[compiled] !== undefined) retained.add(compiled);
-      }
       return retained;
     }
     let retained = await retainedPaths();
@@ -3986,6 +4014,7 @@ async function _buildPrefetchBundle(
       if (retained.has(k)) continue;
       evicted.push([k, rawBytes.get(k) ?? 0]);
       delete bundle[k];
+      emits.delete(k);
       size.remove(k);
     }
     if (evicted.length > 0) {
@@ -4009,6 +4038,7 @@ async function _buildPrefetchBundle(
 
   return {
     bundle,
+    ...(emits.size > 0 ? { emits } : {}),
     cursor,
     reachableCount: fileCount,
     truncated,
@@ -5026,7 +5056,7 @@ export class FacetManager {
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
       pacer,
-      { consume: true },
+      { consume: true, emits: vfsState.emits },
     );
     vfsState.cacheHit = false;
 
@@ -5514,11 +5544,16 @@ export class FacetManager {
             const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
             const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
             const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user');
-            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports);
+            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
+            const codeModules: Record<string, { cjs: string }> = {};
+            for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
             if (diagSink) {
               diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
               for (const source of Object.values(generatedWorker.modules)) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(source);
+              }
+              for (const text of Object.values(generatedWorker.codeModules)) {
+                diagSink.moduleMapBytes += _encodedSourceBytes(text);
               }
               for (const m of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) {
                 diagSink.moduleMapBytes += m.wasm.byteLength;
@@ -5529,14 +5564,17 @@ export class FacetManager {
               for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
                 diagSink.bundleBytes += _encodedSourceBytes(source);
               }
+              for (const text of Object.values(vfsState.bundleSource?.codeModules ?? {})) {
+                diagSink.bundleBytes += _encodedSourceBytes(text);
+              }
             }
             if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
             if (diagSink) __loadStart = Date.now();
             return {
               compatibilityDate: CF_COMPAT_DATE,
-              compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+              compatibilityFlags: [...GUEST_COMPAT_FLAGS],
               mainModule: 'runner.js',
-              modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules, ...wasmModules },
+              modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...codeModules, ...sqliteModules, ...wasmModules },
             };
           },
           request: new Request('http://nimbus-runtime.local/run', {
@@ -5575,7 +5613,7 @@ export class FacetManager {
    * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.
    *
    * The bundle is ESM-only and imports node:sqlite, so it cannot use the
-   * `new Function` CJS facet path. It rides into the Worker Loader module map
+   * CommonJS module-cell path. It rides into the Worker Loader module map
    * as a real ESM module; the generated runner (mainModule) installs the
    * Bun-global polyfill, seeds process state, imports the bundle, and returns
    * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
@@ -6480,7 +6518,7 @@ export class FacetManager {
     let moduleMapBytes = 0;
     let bundleBytes = 0;
     if (diagOn) {
-      for (const source of Object.values(generatedWorker.modules)) {
+      for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules)]) {
         bundleBytes += _encodedSourceBytes(source);
       }
       moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
@@ -6511,8 +6549,15 @@ export class FacetManager {
         'worker.js': generatedWorker.code,
         ...generatedWorker.modules,
       };
+      // The code cells travel as ONE image of many modules: the boot spec
+      // names a path, not thousands, and the loader slices them out at load.
+      const codePack = encodeCommonJsPack(generatedWorker.codeModules);
       generatedWorker = undefined;
-      const vfsTextModules = await this.imageStore.materialize(entry.pid, drainSources(sources), pacer);
+      const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(
+        entry.pid,
+        (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)] as const; })(),
+        pacer,
+      );
       if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: images stored, starting the facet\n');
       // Last gate before the facet exists. A launch now spans many turns, so
       // a kill can land anywhere inside it; booting a process the table has
@@ -6539,12 +6584,13 @@ export class FacetManager {
           kind: 'code',
           code: {
             compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+            compatibilityFlags: [...GUEST_COMPAT_FLAGS],
             mainModule: 'worker.js',
             // Only the sqlite sidecar rides by value: it is a fixed-size
             // asset of the worker's own, not of the user's disk.
             modules: sqliteModules,
             vfsTextModules,
+            vfsCommonJsPacks: [codePackPath],
           },
         },
       });

@@ -5,6 +5,29 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A node process compiles a module the first time it requires it, not at
+  startup. Each code file of the launch's closure, and its entry, is now a
+  `{ cjs }` module of the facet's map (`vfs/<path>`, `entry/<path>`) that the
+  guest's module registry (`new_module_registry`) compiles on first require;
+  the shims' `require` still resolves the path and calls the module's Node
+  wrapper with its own `require`, `module` and `exports`. The facet no longer
+  compiles the whole closure with `new Function` at module evaluation, and a
+  module's stack frames name its file and line
+  (`file:///bundle/vfs/home/user/app/a.js:2:7`) instead of `eval at
+  __mkCompiledFn`. A code file is carried once: the process's store takes the
+  file's content from the module's own text, read back through the bundle
+  filesystem, so the map holds no second copy. A TypeScript source stays the
+  file a program reads and its emit is the module. A resident launch ships
+  the modules as one content-addressed image (`vfsCommonJsPacks`, decoded by
+  `residentLoaderConfig`). Removed: the startup pre-compile loop
+  (`BUNDLE_PRECOMPILE_LOOP`, `__compiledModules`, `__compileFailures`), the
+  NUL-keyed compiled cells (`compiledCellKey`, `compiledCellPath`), the
+  request-time `new Function` fallback and `@nimbus-sh/core/_shared/compiled-fn`.
+  ESM is still lowered to CommonJS and resolution is still Nimbus's own: the
+  registry resolves specifiers as URLs only, keeps every module under
+  `file:///bundle/`, and takes no named exports for a `{ cjs }` module.
+  `generateEntrypointCode` takes the entry's filename as a sixth argument.
+
 - The Worker Loader guests Nimbus generates — the opencode facets, the
   esbuild transform facet, the git network facet, the hosted fetch proxy and
   every `IsolatePool` isolate (pre-bundle, npm resolve, child-process spawn)

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { transform } from 'esbuild';
 import { prefetchForRequire, requireFsOverBridge } from '../../packages/core/src/runtime/require-resolver.ts';
-import { buildPrefetchBundle, greedyAddMainEntries, compiledCellKey } from '../../packages/worker/src/facets/manager.ts';
+import { buildPrefetchBundle, greedyAddMainEntries } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { TurnBudget } from '../../packages/fabric/src/turn-budget.ts';
 import { launchFs } from './lib/launch-fs.mjs';
@@ -185,12 +185,13 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
     assert.equal(warnings.length,1,'actual transformed-size eviction produces one diagnostic');
     assert.ok(warnings[0].includes(a) && warnings[0].includes(nm+'/a/package.json'),'diagnostic names the removed root and its private metadata');
     assert.equal(state.bundle[a],undefined,'overweight root source is removed');
-    assert.equal(state.bundle[compiledCellKey(a)],undefined,'its compiled companion goes with it');
+    assert.equal(state.emits?.has(a) ?? false,false,'its emit goes with it');
     assert.equal(state.bundle[b],files[b],'other kept root survives');
     assert.equal(state.bundle[shared],files[shared],'shared member is retained by another root or the required closure');
     assert.equal(state.bundle[APP+'/keep.cjs']!==undefined,true);
     assert.equal(state.bundle['opt/evidence.cjs'],files['opt/evidence.cjs']);
-    assert.ok(Object.values(state.bundle).reduce((n,s)=>n+(typeof s==='string'?bytes(s):s.byteLength),0)<=bound);
+    const emitted=[...(state.emits?.values()??[])].reduce((n,s)=>n+bytes(s),0);
+    assert.ok(Object.values(state.bundle).reduce((n,s)=>n+(typeof s==='string'?bytes(s):s.byteLength),0)+emitted<=bound);
   }
 }
 console.log('facet-speculative-closure: atomic admission, shared ownership, real transform growth and control failures');

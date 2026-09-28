@@ -112,21 +112,20 @@
  *
  * WHAT THIS STORE DOES NOT DO, and cannot
  * ───────────────────────────────────────
- * It does not make `require()` of a module outside the precompiled closure
+ * It does not make `require()` of a module outside the launch's module map
  * work. Measured on the same worker: `new Function` succeeds at MODULE SCOPE
  * and throws "Code generation from strings disallowed for this context" in the
- * DO constructor and at request time. Module evaluation is the only place a
- * string becomes code, and `ctx` — hence SQLite — does not exist there. So code
- * reaches a facet through the Worker Loader's module map or not at all, and
- * that is a platform boundary, not a policy this store could relax.
+ * DO constructor and at request time. So code reaches a facet through the
+ * Worker Loader's module map or not at all, and that is a platform boundary,
+ * not a policy this store could relax.
  *
  * The split falls out of that, and it is the whole architecture:
  *
- *   CODE cells  — the static require closure. Compiled at module eval into
- *                 `__compiledModules`, exactly as today. The source strings are
- *                 not retained afterwards; the compiled functions are the only
- *                 in-heap form, and a later `readFileSync` of a .js file is
- *                 answered from the store like any other file.
+ *   CODE cells  — the static require closure. Each is a module of the map,
+ *                 compiled by the guest's registry when first required
+ *                 (core/_shared/commonjs-cell.ts). The store adopts its text,
+ *                 read back from the map, so a later `readFileSync` of a .js
+ *                 file is answered from the store like any other file.
  *   EVERY OTHER — held here. Uncapped by admission, bounded only by the
  *      byte      storage budget, so a data read cannot miss.
  *
@@ -1766,12 +1765,15 @@ function __residentStats() {
  * \`takeBundle\` hands over the module bundle and drops the module's own
  * reference to it. The parsed bundle is the largest allocation in the facet
  * before the program starts, so a cold boot releases it the moment it is
- * adopted, and a kept store that reconciles never adopts it at all.
+ * adopted, and a kept store that reconciles never adopts it at all. A cell
+ * may be a getter that reads its text as it is taken (a node process's code
+ * cells, read back from the module map); \`moduleBytes\`, when the launch
+ * costed the bundle already, spares reading each twice.
  *
  * Returns the cursor to publish and, when the boot fell short of the whole
  * filesystem, why.
  */
-async function __residentBoot(takeBundle, moduleCursor, supervisor) {
+async function __residentBoot(takeBundle, moduleCursor, supervisor, moduleBytes) {
   if (!__residentReady) throw new Error("Nimbus: __residentBoot before __residentBind");
   let failure = null;
   if (__residentCursor() !== null) {
@@ -1789,8 +1791,10 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor) {
   // The module map is the program's code: it is held whole or the launch
   // fails. Spawn admitted it (N18); this is room for it now, asked for when
   // the store's cap does not already cover it.
-  let moduleBytes = 0;
-  for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  if (typeof moduleBytes !== "number") {
+    moduleBytes = 0;
+    for (const path of Object.keys(bundle || {})) moduleBytes += __residentCellCost(bundle[path]);
+  }
   if (!(await __residentEnsureRoom(moduleBytes))) {
     throw Object.assign(new Error(
       "ENOSPC: workspace storage is full: this process's modules (" + Math.ceil(moduleBytes / 1048576)

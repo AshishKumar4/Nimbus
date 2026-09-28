@@ -13,12 +13,13 @@
 // supervisor.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { withNamespace } from './lib/listing-supervisor.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 
@@ -33,8 +34,7 @@ let seq = 0;
 
 async function run(program, state = { bundle: {} }, seed = () => {}) {
   const generated = await generateEntrypointCode(program, state, false, sources);
-  const file = join(dir, `entry-${seq++}.mjs`);
-  writeFileSync(file, generated.code);
+  const file = writeModuleSet(join(dir, `entry-${seq++}`), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
   const mod = await import(file);
   const events = [];
   const text = (bytes) => new TextDecoder().decode(bytes);
