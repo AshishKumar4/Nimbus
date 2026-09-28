@@ -432,16 +432,13 @@ export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuf
  * THIS DO instance acts as a peer worker: it runs ONE IsolatePool
  * over its assigned shard and returns the per-task results.
  *
- * Cap-sidestep mechanic
- * ─────────────────────
- * The supervisor's `submitMany` makes N RPC calls to N peer DOs.
- * Each RPC is a stub.fetch / RPC method invocation, NOT an
- * `env.LOADER.get()` from the supervisor's own method context — so
- * those N calls don't count against the V8 4-loaders-per-method cap.
- * Inside this RPC handler, we run a SINGLE IsolatePool with concurrency
- * matching the shard size — and since the shard arrived via the peer
- * router (capped at MAX_PEER_FANOUT = 32 peers, so each shard is
- * ⌈totalTasks / 32⌉ wide), the in-DO pool stays well under 4.
+ * Budget
+ * ──────
+ * The coordinator's calls to its peers are Durable Object RPCs and spend
+ * none of its Dynamic Worker budget; each peer spends its own. The shard
+ * runs one IsolatePool as wide as this DO's headroom allows (at least one
+ * slot — a peer has nowhere further to send it), claimed on the ledger
+ * while it runs.
  *
  * Failure model
  * ─────────────

@@ -1,25 +1,13 @@
 /**
  * npm-install-batch-facet.ts — single-facet batch installer.
  *
- * Why this exists
- * ───────────────
- * The previous per-package pool.map architecture spawned
- * ONE dynamic worker per pool slot. With concurrency=4, that's 4 permanent
- * loader entries in workerd's loader cache (each `loader.get(id, …)` call
- * is cached by id and the cache is never released — confirmed in
- * packages/fabric/src/isolate-pool.ts). Combine with:
- *   - resolver-facet pool: 1 loader entry
- *   - fetch-proxy: 1 loader entry
- *   - pre-bundle pool: 1 effective entry
- *   - install pool.map: 4 entries
- * = 7 concurrent dynamic workers, tripping workerd's per-DO cap with
- * "Too many concurrent dynamic workers" the moment install-pool tries
- * to spawn its 4th slot.
- *
- * The fix: ONE facet for the whole install batch. The facet receives
- * the full FacetPackageSpec[] and loops internally with pLimit(3),
- * producing 1 loader entry instead of 4. Same architectural shape as
- * src/npm/resolve-facet.ts — proven to work in production (commit 9194998).
+ * What this is
+ * ────────────
+ * One install shard: a facet that receives a FacetPackageSpec[] and loops
+ * internally with pLimit(3), so a shard costs one Dynamic Worker however
+ * many packages it holds. The installer's Fanout runs the shards on the
+ * session's Dynamic Worker headroom, or across sibling DOs when there are
+ * more shards than that.
  *
  * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
  * oversize file may occupy a wave by itself; the supervisor's weighted

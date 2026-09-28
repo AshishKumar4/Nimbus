@@ -7,7 +7,7 @@
  *      running 67 npm tarball extractions (cold-start dominates). We pin
  *      each job to `slot = cursor % concurrency` and use stable loader
  *      IDs `nfp:${fnHash}:slot-${i}:g${generation}`, so a pool of
- *      concurrency=4 keeps at most 4 warm isolates rather than N fresh ones.
+ *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
@@ -44,7 +44,11 @@ export interface IsolatePoolEnv {
 }
 /** Options handed to IsolatePool's constructor. */
 export interface IsolatePoolOptions {
-    /** Maximum concurrent in-flight facets. Default 4. */
+    /**
+     * Maximum concurrent in-flight facets, each a distinct Dynamic Worker
+     * spent from the hosting DO's `DO_DYNAMIC_WORKER_LIMIT`. Default 1; a
+     * caller that wants more sizes it against that budget (Fanout does).
+     */
     concurrency?: number;
     /** Per-task timeout in ms. Default 60_000. */
     timeoutMs?: number;
@@ -233,7 +237,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  * Typical use:
  *
  *   const pool = new IsolatePool(env, ctx, {
- *     concurrency: 4,
+ *     concurrency: 2,
  *     tag: 'npm-install',
  *   });
  *   const results = await pool.map(

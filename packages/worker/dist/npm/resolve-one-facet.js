@@ -7,10 +7,10 @@
  * independent fanout tasks. This file is the per-task body: one packument
  * fetch, one version pick, and edge extraction.
  *
- * Each task runs inside a Worker Loader isolate (Fanout routes
- * automatically: <5 = in-DO, ≥5 = peer-DO). The isolate is short-lived;
- * task body has its own ~128 MiB envelope. Parallelism = layer width
- * (capped at 32 by Fanout's MAX_PEER_FANOUT).
+ * Each task runs inside a Worker Loader isolate (Fanout routes a layer
+ * in-DO when the session's Dynamic Worker headroom holds it, else across
+ * sibling DOs). The isolate is short-lived; task body has its own ~128 MiB
+ * envelope. Parallelism = layer width.
  *
  * Stability invariants (cloudflare-parallel serialises via fn.toString)
  * ───────────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, recordLoaderId, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
 export function getNimbusCtxExports() {
@@ -292,10 +292,13 @@ function spawnResident(ctx, env, disk, supervisor, params) {
                 + 'it is not restarted');
         }
         evaluated = true;
-        return { class: residentProcessClass(ctx, env, disk, supervisor, params) };
+        return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
     };
     const book = slotBook(ctx);
     const ledger = sessionLedger(ctx);
+    // A warm worker keeps the SUPERVISOR binding it was built with, and the
+    // loader outlives this instance.
+    const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
     let facet;
     try {
         // N18: the fill is admitted, and recorded under the facet's name, before
@@ -315,6 +318,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     }
     if (explicit)
         book.live.add(name);
+    // The facet's worker is one Dynamic Worker in flight for as long as the
+    // process is resident, not only while a call is open: its WebSockets and
+    // streamed responses outlive the calls the ledger could bracket, and a
+    // request can reach it at any moment. Held from here to `release`, so no
+    // fan-out spends the slot a running process needs.
+    const endResidency = beginLoaderFetch(ctx, loaderKey);
     facetOfPid(ctx).set(params.pid, name);
     let disposed = false;
     const release = async () => {
@@ -323,6 +332,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         disposed = true;
         released = true;
         facetOfPid(ctx).delete(params.pid);
+        endResidency();
         try {
             facets.abort(name, new Error('Nimbus: resident process released'));
         }
@@ -396,25 +406,15 @@ function spawnResident(ctx, env, disk, supervisor, params) {
  * assembles its module map at most once and the bytes never stay resident in
  * the hosting DO's heap.
  */
-function residentProcessClass(ctx, env, disk, supervisor, params) {
+function residentProcessClass(env, disk, supervisor, params, loaderKey) {
     const loader = env.LOADER;
     if (!loader || typeof loader.get !== 'function') {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Resident processes require '
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
-    // A warm worker keeps the SUPERVISOR binding it was built with, and the
-    // loader outlives this instance.
-    const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
-    try {
-        const worker = loader
-            .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-            .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-        recordLoaderId(ctx, loaderKey);
-        return worker;
-    }
-    catch (error) {
-        throw withDynamicWorkerCapNamed(ctx, error);
-    }
+    return loader
+        .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+        .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
 }
 async function runOneShot(ctx, env, supervisor, params, consume) {
     const loader = env.LOADER;
@@ -455,23 +455,23 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
         }
         params.onLoaded?.();
-        // The unkeyed worker is a live dynamic worker for exactly this call, so
-        // the run is a Loader fetch on the hosting actor's ledger — bracketed,
-        // never wrapped: see beginLoaderFetch for the measured DO-poisoning
-        // hazard, and the pipelined-`fetch.call` note above for its sibling.
-        const endFetch = beginLoaderFetch(ctx);
-        let response;
+        // The unkeyed worker is one distinct dynamic worker in flight until its
+        // response is consumed (the body streams from it), keyed by this run's
+        // writer id — bracketed, never wrapped: see beginLoaderFetch for the
+        // measured DO-poisoning hazard, and the pipelined-`fetch.call` note above
+        // for its sibling.
+        const endFetch = beginLoaderFetch(ctx, `one-shot:${params.writerId}`);
         try {
-            response = await ep.fetch(params.request);
+            const response = await ep.fetch(params.request);
+            try {
+                return await consume(response);
+            }
+            finally {
+                disposeRpcResource(response);
+            }
         }
         finally {
             endFetch();
-        }
-        try {
-            return await consume(response);
-        }
-        finally {
-            disposeRpcResource(response);
         }
     }
     catch (error) {
