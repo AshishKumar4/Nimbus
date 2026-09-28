@@ -4573,8 +4573,7 @@ export class SqliteVFS {
     const entries: VfsListEntry[] = [];
     // The page is bounded by its encoded bytes, not only its row count: a full
     // page of long, escaped names or link targets can exceed the RPC frame.
-    const frameBytes = enc.encode(JSON.stringify({ epoch, rev, entries: [], next: null })).byteLength;
-    let entriesBytes = 0;
+    const fits = listPageBudget(epoch, rev);
     const pageEnding = (): VfsListPage => {
       const last = entries[entries.length - 1];
       return { epoch, rev, entries, next: last === undefined ? null : last.path };
@@ -4642,15 +4641,7 @@ export class SqliteVFS {
           ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(path, inode)) } : {}),
           ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
         };
-        // The entry's actual encoding (escaping included) plus the cursor it
-        // would leave in `next` (its path in place of `null`), and a comma.
-        const bytes = enc.encode(JSON.stringify(entry)).byteLength;
-        const cursorBytes = Math.max(4, enc.encode(JSON.stringify(entry.path)).byteLength) - 4;
-        if (frameBytes + entriesBytes + (entries.length ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
-          if (entries.length === 0) throw vfsError('E2BIG', `${logical}: listing entry exceeds the RPC byte budget`);
-          return pageEnding();
-        }
-        entriesBytes += bytes + (entries.length ? 1 : 0);
+        if (!fits(entry)) return pageEnding();
         entries.push(entry);
       }
       if (visited <= limit) return { epoch, rev, entries, next: null };
@@ -9539,6 +9530,30 @@ export function pendingChunkError(path: string): Error & { code: string; nimbusP
   return Object.assign(new Error(`EIO: ${shown} is still being imported; its bytes arrive in the background`), {
     code: 'EIO', nimbusPending: true as const, path: shown,
   });
+}
+
+/**
+ * The byte bound of one listing page (VfsListPage): the page's frame, each
+ * entry's actual encoding (escaping included) and a comma, and the cursor
+ * the last one leaves in `next` (its path in place of `null`). The returned
+ * check admits an entry while the page still fits the RPC frame with it; an
+ * entry that cannot fit a page on its own is E2BIG.
+ */
+export function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry) => boolean {
+  const frameBytes = enc.encode(JSON.stringify({ epoch, rev, entries: [], next: null })).byteLength;
+  let entriesBytes = 0;
+  let count = 0;
+  return (entry) => {
+    const bytes = enc.encode(JSON.stringify(entry)).byteLength;
+    const cursorBytes = Math.max(4, enc.encode(JSON.stringify(entry.path)).byteLength) - 4;
+    if (frameBytes + entriesBytes + (count ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
+      if (count === 0) throw vfsError('E2BIG', `${entry.path}: listing entry exceeds the RPC byte budget`);
+      return false;
+    }
+    entriesBytes += bytes + (count ? 1 : 0);
+    count++;
+    return true;
+  };
 }
 
 /** Whether `error` is a read of bytes still being imported. */

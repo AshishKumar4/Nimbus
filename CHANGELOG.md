@@ -10,29 +10,37 @@ published independently in the `@nimbus-sh` npm scope.
   device) included. 0.13 listed a process's namespace from SQLite alone, so
   `readFileSync`, `existsSync`, `statSync`, `readdirSync`, `writeFileSync`
   and `require` of a path on `ws.filesystem.vfs.mount(...)` answered ENOENT
-  or "Cannot find module" while `fs.promises` read it. A process's listing
-  (`bind(...).list`, the supervisor's `fsList`) now comes from its view of
-  the namespace: SQLite's names, less what a mount covers, and each mount
-  point with the parts of the mount its launch names — its working
-  directory, program directory and arguments, the literal paths its code
-  names, and the files its module map was read from — walked through the
-  mount as the process's credential. A named directory is listed whole,
-  breadth first, up to `MOUNT_LIST_NAME_LIMIT` (8192) names per launch, with
-  every directory from the mount point down to it; a mount the launch does
-  not name is not walked. A synchronous call on a mounted path the launch did
-  not list (or past the bound) answers EAGAIN, "<mount> is an asynchronous
-  mount; this caller cannot wait for it", naming the `fs.promises` form that
-  reads it; `require` of one reports the same, and `existsSync` is false. A
-  missing name in a directory the launch listed is ENOENT. The listing marks
-  such a directory with `VfsListEntry.unlisted` (its mount point). Contents
-  follow the existing data plan and store budget. A synchronous write reaches
-  the mount through the process's write-back, once. A kept resident store
-  never vouches for a mounted file's bytes (a mount keeps no revision on the
-  session's clock), so a relaunch reads what the mount holds.
-  `NimbusFilesystemAuthority.nameLaunch` is how a launch names those paths.
-  The one-shot runners' `vfsWrites` result field and the manager's fallback
-  that wrote it into SQLite are gone: a runner without a supervisor never
-  started user code, so the field was always empty.
+  or "Cannot find module" while `fs.promises` read it. With a mount an
+  embedder made in view, a process's listing and ACQUIRE (`bind(...).list`
+  and `.acquire`, the supervisor's `fsList` and `fsAcquire`) now come from
+  the namespace's feed (`CompositeVFS.feed`): SQLite's names and changes,
+  less what a mount covers (a write SQLite takes under a mount point is not
+  reported), the directories the namespace makes, and each mount's names
+  where the process's launch names them — its working directory, program
+  directory and arguments, the literal paths its code names, and the files
+  its module map was read from — walked through the mount as the process's
+  credential (`CompositeFeed.walk`, a readdir per directory). A named
+  directory is listed whole, breadth first, up to `MOUNT_LIST_NAME_LIMIT`
+  (8192) names per launch, with every directory from the mount point down to
+  it; a mount the launch does not name, or one under a directory the process
+  cannot search, is not walked. A change of the mount table is a poison at
+  the process's next barrier, which relists. A namespace that is SQLite alone
+  lists and acquires exactly as before, synchronously. A synchronous call on
+  a mounted path the launch did not list (or past the bound) answers EAGAIN,
+  "<mount> is an asynchronous mount; this caller cannot wait for it", naming
+  the `fs.promises` form that reads it; `require` of one reports the same,
+  and `existsSync` is false. A missing name in a directory the launch listed
+  is ENOENT. The listing marks such a directory with `VfsListEntry.unlisted`
+  (its mount point). Contents follow the existing data plan and store
+  budget. A synchronous write reaches the mount through the process's
+  write-back, once. A kept resident store never vouches for a mounted file's
+  bytes (a mount keeps no revision on the session's clock), so a relaunch
+  reads what the mount holds. `NimbusFilesystemAuthority.nameLaunch` is how
+  a launch names those paths. `CompositeFeed.list` orders by code point, as
+  SQLite does, and a directory it makes above a mount point carries the stat
+  `stat` gives it. The one-shot runners' `vfsWrites` result field and the
+  manager's fallback that wrote it into SQLite are gone: a runner without a
+  supervisor never started user code, so the field was always empty.
 
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to

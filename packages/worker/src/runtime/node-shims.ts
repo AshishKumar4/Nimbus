@@ -8482,11 +8482,11 @@ function __readFileOr(path, fallback) {
 function __fileExists(path) {
   const k = path.replace(/^\\/+/, "");
   // The namespace answers exactly (vfs/facet-resident-store.ts), except on a
-  // mounted directory the launch did not list: statSync's refusal says so,
-  // and resolution reports it rather than "Cannot find module".
+  // mounted directory the launch did not list: asked only when the namespace
+  // holds such a directory, statSync's refusal says so, and resolution
+  // reports it rather than "Cannot find module".
   if (__fsMod.existsSync("/" + k)) return true;
-  try { __fsMod.statSync("/" + k, { throwIfNoEntry: false }); }
-  catch (error) { if (error && error.code === "EAGAIN") throw error; }
+  if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
   return false;
 }
 // W3.5 Fix A: strict-file membership probe. __fileExists also returns true for

@@ -46,19 +46,28 @@ import { facetSql } from './lib/resident-body.mjs';
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
+// The node processes below run in this realm, and their shims put a timer on
+// globalThis that waits on the process's own barrier: the test keeps its own.
+const nativeSetTimeout = globalThis.setTimeout;
+const turn = (ms = 0) => new Promise((resolve) => nativeSetTimeout(resolve, ms));
 
 /** What reaches the mount: every call by name and path. */
 const calls = [];
-/** A remote backend's shape: every call awaits a timer turn, and there is no `sync` face. */
-const remote = (vfs) => new Proxy(vfs, {
+/**
+ * A remote backend's shape: every call awaits a timer turn, and there is no
+ * `sync` face. `dirStats: false` also drops the stats a readdir carries, as a
+ * backend that has none for free does.
+ */
+const remote = (vfs, { dirStats = true } = {}) => new Proxy(vfs, {
   get(target, key) {
     if (key === 'sync') return undefined;
     const value = target[key];
     if (typeof value !== 'function') return value;
     return async (...args) => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await turn();
       calls.push(`${String(key)} ${args[0]}`);
-      return value.apply(target, args);
+      const answer = await value.apply(target, args);
+      return key === 'readdir' && !dirStats ? answer.map(({ name, type }) => ({ name, type })) : answer;
     };
   },
   has(target, key) { return key !== 'sync' && key in target; },
@@ -227,11 +236,11 @@ console.log('RESULT ' + JSON.stringify({ text, size: fs.statSync(__dirname + '/d
   try { spawned = await manager.spawnNode(code, { command: 'node main.js', filename: '/m/app/main.js', cwd: '/m/app' }); }
   finally { Object.assign(globalThis, real); }
   if (spawned?.done) await spawned.done.catch(() => {});
-  for (let i = 0; i < 200 && !out.includes('RESULT'); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  for (let i = 0; i < 200 && !out.includes('RESULT'); i++) await turn(10);
   const line = out.split('\n').find((l) => l.startsWith('RESULT ')) ?? `RESULT ${JSON.stringify({ out })}`;
   assert.deepEqual(JSON.parse(line.slice(7)), { text: 'resident-data', size: 14, names: ['data.txt', 'main.js', 'out.txt'] },
     'a resident reads its mounted project synchronously');
-  for (let i = 0; i < 200 && !(await backing.stat('/app/out.txt')); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  for (let i = 0; i < 200 && !(await backing.stat('/app/out.txt')); i++) await turn(10);
   assert.equal(dec.decode(await backing.readFile('/app/out.txt')), 'RESIDENT-DATA', 'its write lands in the mount');
 }
 
@@ -292,6 +301,115 @@ return { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromS
   await store.__residentSynchronizeFromSupervisor(supervisor);
   assert.equal(dec.decode(store.__residentGet('m/kept/data.txt')), 'new\n', 'a relaunch reads what the mount holds now');
   await ws.filesystem.releaseProcess(pid);
+}
+
+/** Every name a process's listing gives, by path. */
+async function listAll(fs, limit) {
+  const entries = new Map();
+  for (let after = null; ;) {
+    const page = await fs.list(after, limit);
+    for (const entry of page.entries) entries.set(entry.path, entry);
+    if (page.next === null) return { entries, cursor: { epoch: page.epoch, rev: page.rev } };
+    after = page.next;
+  }
+}
+/** A process of the session user's, as the launch names it. */
+function launched(named = []) {
+  const { pid } = ws.processes.spawn('node main.js', [], '/home/user');
+  const binding = { pid, cred: ws.processes.cred(pid) };
+  ws.filesystem.nameLaunch(binding, () => named);
+  return { pid, fs: ws.filesystem.bind(binding) };
+}
+
+// ── A namespace that is SQLite alone lists at once, as it always has ────────
+{
+  const fresh = createSqliteVfsTestHarness();
+  const alone = await NimbusWorkspace.create({ sql: fresh.sql, transactions: fresh.ctx });
+  const page = alone.filesystem.bind({ pid: 9001, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).list(null);
+  assert.equal(typeof page.then, 'undefined', 'no mount an embedder made: the page is SQLite\'s, answered synchronously');
+  assert.ok(page.entries.some((entry) => entry.path === 'home/user'));
+  await alone.close();
+}
+
+// ── A mount under a directory the credential cannot search is left out ─────
+{
+  const root = ws.vfs.as(CRED_KERNEL);
+  root.mkdir('locked', { mode: 0o700 });
+  const hidden = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await hidden.writeFile('/secret.txt', enc.encode('s'));
+  ws.filesystem.vfs.mount('/locked/x', remote(hidden));
+  const { pid, fs } = launched(['/locked/x']);
+  const { entries } = await listAll(fs);
+  assert.ok(entries.has('home/user'), 'the listing answers');
+  assert.equal(entries.has('locked/x/secret.txt'), false, 'and names nothing it could not reach');
+  await ws.filesystem.releaseProcess(pid);
+  assert.equal(await node('console.log(6 * 7)', { filename: '/home/user/after-locked.js', cwd: '/home/user' }), '42', 'a launch by that user still runs');
+  ws.filesystem.vfs.unmount('/locked/x');
+}
+
+// ── What SQLite takes under a mount point is none of the process's ──────────
+{
+  const root = ws.vfs.as(CRED_KERNEL);
+  root.mkdir('s/app', { recursive: true });
+  root.writeFile('s/app/data.txt', 'shadow!');
+  const drive = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await drive.mkdir('/app');
+  await drive.writeFile('/app/data.txt', enc.encode('drive'));
+  ws.filesystem.vfs.mount('/s', remote(drive));
+  const { pid, fs } = launched(['/s/app']);
+  const { entries, cursor } = await listAll(fs);
+  assert.equal(entries.get('s/app/data.txt')?.size, 5, 'the listing shows the mount\'s file, not the SQLite shadow');
+  root.writeFile('s/app/phantom.txt', 'p');
+  root.unlink('s/app/data.txt');
+  root.writeFile('home/user/news.txt', 'n');
+  const answer = await fs.acquire(cursor.epoch, cursor.rev, { namespace: true });
+  assert.equal(answer.poison, false);
+  assert.deepEqual(answer.paths.map((entry) => entry.path).filter((path) => path.startsWith('s')), [], 'writes SQLite takes under /s are not reported');
+  assert.ok(answer.paths.some((entry) => entry.path === 'home/user/news.txt'), 'a write SQLite shows is');
+  // A mount appearing is in no backend's feed: the next barrier relists.
+  ws.filesystem.vfs.mount('/late', remote(new MemoryVFS()));
+  assert.equal((await fs.acquire(answer.epoch, answer.rev, { namespace: true })).poison, true, 'a changed mount table is a poison');
+  ws.filesystem.vfs.unmount('/late');
+  await ws.filesystem.releaseProcess(pid);
+  ws.filesystem.vfs.unmount('/s');
+}
+
+// ── A listing that is not the one in progress walks the mount afresh ────────
+{
+  const drive = new MemoryVFS({ uid: 1000, gid: 1000 });
+  await drive.mkdir('/d');
+  await drive.writeFile('/d/a.txt', enc.encode('a'));
+  ws.filesystem.vfs.mount('/fresh', remote(drive));
+  const { pid, fs } = launched(['/fresh/d']);
+  const first = await fs.list(null, 1);
+  assert.notEqual(first.next, null, 'a listing in progress');
+  await drive.writeFile('/d/b.txt', enc.encode('b'));
+  // A relist of one directory starts from its own key, not where the listing left off.
+  const relist = await fs.list('fresh/', 8192);
+  assert.ok(relist.entries.some((entry) => entry.path === 'fresh/d/b.txt'), 'a relist sees what the mount holds now');
+  await ws.filesystem.releaseProcess(pid);
+  ws.filesystem.vfs.unmount('/fresh');
+}
+
+// ── A walk costs a readdir per directory, not a lookup per name ─────────────
+{
+  const drive = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const lib = '/app/node_modules/pkg/lib';
+  await drive.mkdir(lib, { recursive: true });
+  for (let i = 0; i < 200; i++) await drive.writeFile(`${lib}/f${i}.js`, enc.encode('x'));
+  ws.filesystem.vfs.mount('/cost', remote(drive, { dirStats: false }));
+  const { pid, fs } = launched(Array.from({ length: 200 }, (_, i) => `/cost${lib}/f${i}.js`));
+  calls.length = 0;
+  const { entries } = await listAll(fs);
+  assert.ok(entries.has(`cost${lib}/f199.js`), 'the named files are listed');
+  const readdirs = calls.filter((call) => call.startsWith('readdir ')).length;
+  const stats = calls.filter((call) => call.startsWith('stat ')).length;
+  // Five directories from the mount point to lib; a stat per name the
+  // readdirs did not describe (205), and one for the mount's root.
+  assert.equal(readdirs, 5, `a readdir per directory (${readdirs})`);
+  assert.ok(stats <= 210, `a stat per listed name, not per name and component (${stats})`);
+  await ws.filesystem.releaseProcess(pid);
+  ws.filesystem.vfs.unmount('/cost');
 }
 
 await ws.close();

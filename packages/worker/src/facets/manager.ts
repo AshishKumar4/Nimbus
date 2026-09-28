@@ -4773,9 +4773,10 @@ export class FacetManager {
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     cwd: string,
-    program: string | undefined,
     home: string | undefined,
     pacer: TurnBudget,
+    /** The program's path, which its listing walks mounts for (nameLaunch). */
+    program?: string,
   ): Promise<{ paths: string[]; storageBytes: number }> {
     if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0 };
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -6401,7 +6402,7 @@ export class FacetManager {
       pacer,
     );
     const planStart = Date.now();
-    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.filename, opts.env?.HOME, pacer);
+    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
     if (this.debugEnabled) {
       this.processes.appendOutput(entry.pid, 'stderr',
         `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
