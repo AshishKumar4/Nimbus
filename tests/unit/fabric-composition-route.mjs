@@ -39,8 +39,10 @@ import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
     assert.throws(
       () => composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES' }),
       (error) => {
-        assert.match(error.message, /enhanced_error_serialization/, 'names the missing flag');
-        assert.match(error.message, /2026-04-21/, 'and the compatibility date that enables it');
+        // Both fixes, named so an embedder can apply one: the flag (which keeps
+        // the rest of an older compatibility date) or the date that enables it.
+        assert.match(error.message, /"enhanced_error_serialization"[^.]*compatibility_flags/);
+        assert.match(error.message, /compatibility_date[^.]*2026-04-21/);
         return true;
       },
     );

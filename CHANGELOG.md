@@ -38,11 +38,13 @@ published independently in the `@nimbus-sh` npm scope.
   with the error itself instead of a `{ code, message }` copy. Filesystem
   errors that carried the code only in their message (the VFS's integrity
   and batch-validation errors, EBUSY on destroy, the facet-ownership EPERM,
-  the hosted session's EPERM) now set `code` too. **Breaking for embedders
-  below 2026-04-21:** `composeFabric` throws at startup on a workerd host
-  without `enhanced_error_serialization`, so such a deploy fails rather than
-  every process seeing EIO where the filesystem said ENOENT. Set
-  `compatibility_date` to 2026-04-21 or later.
+  the hosted session's EPERM) now set `code` too. **Embedders must** run
+  their Worker with `enhanced_error_serialization`: add it to
+  `compatibility_flags`, which keeps every other behavior of an older
+  compatibility date, or set `compatibility_date` to 2026-04-21 or later.
+  `composeFabric` throws at startup on a workerd host without it, naming
+  both fixes, so such a deploy fails rather than every process seeing EIO
+  where the filesystem said ENOENT.
 
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
