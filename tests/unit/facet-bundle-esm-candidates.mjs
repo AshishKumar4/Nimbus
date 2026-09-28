@@ -2,15 +2,15 @@
 /**
  * The bundle's ESM→CJS pass must cover exactly what the facet compiles.
  *
- * A facet pre-compiles every bundle entry into a function at module-eval
- * time, because workerd blocks codegen from strings at request time. That
- * makes the two sets load-bearing: a file the pre-compile loop compiles but
- * the ESM→CJS pass skipped arrives at `new Function` as ESM source and dies
- * there, with nothing left that can recover it at request time.
+ * Every code file of the bundle becomes a `{ cjs }` module the guest's
+ * registry compiles as CommonJS (core/_shared/commonjs-cell.ts). That makes
+ * the two sets load-bearing: a file that is a code cell but that the ESM→CJS
+ * pass skipped reaches the registry as ESM source and dies there, with
+ * nothing left that can recover it at request time.
  *
- * The loop takes extensionless entries — the shape of nearly every npm `bin`
- * script — so the transform has to take them too. The pass previously keyed
- * on `.js` / `.mjs` alone, which left exactly those files behind.
+ * Code cells include extensionless entries — the shape of nearly every npm
+ * `bin` script — so the transform has to take them too. The pass previously
+ * keyed on `.js` / `.mjs` alone, which left exactly those files behind.
  */
 
 import assert from 'node:assert/strict';
