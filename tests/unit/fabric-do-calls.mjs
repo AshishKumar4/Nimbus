@@ -239,4 +239,87 @@ const FAST = { baseDelayMs: 1 };
   }
 }
 
+// ── 15. Hedging: an attempt that has not answered is joined, not abandoned ───
+// A call can also never answer: the platform left some reads to the session
+// pending for minutes without delivering them. With `hedgeAfterMs`, an
+// attempt still unanswered then is joined by the same call on a fresh stub,
+// and the first answer is taken.
+
+{
+  const never = new Promise(() => {});
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const HEDGE = { baseDelayMs: 1, hedgeAfterMs: 20 };
+
+  // An attempt that never answers: the hedge does.
+  const hung = mintKit(async (n) => (n === 1 ? never : 'from-hedge'));
+  assert.equal(await idempotent('stuck read', hung.resolve, (s) => s.ping(), HEDGE), 'from-hedge');
+  assert.equal(hung.stubs.length, 2, 'the stuck attempt was not hedged on a fresh stub');
+  assert.equal(hung.stubs[1].disposed, true);
+
+  // The first attempt answers after the hedge did: one result, the hedge's,
+  // and the late answer is disposed rather than kept or delivered.
+  const answers = [];
+  const answer = (from) => {
+    const value = { from, disposed: false, [Symbol.dispose]() { this.disposed = true; } };
+    answers.push(value);
+    return value;
+  };
+  const late = mintKit(async (n) => {
+    if (n === 1) await sleep(60);
+    return answer(n);
+  });
+  const taken = await idempotent('late read', late.resolve, (s) => s.ping(), HEDGE);
+  assert.equal(taken.from, 2, 'the answer taken was not the first to arrive');
+  await sleep(80);
+  assert.equal(answers.length, 2, 'both attempts ran');
+  const lateAnswer = answers.find((value) => value.from === 1);
+  assert.equal(lateAnswer.disposed, true, 'the late answer was kept');
+  assert.equal(taken.disposed, false, 'the answer taken was disposed under its caller');
+  assert.deepEqual(late.stubs.map((stub) => stub.disposed), [true, true], 'a stub was left undisposed');
+
+  // Without the policy nothing is hedged, however long an attempt takes.
+  const slow = mintKit(async () => { await sleep(60); return 'slow'; });
+  assert.equal(await idempotent('unhedged', slow.resolve, (s) => s.ping(), FAST), 'slow');
+  assert.equal(slow.stubs.length, 1, 'a call with no hedge policy was hedged');
+
+  // Hedges are attempts: no more than maxAttempts are ever in flight.
+  const stuck = mintKit(async () => never);
+  const pending = idempotent('all stuck', stuck.resolve, (s) => s.ping(), HEDGE);
+  let pendingSettled = false;
+  pending.then(() => { pendingSettled = true; }, () => { pendingSettled = true; });
+  await sleep(150);
+  assert.equal(stuck.stubs.length, 3, `${stuck.stubs.length} attempts, not the 3 the cap allows`);
+  assert.equal(pendingSettled, false, 'a call none of whose attempts answered settled');
+
+  // A hedge dropped retryably while the first still hangs is retried.
+  const dropped = mintKit(async (n) => {
+    if (n === 1) return never;
+    if (n === 2) throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+    return 'third';
+  });
+  assert.equal(await idempotent('hedge dropped', dropped.resolve, (s) => s.ping(), HEDGE), 'third');
+  assert.equal(dropped.stubs.length, 3);
+
+  // Attempts spent and all but one dropped: the one still in flight answers.
+  const lastStanding = mintKit(async (n) => {
+    if (n === 1) { await sleep(80); return 'first'; }
+    throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+  });
+  assert.equal(await idempotent('last standing', lastStanding.resolve, (s) => s.ping(), HEDGE), 'first');
+  assert.equal(lastStanding.stubs.length, 3);
+
+  // A hedge answered with a failure that is not transient: that is the answer.
+  const refused = mintKit(async (n) => {
+    if (n === 1) return never;
+    throw Object.assign(new Error('Durable Object is overloaded.'), { retryable: true, overloaded: true });
+  });
+  await assert.rejects(idempotent('hedge refused', refused.resolve, (s) => s.ping(), HEDGE), /overloaded/);
+  assert.equal(refused.stubs.length, 2, 'an overloaded answer was retried');
+
+  // No hedge starts once the retry window has closed.
+  const windowed = mintKit(async (n) => (n === 1 ? sleep(60).then(() => 'first') : 'hedge'));
+  assert.equal(await idempotent('windowed', windowed.resolve, (s) => s.ping(), { ...HEDGE, retryWindowMs: 10 }), 'first');
+  assert.equal(windowed.stubs.length, 1, 'a hedge started past the retry window');
+}
+
 console.log('ok - fabric-do-calls (fresh-stub retry, overloaded refusal, mutating never retries, typed cause)');

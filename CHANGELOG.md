@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A process's filesystem read that the session has not answered after 5 s
+  is sent again on a fresh stub, and the first answer is used. Under
+  concurrent sessions some reads left SupervisorRPC and never reached the
+  session; the program waiting on them hung. The first attempt is left
+  running, and a late answer is disposed. Repeats count against the existing
+  three attempts. `idempotent()` in `@nimbus-sh/fabric/do-calls` takes the
+  new `hedgeAfterMs` policy field. Mutations are not hedged.
+
 - The metadata the node shims learn for each path they refetch now travels
   in the read batch. `fsReadBatch` takes an lstat request (`{ path, lstat:
   true }`) and answers it as the `lstat` op does. Before, each learn was its

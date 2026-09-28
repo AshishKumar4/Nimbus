@@ -35,7 +35,9 @@
  *
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
- * re-sent on a fresh stub. Filesystem mutations, on a binding that names its
+ * re-sent on a fresh stub, and hedged: one unanswered after
+ * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
  * Appends are re-sent under the append ledger's identity. Everything else is
@@ -123,6 +125,18 @@ function _estimateWriteBatchBytes(payload: any): number {
 // worker's composition root (src/index.ts) names this class to the fabric
 // with composeFabric.
 
+// A process's filesystem read (SupervisorRPC → session) still unanswered
+// after this long is sent again on a fresh stub, the first left running and
+// the first answer taken (fabric do-calls `hedgeAfterMs`). Measured on a
+// throwaway under three concurrent sessions, 2026-09-28: none of the 521
+// read batches that answered took more than 5 s at the facet's side, the
+// session served each read it received without waiting on I/O, and the 11
+// attempts that stalled — none of which reached the session — were still
+// pending 110–560 s later. So an attempt past 5 s is one that is not coming
+// back, and a hedge then costs a duplicate read only when that measurement
+// was wrong.
+export const SUPERVISOR_READ_HEDGE_AFTER_MS = 5_000;
+
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
    * A fresh stub for the host, by the route the binding carries, per call.
@@ -160,9 +174,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * dropped on the way to it is repeated on a fresh stub. Measured: the
    * host's `stat` failing with "Network connection lost." (`retryable`) is
    * what failed CPython's start in about one fresh session in twenty.
+   *
+   * A read can also never answer: under concurrent sessions a burst of reads
+   * from one facet left some attempts pending for minutes without reaching
+   * the host, and the program waiting on them never exited
+   * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
+   * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+   * stub, the first attempt left running, the first answer taken. A read
+   * answered twice changes nothing. Mutations are not hedged: their repeats
+   * stay bounded by the delivery retry window, unchanged.
    */
   private _fsRead<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
-    return this._resent<T>({ op, args, pid: this._pid() });
+    return this._resent<T>({ op, args, pid: this._pid() }, { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS });
   }
 
   /**
