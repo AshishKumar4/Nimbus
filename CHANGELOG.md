@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The deploy-isolation preflight now audits Worker Previews
+  (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
+  Every `previews` block is its own deploy target in
+  `bun scripts/deploy-isolation.mjs` and `tests/unit/deploy-isolation.mjs`.
+  A Preview gets automatic isolation only for its Durable Objects, so the
+  check refuses a block that shares D1/R2/KV ids with production or with its
+  parent Worker (except the shared-by-design caches). It also refuses a
+  service, Workflow or DO `script_name` binding that reaches the parent's or
+  a production Worker's deployment, and a Preview of the production Worker
+  itself. It warns about any Worker binding the Preview does not redeclare.
+  `apps/probe/wrangler.jsonc` carries a `previews` block that passes the
+  check. The throwaway tooling still deploys separate `nimbus-tw-*` Workers.
+
 - A rebuild stages a new opencode artifact only from the directory named by
   `NIMBUS_OPENCODE_DIST`, and a named directory that does not exist is an
   error. Before, the stager fell back to `/tmp/opencode-research/dist-nimbus`,

@@ -28,13 +28,21 @@
  * silently opening a new path to production.
  *
  * The invariant stands over every deploy target the repo can name: each
- * config's default block AND each of its non-production env blocks, all
- * enumerated from the files rather than listed. Adding `env.staging` put
- * it under this check with no second step.
+ * config's default block, each of its non-production env blocks, and each
+ * `previews` block (a Worker Preview, `wrangler preview`), all enumerated
+ * from the files rather than listed. Adding `env.staging` put it under this
+ * check with no second step; adding a `previews` block does the same.
+ *
+ * A Preview is audited by stricter rules than a Worker, because it is NOT a
+ * separate Worker: it runs under its parent Worker, and only its Durable
+ * Objects are isolated automatically. Everything else it binds is shared
+ * with whoever else binds the same id — including the parent's own
+ * production deployment — and a service binding from a Preview always
+ * reaches the bound Worker's production. See `checkPreview`.
  *
  * Used by:
  *   - tests/unit/deploy-isolation.mjs   (CI enforces the invariant)
- *   - tests/behavioral/_throwaway-target.mjs (preflight before deploying)
+ *   - tests/behavioral/_throwaway-target.mjs (preflight before a preview)
  *   - tests/behavioral/_staging-target.mjs   (preflight, both halves)
  *   - `bun scripts/deploy-isolation.mjs` (CLI)
  */
@@ -145,7 +153,11 @@ const PER_WORKER_KEYS = new Set([
   'secrets',
 ]);
 
-/** Keys that configure the build/deploy itself and bind nothing. */
+/**
+ * Keys that configure the build/deploy itself and bind nothing. `env` and
+ * `previews` are nested deploy targets rather than bindings of this block:
+ * `deployableTargets` enumerates each one and audits it on its own.
+ */
 const NON_BINDING_KEYS = new Set([
   '$schema', 'account_id', 'base_dir', 'build', 'compatibility_date',
   'compatibility_flags', 'compliance_region', 'define', 'dev',
@@ -404,23 +416,212 @@ export function productionIdentifiers({ root = REPO_ROOT, configs = DEPLOYABLE_C
 }
 
 /**
- * Every (config, env) pair a deploy can target, except production itself.
+ * Every deploy target the repo can name, except production itself.
  *
  * Enumerated from the files rather than kept as a list: an env block nobody
  * remembered to add to a list is exactly the one that ships bound to a
  * production resource. Adding `env.staging` therefore puts it under the same
  * CI check as the default block, with no second step to forget.
+ *
+ * Every block that resolves a `previews` block — production's included,
+ * since a Preview of the production Worker is not production — adds a
+ * `{ preview: true }` target. `previews` is inheritable in wrangler
+ * (wrangler-dist/cli.js `previews: inheritable(...)` in the environment
+ * normalizer), so an env block without its own inherits the top-level one.
  */
 export function deployableTargets({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
   const targets = [];
   for (const relPath of configs) {
     const config = loadConfig(relPath, root);
+    const envNames = Object.keys(config.env ?? {});
     targets.push({ config: relPath, envName: null });
-    for (const envName of Object.keys(config.env ?? {})) {
+    for (const envName of envNames) {
       if (envName !== PRODUCTION_ENV) targets.push({ config: relPath, envName });
+    }
+    for (const envName of [null, ...envNames]) {
+      if (resolveEnvironment(config, envName, { inherit: true }).previews) {
+        targets.push({ config: relPath, envName, preview: true });
+      }
     }
   }
   return targets;
+}
+
+/**
+ * Keys a Preview takes from its parent block when `previews` does not set
+ * them — read from wrangler 4.143's `assemblePreviewDeploymentSettings`
+ * (wrangler-dist/cli.js): assets, compatibility date/flags, migrations and
+ * the build come from the top level; limits, placement, cache,
+ * observability and logpush fall back to it. Every BINDING comes from
+ * `previews` alone (`extractConfigBindings` → `extractBindings(
+ * config.previews, config.assets)`), which is what makes the block
+ * auditable by itself.
+ */
+const PREVIEW_INHERITED_KEYS = new Set([
+  'main', 'alias', 'assets', 'compatibility_date', 'compatibility_flags',
+  'migrations', 'limits', 'placement', 'cache', 'observability', 'logpush',
+  'rules', 'find_additional_modules', 'base_dir', 'no_bundle', 'minify',
+  'keep_names', 'tsconfig', 'jsx_factory', 'jsx_fragment', 'build',
+  'preserve_file_names', 'upload_source_maps',
+]);
+
+/**
+ * What a `wrangler preview` of `envName` runs with. Literal by default (the
+ * `previews` block alone, which names every binding the Preview gets);
+ * `inherit: true` adds the keys a Preview takes from its parent block.
+ */
+export function resolvePreview(config, envName = null, { inherit = false } = {}) {
+  const parent = resolveEnvironment(config, envName, { inherit: true });
+  const block = parent.previews;
+  if (!block) throw new Error(`no previews block for ${envName ? `env.${envName}` : 'the top level'}`);
+  if (!inherit) return block;
+  const merged = { ...block };
+  for (const key of PREVIEW_INHERITED_KEYS) {
+    if (!(key in merged) && key in parent) merged[key] = parent[key];
+  }
+  return merged;
+}
+
+/** JS-visible binding names a block declares, as `name → kind`. */
+function bindingNames(block) {
+  const names = new Map();
+  for (const [key, value] of Object.entries(block)) {
+    if (key === 'assets' || key === 'secrets') continue;
+    if (key === 'vars') {
+      for (const name of Object.keys(value ?? {})) names.set(name, key);
+    } else if (SHARED_STATE_KEYS.has(key) || PER_WORKER_KEYS.has(key)) {
+      const entries = key === 'durable_objects' ? (value?.bindings ?? []) : [value].flat();
+      for (const entry of entries) {
+        const name = entry?.binding ?? entry?.name;
+        if (typeof name === 'string') names.set(name, key);
+      }
+    }
+  }
+  return names;
+}
+
+const PREVIEWS_DOCS = 'https://developers.cloudflare.com/workers/previews/resources/';
+
+/**
+ * Check one `previews` block: does a Worker Preview reach state it does not
+ * own?
+ *
+ * A Preview is not a separate Worker, so the Worker rule (disjoint from
+ * production) is necessary but not sufficient. From the platform's own
+ * matrix (https://developers.cloudflare.com/workers/previews/resources/):
+ *   - "Two Previews bound to the same account-level resource ID or name
+ *     share its data or instances." A Preview is therefore held disjoint
+ *     from its PARENT's own resources too, not only from production's —
+ *     the shared-by-design caches excepted, as everywhere.
+ *   - "Service bindings from a Preview call the bound Worker's production
+ *     deployment." A binding to a production Worker, or to the parent
+ *     itself, is refused: it leaves the Preview.
+ *   - "Workflow bindings use existing Workflows and do not create
+ *     Preview-specific Workflows." One owned by the parent or by a
+ *     production Worker runs that Worker's deployed code and instances.
+ *   - Durable Objects are isolated automatically "for a class defined in
+ *     the same Worker without `script_name`". A `script_name` binding to
+ *     the parent or to production reaches that Worker's namespace.
+ * And a Preview of a production Worker is refused outright: it shares that
+ * Worker's dashboard Previews Base configuration, which can "import names
+ * and values from production" — the path a production secret would take
+ * into a Preview (https://developers.cloudflare.com/workers/previews/configuration/).
+ */
+export function checkPreview(relPath, {
+  root = REPO_ROOT, envName = null, workerName = null, configs = DEPLOYABLE_CONFIGS,
+} = {}) {
+  const config = loadConfig(relPath, root);
+  const violations = [];
+  const { ids: prodIds, names: prodNames } = productionIdentifiers({ root, configs });
+  const parent = resolveWorkerName(config, envName, workerName);
+  const result = {
+    config: relPath, env: envName, preview: true, parent, violations, shared: [], missing: [],
+    production: [...prodNames].join(', '), target: `${parent} (preview)`,
+  };
+
+  const parentBlock = resolveEnvironment(config, envName, { inherit: true });
+  if (!parentBlock.previews) {
+    violations.push(
+      `no \`previews\` block: \`wrangler preview\` needs one, and without it nothing ` +
+      `here says which resources the Preview binds`,
+    );
+    return result;
+  }
+  const block = resolvePreview(config, envName);
+
+  if (prodNames.has(parent)) {
+    violations.push(
+      `parent Worker "${parent}" is the production Worker: its Previews share its ` +
+      `Previews Base configuration, which the dashboard fills by importing production ` +
+      `vars and secrets`,
+    );
+  }
+
+  const parentIds = sharedResourceIdentifiers(resolveEnvironment(config, envName));
+  for (const id of sharedResourceIdentifiers(block)) {
+    const [kind, ...rest] = id.split(':');
+    const name = rest.join(':');
+    const byDesign = SHARED_BY_DESIGN.get(id);
+    if (byDesign && (prodIds.has(id) || parentIds.has(id))) {
+      result.shared.push(`${kind} → "${name}" shared with production by design: ${byDesign}`);
+    } else if (prodIds.has(id)) {
+      violations.push(
+        `${kind} → "${name}" is a PRODUCTION resource (also bound by env.${PRODUCTION_ENV}); ` +
+        `a Preview of "${parent}" would read and write it`,
+      );
+    } else if (parentIds.has(id)) {
+      violations.push(
+        `${kind} → "${name}" is also bound by the parent Worker "${parent}"; "two Previews ` +
+        `bound to the same account-level resource ID or name share its data or instances" ` +
+        `(${PREVIEWS_DOCS}) — bind the Preview to its own resource`,
+      );
+    }
+  }
+
+  // Bindings whose target is a Worker's production by the platform's rules,
+  // whatever id they carry.
+  const leavesPreview = (worker) => worker === parent || prodNames.has(worker);
+  const whose = (worker) => (worker === parent ? `the parent Worker "${parent}"` : `production Worker "${worker}"`);
+  for (const b of [block.services ?? []].flat()) {
+    if (leavesPreview(b.service)) {
+      violations.push(
+        `services → "${b.service}": service bindings from a Preview call the bound Worker's ` +
+        `production deployment (${PREVIEWS_DOCS}#service-bindings), so this reaches ` +
+        `${whose(b.service)} — use ctx.exports for same-Worker calls`,
+      );
+    }
+  }
+  for (const b of block.durable_objects?.bindings ?? []) {
+    if (b.script_name && leavesPreview(b.script_name)) {
+      violations.push(
+        `durable_objects → "${b.name}" names script_name "${b.script_name}": only a class ` +
+        `defined in the same Worker without script_name gets a per-Preview namespace ` +
+        `(${PREVIEWS_DOCS}#durable-objects), so this reaches ${whose(b.script_name)}`,
+      );
+    }
+  }
+  for (const w of [block.workflows ?? []].flat()) {
+    const owner = w.script_name ?? parent;
+    if (leavesPreview(owner)) {
+      violations.push(
+        `workflows → "${w.name}": a Preview binds an existing Workflow and runs its ` +
+        `deployed code and instances (${PREVIEWS_DOCS}#workflows), so this reaches ` +
+        `${whose(owner)} — bind a dedicated non-production Workflow`,
+      );
+    }
+  }
+
+  result.missing = missingCapabilities(resolvePreview(config, envName, { inherit: true }));
+  const declared = bindingNames(block);
+  for (const [name, kind] of bindingNames(resolveEnvironment(config, envName))) {
+    if (declared.has(name)) continue;
+    result.missing.push(
+      `${name} (${kind}) is bound by "${parent}" but not under \`previews\` — Previews do ` +
+      `not inherit bindings, so "the binding will not exist in the Preview and your Worker ` +
+      `can return a 1101 error" (${PREVIEWS_DOCS})`,
+    );
+  }
+  return result;
 }
 
 export function checkConfig(relPath, {
@@ -474,27 +675,34 @@ export function checkConfig(relPath, {
 }
 
 export function checkAll({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
-  return deployableTargets({ root, configs })
-    .map(({ config, envName }) => checkConfig(config, { root, envName, configs }));
+  return deployableTargets({ root, configs }).map(({ config, envName, preview }) => (preview
+    ? checkPreview(config, { root, envName, configs })
+    : checkConfig(config, { root, envName, configs })));
 }
 
 /**
  * Preflight for any non-production deploy — a `--name` throwaway, the
- * persistent staging environment, or a bare default-block deploy. Throws
- * before wrangler is invoked.
+ * persistent staging environment, a bare default-block deploy, or (with
+ * `preview: true`) a `wrangler preview` under the parent `workerName`.
+ * Throws before wrangler is invoked.
  */
 export function assertDeployIsolated({
-  configPath, workerName = null, envName = null, root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS,
+  configPath, workerName = null, envName = null, preview = false,
+  root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS,
 }) {
-  const result = checkConfig(configPath, { root, envName, workerName, configs });
+  const check = preview ? checkPreview : checkConfig;
+  const result = check(configPath, { root, envName, workerName, configs });
   if (result.violations.length > 0) {
     throw new Error(
-      `refusing to deploy "${result.target}" from ${configPath}${envName ? ` (env.${envName})` : ''} ` +
-      `— it would reach production state:\n` +
+      `refusing to deploy "${result.target}" from ${configPath}${envName ? ` (env.${envName})` : ''}` +
+      `${preview ? ' `previews`' : ''} — it would reach state it does not own:\n` +
       result.violations.map((v) => `  - ${v}`).join('\n') +
-      `\n\nA non-production deploy must not share account-level resources with ` +
-      `production. Move the production identifier under env.${PRODUCTION_ENV} only, ` +
-      `or point this block at its own resource.`,
+      (preview
+        ? `\n\nA Preview isolates only its Durable Objects. Point every other binding under ` +
+          `\`previews\` at a Preview-only resource, and reach no Worker's production.`
+        : `\n\nA non-production deploy must not share account-level resources with ` +
+          `production. Move the production identifier under env.${PRODUCTION_ENV} only, ` +
+          `or point this block at its own resource.`),
     );
   }
   return result;
@@ -502,7 +710,8 @@ export function assertDeployIsolated({
 
 /** How a result names the thing it checked, for logs and CLI output. */
 export function describeTarget(result) {
-  return `${result.config}${result.env ? ` (env.${result.env})` : ''} → ${result.target}`;
+  return `${result.config}${result.env ? ` (env.${result.env})` : ''}` +
+    `${result.preview ? ' previews' : ''} → ${result.target}`;
 }
 
 if (import.meta.main) {

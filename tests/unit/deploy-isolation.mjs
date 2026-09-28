@@ -21,6 +21,7 @@ import {
   assertDeployIsolated,
   checkAll,
   checkConfig,
+  checkPreview,
   deployableTargets,
   discoverConfigs,
   loadConfig,
@@ -298,6 +299,62 @@ const PROD_D1 = {
     + 'add it there so it is audited, or delete it',
   );
   console.log('  [11] no wrangler config escapes the audit list');
+}
+
+// [12] A Worker Preview isolates only its Durable Objects. The preflight
+// refuses a `previews` block that would share D1/R2 writes with production
+// or with its parent, or that reaches a Worker's production through a
+// service, Workflow or script_name binding; it accepts a clean one.
+{
+  const prodR2 = { binding: 'UPLOADS', bucket_name: 'prod-uploads' };
+  const base = {
+    name: 'app-probe',
+    d1_databases: [{ binding: 'DB', database_name: 'probe-db', database_id: 'probe-db-id' }],
+    durable_objects: { bindings: [{ name: 'S', class_name: 'S' }] },
+    env: { production: { name: 'app', d1_databases: [PROD_D1], r2_buckets: [prodR2] } },
+  };
+  const check = (previews) => {
+    const root = fixture({ 'wrangler.jsonc': { ...base, previews } });
+    return checkAll({ root, configs: ['wrangler.jsonc'] }).find((r) => r.preview && r.env === null);
+  };
+
+  const clean = check({
+    d1_databases: [{ binding: 'DB', database_name: 'preview-db', database_id: 'preview-db-id' }],
+    durable_objects: { bindings: [{ name: 'S', class_name: 'S' }] },
+  });
+  assert.deepEqual(clean.violations, [], 'a preview bound to its own resources passes');
+
+  for (const [label, previews, pattern] of [
+    ['production D1', { d1_databases: [PROD_D1] }, /8e2ecc37[\s\S]*PRODUCTION/],
+    ['production R2', { r2_buckets: [prodR2] }, /prod-uploads/],
+    ["the parent's own D1", { d1_databases: base.d1_databases }, /probe-db-id[\s\S]*parent Worker/],
+    ['a production service', { services: [{ binding: 'API', service: 'app' }] }, /production deployment/],
+    ['a service back to the parent', { services: [{ binding: 'SELF', service: 'app-probe' }] }, /parent Worker/],
+    ["the parent's Workflow", { workflows: [{ binding: 'WF', name: 'wf', class_name: 'WF' }] }, /existing Workflow/],
+    ['a production DO namespace',
+      { durable_objects: { bindings: [{ name: 'S', class_name: 'S', script_name: 'app' }] } }, /script_name/],
+  ]) {
+    const result = check(previews);
+    assert.ok(result.violations.some((v) => pattern.test(v)), `${label} is refused: ${result.violations}`);
+  }
+
+  const root = fixture({ 'wrangler.jsonc': { ...base, previews: { d1_databases: [PROD_D1] } } });
+  assert.throws(
+    () => assertDeployIsolated({ configPath: 'wrangler.jsonc', workerName: 'app-probe', preview: true, root, configs: ['wrangler.jsonc'] }),
+    /app-probe \(preview\)[\s\S]*8e2ecc37/,
+    'the preview preflight refuses before wrangler runs',
+  );
+  assert.ok(checkPreview('wrangler.jsonc', { root, configs: ['wrangler.jsonc'], workerName: 'app' })
+    .violations.some((v) => v.includes('is the production Worker')), 'a preview of the production Worker is refused');
+
+  // A binding the Worker has but the Preview does not is a capability gap.
+  assert.ok(check({}).missing.some((m) => m.startsWith('S (durable_objects)')));
+
+  // The repo's own probe preview is clean and carries every binding.
+  const probe = checkAll().find((r) => r.preview && r.config === 'apps/probe/wrangler.jsonc');
+  assert.deepEqual(probe.violations, []);
+  assert.deepEqual(probe.missing, []);
+  console.log('  [12] previews: production/parent D1+R2, production services, workflows and script_name refused');
 }
 
 console.log('deploy-isolation: all tests passed');
