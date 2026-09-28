@@ -3,8 +3,8 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { onEngine, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { projectTree } from '../runtime/project-fs.js';
+import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
 import { runEsbuildCli, supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -611,12 +611,13 @@ export async function registerHostedCommands(self, workspace) {
             if (args[i] === '--root' && args[i + 1])
                 root = args[i + 1];
         }
-        const vfsRoot = resolveVfsPath(root, ctx.cwd || '/home/user');
+        const rootPath = resolveVfsPath(root, ctx.cwd || '/home/user');
         // The dev server reads the Worker, and its KV/R2/D1 emulators keep
         // their data, through the engine, per request and after this command
-        // has returned.
-        if (!await onEngine(ctx.vfs, sqliteFs, `/${vfsRoot}`)) {
-            ctx.stderr.write(`${invokedAs}: the Worker dev server serves only projects on the workspace filesystem; /${vfsRoot} is on a mounted one\n`);
+        // has returned: at the project's engine key, which a mount has none of.
+        const vfsRoot = await engineKey(ctx.vfs, sqliteFs, `/${rootPath}`);
+        if (vfsRoot === null) {
+            ctx.stderr.write(`${invokedAs}: the Worker dev server serves only projects on the workspace filesystem; /${rootPath} is on a mounted one\n`);
             return 1;
         }
         // Stop existing
@@ -1099,6 +1100,8 @@ export async function registerHostedCommands(self, workspace) {
                 scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
                 keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
             };
+            // Releases before 0.13.2 wrote package.json as root.
+            await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${pkgPath}`);
             await ctx.vfs.writeFile(`/${pkgPath}`, JSON.stringify(pkg, null, 2) + '\n');
             ctx.stdout.write('Wrote to ' + pkgPath + '\n');
             return 0;
@@ -1111,25 +1114,43 @@ export async function registerHostedCommands(self, workspace) {
                 return 1;
             }
             const nmDir = `/${cwdKey}/node_modules`;
+            let failed = false;
             for (const pkg of packages) {
                 try {
                     await ctx.vfs.remove(nmDir + '/' + pkg, { recursive: true, force: true });
+                    ctx.stdout.write('removed ' + pkg + '\n');
                 }
-                catch { }
-                ctx.stdout.write('removed ' + pkg + '\n');
+                catch (error) {
+                    ctx.stderr.write(`npm ERR! could not remove ${pkg}: ${error instanceof Error ? error.message : String(error)}\n`);
+                    failed = true;
+                }
             }
-            // Update package.json
+            // Update package.json, when there is one to update: one it cannot read
+            // or write fails the command, a corrupt one is left as it is.
             const pkgPath = `/${cwdKey}/package.json`;
             try {
-                const pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath));
+                let pkgJson;
+                try {
+                    pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath));
+                }
+                catch (error) {
+                    if (error instanceof SyntaxError || error.code === 'ENOENT')
+                        return failed ? 1 : 0;
+                    throw error;
+                }
                 for (const pkg of packages) {
                     delete pkgJson.dependencies?.[pkg];
                     delete pkgJson.devDependencies?.[pkg];
                 }
+                // Releases before 0.13.2 wrote package.json as root.
+                await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), pkgPath);
                 await ctx.vfs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
             }
-            catch { }
-            return 0;
+            catch (error) {
+                ctx.stderr.write(`npm ERR! could not update package.json: ${error instanceof Error ? error.message : String(error)}\n`);
+                return 1;
+            }
+            return failed ? 1 : 0;
         }
         // ── npm create <pkg> / npm init <pkg> → npx create-<pkg> ─────────
         //
@@ -1251,8 +1272,7 @@ export async function registerHostedCommands(self, workspace) {
         await self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
-        const npxCred = requireVfsCred(ctx.cred, 'npx');
-        const resolveResult = await resolveNpxBinary(installer, sqliteFs.as(npxCred), (await projectTree(workspace.filesystem, ctx.vfs, npxCred, ctx.cwd || '/home/user')).fs, ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY);
+        const resolveResult = await resolveNpxBinary(installer, projectFs(ctx.vfs), requireVfsCred(ctx.cred, 'npx'), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');
             if (nodeCmd) {

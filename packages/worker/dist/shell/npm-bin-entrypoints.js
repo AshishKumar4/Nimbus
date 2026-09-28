@@ -1,6 +1,6 @@
-import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { projectTree } from '../runtime/project-fs.js';
+import { projectFs } from '../runtime/project-fs.js';
 import { resolveNpmBin, resolveNpmBinFromPath, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
@@ -21,16 +21,25 @@ export function installNpmBinFallbackResolver(registry, deps) {
     const upstreamResolve = registry.resolve.bind(registry);
     // What `registry.resolve` probes a name with before any command runs (it
     // has no caller): the namespace as the kernel, for the registry's life.
-    // The command that then runs looks its bin up again as itself.
-    const inspector = new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs);
-    const probeTree = async (cwd) => (await projectTree(deps.filesystem, inspector, CRED_KERNEL, cwd)).fs;
-    const commandTree = async (ctx) => (await projectTree(deps.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm bin'), ctx.cwd || '/home/user')).fs;
+    // The command that then runs looks its bin up again through its own view.
+    const inspector = projectFs(new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs));
+    // A lookup the namespace cannot answer (a mount that fails under the cwd)
+    // finds no bin: the name resolves as it would with none, and only the
+    // command it names fails.
+    const probe = async (lookup) => {
+        try {
+            return await lookup();
+        }
+        catch {
+            return null;
+        }
+    };
     registry.resolve = async function resolveWithNpmBins(name) {
         // `<dir>/node_modules/.bin/<bin>` by path (a launcher's `exec`) is the
         // same program as the bare name: same runtime choice, TTY and lifecycle.
         if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
             const cwd = deps.getCwd() || '/home/user';
-            const bin = await resolveNpmBinPath(await probeTree(cwd), cwd, name);
+            const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
             if (!bin)
                 return await upstreamResolve(name);
             return binHandler(bin.name, async (ctx, vfs) => await resolveNpmBinPath(vfs, ctx.cwd || '/home/user', name));
@@ -39,7 +48,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
         if (upstream)
             return upstream;
         const cwd = deps.getCwd() || '/home/user';
-        if (!await resolveNpmBinForInvocation(await probeTree(cwd), cwd, DEFAULT_PATH, name)) {
+        if (!await probe(() => resolveNpmBinForInvocation(inspector, cwd, DEFAULT_PATH, name))) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -62,9 +71,16 @@ export function installNpmBinFallbackResolver(registry, deps) {
     function binHandler(name, lookup) {
         return async (ctx) => {
             const invocationCwd = ctx.cwd || '/home/user';
-            // The bin as this command sees it: its project, as its credential.
-            const vfs = await commandTree(ctx);
-            const bin = await lookup(ctx, vfs);
+            // The bin as this command sees it, through its own view.
+            const vfs = projectFs(ctx.vfs);
+            let bin;
+            try {
+                bin = await lookup(ctx, vfs);
+            }
+            catch (error) {
+                ctx.stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+                return 126;
+            }
             if (!bin) {
                 ctx.stderr.write(`${name}: command not found\n`);
                 return 127;

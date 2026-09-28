@@ -85,7 +85,7 @@ async function inspect(fs, path) {
             return null;
         if (stat.type === 'directory')
             return 'directory';
-        const target = await fs.realpath(path);
+        const target = (await fs.stat(path, { follow: false }))?.type === 'symlink' ? await fs.realpath(path) : path;
         return { target, mode: stat.mode, head: await fs.readRange(target, 0, EXEC_HEAD_BYTES) };
     }
     catch (error) {

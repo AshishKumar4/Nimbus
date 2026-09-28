@@ -18,11 +18,12 @@
  *   - Tarball cache is per-package (name, version) — no cross-package dedup
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
- *   - The project is read and written as the invoking principal; the bulk
- *     paths serve a project the namespace puts on SQLite, and a mounted one
- *     is written through the principal's view (see fetchIntoMount)
+ *   - The project is read and written through the invoking principal's view
+ *     of the namespace; the bulk paths serve it at its engine key, and a
+ *     mounted project's packages are put there through the view (see
+ *     fetchIntoMount)
  */
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
@@ -53,6 +54,8 @@ export declare class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
     private readonly filesystem;
     private readonly store;
+    /** What installs in this session are staging or copying now: a sweep leaves them. */
+    private readonly placing;
     private cache;
     private esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
@@ -166,12 +169,28 @@ export declare class NpmInstaller {
     /**
      * A mounted project's packages. The batch facet writes only the engine,
      * so it extracts them into a staging directory in /tmp there, as the
-     * invoking principal whose batch writes it authorizes; each placed
-     * package is then copied into the mounted node_modules through the
-     * principal's view, over whatever an earlier install left there, as the
-     * facet writes over it on SQLite.
+     * invoking principal whose batch writes it authorizes. Each placed
+     * package is then put in the mounted node_modules through the
+     * principal's view whole or not at all (placeMountedPackage); a package
+     * that cannot be put there fails alone. What an install cut short left in
+     * /tmp or beside a package is swept by the next one.
      */
     private fetchIntoMount;
+    /** Staging directories in `tmp` no install in this session is using: an install cut short left them. */
+    private sweepStaging;
+    /** Copies beside the packages in `dir` (on a mount) no install in this session is using. */
+    private sweepCopies;
+    /**
+     * The package staged at `src` on the engine, put at `dst` on a mount. It is
+     * copied beside `dst` and renamed into place, so `dst` holds the old
+     * package or the whole new one; packages the old one held in its own
+     * node_modules that the new one does not bring stay. On a mount that
+     * cannot rename, the files go in place with package.json last, so a copy
+     * cut short reads as not installed and the next install puts it there.
+     */
+    private placeMountedPackage;
+    /** An artifact this installer wrote as root in an earlier release, handed to its directory's owner (see handKernelArtifact). */
+    private handKernelArtifact;
     private buildSpecs;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
@@ -214,9 +233,10 @@ export declare class NpmInstaller {
      */
     private writeLockfile;
     /**
-     * Create node_modules/.bin/ entries for packages with "bin" fields, as
-     * `cred`: one streamed batch on the engine, or written one by one
-     * through the principal's view for a mounted project.
+     * Create node_modules/.bin/ entries for packages with "bin" fields: one
+     * streamed batch through the engine as the invoking principal (`engine`,
+     * at the project's engine key), or written one by one through the
+     * principal's view (`fs`) for a mounted project.
      */
     private linkBins;
     private writeStreamPayload;

@@ -213,22 +213,21 @@ async function findBinInPackage(vfs, packageDir, binName) {
 }
 /**
  * Locate a binary by name across the standard search paths npx uses:
- *   1. cwd/node_modules/.bin/<binName>    (project-local install, read
- *      through the project's filesystem as the caller)
- *   2. NPX_CACHE_NM/<pkgName>/...         (npx-cache install, on the engine)
+ *   1. cwd/node_modules/.bin/<binName>    (project-local install)
+ *   2. NPX_CACHE_NM/<pkgName>/...         (npx-cache install)
  *
  * Returns the absolute path on hit, null on miss.
  */
-async function locateBinary(project, cache, cwd, pkgName, binName) {
+async function locateBinary(vfs, cwd, pkgName, binName) {
     // 1. Project-local node_modules. The packageDir is cwd/node_modules/<pkgName>.
     const projPkgDir = `${cwd}/node_modules/${pkgName}`;
-    const projHit = await findBinInPackage(project, projPkgDir, binName);
-    if (projHit && await project.exists(_vfsKey(projHit)))
+    const projHit = await findBinInPackage(vfs, projPkgDir, binName);
+    if (projHit && await vfs.exists(_vfsKey(projHit)))
         return projHit;
     // 2. NPX cache.
     const npxPkgDir = `${NPX_CACHE_NM}/${pkgName}`;
-    const npxHit = await findBinInPackage(cache, npxPkgDir, binName);
-    if (npxHit && cache.exists(_vfsKey(npxHit)))
+    const npxHit = await findBinInPackage(vfs, npxPkgDir, binName);
+    if (npxHit && await vfs.exists(_vfsKey(npxHit)))
         return npxHit;
     return null;
 }
@@ -241,13 +240,13 @@ async function locateBinary(project, cache, cwd, pkgName, binName) {
  * leaves it alone. Returns the deps object after the write (useful
  * for the caller's log line).
  */
-function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
+async function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
     const pkgJsonPath = `${NPX_CACHE_DIR}/package.json`;
     const pkgJsonKey = _vfsKey(pkgJsonPath);
     let existing = { name: 'npx-cache', version: '0.0.0', dependencies: {} };
-    if (vfs.exists(pkgJsonKey)) {
+    if (await vfs.exists(pkgJsonKey)) {
         try {
-            existing = JSON.parse(vfs.readFileString(pkgJsonKey));
+            existing = JSON.parse(await vfs.readFileString(pkgJsonKey));
             if (!existing.dependencies)
                 existing.dependencies = {};
         }
@@ -257,15 +256,14 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
         }
     }
     else {
-        // Ensure the parent dir exists. SqliteVFS auto-creates parent
-        // dirs in writeFile, but mkdir keeps the cache path explicit here.
+        // mkdir keeps the cache path explicit here.
         try {
-            vfs.mkdir(_vfsKey(NPX_CACHE_DIR), { recursive: true });
+            await vfs.mkdir(_vfsKey(NPX_CACHE_DIR), { recursive: true });
         }
         catch { /* dir exists */ }
     }
     existing.dependencies[pkgName] = pkgRange;
-    vfs.writeFile(pkgJsonKey, JSON.stringify(existing, null, 2) + '\n');
+    await vfs.writeFile(pkgJsonKey, JSON.stringify(existing, null, 2) + '\n');
 }
 /**
  * Resolve a binary for `npx <args>` by:
@@ -283,10 +281,10 @@ function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
  * this resolver.
  */
 export async function resolveNpxBinary(installer, 
-/** The npx cache's filesystem: the engine as the caller. */
+/** The caller's view of the namespace (runtime/project-fs.ts): the project and the npx cache alike. */
 vfs, 
-/** The cwd's project as the caller (runtime/project-fs.ts). */
-project, cwd, rawArgs, log, pid, 
+/** The caller's credential: what the npx cache install is written as. */
+cred, cwd, rawArgs, log, pid, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
 registry) {
     const parsed = parseNpxArgs(rawArgs);
@@ -294,7 +292,7 @@ registry) {
         return { ok: false, error: parsed.error };
     }
     // 1. Check project + NPX cache for pre-installed bin.
-    const existing = await locateBinary(project, vfs, cwd, parsed.pkgName, parsed.binName);
+    const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
     if (existing) {
         return {
             ok: true,
@@ -312,12 +310,12 @@ registry) {
     const installSpec = instVer ? `${instName}@${instVer}` : instName;
     // Synthesize npx-cache package.json so NpmInstaller has a project
     // root. The deps map is the source of truth for the install set.
-    ensureNpxCachePackageJson(vfs, instName, instVer || 'latest');
+    await ensureNpxCachePackageJson(vfs, instName, instVer || 'latest');
     try {
         const result = await installer.install(NPX_CACHE_DIR, {
             packages: [installSpec],
             pid,
-            cred: vfs.cred,
+            cred,
             registry,
         });
         if ((result.failed?.length || 0) > 0) {
@@ -338,7 +336,7 @@ registry) {
         };
     }
     // 3. Re-check NPX cache after install.
-    const installed = await locateBinary(project, vfs, cwd, parsed.pkgName, parsed.binName);
+    const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
     if (installed) {
         return {
             ok: true,

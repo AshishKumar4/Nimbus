@@ -5,13 +5,11 @@
  * init, clone, status, add, commit, log, branch, checkout, diff,
  * ls-files, rev-parse, remote, fetch, pull, push, merge, reset, tag
  *
- * Uses a VFS→isomorphic-git FS adapter over the repository's filesystem as
- * the command's credential: the SqliteVFS itself for a repository on it, and
- * the command's view of the namespace for one on a mount.
+ * Uses a VFS→isomorphic-git FS adapter over the command's view of the
+ * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
-import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { onEngine } from '@nimbus-sh/core/runtime/process-files.js';
-import { viewProjectFs } from '../runtime/project-fs.js';
+import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
+import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork } from './network-facet.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1906,7 +1904,6 @@ async function diffCommand(ctx, git, fs, vfs, args) {
  * script-eval graph.
  */
 export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
-    const cred = requireVfsCred(ctx.cred, 'git');
     let globals;
     try {
         globals = parseGitGlobals(ctx.args, getDir(ctx));
@@ -1915,7 +1912,15 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
         ctx.stderr.write(`git: ${e?.message}\n`);
         return 129;
     }
-    const { sub, subArgs, dir } = globals;
+    const { sub, subArgs } = globals;
+    // The directory as git's getcwd() sees it, every link resolved: a
+    // worktree reached through a link (a mount's link into SQLite, say) is
+    // the directory it names, whose top is not itself a link.
+    let dir = globals.dir;
+    try {
+        dir = await ctx.vfs.realpath(dir);
+    }
+    catch { /* not there: the subcommand says so */ }
     // Every subcommand below reads `dir` and the clone's `getDir(ctx)`; `-C`
     // moves both, exactly as `git -C <path>` runs the command from <path>.
     ctx = { ...ctx, cwd: dir };
@@ -1946,16 +1951,17 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
     const initPath = sub === 'init' ? subArgs.find((a) => !a.startsWith('-')) : undefined;
     const initDir = initPath === undefined ? dir : initPath.startsWith('/') ? initPath : dir + '/' + initPath;
     try {
-        // The repository's filesystem as the command's credential: the engine
-        // itself when the namespace puts the work on SQLite (its calls answer at
-        // once), the command's view of the namespace otherwise (a mount, awaited).
-        const onSqlite = await onEngine(ctx.vfs, vfs, initDir);
-        const repoVfs = onSqlite ? vfs.as(cred) : viewProjectFs(ctx.vfs);
+        // The repository through the command's view of the namespace, as its
+        // credential: SQLite paths reach the engine, mounted ones their mount.
+        const repoVfs = projectFs(ctx.vfs);
         const fs = createGitFs(repoVfs);
-        // The network commands write through the engine's streamed batches.
-        const offEngine = async (target) => {
-            await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
-            return 128;
+        // The network commands write through the engine's streamed batches, at
+        // the repository's engine key; a mounted repository has none.
+        const onEngine = async (target) => {
+            const key = await engineKey(ctx.vfs, vfs, target);
+            if (key === null)
+                await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
+            return key === null ? null : '/' + key;
         };
         switch (sub) {
             case 'init': {
@@ -1992,8 +1998,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 else {
                     dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
                 }
-                if (!await onEngine(ctx.vfs, vfs, dest))
-                    return await offEngine(dest);
+                const target = await onEngine(dest);
+                if (target === null)
+                    return 128;
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -2004,7 +2011,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 // the lease before the facet performs its lstat/readdir emptiness
                 // proof; the clone's W7 stream carries the opaque owner capability
                 // through the trusted SupervisorRPC binding.
-                const mutationLease = vfs.acquireExclusiveMutation(dest, {
+                const mutationLease = vfs.acquireExclusiveMutation(target, {
                     includeMissingAncestors: true,
                 });
                 // Delegate to git-network-facet: heavy packfile processing runs in
@@ -2014,7 +2021,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                         const result = await execGitNetwork(doCtx, doEnv, {
                             op: 'clone',
                             pid: ctx.pid,
-                            dir: dest,
+                            dir: target,
                             url,
                             ref: branch,
                             depth,
@@ -2233,8 +2240,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'fetch': {
-                if (!onSqlite)
-                    return await offEngine(dir);
+                const target = await onEngine(dir);
+                if (target === null)
+                    return 128;
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 if (!doCtx || !doEnv) {
@@ -2246,7 +2254,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'fetch',
                     pid: ctx.pid,
-                    dir,
+                    dir: target,
                     remote,
                     quiet,
                     auth: {
@@ -2265,8 +2273,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'pull': {
-                if (!onSqlite)
-                    return await offEngine(dir);
+                const target = await onEngine(dir);
+                if (target === null)
+                    return 128;
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -2284,7 +2293,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'pull',
                     pid: ctx.pid,
-                    dir,
+                    dir: target,
                     remote,
                     ref: branch,
                     quiet,
@@ -2305,8 +2314,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'push': {
-                if (!onSqlite)
-                    return await offEngine(dir);
+                const target = await onEngine(dir);
+                if (target === null)
+                    return 128;
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -2319,7 +2329,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 const result = await execGitNetwork(doCtx, doEnv, {
                     op: 'push',
                     pid: ctx.pid,
-                    dir,
+                    dir: target,
                     remote,
                     ref: branch,
                     quiet,

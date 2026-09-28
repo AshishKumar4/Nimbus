@@ -106,14 +106,14 @@ export declare function bindProcessView(authority: NimbusFilesystemAuthority, bi
 /** Host-side work through a credentialed view whose lease is released when the work settles. */
 export declare function withHostView<T>(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, use: (view: ProcessView) => Promise<T>): Promise<T>;
 /**
- * Whether `path` is on `engine` as `view` sees the namespace: its st_dev,
- * links followed, is the engine's. A name that is not there yet is judged
- * by the nearest directory above it that is, where it would be made. A
- * host tool asks this once for the tree it works on, then takes the
- * engine's bulk paths for a SQLite tree and `view` for anything else (a
- * mount, awaited), so the namespace alone decides which.
+ * Where `path` is on `engine`, as `view` sees the namespace: its engine key
+ * with every link resolved, or null when it is on a mount. A name not there
+ * yet is placed by the nearest directory above it that is, where it would
+ * be made. Host tools read and write a user's tree through `view`; they
+ * take the engine's bulk paths (batched writes, pre-bundling, the dev
+ * servers) only at this key, never at a lexical path a mount may shadow.
  */
-export declare function onEngine(view: Pick<VFS, 'stat'>, engine: Pick<SqliteVFS, 'deviceId'>, path: string): Promise<boolean>;
+export declare function engineKey(view: Pick<ProcessView, 'realpath' | 'stat'>, engine: Pick<SqliteVFS, 'deviceId'>, path: string): Promise<string | null>;
 /** POSIX access(2) modes. */
 export declare const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
 /**

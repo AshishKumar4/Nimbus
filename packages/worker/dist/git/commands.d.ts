@@ -5,12 +5,11 @@
  * init, clone, status, add, commit, log, branch, checkout, diff,
  * ls-files, rev-parse, remote, fetch, pull, push, merge, reset, tag
  *
- * Uses a VFS→isomorphic-git FS adapter over the repository's filesystem as
- * the command's credential: the SqliteVFS itself for a repository on it, and
- * the command's view of the namespace for one on a mount.
+ * Uses a VFS→isomorphic-git FS adapter over the command's view of the
+ * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
