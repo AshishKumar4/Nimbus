@@ -94,7 +94,7 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.13.0",
+      "version": "0.13.1",
       "dependencies": {
         "@nimbus-sh/platform": "^0.6.0",
         "@renovatebot/pep440": "^5.0.0",

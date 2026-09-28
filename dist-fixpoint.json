@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d842e29f4d057fbcb385a873101a2d2bdcbe724b00afa4dfd7a14da03c1799b6",
+  "fingerprint": "1ca1a3325ee801a82a5ec2fe46227845a79809c9fbe031d267898f80d6b874c9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -912,7 +912,7 @@
     "packages/core/dist/workspace/supervisor-op.d.ts": "71ea470016b87e9b15219eb590bc4515ed4e385c93e101535704e90db0a18238",
     "packages/core/dist/workspace/supervisor-op.d.ts.map": "e923e4461f9722c3da6cbb69ee903ac707990bda692c477f866303cd3c619ae1",
     "packages/core/dist/workspace/supervisor-op.js": "45aed8dc0f7ff82481714c2b1b383c802263a643e98d71c54d33bc411ff10dd5",
-    "packages/core/package.json": "b5a436242f93d36c0d85972a580b2b2a88c6e1392dcc1f896d36ff14dc7fa772",
+    "packages/core/package.json": "e2bb36f4233add121ee3eb5b84f8f509fceab1da97567fa9ff28f7ceea9ecd57",
     "packages/core/scripts/check-runtime-packages.mjs": "0820165ac164121725d7ea042c41909e486360f2fe4bfce2d5f19279ff9c00e5",
     "packages/core/src/_shared/ai-egress.ts": "d44aa6cebc8a61218cc9067f6c74003110ffb02530c5f842d36d497b59f60ff8",
     "packages/core/src/_shared/byte-stream.ts": "21df7038a653460c45901a3a70af26a0baa00226eb58164a5bf245ee1c610538",
