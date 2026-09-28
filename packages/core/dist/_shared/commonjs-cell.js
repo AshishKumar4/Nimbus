@@ -24,7 +24,7 @@
  *     (worker-loader.c++ extractSource), so an ES module could not import a
  *     CommonJS package's names from one. ESM stays lowered to CommonJS.
  *   - The map is fixed at load; a program writes and requires files the load
- *     never saw.
+ *     never saw. See RUNTIME CODE below for those.
  * So every cell is CommonJS by the time it is wrapped here, and it is the
  * shims' `require` that asks the registry for it by the module name below.
  *
@@ -50,7 +50,32 @@
  * applies. The wrapper is on the cell's first line, so every stack frame
  * carries the cell's own line numbers, under the module's
  * `file:///bundle/vfs/<path>` name.
+ *
+ * RUNTIME CODE
+ * ────────────
+ * Code that first exists while the program runs — a file written and then
+ * required (Vite's `.vite-temp/vite.config.ts.timestamp-*.mjs`), or text
+ * handed to a Function constructor (a module runner's `new AsyncFunction`) —
+ * cannot compile in the launch that produced it. The map is the only way code
+ * reaches a Worker, and it cannot grow after load: Worker Loader builds it
+ * once from the WorkerCode (workerd src/workerd/api/worker-loader.c++
+ * extractSource), a dynamic worker runs with no module fallback
+ * (src/workerd/server/server.c++ ~L5517-5521, `.moduleFallback = kj::none`,
+ * `.isDynamic = true`, v1.20260928.1), the registry is immutable once built,
+ * and `data:` modules are refused "due to dynamic eval restrictions"
+ * (src/workerd/jsg/modules-new.c++ ~L2001-2007). Request-time `eval` and
+ * `new Function` throw.
+ *
+ * So such code is staged for the NEXT launch of the same command. The guest
+ * records it in a ledger that travels with the existing residency-miss report
+ * (the one-shot envelope, the resident exit report); the supervisor keeps it
+ * content-addressed for that command's bundle key; the next launch carries it
+ * as `gen/<sha256>.js` modules, compiled on first use. A key is the SHA-256 of
+ * the text (runtimeCodeKeySource), not of a path, so a file written under a
+ * fresh name each run still converges. Text that changes every run (an edit,
+ * then the module runner's transform of it) costs one relaunch per change.
  */
+import { createHash } from 'node:crypto';
 import { tokenizer, tokTypes } from 'acorn';
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -159,17 +184,81 @@ export function opensWithUseStrict(source) {
         token = next;
     }
 }
+/** Bytes of runtime code one launch records, and the supervisor keeps. */
+export const RUNTIME_CODE_MAX_BYTES = 8 * 1024 * 1024;
+/** The constructors whose text a program can hand in at runtime. */
+const RUNTIME_FUNCTION_HEADS = {
+    function: 'function',
+    async: 'async function',
+    generator: 'function*',
+    asyncGenerator: 'async function*',
+};
+/**
+ * What a runtime-code key hashes: the constructor's arguments, or a file's
+ * text. The guest hashes the same string with the same function (its sync
+ * node:crypto), so both sides name the same module.
+ */
+function runtimeCodeKeySource(entry) {
+    return entry.kind === 'module'
+        ? JSON.stringify(['module', entry.text])
+        : JSON.stringify([entry.kind, entry.params, entry.body]);
+}
+/** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
+export function runtimeCodeKey(entry) {
+    const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
+    let hex = '';
+    for (const byte of digest)
+        hex += byte.toString(16).padStart(2, '0');
+    return hex;
+}
+/** The module name of the runtime code with key `key`. */
+export function runtimeCodeModuleName(key) {
+    return `gen/${key}.js`;
+}
+/** A ledger entry as the supervisor receives it: shape-checked, or null. */
+export function parseRuntimeCodeEntry(value) {
+    if (typeof value !== 'object' || value === null)
+        return null;
+    const v = value;
+    if (v.kind === 'module') {
+        return typeof v.path === 'string' && typeof v.text === 'string'
+            ? { kind: 'module', path: v.path, text: v.text } : null;
+    }
+    if (typeof v.kind !== 'string' || !Object.hasOwn(RUNTIME_FUNCTION_HEADS, v.kind))
+        return null;
+    if (!Array.isArray(v.params) || !v.params.every((p) => typeof p === 'string') || typeof v.body !== 'string')
+        return null;
+    return { kind: v.kind, params: [...v.params], body: v.body };
+}
+/**
+ * The `{ cjs }` module text for a Function-constructor call: it exports the
+ * function V8 builds for `new <Kind>Function(...params, body)` — named
+ * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
+ * from line 3. A constructor's function closes over the global scope, where a
+ * CommonJS module's body would see workerd's five CommonJS names
+ * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
+ * exports, __filename, __dirname), so an enclosing function rebinds those five
+ * to the global object's.
+ */
+export function runtimeFunctionModule(kind, params, body) {
+    return 'module.exports = (function (require, module, exports, __filename, __dirname) { return ('
+        + `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${params.join(',')}\n) {\n${body}\n}); })`
+        + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
+}
 /** The main module's imports the runtime below reads through. */
 export const COMMONJS_CELL_IMPORTS = [
     'import { createRequire as __nimbusCreateRequire } from "node:module";',
     'import { readFileSync as __nimbusReadBundleFile } from "node:fs";',
+    'import { createHash as __nimbusCreateHash } from "node:crypto";',
 ].join('\n');
 /**
  * The generated facet's side of the cells: resolve a VFS key to its module's
- * wrapper function, and read a cell's text back for the process's store.
+ * wrapper function, read a cell's text back for the process's store, and
+ * answer runtime code from the launch's `gen/` modules or record it for the
+ * next launch (`__nimbusRuntimeCode`, the API a module runner's seam calls).
  *
- * Expects COMMONJS_CELL_IMPORTS and a `__NIMBUS_CODE_CELLS` table of
- * CommonJsCellRow rows.
+ * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
+ * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
@@ -197,5 +286,41 @@ function __nimbusWithCodeCells(bundle) {
     Object.defineProperty(bundle, __row[0], { enumerable: true, configurable: true, get: () => __nimbusModuleCellSource(__row) });
   }
   return bundle;
+}
+// ── Runtime code (see RUNTIME CODE in commonjs-cell.ts) ──
+const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
+const __nimbusRuntimeLedger = new Map();
+let __nimbusRuntimeLedgerBytes = 0;
+function __nimbusRuntimeCodeCompile(entry, describe) {
+  const __source = entry.kind === "module"
+    ? JSON.stringify(["module", entry.text])
+    : JSON.stringify([entry.kind, entry.params, entry.body]);
+  const __key = __nimbusCreateHash("sha256").update(__source).digest("hex");
+  if (__nimbusRuntimeKeys.has(__key)) return __nimbusRegistryRequire("./gen/" + __key + ".js");
+  if (!__nimbusRuntimeLedger.has(__key) && __nimbusRuntimeLedgerBytes + __source.length <= ${RUNTIME_CODE_MAX_BYTES}) {
+    __nimbusRuntimeLedger.set(__key, entry);
+    __nimbusRuntimeLedgerBytes += __source.length;
+  }
+  const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with. It is staged: the next launch of this command compiles it.");
+  __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+  __err.key = __key;
+  throw __err;
+}
+// The wrapper function of a file that is not one of the launch's cells.
+function __nimbusRuntimeModule(path, text) {
+  return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
+}
+globalThis.__nimbusRuntimeCode = Object.freeze({
+  compileFunction(kind, params, body) {
+    if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
+    return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
+  },
+  compileModule(path, text) {
+    return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
+  },
+});
+// What this launch could not compile, for the next launch of its command.
+function __nimbusRuntimeCodeLedger() {
+  return [...__nimbusRuntimeLedger.values()];
 }
 `;

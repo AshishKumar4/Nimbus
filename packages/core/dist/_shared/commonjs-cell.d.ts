@@ -40,14 +40,54 @@ export declare function opensWithUseStrict(source: string): boolean;
  * of that file, and the map's only.
  */
 export type CommonJsCellRow = [key: string, moduleName: string, head: number, hashbang: 0 | 1, adopt: 0 | 1];
+/** Bytes of runtime code one launch records, and the supervisor keeps. */
+export declare const RUNTIME_CODE_MAX_BYTES: number;
+/** The constructors whose text a program can hand in at runtime. */
+declare const RUNTIME_FUNCTION_HEADS: {
+    readonly function: "function";
+    readonly async: "async function";
+    readonly generator: "function*";
+    readonly asyncGenerator: "async function*";
+};
+export type RuntimeFunctionKind = keyof typeof RUNTIME_FUNCTION_HEADS;
+/** Code a launch could not compile, as its ledger reports it. */
+export type RuntimeCodeEntry = {
+    kind: RuntimeFunctionKind;
+    params: string[];
+    body: string;
+} | {
+    kind: 'module';
+    path: string;
+    text: string;
+};
+/** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
+export declare function runtimeCodeKey(entry: RuntimeCodeEntry): string;
+/** The module name of the runtime code with key `key`. */
+export declare function runtimeCodeModuleName(key: string): string;
+/** A ledger entry as the supervisor receives it: shape-checked, or null. */
+export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null;
+/**
+ * The `{ cjs }` module text for a Function-constructor call: it exports the
+ * function V8 builds for `new <Kind>Function(...params, body)` — named
+ * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
+ * from line 3. A constructor's function closes over the global scope, where a
+ * CommonJS module's body would see workerd's five CommonJS names
+ * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
+ * exports, __filename, __dirname), so an enclosing function rebinds those five
+ * to the global object's.
+ */
+export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
 /** The main module's imports the runtime below reads through. */
 export declare const COMMONJS_CELL_IMPORTS: string;
 /**
  * The generated facet's side of the cells: resolve a VFS key to its module's
- * wrapper function, and read a cell's text back for the process's store.
+ * wrapper function, read a cell's text back for the process's store, and
+ * answer runtime code from the launch's `gen/` modules or record it for the
+ * next launch (`__nimbusRuntimeCode`, the API a module runner's seam calls).
  *
- * Expects COMMONJS_CELL_IMPORTS and a `__NIMBUS_CODE_CELLS` table of
- * CommonJsCellRow rows.
+ * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
+ * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
  */
 export declare const COMMONJS_CELL_RUNTIME_SOURCE: string;
+export {};
 //# sourceMappingURL=commonjs-cell.d.ts.map

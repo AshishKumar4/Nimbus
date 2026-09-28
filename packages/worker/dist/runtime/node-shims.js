@@ -8813,12 +8813,19 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   Object.defineProperty(mod, "__nimbusImportMeta", { value: importMeta });
   try {
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
-    const cell = __nimbusModuleCell(normalizedPath);
+    let cell = __nimbusModuleCell(normalizedPath);
     if (!cell) {
-      // Not a read miss and nothing in the process can answer it, so it is
-      // kept apart from the read ledger that settles those.
+      // Not in the launch's map: written after it started, or not reached by
+      // its closure. Kept apart from the read ledger, which settles reads. By
+      // path, the next launch stages the file if it is still there; by
+      // content, this text wherever it was written (a fresh name each run
+      // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
+      // key the launch already carries answers now.
       (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
-      throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
+      const text = __readFileOr(resolvedPath, null);
+      if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
+      cell = __nimbusRuntimeModule(normalizedPath, text);
+      globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
   } catch (e) {

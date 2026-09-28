@@ -61,6 +61,13 @@ export interface FacetExecResult {
      */
     residencyMisses?: string[];
     /**
+     * Code the run produced and could not compile (a file written then
+     * required, a Function-constructor call), as its ledger reported it:
+     * staged for the next launch of the same entry (commonjs-cell.ts, RUNTIME
+     * CODE). Validated where it is recorded.
+     */
+    runtimeCode?: unknown[];
+    /**
      * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses,
      * rpcWrites and fsRpcReads originate inside the facet (see
      * exec-telemetry.ts); the supervisor folds them with its own phase timings
@@ -312,6 +319,8 @@ interface FacetVfsBundleSource {
     codeModules: Record<string, string>;
     /** The JSON of the launch's CommonJsCellRow table. */
     codeCells: string;
+    /** The JSON list of runtime-code keys the map carries as `gen/<key>.js`. */
+    runtimeCode: string;
     /**
      * What the process's store charges itself to adopt the data cells and the
      * code cells it reads back (facet-resident-store's __residentCellCost).
@@ -354,9 +363,11 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, runtimeCode, }?: {
     consume?: boolean;
     emits?: ReadonlyMap<string, string>;
+    /** Runtime code staged for this launch: `{ cjs }` module text by key. */
+    runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
 /**
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
@@ -970,6 +981,14 @@ export declare class FacetManager {
      */
     private residencyProfiles;
     /**
+     * Runtime code by content key (commonjs-cell.ts, RUNTIME CODE), least
+     * recently recorded first, at most RUNTIME_CODE_MAX_BYTES of it.
+     */
+    private runtimeCode;
+    private runtimeCodeBytes;
+    /** Which runtime code each entry produced, keyed like residencyProfiles. */
+    private runtimeCodeProfiles;
+    /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
      * tarballs. Unbound, a miss is learned for this session only
@@ -1186,6 +1205,24 @@ export declare class FacetManager {
      * nothing here needs to, because the facet failed loudly on the way out.
      */
     private _recordResidencyMisses;
+    private _dropPrefetchCacheEntry;
+    /**
+     * Record the code a run produced and could not compile (commonjs-cell.ts,
+     * RUNTIME CODE) for the next launch of the same entry: kept by content key,
+     * the key recomputed here rather than taken from the guest, and the entry's
+     * cached bundle dropped so that launch is built with it. The store is
+     * bounded in bytes, least recently recorded first out; like the residency
+     * profiles it lives as long as this isolate, which is as long as the case
+     * it serves — running the command again — needs.
+     */
+    private _recordRuntimeCode;
+    /**
+     * The runtime code recorded for an entry, as `{ cjs }` module text by key:
+     * a constructor call as the function module, a file lowered and wrapped as
+     * a module cell is. A file the launch already stages by its path is left
+     * to that cell — it is the file as it is now.
+     */
+    private _stagedRuntimeCode;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     private _admitPrefetchCacheEntry;
     /**
@@ -1207,7 +1244,7 @@ export declare class FacetManager {
     noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[], evidence?: {
         served: ReadonlySet<string>;
         profileUnread: readonly string[] | null;
-    }): void;
+    }, runtimeCode?: unknown[]): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
      * Called when the attach TUI exits (reported / killed) so the OS-child serve
