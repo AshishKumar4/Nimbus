@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1ca1a3325ee801a82a5ec2fe46227845a79809c9fbe031d267898f80d6b874c9",
+  "fingerprint": "e32caa74bbf08faa35b93a045a6b256caabcc696d72bdf22a1652cbb14d052ed",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1954,14 +1954,14 @@
     "packages/worker/scripts/bundle-git.mjs": "7c74fc6b3f74c1517bab839aaa8a3841f1d2c14f2c727ba06aa28669f6cfff5c",
     "packages/worker/scripts/bundle-node-shims.mjs": "b572e3a0673c46540c035e94eac073ccae6c4d42a43b5124ba9c187468a3d347",
     "packages/worker/scripts/bundle-npm-cjs.mjs": "069f750eefcc6c4394028a4c9200e79cc00ddfea114f7e25752ea6c68eab8cbb",
-    "packages/worker/scripts/bundle-opencode.mjs": "cfc4f730159ea7f1dd4592280eb05cd444868d317ff7a4d0ef078ee562aad521",
+    "packages/worker/scripts/bundle-opencode.mjs": "3bfd5894501f11393585780dde6f450b963a2786c58445472b7b8735944d00be",
     "packages/worker/scripts/bundle-plugin-react.mjs": "fe16668909e911b4ad06e85b9b33545abb7803a200e0a6c4abb4b8a7fbd4836e",
     "packages/worker/scripts/bundle-real-vite.mjs": "9dec37042e380a0b5f191b8a39bffa58c7fa4a7e8b9eb44d6cc7045bed17ee08",
     "packages/worker/scripts/bundle-runtime.mjs": "1e61e52687cb441d32f8a5d044b44f32c7f3b1eb6116b9769564394229491f02",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "f5a7299e50c572a6f567a9bc6619f28d7d26af223600c557eff6865a99843f46",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "7e364d37acfd22db218e2f5717aa00a44c9e5d20d61ad96cc45ced67e9a17849",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
-    "packages/worker/scripts/opencode/README.md": "9e33dc5a2ecdd250e6ab3008521b730812db81b1eb80704caeded4225f98acae",
+    "packages/worker/scripts/opencode/README.md": "a0efa49743285da6a344598caf350073cfb33bf0b4d91ccf992ed466321b3ab3",
     "packages/worker/scripts/opencode/build-node.ts": "f766162cf357d99e83fd945b9265e23a1fa53712c80e23983310cdaea1370b08",
     "packages/worker/scripts/opencode/bundle-patches.ts": "8bec1a79c581afe3ba85391a8ec58636aa17c0dda3a8ca0609d63558b96026c2",
     "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
