@@ -32,14 +32,16 @@
  * which the node runtime executes with the Bun-global polyfill injected.
  *
  * Source dir:
- *   NIMBUS_OPENCODE_DIST env var, else /tmp/opencode-research/dist-nimbus
- *   (the research build output). When neither exists but the pinned version
- *   is already staged under public/_assets/opencode/<version>/, staging is
- *   re-derived from those committed assets — they are the deterministic
- *   build output (content-addressed via OPENCODE_ARTIFACT_BUILD_ID), so a
- *   host without the upstream clone must not silently unstage the artifact.
- *   Only when no source exists at all does the script skip with a clear
- *   notice so a fresh checkout still builds the worker.
+ *   NIMBUS_OPENCODE_DIST, and only that: a new opencode build is staged
+ *   only when the caller names its output (build-node.ts writes to
+ *   /tmp/opencode-research/dist-nimbus). A named directory that does not
+ *   exist is an error. Without the variable, staging is re-derived from the
+ *   committed public/_assets/opencode/<version>/ assets — they are the
+ *   deterministic build output (content-addressed via
+ *   OPENCODE_ARTIFACT_BUILD_ID) — so a leftover build on this host can
+ *   never change what a routine rebuild stages. Only when nothing is staged
+ *   either does the script skip with a clear notice, so a fresh checkout
+ *   still builds the worker.
  *
  * Output:
  *   src/opencode-artifact.generated.ts
@@ -63,8 +65,7 @@ const ROOT = path.resolve(__dirname, '..');
 const CORE_ROOT = path.resolve(ROOT, '..', 'core');
 const OUT_TS = path.join(ROOT, 'src', 'opencode-artifact.generated.ts');
 
-const DIST_DIR =
-  process.env.NIMBUS_OPENCODE_DIST || '/tmp/opencode-research/dist-nimbus';
+const DIST_DIR = process.env.NIMBUS_OPENCODE_DIST || null;
 
 async function readPinnedVersion() {
   const src = await fs.readFile(path.join(CORE_ROOT, 'src', 'constants.ts'), 'utf8');
@@ -255,20 +256,20 @@ async function main() {
   const assetRel = path.join('_assets', 'opencode', version);
   const assetDir = path.join(ROOT, 'public', assetRel);
 
-  // Prefer the research build output; fall back to the already-staged assets
-  // for the pinned version (byte-identical to the dist they were staged from)
-  // so a host without the clone re-derives the same staging instead of
-  // silently unstaging the artifact.
+  // A named build is staged; otherwise the committed assets for the pinned
+  // version are re-derived (byte-identical to the dist they were staged
+  // from), so a host without the clone does not silently unstage the artifact.
   let distDir = DIST_DIR;
-  if (!(await exists(distDir))) {
+  if (distDir !== null && !(await exists(distDir))) {
+    throw new Error(`[bundle-opencode] NIMBUS_OPENCODE_DIST=${distDir} does not exist`);
+  }
+  if (distDir === null) {
     if (await exists(path.join(assetDir, 'index.js'))) {
       distDir = assetDir;
-      console.log(
-        `[bundle-opencode] dist dir not found: ${DIST_DIR} — re-deriving from staged public/${assetRel}`,
-      );
+      console.log(`[bundle-opencode] re-deriving from staged public/${assetRel}`);
     } else {
       console.warn(
-        `[bundle-opencode] dist dir not found: ${DIST_DIR}\n` +
+        `[bundle-opencode] nothing staged for opencode ${version}\n` +
           `   skipping staging — set NIMBUS_OPENCODE_DIST to the opencode build output.\n` +
           `   The worker still builds; opencode install will report "artifact not staged".`,
       );

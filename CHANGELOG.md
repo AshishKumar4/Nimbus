@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A rebuild stages a new opencode artifact only from the directory named by
+  `NIMBUS_OPENCODE_DIST`, and a named directory that does not exist is an
+  error. Before, the stager fell back to `/tmp/opencode-research/dist-nimbus`,
+  so a leftover build on the host silently replaced the committed opencode
+  assets during `dist-integrity`. Without the variable, the committed assets
+  are re-derived as before.
+
 - A directory or file moved into a shared directory is shared at once in the
   running engine. The move wrote the shared mode, group and default ACL to
   the database, but the in-memory entry kept the pre-move values. Other

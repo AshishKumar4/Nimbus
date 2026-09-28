@@ -130,6 +130,7 @@ cp <this-dir>/build-node.ts <this-dir>/bundle-patches.ts \
 cd packages/opencode && bun build-node.ts
 
 # In Nimbus:
-node packages/worker/scripts/bundle-opencode.mjs   # restage into public/_assets
+NIMBUS_OPENCODE_DIST=/tmp/opencode-research/dist-nimbus \
+  node packages/worker/scripts/bundle-opencode.mjs   # restage into public/_assets
 bun run --cwd packages/worker build
 ```
