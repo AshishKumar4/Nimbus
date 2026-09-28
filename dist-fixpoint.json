@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6b671ae99a748394f514b720a7dba47f31ced6ace1abeeff59c9541b268958af",
+  "fingerprint": "746ac8d54a4d8c4cea2bd4cb0aff6b6558434093532cbf69fd1039779801bcda",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1358,8 +1358,8 @@
     "packages/platform/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
     "packages/platform/README.md": "6beb94e397f65cf78d88a869124774ac43b74832cda9c8db73163cb83e82e852",
     "packages/platform/dist/composition.d.ts": "cf0bd2b2053c85224c8d1d285cc73d3cdc06a2fc8593b14dcf5dbdc2ef4a8bab",
-    "packages/platform/dist/composition.d.ts.map": "33857c8a92cfbd339f314cfb1c7bbc8505f625df2cf3dac40f741127e1b627f2",
-    "packages/platform/dist/composition.js": "6ae2d39e748379c18682b2ac7dce06217f9298f54e698f6180bf363a2f580d63",
+    "packages/platform/dist/composition.d.ts.map": "208d5f1e090e227e07223d75b44636fffd9bfcf880eb04c9952e8b43577b76bf",
+    "packages/platform/dist/composition.js": "be32c14b3a21374add1c725fba3d137bd2d5441ab2c54aa0f746f253603e32ab",
     "packages/platform/dist/crc32.d.ts": "5623b288a2f101809650339d37081bca3c02ff1b4ff3baededefc27bc7a0dca5",
     "packages/platform/dist/crc32.d.ts.map": "447e3aeeceaa3e1d7a2657ab66e4d1932437a363dc5b3762484d5c1de65b059d",
     "packages/platform/dist/crc32.js": "f840b6ae9a33a3463b47875e819bab302e38ee0623fcb931dfedfb3cff24e8d8",
@@ -1397,7 +1397,7 @@
     "packages/platform/dist/weighted-credit-pool.d.ts.map": "0825e98c82abdb108d74b6468a5b564980b03fad7e11c7f1645af9bbefa4d70e",
     "packages/platform/dist/weighted-credit-pool.js": "e9e5892020ce6d4a059053b9cf3cbba6a93b51e67cb26f9e5261fd31e2502079",
     "packages/platform/package.json": "c7c8beef9eeda6739966902a112e346c878c4d8c9091b28745aa0da283b126ec",
-    "packages/platform/src/composition.ts": "165817f3d9a2bf07e2530eb823ea8c46e9d9b681e88111d3fe8b5f85f1623d91",
+    "packages/platform/src/composition.ts": "0ddefe4d6848f7e60cc8afaa154401f1479a3c5cb9b382ce004a970a29da8c15",
     "packages/platform/src/crc32.ts": "803eedeacaa6c5d4aebec6c13924438498d6ac0419b3db106f4a1700899f792f",
     "packages/platform/src/diag-counters.ts": "7ba55617a8eed9e240c840a775f52176ac8e7b11a328ed8546be9d2982e8bb1d",
     "packages/platform/src/heap-estimate.ts": "86e105f5d9c702fee964eca3b39f3699ad379341e2c8bce572047637a6cca9c0",

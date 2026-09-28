@@ -16,8 +16,9 @@ let ctxExports = null;
  * Programs load at CF_COMPAT_DATE, past it. The host runs at its embedder's
  * date, and below it every ENOENT would reach every program as a bare message
  * it maps to EIO. So composing refuses such a host, at startup, which on
- * Cloudflare fails the deploy. Off workerd (bun, node) there is no RPC hop and
- * no `Cloudflare` global to read.
+ * Cloudflare fails the deploy, and names both fixes: the flag alone keeps
+ * every other behavior of the embedder's date. Off workerd (bun, node) there
+ * is no RPC hop and no `Cloudflare` global to read.
  */
 function requireEnhancedErrorSerialization() {
     // `typeof` of an undeclared global is 'undefined', not a ReferenceError.
@@ -25,9 +26,10 @@ function requireEnhancedErrorSerialization() {
         return;
     if (Cloudflare.compatibilityFlags.enhanced_error_serialization === true)
         return;
-    throw new Error('fabric: this Worker runs without enhanced_error_serialization, so the code on a '
-        + "program's filesystem error (ENOENT, EEXIST, ...) would not survive the RPC back to it. "
-        + 'Set compatibility_date to 2026-04-21 or later.');
+    throw new Error('fabric: this Worker runs without the enhanced_error_serialization compatibility flag, so the '
+        + "code on a program's filesystem error (ENOENT, EEXIST, ...) would not survive the RPC back "
+        + 'to it. Add "enhanced_error_serialization" to compatibility_flags in your wrangler config, '
+        + 'or set compatibility_date to 2026-04-21 or later.');
 }
 /**
  * Compose once per isolate. A second call with the same values is a no-op;
