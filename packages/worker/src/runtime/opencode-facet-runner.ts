@@ -38,6 +38,7 @@
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { getRealNodeHttpImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import type { NodeFacetSources } from './node-shims-artifact.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import {
@@ -142,13 +143,6 @@ const OS_NAMES: readonly string[] = [
   'platform', 'release', 'setPriority', 'tmpdir', 'totalmem', 'type', 'uptime',
   'userInfo', 'version', 'availableParallelism',
 ];
-// The shim http surface (node-shims.ts builtins.http). request/get throw
-// "Use fetch()" — honest failure; nodejs_compat's fetch-backed client is NOT
-// preserved by this bridge, so a chunk that does http.request() fails loud.
-const HTTP_NAMES: readonly string[] = [
-  'createServer', 'Server', 'IncomingMessage', 'ServerResponse',
-  'Agent', 'STATUS_CODES', 'METHODS', 'request', 'get',
-];
 
 const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:fs', builtin: 'fs', names: FS_NAMES },
@@ -156,14 +150,6 @@ const BUILTIN_BRIDGES: readonly BuiltinBridge[] = [
   { specifier: 'node:os', builtin: 'os', names: OS_NAMES },
   // node:sqlite is not in nodejs_compat; bridge to the VFS-backed sql.js shim.
   { specifier: 'node:sqlite', builtin: 'sqlite', names: ['DatabaseSync', 'StatementSync'] },
-  // node:http MUST land on the shim server, not nodejs_compat: the serve
-  // facet's HTTP server is only routeable (loopback + external preview +
-  // the /doc readiness gate) if listen() registers on globalThis.__portRegistry
-  // and SUPERVISOR.registerPort. nodejs_compat's http.Server binds invisibly —
-  // "listening" is printed but no request can ever be routed to it (the
-  // empty-registry 502). CJS require("http") already resolves to this shim;
-  // this bridge gives the ESM `import "node:http"` chunks the same server.
-  { specifier: 'node:http', builtin: 'http', names: HTTP_NAMES },
 ];
 
 // node:process public surface opencode/OpenTUI consume by name. The bundle uses
@@ -731,6 +717,7 @@ export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): string 
 // one-shot run is a single fetch into a stateless entrypoint, which cannot be a
 // Durable Object; it keeps the WorkerEntrypoint default export.
 import { DurableObject as __NimbusDurableObject, WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
+${getRealNodeHttpImportsCode()}
 
 // ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
 // The pre-compiled WebAssembly.Module rides in via the module map; the glue
@@ -828,6 +815,9 @@ class __ProcessExit extends Error {
 ${opts.sources.shims}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
+// Patch native HTTP listen/close before the staged ESM graph links. Its
+// node:http imports and the shims' require now share the native Server.
+void builtins.http;
 // Capture workerd's real process.memoryUsage BEFORE the shim process takes over
 // (the shim's memoryUsage is a stub returning zeros). workerd exposes a working
 // memoryUsage inside dynamic isolates; the [oc-mem] diagnostic reads it to watch

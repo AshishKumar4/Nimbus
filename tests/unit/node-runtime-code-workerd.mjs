@@ -108,6 +108,12 @@ try {
     await terminal.run(`cd ${W} && node server.js`);
     assert.equal(await residentResult(), 'resident-ok', 'and its exit report staged it for the next launch');
 
+    const unref = await terminal.run(
+      `node -e "require('http').createServer().listen(0).unref(); console.log('UNREF_OK')"`, 15000,
+    );
+    assert.equal(unref.status, 0, unref.stdout);
+    assert.match(unref.stdout, /^UNREF_OK$/m, 'an unrefed native listener does not keep the process alive');
+
     const bad = await terminal.run(`cd ${W} && node bad.js`);
     assert.match(bad.stdout, /\/home\/user\/w\/bad\.js\n\nSyntaxError/, bad.stdout);
   } finally {

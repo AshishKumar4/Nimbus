@@ -14,7 +14,7 @@
 // never-ending SSE returned a dead 5s-capped body.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { generateShimsCode } from './lib/node-http-platform.mjs';
 
 function makeFacet() {
   // Each facet isolate owns a fresh port registry; the shim re-creates it on
@@ -175,13 +175,12 @@ function routedRequest(port, path, init = {}) {
   await reader.cancel();
 }
 
-// ── downstream cancel releases the handler (close/aborted fire) ──────────────
+// Downstream cancellation closes the native response.
 {
   const { http, serveHttp } = makeFacet();
-  let closed = false, aborted = false;
+  let closed = false;
   const server = http.createServer((_req, res) => {
     res.on('close', () => { closed = true; });
-    res.on('aborted', () => { aborted = true; });
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: hi\n\n');
   });
@@ -192,7 +191,6 @@ function routedRequest(port, path, init = {}) {
   await reader.cancel(); // downstream (client / attach facet) goes away
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(closed, true, 'res emits close when the downstream cancels');
-  assert.equal(aborted, true, 'res emits aborted when the downstream cancels');
 }
 
 // ── no server on the port → honest 502 ───────────────────────────────────────

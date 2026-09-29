@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Node HTTP guests now use workerd's native `node:http` server and
+  `cloudflare:node.handleAsNodeRequest` instead of Nimbus's synthetic
+  IncomingMessage/ServerResponse/Server classes. Native HTTP/HTTPS clients
+  also replace the throwing HTTP client and the buffered HTTPS mini-client.
+  Nimbus still owns port registration, VFS admission, requests parked before
+  a listener attaches, and the response-header deadline. `listen(0)` reserves
+  a distinct port through the session supervisor rather than independently
+  choosing 49152 in every guest; ref/unref affects the process live-handle
+  count without removing its route. Opencode's `node:http` map bridge is
+  removed: its ESM imports share the patched native Server prototype. This
+  does not add WebSocket upgrade support to workerd's HTTP dispatcher.
+
 - Large Node CLI launches no longer build and walk a whole AST to route a
   handful of dynamic imports. The transform facet uses Acorn tokens and
   delimiter boundaries instead, preserving strings, templates, methods,
