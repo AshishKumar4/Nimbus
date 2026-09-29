@@ -50,4 +50,12 @@ const evaluate = filename => {
   return module.exports;
 };
 assert.equal(evaluate(learned), 'x'.repeat(2048), 'the fitting learned graph executes its actual transitive dependency');
+const generatedPath = 'home/user/generated/config.timestamp-1.cjs';
+const dependencyPath = 'opt/runtime-plugin/deep/plugin.cjs';
+const generatedText = 'module.exports = require("/opt/runtime-plugin/deep/plugin.cjs");';
+const generatedFs = launchFs({ [dependencyPath]: 'module.exports = "loaded-from-generated-config";' }).fs;
+const generated = await buildPrefetchBundle(generatedFs, undefined, '/home/user/generated', '', undefined,
+  undefined, undefined, undefined, 4096, undefined, new Map([[generatedPath, generatedText]]));
+assert.equal(generated.bundle[dependencyPath], 'module.exports = "loaded-from-generated-config";',
+  'a deleted temporary config still brings the imports of its retained executable source');
 console.log('observed-read-closure: ok');

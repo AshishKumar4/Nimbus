@@ -3161,6 +3161,11 @@ export async function collectClosureWasmImages(
   for (const [path, cell] of Object.entries(bundle)) {
     if (typeof cell !== 'string' || !cell.includes('.wasm')) continue;
     if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs'))) continue;
+    // wasm-bindgen also uses a folded template/variable path. Reuse the
+    // filesystem AST analysis rather than adding another string-pattern rule.
+    for (const ref of findStaticFsReferences(cell, '/' + stripLeadingSlashes(path)).exact) {
+      if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
+    }
     const dir = stripLeadingSlashes(path).split('/').slice(0, -1);
     for (const match of cell.matchAll(RELATIVE_WASM_LITERAL_RE)) {
       const segments = [...dir];
@@ -3886,6 +3891,7 @@ export async function buildPrefetchBundle(
   pacer?: TurnBudget,
   maxBundleBytes?: number,
   learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
+  runtimeModules?: ReadonlyMap<string, string>,
 ): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3898,7 +3904,7 @@ export async function buildPrefetchBundle(
   try {
     return await _buildPrefetchBundle(
       vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
-      maxBundleBytes, learnedFor,
+      maxBundleBytes, learnedFor, runtimeModules,
     );
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
@@ -3917,6 +3923,7 @@ async function _buildPrefetchBundle(
   pacer?: TurnBudget,
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
   learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>,
+  runtimeModules?: ReadonlyMap<string, string>,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -3926,12 +3933,15 @@ async function _buildPrefetchBundle(
   // Learned executable roots belong to the complete required graph. Adding
   // them later as enrichment let final pruning remove one imported sibling
   // on every launch, so Nuxt/Vinext never reached a complete executable map.
-  const codeRoots: string[] = [];
+  const codeRoots: { path: string; text?: string }[] = [];
   const dataReads = new Set<string>();
   for (const path of observedReads ?? []) {
-    if (isCodeCellPath(path) || bundleTypescriptLoader(path) !== null) codeRoots.push(path);
+    if (isCodeCellPath(path) || bundleTypescriptLoader(path) !== null) codeRoots.push({ path });
     else dataReads.add(path);
   }
+  // Vite unlinks its temporary config module after loading it. Its staged
+  // factory still imports packages even when no file remains to walk.
+  for (const [path, text] of runtimeModules ?? []) codeRoots.push({ path, text });
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
     pacer?.spend.bind(pacer), undefined, codeRoots.length > 0 ? codeRoots : undefined));
   if ('kind' in prefetch) {
@@ -5352,16 +5362,21 @@ export class FacetManager {
       return offered.map((entry) => entry.path);
     };
     const learnedPaths = new Set(await this.residencyProfiles.paths(key));
+    const runtimeModules = new Map<string, string>();
     // A file can already be readable data yet absent from the executable
     // module map. Its miss then lands in runtimeCode, not residencyProfiles.
     // Treat those known module files as graph roots too; staging only their
     // own factory made Nuxt/Vinext discover one static dependency per launch.
     for (const code of (await this.runtimeCode.forLaunch(key)).values()) {
-      if (code.kind === 'module' && !code.path.startsWith('data:')) learnedPaths.add(code.path.replace(/^\/+/, ''));
+      if (code.kind === 'module' && !code.path.startsWith('data:')) {
+        const path = code.path.replace(/^\/+/, '');
+        learnedPaths.add(path);
+        runtimeModules.set(path, code.text);
+      }
     }
     const vfsState = await buildPrefetchBundle(
       vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
-      learnedPaths, pacer, undefined, learnedFor,
+      learnedPaths, pacer, undefined, learnedFor, runtimeModules,
     );
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];

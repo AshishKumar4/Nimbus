@@ -735,15 +735,18 @@ export class ClosureBoundExceededError extends Error {
   }
 }
 
+/** An executable module already observed, including a deleted generated file. */
+export interface RequiredModuleRoot { path: string; text?: string }
+
 /** Resolve the complete dependency graph starting from entry code. */
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string,
-  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<string>,
+  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>,
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
-  policy: DependencyClosurePolicy, requiredRoots?: Iterable<string>,
+  policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>,
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
   vfs: RequireFs,
@@ -753,7 +756,7 @@ export async function prefetchForRequire(
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
   progress?: WalkProgress,
   policy?: DependencyClosurePolicy,
-  requiredRoots?: Iterable<string>,
+  requiredRoots?: Iterable<RequiredModuleRoot>,
 ): Promise<DependencyClosureOutcome> {
   const report = progress;
   if (report) progress = async work => {
@@ -1066,8 +1069,10 @@ export async function prefetchForRequire(
     // Modules a previous launch actually tried to execute are required roots,
     // not speculative dynamic-import subtrees. Walk their static imports in
     // this same visited set and byte budget before any optional enrichment.
-    for (const path of requiredRoots ?? []) {
-      await addFile(strip(path));
+    for (const root of requiredRoots ?? []) {
+      const path = strip(root.path);
+      if (root.text === undefined) await addFile(path);
+      else await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
       if (closureExceeded || declined) break;
     }
 

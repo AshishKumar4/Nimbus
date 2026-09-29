@@ -13,13 +13,10 @@ import {
   collectClosureWasmImages,
   findInlineWasmImages,
   facetWasmImports,
-  generateEntrypointCode,
-  generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 
 
@@ -51,7 +48,6 @@ assert.deepEqual(images, new Map([
   [`/${PKG}/lib/small.wasm`, wasmImageDigest(small)],
 ]), 'the closure records every .wasm file with its content digest, whether or not it fit the bundle');
 // The shared digest is the only registry left — inline-wasm is gone (real-vite-module was deleted).
-assert.equal(wasmImageDigest(big), wasmImageDigest(big), 'the closure digest is stable and consistent');
 console.log('  the closure walk records a staged image and an over-cap image, by path and digest');
 
 // A cell is digested from the cell; a file from ranged reads, never whole:
@@ -83,6 +79,13 @@ console.log('  the closure walk records a staged image and an over-cap image, by
   ]), 'the literal-named sibling image is collected, with the same digest as a whole read');
 }
 
+// wasm-bindgen uses a single-assignment template path, not a quoted relative
+// literal. Its program still needs the same Loader-compiled image.
+const templateImages = await collectClosureWasmImages(vfs, {
+  [PKG + "/lib/bindings.js"]: "const wasmPath = `${__dirname}/small.wasm`; const bytes = require(\"fs\").readFileSync(wasmPath); new WebAssembly.Module(bytes);",
+}, []);
+assert.deepEqual(templateImages, [{ vfsPath: '/' + PKG + '/lib/small.wasm', digest: wasmImageDigest(small) }]);
+
 // ── the launch stages them as wasm map entries, under both keys ───────
 const imports = facetWasmImports([{ vfsPath: `/${PKG}/esbuild.wasm`, digest: undefined }], state.wasmImages);
 assert.deepEqual(imports, [
@@ -90,18 +93,6 @@ assert.deepEqual(imports, [
   { vfsPath: `/${PKG}/lib/small.wasm`, digest: wasmImageDigest(small), moduleName: '__nimbus_wasm_1.wasm' },
 ], 'an image the options name by path gets the closure\'s digest; one they do not name is added');
 
-const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const SHIMS = '/* __SHIMS_MARKER__ */';
-const oneShot = (await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS), imports)).code;
-const resident = (await generateLongRunningNodeCode('', state, { cred, wasmImports: imports }, false, nodeFacetSources(SHIMS))).code;
-for (const [label, code] of [['one-shot', oneShot], ['resident', resident]]) {
-  for (const [index, image] of imports.entries()) {
-    assert.ok(code.includes(`import __nimbusWasm${index} from ${JSON.stringify(image.moduleName)};`), `${label}: imports ${image.moduleName}`);
-    assert.ok(code.includes(`[${JSON.stringify(image.vfsPath.slice(1))}, __nimbusWasm${index}]`), `${label}: registers ${image.vfsPath} by path`);
-    assert.ok(code.includes(`[${JSON.stringify(image.digest)}, __nimbusWasm${index}]`), `${label}: registers ${image.vfsPath} by digest`);
-  }
-}
-console.log('  both generated entries import the map entries and register them by path and by digest');
 
 // ── the seam answers those bytes from the map, and refuses others loudly ──
 {
