@@ -259,10 +259,11 @@ interface FacetVfsState {
      */
     usesNodeSqlite?: boolean;
     /**
-     * Memoized `bundleUsesRolldownBinding(bundle)`, answered with
-     * `usesNodeSqlite`: the launch carries the staged rolldown binding.
+     * Names of the staged napi bindings the closure requires
+     * (stagedBindingsRequiredBy), answered with `usesNodeSqlite`: the launch
+     * carries each, and the main module registers them.
      */
-    usesRolldownBinding?: boolean;
+    stagedBindings?: string[];
     /**
      * True once `releaseGeneratedSources` has dropped the serialized forms. The
      * state can still answer for its cursor, key and flags; it can no longer
@@ -981,11 +982,10 @@ export declare class FacetManager {
     /**
      * What each entry was observed to read and not have, keyed exactly like the
      * prefetch cache above so a profile can only ever seed the bundle it was
-     * measured against.
-     *
-     * costs one more loud failure and then relearns. Persisting it would be a
-     * schema and a migration bought with nothing the in-memory form does not
-     * already deliver for the case that matters: running the command again.
+     * measured against. Kept in the session's storage: the session is evicted
+     * whenever it sits idle between two commands, and an in-memory profile died
+     * with it, so running the command again after a pause missed the same file
+     * again (Vite's node_modules/ms/index.js on every launch).
      */
     private residencyProfiles;
     /**
@@ -1156,12 +1156,13 @@ export declare class FacetManager {
      */
     private _wasmModulesByValue;
     /**
-     * The staged rolldown binding's three module-map members, by value, for a
-     * one-shot facet (it has no disk reader at load). Fetched from the
-     * worker's own assets — L2-cached, digest-verified — inside the scope that
-     * holds the map, and dropped with it.
+     * The module-map members of the staged napi bindings `names`, by value, for
+     * a one-shot facet (it has no disk reader at load): the shared loader and
+     * trampoline, and each binding. Fetched from the worker's own assets —
+     * L2-cached, digest-verified — inside the scope that holds the map, and
+     * dropped with it.
      */
-    private _rolldownModulesByValue;
+    private _stagedBindingModulesByValue;
     /**
      * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
      * as a kernel-owned file named by its content key, and return the records
@@ -1171,23 +1172,23 @@ export declare class FacetManager {
      * and written once per session per image.
      */
     private _stageInlineWasmImages;
-    /** In-flight write of the session's copy of the binding; one writer at a time. */
-    private rolldownImageWrite;
+    /** In-flight writes of the session's copies of staged bindings, by name; one writer each. */
+    private stagedBindingWrites;
     /**
-     * The staged rolldown binding for a resident facet: the loader's text (the
-     * caller stores it through the image store with the rest of the map), the
-     * trampoline by value, and the binding by PATH. A 13 MB member inline in
-     * the boot spec would sit in this isolate's heap for the process's life;
-     * named by path it is read only while the facet loads, like a runtime's
-     * interpreter image.
+     * The staged napi bindings `names` for a resident facet: the shared
+     * loader's text (the caller stores it through the image store with the rest
+     * of the map), the trampoline by value, and each binding by PATH. A
+     * multi-megabyte member inline in the boot spec would sit in this isolate's
+     * heap for the process's life; named by path it is read only while the
+     * facet loads, like a runtime's interpreter image.
      *
-     * The path is a kernel-owned copy in the session's VFS, written once per
+     * Each path is a kernel-owned copy in the session's VFS, written once per
      * session and version. Completeness is its size — the write only ever grows
      * the file from offset zero — and it goes down in the image store's slice
      * size with a turn between slices, for the same reason boot images do: the
      * platform resets an object over what one turn has outstanding.
      */
-    private _residentRolldownMembers;
+    private _residentStagedBindingMembers;
     /**
      * Which contents a resident process holds from its first instruction,
      * beyond its module map: data-plan.ts over this process's view of the
@@ -1238,10 +1239,13 @@ export declare class FacetManager {
      * File what a process could not read against the bundle that failed it.
      *
      * A miss the supervisor never hears about is a miss the next run repeats,
-     * so this is the whole of the repair: record the path, then drop the cached
-     * bundle for that key so the next build is a real one and stages it. The
-     * program that hit the miss is already gone — nothing here rescues it, and
-     * nothing here needs to, because the facet failed loudly on the way out.
+     * so this is the whole of the repair: record the path (in the session's
+     * storage, so the next run learns it however long the user waits), then
+     * drop the cached bundle for that key so the next build is a real one and
+     * stages it. The record is queued ahead of any later read of the profile,
+     * so a relaunch that follows at once builds from it. The program that hit
+     * the miss is already gone — nothing here rescues it, and nothing here
+     * needs to, because the facet failed loudly on the way out.
      */
     private _recordResidencyMisses;
     private _dropPrefetchCacheEntry;

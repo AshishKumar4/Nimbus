@@ -49,11 +49,11 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, resolvePackageEntry, parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { RuntimeCodeStore } from './runtime-code-store.js';
+import { ResidencyProfileStore } from './residency-profile-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
-import { fetchRolldownAsset, ROLLDOWN_BINDING_ASSET, ROLLDOWN_BINDING_MODULE, ROLLDOWN_BINDING_SPECIFIER_RE, ROLLDOWN_BINDING_VFS_PATH, ROLLDOWN_FACET_IMPORT, ROLLDOWN_LOADER_ASSET, ROLLDOWN_LOADER_MODULE, ROLLDOWN_TRAMPOLINE_ASSET, ROLLDOWN_TRAMPOLINE_MODULE, } from '../runtime/rolldown-artifact.js';
-import { ROLLDOWN_BINDING_BYTES } from '../rolldown-artifact.generated.js';
+import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, } from '@nimbus-sh/fabric/process-fabric.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
@@ -399,23 +399,6 @@ function bundleUsesNodeSqlite(entryCode, bundle) {
     }
     return false;
 }
-/**
- * Whether the closure requires rolldown's N-API binding (see
- * runtime/rolldown-artifact.ts). Answered alongside `usesNodeSqlite`, while
- * the raw cells are in hand; the launch then carries the staged binding and
- * the main module registers it (ROLLDOWN_FACET_IMPORT).
- */
-function bundleUsesRolldownBinding(bundle) {
-    for (const [path, cell] of Object.entries(bundle)) {
-        if (typeof cell !== 'string')
-            continue;
-        if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs')))
-            continue;
-        if (ROLLDOWN_BINDING_SPECIFIER_RE.test(cell))
-            return true;
-    }
-    return false;
-}
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
 const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
 /**
@@ -495,7 +478,7 @@ ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
 ${COMMONJS_CELL_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${vfsState.usesRolldownBinding ? ROLLDOWN_FACET_IMPORT : ''}
+${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
 const __NimbusHostResponse = globalThis.Response;
 
@@ -815,7 +798,7 @@ import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 ${COMMONJS_CELL_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${vfsState.usesRolldownBinding ? ROLLDOWN_FACET_IMPORT : ''}
+${stagedBindingsFacetImport(vfsState.stagedBindings)}
 ${facetWasmImportsSource(opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
@@ -3899,13 +3882,12 @@ export class FacetManager {
     /**
      * What each entry was observed to read and not have, keyed exactly like the
      * prefetch cache above so a profile can only ever seed the bundle it was
-     * measured against.
-     *
-     * costs one more loud failure and then relearns. Persisting it would be a
-     * schema and a migration bought with nothing the in-memory form does not
-     * already deliver for the case that matters: running the command again.
+     * measured against. Kept in the session's storage: the session is evicted
+     * whenever it sits idle between two commands, and an in-memory profile died
+     * with it, so running the command again after a pause missed the same file
+     * again (Vite's node_modules/ms/index.js on every launch).
      */
-    residencyProfiles = new Map();
+    residencyProfiles;
     /**
      * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
      * kept in the session's storage so an evicted isolate does not forget it.
@@ -3937,7 +3919,7 @@ export class FacetManager {
             entries: [...this.prefetchBundleCache].map(([key, entry]) => ({
                 key, revision: entry.revision, bytes: entry.bytes,
             })),
-            residencyProfiles: [...this.residencyProfiles].map(([key, paths]) => ({ key, paths: [...paths] })),
+            residencyProfiles: this.residencyProfiles.cached(),
         };
     }
     /** In-flight request-driven durable-app ensures, single-flight per port. */
@@ -3968,6 +3950,7 @@ export class FacetManager {
     constructor(ctx, env, processes, portRegistry, host, hooks = {}) {
         this.ctx = ctx;
         this.runtimeCode = new RuntimeCodeStore(ctx.storage);
+        this.residencyProfiles = new ResidencyProfileStore(ctx.storage, FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES, FacetManager.RESIDENCY_PROFILE_MAX_PATHS);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
         this.portRegistry = portRegistry;
@@ -4276,22 +4259,26 @@ export class FacetManager {
         return modules;
     }
     /**
-     * The staged rolldown binding's three module-map members, by value, for a
-     * one-shot facet (it has no disk reader at load). Fetched from the
-     * worker's own assets — L2-cached, digest-verified — inside the scope that
-     * holds the map, and dropped with it.
+     * The module-map members of the staged napi bindings `names`, by value, for
+     * a one-shot facet (it has no disk reader at load): the shared loader and
+     * trampoline, and each binding. Fetched from the worker's own assets —
+     * L2-cached, digest-verified — inside the scope that holds the map, and
+     * dropped with it.
      */
-    async _rolldownModulesByValue() {
-        const [binding, trampoline, loader] = await Promise.all([
-            fetchRolldownAsset(this.env, ROLLDOWN_BINDING_ASSET),
-            fetchRolldownAsset(this.env, ROLLDOWN_TRAMPOLINE_ASSET),
-            fetchRolldownAsset(this.env, ROLLDOWN_LOADER_ASSET),
+    async _stagedBindingModulesByValue(names) {
+        if (names.length === 0)
+            return {};
+        const [loader, trampoline, ...bindings] = await Promise.all([
+            fetchStagedBindingAsset(this.env, NAPI_WASM_LOADER),
+            fetchStagedBindingAsset(this.env, NAPI_WASM_TRAMPOLINE),
+            ...names.map((name) => fetchStagedBindingAsset(this.env, stagedBinding(name).wasm)),
         ]);
-        return {
-            [ROLLDOWN_BINDING_MODULE]: { wasm: binding },
-            [ROLLDOWN_TRAMPOLINE_MODULE]: { wasm: trampoline },
-            [ROLLDOWN_LOADER_MODULE]: new TextDecoder().decode(loader),
+        const modules = {
+            [STAGED_BINDING_LOADER_MODULE]: new TextDecoder().decode(loader),
+            [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: trampoline },
         };
+        names.forEach((name, i) => { modules[stagedBinding(name).moduleName] = { wasm: bindings[i] }; });
+        return modules;
     }
     /**
      * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
@@ -4315,60 +4302,71 @@ export class FacetManager {
             return { vfsPath, digest };
         });
     }
-    /** In-flight write of the session's copy of the binding; one writer at a time. */
-    rolldownImageWrite = null;
+    /** In-flight writes of the session's copies of staged bindings, by name; one writer each. */
+    stagedBindingWrites = new Map();
     /**
-     * The staged rolldown binding for a resident facet: the loader's text (the
-     * caller stores it through the image store with the rest of the map), the
-     * trampoline by value, and the binding by PATH. A 13 MB member inline in
-     * the boot spec would sit in this isolate's heap for the process's life;
-     * named by path it is read only while the facet loads, like a runtime's
-     * interpreter image.
+     * The staged napi bindings `names` for a resident facet: the shared
+     * loader's text (the caller stores it through the image store with the rest
+     * of the map), the trampoline by value, and each binding by PATH. A
+     * multi-megabyte member inline in the boot spec would sit in this isolate's
+     * heap for the process's life; named by path it is read only while the
+     * facet loads, like a runtime's interpreter image.
      *
-     * The path is a kernel-owned copy in the session's VFS, written once per
+     * Each path is a kernel-owned copy in the session's VFS, written once per
      * session and version. Completeness is its size — the write only ever grows
      * the file from offset zero — and it goes down in the image store's slice
      * size with a turn between slices, for the same reason boot images do: the
      * platform resets an object over what one turn has outstanding.
      */
-    async _residentRolldownMembers(pacer) {
+    async _residentStagedBindingMembers(names, pacer) {
+        if (names.length === 0)
+            return null;
         const vfs = this.vfs;
         if (!vfs)
             throw new Error('Nimbus: a resident process needs a session filesystem to boot');
         const fs = vfs.as(CRED_KERNEL);
-        const path = ROLLDOWN_BINDING_VFS_PATH;
-        const complete = () => fs.exists(path) && fs.lstat(path).size === ROLLDOWN_BINDING_BYTES;
-        if (!complete()) {
-            this.rolldownImageWrite ??= (async () => {
-                try {
-                    const bytes = new Uint8Array(await fetchRolldownAsset(this.env, ROLLDOWN_BINDING_ASSET));
-                    fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
-                    let offset = 0;
-                    do {
-                        const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
-                        // The first slice replaces the file, truncating an interrupted
-                        // write's remains to a known length.
-                        if (offset === 0)
-                            fs.writeFile(path, slice, { mode: 0o644 });
-                        else
-                            fs.writeRange(path, offset, slice);
-                        offset += slice.byteLength;
-                        await pacer.spend(slice.byteLength);
-                    } while (offset < bytes.byteLength);
+        const bindingPaths = {};
+        for (const name of names) {
+            const binding = stagedBinding(name);
+            const path = binding.vfsPath;
+            const complete = () => fs.exists(path) && fs.lstat(path).size === binding.wasm.bytes;
+            if (!complete()) {
+                let write = this.stagedBindingWrites.get(name);
+                if (!write) {
+                    write = (async () => {
+                        try {
+                            const bytes = new Uint8Array(await fetchStagedBindingAsset(this.env, binding.wasm));
+                            fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+                            let offset = 0;
+                            do {
+                                const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
+                                // The first slice replaces the file, truncating an interrupted
+                                // write's remains to a known length.
+                                if (offset === 0)
+                                    fs.writeFile(path, slice, { mode: 0o644 });
+                                else
+                                    fs.writeRange(path, offset, slice);
+                                offset += slice.byteLength;
+                                await pacer.spend(slice.byteLength);
+                            } while (offset < bytes.byteLength);
+                        }
+                        finally {
+                            this.stagedBindingWrites.delete(name);
+                        }
+                    })();
+                    this.stagedBindingWrites.set(name, write);
                 }
-                finally {
-                    this.rolldownImageWrite = null;
-                }
-            })();
-            await this.rolldownImageWrite;
-            if (!complete())
-                throw new Error(`Nimbus: writing the staged rolldown binding to ${path} did not complete`);
+                await write;
+                if (!complete())
+                    throw new Error(`Nimbus: writing the staged ${name} binding to ${path} did not complete`);
+            }
+            bindingPaths[binding.moduleName] = path;
         }
         const [trampoline, loader] = await Promise.all([
-            fetchRolldownAsset(this.env, ROLLDOWN_TRAMPOLINE_ASSET),
-            fetchRolldownAsset(this.env, ROLLDOWN_LOADER_ASSET),
+            fetchStagedBindingAsset(this.env, NAPI_WASM_TRAMPOLINE),
+            fetchStagedBindingAsset(this.env, NAPI_WASM_LOADER),
         ]);
-        return { loader: new TextDecoder().decode(loader), trampoline, bindingPath: path };
+        return { loader: new TextDecoder().decode(loader), trampoline, bindingPaths };
     }
     /**
      * Which contents a resident process holds from its first instruction,
@@ -4453,7 +4451,7 @@ export class FacetManager {
      * in _buildProcessBundle, where a learned module brings its imports.
      */
     async _learnedReads(vfsState, _cred) {
-        return vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
+        return vfsState.bundleKey ? await this.residencyProfiles.paths(vfsState.bundleKey) : [];
     }
     /**
      * The installed packages a closure can load: every package the lockfiles
@@ -4609,7 +4607,7 @@ export class FacetManager {
             offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
             return offered.map((entry) => entry.path);
         };
-        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, this.residencyProfiles.get(key), pacer, undefined, learnedFor);
+        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, new Set(await this.residencyProfiles.paths(key)), pacer, undefined, learnedFor);
         if (offered.length > 0) {
             const staged = [];
             const unresolved = [];
@@ -4627,10 +4625,10 @@ export class FacetManager {
         }
         vfsState.bundleKey = key;
         vfsState.bundlePaths = Object.keys(vfsState.bundle);
-        // The only consumers of the raw cells past serialization are two
-        // booleans, so they are answered first; the serialization then consumes them.
+        // The only consumers of the raw cells past serialization are these two
+        // answers, so they come first; the serialization then consumes the cells.
         vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
-        vfsState.usesRolldownBinding = bundleUsesRolldownBinding(vfsState.bundle);
+        vfsState.stagedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
         // Wasm a package inlines as base64 in its own source (Vite's copy of
         // es-module-lexer) never passes through the filesystem, so the closure
         // walk's by-path records cannot name it; it is staged here instead.
@@ -4677,37 +4675,21 @@ export class FacetManager {
      * File what a process could not read against the bundle that failed it.
      *
      * A miss the supervisor never hears about is a miss the next run repeats,
-     * so this is the whole of the repair: record the path, then drop the cached
-     * bundle for that key so the next build is a real one and stages it. The
-     * program that hit the miss is already gone — nothing here rescues it, and
-     * nothing here needs to, because the facet failed loudly on the way out.
+     * so this is the whole of the repair: record the path (in the session's
+     * storage, so the next run learns it however long the user waits), then
+     * drop the cached bundle for that key so the next build is a real one and
+     * stages it. The record is queued ahead of any later read of the profile,
+     * so a relaunch that follows at once builds from it. The program that hit
+     * the miss is already gone — nothing here rescues it, and nothing here
+     * needs to, because the facet failed loudly on the way out.
      */
     _recordResidencyMisses(key, misses) {
         if (!key || !misses || misses.length === 0)
             return;
-        let profile = this.residencyProfiles.get(key);
-        if (profile)
-            this.residencyProfiles.delete(key);
-        else
-            profile = new Set();
-        this.residencyProfiles.set(key, profile);
-        let learned = 0;
-        for (const path of misses) {
-            if (profile.size >= FacetManager.RESIDENCY_PROFILE_MAX_PATHS)
-                break;
-            if (typeof path !== 'string' || path === '' || profile.has(path))
-                continue;
-            profile.add(path);
-            learned++;
-        }
-        for (const oldest of this.residencyProfiles.keys()) {
-            if (this.residencyProfiles.size <= FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES)
-                break;
-            this.residencyProfiles.delete(oldest);
-        }
-        if (learned === 0)
-            return;
         this._dropPrefetchCacheEntry(key);
+        // A failed storage write leaves the profile learned in this isolate; only
+        // its survival past an eviction is lost, and the next run reports again.
+        this.residencyProfiles.record(key, misses).catch(() => undefined);
     }
     _dropPrefetchCacheEntry(key) {
         const cached = this.prefetchBundleCache.get(key);
@@ -5120,9 +5102,9 @@ export class FacetManager {
                     // the map, and compiled by the loader like the sqlite sidecar.
                     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
                     const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
-                    // The staged rolldown binding rides by value too, from the
-                    // worker's own assets, for the same reason.
-                    const rolldownModules = vfsState.usesRolldownBinding ? await this._rolldownModulesByValue() : {};
+                    // The staged napi bindings ride by value too, from the worker's
+                    // own assets, for the same reason.
+                    const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
                     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user');
                     const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
                     const codeModules = {};
@@ -5157,7 +5139,7 @@ export class FacetManager {
                         compatibilityDate: CF_COMPAT_DATE,
                         compatibilityFlags: [...GUEST_COMPAT_FLAGS],
                         mainModule: 'runner.js',
-                        modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...codeModules, ...sqliteModules, ...wasmModules, ...rolldownModules },
+                        modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...codeModules, ...sqliteModules, ...wasmModules, ...stagedModules },
                     };
                 },
                 request: new Request('http://nimbus-runtime.local/run', {
@@ -6057,11 +6039,11 @@ export class FacetManager {
             // names a path, not thousands, and the loader slices them out at load.
             const codePack = encodeCommonJsPack(generatedWorker.codeModules);
             generatedWorker = undefined;
-            // The staged rolldown binding: its loader is module text like the rest
-            // of the map, its trampoline a 2 KB asset, its 13 MB image a path.
-            const rolldown = vfsState.usesRolldownBinding ? await this._residentRolldownMembers(pacer) : null;
-            if (rolldown)
-                sources[ROLLDOWN_LOADER_MODULE] = rolldown.loader;
+            // The staged napi bindings: the shared loader is module text like the
+            // rest of the map, the trampoline a 2 KB asset, each binding a path.
+            const staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], pacer);
+            if (staged)
+                sources[STAGED_BINDING_LOADER_MODULE] = staged.loader;
             const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(entry.pid, (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)]; })(), pacer);
             if (this.debugEnabled)
                 this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: images stored, starting the facet\n');
@@ -6093,14 +6075,14 @@ export class FacetManager {
                         compatibilityFlags: [...GUEST_COMPAT_FLAGS],
                         mainModule: 'worker.js',
                         // Only fixed-size assets of the worker's own ride by value: the
-                        // sqlite sidecar and the rolldown trampoline.
-                        modules: rolldown ? { ...sqliteModules, [ROLLDOWN_TRAMPOLINE_MODULE]: { wasm: rolldown.trampoline } } : sqliteModules,
+                        // sqlite sidecar and the staged bindings' trampoline.
+                        modules: staged ? { ...sqliteModules, [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: staged.trampoline } } : sqliteModules,
                         vfsTextModules,
                         // Wasm images are read by path when the facet loads: the closure's
-                        // own, and the staged rolldown binding's kernel-owned copy.
+                        // own, and the staged bindings' kernel-owned copies.
                         vfsWasmModules: {
                             ...Object.fromEntries(wasmImports.map((image) => [image.moduleName, image.vfsPath])),
-                            ...(rolldown ? { [ROLLDOWN_BINDING_MODULE]: rolldown.bindingPath } : {}),
+                            ...staged?.bindingPaths,
                         },
                         vfsCommonJsPacks: [codePackPath],
                     },
