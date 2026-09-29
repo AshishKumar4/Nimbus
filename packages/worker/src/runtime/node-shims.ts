@@ -7512,8 +7512,18 @@ const __processMod = {
   uptime: () => 0,
   kill: (pid, signal) => {
     const n = Number(pid);
-    if (n === __processMod.pid || n === 0) return __nimbusSignalSelf(signal || "SIGTERM");
-    return false;
+    if (n === __processMod.pid || n === 0) {
+      if (signal === 0) return true; // existence probe, never deliver SIGTERM
+      return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
+    }
+    // Node's process.kill throws on failure; returning false falsely told
+    // Vinext/Astro lockfile probes that every stale pid was still alive.
+    // There is no synchronous cross-isolate process table or signal syscall.
+    // Do not invent ESRCH for a pid we cannot inspect: report ENOSYS honestly.
+    const error = new Error("kill: synchronous cross-isolate process signalling is unavailable; use the owning child-process handle");
+    error.code = "ENOSYS";
+    error.syscall = "kill";
+    throw error;
   },
   getuid: () => Number(cred.uid),
   geteuid: () => Number(cred.uid),
