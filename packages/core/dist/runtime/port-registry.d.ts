@@ -85,6 +85,14 @@ export declare class PortRegistry {
      * resolve to the same handler.
      */
     register(port: number, pid: number): void;
+    /**
+     * Reserve an ephemeral port in the session, not in a guest isolate.
+     * IANA's dynamic/private range is 49152–65535:
+     * https://www.iana.org/assignments/service-names-port-numbers/
+     * Reservation and selection are synchronous, so concurrent listen(0)
+     * calls cannot receive the same number. Normal pid cleanup releases it.
+     */
+    allocate(pid: number): number;
     /** Unregister a port. */
     unregister(port: number): boolean;
     /** Unregister all ports owned by a specific PID. */

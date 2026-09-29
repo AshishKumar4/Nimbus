@@ -8708,294 +8708,164 @@ builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
-builtins.http = (() => {
-  if (!globalThis.__portRegistry) globalThis.__portRegistry = new Map();
-  // Capture the host Response/encoder at shim-init (before any user code can
-  // shadow globalThis.Response) — the dispatch layer wraps the response stream
-  // in a host Response and streams it across the RPC boundary.
-  const __httpEnc = new TextEncoder();
-  const __hostResponse = globalThis.Response;
-  // Streaming ServerResponse: writes flow into a ReadableStream that the
-  // dispatch layer (__nimbusServeHttp) returns the moment response headers are
-  // known — nothing is buffered to "finish". A live SSE / chunked body that
-  // never ends streams indefinitely; a slow-but-finite response streams as it
-  // is produced. res.write() enqueues bytes (binary-safe), res.end() closes the
-  // stream, and a downstream cancel (client disconnect) releases the handler.
-  class ServerResponse extends __eventsMod {
-    constructor() {
-      super();
-      this.statusCode = 200;
-      this.statusMessage = undefined;
-      this.headers = {};
-      this._headersSent = false;
-      this._ended = false;
-      this._destroyed = false;
-      this._closed = false;
-      this._controller = null;
-      this._needDrain = false;
-      const self = this;
-      // Bounded backpressure: up to 16 queued chunks before write() reports
-      // backpressure (returns false) and a 'drain' fires on the next pull.
-      this._stream = new ReadableStream({
-        start(c) { self._controller = c; },
-        pull() { if (self._needDrain) { self._needDrain = false; self.emit("drain"); } },
-        cancel() {
-          // Downstream (client / attach facet) went away — release the handler
-          // so a dead SSE does not keep the producer writing into a void.
-          self._destroyed = true;
-          self._ended = true;
-          self.emit("aborted");
-          self._emitClose();
-        },
-      }, new CountQueuingStrategy({ highWaterMark: 16 }));
-      // Resolves as soon as headers are flushed (writeHead / first write / end).
-      this._headersReady = new Promise((resolve) => { self._resolveHeaders = resolve; });
-    }
-    _emitClose() { if (!this._closed) { this._closed = true; this.emit("close"); } }
-    _flushHeaders() { if (this._headersSent) return; this._headersSent = true; this._resolveHeaders(); }
-    _toBytes(chunk) {
-      if (typeof chunk === "string") return __httpEnc.encode(chunk);
-      if (chunk instanceof Uint8Array) return chunk;
-      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-      if (chunk && chunk.buffer instanceof ArrayBuffer && typeof chunk.byteLength === "number") {
-        return new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
+
+const __nativeHttpResponse = globalThis.Response;
+const __nativeHttpRequest = globalThis.Request;
+Object.defineProperty(builtins, "http", {
+  configurable: true, enumerable: true,
+  get() {
+    const http = typeof __real_http !== "undefined"
+      ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
+    const net = typeof __real_net !== "undefined"
+      ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
+    const ports = globalThis.__portRegistry ??= new Map();
+    const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
+    globalThis.__nimbusHttpContext = context;
+    const patchKey = Symbol.for("nimbus.native-http.patch");
+    const ownerKey = Symbol.for("nimbus.native-http.owner");
+    if (!http.Server.prototype[patchKey]) {
+      const proto = http.Server.prototype;
+      // workerd v1.20260926.1 _storeHeader calls headers.hasOwnProperty:
+      // https://github.com/cloudflare/workerd/blob/v1.20260926.1/src/node/internal/internal_http_outgoing.ts
+      // Node also accepts null-prototype dictionaries (effect-platform uses
+      // them). Use the native progressive header API, without copying or
+      // mutating the caller map.
+      const responseProto = http.ServerResponse.prototype;
+      const responsePatch = Symbol.for("nimbus.native-http.response-headers");
+      if (!responseProto[responsePatch]) {
+        const writeHead = responseProto.writeHead;
+        Object.defineProperty(responseProto, responsePatch, { value: true });
+        responseProto.writeHead = function (status, reason, headers) {
+          const fields = typeof reason === "object" && reason !== null ? reason : headers;
+          if (fields && !Array.isArray(fields) && (Object.getPrototypeOf(fields) !== Object.prototype || Object.hasOwn(fields, "hasOwnProperty"))) {
+            for (const name in fields) if (Object.hasOwn(fields, name)) this.setHeader(name, fields[name]);
+            return Reflect.apply(writeHead, this, typeof reason === "string" ? [status, reason] : [status]);
+          }
+          return Reflect.apply(writeHead, this, arguments);
+        };
       }
-      return __httpEnc.encode(String(chunk));
-    }
-    writeHead(code, reasonOrHeaders, maybeHeaders) {
-      this.statusCode = code;
-      let hdrs = maybeHeaders;
-      if (reasonOrHeaders && typeof reasonOrHeaders === "object") hdrs = reasonOrHeaders;
-      else if (typeof reasonOrHeaders === "string") this.statusMessage = reasonOrHeaders;
-      if (hdrs) {
-        if (Array.isArray(hdrs)) { for (let i = 0; i + 1 < hdrs.length; i += 2) this.headers[String(hdrs[i]).toLowerCase()] = hdrs[i + 1]; }
-        else for (const k of Object.keys(hdrs)) this.headers[k.toLowerCase()] = hdrs[k];
-      }
-      this._flushHeaders();
-      return this;
-    }
-    flushHeaders() { this._flushHeaders(); return this; }
-    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; return this; }
-    getHeader(k) { return this.headers[String(k).toLowerCase()]; }
-    getHeaders() { return { ...this.headers }; }
-    hasHeader(k) { return Object.prototype.hasOwnProperty.call(this.headers, String(k).toLowerCase()); }
-    removeHeader(k) { delete this.headers[String(k).toLowerCase()]; }
-    write(chunk, enc, cb) {
-      if (typeof enc === "function") { cb = enc; }
-      this._flushHeaders();
-      if (this._ended || this._destroyed) { if (cb) queueMicrotask(cb); return false; }
-      if (chunk != null && !(typeof chunk === "string" && chunk.length === 0)) {
-        try { this._controller.enqueue(this._toBytes(chunk)); }
-        catch { this._destroyed = true; if (cb) queueMicrotask(cb); return false; }
-      }
-      if (cb) queueMicrotask(cb);
-      const ds = this._controller ? this._controller.desiredSize : null;
-      const ok = ds === null || ds > 0;
-      if (!ok) this._needDrain = true;
-      return ok;
-    }
-    end(data, enc, cb) {
-      if (typeof data === "function") { cb = data; data = undefined; }
-      else if (typeof enc === "function") { cb = enc; }
-      if (data != null) this.write(data);
-      this._flushHeaders();
-      if (!this._ended) {
-        this._ended = true;
-        if (!this._destroyed) { try { this._controller.close(); } catch {} }
-        this.emit("finish");
-        this._emitClose();
-      }
-      if (cb) queueMicrotask(cb);
-      return this;
-    }
-    destroy(err) {
-      if (this._destroyed) return this;
-      this._destroyed = true;
-      if (!this._ended) { this._ended = true; try { this._controller.error(err || new Error("aborted")); } catch {} }
-      if (err) this.emit("error", err);
-      this._emitClose();
-      return this;
-    }
-    get headersSent() { return this._headersSent; }
-    get writableEnded() { return this._ended; }
-    get writableFinished() { return this._ended; }
-    get destroyed() { return this._destroyed; }
-  }
-  // Node's IncomingMessage is a Readable whose chunks are Buffers, and every
-  // idiom for reading a request body depends on both halves of that: the
-  // canonical `req.on('data', c => chunks.push(c))` + `Buffer.concat(chunks)`
-  // brand-checks each chunk as a TypedArray, `for await (const c of req)` and
-  // `req.pipe()` need the stream contract, and a Readable is what holds the
-  // bytes until a consumer actually attaches instead of emitting them into
-  // the void. The body arrives here as bytes and is pushed on demand.
-  class IncomingMessage extends __streamMod.Readable {
-    constructor(u, m, h, body) {
-      super();
-      this.url = u || "/";
-      this.method = m || "GET";
-      this.headers = h || {};
-      this.httpVersion = "1.1";
-      this._body = body && body.byteLength > 0 ? body : null;
-    }
-    _read() {
-      const body = this._body;
-      this._body = null;
-      if (body) this.push(__BufferMod.from(body));
-      this.push(null);
-    }
-  }
-  class Server extends __eventsMod {
-    constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
-    // effect-platform (opencode serve) binds via listen() FIRST and attaches
-    // its "request" handler only after the HTTP-app layer is built. A request
-    // emitted into zero listeners is silently lost — the ServerResponse never
-    // gets headers and the dispatcher's header timeout fires. Park requests
-    // that arrive in that window and flush them when the handler attaches.
-    on(n, fn) {
-      super.on(n, fn);
-      if (n === "request") this._flushParkedRequests();
-      return this;
-    }
-    prependListener(n, fn) {
-      super.prependListener(n, fn);
-      if (n === "request") this._flushParkedRequests();
-      return this;
-    }
-    _flushParkedRequests() {
-      if (!this._parkedRequests || this._parkedRequests.length === 0) return;
-      const parked = this._parkedRequests.splice(0);
-      for (const dispatch of parked) queueMicrotask(dispatch);
-    }
-    // Node's listen has several overloads; the two we honour are
-    // listen(options[, cb]) — options = { port, host, path, backlog, ... } —
-    // and listen([port[, host[, backlog]]][, cb]). opencode's server adaptor
-    // binds via the OPTIONS-OBJECT form (server.listen({ host, port }, cb)), so
-    // we read port/host off the object; a bare positional port is the classic
-    // form. The port is normalized to a number (number|string) so the ACTUAL
-    // listened port is what lands in the registry + SUPERVISOR.registerPort.
-    listen(...args) {
-      let portArg, host, cb;
-      const first = args[0];
-      if (first !== null && typeof first === "object") {
-        portArg = first.port;
-        host = first.host;
-        if (typeof args[1] === "function") cb = args[1];
-      } else {
-        portArg = first;
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i];
-          if (typeof a === "function") { cb = a; break; }
-          if (typeof a === "string") host = a;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref;
+      Object.defineProperty(proto, patchKey, { value: true });
+      proto.listen = function (...args) {
+        const ctx = globalThis.__nimbusHttpContext;
+        const [options, callback] = net._normalizeArgs(args);
+        if (this.listening || this[ownerKey]?.pending) {
+          const err = new Error("Listen method has been called more than once without closing.");
+          err.code = "ERR_SERVER_ALREADY_LISTEN";
+          throw err;
         }
-      }
-      const numPort = typeof portArg === "string" ? parseInt(portArg, 10) : portArg;
-      this._port = Number.isFinite(numPort) ? numPort : 0;
-      this._host = host;
-      this._listening = true;
-      globalThis.__portRegistry.set(this._port, this);
-      try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {}
-      if (cb) queueMicrotask(cb);
-      this.emit("listening");
-      return this;
-    }
-    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
-    get listening() { return this._listening; }
-    // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
-    // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
-    // immediately after createServer(). Pre-X5M the Server class lacked
-    // this method → "TypeError: server.setTimeout is not a function".
-    // Mirror the net.Socket.setTimeout pattern at the bottom of this file
-    // (same builtins/net IIFE): no-op + chainable. Idle timeouts have no
-    // facet-side meaning (we don't own outbound TCP), but we honour the
-    // 1-arg callback form so listeners that emit on 'timeout' still run.
-    setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
-    setKeepAlive() { return this; }
-    address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
-    _handleRequest(u, m, h, b) {
-      const req = new IncomingMessage(u, m, h, b);
-      const res = new ServerResponse();
-      // Node drains a request body the handler never reads, which is what lets
-      // an 'end'-only listener fire. Nudge the stream once the handler has had
-      // its turn, so a handler that DID attach a consumer owns the bytes and
-      // one that did not still sees the request complete.
-      const dispatch = () => {
-        this.emit("request", req, res);
-        if (req.readableFlowing !== true) req.resume();
+        const state = { ctx, pending: false, cancelled: false, port: null };
+        this[ownerKey] = state;
+        const requested = options.port === undefined ? 0 : Number(options.port);
+        const start = (port) => {
+          state.pending = false;
+          if (state.cancelled) {
+            if (state.port !== null) ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+            return;
+          }
+          try {
+            // Native listen validates the arguments and binds the native port.
+            // An EADDRINUSE from workerd is synchronous; Node emits it instead.
+            Reflect.apply(listen, this, [{ ...options, port }, ...(callback ? [callback] : [])]);
+            state.port = Number(this.address()?.port ?? port);
+            ctx.ports.set(state.port, this);
+            ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
+          } catch (e) {
+            if (requested === 0 && state.port !== null) ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+            if (e && e.code === "EADDRINUSE") { queueMicrotask(() => this.emit("error", e)); return; }
+            throw e;
+          }
+        };
+        if (requested === 0) {
+          state.pending = true;
+          const task = Promise.resolve(ctx.supervisor.allocatePort()).then(port => {
+            state.port = port;
+            start(port);
+          }, error => { state.pending = false; this.emit("error", error); });
+          ctx.pending.push(task);
+        } else start(options.port);
+        return this;
       };
-      if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
-      else dispatch();
-      return res;
+      proto.close = function (callback) {
+        const state = this[ownerKey];
+        if (state) {
+          state.cancelled = true;
+          if (state.pending) {
+            if (callback) queueMicrotask(() => callback());
+            return this;
+          }
+          if (state.port !== null && state.ctx.ports.get(state.port) === this) {
+            state.ctx.ports.delete(state.port);
+            state.ctx.pending.push(Promise.resolve(state.ctx.supervisor.unregisterPort(state.port)));
+          }
+        }
+        return Reflect.apply(close, this, callback ? [callback] : []);
+      };
+      proto.ref = function () { this.__nimbusUnrefed = false; return Reflect.apply(ref, this, []); };
+      proto.unref = function () { this.__nimbusUnrefed = true; return Reflect.apply(unref, this, []); };
     }
-  }
-  function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
-  // Shared streaming HTTP dispatch for every facet server (generic node
-  // long-running, opencode serve, …). A request forwarded by the port registry
-  // (loopback OR external /port/<n>, stamped X-Nimbus-Port) is replayed through
-  // the in-facet server's _handleRequest, and the response is returned as a
-  // streaming host Response the moment its headers are known — never buffered.
-  // This is what lets an SSE / chunked body flow live across the RPC boundary
-  // (the registry + loopback both return this Response as-is). The single
-  // source of truth for facet HTTP dispatch: manager.ts (__nimbusDispatchHttp)
-  // and the opencode runner (__ocDispatchHttp) both delegate here.
-  globalThis.__nimbusServeHttp = async function __nimbusServeHttp(request) {
-    const ports = globalThis.__portRegistry;
-    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
-    const server = ports && (ports.get(hinted) || ports.values().next().value);
-    if (!server || typeof server._handleRequest !== "function") {
-      return new __hostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
-    }
-    const url = new URL(request.url);
-    // The request carries the answer to its own barrier (below). It is
-    // Nimbus's, not the program's, so the program does not see it.
-    let delivered;
-    try { delivered = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
-    const headers = {};
-    request.headers.forEach((v, k) => { if (k !== "x-nimbus-vfs-acquired") headers[k] = v; });
-    // Bytes, not text: a UTF-8 decode corrupts every binary upload, and the
-    // decoded string is not the TypedArray receiver Buffer methods require.
-    let body = null;
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      body = new Uint8Array(await request.arrayBuffer());
-    }
-    // A request is a resumption like any other, and often the second half of
-    // a causal chain — `echo v2 > f; curl :3000` — so the handler runs behind
-    // the barrier, after the body has arrived. Sited here, in the dispatch
-    // every resident's server shares, not in a caller that happens to yield
-    // through a barriered timer on the way. The supervisor routed it, so it
-    // arrives with an answer, which is enough when no write preceded the
-    // request since this process last caught up (session/rpc.ts
-    // _acquireForRoutedRequest); otherwise the barrier asks.
-    await __nimbusInboundBarrier(delivered);
-    const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
-    // Return once headers are known. A handler that never sends headers is
-    // bounded by a header timeout (NOT a body-finish cap) so a hung handler
-    // can't wedge the request, while a live stream that never "finishes" flows.
-    // The timeout defaults to 30s; tests pin it low via __nimbusHttpHeaderTimeoutMs.
-    if (!res._headersSent) {
-      const headerTimeoutMs = Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000;
+    globalThis.__nimbusServeHttp = async (request) => {
+      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
+      const server = port ? ports.get(port) : ports.values().next().value;
+      if (!server) return new __nativeHttpResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
+      let acquired;
+      try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
+      await __nimbusInboundBarrier(acquired);
+      const headers = new Headers(request.headers);
+      headers.delete("X-Nimbus-Vfs-Acquired");
+      const controller = new AbortController();
+      const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
+      let detach = () => {};
       let timer;
-      const timedOut = await Promise.race([
-        res._headersReady.then(() => false),
-        new Promise((resolve) => { timer = setTimeout(() => resolve(true), headerTimeoutMs); }),
-      ]);
-      clearTimeout(timer);
-      if (timedOut && !res._headersSent) {
-        try { res.destroy(); } catch {}
-        return new __hostResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 });
-      }
-    }
-    return new __hostResponse(res._stream, { status: res.statusCode || 200, headers: res.headers || {} });
-  };
-  return { createServer, Server, IncomingMessage, ServerResponse, Agent: class {}, STATUS_CODES: {}, METHODS: ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"], request: () => { throw new Error("Use fetch()"); }, get: () => { throw new Error("Use fetch()"); } };
-})();
-builtins.https = (() => {
-  const hm = builtins.http;
-  return {
-    createServer: hm.createServer, Server: hm.Server, Agent: class {}, globalAgent: {},
-    request: (url, opts, cb) => { if (typeof url === "string") url = new URL(url); if (typeof opts === "function") { cb = opts; opts = {}; } const req = new __eventsMod(); req.end = (body) => { fetch(url.href || url, { method: opts?.method || "GET", headers: opts?.headers, body }).then(async (resp) => { const res = new __eventsMod(); res.statusCode = resp.status; res.headers = Object.fromEntries(resp.headers); if (cb) cb(res); const text = await resp.text(); res.emit("data", text); res.emit("end"); }).catch((e) => req.emit("error", e)); }; req.write = () => req; req.on = (...a) => { __eventsMod.prototype.on.apply(req, a); return req; }; return req; },
-    get: (url, opts, cb) => { const req = builtins.https.request(url, opts, cb); req.end(); return req; },
-  };
-})();
+      let nativeResponse;
+      const captureResponse = (_request, response) => { nativeResponse = response; };
+      const dispatch = async () => {
+        // effect-platform binds first and attaches its request handler later.
+        // Do not let the native server silently drop that first request.
+        if (server.listenerCount("request") === 0) {
+          const ready = Promise.withResolvers();
+          const added = (event) => { if (event === "request") queueMicrotask(ready.resolve); };
+          const closed = () => ready.resolve();
+          detach = () => { server.removeListener("newListener", added); server.removeListener("close", closed); };
+          server.on("newListener", added);
+          server.once("close", closed);
+          await ready.promise;
+          detach();
+        }
+        if (!server.listening) return new __nativeHttpResponse("Nimbus: HTTP server closed", { status: 502 });
+        // workerd emits request synchronously inside handleAsNodeRequest
+        // (internal_http_server.ts #onRequest), before its response promise.
+        server.prependOnceListener("request", captureResponse);
+        return __nimbusHandleAsNodeRequest(Number(server.address().port), inbound);
+      };
+      const deadline = Promise.withResolvers();
+      timer = setTimeout(() => {
+        deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
+        detach();
+        nativeResponse?.destroy();
+        controller.abort();
+      }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
+      try {
+        return await Promise.race([dispatch(), deadline.promise]);
+      } finally { clearTimeout(timer); detach(); server.removeListener("request", captureResponse); }
+    };
+    Object.defineProperty(builtins, "http", { value: http, writable: true, enumerable: true, configurable: true });
+    return http;
+  },
+});
+Object.defineProperty(builtins, "https", {
+  configurable: true, enumerable: true,
+  get() {
+    // Install the shared HTTP Server prototype bridge before native HTTPS is
+    // used; workerd's HTTPS server is the HTTP server (TLS ends at ingress).
+    void builtins.http;
+    const https = typeof __real_https !== "undefined"
+      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    Object.defineProperty(builtins, "https", { value: https, writable: true, enumerable: true, configurable: true });
+    return https;
+  },
+});
+
 // W3 — net.Socket honest-error mode.
 //
 // Pre-W3 behaviour: `new net.Socket().connect(443, 'example.com')`
@@ -9055,7 +8925,7 @@ builtins.net = (() => {
   }
   return {
     Socket,
-    Server: builtins.http.Server,
+    get Server() { return builtins.http.Server; },
     createServer: (o, h) => { if (typeof o === "function") { h = o; } return builtins.http.createServer(h); },
     createConnection: (p, h, cb) => new Socket().connect(p, h, cb),
     connect: (p, h, cb) => new Socket().connect(p, h, cb),
