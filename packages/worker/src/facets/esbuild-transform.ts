@@ -29,40 +29,39 @@ import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
- * build id keys. `wasmModule`, `newEsbuild` and `esbuild` are bound by the
- * lines before it, and the runner installs `globalThis.__esbuildCliRun` and
- * the dynamic-import rewrite transforms run after esbuild,
+ * build id keys. `wasmModule` and `newEsbuild` are bound by the lines before
+ * it, and the runner installs `globalThis.__esbuildCliRun` and the
+ * dynamic-import rewrite transforms run after esbuild,
  * `globalThis.__nimbusRewriteDynamicImports`.
  *
- * Transforms share one esbuild, whose heap only grows. A build or an
- * `esbuild` command gets its own Go instance, dropped when it ends, so what
- * it grew goes with it.
+ * Every call gets its own esbuild — its own Go instance, stopped when the call
+ * ends — so what one call grew goes with it. esbuild's linear memory only
+ * grows: shared across a launch's transforms, it climbed with each one, and
+ * the facet's isolate was reset over its memory limit mid-launch (Vite's
+ * dev-server closure). A transform call is one slice of a launch
+ * (TRANSFORM_BATCH_SOURCE_BYTES), so a fresh instance costs one
+ * instantiation of the precompiled module per slice.
  */
 const ESBUILD_FACET_BODY = [
   ESBUILD_NAME_GLOBAL_SHIM,
   generateEsbuildFacetRuntimeSource(),
-  'let initialized;',
-  // One initialization per facet, shared by every transform. A failed one is
-  // forgotten, as esbuild forgets it, so the next call retries.
-  'function ensureInitialized() {',
-  '  initialized ||= esbuild.initialize({ wasmModule, worker: false }).catch((e) => {',
-  '    initialized = undefined;',
-  '    throw e;',
-  '  });',
-  '  return initialized;',
-  '}',
   'export class EsbuildFacet extends DurableObject {',
   '  async transformMany(requests) {',
-  '    if (requests.some(({ options }) => !options?.rewriteOnly)) await ensureInitialized();',
-  '    const outcomes = [];',
-  '    for (const { code, options } of requests) {',
-  '      try {',
-  '        outcomes.push(await runTransformRequest(esbuild, code, options, globalThis.__nimbusRewriteDynamicImports));',
-  '      } catch (e) {',
-  '        outcomes.push({ error: String((e && e.message) || e) });',
+  '    const own = requests.some(({ options }) => !options?.rewriteOnly) ? newEsbuild() : null;',
+  '    if (own) await own.initialize({ wasmModule, worker: false });',
+  '    try {',
+  '      const outcomes = [];',
+  '      for (const { code, options } of requests) {',
+  '        try {',
+  '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports));',
+  '        } catch (e) {',
+  '          outcomes.push({ error: String((e && e.message) || e) });',
+  '        }',
   '      }',
+  '      return outcomes;',
+  '    } finally {',
+  '      if (own) await own.stop();',
   '    }',
-  '    return outcomes;',
   '  }',
   '  async build(options, plugin) {',
   '    const own = newEsbuild();',
@@ -82,8 +81,20 @@ const ESBUILD_FACET_BODY = [
 // The loader serves the code it cached under an id, so the id carries the code.
 export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
 
-/** Source bytes per facet call: bounds what the caller's isolate holds for one round trip. */
-const TRANSFORM_BATCH_SOURCE_BYTES = 4 * 1024 * 1024;
+/**
+ * Source bytes per facet call. It bounds what the caller's isolate holds for
+ * one round trip, and — each call being its own esbuild — the facet's memory
+ * for one call: a 4 MiB slice of Vite's closure took the facet past its
+ * memory limit.
+ */
+const TRANSFORM_BATCH_SOURCE_BYTES = 1024 * 1024;
+/**
+ * Files per facet call. Bytes alone put a package of thousands of tiny
+ * modules in one call — 1,184 of lucide-react's icons in one 1 MiB slice,
+ * 13.5 s of transform in a local replay — and a call's CPU is what a
+ * Durable Object invocation is limited by.
+ */
+const TRANSFORM_BATCH_FILES = 256;
 
 type EsbuildFacetRpc = DurableObject & {
   transformMany(requests: EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
@@ -103,7 +114,6 @@ export function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string,
     'import { DurableObject } from "cloudflare:workers";',
     'import wasmModule from "esbuild.wasm";',
     `const newEsbuild = new Function(${JSON.stringify(jsFnBody)});`,
-    'const esbuild = newEsbuild();',
     cliRunner,
     ESBUILD_FACET_BODY,
   ].join('\n');
@@ -213,7 +223,10 @@ export function esbuildTransformHost(ctx: DurableObjectState, env: unknown): Esb
       for (let start = 0; start < requests.length;) {
         let end = start;
         let bytes = 0;
-        while (end < requests.length && (end === start || bytes + requests[end].code.length <= TRANSFORM_BATCH_SOURCE_BYTES)) {
+        while (
+          end < requests.length
+          && (end === start || (bytes + requests[end].code.length <= TRANSFORM_BATCH_SOURCE_BYTES && end - start < TRANSFORM_BATCH_FILES))
+        ) {
           bytes += requests[end].code.length;
           end++;
         }
