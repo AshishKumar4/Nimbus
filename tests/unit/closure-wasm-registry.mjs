@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   buildPrefetchBundle,
   collectClosureWasmImages,
+  findInlineWasmImages,
   facetWasmImports,
   generateEntrypointCode,
   generateLongRunningNodeCode,
@@ -130,6 +131,31 @@ console.log('  both generated entries import the map entries and register them b
   assert.match(refused.message, /WebAssembly cannot be compiled from bytes here/);
   assert.match(refused.message, /Images this launch does carry: 1/);
   console.log('  the seam answers the closure\'s bytes by digest and refuses unknown bytes naming what it carries');
+}
+
+// ── inlined images: base64 and numeric array literals ───────────────────
+// A module that carries its wasm in its own source never reads it from disk,
+// so the closure walk cannot name it; the scan finds it by content. Both
+// shapes are real: es-module-lexer (Vite 8) inlines base64, xxhash-wasm
+// (Astro) a `new Uint8Array([0,97,115,109,…])`.
+{
+  const image = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 4, 1, 2, 0, 11]);
+  assert.ok(WebAssembly.validate(image), 'fixture is a valid module');
+  const padded = new Uint8Array(64);
+  padded.set(image);
+  const found = findInlineWasmImages({
+    'home/user/app/node_modules/xxhash-wasm/cjs/xxhash-wasm.cjs': `"use strict";const t=new Uint8Array([${[...image].join(',')}]);WebAssembly.instantiate(t,{});`,
+    'home/user/app/node_modules/spaced/index.js': `const w = new Uint8Array([ ${[...image].join(', ')} ]);`,
+    'home/user/app/node_modules/lexer/index.js': `const C=()=>Uint8Array.from(atob("${btoa(String.fromCharCode(...padded))}"),c=>c.charCodeAt(0));`,
+    'home/user/app/node_modules/not-wasm/index.js': 'const version = [0, 97, 115, 109, 2, 0, 0, 0, 5];',
+    'home/user/app/node_modules/out-of-range/index.js': 'const x = [0,97,115,109,1,0,0,0,300];',
+    'home/user/app/data.json': `[${[...image].join(',')}]`,
+  });
+  const digests = new Set(found.map((bytes) => wasmImageDigest(bytes)));
+  assert.equal(found.length, 2, `the array image (once, however spaced) and the base64 image; nothing else (found ${found.length})`);
+  assert.ok(digests.has(wasmImageDigest(image)), 'the numeric array literal is found with the exact bytes');
+  assert.ok(digests.has(wasmImageDigest(padded)), 'the base64 literal is found');
+  console.log('  inlined wasm is found by content in both shapes; version-2, out-of-range and non-JS cells are not');
 }
 
 console.log('closure-wasm-registry OK');
