@@ -4662,7 +4662,16 @@ export class FacetManager {
             offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
             return offered.map((entry) => entry.path);
         };
-        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, new Set(await this.residencyProfiles.paths(key)), pacer, undefined, learnedFor);
+        const learnedPaths = new Set(await this.residencyProfiles.paths(key));
+        // A file can already be readable data yet absent from the executable
+        // module map. Its miss then lands in runtimeCode, not residencyProfiles.
+        // Treat those known module files as graph roots too; staging only their
+        // own factory made Nuxt/Vinext discover one static dependency per launch.
+        for (const code of (await this.runtimeCode.forLaunch(key)).values()) {
+            if (code.kind === 'module' && !code.path.startsWith('data:'))
+                learnedPaths.add(code.path.replace(/^\/+/, ''));
+        }
+        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile, learnedPaths, pacer, undefined, learnedFor);
         if (offered.length > 0) {
             const staged = [];
             const unresolved = [];
