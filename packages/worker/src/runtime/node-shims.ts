@@ -5495,6 +5495,8 @@ const __osMod = {
     return { uid, gid, username: root ? "root" : "user", homedir: root ? "/root" : "/home/user", shell: "/bin/sh" };
   },
   cpus: () => [{ model: "DO vCPU", speed: 3000, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
+  // One JavaScript thread per Worker isolate, irrespective of the host CPU.
+  availableParallelism: () => 1,
   totalmem: () => 128 * 1024 * 1024, freemem: () => 64 * 1024 * 1024,
   loadavg: () => [0, 0, 0], uptime: () => 3600,
   networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true }] }),
