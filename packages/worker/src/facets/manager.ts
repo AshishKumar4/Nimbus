@@ -390,9 +390,18 @@ function __nimbusHandleCount(__name) {
   return typeof __value === "number" ? __value : 0;
 }
 
-// Work an entrypoint's STARTUP has to settle before it can be called booted.
+// Binding a native listen(0) first awaits session-wide allocation. Until it
+// binds, it is a referenced handle just like the eventual server; unref and
+// close still remove its contribution. It is also startup work to settle.
+function __nimbusPendingHttpListens() {
+  let count = 0;
+  const listeners = globalThis.__nimbusPendingHttpListeners;
+  if (listeners) for (const server of listeners) if (!server.__nimbusUnrefed) count++;
+  return count;
+}
+
 function __nimbusPendingStartupWork() {
-  return __nimbusHandleCount("__nimbusPendingTimers") + __nimbusHandleCount("__nimbusPendingOps");
+  return __nimbusHandleCount("__nimbusPendingTimers") + __nimbusHandleCount("__nimbusPendingOps") + __nimbusPendingHttpListens();
 }
 
 // The above, plus the handles a program holds open on purpose. A bound port
