@@ -145,7 +145,9 @@ export declare class ProcessView implements VFS {
     stat(path: string, options?: {
         follow?: boolean;
     }): Promise<ProcessStat | null>;
-    /** Whether anything is at `path` (links followed): access(F_OK). */
+    /** Probes need only the bridge's type, not another converted stat object. */
+    private probe;
+    /** Whether anything is at `path` (links followed). */
     exists(path: string): Promise<boolean>;
     isFile(path: string): Promise<boolean>;
     isDirectory(path: string): Promise<boolean>;

@@ -44,6 +44,16 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * inside a capability can never reach `/proc` or `/dev` sideways.
      */
     private locate;
+    /**
+     * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
+     * for the walk component by component (resolveDataPath): for a walk
+     * beneath a root, for a spelling with `..` (that walk takes `..`
+     * physically, after the link before it, where the engine's names take it
+     * lexically), where the namespace lays a mount or a directory above one,
+     * and where a name is missing while the legacy registry could hold a link
+     * there.
+     */
+    private walkOnSqlite;
     /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
     private virtualStat;
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */

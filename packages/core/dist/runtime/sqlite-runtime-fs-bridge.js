@@ -47,6 +47,10 @@ export class SqliteRuntimeFsBridge {
      * inside a capability can never reach `/proc` or `/dev` sideways.
      */
     locate(path, followSymlinks) {
+        // The namespace declined the walk's first name, and with it every name below.
+        const walked = this.walkOnSqlite(path, followSymlinks);
+        if (walked !== null)
+            return walked.end === 'absent' ? { path: walked.name, absent: true } : { path: walked.name };
         const resolved = this.resolveDataPath(path, followSymlinks);
         if (resolved === null)
             return null;
@@ -54,6 +58,27 @@ export class SqliteRuntimeFsBridge {
         if (!mounted || !this.namespace.composes('/' + resolved))
             return { path: resolved };
         return { mount: mounted, path: '/' + resolved };
+    }
+    /**
+     * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
+     * for the walk component by component (resolveDataPath): for a walk
+     * beneath a root, for a spelling with `..` (that walk takes `..`
+     * physically, after the link before it, where the engine's names take it
+     * lexically), where the namespace lays a mount or a directory above one,
+     * and where a name is missing while the legacy registry could hold a link
+     * there.
+     */
+    walkOnSqlite(path, followSymlinks) {
+        if (typeof path !== 'string' && path.beneath)
+            return null;
+        const spelled = this.pathArgument(path);
+        if (DOT_DOT_SEGMENT.test(spelled))
+            return null;
+        const namespace = this.namespace;
+        const walked = this.vfs.resolveName(spelled, followSymlinks, namespace && ((name) => namespace.composes('/' + name)));
+        if (walked === null || (walked.end !== 'found' && this.legacySymlinks.size > 0))
+            return null;
+        return walked;
     }
     /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
     virtualStat(mount, path) {
@@ -93,6 +118,9 @@ export class SqliteRuntimeFsBridge {
             return stat === null ? null : runtimeStatOf(stat);
         }
         const p = located.path;
+        // The walk met the absent name itself; the engine would only say ENOENT.
+        if (located.absent)
+            return null;
         if (p === '')
             return this.rootStat();
         if (!followSymlinks && !this.vfs.exists(p)) {
@@ -143,7 +171,7 @@ export class SqliteRuntimeFsBridge {
     }
     readFile(path, options = {}) {
         const located = this.locate(path, options.followSymlinks !== false);
-        if (located === null)
+        if (located === null || located.absent)
             return null;
         try {
             if (!located.mount)
@@ -586,7 +614,7 @@ export class SqliteRuntimeFsBridge {
         return this.vfs.subscribe(path, listener);
     }
     realpath(path) {
-        const resolved = this.resolveDataPath(path, true);
+        const resolved = this.walkOnSqlite(path, true)?.name ?? this.resolveDataPath(path, true);
         if (resolved === null)
             throw fsError('ELOOP', 'realpath', path);
         if (resolved === '')
@@ -970,6 +998,8 @@ export class SqliteRuntimeFsBridge {
 }
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
+/** A `..` component in a path's spelling. */
+const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
  * namespace walk does it (VFS-COMP-006): the root must be reachable (every
