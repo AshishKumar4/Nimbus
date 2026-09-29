@@ -875,7 +875,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   // Misc supervisor RPC
   async _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>> { return (await _rpc._rpcPrefetch(this as any, cwd, entryCode)); }
   async _rpcRegisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcRegisterPort(this as any, pid, port); }
-  async _rpcUnregisterPort(port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, port); }
+  async _rpcAllocatePort(pid: number): Promise<number> { return _rpc._rpcAllocatePort(this as any, pid); }
+  async _rpcUnregisterPort(pid: number, port: number): Promise<void> { return _rpc._rpcUnregisterPort(this as any, pid, port); }
   async _rpcRouteLoopback(port: number, request: Request): Promise<Response> { return _rpc._rpcRouteLoopback(this as any, port, request); }
   async _rpcTransform(code: string, loader: string): Promise<{ code: string; map: string } | null> { return _rpc._rpcTransform(this as any, code, loader); }
 

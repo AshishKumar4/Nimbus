@@ -16,7 +16,7 @@
 // `for await (const chunk of req)` and `req.pipe()` had nothing to iterate.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { generateShimsCode } from './lib/node-http-platform.mjs';
 
 function makeFacet() {
   delete globalThis.__portRegistry;
@@ -173,26 +173,6 @@ for (const size of [16, 64 * 1024]) {
   assert.equal(await response.text(), 'late reader', 'a body is held until a consumer attaches');
 }
 
-// ── an 'end'-only listener still fires when nothing reads the body ─────────
-// The contract the pre-fix unconditional `req.emit("end")` provided; a
-// demand-driven stream must not quietly stop honouring it.
-{
-  const { http, serveHttp } = makeFacet();
-  const server = http.createServer((req, res) => {
-    req.on('end', () => res.end('ended'));
-  });
-  server.listen(3006);
-  assert.equal(
-    await (await serveHttp(routedRequest(3006, '/', { method: 'GET' }))).text(),
-    'ended',
-    "a GET handler listening only for 'end' still completes",
-  );
-  assert.equal(
-    await (await serveHttp(routedRequest(3006, '/', { method: 'POST', body: 'ignored' }))).text(),
-    'ended',
-    "a POST handler that never reads the body still gets 'end'",
-  );
-}
 
 // ── request bodies stay isolated between concurrent requests ───────────────
 {

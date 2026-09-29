@@ -361,8 +361,12 @@ Implementation rules:
   body limits.
 - Propagate aborts. Client abort, process exit, kill, or port unregister closes
   queued connections and produces clear errors.
-- Node's current HTTP bridge is transitional. Final Node `net` and HTTP should
-  use the same virtual socket path as Python, Ruby, and WASI.
+- Node HTTP uses workerd's native `node:http` implementation and
+  `cloudflare:node.handleAsNodeRequest`. Nimbus owns the session-wide port
+  table (including ephemeral allocations), VFS request admission and the
+  response-header deadline; the runtime owns HTTP streams and protocol
+  semantics. Raw TCP remains separate. The native dispatcher does not emit
+  WebSocket upgrade events; Cirrus's existing HMR bridge is unchanged.
 - Static serving is explicit only. Do not hide static-server substitutions behind
   language server paths.
 

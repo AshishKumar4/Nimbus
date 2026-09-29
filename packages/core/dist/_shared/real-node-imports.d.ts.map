@@ -1,1 +1,1 @@
-{"version":3,"file":"real-node-imports.d.ts","sourceRoot":"","sources":["../../src/_shared/real-node-imports.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GA+CG;AAEH,wBAAgB,sBAAsB,IAAI,MAAM,CAY/C"}
+{"version":3,"file":"real-node-imports.d.ts","sourceRoot":"","sources":["../../src/_shared/real-node-imports.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GA+CG;AAEH,wEAAwE;AACxE,wBAAgB,0BAA0B,IAAI,MAAM,CAOnD;AAED,wBAAgB,sBAAsB,IAAI,MAAM,CAY/C"}

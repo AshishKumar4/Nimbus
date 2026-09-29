@@ -357,7 +357,8 @@ export declare function _reportExternalExit(self: RpcHost, pid: number, code: nu
 export declare function _logJanitorOrphanCheck(self: RpcHost): (pid: number) => boolean;
 export declare function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string): Promise<Record<string, string>>;
 export declare function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
-export declare function _rpcUnregisterPort(self: RpcHost, port: number): Promise<void>;
+export declare function _rpcAllocatePort(self: RpcHost, pid: number): Promise<number>;
+export declare function _rpcUnregisterPort(self: RpcHost, pid: number, port: number): Promise<void>;
 export declare function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response>;
 export declare function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{
     code: string;

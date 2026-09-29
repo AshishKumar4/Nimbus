@@ -47,6 +47,16 @@
  *                         __BufferMod.isBuffer recognizes.
  */
 
+/** Native HTTP imports shared by generated node and opencode guests. */
+export function getRealNodeHttpImportsCode(): string {
+  return `
+import * as __real_http from 'node:http';
+import * as __real_https from 'node:https';
+import * as __real_net from 'node:net';
+import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
+`.trim();
+}
+
 export function getRealNodeImportsCode(): string {
   return `
 import * as __real_crypto from 'node:crypto';
@@ -58,5 +68,6 @@ import * as __real_repl from 'node:repl';
 import * as __real_vm from 'node:vm';
 import * as __real_inspector from 'node:inspector';
 import * as __real_zlib from 'node:zlib';
+${getRealNodeHttpImportsCode()}
 `.trim();
 }

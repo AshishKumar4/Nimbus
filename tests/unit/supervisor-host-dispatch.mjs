@@ -169,6 +169,7 @@ const INPUTS = {
   reportExit: [code, tail, ['home/user/app/node_modules/on-change/source/index.js'], ['home/user/app/node_modules/pkg/learned.js'], [{ kind: 'async', params: ['a'], body: 'return a' }]],
   prefetch: [cwd, entryCode],
   registerPort: [port],
+  allocatePort: [],
   unregisterPort: [port],
   routeLoopback: [port, request],
   transform: [code, loader],

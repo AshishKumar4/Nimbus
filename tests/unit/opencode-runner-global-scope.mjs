@@ -56,8 +56,8 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
   // an unrewritten import means the eval below is no longer the real module.
   const dir = mkdtempSync(join(tmpdir(), 'oc-runner-global-scope-'));
   const alias = (specifier, stubName, stubSource) => {
-    const find = `from "${specifier}"`;
-    assert.ok(source.includes(find), `generated source imports ${specifier}`);
+    const find = [`from "${specifier}"`, `from '${specifier}'`].find(text => source.includes(text));
+    assert.ok(find, `generated source imports ${specifier}`);
     source = source.replaceAll(find, `from "./${stubName}"`);
     writeFileSync(join(dir, stubName), stubSource);
   };
@@ -66,6 +66,7 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     'cloudflare-workers.mjs',
     'export class WorkerEntrypoint {}\nexport class DurableObject {}\n',
   );
+  alias('cloudflare:node', 'cloudflare-node.mjs', 'export function handleAsNodeRequest() { throw new Error("HTTP dispatch during module evaluation"); }');
   alias(SQLITE_WASM_MODULE_NAME, 'sqlite-wasm.mjs', 'export default {};\n');
   for (const [key, wasm] of Object.entries(OPENCODE_TREE_SITTER_WASMS)) {
     alias(wasm, `tree-sitter-${key}.mjs`, 'export default {};\n');

@@ -370,7 +370,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _reportExternalExit(pid: number, code: number, reason: string): void;
     _rpcPrefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     _rpcRegisterPort(pid: number, port: number): Promise<void>;
-    _rpcUnregisterPort(port: number): Promise<void>;
+    _rpcAllocatePort(pid: number): Promise<number>;
+    _rpcUnregisterPort(pid: number, port: number): Promise<void>;
     _rpcRouteLoopback(port: number, request: Request): Promise<Response>;
     _rpcTransform(code: string, loader: string): Promise<{
         code: string;

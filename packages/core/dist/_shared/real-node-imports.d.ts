@@ -46,5 +46,7 @@
  *                         realm's own Buffers, which the widened
  *                         __BufferMod.isBuffer recognizes.
  */
+/** Native HTTP imports shared by generated node and opencode guests. */
+export declare function getRealNodeHttpImportsCode(): string;
 export declare function getRealNodeImportsCode(): string;
 //# sourceMappingURL=real-node-imports.d.ts.map

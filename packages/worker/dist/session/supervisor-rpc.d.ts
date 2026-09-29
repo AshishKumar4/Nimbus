@@ -404,6 +404,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     reportRuntimeCode(entries: unknown[], missedFiles?: string[]): Promise<void>;
     prefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     registerPort(port: number): Promise<void>;
+    allocatePort(): Promise<number>;
     unregisterPort(port: number): Promise<void>;
     /**
      * Route an in-session loopback HTTP request (a facet's fetch to

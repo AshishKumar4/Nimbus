@@ -1295,8 +1295,14 @@ export async function _rpcRegisterPort(self: RpcHost, pid: number, port: number)
     await registerServingPort(self, pid, port);
 }
 
-export async function _rpcUnregisterPort(self: RpcHost, port: number): Promise<void> {
-    self.portRegistry.unregister(port);
+export async function _rpcAllocatePort(self: RpcHost, pid: number): Promise<number> {
+    return self.portRegistry.allocate(pid);
+}
+
+export async function _rpcUnregisterPort(self: RpcHost, pid: number, port: number): Promise<void> {
+    // A delayed close from the previous owner must not remove a rebound
+    // listener belonging to another process.
+    if (self.portRegistry.get(port)?.pid === pid) self.portRegistry.unregister(port);
 }
 
 export async function _rpcRouteLoopback(self: RpcHost, port: number, request: Request): Promise<Response> {

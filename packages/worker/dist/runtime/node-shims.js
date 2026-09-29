@@ -40,7 +40,6 @@
  */
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
-import { decodeJavaScriptStringLiteral } from './javascript-string-literal.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
@@ -49,6 +48,7 @@ import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/co
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
+import { NATIVE_HTTP_SOURCE } from './native-http.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -532,17 +532,130 @@ __pathMod.posix = __pathMod;
 __pathMod.win32 = __pathMod;
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  Native Buffer ───────────────────────────────────────────────────
+// ──  Buffer shim ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// Workers' native Buffer is already used by crypto, zlib and node:http.
-// Keep that one constructor everywhere: a second partial implementation lost
-// offsets, UTF-16 writes and numeric/prototype APIs required by napi and Vite.
-// Non-Workers embedders obtain the same native module through their Node API;
-// there is deliberately no emulated Buffer fallback.
-const __bufferModule = typeof __real_buffer !== "undefined"
-  ? (__real_buffer.default ?? __real_buffer) : globalThis.process?.getBuiltinModule?.("node:buffer");
-if (!__bufferModule?.Buffer) throw new Error("Nimbus node runtime requires native node:buffer");
-const __BufferMod = __bufferModule.Buffer;
+const __BufferMod = (() => {
+  const _enc = new TextEncoder();
+  const _dec = new TextDecoder();
+  // The unwrapped view helper. Buffer methods are installed as own
+  // properties on each instance, so \`this.subarray\` is the Buffer-returning
+  // override — internal slicing must reach past it to avoid re-wrapping
+  // throwaway views.
+  const _view = Uint8Array.prototype.subarray;
+
+  function from(d, encoding, length) {
+    if (typeof d === "string") {
+      if (encoding === "base64") {
+        const bin = atob(d); const a = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+        return _wrap(a);
+      }
+      if (encoding === "hex") {
+        const a = new Uint8Array(d.length / 2);
+        for (let i = 0; i < a.length; i++) a[i] = parseInt(d.substr(i*2, 2), 16);
+        return _wrap(a);
+      }
+      return _wrap(_enc.encode(d));
+    }
+    if (d instanceof Uint8Array) return _wrap(new Uint8Array(d));
+    // Buffer.from(arrayBuffer[, byteOffset[, length]]) is a view that shares
+    // the memory, bounded by the two numbers — napi-wasm hands every result
+    // buffer back as Buffer.from(wasmMemory.buffer, ptr, len). Ignoring the
+    // bounds returned the whole memory instead (lightningcss-wasm's minified
+    // CSS came back as 1.4 MB of mostly NUL bytes).
+    if (d instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && d instanceof SharedArrayBuffer)) {
+      const offset = encoding === undefined ? 0 : Math.trunc(Number(encoding)) || 0;
+      if (offset < 0 || offset > d.byteLength) throw new RangeError('"offset" is outside of buffer bounds');
+      const size = length === undefined ? d.byteLength - offset : Math.trunc(Number(length)) || 0;
+      if (size < 0 || offset + size > d.byteLength) throw new RangeError('"length" is outside of buffer bounds');
+      return _wrap(new Uint8Array(d, offset, size));
+    }
+    if (Array.isArray(d)) return _wrap(new Uint8Array(d));
+    return _wrap(new Uint8Array(0));
+  }
+
+  function alloc(n, fill) { const a = new Uint8Array(n); if (fill !== undefined) a.fill(typeof fill === "number" ? fill : 0); return _wrap(a); }
+  function allocUnsafe(n) { return _wrap(new Uint8Array(Number(n) || 0)); }
+  // Marker check plus native-brand recognition: forwarded node:* builtins
+  // (zlib streams and results, crypto) hand back the host realm's own Buffer
+  // instances, which carry no __isBuffer marker. Their constructor brand is
+  // the closest cross-realm equivalent of Node's instanceof check, so
+  // Buffer.isBuffer stays truthful across the shim/native boundary instead
+  // of rejecting genuine host Buffers. Always returns a boolean (the old
+  // single-expression form leaked an undefined when the marker was absent).
+  function isBuffer(o) {
+    if (!(o instanceof Uint8Array)) return false;
+    if (o.__isBuffer) return true;
+    const ctor = o.constructor;
+    return typeof ctor === "function" && ctor.name === "Buffer";
+  }
+  function concat(bufs, len) {
+    const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
+    const r = new Uint8Array(total); let off = 0;
+    for (const b of bufs) { r.set(_view.call(b, 0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
+    return _wrap(r);
+  }
+  function byteLength(value, encoding) {
+    if (typeof value === "string") {
+      if (encoding === "base64") {
+        try { return from(value, "base64").byteLength; } catch { return 0; }
+      }
+      if (encoding === "hex") return Math.floor(value.length / 2);
+      return _enc.encode(value).length;
+    }
+    if (value instanceof ArrayBuffer) return value.byteLength;
+    if (value instanceof Uint8Array) return value.byteLength;
+    return 0;
+  }
+  function compare(a, b) {
+    const aa = from(a);
+    const bb = from(b);
+    const n = Math.min(aa.length, bb.length);
+    for (let i = 0; i < n; i++) {
+      if (aa[i] !== bb[i]) return aa[i] < bb[i] ? -1 : 1;
+    }
+    if (aa.length === bb.length) return 0;
+    return aa.length < bb.length ? -1 : 1;
+  }
+  function isEncoding(enc) {
+    if (!enc) return false;
+    return ["utf8", "utf-8", "base64", "hex", "ascii", "latin1", "binary"].includes(String(enc).toLowerCase());
+  }
+  function _wrap(u8) {
+    u8.__isBuffer = true;
+    u8.toString = function(encoding) {
+      if (!encoding || encoding === "utf8" || encoding === "utf-8") return _dec.decode(this);
+      if (encoding === "base64") { let s = ""; for (const b of this) s += String.fromCharCode(b); return btoa(s); }
+      if (encoding === "hex") { let s = ""; for (const b of this) s += b.toString(16).padStart(2, "0"); return s; }
+      return _dec.decode(this);
+    };
+    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(_view.call(b, 0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
+    // Node's Buffer#subarray returns a Buffer over the same memory, and
+    // Buffer#slice is documented as its alias. Without the override a slice
+    // came back as a bare Uint8Array whose toString() is the comma-joined
+    // byte list — silent corruption for anything that slices then stringifies.
+    u8.subarray = function(s, e) { return _wrap(_view.call(this, s, e)); };
+    u8.slice = u8.subarray;
+    u8.copy = function(t, tOff, sOff, sEnd) { t.set(_view.call(this, sOff || 0, sEnd), tOff || 0); };
+    u8.equals = function(o) { if (this.length !== o.length) return false; for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false; return true; };
+    u8.toJSON = function() { return { type: "Buffer", data: Array.from(this) }; };
+    u8.indexOf = function(v) { if (typeof v === "number") return Uint8Array.prototype.indexOf.call(this, v); const b = typeof v === "string" ? _enc.encode(v) : v; outer: for (let i = 0; i <= this.length - b.length; i++) { for (let j = 0; j < b.length; j++) if (this[i+j] !== b[j]) continue outer; return i; } return -1; };
+    return u8;
+  }
+  const B = Object.assign(from, {
+    from,
+    alloc,
+    allocUnsafe,
+    allocUnsafeSlow: allocUnsafe,
+    isBuffer,
+    concat,
+    byteLength,
+    compare,
+    isEncoding,
+    poolSize: 8192,
+  });
+  return B;
+})();
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  Process output is bytes ─────────────────────────────────────────
@@ -1058,7 +1171,6 @@ const __fsMod = (() => {
   function _recordMiss(k) {
     if (k === "" || _residencyMisses.has(k)) return;
     _residencyMisses.add(k);
-    if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
   }
 
@@ -4813,39 +4925,16 @@ const __fsMod = (() => {
       watcher.close = () => { watcher._closed = true; watcher.removeAllListeners(); };
       watcher._closed = false;
       if (listener) watcher.on("change", listener);
-      // A resident-store read reassembles a fresh byte buffer every time;
-      // object identity is not file identity. It also changes representation
-      // when data is hydrated, without a filesystem mutation. Compare the
-      // namespace's authoritative inode/revision instead, without reading any
-      // content. Heap-only embedders have no namespace, so compare bytes.
+      // Poll for changes every 500ms (simple but functional)
       const absPath = _resolve(filename);
       const key = _strip(absPath);
-      function snapshot() {
-        if (_nsActive()) {
-          const found = __nsResolve(key, true);
-          if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
-          const row = found.row;
-          return { stamp: [row.ino, row.rev, row.kind, row.size, row.mtime, row.ctime].join(":"), absent: false };
-        }
-        const cell = _bundleLookup(absPath);
-        return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
-      }
-      function equal(a, b) {
-        if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
-        if (a.data === b.data) return true;
-        const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
-        const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
-        if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
-        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
-        return true;
-      }
-      let previous = snapshot();
+      let lastContent = _bundleLookup(absPath);
       const interval = setInterval(() => {
         if (watcher._closed) { clearInterval(interval); return; }
-        const current = snapshot();
-        if (!equal(current, previous)) {
-          const eventType = current.absent || previous.absent ? "rename" : "change";
-          previous = current;
+        const current = _bundleLookup(absPath);
+        if (current !== lastContent) {
+          lastContent = current;
+          const eventType = current === undefined ? "rename" : "change";
           watcher.emit("change", eventType, __pathMod.basename(filename));
         }
       }, 500);
@@ -5233,8 +5322,6 @@ const __osMod = {
     return { uid, gid, username: root ? "root" : "user", homedir: root ? "/root" : "/home/user", shell: "/bin/sh" };
   },
   cpus: () => [{ model: "DO vCPU", speed: 3000, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
-  // One JavaScript thread per Worker isolate, irrespective of the host CPU.
-  availableParallelism: () => 1,
   totalmem: () => 128 * 1024 * 1024, freemem: () => 64 * 1024 * 1024,
   loadavg: () => [0, 0, 0], uptime: () => 3600,
   networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", internal: true }] }),
@@ -5814,25 +5901,6 @@ const __cryptoMod = (() => {
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
-// es-module-lexer decodes quoted import/export names with indirect eval and
-// swallows failures. A single quoted string is data, not executable code:
-// decode it without compiling, preserving native eval (including its Workers
-// refusal) for everything else. No general-evaluation capability is exposed,
-// and Function("null") / eval("1 + 1") feature probes remain refused.
-(() => {
-  const nativeEval = globalThis.eval;
-  if (nativeEval.__nimbusNative) return;
-  const decode = ${decodeJavaScriptStringLiteral.toString()};
-  const routed = { eval(source) {
-    if (typeof source === "string") {
-      const value = decode(source);
-      if (value !== undefined) return value;
-    }
-    return Reflect.apply(nativeEval, undefined, [source]);
-  } }.eval;
-  Object.defineProperty(routed, "__nimbusNative", { value: nativeEval });
-  globalThis.eval = routed;
-})();
 (() => {
   const kinds = [
     ["async", Object.getPrototypeOf(async function () {}).constructor],
@@ -5900,22 +5968,7 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
-    // Stage that expression as a zero-argument function returning its value;
-    // the wrapper itself executes only when the caller invokes it. This is
-    // not a vm context or a global-script evaluator: declarations/completion
-    // values spanning statements, execution deadlines and context mutation
-    // have no equivalent here and remain unsupported.
-    runInThisContext: (code, options = {}) => {
-      try { return wrapRuntimeEval('runInThisContext')(code, options); }
-      catch (e) {
-        const service = globalThis.__nimbusRuntimeCode;
-        if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
-          || options?.timeout !== undefined || options?.breakOnSigint
-          || options?.importModuleDynamically || options?.cachedData) throw e;
-        return service.compileFunction("function", [], "return (\\n" + String(code) + "\\n);")();
-      }
-    },
+    runInThisContext: wrapRuntimeEval('runInThisContext'),
     // A function of \`params\` and \`code\` is what the Function constructor
     // builds, so a refusal goes to the same runtime-code service. Context
     // extensions and a parsing context have no such form.
@@ -7072,14 +7125,8 @@ function __makeProcessStdin() {
     wrapped.__orig = listener;
     return wrapped;
   }
-  // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
-  // listener, resume() or read(). An 'end', 'close' or 'error' listener on
-  // paused stdin receives nothing. Vite's dev server registers
-  // process.stdin.on("end", closeServerAndExit); seeding on that listener
-  // ended stdin at once, and every Vite dev server (Astro's included) shut
-  // itself down seconds after it started.
   r.on = function(event, listener) {
-    if (event === "data" || event === "readable") seed();
+    seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
@@ -7223,10 +7270,7 @@ const __processMod = {
   },
   execPath: "/usr/local/bin/node",
   execArgv: [],
-  // The pid belongs to the supervisor, not to the host isolate. A constant 1
-  // made every new Vinext process claim its predecessor's stale lock.
-  get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
-  ppid: 0, title: "node",
+  pid: 1, ppid: 0, title: "node",
   stdout: __makeProcessOutputStream("stdout"),
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
@@ -7253,18 +7297,8 @@ const __processMod = {
   uptime: () => 0,
   kill: (pid, signal) => {
     const n = Number(pid);
-    if (n === __processMod.pid || n === 0) {
-      if (signal === 0) return true; // existence probe, never deliver SIGTERM
-      return __nimbusSignalSelf(signal === undefined ? "SIGTERM" : signal);
-    }
-    // Node's process.kill throws on failure; returning false falsely told
-    // Vinext/Astro lockfile probes that every stale pid was still alive.
-    // There is no synchronous cross-isolate process table or signal syscall.
-    // Do not invent ESRCH for a pid we cannot inspect: report ENOSYS honestly.
-    const error = new Error("kill: synchronous cross-isolate process signalling is unavailable; use the owning child-process handle");
-    error.code = "ENOSYS";
-    error.syscall = "kill";
-    throw error;
+    if (n === __processMod.pid || n === 0) return __nimbusSignalSelf(signal || "SIGTERM");
+    return false;
   },
   getuid: () => Number(cred.uid),
   geteuid: () => Number(cred.uid),
@@ -7373,7 +7407,7 @@ builtins.stream = __streamMod;
 // Idempotent guard so a future streams.ts revision that already exposes
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
-builtins.buffer = __bufferModule;
+builtins.buffer = { Buffer: __BufferMod };
 builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
@@ -7390,298 +7424,7 @@ builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
-builtins.http = (() => {
-  if (!globalThis.__portRegistry) globalThis.__portRegistry = new Map();
-  // Capture the host Response/encoder at shim-init (before any user code can
-  // shadow globalThis.Response) — the dispatch layer wraps the response stream
-  // in a host Response and streams it across the RPC boundary.
-  const __httpEnc = new TextEncoder();
-  const __hostResponse = globalThis.Response;
-  // Streaming ServerResponse: writes flow into a ReadableStream that the
-  // dispatch layer (__nimbusServeHttp) returns the moment response headers are
-  // known — nothing is buffered to "finish". A live SSE / chunked body that
-  // never ends streams indefinitely; a slow-but-finite response streams as it
-  // is produced. res.write() enqueues bytes (binary-safe), res.end() closes the
-  // stream, and a downstream cancel (client disconnect) releases the handler.
-  class ServerResponse extends __eventsMod {
-    constructor() {
-      super();
-      this.statusCode = 200;
-      this.statusMessage = undefined;
-      this.headers = {};
-      this._headersSent = false;
-      this._ended = false;
-      this._destroyed = false;
-      this._closed = false;
-      this._controller = null;
-      this._needDrain = false;
-      const self = this;
-      // Bounded backpressure: up to 16 queued chunks before write() reports
-      // backpressure (returns false) and a 'drain' fires on the next pull.
-      this._stream = new ReadableStream({
-        start(c) { self._controller = c; },
-        pull() { if (self._needDrain) { self._needDrain = false; self.emit("drain"); } },
-        cancel() {
-          // Downstream (client / attach facet) went away — release the handler
-          // so a dead SSE does not keep the producer writing into a void.
-          self._destroyed = true;
-          self._ended = true;
-          self.emit("aborted");
-          self._emitClose();
-        },
-      }, new CountQueuingStrategy({ highWaterMark: 16 }));
-      // Resolves as soon as headers are flushed (writeHead / first write / end).
-      this._headersReady = new Promise((resolve) => { self._resolveHeaders = resolve; });
-    }
-    _emitClose() { if (!this._closed) { this._closed = true; this.emit("close"); } }
-    _flushHeaders() { if (this._headersSent) return; this._headersSent = true; this._resolveHeaders(); }
-    _toBytes(chunk) {
-      if (typeof chunk === "string") return __httpEnc.encode(chunk);
-      if (chunk instanceof Uint8Array) return chunk;
-      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-      if (chunk && chunk.buffer instanceof ArrayBuffer && typeof chunk.byteLength === "number") {
-        return new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
-      }
-      return __httpEnc.encode(String(chunk));
-    }
-    writeHead(code, reasonOrHeaders, maybeHeaders) {
-      this.statusCode = code;
-      let hdrs = maybeHeaders;
-      if (reasonOrHeaders && typeof reasonOrHeaders === "object") hdrs = reasonOrHeaders;
-      else if (typeof reasonOrHeaders === "string") this.statusMessage = reasonOrHeaders;
-      if (hdrs) {
-        if (Array.isArray(hdrs)) { for (let i = 0; i + 1 < hdrs.length; i += 2) this.headers[String(hdrs[i]).toLowerCase()] = hdrs[i + 1]; }
-        else for (const k of Object.keys(hdrs)) this.headers[k.toLowerCase()] = hdrs[k];
-      }
-      this._flushHeaders();
-      return this;
-    }
-    flushHeaders() { this._flushHeaders(); return this; }
-    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; return this; }
-    getHeader(k) { return this.headers[String(k).toLowerCase()]; }
-    getHeaders() { return { ...this.headers }; }
-    hasHeader(k) { return Object.prototype.hasOwnProperty.call(this.headers, String(k).toLowerCase()); }
-    removeHeader(k) { delete this.headers[String(k).toLowerCase()]; }
-    write(chunk, enc, cb) {
-      if (typeof enc === "function") { cb = enc; }
-      this._flushHeaders();
-      if (this._ended || this._destroyed) { if (cb) queueMicrotask(cb); return false; }
-      if (chunk != null && !(typeof chunk === "string" && chunk.length === 0)) {
-        try { this._controller.enqueue(this._toBytes(chunk)); }
-        catch { this._destroyed = true; if (cb) queueMicrotask(cb); return false; }
-      }
-      if (cb) queueMicrotask(cb);
-      const ds = this._controller ? this._controller.desiredSize : null;
-      const ok = ds === null || ds > 0;
-      if (!ok) this._needDrain = true;
-      return ok;
-    }
-    end(data, enc, cb) {
-      if (typeof data === "function") { cb = data; data = undefined; }
-      else if (typeof enc === "function") { cb = enc; }
-      if (data != null) this.write(data);
-      this._flushHeaders();
-      if (!this._ended) {
-        this._ended = true;
-        if (!this._destroyed) { try { this._controller.close(); } catch {} }
-        this.emit("finish");
-        this._emitClose();
-      }
-      if (cb) queueMicrotask(cb);
-      return this;
-    }
-    destroy(err) {
-      if (this._destroyed) return this;
-      this._destroyed = true;
-      if (!this._ended) { this._ended = true; try { this._controller.error(err || new Error("aborted")); } catch {} }
-      if (err) this.emit("error", err);
-      this._emitClose();
-      return this;
-    }
-    get headersSent() { return this._headersSent; }
-    get writableEnded() { return this._ended; }
-    get writableFinished() { return this._ended; }
-    get destroyed() { return this._destroyed; }
-  }
-  // Node's IncomingMessage is a Readable whose chunks are Buffers, and every
-  // idiom for reading a request body depends on both halves of that: the
-  // canonical \`req.on('data', c => chunks.push(c))\` + \`Buffer.concat(chunks)\`
-  // brand-checks each chunk as a TypedArray, \`for await (const c of req)\` and
-  // \`req.pipe()\` need the stream contract, and a Readable is what holds the
-  // bytes until a consumer actually attaches instead of emitting them into
-  // the void. The body arrives here as bytes and is pushed on demand.
-  class IncomingMessage extends __streamMod.Readable {
-    constructor(u, m, h, body) {
-      super();
-      this.url = u || "/";
-      this.method = m || "GET";
-      this.headers = h || {};
-      this.httpVersion = "1.1";
-      this._body = body && body.byteLength > 0 ? body : null;
-    }
-    _read() {
-      const body = this._body;
-      this._body = null;
-      if (body) this.push(__BufferMod.from(body));
-      this.push(null);
-    }
-  }
-  class Server extends __eventsMod {
-    constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
-    // effect-platform (opencode serve) binds via listen() FIRST and attaches
-    // its "request" handler only after the HTTP-app layer is built. A request
-    // emitted into zero listeners is silently lost — the ServerResponse never
-    // gets headers and the dispatcher's header timeout fires. Park requests
-    // that arrive in that window and flush them when the handler attaches.
-    on(n, fn) {
-      super.on(n, fn);
-      if (n === "request") this._flushParkedRequests();
-      return this;
-    }
-    prependListener(n, fn) {
-      super.prependListener(n, fn);
-      if (n === "request") this._flushParkedRequests();
-      return this;
-    }
-    _flushParkedRequests() {
-      if (!this._parkedRequests || this._parkedRequests.length === 0) return;
-      const parked = this._parkedRequests.splice(0);
-      for (const dispatch of parked) queueMicrotask(dispatch);
-    }
-    // Node's listen has several overloads; the two we honour are
-    // listen(options[, cb]) — options = { port, host, path, backlog, ... } —
-    // and listen([port[, host[, backlog]]][, cb]). opencode's server adaptor
-    // binds via the OPTIONS-OBJECT form (server.listen({ host, port }, cb)), so
-    // we read port/host off the object; a bare positional port is the classic
-    // form. The port is normalized to a number (number|string) so the ACTUAL
-    // listened port is what lands in the registry + SUPERVISOR.registerPort.
-    listen(...args) {
-      let portArg, host, cb;
-      const first = args[0];
-      if (first !== null && typeof first === "object") {
-        portArg = first.port;
-        host = first.host;
-        if (typeof args[1] === "function") cb = args[1];
-      } else {
-        portArg = first;
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i];
-          if (typeof a === "function") { cb = a; break; }
-          if (typeof a === "string") host = a;
-        }
-      }
-      const numPort = typeof portArg === "string" ? parseInt(portArg, 10) : portArg;
-      this._port = Number.isFinite(numPort) ? numPort : 0;
-      this._host = host;
-      this._listening = true;
-      globalThis.__portRegistry.set(this._port, this);
-      try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {}
-      if (cb) queueMicrotask(cb);
-      this.emit("listening");
-      return this;
-    }
-    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
-    get listening() { return this._listening; }
-    // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
-    // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
-    // immediately after createServer(). Pre-X5M the Server class lacked
-    // this method → "TypeError: server.setTimeout is not a function".
-    // Mirror the net.Socket.setTimeout pattern at the bottom of this file
-    // (same builtins/net IIFE): no-op + chainable. Idle timeouts have no
-    // facet-side meaning (we don't own outbound TCP), but we honour the
-    // 1-arg callback form so listeners that emit on 'timeout' still run.
-    setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
-    setKeepAlive() { return this; }
-    address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
-    // A port remains routable after unref, but no longer keeps a one-shot's
-    // event loop alive. Nuxt's get-port-please unrefs its temporary listener.
-    ref() { this.__nimbusUnrefed = false; return this; }
-    unref() { this.__nimbusUnrefed = true; return this; }
-    _handleRequest(u, m, h, b) {
-      const req = new IncomingMessage(u, m, h, b);
-      const res = new ServerResponse();
-      // Node drains a request body the handler never reads, which is what lets
-      // an 'end'-only listener fire. Nudge the stream once the handler has had
-      // its turn, so a handler that DID attach a consumer owns the bytes and
-      // one that did not still sees the request complete.
-      const dispatch = () => {
-        this.emit("request", req, res);
-        if (req.readableFlowing !== true) req.resume();
-      };
-      if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
-      else dispatch();
-      return res;
-    }
-  }
-  function createServer(o, h) { if (typeof o === "function") { h = o; } return new Server(h); }
-  // Shared streaming HTTP dispatch for every facet server (generic node
-  // long-running, opencode serve, …). A request forwarded by the port registry
-  // (loopback OR external /port/<n>, stamped X-Nimbus-Port) is replayed through
-  // the in-facet server's _handleRequest, and the response is returned as a
-  // streaming host Response the moment its headers are known — never buffered.
-  // This is what lets an SSE / chunked body flow live across the RPC boundary
-  // (the registry + loopback both return this Response as-is). The single
-  // source of truth for facet HTTP dispatch: manager.ts (__nimbusDispatchHttp)
-  // and the opencode runner (__ocDispatchHttp) both delegate here.
-  globalThis.__nimbusServeHttp = async function __nimbusServeHttp(request) {
-    const ports = globalThis.__portRegistry;
-    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);
-    const server = ports && (ports.get(hinted) || ports.values().next().value);
-    if (!server || typeof server._handleRequest !== "function") {
-      return new __hostResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
-    }
-    const url = new URL(request.url);
-    // The request carries the answer to its own barrier (below). It is
-    // Nimbus's, not the program's, so the program does not see it.
-    let delivered;
-    try { delivered = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
-    const headers = {};
-    request.headers.forEach((v, k) => { if (k !== "x-nimbus-vfs-acquired") headers[k] = v; });
-    // Bytes, not text: a UTF-8 decode corrupts every binary upload, and the
-    // decoded string is not the TypedArray receiver Buffer methods require.
-    let body = null;
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      body = new Uint8Array(await request.arrayBuffer());
-    }
-    // A request is a resumption like any other, and often the second half of
-    // a causal chain — \`echo v2 > f; curl :3000\` — so the handler runs behind
-    // the barrier, after the body has arrived. Sited here, in the dispatch
-    // every resident's server shares, not in a caller that happens to yield
-    // through a barriered timer on the way. The supervisor routed it, so it
-    // arrives with an answer, which is enough when no write preceded the
-    // request since this process last caught up (session/rpc.ts
-    // _acquireForRoutedRequest); otherwise the barrier asks.
-    await __nimbusInboundBarrier(delivered);
-    const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
-    // Return once headers are known. A handler that never sends headers is
-    // bounded by a header timeout (NOT a body-finish cap) so a hung handler
-    // can't wedge the request, while a live stream that never "finishes" flows.
-    // The timeout defaults to 30s; tests pin it low via __nimbusHttpHeaderTimeoutMs.
-    if (!res._headersSent) {
-      const headerTimeoutMs = Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000;
-      let timer;
-      const timedOut = await Promise.race([
-        res._headersReady.then(() => false),
-        new Promise((resolve) => { timer = setTimeout(() => resolve(true), headerTimeoutMs); }),
-      ]);
-      clearTimeout(timer);
-      if (timedOut && !res._headersSent) {
-        try { res.destroy(); } catch {}
-        return new __hostResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 });
-      }
-    }
-    return new __hostResponse(res._stream, { status: res.statusCode || 200, headers: res.headers || {} });
-  };
-  return { createServer, Server, IncomingMessage, ServerResponse, Agent: class {}, STATUS_CODES: {}, METHODS: ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"], request: () => { throw new Error("Use fetch()"); }, get: () => { throw new Error("Use fetch()"); } };
-})();
-builtins.https = (() => {
-  const hm = builtins.http;
-  return {
-    createServer: hm.createServer, Server: hm.Server, Agent: class {}, globalAgent: {},
-    request: (url, opts, cb) => { if (typeof url === "string") url = new URL(url); if (typeof opts === "function") { cb = opts; opts = {}; } const req = new __eventsMod(); req.end = (body) => { fetch(url.href || url, { method: opts?.method || "GET", headers: opts?.headers, body }).then(async (resp) => { const res = new __eventsMod(); res.statusCode = resp.status; res.headers = Object.fromEntries(resp.headers); if (cb) cb(res); const text = await resp.text(); res.emit("data", text); res.emit("end"); }).catch((e) => req.emit("error", e)); }; req.write = () => req; req.on = (...a) => { __eventsMod.prototype.on.apply(req, a); return req; }; return req; },
-    get: (url, opts, cb) => { const req = builtins.https.request(url, opts, cb); req.end(); return req; },
-  };
-})();
+${NATIVE_HTTP_SOURCE}
 // W3 — net.Socket honest-error mode.
 //
 // Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`
@@ -7741,7 +7484,7 @@ builtins.net = (() => {
   }
   return {
     Socket,
-    Server: builtins.http.Server,
+    get Server() { return builtins.http.Server; },
     createServer: (o, h) => { if (typeof o === "function") { h = o; } return builtins.http.createServer(h); },
     createConnection: (p, h, cb) => new Socket().connect(p, h, cb),
     connect: (p, h, cb) => new Socket().connect(p, h, cb),
@@ -9025,7 +8768,6 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
       // key the launch already carries answers now.
       (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
-      if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);
@@ -9179,43 +8921,13 @@ function __esmLoad(resolution) {
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
   } else if (resolution.format === "data") {
-    const url = new URL(resolution.url);
-    const comma = url.pathname.indexOf(',');
-    const header = url.pathname.slice(0, comma);
-    const mediaType = header.split(';')[0].toLowerCase();
-    const payload = url.pathname.slice(comma + 1);
-    const text = header.split(';').includes('base64')
-      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
-    if (mediaType === "application/json") {
-      const value = JSON.parse(text);
-      ns = __esmNamespaceOf(["default"], () => value);
-    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
-      // A data URL produced at runtime is a module body, just like a written
-      // file. It is staged by the same runtime-code service, retaining its URL
-      // as the import base (relative imports from data URLs remain invalid).
-      const cell = __nimbusRuntimeModule(resolution.url, text);
-      const mod = { exports: {} };
-      Object.defineProperty(mod, "__nimbusImportMeta", { value: {
-        url: resolution.url,
-        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
-      } });
-      const requireData = (id) => {
-        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
-        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
-        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
-        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
-      };
-      const result = cell(mod.exports, requireData, mod, undefined, undefined);
-      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
-      if (result && typeof result.then === "function") {
-        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
-        __esmNamespaces.set(resolution.url, pending);
-        return pending;
-      }
-      ns = namespace();
-    } else {
-      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
+    const match = /^data:application\\/json(;[^,]*)?,/.exec(resolution.url);
+    if (!match) {
+      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
     }
+    const body = resolution.url.slice(match[0].length);
+    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
+    ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
     const esm = resolution.format === "module"

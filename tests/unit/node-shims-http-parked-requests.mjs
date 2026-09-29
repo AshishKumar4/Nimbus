@@ -12,7 +12,7 @@
 // hung poll (bare `opencode` never launched its TUI).
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { generateShimsCode } from './lib/node-http-platform.mjs';
 
 function makeFacet() {
   delete globalThis.__portRegistry;
