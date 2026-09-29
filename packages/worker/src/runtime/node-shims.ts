@@ -7485,7 +7485,10 @@ const __processMod = {
   },
   execPath: "/usr/local/bin/node",
   execArgv: [],
-  pid: 1, ppid: 0, title: "node",
+  // The pid belongs to the supervisor, not to the host isolate. A constant 1
+  // made every new Vinext process claim its predecessor's stale lock.
+  get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
+  ppid: 0, title: "node",
   stdout: __makeProcessOutputStream("stdout"),
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
