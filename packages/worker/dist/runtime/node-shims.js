@@ -542,20 +542,121 @@ const __BufferMod = (() => {
   // throwaway views.
   const _view = Uint8Array.prototype.subarray;
 
-  function from(d, encoding, length) {
-    if (typeof d === "string") {
-      if (encoding === "base64") {
-        const bin = atob(d); const a = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
-        return _wrap(a);
-      }
-      if (encoding === "hex") {
-        const a = new Uint8Array(d.length / 2);
-        for (let i = 0; i < a.length; i++) a[i] = parseInt(d.substr(i*2, 2), 16);
-        return _wrap(a);
-      }
-      return _wrap(_enc.encode(d));
+  // Node's encodings, by canonical name; null for a name Node rejects.
+  function _encodingName(enc) {
+    if (enc === undefined || enc === null) return "utf8";
+    switch (String(enc).toLowerCase()) {
+      case "utf8": case "utf-8": return "utf8";
+      case "utf16le": case "utf-16le": case "ucs2": case "ucs-2": return "utf16le";
+      case "latin1": case "binary": return "latin1";
+      case "ascii": return "ascii";
+      case "base64": return "base64";
+      case "base64url": return "base64url";
+      case "hex": return "hex";
+      default: return null;
     }
+  }
+  function _encodingOf(enc) {
+    const name = _encodingName(enc);
+    if (name === null) {
+      const e = new TypeError("Unknown encoding: " + enc);
+      e.code = "ERR_UNKNOWN_ENCODING";
+      throw e;
+    }
+    return name;
+  }
+  // Both base64 alphabets, as Node's decoder accepts either for either name.
+  const _b64Values = new Int16Array(128).fill(-1);
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".split("").forEach((c, i) => { _b64Values[c.charCodeAt(0)] = i; });
+  _b64Values[45] = 62; // '-'
+  _b64Values[95] = 63; // '_'
+  function _hexValue(c) {
+    if (c >= 48 && c <= 57) return c - 48;
+    if (c >= 97 && c <= 102) return c - 87;
+    if (c >= 65 && c <= 70) return c - 55;
+    return -1;
+  }
+  /** A string's bytes in \`enc\`, with Node's decoders' leniency. */
+  function _encode(str, enc) {
+    switch (enc) {
+      case "utf8": return _enc.encode(str);
+      case "utf16le": {
+        const out = new Uint8Array(str.length * 2);
+        for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); out[2 * i] = c & 0xff; out[2 * i + 1] = c >> 8; }
+        return out;
+      }
+      case "latin1": case "ascii": {
+        const out = new Uint8Array(str.length);
+        for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+        return out;
+      }
+      case "base64": case "base64url": {
+        // Whitespace and foreign characters are skipped; '=' ends the data.
+        const out = new Uint8Array(Math.ceil(str.length * 3 / 4));
+        let n = 0, acc = 0, bits = 0;
+        for (let i = 0; i < str.length; i++) {
+          const c = str.charCodeAt(i);
+          if (c === 61) break;
+          const v = c < 128 ? _b64Values[c] : -1;
+          if (v < 0) continue;
+          acc = (acc << 6) | v;
+          bits += 6;
+          if (bits >= 8) { bits -= 8; out[n++] = (acc >> bits) & 0xff; }
+        }
+        return _view.call(out, 0, n);
+      }
+      case "hex": {
+        // Pairs up to the first that is not hex; a lone final digit is dropped.
+        const out = new Uint8Array(str.length >> 1);
+        let n = 0;
+        for (; n < out.length; n++) {
+          const hi = _hexValue(str.charCodeAt(2 * n)), lo = _hexValue(str.charCodeAt(2 * n + 1));
+          if (hi < 0 || lo < 0) break;
+          out[n] = (hi << 4) | lo;
+        }
+        return _view.call(out, 0, n);
+      }
+    }
+    return _enc.encode(str);
+  }
+  function _fromCodes(codes, count) {
+    let s = "";
+    for (let i = 0; i < count; i += 8192) s += String.fromCharCode.apply(null, _view.call(codes, i, Math.min(count, i + 8192)));
+    return s;
+  }
+  /** Bytes as a string in \`enc\`. */
+  function _decode(bytes, enc) {
+    switch (enc) {
+      case "utf8": return _dec.decode(bytes);
+      case "utf16le": {
+        const units = new Uint16Array(bytes.length >> 1);
+        for (let i = 0; i < units.length; i++) units[i] = bytes[2 * i] | (bytes[2 * i + 1] << 8);
+        return _fromCodes(units, units.length);
+      }
+      case "latin1": return _fromCodes(bytes, bytes.length);
+      case "ascii": {
+        const codes = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) codes[i] = bytes[i] & 0x7f;
+        return _fromCodes(codes, codes.length);
+      }
+      case "base64": return btoa(_fromCodes(bytes, bytes.length));
+      case "base64url": {
+        const s = btoa(_fromCodes(bytes, bytes.length));
+        let end = s.length;
+        while (end > 0 && s.charCodeAt(end - 1) === 61) end--;
+        return s.slice(0, end).split("+").join("-").split("/").join("_");
+      }
+      case "hex": {
+        let s = "";
+        for (let i = 0; i < bytes.length; i++) s += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+        return s;
+      }
+    }
+    return _dec.decode(bytes);
+  }
+
+  function from(d, encoding, length) {
+    if (typeof d === "string") return _wrap(_encode(d, _encodingOf(encoding)));
     if (d instanceof Uint8Array) return _wrap(new Uint8Array(d));
     // Buffer.from(arrayBuffer[, byteOffset[, length]]) is a view that shares
     // the memory, bounded by the two numbers — napi-wasm hands every result
@@ -596,14 +697,14 @@ const __BufferMod = (() => {
   }
   function byteLength(value, encoding) {
     if (typeof value === "string") {
-      if (encoding === "base64") {
-        try { return from(value, "base64").byteLength; } catch { return 0; }
-      }
-      if (encoding === "hex") return Math.floor(value.length / 2);
-      return _enc.encode(value).length;
+      // Node counts an unknown encoding as utf8.
+      const enc = _encodingName(encoding) ?? "utf8";
+      if (enc === "utf16le") return value.length * 2;
+      if (enc === "latin1" || enc === "ascii") return value.length;
+      return _encode(value, enc).length;
     }
     if (value instanceof ArrayBuffer) return value.byteLength;
-    if (value instanceof Uint8Array) return value.byteLength;
+    if (ArrayBuffer.isView(value)) return value.byteLength;
     return 0;
   }
   function compare(a, b) {
@@ -617,18 +718,53 @@ const __BufferMod = (() => {
     return aa.length < bb.length ? -1 : 1;
   }
   function isEncoding(enc) {
-    if (!enc) return false;
-    return ["utf8", "utf-8", "base64", "hex", "ascii", "latin1", "binary"].includes(String(enc).toLowerCase());
+    return typeof enc === "string" && enc !== "" && _encodingName(enc) !== null;
   }
   function _wrap(u8) {
     u8.__isBuffer = true;
-    u8.toString = function(encoding) {
-      if (!encoding || encoding === "utf8" || encoding === "utf-8") return _dec.decode(this);
-      if (encoding === "base64") { let s = ""; for (const b of this) s += String.fromCharCode(b); return btoa(s); }
-      if (encoding === "hex") { let s = ""; for (const b of this) s += b.toString(16).padStart(2, "0"); return s; }
-      return _dec.decode(this);
+    // Node's buf.toString([encoding[, start[, end]]]).
+    u8.toString = function(encoding, start, end) {
+      const enc = _encodingOf(encoding);
+      const lo = Math.max(0, Math.trunc(Number(start)) || 0);
+      const hi = end === undefined ? this.length : Math.min(this.length, Math.trunc(Number(end)) || 0);
+      return _decode(lo === 0 && hi === this.length ? this : _view.call(this, lo, Math.max(lo, hi)), enc);
     };
-    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(_view.call(b, 0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
+    // Node's buf.write(string[, offset[, length]][, encoding]): the encoding
+    // may stand in any trailing position, only whole characters are written
+    // (utf8 sequences, utf16le code units), and the count written returns.
+    // es-module-lexer writes each module's source into its wasm memory as
+    // Buffer.from(memory.buffer, at, n).write(source, "utf16le"); taking the
+    // encoding for an offset wrote UTF-8, the lexer found no imports, and
+    // Vite's import analysis rewrote nothing (every virtual: import broke).
+    u8.write = function(str, offset, length, encoding) {
+      const text = String(str);
+      if (typeof offset === "string") { encoding = offset; offset = 0; length = undefined; }
+      else if (typeof length === "string") { encoding = length; length = undefined; }
+      const at = offset === undefined ? 0 : Math.trunc(Number(offset));
+      if (!(at >= 0 && at <= this.length)) {
+        const e = new RangeError('The value of "offset" is out of range. It must be >= 0 && <= ' + this.length + ". Received " + offset);
+        e.code = "ERR_OUT_OF_RANGE";
+        throw e;
+      }
+      const room = this.length - at;
+      const max = length === undefined ? room : Math.min(room, Math.max(0, Math.trunc(Number(length)) || 0));
+      const enc = _encodingOf(encoding);
+      if (enc === "utf8") return _enc.encodeInto(text, _view.call(this, at, at + max)).written;
+      if (enc === "utf16le") {
+        const units = Math.min(text.length, max >> 1);
+        for (let i = 0; i < units; i++) { const c = text.charCodeAt(i); this[at + 2 * i] = c & 0xff; this[at + 2 * i + 1] = c >> 8; }
+        return units * 2;
+      }
+      if (enc === "latin1" || enc === "ascii") {
+        const n = Math.min(text.length, max);
+        for (let i = 0; i < n; i++) this[at + i] = text.charCodeAt(i) & 0xff;
+        return n;
+      }
+      const bytes = _encode(text, enc);
+      const n = Math.min(bytes.length, max);
+      this.set(_view.call(bytes, 0, n), at);
+      return n;
+    };
     // Node's Buffer#subarray returns a Buffer over the same memory, and
     // Buffer#slice is documented as its alias. Without the override a slice
     // came back as a bare Uint8Array whose toString() is the comma-joined
