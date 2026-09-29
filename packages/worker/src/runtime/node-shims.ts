@@ -5075,16 +5075,39 @@ const __fsMod = (() => {
       watcher.close = () => { watcher._closed = true; watcher.removeAllListeners(); };
       watcher._closed = false;
       if (listener) watcher.on("change", listener);
-      // Poll for changes every 500ms (simple but functional)
+      // A resident-store read reassembles a fresh byte buffer every time;
+      // object identity is not file identity. It also changes representation
+      // when data is hydrated, without a filesystem mutation. Compare the
+      // namespace's authoritative inode/revision instead, without reading any
+      // content. Heap-only embedders have no namespace, so compare bytes.
       const absPath = _resolve(filename);
       const key = _strip(absPath);
-      let lastContent = _bundleLookup(absPath);
+      function snapshot() {
+        if (_nsActive()) {
+          const found = __nsResolve(key, true);
+          if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
+          const row = found.row;
+          return { stamp: [row.ino, row.rev, row.kind, row.size, row.mtime, row.ctime].join(":"), absent: false };
+        }
+        const cell = _bundleLookup(absPath);
+        return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
+      }
+      function equal(a, b) {
+        if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
+        if (a.data === b.data) return true;
+        const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
+        const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
+        if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
+        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+        return true;
+      }
+      let previous = snapshot();
       const interval = setInterval(() => {
         if (watcher._closed) { clearInterval(interval); return; }
-        const current = _bundleLookup(absPath);
-        if (current !== lastContent) {
-          lastContent = current;
-          const eventType = current === undefined ? "rename" : "change";
+        const current = snapshot();
+        if (!equal(current, previous)) {
+          const eventType = current.absent || previous.absent ? "rename" : "change";
+          previous = current;
           watcher.emit("change", eventType, __pathMod.basename(filename));
         }
       }, 500);
