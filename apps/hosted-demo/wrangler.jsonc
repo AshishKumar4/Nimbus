@@ -29,8 +29,9 @@
   // — exactly the shape a third-party embedder ships.
   "main": "src/index.ts",
   // The newest date the pinned workerd accepts (1.20260926.1, via wrangler
-  // 4.143.0). It must stay at or past 2026-04-21: Nimbus refuses to compose
-  // below `enhanced_error_serialization` (packages/platform/src/composition.ts).
+  // 4.143.0). It must stay at or past 2026-04-21, or list
+  // `enhanced_error_serialization`: without it this Worker fails at startup
+  // (packages/platform/src/composition.ts).
   // `nodejs_compat` is on by date from 2026-08-04, so no flag is listed.
   "compatibility_date": "2026-09-26",
   // [DEPLOY-FLAG-FIX 2026-05-08] Removed `experimental` and `replica_routing`.

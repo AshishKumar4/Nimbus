@@ -143,15 +143,19 @@ export interface IsolatePoolOptions {
     /**
      * WebAssembly modules to ship into the facet via the LOADER's
      * `modules` map. Map keys are module specifier paths (e.g.
-     * `'esbuild.wasm'`); values are the raw bytes.
+     * `'esbuild.wasm'`); values are the raw bytes, or a module the host
+     * already holds compiled.
      *
-     * Workerd registers each entry as `{ wasm: ArrayBuffer }` in the
-     * worker's modules map. The pool prepends a static
+     * Workerd registers each entry as `{ wasm }` in the worker's modules
+     * map. The pool prepends a static
      * `import __NIMBUS_WASM_<id> from './<key>';` to the generated
-     * worker.js so workerd compiles each at module-load (startup phase,
-     * where wasm code generation is permitted). The compiled Modules
-     * are exposed via `globalThis.__NIMBUS_WASM[<key>]` for the user
-     * function to read at request time.
+     * worker.js; bytes are compiled at the facet's module-load (startup
+     * phase, where wasm code generation is permitted), and a compiled
+     * module is shared with the facet as is, its compiled code included
+     * (workerd src/workerd/api/worker-loader.c++,
+     * extractWasmModuleContent). The Modules are exposed via
+     * `globalThis.__NIMBUS_WASM[<key>]` for the user function to read at
+     * request time.
      *
      * Why this works when other paths don't:
      *   - request-time `WebAssembly.compile()` — disallowed by workerd
@@ -160,15 +164,15 @@ export interface IsolatePoolOptions {
      *     structured-clone refuses ("Unable to deserialize cloned data").
      *   - inlining bytes in the preamble — 16 MiB string per dispatch
      *     OOMs the supervisor at module-source allocation time.
-     *   - LOADER modules-map (this) — bytes ride INSIDE the worker code
-     *     blob; workerd compiles wasm during its own startup pipeline,
-     *     never crossing structured-clone, never executing JS eval.
+     *   - LOADER modules-map (this) — the module rides INSIDE the worker
+     *     code blob, never crossing structured-clone, never executing JS
+     *     eval.
      *
-     * The bytes ARE part of the loader-cache key (workerd hashes the
-     * whole WorkerCode), so changing the wasm bytes invalidates warm
-     * slots — desirable when the bundled wasm version changes.
+     * A compiled module must be described (host-wasm.ts describeHostWasm):
+     * its identity keys warm slots, as the bytes' fingerprint does, and its
+     * size counts toward the dynamic-worker code limit.
      */
-    wasmModules?: Record<string, ArrayBuffer>;
+    wasmModules?: Record<string, ArrayBuffer | WebAssembly.Module>;
 }
 /** Per-call override (merged with pool defaults). */
 export interface IsolateCallOptions {
@@ -277,11 +281,11 @@ export declare class IsolatePool {
      * across pool dispatches (cache-key stability).
      */
     private readonly wasmModules;
-    /** Hash of (name + byte length + first/last bytes) of every wasm
-     *  module, folded into the loader cache key so changes invalidate
-     *  warm slots. Hashing the FULL bytes would be O(20+ MiB) per dispatch
-     *  and is unnecessary — wasm bytes are pinned at deploy time, the
-     *  length+endpoints are a strong-enough fingerprint. */
+    /** Hash of every constructor-time wasm module, folded into the loader
+     *  cache key so changes invalidate warm slots: a compiled module by the
+     *  identity its host described, bytes by name + length + first/last
+     *  byte. Hashing the FULL bytes would be O(20+ MiB) per dispatch and is
+     *  unnecessary — they are pinned at deploy time. */
     private readonly wasmHash;
     /**
      * Short prefix of the owning DO's id, baked into the loader.get()

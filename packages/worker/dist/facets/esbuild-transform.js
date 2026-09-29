@@ -9,7 +9,8 @@ import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { ESBUILD_WASM_VERSION } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_BUILD_ID } from '../esbuild-cli-artifact.generated.js';
-import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody, fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
+import { fetchEsbuildCliRunner, fetchEsbuildJsFnBody } from '../runtime/esbuild-wasm-bytes.js';
+import { esbuildWasmModule } from '../runtime/host-wasm.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, and the `esbuild` command's runner, which its
@@ -68,12 +69,14 @@ export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:$
 const TRANSFORM_BATCH_SOURCE_BYTES = 4 * 1024 * 1024;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
+ * `wasmModule` is the host Worker's own compiled esbuild module
+ * (runtime/host-wasm.ts), shared with the facet rather than compiled again.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
  * each call of the factory is a separate esbuild. `cliRunner` is the staged
  * runner of the `esbuild` command (fetchEsbuildCliRunner).
  */
-export function esbuildFacetWorkerCode(wasmBytes, jsFnBody, cliRunner) {
+export function esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner) {
     const source = [
         'import { DurableObject } from "cloudflare:workers";',
         'import wasmModule from "esbuild.wasm";',
@@ -88,7 +91,7 @@ export function esbuildFacetWorkerCode(wasmBytes, jsFnBody, cliRunner) {
         mainModule: 'worker.js',
         modules: {
             'worker.js': source,
-            'esbuild.wasm': { wasm: wasmBytes },
+            'esbuild.wasm': { wasm: wasmModule },
         },
         globalOutbound: null,
     };
@@ -109,12 +112,12 @@ async function esbuildFacet(ctx, env) {
     }
     const worker = await loader.get(ESBUILD_FACET_WORKER_ID, async () => {
         const assetsEnv = { ASSETS: assets };
-        const [wasmBytes, jsFnBody, cliRunner] = await Promise.all([
-            fetchEsbuildWasmBytes(assetsEnv),
+        const [wasmModule, jsFnBody, cliRunner] = await Promise.all([
+            esbuildWasmModule(),
             fetchEsbuildJsFnBody(assetsEnv),
             fetchEsbuildCliRunner(assetsEnv),
         ]);
-        return esbuildFacetWorkerCode(wasmBytes, jsFnBody, cliRunner);
+        return esbuildFacetWorkerCode(wasmModule, jsFnBody, cliRunner);
     });
     const facetClass = worker.getDurableObjectClass('EsbuildFacet');
     return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
@@ -122,8 +125,8 @@ async function esbuildFacet(ctx, env) {
 /**
  * The one way to a Durable Object's esbuild facet: its transforms, builds,
  * and `esbuild` commands share one stub, so a caller that starts
- * while another is still loading the facet (fetching and verifying the 12 MiB
- * wasm) waits on that load instead of starting a second one. A load or call
+ * while another is still loading the facet (fetching and verifying its
+ * staged adapter and runner) waits on that load instead of starting a second one. A load or call
  * that failed drops the entry; the next caller mints a fresh stub.
  */
 const sharedFacets = new WeakMap();

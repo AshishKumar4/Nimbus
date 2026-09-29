@@ -56,8 +56,9 @@ Hosted-demo-only probes and the expensive markflow probes are skipped via
 
 A PR push cancels in-flight runs for the same ref (concurrency
 `cancel-in-progress`). Latest commit always wins. A cancelled run may not
-reach teardown; `bun tests/behavioral/_throwaway-target.mjs list` finds any
-`nimbus-tw-ci-*` strays, and `down --name <n>` removes them.
+reach teardown; `bun tests/behavioral/_throwaway-target.mjs list` lists every
+Preview under `nimbus-probe-previews` and marks the `tw-ci-*` strays, and
+`down --name ci-<run>-<attempt>` removes one.
 
 ### Reading the output
 

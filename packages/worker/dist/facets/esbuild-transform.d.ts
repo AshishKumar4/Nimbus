@@ -5,12 +5,14 @@ import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 export declare const ESBUILD_FACET_WORKER_ID: string;
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
+ * `wasmModule` is the host Worker's own compiled esbuild module
+ * (runtime/host-wasm.ts), shared with the facet rather than compiled again.
  * `jsFnBody` is the staged adapter (fetchEsbuildJsFnBody), compiled into a
  * factory at startup, the one moment code may be generated from a string;
  * each call of the factory is a separate esbuild. `cliRunner` is the staged
  * runner of the `esbuild` command (fetchEsbuildCliRunner).
  */
-export declare function esbuildFacetWorkerCode(wasmBytes: ArrayBuffer, jsFnBody: string, cliRunner: string): WorkerCode;
+export declare function esbuildFacetWorkerCode(wasmModule: WebAssembly.Module, jsFnBody: string, cliRunner: string): WorkerCode;
 /**
  * The transform host a Durable Object's esbuild runs its transforms on: its
  * esbuild facet, a slice per call. Transforms are pure, so a slice whose call

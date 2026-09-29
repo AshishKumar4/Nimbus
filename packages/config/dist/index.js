@@ -42,12 +42,17 @@ export const NIMBUS_REQUIRED_ALIASES = Object.freeze({
     minimisted: 'minimisted',
 });
 /**
- * From this compatibility date workerd enables `nodejs_compat` (and
- * `nodejs_compat_v2`) by date, so a config at or past it names neither:
- * src/workerd/io/compatibility-date.capnp, `nodeJsCompat @21
- * $compatEnableDate("2026-08-04")`.
+ * The flags Nimbus needs, each with the compatibility date from which
+ * workerd enables it (src/workerd/io/compatibility-date.capnp): a config
+ * names a flag only when its date is earlier. `enhanced_error_serialization`
+ * (`enhancedErrorSerialization @115`) carries a filesystem error's `code`
+ * across RPC; composeFabric refuses a Worker without it. `nodejs_compat`
+ * (`nodeJsCompat @21`) brings `node:crypto` and `node:async_hooks`.
  */
-const NODEJS_COMPAT_DEFAULT_DATE = '2026-08-04';
+const REQUIRED_FLAGS = [
+    ['nodejs_compat', '2026-08-04'],
+    ['enhanced_error_serialization', '2026-04-21'],
+];
 /**
  * Build a wrangler.jsonc-shaped object for a Nimbus embedder.
  *
@@ -75,7 +80,7 @@ export function buildNimbusWranglerConfig(opts) {
         name: opts.name,
         main: 'src/index.ts',
         compatibility_date: compatDate,
-        compatibility_flags: compatDate < NODEJS_COMPAT_DEFAULT_DATE ? ['nodejs_compat'] : [],
+        compatibility_flags: REQUIRED_FLAGS.filter(([, onByDate]) => compatDate < onByDate).map(([flag]) => flag),
         // Shell commands run in the session DO; the platform's 30 s default kills long ones.
         limits: { cpu_ms: 300_000 },
         assets: {

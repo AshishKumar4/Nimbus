@@ -14,11 +14,8 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
 // getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
 // no longer references any of them directly.
-// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
-// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
-// longer references them directly. Phase 2 A'.5 renamed the function
-// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
-// supervisor cache; goes through env.ASSETS on demand).
+// S10: classifyError and LRU_MAX_ENTRIES moved to sibling modules (-rpc,
+// -routes); class file no longer references them directly.
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
 // moved to sibling modules (-rpc uses recordFailure for _reportExternalExit;
@@ -26,11 +23,6 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
 // getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
 // no longer references any of them directly.
-// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
-// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
-// longer references them directly. Phase 2 A'.5 renamed the function
-// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
-// supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { NIMBUS_VERSION } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';

@@ -5,6 +5,44 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- esbuild facets are handed the host Worker's compiled esbuild module
+  instead of 12 MiB of wasm bytes. The host already bundles
+  `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
+  Loader shares a compiled `WebAssembly.Module` member with the dynamic
+  worker (workerd `worker-loader.c++`, `extractWasmModuleContent`).
+  - The staged `/_assets/esbuild-0.24.2.wasm` and its fetch, digest check,
+    and per-facet compile are gone, along with the `/api/_test/cache/wasm/*`
+    endpoints that benchmarked that fetch.
+  - The session's esbuild pool no longer retains the bytes. It no longer
+    holds 11,907,565 bytes of resident supervisor allocation credit for its
+    whole life. That resident lane was the credit pool's only use, so it is
+    removed.
+  - Measured locally on workerd 1.20260926.1 with esbuild's wasm: loading a
+    dynamic worker and serving its first fetch took 14 ms when handed the
+    Module and 64–75 ms when handed the bytes. On two Previews, a fresh
+    session's first `esbuild` run took a median of 1,133 ms (n=12) against
+    1,382 ms (n=8) for the build before the change.
+  - `@nimbus-sh/fabric` adds `describeHostWasm` (`host-wasm.js`). A host
+    records a module's id and wire size there. `IsolatePool` keys warm
+    slots by that id and refuses an undescribed Module.
+    `assertModuleMapWithinCodeLimit` counts the size, since a Module's
+    bytes still count toward the 64 MiB dynamic-worker code limit.
+  - The `worker-bundle-size` probe now checks the platform's limits as
+    documented, not the 7 MB index.js budget: `Total Upload` ≤ 64 MiB
+    uncompressed, and startup under 1 s as profiled by
+    `wrangler check startup`. Measured: 18.42 MiB, 192.6 ms active CPU on
+    local workerd.
+  - The other fixed wasm stays staged and is handed over as bytes: sql.js,
+    OpenTUI, yoga and tree-sitter (core, bash, powershell), 3.79 MB in all.
+    esbuild's handoff was free because the host already bundled it. With
+    these six bundled into the probe Worker, measured:
+    - idle workerd RSS locally +8.1 and +9.2 MB (two runs), in an isolate
+      every request and session shares, while most sessions never load them;
+    - startup +~8 ms (`wrangler check startup`, three runs each);
+    - Total Upload 18.4 → 22.0 MiB.
+  - `_throwaway-target.mjs up` logs the Preview deployment's
+    `startup_time_ms`, the platform's own startup figure.
+
 - The deploy-isolation preflight now audits Worker Previews
   (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
   Every `previews` block is its own deploy target in
@@ -16,7 +54,28 @@ published independently in the `@nimbus-sh` npm scope.
   a production Worker's deployment, and a Preview of the production Worker
   itself. It warns about any Worker binding the Preview does not redeclare.
   `apps/probe/wrangler.jsonc` carries a `previews` block that passes the
-  check. The throwaway tooling still deploys separate `nimbus-tw-*` Workers.
+  check.
+
+- Throwaway probe targets, local and CI's, are Worker Previews of
+  `nimbus-probe-previews`, a parent Worker with no production deployment.
+  They are no longer separate `nimbus-tw-*` Workers.
+  - `_throwaway-target.mjs up --name x` creates or updates Preview `tw-x` at
+    `tw-x-nimbus-probe-previews.<subdomain>.workers.dev`.
+  - Each Preview has its own Durable Object namespace and storage. Measured:
+    a file written in a session on one Preview is absent under the same
+    session id on another, and present again on the first.
+  - `JWT_SECRET` is uploaded with every deployment (`--secrets-file`), and
+    the dashboard's Previews Base configuration is ignored.
+  - A deploy counts as landed only when the Preview's latest deployment id is
+    the one reported and differs from the one before.
+  - `down` runs `wrangler preview delete` and confirms through the API. The
+    Preview's storage goes with it: a terminal no longer opens. Its
+    hostname kept answering from the edge for over two minutes afterwards.
+  - `list` shows every Preview under the parent, marking the ones no local
+    checkout holds.
+  - The parent is created with Preview URLs on.
+  - Staging stays two Workers: Cron Triggers and routes target production
+    only.
 
 - A rebuild stages a new opencode artifact only from the directory named by
   `NIMBUS_OPENCODE_DIST`, and a named directory that does not exist is an
@@ -62,9 +121,18 @@ published independently in the `@nimbus-sh` npm scope.
   their Worker with `enhanced_error_serialization`: add it to
   `compatibility_flags`, which keeps every other behavior of an older
   compatibility date, or set `compatibility_date` to 2026-04-21 or later.
-  `composeFabric` throws at startup on a workerd host without it, naming
-  both fixes, so such a deploy fails rather than every process seeing EIO
-  where the filesystem said ENOENT.
+  Without it `composeFabric` throws, naming both fixes, rather than every
+  process seeing EIO where the filesystem said ENOENT. It throws where the
+  embedder composes: a library host that composes through
+  `NimbusWorkspace.create({ fabric })` gets the error from its first
+  `NimbusWorkspace.create` (measured: HTTP 500 with that message), and a
+  Worker on `@nimbus-sh/worker`'s entry, which composes at module scope,
+  fails at startup (measured under `wrangler dev`). Verified on local
+  workerd: a host at 2025-12-01 with
+  only the flag added starts, and its processes get
+  ENOENT/ENOTDIR/ENOTEMPTY. `@nimbus-sh/config` lists the flag for a
+  `compatibilityDate` before 2026-04-21, as it lists `nodejs_compat` before
+  2026-08-04.
 
 - A destroyed session no longer keeps a live alarm when an alarm handler was
   running at the time of the destroy. The alarm dispatcher wrote its reasons

@@ -11,11 +11,6 @@ export interface WeightedCreditPoolStats {
   readonly current: number;
   readonly peak: number;
   readonly queued: number;
-  /**
-   * Credit held by owners that keep it for their whole lifetime rather than
-   * for one operation — the floor no waiter can ever expect to get back.
-   */
-  readonly resident: number;
 }
 
 export interface WeightedCreditPoolOptions {
@@ -34,8 +29,6 @@ export interface WeightedCreditPoolOptions {
 
 interface CreditWaiter {
   readonly bytes: number;
-  /** Whether the granted lease counts toward the resident floor. */
-  readonly resident: boolean;
   readonly resolve: (lease: ResizableCreditLease) => void;
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
@@ -46,55 +39,27 @@ interface CreditWaiter {
 class CreditLane {
   private current = 0;
   private peak = 0;
-  private resident = 0;
   private readonly waiters: CreditWaiter[] = [];
 
   constructor(readonly capacity: number) {}
 
   get stats(): WeightedCreditPoolStats {
-    return {
-      current: this.current, peak: this.peak, queued: this.waiters.length, resident: this.resident,
-    };
+    return { current: this.current, peak: this.peak, queued: this.waiters.length };
   }
 
   tryAcquire(bytes: number): ResizableCreditLease | null {
     if (this.waiters.length > 0 || this.current + bytes > this.capacity) return null;
-    return this.grant(bytes, false);
+    return this.grant(bytes);
   }
 
-  /**
-   * The largest claim this lane can ever grant: capacity less what resident
-   * owners hold for their whole lifetime. A claim above it cannot be
-   * satisfied by waiting, because nothing it is waiting for will be
-   * released.
-   */
-  get grantableCeiling(): number {
-    return this.capacity - this.resident;
-  }
-
-  acquire(bytes: number, signal?: AbortSignal, resident = false): Promise<ResizableCreditLease> {
+  acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
     if (signal?.aborted) return Promise.reject(abortError(signal));
-    // Refuse a claim no amount of waiting can satisfy, rather than parking it
-    // in the FIFO forever. A parked claim is indistinguishable from a caller
-    // that stopped: no error, no timeout, and — because the queue refuses
-    // everyone behind it — no further progress anywhere in the isolate. That
-    // is what a real-vite launch looked like for four rounds of debugging.
-    if (bytes > this.grantableCeiling) {
-      return Promise.reject(new RangeError(
-        `weighted credit claim of ${bytes} bytes can never be granted: capacity is ${this.capacity} `
-        + `and ${this.resident} bytes are held by resident owners, leaving ${this.grantableCeiling}`,
-      ));
-    }
-    const immediate = resident ? null : this.tryAcquire(bytes);
+    const immediate = this.tryAcquire(bytes);
     if (immediate) return Promise.resolve(immediate);
-    if (resident && this.waiters.length === 0 && this.current + bytes <= this.capacity) {
-      return Promise.resolve(this.grant(bytes, true));
-    }
 
     return new Promise<ResizableCreditLease>((resolve, reject) => {
       const waiter: CreditWaiter = {
         bytes,
-        resident,
         resolve,
         reject,
         signal,
@@ -119,9 +84,8 @@ class CreditLane {
     });
   }
 
-  private grant(bytes: number, resident: boolean): ResizableCreditLease {
+  private grant(bytes: number): ResizableCreditLease {
     this.current += bytes;
-    if (resident) this.resident += bytes;
     this.peak = Math.max(this.peak, this.current);
     let leasedBytes = bytes;
     let released = false;
@@ -143,7 +107,6 @@ class CreditLane {
           );
         }
         this.current -= leasedBytes - nextBytes;
-        if (resident) this.resident -= leasedBytes - nextBytes;
         leasedBytes = nextBytes;
         this.drain();
       },
@@ -151,7 +114,6 @@ class CreditLane {
         if (released) return;
         released = true;
         this.current -= leasedBytes;
-        if (resident) this.resident -= leasedBytes;
         if (this.current < 0) {
           throw new Error('weighted credit accounting underflow');
         }
@@ -172,7 +134,7 @@ class CreditLane {
       if (this.current + waiter.bytes > this.capacity) return;
       this.waiters.shift();
       waiter.signal?.removeEventListener('abort', waiter.onAbort!);
-      waiter.resolve(this.grant(waiter.bytes, waiter.resident));
+      waiter.resolve(this.grant(waiter.bytes));
     }
   }
 }
@@ -233,7 +195,6 @@ export class WeightedCreditPool {
       current: general.current + small.current,
       peak: general.peak + small.peak,
       queued: general.queued + small.queued,
-      resident: general.resident + small.resident,
     };
   }
 
@@ -263,22 +224,6 @@ export class WeightedCreditPool {
       return this.small!.acquire(bytes, signal);
     }
     return this.general.acquire(bytes, signal);
-  }
-
-  /**
-   * Take credit that will be held for the owner's whole lifetime rather than
-   * for one operation — the esbuild pool's wasm image is the case.
-   *
-   * Recorded as a floor so a later claim that could never fit around it is
-   * refused with both numbers instead of parking in the FIFO forever.
-   */
-  acquireResident(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
-    try {
-      this.validateRequest(bytes);
-    } catch (error) {
-      return Promise.reject(error as Error);
-    }
-    return this.general.acquire(bytes, signal, true);
   }
 
   private validateRequest(bytes: number): void {

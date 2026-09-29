@@ -113,11 +113,14 @@ export default createNimbusHandler({
 }
 ```
 
-The compatibility date must be 2026-04-21 or later. A process's filesystem
-errors reach it across workerd RPC, and only `enhanced_error_serialization`
-(on by date from 2026-04-21) carries their `code` across. Below it the Worker
-throws at startup, so `wrangler deploy` fails with that reason. From
-2026-08-04 the date also enables `nodejs_compat`, so no flag is listed.
+The Worker needs `enhanced_error_serialization`. A process's filesystem errors
+reach it across workerd RPC, and only that flag carries their `code` across.
+A compatibility date of 2026-04-21 or later enables it; on an older date, add
+`"enhanced_error_serialization"` to `compatibility_flags`, which keeps every
+other behavior of that date. Without it the Worker fails at startup with
+that reason, since this package's entry composes the fabric at module scope.
+From 2026-08-04 the date also enables
+`nodejs_compat`, so no flag is listed.
 
 Then:
 
