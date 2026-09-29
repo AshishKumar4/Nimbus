@@ -967,8 +967,12 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // Modules a previous launch actually tried to execute are required roots,
         // not speculative dynamic-import subtrees. Walk their static imports in
         // this same visited set and byte budget before any optional enrichment.
-        for (const path of requiredRoots ?? []) {
-            await addFile(strip(path));
+        for (const root of requiredRoots ?? []) {
+            const path = strip(root.path);
+            if (root.text === undefined)
+                await addFile(path);
+            else
+                await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
             if (closureExceeded || declined)
                 break;
         }

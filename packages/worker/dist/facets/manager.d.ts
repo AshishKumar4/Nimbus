@@ -690,7 +690,7 @@ export declare function isTypescriptDeclarationFile(path: string): boolean;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: LaunchFs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, maxBundleBytes?: number, learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>, runtimeModules?: ReadonlyMap<string, string>): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.

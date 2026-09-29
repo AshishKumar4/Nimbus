@@ -107,8 +107,13 @@ export declare class ClosureBoundExceededError extends Error {
     readonly outcome: ClosureBoundExceeded;
     constructor(outcome: ClosureBoundExceeded);
 }
+/** An executable module already observed, including a deleted generated file. */
+export interface RequiredModuleRoot {
+    path: string;
+    text?: string;
+}
 /** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<string>): Promise<PrefetchOutcome>;
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<string>): Promise<DependencyClosureOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<DependencyClosureOutcome>;
 export {};
 //# sourceMappingURL=require-resolver.d.ts.map
