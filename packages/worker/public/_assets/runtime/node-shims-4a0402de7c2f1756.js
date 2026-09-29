@@ -8409,8 +8409,14 @@ function __makeProcessStdin() {
     wrapped.__orig = listener;
     return wrapped;
   }
+  // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
+  // listener, resume() or read(). An 'end', 'close' or 'error' listener on
+  // paused stdin receives nothing. Vite's dev server registers
+  // process.stdin.on("end", closeServerAndExit); seeding on that listener
+  // ended stdin at once, and every Vite dev server (Astro's included) shut
+  // itself down seconds after it started.
   r.on = function(event, listener) {
-    seed();
+    if (event === "data" || event === "readable") seed();
     if (event === "data" && typeof listener === "function") {
       const wrapped = wrapDataListener(listener);
       const ret = origOn(event, wrapped);
