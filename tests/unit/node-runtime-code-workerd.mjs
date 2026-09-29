@@ -131,10 +131,12 @@ try {
     const caughtFile = async () => {
       for (let n = 0; n < 100; n++) {
         const r = await terminal.run('cat ' + W + '/caught.txt');
-        if (r.exitCode === 0) return r.stdout.trim();
+        if (r.status === 0) return r.stdout.trim();
         await Bun.sleep(50);
       }
-      throw new Error('caught module fixture never wrote its result');
+      const ps = await terminal.run('ps');
+      const logs = await terminal.run('logs ' + caughtPid);
+      throw new Error('caught module fixture never wrote its result: ' + JSON.stringify({startup:caughtFirst,ps,logs}));
     };
     const caughtFirst = await terminal.run('cd ' + W + ' && node caught.js');
     const caughtPid = Number(caughtFirst.stdout.match(/pid=(\d+)/)?.[1]);
