@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- `npm install` run by a node process (`create-next-app`, or any
+  `child_process.spawn('npm', ...)`) installs again. Its resolver's last
+  layer ran in-DO and its install batch followed at once, sized to the
+  Durable Object's Dynamic Worker headroom; the platform still counted the
+  resolver's workers for a moment after their calls returned and refused
+  the batch ("Dynamic worker concurrency limit exceeded"), so
+  create-next-app aborted with "npm install has failed". A pooled call the
+  platform refuses to start now waits and is sent again, as the platform
+  asks (up to 15 s), and the platform's limit message is recognised, so a
+  hit that outlasts the wait names the workers that were in flight.
+
 - `npm install` links every command of a project with more than about 120
   of them. The installer wrote all of `node_modules/.bin` in one W7 stream,
   which owns at most 128 paths, so the install failed at link-bins with
