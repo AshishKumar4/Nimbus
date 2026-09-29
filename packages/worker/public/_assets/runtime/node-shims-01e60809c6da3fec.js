@@ -4992,16 +4992,39 @@ const __fsMod = (() => {
       watcher.close = () => { watcher._closed = true; watcher.removeAllListeners(); };
       watcher._closed = false;
       if (listener) watcher.on("change", listener);
-      // Poll for changes every 500ms (simple but functional)
+      // A resident-store read reassembles a fresh byte buffer every time;
+      // object identity is not file identity. It also changes representation
+      // when data is hydrated, without a filesystem mutation. Compare the
+      // namespace's authoritative inode/revision instead, without reading any
+      // content. Heap-only embedders have no namespace, so compare bytes.
       const absPath = _resolve(filename);
       const key = _strip(absPath);
-      let lastContent = _bundleLookup(absPath);
+      function snapshot() {
+        if (_nsActive()) {
+          const found = __nsResolve(key, true);
+          if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
+          const row = found.row;
+          return { stamp: [row.ino, row.rev, row.kind, row.size, row.mtime, row.ctime].join(":"), absent: false };
+        }
+        const cell = _bundleLookup(absPath);
+        return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
+      }
+      function equal(a, b) {
+        if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
+        if (a.data === b.data) return true;
+        const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
+        const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
+        if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
+        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+        return true;
+      }
+      let previous = snapshot();
       const interval = setInterval(() => {
         if (watcher._closed) { clearInterval(interval); return; }
-        const current = _bundleLookup(absPath);
-        if (current !== lastContent) {
-          lastContent = current;
-          const eventType = current === undefined ? "rename" : "change";
+        const current = snapshot();
+        if (!equal(current, previous)) {
+          const eventType = current.absent || previous.absent ? "rename" : "change";
+          previous = current;
           watcher.emit("change", eventType, __pathMod.basename(filename));
         }
       }, 500);
@@ -11359,13 +11382,43 @@ function __esmLoad(resolution) {
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
   } else if (resolution.format === "data") {
-    const match = /^data:application\/json(;[^,]*)?,/.exec(resolution.url);
-    if (!match) {
-      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
+    const url = new URL(resolution.url);
+    const comma = url.pathname.indexOf(',');
+    const header = url.pathname.slice(0, comma);
+    const mediaType = header.split(';')[0].toLowerCase();
+    const payload = url.pathname.slice(comma + 1);
+    const text = header.split(';').includes('base64')
+      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
+    if (mediaType === "application/json") {
+      const value = JSON.parse(text);
+      ns = __esmNamespaceOf(["default"], () => value);
+    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
+      // A data URL produced at runtime is a module body, just like a written
+      // file. It is staged by the same runtime-code service, retaining its URL
+      // as the import base (relative imports from data URLs remain invalid).
+      const cell = __nimbusRuntimeModule(resolution.url, text);
+      const mod = { exports: {} };
+      Object.defineProperty(mod, "__nimbusImportMeta", { value: {
+        url: resolution.url,
+        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
+      } });
+      const requireData = (id) => {
+        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
+        if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
+        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
+      };
+      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
+      if (result && typeof result.then === "function") {
+        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        __esmNamespaces.set(resolution.url, pending);
+        return pending;
+      }
+      ns = namespace();
+    } else {
+      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
     }
-    const body = resolution.url.slice(match[0].length);
-    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
-    ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\/+/, "");
     const esm = resolution.format === "module"

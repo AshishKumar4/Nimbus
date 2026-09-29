@@ -2826,7 +2826,9 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer));
+        const cell = bundle[path];
+        const source = typeof cell === 'string' ? cell : new TextDecoder().decode(cell);
+        const closure = await prefetchForRequire(requireFsOverBridge(vfs), source, '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer));
         if ('kind' in closure)
             continue;
         for (const [dep, content] of Object.entries(closure.bundle)) {
@@ -4763,6 +4765,16 @@ export class FacetManager {
         for (const [codeKey, entry] of await this.runtimeCode.forLaunch(key)) {
             if (entry.kind !== 'module') {
                 modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
+                continue;
+            }
+            if (entry.path.startsWith('data:')) {
+                if (!this.esbuild)
+                    throw new Error('No transformer for a staged data URL module');
+                const result = await this.esbuild.transform(entry.text, {
+                    loader: 'js', format: 'cjs', target: 'esnext',
+                    moduleMetadata: true, dynamicImportParent: entry.path,
+                });
+                modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
                 continue;
             }
             const path = entry.path.replace(/^\/+/, '');
