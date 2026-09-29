@@ -1136,6 +1136,7 @@ async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
+    await __nimbusFlushRuntimeCode(rt.supervisor);
     const __vfsTasks = [];
     if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
       for (const path of Object.keys(rt.vfsWrites)) {
@@ -1183,6 +1184,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
+    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor);
     // The resident set lives in this facet's own SQLite rather than its heap.
     // A synchronous read cannot block and no JS stack here can be suspended, so
     // the bytes have to sit somewhere a synchronous call can already reach;
@@ -5537,6 +5539,14 @@ export class FacetManager {
    */
   hasResidentProcess(pid: number): boolean {
     return this.processRpcResources.has(pid);
+  }
+
+  /** Acknowledge generated code only after storage has accepted it. The
+   * launch key comes from the process table, never from guest arguments. */
+  async noteProcessRuntimeCode(pid: number, entries: unknown[]): Promise<void> {
+    const key = this.residentBundleKeys.get(pid);
+    if (!key || this.processes.get(pid)?.state !== 'running') throw new Error('Runtime code report has no live launch');
+    await this._recordRuntimeCode(key, entries);
   }
 
   noteProcessReportedExit(
