@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Native HTTP client I/O now remains live until the request's response body
+  completes, errors or is cancelled, rather than ending at response headers.
+  Referenced `listen(0)` allocations also keep the process alive until binding
+  finishes. Closing a pending allocation emits `close`, permits immediate
+  relisten, and retires late replies without disturbing the new listener.
+  Import rewriting now lexes ordinary CommonJS as a script and falls back to
+  Acorn's grammar for ambiguous slash/method/ASI contexts or tokenizer errors.
+  This preserves octal CommonJS and imports after keyword-named member calls.
+  The Bun HTTP test adapter no longer charges its internal TCP connection
+  sweep as a guest timer: refinement boots no longer wait out the one-second
+  startup budget. Real workerd retains its native scheduling unchanged.
+
 - Node HTTP guests now use workerd's native `node:http` server and
   `cloudflare:node.handleAsNodeRequest` instead of Nimbus's synthetic
   IncomingMessage/ServerResponse/Server classes. Native HTTP/HTTPS clients

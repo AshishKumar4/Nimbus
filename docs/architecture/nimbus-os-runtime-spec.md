@@ -362,10 +362,12 @@ Implementation rules:
   queued connections and produces clear errors.
 - Node HTTP uses workerd's native `node:http` implementation and
   `cloudflare:node.handleAsNodeRequest`. Nimbus owns the session-wide port
-  table (including ephemeral allocations), VFS request admission and the
-  response-header deadline; the runtime owns HTTP streams and protocol
-  semantics. Raw TCP remains separate. The native dispatcher does not emit
-  WebSocket upgrade events; Cirrus's existing HMR bridge is unchanged.
+  table (including referenced pending ephemeral allocations), VFS admission
+  and the response-header deadline. Native client exchanges count as live
+  I/O through body completion/error/cancellation; headers alone do not end a
+  CLI download. The runtime owns HTTP streams and protocol semantics. Raw
+  TCP remains separate. The native dispatcher does not emit WebSocket upgrade
+  events; Cirrus's existing HMR bridge is unchanged.
 - Static serving is explicit only. Do not hide static-server substitutions behind
   language server paths.
 

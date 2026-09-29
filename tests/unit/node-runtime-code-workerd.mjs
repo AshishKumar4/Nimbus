@@ -108,11 +108,25 @@ try {
     await terminal.run(`cd ${W} && node server.js`);
     assert.equal(await residentResult(), 'resident-ok', 'and its exit report staged it for the next launch');
 
+    // Real workerd uses its own HTTP scheduling, not the Bun fixture's TCP
+    // connection sweep. Measure the guest counter while each server is bound
+    // and verify natural one-shot exit after close or unref (no runner deadline).
+    const closeStart = performance.now();
+    const closing = await terminal.run(
+      `node -e "const s=require('http').createServer();s.listen(0,()=>{console.log('BOUND_TIMERS='+globalThis.__nimbusPendingTimers);s.close(()=>console.log('CLOSED_TIMERS='+globalThis.__nimbusPendingTimers))})"`, 15000,
+    );
+    assert.equal(closing.status, 0, closing.stdout);
+    assert.match(closing.stdout, /^BOUND_TIMERS=0$/m);
+    assert.match(closing.stdout, /^CLOSED_TIMERS=0$/m);
+    console.log('workerd native listen/close natural exit: ' + Math.round(performance.now() - closeStart) + 'ms');
+    const unrefStart = performance.now();
     const unref = await terminal.run(
-      `node -e "require('http').createServer().listen(0).unref(); console.log('UNREF_OK')"`, 15000,
+      `node -e "const s=require('http').createServer();s.listen(0,()=>{console.log('UNREF_TIMERS='+globalThis.__nimbusPendingTimers);s.unref();console.log('UNREF_OK')})"`, 15000,
     );
     assert.equal(unref.status, 0, unref.stdout);
+    assert.match(unref.stdout, /^UNREF_TIMERS=0$/m);
     assert.match(unref.stdout, /^UNREF_OK$/m, 'an unrefed native listener does not keep the process alive');
+    console.log('workerd native listen/unref natural exit: ' + Math.round(performance.now() - unrefStart) + 'ms');
 
     const bad = await terminal.run(`cd ${W} && node bad.js`);
     assert.match(bad.stdout, /\/home\/user\/w\/bad\.js\n\nSyntaxError/, bad.stdout);

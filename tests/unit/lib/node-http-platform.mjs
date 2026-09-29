@@ -7,6 +7,13 @@ import net from 'node:net';
 import { generateShimsCode as shims } from '../../../packages/worker/src/runtime/node-shims.ts';
 
 const hostFetch = globalThis.fetch.bind(globalThis);
+const hostTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
+
+function withHostTimers(work) {
+  const guestTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
+  Object.assign(globalThis, hostTimers);
+  try { return work(); } finally { Object.assign(globalThis, guestTimers); }
+}
 const realms = globalThis.__nimbusTestHttpRealms ??= new Map();
 let nextRealm = 0;
 
@@ -14,6 +21,17 @@ let nextRealm = 0;
 export function createHttpPlatform() {
   const listeners = new Map();
   class Server extends http.Server {
+    constructor(...args) {
+      withHostTimers(() => super(...args));
+      // Bun starts its 30 s TCP connection sweep from an internal listening
+      // listener, not from listen() itself. Workerd has no host TCP sweep.
+      // Keep only the listeners installed by the native constructor on host
+      // scheduling; application listeners added afterward use guest timers.
+      for (const listener of this.rawListeners('listening')) {
+        this.removeListener('listening', listener);
+        this.on('listening', (...values) => withHostTimers(() => Reflect.apply(listener, this, values)));
+      }
+    }
     listen(...args) {
       const [opts, callback] = net._normalizeArgs(args);
       const port = Number(opts.port ?? 0);
