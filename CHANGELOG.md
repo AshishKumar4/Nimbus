@@ -107,6 +107,7 @@ published independently in the `@nimbus-sh` npm scope.
   component no mount shares, and `normalizeVfsPath` returns a key already in
   canonical form as it is. The tools that now read a project through the
   caller's view (git, npm, vite build) gain the same.
+
 - Node HTTP guests now use workerd's native `node:http` server and
   `cloudflare:node.handleAsNodeRequest` instead of Nimbus's synthetic
   IncomingMessage/ServerResponse/Server classes. Native HTTP/HTTPS clients
