@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a008e87583e0e2aa8e69fa8402e904b434a99a6aca202d8487c78ebb95d75c20",
+  "fingerprint": "57ba321f5a7e3b2f197cd802656c12037c4bea1c1696d5980249ac4d4d887f7d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1537,8 +1537,8 @@
     "packages/worker/dist/facets/esbuild-bundle-pool.d.ts.map": "abf8e2755a7dba0f45ad5d9c3e26f74b8d187e7106a9565f9962d48d939de233",
     "packages/worker/dist/facets/esbuild-bundle-pool.js": "cd6de9e64c0f7d1082a3d1550f4a5378c83db3640f30813b1689b43100b784d1",
     "packages/worker/dist/facets/esbuild-transform.d.ts": "da4fc32e41c4ed6138cce685e7a57a220af9781ab7c570faf40f86378bfd996a",
-    "packages/worker/dist/facets/esbuild-transform.d.ts.map": "8a206ff8398f8d6b448a91a6f6cc36fb2825d988dff5fa051f9f1450bddfc327",
-    "packages/worker/dist/facets/esbuild-transform.js": "c5740cfebd683fd6afe735b864acf4d5ed94c9566b004dd8d041f8c91d115ea6",
+    "packages/worker/dist/facets/esbuild-transform.d.ts.map": "330c2d203c76ebc72d57b67cc84c2a9f2b798487f6918dfb7b07ea7205c07ba3",
+    "packages/worker/dist/facets/esbuild-transform.js": "3e114852c03b8e249edd010900cb7927aa5ff276da6f972090311038173537a1",
     "packages/worker/dist/facets/exec-telemetry.d.ts": "62b88f8d6d77899abbeaf42317904c71ee5bbe06b9c62ac2345ce4e3736d82de",
     "packages/worker/dist/facets/exec-telemetry.d.ts.map": "4795182269f7c552a1073e87b90de785dccc180ffccfb4ac4f11d39a8d36cbb4",
     "packages/worker/dist/facets/exec-telemetry.js": "ca016fce9d18f6a29cc2db43a71e958c52d39c25f2ca3f0ab12215a29065d0f9",
@@ -2030,7 +2030,7 @@
     "packages/worker/src/facets/durable-images.ts": "1001de6152cd7d3873e5cd48c2053b3d83c934828813d1f3443bd102c562f48f",
     "packages/worker/src/facets/durable-slots.ts": "9f82f02d666b34437731c02884daa27d88961c2885817f22e4b3482567f5e566",
     "packages/worker/src/facets/esbuild-bundle-pool.ts": "a86cfedcacbe5761c01b661514fa36f455a01f06070fa1192ba44f11986bf575",
-    "packages/worker/src/facets/esbuild-transform.ts": "f949415a6053a034ed4f017882443df5c1f46e58f97c5bbb951c3bb9ada46443",
+    "packages/worker/src/facets/esbuild-transform.ts": "f81001fe57cd04374989bdfa1c6f470cfcc4fccd790ef30717f23eff8e2ab6c6",
     "packages/worker/src/facets/exec-telemetry.ts": "8b680499e6b0ef582a456d2aa4d0873138dc6765d843b81e76910026d984d852",
     "packages/worker/src/facets/manager.ts": "f4c706d90d451e32d342caa6225a087b8c3960c83d575d12f4bd6189c1f67fe3",
     "packages/worker/src/facets/opencode-staging.ts": "e5c78bd8159028f448266e0b7c94f2bb8dcfbcaa52e482a24e5dfd840b78a257",
