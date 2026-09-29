@@ -33,6 +33,7 @@ import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
+import { hostWasmIdentity } from './host-wasm.js';
 /**
  * esbuild runtime helpers re-declared at the top of every generated facet
  * module. esbuild emits `__name(fn, "fn")` wrappers around every named
@@ -139,11 +140,11 @@ export class IsolatePool {
      * across pool dispatches (cache-key stability).
      */
     wasmModules;
-    /** Hash of (name + byte length + first/last bytes) of every wasm
-     *  module, folded into the loader cache key so changes invalidate
-     *  warm slots. Hashing the FULL bytes would be O(20+ MiB) per dispatch
-     *  and is unnecessary — wasm bytes are pinned at deploy time, the
-     *  length+endpoints are a strong-enough fingerprint. */
+    /** Hash of every constructor-time wasm module, folded into the loader
+     *  cache key so changes invalidate warm slots: a compiled module by the
+     *  identity its host described, bytes by name + length + first/last
+     *  byte. Hashing the FULL bytes would be O(20+ MiB) per dispatch and is
+     *  unnecessary — they are pinned at deploy time. */
     wasmHash;
     /**
      * Short prefix of the owning DO's id, baked into the loader.get()
@@ -193,15 +194,34 @@ export class IsolatePool {
         // 'esbuild_wasm') are rejected loudly because the generated worker
         // would otherwise have duplicate imports. Order is preserved.
         const wasmEntries = [];
+        const fingerprints = [];
         const seenIds = new Set();
         if (opts?.wasmModules) {
-            for (const [name, bytes] of Object.entries(opts.wasmModules)) {
-                if (!(bytes instanceof ArrayBuffer)) {
+            for (const [name, wasm] of Object.entries(opts.wasmModules)) {
+                let fingerprint;
+                if (wasm instanceof ArrayBuffer) {
+                    // Name + length + first/last byte: hashing 20+ MiB of wasm per
+                    // dispatch would be wasteful, and these bytes change only with
+                    // the deployed bundle.
+                    const u = new Uint8Array(wasm);
+                    const len = u.byteLength;
+                    fingerprint = `${name}:${len}:${len > 0 ? u[0] : 0}:${len > 0 ? u[len - 1] : 0}`;
+                }
+                else if (wasm instanceof WebAssembly.Module) {
+                    const identity = hostWasmIdentity(wasm);
+                    if (!identity) {
+                        throw new BindingError(`IsolatePool: wasmModules['${name}'] is a WebAssembly.Module nobody described; ` +
+                            'pass it through describeHostWasm (@nimbus-sh/fabric/host-wasm.js) so warm slots ' +
+                            'can be keyed by it and the code limit can count it.');
+                    }
+                    fingerprint = `${name}:host:${identity.id}:${identity.bytes}`;
+                }
+                else {
                     // Reached only when a caller broke the declared option type, so the
-                    // value is whatever it really was rather than the ArrayBuffer here.
-                    const got = bytes?.constructor?.name;
-                    throw new BindingError(`IsolatePool: wasmModules['${name}'] must be ArrayBuffer ` +
-                        `(got ${got || typeof bytes}).`);
+                    // value is whatever it really was rather than the union here.
+                    const got = wasm?.constructor?.name;
+                    throw new BindingError(`IsolatePool: wasmModules['${name}'] must be an ArrayBuffer or a WebAssembly.Module ` +
+                        `(got ${got || typeof wasm}).`);
                 }
                 const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
                 if (seenIds.has(id)) {
@@ -209,29 +229,12 @@ export class IsolatePool {
                         `identifier-sanitisation (id='${id}'). Pick distinct module names.`);
                 }
                 seenIds.add(id);
-                wasmEntries.push({ name, id, bytes });
+                wasmEntries.push({ name, id, wasm });
+                fingerprints.push(fingerprint);
             }
         }
         this.wasmModules = wasmEntries;
-        // Fingerprint: name + length + first/last byte of each module.
-        // Hashing 20+ MiB of wasm per dispatch would be wasteful; this
-        // fingerprint is bytes-stable for a given deployed bundle and only
-        // changes when the wasm itself changes (deploy-time event).
-        if (wasmEntries.length === 0) {
-            this.wasmHash = '0';
-        }
-        else {
-            const fp = wasmEntries
-                .map((w) => {
-                const u = new Uint8Array(w.bytes);
-                const len = u.byteLength;
-                const first = len > 0 ? u[0] : 0;
-                const last = len > 0 ? u[len - 1] : 0;
-                return `${w.name}:${len}:${first}:${last}`;
-            })
-                .join('|');
-            this.wasmHash = hashSource(fp);
-        }
+        this.wasmHash = fingerprints.length === 0 ? '0' : hashSource(fingerprints.join('|'));
         const bindings = { ...(opts?.extraBindings ?? {}) };
         this.supervisorKey = 's-none';
         if (!opts?.omitSupervisor) {
@@ -311,7 +314,7 @@ export class IsolatePool {
                     `id='${id}') collides with another per-call key. Pick distinct names.`);
             }
             seen.add(id);
-            out.push({ name, id, bytes });
+            out.push({ name, id, wasm: bytes });
         }
         return out;
     }
@@ -347,7 +350,7 @@ export class IsolatePool {
             return '0';
         const parts = [];
         for (const w of entries) {
-            const u = new Uint8Array(w.bytes);
+            const u = new Uint8Array(w.wasm);
             const len = u.byteLength;
             // djb2 over the bytes. Faster than crypto.subtle.digest at small
             // sizes, deterministic, and good enough for cache-key
@@ -418,7 +421,7 @@ export class IsolatePool {
         // (matters only for human-readable diffs; workerd doesn't care).
         const modules = { 'worker.js': moduleSource };
         for (const w of allWasmEntries) {
-            modules[w.name] = { wasm: w.bytes };
+            modules[w.name] = { wasm: w.wasm };
         }
         assertModuleMapWithinCodeLimit(modules);
         return {

@@ -17,13 +17,19 @@ export interface JsonModule {
     json: unknown;
 }
 /**
- * A compiled WebAssembly module, importable from a facet by module name.
- * Nimbus ships these on every path — sql.js for node:sqlite, the interpreter
- * images for python and ruby — so the omission here was the type lagging the
- * API, not a kind the loader lacks.
+ * A WebAssembly module, importable from a facet by module name. Nimbus ships
+ * these on every path — sql.js for node:sqlite, the interpreter images for
+ * python and ruby — so the omission here was the type lagging the API, not a
+ * kind the loader lacks. The loader takes either the bytes, which it
+ * compiles, or a module the caller holds compiled already, whose compiled
+ * code the dynamic worker then shares (workerd src/workerd/api/
+ * worker-loader.c++, extractWasmModuleContent). A module handed over this
+ * way should be described with describeHostWasm (host-wasm.ts): the
+ * code-size budget and the loader cache key cannot read a Module's size or
+ * identity from JS.
  */
 export interface WasmModule {
-    wasm: ArrayBuffer;
+    wasm: ArrayBuffer | WebAssembly.Module;
 }
 /** Plain string = type inferred from file extension (.js or .py). */
 export type ModuleContent = string | JsModule | CjsModule | PyModule | TextModule | DataModule | JsonModule | WasmModule;

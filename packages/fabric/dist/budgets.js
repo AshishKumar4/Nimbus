@@ -23,6 +23,7 @@
  * that still exists.
  */
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { hostWasmIdentity } from './host-wasm.js';
 /**
  * Distinct Dynamic Workers one Durable Object may have with in-flight
  * requests at once, shared across all concurrent requests to that object;
@@ -176,13 +177,18 @@ export function assertModuleMapWithinCodeLimit(modules) {
 }
 /**
  * Bytes one module-map member carries, across the loader's content kinds
- * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`). With an
- * encoder, text is measured exactly; without one, by code-unit length.
+ * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`, a bare
+ * WebAssembly.Module). With an encoder, text is measured exactly; without
+ * one, by code-unit length. A compiled module counts the wire size its host
+ * described (host-wasm.ts); one nobody described counts nothing here and is
+ * left to the platform's own refusal, as the text undercount is.
  */
 function memberBytes(content, encoder) {
     const textBytes = (text) => encoder ? encoder.encode(text).byteLength : text.length;
     if (typeof content === 'string')
         return textBytes(content);
+    if (content instanceof WebAssembly.Module)
+        return hostWasmIdentity(content)?.bytes ?? 0;
     if (content !== null && typeof content === 'object') {
         for (const value of Object.values(content)) {
             if (typeof value === 'string')
@@ -191,6 +197,8 @@ function memberBytes(content, encoder) {
                 return value.byteLength;
             if (ArrayBuffer.isView(value))
                 return value.byteLength;
+            if (value instanceof WebAssembly.Module)
+                return hostWasmIdentity(value)?.bytes ?? 0;
         }
     }
     return 0;
