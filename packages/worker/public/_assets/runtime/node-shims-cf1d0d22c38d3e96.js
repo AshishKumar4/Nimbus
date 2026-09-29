@@ -4752,7 +4752,11 @@ const __fsMod = (() => {
       const absPath = _resolve(filename);
       const key = _strip(absPath);
       function snapshot() {
-        if (_nsActive()) {
+        if (typeof __nsReady === "function") {
+          // A relist temporarily makes metadata unavailable. Falling back
+          // to byte cells here invents two changes: leaving and re-entering
+          // the namespace, even when the watched inode never changed.
+          if (!_nsActive()) return null;
           const found = __nsResolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
@@ -4774,6 +4778,8 @@ const __fsMod = (() => {
       const interval = setInterval(() => {
         if (watcher._closed) { clearInterval(interval); return; }
         const current = snapshot();
+        if (current === null) return;
+        if (previous === null) { previous = current; return; }
         if (!equal(current, previous)) {
           const eventType = current.absent || previous.absent ? "rename" : "change";
           previous = current;
