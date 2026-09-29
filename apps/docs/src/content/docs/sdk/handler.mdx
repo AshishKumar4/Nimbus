@@ -53,7 +53,7 @@ routes: async (request, env) => {
 bundler aliases. Use `NIMBUS_REQUIRED_ALIASES` when keeping the config by
 hand. The Worker needs `enhanced_error_serialization`, which a date of
 2026-04-21 or later enables; on an older date the generated config lists the
-flag, and a hand-kept one must too. Without it the Worker refuses to start,
+flag, and a hand-kept one must too. Without it the Worker fails at startup,
 because a process's filesystem errors would lose their `code`.
 
 ```ts
