@@ -1330,6 +1330,9 @@ function request(path = 'first') {
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
+  // Measure response streaming after boot, not against the separate 1 s
+  // resident-startup settlement budget (which native HTTP may use).
+  await worker.startProcess();
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
 
   const response = await Promise.race([

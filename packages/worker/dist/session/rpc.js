@@ -1068,8 +1068,14 @@ export async function _rpcRegisterPort(self, pid, port) {
     // capability is re-adopted or retired.
     await registerServingPort(self, pid, port);
 }
-export async function _rpcUnregisterPort(self, port) {
-    self.portRegistry.unregister(port);
+export async function _rpcAllocatePort(self, pid) {
+    return self.portRegistry.allocate(pid);
+}
+export async function _rpcUnregisterPort(self, pid, port) {
+    // A delayed close from the previous owner must not remove a rebound
+    // listener belonging to another process.
+    if (self.portRegistry.get(port)?.pid === pid)
+        self.portRegistry.unregister(port);
 }
 export async function _rpcRouteLoopback(self, port, request) {
     // In-session loopback routing for a facet's outbound fetch — the same policy

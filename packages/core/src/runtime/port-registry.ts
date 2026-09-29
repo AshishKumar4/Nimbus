@@ -187,6 +187,22 @@ export class PortRegistry {
     this.notifyPortWaiters(pid);
   }
 
+  /**
+   * Reserve an ephemeral port in the session, not in a guest isolate.
+   * IANA's dynamic/private range is 49152–65535:
+   * https://www.iana.org/assignments/service-names-port-numbers/
+   * Reservation and selection are synchronous, so concurrent listen(0)
+   * calls cannot receive the same number. Normal pid cleanup releases it.
+   */
+  allocate(pid: number): number {
+    for (let port = 49152; port <= 65535; port++) {
+      if (this.ports.has(port)) continue;
+      this.register(port, pid);
+      return port;
+    }
+    throw Object.assign(new Error("No ephemeral port available in this session"), { code: "EADDRINUSE" });
+  }
+
   /** Unregister a port. */
   unregister(port: number): boolean {
     return this.ports.delete(port);

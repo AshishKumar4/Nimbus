@@ -844,8 +844,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('registerPort', [port], { pid: this._reportingPid() }));
   }
 
+  async allocatePort(): Promise<number> {
+    return this._call(this._op('allocatePort', [], { pid: this._reportingPid() }));
+  }
+
   async unregisterPort(port: number): Promise<void> {
-    return this._call(this._op('unregisterPort', [port]));
+    return this._call(this._op('unregisterPort', [port], { pid: this._reportingPid() }));
   }
 
   /**

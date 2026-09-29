@@ -698,8 +698,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async registerPort(port) {
         return this._call(this._op('registerPort', [port], { pid: this._reportingPid() }));
     }
+    async allocatePort() {
+        return this._call(this._op('allocatePort', [], { pid: this._reportingPid() }));
+    }
     async unregisterPort(port) {
-        return this._call(this._op('unregisterPort', [port]));
+        return this._call(this._op('unregisterPort', [port], { pid: this._reportingPid() }));
     }
     /**
      * Route an in-session loopback HTTP request (a facet's fetch to

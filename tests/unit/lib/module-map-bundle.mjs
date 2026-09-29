@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { adaptHttpImports } from './node-http-platform.mjs';
 
 const SIDE = /^import (\w+) from "(__nimbus_vfs_bundle_\d+\.js)";$/gm;
 
@@ -94,7 +95,7 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
   for (const [name, member] of Object.entries(modules)) {
     const path = join(dir, name);
     if (typeof member === 'string') {
-      writeFileSync(path, local(rewrite(name, member)).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
+      writeFileSync(path, adaptHttpImports(local(rewrite(name, member))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
     } else if (cjsText(member) !== undefined) {
       // A module name is a URL path: the file is where the registry's URL
       // resolution — the stand-in's fileURLToPath — finds it.
