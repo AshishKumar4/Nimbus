@@ -22,7 +22,9 @@ published independently in the `@nimbus-sh` npm scope.
   session), and copies only what the child can read: the memory below and
   above the arena, the unwind it resumes from, and each live setjmp capture
   up to its high-water mark (about 1 MB). A 300-iteration loop instantiates
-  bash 4 times instead of 301; the 2000-fork pipeline peaks at 1.4 GB.
+  bash 4 times instead of 301; the 2000-fork pipeline peaks at 1.4 GB. On a
+  deployed Worker, `echo "$(printf ...)"` in a loop went from 140-175 ms a
+  fork (500 iterations exceeded the CPU limit) to 2000 iterations in 1.8 s.
 
 - A process's filesystem call on a SQLite path costs less: a stat five
   components deep through the process bridge (`bind(...)`, `ProcessView`)
