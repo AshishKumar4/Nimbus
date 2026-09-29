@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- SQLite filesystem calls through a process view reuse one checked inode
+  traversal instead of re-walking every prefix, then walking again for the
+  operation and revision. The namespace is consulted before each operation;
+  links, mounts and beneath-root paths retain the component walk. A bounded
+  last-resolution proof is invalidated by inode-table changes, mutations and
+  confinement changes, and can share the checked parent among adjacent
+  entries. Git's 400-file status/add/commit benchmark is back within the
+  baseline's variation (50 alternating samples per revision in one process);
+  permission changes and mount overlays still take effect immediately.
+
 - `npm install` run by a node process (`create-next-app`, or any
   `child_process.spawn('npm', ...)`) installs again. Its resolver's last
   layer ran in-DO and its install batch followed at once, sized to the

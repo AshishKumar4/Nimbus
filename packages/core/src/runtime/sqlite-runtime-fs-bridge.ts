@@ -1,4 +1,4 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import type { SyncVFS, VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -81,11 +81,33 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * inside a capability can never reach `/proc` or `/dev` sideways.
    */
   private locate(path: RuntimeFsPath, followSymlinks: boolean): Located | null {
+    // The namespace declined the walk's first name, and with it every name below.
+    const walked = this.walkOnSqlite(path, followSymlinks);
+    if (walked !== null) return walked.end === 'absent' ? { path: walked.name, absent: true } : { path: walked.name };
     const resolved = this.resolveDataPath(path, followSymlinks);
     if (resolved === null) return null;
     const mounted = this.mounted;
     if (!mounted || !this.namespace!.composes('/' + resolved)) return { path: resolved };
     return { mount: mounted, path: '/' + resolved };
+  }
+
+  /**
+   * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
+   * for the walk component by component (resolveDataPath): for a walk
+   * beneath a root, for a spelling with `..` (that walk takes `..`
+   * physically, after the link before it, where the engine's names take it
+   * lexically), where the namespace lays a mount or a directory above one,
+   * and where a name is missing while the legacy registry could hold a link
+   * there.
+   */
+  private walkOnSqlite(path: RuntimeFsPath, followSymlinks: boolean): VfsNameResolution | null {
+    if (typeof path !== 'string' && path.beneath) return null;
+    const spelled = this.pathArgument(path);
+    if (DOT_DOT_SEGMENT.test(spelled)) return null;
+    const namespace = this.namespace;
+    const walked = this.vfs.resolveName(spelled, followSymlinks, namespace && ((name) => namespace.composes('/' + name)));
+    if (walked === null || (walked.end !== 'found' && this.legacySymlinks.size > 0)) return null;
+    return walked;
   }
 
   /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
@@ -123,6 +145,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       return stat === null ? null : runtimeStatOf(stat);
     }
     const p = located.path;
+    // The walk met the absent name itself; the engine would only say ENOENT.
+    if (located.absent) return null;
     if (p === '') return this.rootStat();
     if (!followSymlinks && !this.vfs.exists(p)) {
       const target = this.legacySymlinks.readlink(this.legacyKey(p));
@@ -170,7 +194,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): Uint8Array | null {
     const located = this.locate(path, options.followSymlinks !== false);
-    if (located === null) return null;
+    if (located === null || located.absent) return null;
     try {
       if (!located.mount) return this.vfs.readFile(located.path);
       return this.processView(located.mount, located.path) ?? located.mount.readFile(located.path);
@@ -597,7 +621,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   realpath(path: RuntimeFsPath): string {
-    const resolved = this.resolveDataPath(path, true);
+    const resolved = this.walkOnSqlite(path, true)?.name ?? this.resolveDataPath(path, true);
     if (resolved === null) throw fsError('ELOOP', 'realpath', path);
     if (resolved === '') return '/';
     if (this.namespace?.composes('/' + resolved)) return this.namespace.realpath('/' + resolved);
@@ -957,6 +981,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 const MAX_LINK_HOPS = 40;
 
+/** A `..` component in a path's spelling. */
+const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
+
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
 export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
 type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
@@ -1012,7 +1039,10 @@ export function* walkBeneath(root: string, path: RuntimeFsPath, follow: boolean,
 }
 
 /** A confined path, and whether a mount other than the SQLite root owns it. */
-type Located = { mount: SyncVFS; path: string } | { mount?: undefined; path: string };
+type Located =
+  | { mount: SyncVFS; path: string; absent?: undefined }
+  /** `absent`: the one walk on SQLite ended at an absent name (walkOnSqlite). */
+  | { mount?: undefined; path: string; absent?: true };
 
 /** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;

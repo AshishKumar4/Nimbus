@@ -27,7 +27,7 @@ import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { exists, isDirectory, isFile, isSymlink, readText } from '../vfs/vfs.js';
+import { readText } from '../vfs/vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
@@ -1012,9 +1012,10 @@ export class ProcessView implements VFS {
     readonly process: RuntimeFsBridge,
   ) {}
 
-  private async call<T>(path: string, run: () => T | Promise<T>): Promise<T> {
+  private call<T>(path: string, run: () => T | Promise<T>): T | Promise<T> {
     try {
-      return await run();
+      const result = run();
+      return result instanceof Promise ? result.catch((error) => { throw toVfsError(error, path); }) : result;
     } catch (error) {
       throw toVfsError(error, path);
     }
@@ -1024,12 +1025,22 @@ export class ProcessView implements VFS {
     const stat = await this.call(path, () => this.process.stat(path, { followSymlinks: options?.follow !== false }));
     return stat === null ? null : vfsStatOf(stat);
   }
-  /** Whether anything is at `path` (links followed): access(F_OK). */
-  async exists(path: string): Promise<boolean> { return await exists(this, path); }
-  async isFile(path: string): Promise<boolean> { return await isFile(this, path); }
-  async isDirectory(path: string): Promise<boolean> { return await isDirectory(this, path); }
+  /** Probes need only the bridge's type, not another converted stat object. */
+  private async probe(path: string, follow: boolean): Promise<RuntimeVfsStat | null> {
+    try {
+      return await this.process.stat(path, { followSymlinks: follow });
+    } catch (error) {
+      const failure = toVfsError(error, path);
+      if (isVfsError(failure, 'ENOTDIR')) return null;
+      throw failure;
+    }
+  }
+  /** Whether anything is at `path` (links followed). */
+  async exists(path: string): Promise<boolean> { return (await this.probe(path, true)) !== null; }
+  async isFile(path: string): Promise<boolean> { return (await this.probe(path, true))?.type === 'file'; }
+  async isDirectory(path: string): Promise<boolean> { return (await this.probe(path, true))?.type === 'directory'; }
   /** Whether `path` itself is a symbolic link. */
-  async isSymlink(path: string): Promise<boolean> { return await isSymlink(this, path); }
+  async isSymlink(path: string): Promise<boolean> { return (await this.probe(path, false))?.type === 'symlink'; }
   /** The file's bytes as UTF-8 text. */
   async readFileString(path: string): Promise<string> { return await readText(this, path); }
   async readFile(path: string): Promise<Uint8Array> {
