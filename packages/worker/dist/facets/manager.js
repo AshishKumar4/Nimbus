@@ -408,36 +408,56 @@ const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
  */
 const INLINE_WASM_LITERAL_RE = /["'`](AGFzbQ[A-Za-z0-9+/]{58,}={0,2})["'`]/g;
 /**
- * Every wasm image a closure's JavaScript inlines as a base64 literal,
- * deduplicated by content. Vite 8 compiles es-module-lexer's parser this way
- * at module top level (`WebAssembly.compile(C())`); from a facet cell that is
- * request time, where the runtime refuses to compile from bytes, so the image
- * has to ride in the module map and be answered by content (the node-shims
- * seam's by-digest registry).
+ * A numeric array literal that starts with wasm's magic and version,
+ * `[0,97,115,109,1,0,0,0,…]`: how xxhash-wasm (Astro's content hashing) and
+ * other small modules inline their image, as `new Uint8Array([…])`.
+ */
+const INLINE_WASM_ARRAY_RE = /\[\s*0\s*,\s*97\s*,\s*115\s*,\s*109\s*,\s*1\s*,\s*0\s*,\s*0\s*,\s*0\s*(?:,\s*\d{1,3}\s*)+\]/g;
+/** Wasm magic (`\0asm`) and version 1. */
+function isWasmImage(bytes) {
+    return bytes.length >= 8 && bytes[0] === 0 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d
+        && bytes[4] === 1 && bytes[5] === 0 && bytes[6] === 0 && bytes[7] === 0;
+}
+/**
+ * Every wasm image a closure's JavaScript inlines, as a base64 string or as a
+ * numeric array literal, deduplicated by content. Vite 8 compiles
+ * es-module-lexer's parser from base64 at module top level
+ * (`WebAssembly.compile(C())`), and xxhash-wasm instantiates a
+ * `new Uint8Array([0,97,115,109,…])`; from a facet cell that is request
+ * time, where the runtime refuses to compile from bytes, so the image has to
+ * ride in the module map and be answered by content (the node-shims seam's
+ * by-digest registry).
  */
 export function findInlineWasmImages(bundle) {
     const found = new Map();
+    const keep = (bytes) => {
+        if (!isWasmImage(bytes))
+            return;
+        const digest = wasmImageDigest(bytes);
+        if (!found.has(digest))
+            found.set(digest, bytes);
+    };
     for (const [path, cell] of Object.entries(bundle)) {
         if (typeof cell !== 'string')
             continue;
         if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs')))
             continue;
-        if (!cell.includes('AGFzbQ'))
-            continue;
-        for (const match of cell.matchAll(INLINE_WASM_LITERAL_RE)) {
-            let bytes;
-            try {
-                bytes = Uint8Array.from(atob(match[1]), (c) => c.charCodeAt(0));
+        if (cell.includes('AGFzbQ')) {
+            for (const match of cell.matchAll(INLINE_WASM_LITERAL_RE)) {
+                try {
+                    keep(Uint8Array.from(atob(match[1]), (c) => c.charCodeAt(0)));
+                }
+                catch {
+                    // Not base64 after all: not an image.
+                }
             }
-            catch {
-                continue;
+        }
+        if (/97\s*,\s*115\s*,\s*109/.test(cell)) {
+            for (const match of cell.matchAll(INLINE_WASM_ARRAY_RE)) {
+                const values = match[0].slice(1, -1).split(',').map(Number);
+                if (values.every((v) => Number.isInteger(v) && v >= 0 && v <= 255))
+                    keep(Uint8Array.from(values));
             }
-            // Magic and version 1: `\0asm\1\0\0\0`.
-            if (bytes.length < 8 || bytes[4] !== 1 || bytes[5] !== 0 || bytes[6] !== 0 || bytes[7] !== 0)
-                continue;
-            const digest = wasmImageDigest(bytes);
-            if (!found.has(digest))
-                found.set(digest, bytes);
         }
     }
     return [...found.values()];
