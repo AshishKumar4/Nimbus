@@ -7321,6 +7321,102 @@ const __cryptoMod = (() => {
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
+// es-module-lexer decodes quoted import/export names with indirect eval and
+// swallows failures. A single quoted string is data, not executable code:
+// decode it without compiling, preserving native eval (including its Workers
+// refusal) for everything else. No general-evaluation capability is exposed,
+// and Function("null") / eval("1 + 1") feature probes remain refused.
+(() => {
+  const nativeEval = globalThis.eval;
+  if (nativeEval.__nimbusNative) return;
+  const decode = function decodeJavaScriptStringLiteral(source) {
+    const text = source.trim();
+    const quote = text[0];
+    if ((quote !== '"' && quote !== "'") || text.length < 2)
+        return undefined;
+    let result = '';
+    for (let i = 1; i < text.length; i++) {
+        const c = text[i];
+        if (c === quote)
+            return i === text.length - 1 ? result : undefined;
+        if (c === '\n' || c === '\r')
+            return undefined;
+        if (c !== '\\') {
+            result += c;
+            continue;
+        }
+        if (++i >= text.length)
+            return undefined;
+        const escaped = text[i];
+        switch (escaped) {
+            case 'n':
+                result += '\n';
+                break;
+            case 'r':
+                result += '\r';
+                break;
+            case 't':
+                result += '\t';
+                break;
+            case 'b':
+                result += '\b';
+                break;
+            case 'f':
+                result += '\f';
+                break;
+            case 'v':
+                result += '\v';
+                break;
+            case '\r':
+                if (text[i + 1] === '\n')
+                    i++;
+                break;
+            case '\n':
+            case '\u2028':
+            case '\u2029': break;
+            case 'x':
+            case 'u': {
+                const braced = escaped === 'u' && text[i + 1] === '{';
+                const start = i + (braced ? 2 : 1);
+                const end = braced ? text.indexOf('}', start) : start + (escaped === 'x' ? 2 : 4);
+                if (end <= start || end > text.length)
+                    return undefined;
+                const digits = text.slice(start, end);
+                if (!/^[0-9a-fA-F]+$/.test(digits))
+                    return undefined;
+                const point = Number.parseInt(digits, 16);
+                if (point > 0x10ffff)
+                    return undefined;
+                result += String.fromCodePoint(point);
+                i = braced ? end : end - 1;
+                break;
+            }
+            default: {
+                if (escaped >= '0' && escaped <= '7') {
+                    // 0..3 consumes up to three octal digits; 4..7 only two.
+                    const end = Math.min(text.length, i + (escaped <= '3' ? 3 : 2));
+                    let octal = escaped;
+                    while (i + 1 < end && text[i + 1] >= '0' && text[i + 1] <= '7')
+                        octal += text[++i];
+                    result += String.fromCharCode(Number.parseInt(octal, 8));
+                }
+                else
+                    result += escaped;
+            }
+        }
+    }
+    return undefined;
+};
+  const routed = { eval(source) {
+    if (typeof source === "string") {
+      const value = decode(source);
+      if (value !== undefined) return value;
+    }
+    return Reflect.apply(nativeEval, undefined, [source]);
+  } }.eval;
+  Object.defineProperty(routed, "__nimbusNative", { value: nativeEval });
+  globalThis.eval = routed;
+})();
 (() => {
   const kinds = [
     ["async", Object.getPrototypeOf(async function () {}).constructor],

@@ -40,6 +40,7 @@
  */
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
+import { decodeJavaScriptStringLiteral } from './javascript-string-literal.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE } from '../loaders/generated-workers.js';
@@ -6036,6 +6037,25 @@ const __cryptoMod = (() => {
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
+// es-module-lexer decodes quoted import/export names with indirect eval and
+// swallows failures. A single quoted string is data, not executable code:
+// decode it without compiling, preserving native eval (including its Workers
+// refusal) for everything else. No general-evaluation capability is exposed,
+// and Function("null") / eval("1 + 1") feature probes remain refused.
+(() => {
+  const nativeEval = globalThis.eval;
+  if (nativeEval.__nimbusNative) return;
+  const decode = ${decodeJavaScriptStringLiteral.toString()};
+  const routed = { eval(source) {
+    if (typeof source === "string") {
+      const value = decode(source);
+      if (value !== undefined) return value;
+    }
+    return Reflect.apply(nativeEval, undefined, [source]);
+  } }.eval;
+  Object.defineProperty(routed, "__nimbusNative", { value: nativeEval });
+  globalThis.eval = routed;
+})();
 (() => {
   const kinds = [
     ["async", Object.getPrototypeOf(async function () {}).constructor],
