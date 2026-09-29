@@ -74,6 +74,17 @@ const SWAPS: ReadonlyArray<PackageSwapEntry> = [
       'Native lightningcss ships platform .node bindings; lightningcss-wasm exposes the same transform/bundle/bundleAsync/browserslistToTargets API from one wasm module.',
     compat: 'drop-in',
   },
+  {
+    // Vite 7 and earlier bundle with rollup, whose dist/native.js requires a
+    // platform shard (@rollup/rollup-<platform>). @rollup/wasm-node is the
+    // same package built on one wasm-bindgen module (no WASI, no threads),
+    // with rollup's exports and bin, released version for version.
+    from: 'rollup',
+    to: '@rollup/wasm-node',
+    reason:
+      'Native rollup loads a platform .node shard; @rollup/wasm-node is the same rollup with its parser as one wasm module.',
+    compat: 'drop-in',
+  },
 ];
 
 /**
