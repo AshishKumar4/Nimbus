@@ -230,6 +230,8 @@ export interface CredentialedVfs {
   isDirectory(path: string): boolean;
   isFile(path: string): boolean;
   isSymlink(path: string): boolean;
+  /** What `path` itself is (a link is not followed), or null when absent: one lookup for the four questions above. */
+  kind(path: string): VfsInodeKind | null;
   access(path: string, mode: number): void;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): void;
@@ -2276,6 +2278,7 @@ export class SqliteVFS {
       isDirectory: (path) => this.isDirectory(path, bound),
       isFile: (path) => this.isFile(path, bound),
       isSymlink: (path) => this.isSymlink(path, bound),
+      kind: (path) => this.probeInode(path, bound)?.kind ?? null,
       access: (path, mode) => { this.checkAccess(path, mode, bound); },
       mkdir: (path, options) => this.mkdir(path, options, bound),
       writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
@@ -5687,6 +5690,7 @@ export class SqliteVFS {
       isDirectory: (path) => probe(path)?.kind === 'directory',
       isFile: (path) => probe(path)?.kind === 'file',
       isSymlink: (path) => probe(path)?.kind === 'symlink',
+      kind: (path) => probe(path)?.kind ?? null,
       access: (path, mode) => { resolve(path, mode); },
       mkdir: readOnly,
       writeFile: readOnly,

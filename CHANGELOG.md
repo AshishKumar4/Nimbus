@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A process's filesystem call on a SQLite path costs less: a stat five
+  components deep through the process bridge (`bind(...)`, `ProcessView`)
+  went from 23.5 to 11 µs. The bridge's walk looks each component up once
+  (the engine's credentialed view gains `kind(path)`, what `exists`,
+  `isFile`, `isDirectory` and `isSymlink` each looked up separately), the
+  namespace answers `composes` without normalizing a path whose first
+  component no mount shares, and `normalizeVfsPath` returns a key already in
+  canonical form as it is. The tools that now read a project through the
+  caller's view (git, npm, vite build) gain the same.
+
 - The deploy-isolation preflight now audits Worker Previews
   (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
   Every `previews` block is its own deploy target in
