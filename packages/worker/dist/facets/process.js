@@ -314,19 +314,26 @@ export class FacetProcessManager {
      * Loader isolate. The dispatch envelope is in a fresh isolate; the
      * actual command logic still uses the existing registry paths.
      *
-     * Single-ownership: stdin/stdout/stderr returned as strings; no
-     * shared buffers cross the RPC boundary.
+     * A managed child streams to its existing output queue while it runs;
+     * otherwise the inline caller receives captured text in the result.
      */
     async dispatchInline(req, kind) {
         if (kind === 'unknown') {
             return { exitCode: 127, stdout: '', stderr: `${req.command}: command not found\n` };
         }
-        // An inline result is text for a caller expecting text: decode here, at
-        // its edge, streaming per fd so a split multibyte character survives.
+        // A managed spawn already has byte queues for the parent to poll. Do
+        // not buffer a prompt until the child exits: it may be waiting for the
+        // parent's input. Return only output not already queued, so the spawn
+        // pool's result relay cannot duplicate it. Direct inline calls without
+        // a child retain their captured-text contract.
+        const child = req.processPid === undefined ? undefined : this.children.get(req.processPid);
         let stdoutBuf = '';
         let stderrBuf = '';
         const decoders = new StreamTextDecoders();
-        const hooks = {
+        const hooks = child ? {
+            onStdout: (d) => this._appendOutput(child, 1, d),
+            onStderr: (d) => this._appendOutput(child, 2, d),
+        } : {
             onStdout: (d) => { stdoutBuf += decoders.decode(1, d); },
             onStderr: (d) => { stderrBuf += decoders.decode(2, d); },
         };

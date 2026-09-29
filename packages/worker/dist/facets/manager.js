@@ -191,7 +191,7 @@ function __nimbusPendingStartupWork() {
 function __nimbusLiveHandles() {
   const __servers = globalThis.__portRegistry;
   const __bound = __servers && typeof __servers.size === "number" ? __servers.size : 0;
-  return __nimbusPendingStartupWork() + __bound;
+  return __nimbusPendingStartupWork() + __bound + __nimbusHandleCount("__nimbusInputHandles");
 }
 
 async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {

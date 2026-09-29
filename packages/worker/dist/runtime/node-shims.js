@@ -6972,12 +6972,24 @@ function __makeProcessStdin() {
     r.isRaw = mode !== false;
     return r;
   };
-  r.ref = function() { return r; };
-  r.unref = function() { return r; };
+  r.ref = function() { inputReferenced = true; if (r.readableFlowing) holdInput(true); return r; };
+  r.unref = function() { inputReferenced = false; holdInput(false); return r; };
   r.setEncoding = function(enc) { encoding = enc || null; return r; };
   const liveChildPid = env && env.NIMBUS_CP_CHILD_PID
     ? Number(env.NIMBUS_CP_CHILD_PID)
     : 0;
+  // The polling infrastructure is unref'd, but a program actively consuming
+  // live stdin owns a referenced input handle, as in Node. Otherwise an
+  // interactive child exits after its prompt, before a keystroke arrives.
+  let inputReferenced = true, inputHeld = false;
+  function holdInput(want) {
+    const held = !!(want && liveChildPid && inputReferenced && !r.readableEnded && !r.destroyed);
+    if (held === inputHeld) return;
+    inputHeld = held;
+    globalThis.__nimbusInputHandles = (globalThis.__nimbusInputHandles || 0) + (held ? 1 : -1);
+  }
+  __eventsMod.prototype.on.call(r, 'end', () => holdInput(false));
+  __eventsMod.prototype.on.call(r, 'close', () => holdInput(false));
   if (liveChildPid) {
     try {
       globalThis.__nimbusProcessStdin = r;
@@ -7093,9 +7105,11 @@ function __makeProcessStdin() {
   const origPause = typeof r.pause === "function" ? r.pause.bind(r) : null;
   r.resume = function() {
     seed();
+    holdInput(true);
     return origResume ? origResume() : r;
   };
   r.pause = function() {
+    holdInput(false);
     return origPause ? origPause() : r;
   };
   const origOn = r.on.bind(r);

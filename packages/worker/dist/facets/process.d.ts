@@ -226,8 +226,8 @@ export declare class FacetProcessManager {
      * Loader isolate. The dispatch envelope is in a fresh isolate; the
      * actual command logic still uses the existing registry paths.
      *
-     * Single-ownership: stdin/stdout/stderr returned as strings; no
-     * shared buffers cross the RPC boundary.
+     * A managed child streams to its existing output queue while it runs;
+     * otherwise the inline caller receives captured text in the result.
      */
     dispatchInline(req: SpawnReq, kind: string): Promise<{
         exitCode: number;
