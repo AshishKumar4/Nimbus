@@ -3,9 +3,10 @@
 // Nimbus's bare `vite` command and not a configFile:false API wrapper).
 // Generated config code can require a later launch; only that explicit
 // next-launch boundary is retried. Assertions cover production output and
-// actual HTML/TSX served through the public port route. Node WebSocket HMR
-// remains a separate platform limitation: workerd node:http has no upgrade
-// event, unlike Nimbus's built-in HMR bridge.
+// actual HTML/TSX served through the public port route.
+// HMR uses Nimbus's built-in vite path: inbound WebSocket upgrade to a Node
+// guest server is not implemented in Nimbus, before or after native HTTP.
+// That implementation gap is not a prohibition on a Workers adapter.
 import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders} from '../_driver.mjs';
 import {launchFrameworkDev,NEXT_FRAMEWORK_LAUNCH} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
