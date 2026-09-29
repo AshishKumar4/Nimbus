@@ -1294,7 +1294,7 @@ export declare class FacetManager {
     hasResidentProcess(pid: number): boolean;
     /** Acknowledge generated code only after storage has accepted it. The
      * launch key comes from the process table, never from guest arguments. */
-    noteProcessRuntimeCode(pid: number, entries: unknown[]): Promise<void>;
+    noteProcessRuntimeCode(pid: number, entries: unknown[], missedFiles?: string[]): Promise<void>;
     noteProcessReportedExit(pid: number, exitCode: number, residencyMisses?: string[], evidence?: {
         served: ReadonlySet<string>;
         profileUnread: readonly string[] | null;

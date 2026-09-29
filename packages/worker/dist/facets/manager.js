@@ -525,6 +525,7 @@ export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
+    const __nimbusProcessId = Number(args.pid || 1);
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
@@ -908,6 +909,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
     // Off the start payload, never out of the module text: this body is
     // content-addressed into the facet image store, and a revision that
     // advances on every spawn would give the same program a new image each
@@ -4889,11 +4891,15 @@ export class FacetManager {
     }
     /** Acknowledge generated code only after storage has accepted it. The
      * launch key comes from the process table, never from guest arguments. */
-    async noteProcessRuntimeCode(pid, entries) {
+    async noteProcessRuntimeCode(pid, entries, missedFiles = []) {
         const key = this.residentBundleKeys.get(pid);
         if (!key || this.processes.get(pid)?.state !== 'running')
             throw new Error('Runtime code report has no live launch');
         await this._recordRuntimeCode(key, entries);
+        if (missedFiles.length > 0) {
+            this._dropPrefetchCacheEntry(key);
+            await this.residencyProfiles.record(key, missedFiles);
+        }
     }
     noteProcessReportedExit(pid, exitCode, residencyMisses, evidence, runtimeCode) {
         // Filed before the exit marks the table: the terminal hook forgets the key.
@@ -5157,6 +5163,7 @@ export class FacetManager {
         let __loadStart = 0;
         let __runStart = 0;
         const body = JSON.stringify({
+            pid: entry.pid,
             argv: opts.argv || [],
             env: opts.env || {},
             cwd: opts.cwd || '/home/user',

@@ -401,7 +401,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     reportExit(code: number, tail?: string, residencyMisses?: string[], profileUnread?: string[], runtimeCode?: unknown[]): Promise<void>;
     /** Persist a live process's generated code without terminating the process. */
-    reportRuntimeCode(entries: unknown[]): Promise<void>;
+    reportRuntimeCode(entries: unknown[], missedFiles?: string[]): Promise<void>;
     prefetch(cwd: string, entryCode: string): Promise<Record<string, string>>;
     registerPort(port: number): Promise<void>;
     unregisterPort(port: number): Promise<void>;

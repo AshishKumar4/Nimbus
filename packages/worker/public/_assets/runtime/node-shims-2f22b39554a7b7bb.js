@@ -1238,6 +1238,7 @@ const __fsMod = (() => {
   function _recordMiss(k) {
     if (k === "" || _residencyMisses.has(k)) return;
     _residencyMisses.add(k);
+    if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
   }
 
@@ -8832,7 +8833,10 @@ const __processMod = {
   },
   execPath: "/usr/local/bin/node",
   execArgv: [],
-  pid: 1, ppid: 0, title: "node",
+  // The pid belongs to the supervisor, not to the host isolate. A constant 1
+  // made every new Vinext process claim its predecessor's stale lock.
+  get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
+  ppid: 0, title: "node",
   stdout: __makeProcessOutputStream("stdout"),
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
@@ -10748,6 +10752,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
       // key the launch already carries answers now.
       (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
+      if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);

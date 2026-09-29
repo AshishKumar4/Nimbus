@@ -796,12 +796,12 @@ function shouldMirrorProcessOutputToShell(self, pid) {
 }
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
-export async function _rpcReportRuntimeCode(self, pid, entries) {
+export async function _rpcReportRuntimeCode(self, pid, entries, missedFiles = []) {
     if (pid <= 0 || isPriorGenerationPid(self, pid))
         throw new Error('Runtime code report from a stale process');
     if (!self.facetManager)
         throw new Error('Runtime code report has no process owner');
-    await self.facetManager.noteProcessRuntimeCode(pid, entries);
+    await self.facetManager.noteProcessRuntimeCode(pid, entries, missedFiles);
 }
 /**
  * Called by facets from their `finally` block after I/O has drained.

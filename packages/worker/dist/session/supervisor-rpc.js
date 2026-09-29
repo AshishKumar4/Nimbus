@@ -691,8 +691,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._op('reportExit', [code, tail || '', residencyMisses ?? [], profileUnread ?? null, runtimeCode ?? []], { pid: this._reportingPid() }));
     }
     /** Persist a live process's generated code without terminating the process. */
-    async reportRuntimeCode(entries) {
-        return this._call(this._op('reportRuntimeCode', [entries], { pid: this._reportingPid() }));
+    async reportRuntimeCode(entries, missedFiles = []) {
+        return this._call(this._op('reportRuntimeCode', [entries, missedFiles], { pid: this._reportingPid() }));
     }
     // ── Prefetch ──────────────────────────────────────────────────────────
     async prefetch(cwd, entryCode) {
