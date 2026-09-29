@@ -6786,6 +6786,11 @@ export class FacetManager {
     // re-derived from the reservation on every launch, so a port the
     // application was given follows the reservation, not the recipe.
     const spawnEnv = launchEnv === undefined ? opts.env : { ...(opts.env || {}), ...launchEnv };
+    // Every long-running process has an input channel on its pid, and its
+    // stdin reads that channel (NIMBUS_CP_CHILD_PID) once the program
+    // consumes stdin. A backgrounded server started from the terminal sees
+    // its stdin stay open, as a job's terminal stdin does, instead of an
+    // immediate EOF; only an attached one is a TTY.
     const processEnv = opts.attachedTty
       ? {
           ...(spawnEnv || {}),
@@ -6797,7 +6802,7 @@ export class FacetManager {
           LINES: opts.env?.LINES || '24',
           FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
         }
-      : spawnEnv;
+      : { ...(spawnEnv || {}), NIMBUS_CP_CHILD_PID: String(entry.pid) };
     // Answered by _buildProcessBundle while the raw cells were still in hand.
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
     const [sqliteModules, sources] = await Promise.all([
