@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6cc77e8e8a2aa2e99318a258b5b91c460299712b57f96b2ffbbb203ff2969dc6",
+  "fingerprint": "aa33ec6ea4550bdc33111283c930590853135117e5bddc2ac234463f604f32b2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1523,8 +1523,8 @@
     "packages/worker/dist/esbuild-wasm-bundle.generated.d.ts.map": "7888055c2e795d74d9ee7b7e21b211e769584de402f283b29866759f23dd3446",
     "packages/worker/dist/esbuild-wasm-bundle.generated.js": "d37206b726a104aca6a8e821dd4a72f9b1b55e64508f37a3040d87e6f31acd2b",
     "packages/worker/dist/facets/cirrus-real.d.ts": "71151e18c63ca8de5ec64e3ac5e10456aad5eb2eea190530a9983b7075b55503",
-    "packages/worker/dist/facets/cirrus-real.d.ts.map": "e9aa822784ccdea9f41c1bff59f163e5384aed6635bdc83384542b31bf5d6e04",
-    "packages/worker/dist/facets/cirrus-real.js": "3723390a43cd52e6dde1d27c4e485069282f0e5a9b501714b6161afeaa412251",
+    "packages/worker/dist/facets/cirrus-real.d.ts.map": "50b069c8f65542db553cf0b103cf7c22c2ed918d574cc7ffbd45ef24e0d8af1f",
+    "packages/worker/dist/facets/cirrus-real.js": "75f2f202843efd79bdf02544bee5dd8a92b70ffa712e9ae0fe3f0ef4e359efae",
     "packages/worker/dist/facets/compose.d.ts": "f1304a3e53ccd15fe4d50ce609fd813b32105435bfbad7552feeafbe64d417f7",
     "packages/worker/dist/facets/compose.d.ts.map": "deaafcb279b321e4737d001419f1ad4dd51b874346d8b792de7ebfbe62ddd510",
     "packages/worker/dist/facets/compose.js": "9be9a94c255d3fab1b2468fdd9ab1dd8d5c4a5415de2fcc1a41f7d82f064eb8a",
@@ -2046,7 +2046,7 @@
     "packages/worker/src/cirrus-plugin-react.generated.ts": "1d68ba0bad0299c7b9f9a7e9284670db138414791b53e9ef8bea64617584be87",
     "packages/worker/src/esbuild-cli-artifact.generated.ts": "01eaae8a13dc4a8622cbc58093eadde6b67c3a9bc3bd65176d2e86a7751d7b02",
     "packages/worker/src/esbuild-wasm-bundle.generated.ts": "493b878e2171960c369dc4764216f12063fb2f497a3b571fc2c5e1caf8418072",
-    "packages/worker/src/facets/cirrus-real.ts": "2f8414c9e340df62031cbe41d9d83dd19b59de1a39c59120611aa045a9dd855d",
+    "packages/worker/src/facets/cirrus-real.ts": "2ada104320197238e01fa260f2cdf71ee22eefb6ef188d73aff33e7496c1d4b6",
     "packages/worker/src/facets/compose.ts": "039a6292b881bbf59d67fb33dd5f6a4a813e491a63299ee2059f41e5a7960583",
     "packages/worker/src/facets/data-plan.ts": "4a91239f1df5d5759b971fe2348b5cce1ec3950aa04d654995d8c54c3896bd54",
     "packages/worker/src/facets/durable-images.ts": "1001de6152cd7d3873e5cd48c2053b3d83c934828813d1f3443bd102c562f48f",

@@ -266,11 +266,9 @@ function dispatchEvents(events) {
 // the pump: a short-timeout poll (2s) that dispatches events and
 // returns. If clients are connected, the pump schedules itself again
 // via waitUntil.
-type DisposableSymbolConstructor = SymbolConstructor & { readonly dispose?: symbol };
-
-function disposeRpcResult(value: unknown): void {
+function disposeRpcResult(value) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
-  const disposerKey = (Symbol as DisposableSymbolConstructor).dispose;
+  const disposerKey = Symbol.dispose;
   if (!disposerKey) return;
   const dispose = Reflect.get(value, disposerKey);
   if (typeof dispose === 'function') {
@@ -278,10 +276,7 @@ function disposeRpcResult(value: unknown): void {
   }
 }
 
-async function useRpcResult<T, R>(
-  promise: Promise<T>,
-  use: (value: T) => R | Promise<R>,
-): Promise<R> {
+async function useRpcResult(promise, use) {
   const value = await promise;
   try {
     return await use(value);
