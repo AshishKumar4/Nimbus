@@ -495,7 +495,7 @@ function __nimbusNotifyRuntimeCode() {
   queueMicrotask(() => {
     __nimbusCodeNotifyQueued = false;
     // A failed report stays unacknowledged: startup/HTTP/exit flush retries it.
-    __nimbusRuntimeCodeReporter().catch(() => undefined);
+    __nimbusRuntimeCodeReporter().catch((error) => console.error("Nimbus: runtime code persistence failed", error));
   });
 }
 const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};

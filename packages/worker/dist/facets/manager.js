@@ -190,7 +190,10 @@ function __nimbusPendingStartupWork() {
 // keeps a Node process alive, and it keeps a one-shot facet alive too.
 function __nimbusLiveHandles() {
   const __servers = globalThis.__portRegistry;
-  const __bound = __servers && typeof __servers.size === "number" ? __servers.size : 0;
+  let __bound = 0;
+  if (__servers && typeof __servers.values === "function") {
+    for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;
+  }
   return __nimbusPendingStartupWork() + __bound;
 }
 
@@ -912,7 +915,13 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
     const __supervisor = workerEnv?.SUPERVISOR || null;
-    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor);
+    __nimbusRuntimeCodeReporter = () => {
+      const report = __nimbusFlushRuntimeCode(__supervisor);
+      // Code may be produced by a timer after boot has returned, not by an
+      // HTTP request that will call our flush. Own this asynchronous write.
+      workerCtx.waitUntil(report);
+      return report;
+    };
     // The resident set lives in this facet's own SQLite rather than its heap.
     // A synchronous read cannot block and no JS stack here can be suspended, so
     // the bytes have to sit somewhere a synchronous call can already reach;
