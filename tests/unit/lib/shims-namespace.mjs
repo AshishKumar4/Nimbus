@@ -25,7 +25,7 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -119,7 +119,7 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
  */
 globalThis.__nimbusTestCompileCell = (text) => {
   const moduleObject = { exports: {} };
-  new Function('module', 'exports', wrapCommonJsCell(text).text)(moduleObject, moduleObject.exports);
+  new Function('module', 'exports', wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function').text)(moduleObject, moduleObject.exports);
   return moduleObject.exports;
 };
 const MODULE_CELLS = `

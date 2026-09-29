@@ -32,24 +32,39 @@
  * ───────────
  * The module a cell becomes exports Node's module wrapper function, which the
  * shims call with their own exports, require, module, __filename and
- * __dirname:
+ * __dirname. A cell of CommonJS runs as Node's own wrapper runs it, as the
+ * function body:
+ *
+ *   module.exports = (function (exports, require, module, __filename, __dirname) {<cell>
+ *   });
+ *
+ * An ES module lowered to CommonJS (esbuild, or the bounded rewrite of a large
+ * bundle) is the one exception. As an ES module it could declare its own
+ * top-level `const __dirname = …`, `class exports {}` or — kept by the
+ * bounded rewrite — `const require = createRequire(import.meta.url)`, and a
+ * lexical declaration of a parameter's name in a function body is a
+ * SyntaxError. Such a cell sits in a BLOCK inside the function, where the
+ * declaration shadows the parameter, which is what the module meant:
  *
  *   module.exports = (function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
  *   }});
  *
- * The cell sits in a BLOCK inside the function, not in the function body
- * itself, for one case: an ES module esbuild lowered to CommonJS keeps its own
- * top-level `const require = createRequire(import.meta.url)` (or `const
- * __dirname = …`), and a lexical declaration of a parameter's name in the
- * body is a SyntaxError. In a block it shadows the parameter instead, which is
- * what the module meant. `var` and function declarations still reach the
- * function scope and redeclare the parameter exactly as in Node's own
- * wrapper, and top-level `return` and `arguments` mean what they mean there.
- * A block is not a directive prologue, so a cell that opens with
- * "use strict" has the directive restated in the function body, where it
- * applies. The wrapper is on the cell's first line, so every stack frame
- * carries the cell's own line numbers, under the module's
- * `file:///bundle/vfs/<path>` name.
+ * Only a lowered module gets the block, because the block is not a function
+ * body: a top-level function declaration in it is lexical, so `var f; function
+ * f() {}`, or a strict cell declaring one function twice, is a SyntaxError
+ * there that Node's wrapper accepts. An ES module can never contain either
+ * (both are early errors in module code), and a CommonJS file can never
+ * declare a parameter's name lexically (Node rejects it), so each form is
+ * exact for what it wraps. A block is not a directive prologue, so a lowered
+ * cell that opens with "use strict" has the directive restated in the
+ * function body, where it applies.
+ *
+ * The wrapper is on the cell's first line, so a stack frame carries the
+ * cell's own line numbers under the module's `file:///bundle/vfs/<name>`
+ * name; a column on the first line is shifted by the wrapper's head. A
+ * SyntaxError in a cell carries no location of its own — the registry
+ * compiles the module when it is required and V8 reports the requiring
+ * frame — so the shims name the module in the message instead.
  *
  * RUNTIME CODE
  * ────────────
@@ -71,12 +86,15 @@
  * (the one-shot envelope, the resident exit report); the supervisor keeps it
  * content-addressed for that command's bundle key; the next launch carries it
  * as `gen/<sha256>.js` modules, compiled on first use. A key is the SHA-256 of
- * the text (runtimeCodeKeySource), not of a path, so a file written under a
- * fresh name each run still converges. Text that changes every run (an edit,
- * then the module runner's transform of it) costs one relaunch per change.
+ * what decides the module (runtimeCodeKeySource): a constructor's arguments,
+ * or a file's text together with its directory and extension, which decide
+ * how it is lowered and what its relative imports mean — not its name, so a
+ * file written under a fresh name each run still converges. Text that
+ * changes every run (an edit, then the module runner's transform of it)
+ * costs one relaunch per change.
  */
 import { createHash } from 'node:crypto';
-import { tokenizer, tokTypes, type Token } from 'acorn';
+import { parse, tokenizer, tokTypes, type Token } from 'acorn';
 
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -87,21 +105,32 @@ const CELL_DIR = 'vfs/';
  */
 const ENTRY_DIR = 'entry/';
 
-/** Closes the block, the function and the parenthesized expression. */
-export const COMMONJS_CELL_TAIL = '\n}});';
-
 /**
- * A path as a module name under `dir`: the path itself wherever the
- * registry's URL parsing keeps it. A name is resolved as a URL against the
- * bundle base, which percent-encodes what a path may not carry, strips a
- * `?query` and `#fragment`, and reads `\` as `/`. Those four characters are
- * therefore escaped, and `%` with them so no path can spell another's escape.
- * The shims require `./` + the name from the main module at the bundle root;
- * the same parse resolves both.
+ * A path as a module name under `dir`, injectively and exactly as the
+ * registry's URL parsing keeps it. A name is resolved as a URL path against
+ * the bundle base, which drops tabs and newlines, trims trailing spaces and
+ * controls, reads `\` as `/`, and ends the path at `?` or `#`, so two paths
+ * could otherwise name one module (and a map holding both fails to load:
+ * "already added to bundle"). Every character the WHATWG path
+ * percent-encode set holds — C0 controls, space, `"`, `#`, `<`, `>`, `?`, `` ` ``,
+ * `{`, `}` and everything above U+007E — is written as its UTF-8 escapes,
+ * which the parser keeps as they are, and `%` and `\` with them, so no path
+ * can spell another's escape. The shims require `./` + the name from the main
+ * module at the bundle root; the same parse resolves both.
  */
 function moduleNameUnder(dir: string, path: string): string {
-  return dir + path.replace(/^\/+/, '').replace(/[%#?\\]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+  let name = dir;
+  for (const ch of path.replace(/^\/+/, '')) {
+    const code = ch.codePointAt(0)!;
+    if (code > 0x20 && code < 0x7f && !MODULE_NAME_ESCAPED.includes(ch)) {
+      name += ch;
+      continue;
+    }
+    for (const byte of new TextEncoder().encode(ch)) name += '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+  }
+  return name;
 }
+const MODULE_NAME_ESCAPED = '"#<>?`{}%\\';
 
 /** The Worker Loader module name for the cell at VFS key `key` (a path without its leading slash). */
 export function commonJsCellModuleName(key: string): string {
@@ -115,35 +144,103 @@ export function commonJsEntryModuleName(filename: string): string {
 
 /**
  * Whether the guest can read a cell's module text back from its bundle
- * filesystem (`/bundle/vfs/<path>`, workerd's node:fs view of the module map)
- * by the cell's own path. workerd's lookup percent-decodes the path it is
- * given and reads `\` as a separator, so a path carrying `%` or `\` names a
- * different file there; such a cell also travels as data.
+ * filesystem (workerd's node:fs view of the module map) under its module
+ * name. workerd's lookup percent-decodes the path it is given and encodes it
+ * again with the path set, which gives back every name moduleNameUnder
+ * writes except an escaped `%` or `\`: a path carrying either names a
+ * different file there, so its cell also travels as data.
  */
 export function commonJsCellReadsBack(key: string): boolean {
   return !/[%\\]/.test(key);
 }
+
+/** How a cell is wrapped (THE WRAPPER): as Node's function body, or in a block. */
+export type CommonJsCellScope = 'function' | 'block';
 
 export interface WrappedCommonJsCell {
   /** The module text. */
   text: string;
   /** Characters of wrapper before the cell. */
   head: number;
+  /** Characters of wrapper after the cell. */
+  tail: number;
   /** The cell opened with a shebang, which the text carries as `//`. */
   hashbang: boolean;
 }
 
+const WRAPPER_HEAD = 'module.exports = (function (exports, require, module, __filename, __dirname) {';
+
 /**
  * Wrap a CommonJS cell as a `{ cjs }` module whose export is Node's module
- * wrapper function. A leading shebang becomes a line comment of the same
- * length (Node strips it too; `#!` is not valid inside a function).
+ * wrapper function, in the given scope (THE WRAPPER). A leading shebang
+ * becomes a line comment of the same length (Node strips it too; `#!` is not
+ * valid inside a function).
  */
-export function wrapCommonJsCell(cell: string): WrappedCommonJsCell {
+export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function'): WrappedCommonJsCell {
   const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
   const body = hashbang ? '//' + cell.slice(2) : cell;
-  const head = 'module.exports = (function (exports, require, module, __filename, __dirname) {'
-    + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
-  return { text: head + body + COMMONJS_CELL_TAIL, head: head.length, hashbang };
+  const head = scope === 'function'
+    ? WRAPPER_HEAD
+    : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
+  const tail = scope === 'function' ? '\n});' : '\n}});';
+  return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
+}
+
+const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
+/** Could the text declare a wrapper name lexically at all: the cheap test before a parse. */
+const LEXICAL_WRAPPER_NAME = /\b(?:const|let|class)\b[\s\S]{0,4096}?\b(?:exports|require|module|__filename|__dirname)\b/;
+/** Largest source declaresWrapperBinding parses; above it the answer is `true`. */
+const WRAPPER_BINDING_PARSE_MAX = 2 * 1024 * 1024;
+
+/**
+ * Whether a script declares one of the wrapper's five names lexically at its
+ * top level (`const`, `let` or `class`) — the one thing that needs the block
+ * scope — for code whose provenance is unknown: an entry script as the
+ * runtime prepared it, or runtime code. Parsed, not matched: a declaration
+ * inside a string or template is not one. Parsed as a script, and failing
+ * that as a module (a lowered module may still read `import.meta`); a source
+ * that parses as neither gets `false` (its SyntaxError surfaces under either
+ * scope), and one too large to parse cheaply gets `true`, the scope every
+ * lowered module needs.
+ */
+export function declaresWrapperBinding(source: string): boolean {
+  if (!LEXICAL_WRAPPER_NAME.test(source)) return false;
+  if (source.length > WRAPPER_BINDING_PARSE_MAX) return true;
+  let program;
+  for (const sourceType of ['script', 'module'] as const) {
+    try {
+      program = parse(source, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: true, allowHashBang: true });
+      break;
+    } catch {
+      // The other goal, then none.
+    }
+  }
+  if (!program) return false;
+  for (const statement of program.body) {
+    if (statement.type === 'ClassDeclaration') {
+      if (statement.id && WRAPPER_NAMES.has(statement.id.name)) return true;
+    } else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
+      for (const declarator of statement.declarations) {
+        if (patternBinds(declarator.id)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Whether a binding pattern binds one of the wrapper's names. */
+function patternBinds(node: { type: string } | null | undefined): boolean {
+  if (!node) return false;
+  const n = node as Record<string, unknown> & { type: string };
+  switch (n.type) {
+    case 'Identifier': return WRAPPER_NAMES.has(n.name as string);
+    case 'ObjectPattern': return (n.properties as Array<Record<string, unknown> & { type: string }>)
+      .some((p) => patternBinds((p.type === 'RestElement' ? p.argument : p.value) as { type: string }));
+    case 'ArrayPattern': return (n.elements as Array<{ type: string } | null>).some((e) => patternBinds(e));
+    case 'RestElement': return patternBinds(n.argument as { type: string });
+    case 'AssignmentPattern': return patternBinds(n.left as { type: string });
+    default: return false;
+  }
 }
 
 /** Tokens that continue an expression across a line break, so ASI does not end a directive there. */
@@ -190,15 +287,23 @@ export function opensWithUseStrict(source: string): boolean {
 
 /**
  * One row of the table a launch's main module carries for its cells:
- * `[key, moduleName, head, hashbang, adopt]`. `adopt` is 1 when the process's
- * store takes the cell's file content from the module text (read back from
- * the bundle filesystem) rather than from a data cell: the store's one copy
- * of that file, and the map's only.
+ * `[key, moduleName, head, tail, hashbang, adopt]`. `adopt` is 1 when the
+ * process's store takes the cell's file content from the module text (read
+ * back from the bundle filesystem) rather than from a data cell: the store's
+ * one copy of that file, and the map's only.
  */
-export type CommonJsCellRow = [key: string, moduleName: string, head: number, hashbang: 0 | 1, adopt: 0 | 1];
+export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1];
 
 /** Bytes of runtime code one launch records, and the supervisor keeps. */
 export const RUNTIME_CODE_MAX_BYTES = 8 * 1024 * 1024;
+/** Pieces of runtime code one launch records, and the supervisor keeps. */
+export const RUNTIME_CODE_MAX_ENTRIES = 1024;
+/**
+ * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
+ * its key, its bookkeeping, and the module it becomes. Without it a flood of
+ * tiny pieces is nearly free by text and not at all by heap.
+ */
+export const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
 
 /** The constructors whose text a program can hand in at runtime. */
 const RUNTIME_FUNCTION_HEADS = {
@@ -215,22 +320,41 @@ export type RuntimeCodeEntry =
   | { kind: 'module'; path: string; text: string };
 
 /**
- * What a runtime-code key hashes: the constructor's arguments, or a file's
- * text. The guest hashes the same string with the same function (its sync
- * node:crypto), so both sides name the same module.
+ * What of a file's path decides the module its text becomes: its directory
+ * (the parent its relative imports and `import.meta.resolve` resolve
+ * against) and its extension (how it is lowered: TypeScript, JSX, ESM or
+ * CommonJS). Its name does not, so a file written under a fresh name each run
+ * — Vite's `vite.config.ts.timestamp-<now>.mjs` — is the same module each time.
+ * Self-contained: the guest embeds its source to compute the same key.
+ */
+export function runtimeModuleScope(path: string): [dir: string, ext: string] {
+  const p = path.replace(/^\/+/, '');
+  const slash = p.lastIndexOf('/');
+  const base = p.slice(slash + 1);
+  const dot = base.lastIndexOf('.');
+  return [slash < 0 ? '' : p.slice(0, slash), dot > 0 ? base.slice(dot) : ''];
+}
+
+/**
+ * What a runtime-code key hashes: a constructor's arguments, or a file's
+ * text with its runtimeModuleScope. The guest hashes the same string with the
+ * same function (its sync node:crypto), so both sides name the same module.
  */
 function runtimeCodeKeySource(entry: RuntimeCodeEntry): string {
   return entry.kind === 'module'
-    ? JSON.stringify(['module', entry.text])
+    ? JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text])
     : JSON.stringify([entry.kind, entry.params, entry.body]);
 }
 
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export function runtimeCodeKey(entry: RuntimeCodeEntry): string {
   const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
-  let hex = '';
-  for (const byte of digest) hex += byte.toString(16).padStart(2, '0');
-  return hex;
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES. */
+export function runtimeCodeCharge(entry: RuntimeCodeEntry): number {
+  return runtimeCodeKeySource(entry).length + RUNTIME_CODE_ENTRY_OVERHEAD;
 }
 
 /** The module name of the runtime code with key `key`. */
@@ -252,16 +376,57 @@ export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
 }
 
 /**
+ * Why V8's constructor would refuse these arguments, or null when it would
+ * build the function. V8 parses the parameters alone and requires them to end
+ * where the list ends ("Arg string terminates parameters early"), the body
+ * alone, and then the whole source, which must be exactly one function
+ * literal ("Single function literal required"). Splicing unchecked text into
+ * `(<head> anonymous(<params>\n) {\n<body>\n})` would otherwise let a body
+ * such as `}, globalThis.x = 1, function () {` run code at module
+ * evaluation that the constructor never would.
+ */
+export function runtimeFunctionSyntaxError(kind: RuntimeFunctionKind, params: readonly string[], body: string): string | null {
+  const head = `(${RUNTIME_FUNCTION_HEADS[kind]} anonymous(`;
+  const paramText = params.join(',');
+  const checks: Array<[text: string, bodyStart: number, emptyBody: boolean]> = [
+    [`${head}${paramText}\n) {})`, `${head}${paramText}\n) `.length, true],
+    [`${head}\n) {\n${body}\n})`, `${head}\n) `.length, false],
+    [`${head}${paramText}\n) {\n${body}\n})`, `${head}${paramText}\n) `.length, false],
+  ];
+  for (const [text, bodyStart, emptyBody] of checks) {
+    let program;
+    try {
+      program = parse(text, { ecmaVersion: 'latest', sourceType: 'script' });
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    const [statement] = program.body;
+    const fn = program.body.length === 1 && statement.type === 'ExpressionStatement' ? statement.expression : null;
+    if (
+      !fn || fn.type !== 'FunctionExpression' || fn.start !== 1 || fn.end !== text.length - 1
+      || fn.body.start !== bodyStart || (emptyBody && fn.body.body.length !== 0)
+    ) {
+      return emptyBody ? 'Arg string terminates parameters early' : 'Single function literal required';
+    }
+  }
+  return null;
+}
+
+/**
  * The `{ cjs }` module text for a Function-constructor call: it exports the
  * function V8 builds for `new <Kind>Function(...params, body)` — named
  * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
- * from line 3. A constructor's function closes over the global scope, where a
- * CommonJS module's body would see workerd's five CommonJS names
+ * from line 3 — or, for arguments the constructor refuses
+ * (runtimeFunctionSyntaxError), throws the SyntaxError it would. A
+ * constructor's function closes over the global scope, where a CommonJS
+ * module's body would see workerd's five CommonJS names
  * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
  * exports, __filename, __dirname), so an enclosing function rebinds those five
  * to the global object's.
  */
 export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string {
+  const refused = runtimeFunctionSyntaxError(kind, params, body);
+  if (refused !== null) return `throw new SyntaxError(${JSON.stringify(refused)});`;
   return 'module.exports = (function (require, module, exports, __filename, __dirname) { return ('
     + `${RUNTIME_FUNCTION_HEADS[kind]} anonymous(${params.join(',')}\n) {\n${body}\n}); })`
     + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
@@ -278,7 +443,9 @@ export const COMMONJS_CELL_IMPORTS = [
  * The generated facet's side of the cells: resolve a VFS key to its module's
  * wrapper function, read a cell's text back for the process's store, and
  * answer runtime code from the launch's `gen/` modules or record it for the
- * next launch (`__nimbusRuntimeCode`, the API a module runner's seam calls).
+ * next launch (`__nimbusRuntimeCode`, which the shims' async and generator
+ * Function constructors, `vm.compileFunction`, `Module.prototype._compile`
+ * and the loader of a file outside the map call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
@@ -286,26 +453,36 @@ export const COMMONJS_CELL_IMPORTS = [
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
-const __NIMBUS_CELL_TAIL = ${JSON.stringify(COMMONJS_CELL_TAIL)};
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
-const __NIMBUS_CELL_FILES = decodeURIComponent(new URL("./${CELL_DIR}", import.meta.url).pathname);
+const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for; null when the launch's map has no such cell.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
   return __row ? __nimbusRegistryRequire("./" + __row[1]) : null;
 }
-// The cell's own text, read back from the module map by its path.
+// The entry's wrapper function. A SyntaxError from compiling it carries no
+// location (the registry compiles on require, and V8 reports the requiring
+// frame), so its stack leads with the file, as Node's report does.
+function __nimbusEntryWrapper(name, filename) {
+  try {
+    return __nimbusRegistryRequire("./" + name);
+  } catch (e) {
+    if (e instanceof SyntaxError && typeof e.stack === "string") e.stack = filename + "\\n\\n" + e.stack;
+    throw e;
+  }
+}
+// The cell's own text, read back from the module map under its module name.
 function __nimbusModuleCellSource(row) {
-  const __text = __nimbusReadBundleFile(__NIMBUS_CELL_FILES + row[0], "utf8");
-  const __cell = __text.slice(row[2], __text.length - __NIMBUS_CELL_TAIL.length);
-  return row[3] ? "#!" + __cell.slice(2) : __cell;
+  const __text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + row[1], "utf8");
+  const __cell = __text.slice(row[2], __text.length - row[3]);
+  return row[4] ? "#!" + __cell.slice(2) : __cell;
 }
 // The data bundle, with every adopted cell added as a getter: the store reads
 // each as it takes it, so no more than one cell's text is in hand at a time.
 function __nimbusWithCodeCells(bundle) {
   for (const __row of __NIMBUS_CODE_CELLS) {
-    if (!__row[4]) continue;
+    if (!__row[5]) continue;
     Object.defineProperty(bundle, __row[0], { enumerable: true, configurable: true, get: () => __nimbusModuleCellSource(__row) });
   }
   return bundle;
@@ -314,15 +491,21 @@ function __nimbusWithCodeCells(bundle) {
 const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
 const __nimbusRuntimeLedger = new Map();
 let __nimbusRuntimeLedgerBytes = 0;
+const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
 function __nimbusRuntimeCodeCompile(entry, describe) {
   const __source = entry.kind === "module"
-    ? JSON.stringify(["module", entry.text])
+    ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
     : JSON.stringify([entry.kind, entry.params, entry.body]);
   const __key = __nimbusCreateHash("sha256").update(__source).digest("hex");
   if (__nimbusRuntimeKeys.has(__key)) return __nimbusRegistryRequire("./gen/" + __key + ".js");
-  if (!__nimbusRuntimeLedger.has(__key) && __nimbusRuntimeLedgerBytes + __source.length <= ${RUNTIME_CODE_MAX_BYTES}) {
+  const __charge = __source.length + ${RUNTIME_CODE_ENTRY_OVERHEAD};
+  if (
+    !__nimbusRuntimeLedger.has(__key)
+    && __nimbusRuntimeLedger.size < ${RUNTIME_CODE_MAX_ENTRIES}
+    && __nimbusRuntimeLedgerBytes + __charge <= ${RUNTIME_CODE_MAX_BYTES}
+  ) {
     __nimbusRuntimeLedger.set(__key, entry);
-    __nimbusRuntimeLedgerBytes += __source.length;
+    __nimbusRuntimeLedgerBytes += __charge;
   }
   const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with. It is staged: the next launch of this command compiles it.");
   __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";

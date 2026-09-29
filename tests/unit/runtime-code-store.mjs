@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { RuntimeCodeStore } from '../../packages/worker/src/facets/runtime-code-store.ts';
-import { RUNTIME_CODE_MAX_BYTES, runtimeCodeKey } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_CODE_MAX_BYTES, RUNTIME_CODE_MAX_ENTRIES, runtimeCodeKey } from '../../packages/core/src/_shared/commonjs-cell.ts';
 
 /** Durable Object storage over a Map, as a session's outlives its isolate. */
 function storageOver(rows) {
@@ -66,6 +66,25 @@ const big = (fill) => fn(fill.repeat(third));
   assert.equal(await store.record('cmd', [{ kind: 'eval', body: 'x' }, { kind: 'module', path: 1 }, null]), false);
   assert.equal((await store.forLaunch('cmd')).size, 0);
   console.log('  [3] malformed reports are dropped');
+}
+
+// A flood of tiny pieces is bounded by count, not only by text: a report is
+// read up to RUNTIME_CODE_MAX_ENTRIES, the store keeps as many, and a key the
+// store dropped leaves every profile, the other commands' included.
+{
+  const rows = new Map();
+  const store = new RuntimeCodeStore(storageOver(rows));
+  const flood = Array.from({ length: RUNTIME_CODE_MAX_ENTRIES * 3 }, (_, i) => fn(String(i)));
+  await store.record('first', flood.slice(0, 10));
+  await store.record('second', flood.slice(10));
+  const entryRows = [...rows.keys()].filter((key) => /^runtime-code:[0-9a-f]{64}:/.test(key));
+  assert.ok(entryRows.length <= RUNTIME_CODE_MAX_ENTRIES, `at most ${RUNTIME_CODE_MAX_ENTRIES} entries are kept: ${entryRows.length}`);
+  const fresh = new RuntimeCodeStore(storageOver(rows));
+  assert.ok((await fresh.forLaunch('second')).size <= RUNTIME_CODE_MAX_ENTRIES);
+  const first = await fresh.forLaunch('first');
+  assert.equal(first.size, 0, 'the first command\'s ten pieces were the least recent, and left');
+  assert.deepEqual(rows.get('runtime-code-profile:first'), [], 'and its profile row names none of them');
+  console.log('  [4] bounded by count as well as bytes; dropped keys leave every profile');
 }
 
 console.log('runtime-code-store OK');

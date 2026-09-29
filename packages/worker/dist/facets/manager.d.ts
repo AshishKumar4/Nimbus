@@ -210,6 +210,12 @@ interface FacetVfsState {
      * its transformed text replaces it in `bundle` and serves both.
      */
     emits?: Map<string, string>;
+    /**
+     * The JavaScript cells lowered from ESM (transformEsmInBundle), whose
+     * module wraps them in the block scope (commonjs-cell.ts, THE WRAPPER).
+     * Every other code cell is CommonJS as Node would run it.
+     */
+    lowered?: Set<string>;
     /** What the module map costs the facet's store, taken before its cells are released (N18). */
     moduleStorageBytes?: number;
     /**
@@ -367,9 +373,11 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, runtimeCode, }?: {
     consume?: boolean;
     emits?: ReadonlyMap<string, string>;
+    /** Cells lowered from ESM, wrapped in the block scope. */
+    lowered?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
@@ -1253,9 +1261,11 @@ export declare class FacetManager {
     private _recordRuntimeCode;
     /**
      * The runtime code recorded for an entry, as `{ cjs }` module text by key:
-     * a constructor call as the function module, a file lowered and wrapped as
-     * a module cell is. A file the launch already stages by its path is left
-     * to that cell — it is the file as it is now.
+     * a constructor call as the function module (or the SyntaxError the
+     * constructor would throw), a file lowered and wrapped as a module cell is.
+     * A file is staged by its content key even when the launch also carries its
+     * path as a cell: the guest looks a path up first and the key only for a
+     * path the map lacks — the same text written under a fresh name.
      */
     private _stagedRuntimeCode;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
