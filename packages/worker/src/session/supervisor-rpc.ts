@@ -833,8 +833,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /** Persist a live process's generated code without terminating the process. */
-  async reportRuntimeCode(entries: unknown[]): Promise<void> {
-    return this._call(this._op('reportRuntimeCode', [entries], { pid: this._reportingPid() }));
+  async reportRuntimeCode(entries: unknown[], missedFiles: string[] = []): Promise<void> {
+    return this._call(this._op('reportRuntimeCode', [entries, missedFiles], { pid: this._reportingPid() }));
   }
 
   // ── Prefetch ──────────────────────────────────────────────────────────

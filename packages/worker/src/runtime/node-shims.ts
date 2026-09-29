@@ -1321,6 +1321,7 @@ const __fsMod = (() => {
   function _recordMiss(k) {
     if (k === "" || _residencyMisses.has(k)) return;
     _residencyMisses.add(k);
+    if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
   }
 
@@ -9287,6 +9288,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
       // key the launch already carries answers now.
       (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
+      if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);

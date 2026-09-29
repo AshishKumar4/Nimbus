@@ -75,6 +75,14 @@ const FILES = {
     '  process.exit(0);',
     '}, 300);',
   ].join('\n'),
+  'node_modules/late-module/package.json': '{"name":"late-module","main":"unused.js"}',
+  'node_modules/late-module/unused.js': 'module.exports = "unused";',
+  'node_modules/late-module/deep/hidden.cjs': 'module.exports = "learned-live-file";',
+  'caught.js': [
+    'require("http").createServer((q,s)=>s.end("alive")).listen(7072);',
+    'let result; try { result = require(process.cwd()+"/node_modules/"+["late","module"].join("-")+"/deep/"+["hid","den"].join("")+".cjs"); } catch(e) { result="CAUGHT "+e.message; }',
+    'require("fs").writeFileSync("/home/user/w/caught.txt",String(result));',
+  ].join('\n'),
   'bad.js': 'const x = ;\n',
 };
 
@@ -85,7 +93,7 @@ try {
   try {
     const payload = Buffer.from(JSON.stringify(FILES)).toString('base64');
     const setup = await terminal.run(
-      `mkdir -p ${W} && node -e "const f = JSON.parse(Buffer.from('${payload}', 'base64').toString()); for (const [n, t] of Object.entries(f)) require('fs').writeFileSync('${W}/' + n, t); console.log('SETUP')"`,
+      `mkdir -p ${W}/node_modules/late-module/deep && node -e "const f = JSON.parse(Buffer.from('${payload}', 'base64').toString()); for (const [n, t] of Object.entries(f)) require('fs').writeFileSync('${W}/' + n, t); console.log('SETUP')"`,
     );
     assert.match(setup.stdout, /SETUP/, setup.stdout);
 
@@ -117,6 +125,26 @@ try {
     await Bun.sleep(1000);
     await terminal.run(`cd ${W} && node server.js`);
     assert.equal(await residentResult(), 'resident-ok', 'and its exit report staged it for the next launch');
+    // An SSR server can catch a missing module without exiting. Persist that
+    // file miss before acknowledging startup, so killing it does not lose
+    // the dependency and make every subsequent launch repeat the same error.
+    const caughtFile = async () => {
+      for (let n = 0; n < 100; n++) {
+        const r = await terminal.run('cat ' + W + '/caught.txt');
+        if (r.exitCode === 0) return r.stdout.trim();
+        await Bun.sleep(50);
+      }
+      throw new Error('caught module fixture never wrote its result');
+    };
+    const caughtFirst = await terminal.run('cd ' + W + ' && node caught.js');
+    const caughtPid = Number(caughtFirst.stdout.match(/pid=(\d+)/)?.[1]);
+    assert.ok(caughtPid > 0, caughtFirst.stdout);
+    assert.match(await caughtFile(), /^CAUGHT /);
+    await terminal.run('kill -KILL ' + caughtPid);
+    await terminal.run('rm -f ' + W + '/caught.txt');
+    await terminal.run('cd ' + W + ' && node caught.js');
+    assert.equal(await caughtFile(), 'learned-live-file', 'a caught file miss survives a forced kill without an exit report');
+
 
     const bad = await terminal.run(`cd ${W} && node bad.js`);
     assert.match(bad.stdout, /\/home\/user\/w\/bad\.js\n\nSyntaxError/, bad.stdout);

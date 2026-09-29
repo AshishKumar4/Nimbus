@@ -5578,10 +5578,14 @@ export class FacetManager {
 
   /** Acknowledge generated code only after storage has accepted it. The
    * launch key comes from the process table, never from guest arguments. */
-  async noteProcessRuntimeCode(pid: number, entries: unknown[]): Promise<void> {
+  async noteProcessRuntimeCode(pid: number, entries: unknown[], missedFiles: string[] = []): Promise<void> {
     const key = this.residentBundleKeys.get(pid);
     if (!key || this.processes.get(pid)?.state !== 'running') throw new Error('Runtime code report has no live launch');
     await this._recordRuntimeCode(key, entries);
+    if (missedFiles.length > 0) {
+      this._dropPrefetchCacheEntry(key);
+      await this.residencyProfiles.record(key, missedFiles);
+    }
   }
 
   noteProcessReportedExit(
