@@ -238,6 +238,13 @@ export function buildRuntimeHandler(
     const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
       || ctx.isFdTerminal?.(1) === false
       || ctx.isFdTerminal?.(2) === false;
+    // A bin wrapper or child-process broker may already own the process
+    // entry; preserve it for eval/stdin programs as well as script files.
+    const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
+    const reservedProcess = binSpawn ? {
+      skipSpawn: true, callerPid: binSpawn.callerPid,
+      forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
+    } : {};
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
 
     // ── Flag-span computation (primitive #1) ──
@@ -290,7 +297,8 @@ export function buildRuntimeHandler(
         cwd: ctx.cwd,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
-        command: `${name} -e ...`,
+        command: binSpawn?.command || `${name} -e ...`,
+        ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
       });
@@ -325,7 +333,8 @@ export function buildRuntimeHandler(
         cwd: ctx.cwd,
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
-        command: `${name} -`,
+        command: binSpawn?.command || `${name} -`,
+        ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
       });
@@ -489,10 +498,6 @@ export function buildRuntimeHandler(
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
 
-    // Primitive #1 / G4 — propagate bin-spawn ctx if the runtime
-    // supports it (currently node only).
-    const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
-
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(code, {
       cred: ctx.cred,
@@ -504,12 +509,7 @@ export function buildRuntimeHandler(
       dirname,
       command:
         binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-      ...(binSpawn ? {
-        skipSpawn: true,
-        callerPid: binSpawn.callerPid,
-        forceLongRunning: binSpawn.forceLongRunning === true,
-        attachedTty: binSpawn.attachedTty === true,
-      } : {}),
+      ...reservedProcess,
       ...(captureOutput ? { captureOutput: true } : {}),
       ...(bundleProfile ? { bundleProfile } : {}),
     });

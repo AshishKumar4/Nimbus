@@ -226,8 +226,8 @@ export declare class FacetProcessManager {
      * Loader isolate. The dispatch envelope is in a fresh isolate; the
      * actual command logic still uses the existing registry paths.
      *
-     * Single-ownership: stdin/stdout/stderr returned as strings; no
-     * shared buffers cross the RPC boundary.
+     * A managed child streams to its existing output queue while it runs;
+     * otherwise the inline caller receives captured text in the result.
      */
     dispatchInline(req: SpawnReq, kind: string): Promise<{
         exitCode: number;
@@ -261,6 +261,10 @@ export declare class FacetProcessManager {
     }>;
     /** A broker-side text message onto the child's byte ring. */
     private _appendText;
+    /** Whether this pid's descriptors belong to a child managed by this broker. */
+    isChild(pid: number): boolean;
+    /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
+    routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     private _appendOutput;
     /**

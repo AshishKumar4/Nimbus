@@ -85,6 +85,16 @@ export interface VfsStat {
     /** Generation that last wrote this inode; absent for a stat from a non-SQLite mount. */
     gen?: number;
 }
+/** Where a caller's path leads on SQLite (SqliteVFS.resolveName). */
+export interface VfsNameResolution {
+    /** The canonical caller name; following a link leaves resolution to the namespace instead. */
+    name: string;
+    /**
+     * How the walk ended: at the entry, or at a component that is absent or
+     * not a directory, the rest appended as spelled.
+     */
+    end: 'found' | 'absent' | 'not-directory';
+}
 export interface CredentialedVfs {
     readonly cred: VfsCred;
     exists(path: string): boolean;
@@ -104,6 +114,12 @@ export interface CredentialedVfs {
     symlink(target: string, path: string): void;
     readlink(path: string): string;
     resolveSymlink(path: string): string | null;
+    /**
+     * `path` resolved in one walk, in the caller's names, for a namespace that
+     * lays other filesystems over parts of this one; null leaves it to the
+     * namespace (see SqliteVFS.resolveName).
+     */
+    resolveName(path: string, followLeaf: boolean, stop?: (name: string) => boolean): VfsNameResolution | null;
     readFile(path: string): Uint8Array;
     /** Whole-file read that bypasses the LRU content cache (see SqliteVFS.readFileUncached). */
     readFileUncached(path: string): Uint8Array;
@@ -570,6 +586,17 @@ export declare class SqliteVFS {
      * unregistered credential, so the ordinary session user is untouched.
      */
     private confinedTmpRoots;
+    /**
+     * The last walk resolveName completed on the live tree. The operation a
+     * caller runs next on the name it returned (a stat, a read, its revision)
+     * finds the walk here instead of repeating it (resolvePath). It holds only
+     * while nothing that could move a resolution has happened since: no change
+     * to the inode table, no mutation (bumpRevision), no change to confinement.
+     * Keyed by the view's credential object. Adjacent entries can share the
+     * parent search proof; resolveName still consults the namespace each time.
+     */
+    private lastResolution;
+    private resolutionEpoch;
     private readonly sharedDirectories;
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
     registerSharedDirectory(path: string): () => void;
@@ -678,6 +705,18 @@ export declare class SqliteVFS {
      * `tree` looks inodes up by key: the live tree, or a snapshot's (SnapshotVfs).
      */
     private resolvePath;
+    /**
+     * Walk a plain SQLite path once, checking ancestor search permission. A
+     * link that needs following, or a name claimed by the namespace, returns
+     * null for the existing component walk. Thus mount shadowing, link-hop
+     * limits and physical `..` traversal keep their namespace semantics.
+     * `stop` must include mount ancestors: declining the first component
+     * declines this descent, but not a link target. `end` distinguishes a
+     * missing entry from a non-directory component without throwing merely
+     * to report absence. The returned name's engine operations share this
+     * traversal proof (lastResolution), rather than walking it again.
+     */
+    private resolveName;
     private checkAccess;
     /**
      * `/` has no row: it is 0755 root:root by definition, and adding or

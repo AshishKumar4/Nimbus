@@ -24,13 +24,17 @@
  *   normalizeVfsPath('/foo//bar/')         -> 'foo/bar'
  *   normalizeVfsPath('../escape')          -> 'escape'  (bounded; doesn't go negative)
  */
-/** A spelling normalizeVfsPath would change: a leading or trailing slash, an empty segment, or a `.`/`..` segment. */
-const NOT_NORMAL = /^\/|\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+/**
+ * A spelling normalizeVfsPath would change beyond one leading slash: a
+ * trailing slash, an empty segment, or a `.`/`..` segment.
+ */
+const NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
 
 export function normalizeVfsPath(p: string): string {
   const text = String(p ?? '');
-  // A key already in canonical form, as most lookups pass, is returned as it is.
-  if (!NOT_NORMAL.test(text)) return text;
+  // A key already in canonical form, or an absolute path that is one past
+  // its leading slash, as most lookups pass, is returned without the split.
+  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
   const segments = text.split('/');
   const out: string[] = [];
   for (const seg of segments) {

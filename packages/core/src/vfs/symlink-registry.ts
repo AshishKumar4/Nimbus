@@ -100,6 +100,11 @@ export class SymlinkRegistry {
     this.vfs.assertMutationAllowed(LEGACY_SYMLINK_REGISTRY_PATH);
   }
 
+  /** How many links the registry holds (none, in a session that never had an older one). */
+  get size(): number {
+    return this.load().size;
+  }
+
   /** Check if `path` is registered as a symlink (no chain resolution). */
   isSymlink(path: string): boolean {
     return this.load().has(this.norm(path));
