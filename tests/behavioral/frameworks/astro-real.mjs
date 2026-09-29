@@ -15,24 +15,23 @@
 //      fetch with Nimbus's default "User-Agent: node"; api.github.com 403s
 //      UA-less requests), exits 0, and the template is on disk (node-tar's
 //      gzip extract over workerd's synchronous zlib).
-//   2. `npm install` of the generated project exits 0 and refuses neither
-//      rolldown nor its wasm binding (Nimbus answers the binding with its
-//      staged single-threaded wasm32-wasip1 build).
-//   3. `npx astro dev` starts as a long-running bin and serves the minimal
+//   2. `npm install` of the generated project exits 0 and refuses none of
+//      Astro 7's napi-rs bindings (rolldown, satteri, the .astro compiler):
+//      Nimbus answers each with its staged single-threaded wasm32-wasip1 build.
+//   3. Those bindings run in the guest: satteri renders Markdown to HTML and
+//      the compiler compiles an .astro component, through the packages' own
+//      APIs.
+//   4. `npx astro dev` starts as a long-running bin and serves the minimal
 //      template's page through /s/<sid>/port/4321/.
 //
-// Current boundary (check 3 is expected RED until it moves): Vite 8 and
-// rolldown load and run. `astro dev` then stops at satteri, Astro 7's
-// Markdown engine: another napi-rs addon whose only wasm build
-// (@bruits/satteri-wasm32-wasi) imports a shared memory — the same
-// wasm32-wasip1-threads ABI rolldown had, so it needs the same staged
-// single-threaded build. Behind it, Astro loads astro.config and every page
-// through Vite's SSR module runner (`new AsyncFunction`), runtime code
-// generation a Worker refuses outside module evaluation.
+// Current boundary (check 4 is expected RED until it moves): the bindings
+// load and run, but Astro loads astro.config and every page through Vite's
+// SSR module runner (`new AsyncFunction`), runtime code generation a Worker
+// refuses outside module evaluation.
 
 import {
   Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort,
-  connectProcessTerminal, sleep, BASE,
+  connectProcessTerminal, sleep, BASE, heredocCommand,
 } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -101,11 +100,27 @@ try {
   a.check('npm install exits 0', ins.exit === 0, `exit=${ins.exit} tail=${JSON.stringify(tail(ins.output, 20))}`);
   if (ins.exit !== 0) throw new Error('npm install failed; nothing to launch');
   const insOut = stripAnsi(ins.output);
-  a.check('npm install refuses neither rolldown nor its wasm binding',
-    !/note:\s*(rolldown|@rolldown\/binding-wasm32-wasi) has no Workers-compatible build/.test(insOut),
+  a.check('npm install refuses none of the napi-rs bindings (rolldown, satteri, compiler)',
+    !/note:\s*(rolldown|@rolldown\/binding-wasm32-wasi|satteri|@bruits\/satteri-wasm32-wasi|@astrojs\/compiler-binding(-wasm32-wasi)?) has no Workers-compatible build/.test(insOut),
     tail(insOut, 20));
 
-  // ── 3. astro dev ────────────────────────────────────────────────────
+  // ── 3. the bindings run ─────────────────────────────────────────────
+  const check = [
+    "import { markdownToHtml } from 'satteri';",
+    "import { transform } from '@astrojs/compiler-rs';",
+    "console.log('SATTERI ' + JSON.stringify(markdownToHtml('# Title\\n\\nSome **bold** text.')));",
+    "const out = transform('---\\nconst name = \"Nimbus\";\\n---\\n<h1>Hello {name}</h1>', { filename: '/x.astro' });",
+    "console.log('COMPILER ' + JSON.stringify({ render: out.code.includes('$$render'), hello: out.code.includes('Hello') }));",
+  ].join('\n');
+  await t.run(heredocCommand(`${ROOT}/mvp/bindings-check.mjs`, check), 15_000);
+  const bindings = await run(t, `cd ${ROOT}/mvp && node bindings-check.mjs 2>&1`, 180_000);
+  const bindingsOut = stripAnsi(bindings.output);
+  a.check('satteri renders Markdown to HTML in the guest',
+    bindingsOut.includes('SATTERI "<h1>Title</h1>\\n<p>Some <strong>bold</strong> text.</p>\\n"'), tail(bindingsOut, 12));
+  a.check('the Astro compiler compiles an .astro component in the guest',
+    bindingsOut.includes('COMPILER {"render":true,"hello":true}'), tail(bindingsOut, 12));
+
+  // ── 4. astro dev ────────────────────────────────────────────────────
   // A long-running npm bin returns the shell prompt immediately with a
   // `[bin started (long-running): pid=N ...]` line; its own output goes to
   // the process log at /api/logs/<pid>.
