@@ -328,6 +328,9 @@ export type RuntimeCodeEntry =
  * Self-contained: the guest embeds its source to compute the same key.
  */
 export function runtimeModuleScope(path: string): [dir: string, ext: string] {
+  // Inline JS modules have no filesystem directory. Their complete URL is
+  // the import base and evaluation metadata, so it participates in the key.
+  if (path.startsWith('data:')) return [path, '.mjs'];
   const p = path.replace(/^\/+/, '');
   const slash = p.lastIndexOf('/');
   const base = p.slice(slash + 1);

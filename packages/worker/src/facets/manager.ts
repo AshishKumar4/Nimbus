@@ -5441,6 +5441,15 @@ export class FacetManager {
         modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
         continue;
       }
+      if (entry.path.startsWith('data:')) {
+        if (!this.esbuild) throw new Error('No transformer for a staged data URL module');
+        const result = await this.esbuild.transform(entry.text, {
+          loader: 'js', format: 'cjs', target: 'esnext',
+          moduleMetadata: true, dynamicImportParent: entry.path,
+        });
+        modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
+        continue;
+      }
       const path = entry.path.replace(/^\/+/, '');
       const file: Record<string, string | Uint8Array> = { [path]: entry.text };
       const emits = new Map<string, string>();

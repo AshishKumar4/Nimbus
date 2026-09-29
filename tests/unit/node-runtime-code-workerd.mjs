@@ -61,6 +61,11 @@ const FILES = {
     'import(temp).then((m) => out.push("file=" + m.default), (e) => out.push("file!" + (e.code || e.name)))',
     '  .then(() => console.log("FN " + out.join(" ") + " broke=" + globalThis.__broke));',
   ].join('\n'),
+  'data.js': [
+    'const text = ' + JSON.stringify('import { sep } from "node:path"; export const name = await Promise.resolve("café"); export {sep}; export const url=import.meta.url; export const bad=()=>import("./missing.js");'),
+    'const url = "data:text/javascript;base64," + Buffer.from(text).toString("base64");',
+    'import(url).then(async (m) => { const again=await import(url); let bad=false; try { await m.bad(); } catch { bad=true; } console.log("DATA " + JSON.stringify([m.name,m.sep,m.url===url,m===again,bad])); }, (e) => console.log("DATA!" + (e.code || e.name)));',
+  ].join('\n'),
   'server.js': [
     'require("http").createServer((q, s) => s.end("ok")).listen(7071);',
     'setTimeout(() => {',
@@ -93,6 +98,10 @@ try {
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 vmexpr=5 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
+    const dataFirst = await terminal.run('cd ' + W + ' && node data.js');
+    assert.match(dataFirst.stdout, /DATA!ERR_NIMBUS_CODE_NEXT_LAUNCH/, dataFirst.stdout);
+    const dataSecond = await terminal.run('cd ' + W + ' && node data.js');
+    assert.match(dataSecond.stdout, /DATA \["café","\/",true,true,true\]/, dataSecond.stdout);
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

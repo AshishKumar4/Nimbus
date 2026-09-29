@@ -9398,13 +9398,43 @@ function __esmLoad(resolution) {
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
   } else if (resolution.format === "data") {
-    const match = /^data:application\\/json(;[^,]*)?,/.exec(resolution.url);
-    if (!match) {
-      throw Object.assign(new Error("Nimbus: a data: URL module can only be JSON here; code cannot be compiled after the process starts: " + resolution.url.slice(0, 64)), { code: "ERR_NIMBUS_DATA_MODULE" });
+    const url = new URL(resolution.url);
+    const comma = url.pathname.indexOf(',');
+    const header = url.pathname.slice(0, comma);
+    const mediaType = header.split(';')[0].toLowerCase();
+    const payload = url.pathname.slice(comma + 1);
+    const text = header.split(';').includes('base64')
+      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
+    if (mediaType === "application/json") {
+      const value = JSON.parse(text);
+      ns = __esmNamespaceOf(["default"], () => value);
+    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
+      // A data URL produced at runtime is a module body, just like a written
+      // file. It is staged by the same runtime-code service, retaining its URL
+      // as the import base (relative imports from data URLs remain invalid).
+      const cell = __nimbusRuntimeModule(resolution.url, text);
+      const mod = { exports: {} };
+      Object.defineProperty(mod, "__nimbusImportMeta", { value: {
+        url: resolution.url,
+        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
+      } });
+      const requireData = (id) => {
+        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
+        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
+        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
+      };
+      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
+      if (result && typeof result.then === "function") {
+        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        __esmNamespaces.set(resolution.url, pending);
+        return pending;
+      }
+      ns = namespace();
+    } else {
+      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
     }
-    const body = resolution.url.slice(match[0].length);
-    const value = JSON.parse(match[1] && match[1].includes(";base64") ? atob(body) : decodeURIComponent(body));
-    ns = __esmNamespaceOf(["default"], () => value);
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
     const esm = resolution.format === "module"
