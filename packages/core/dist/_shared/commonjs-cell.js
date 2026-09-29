@@ -417,9 +417,9 @@ export const COMMONJS_CELL_IMPORTS = [
  * The generated facet's side of the cells: resolve a VFS key to its module's
  * wrapper function, read a cell's text back for the process's store, and
  * answer runtime code from the launch's `gen/` modules or record it for the
- * next launch (`__nimbusRuntimeCode`, which the shims' Function constructors,
- * `vm.compileFunction`, `Module.prototype._compile` and the loader of a file
- * outside the map call).
+ * next launch (`__nimbusRuntimeCode`, which the shims' async and generator
+ * Function constructors, `vm.compileFunction`, `Module.prototype._compile`
+ * and the loader of a file outside the map call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.

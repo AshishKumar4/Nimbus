@@ -9,13 +9,16 @@
 //     names.
 //   - Cells whose paths differ only where URL parsing is lossy (a trailing
 //     space, a tab) are distinct modules, and the map loads.
-//   - Code generation is refused at request time, so the Function
-//     constructors, vm.compileFunction and a file written then imported go to
-//     the runtime-code service: refused with ERR_NIMBUS_CODE_NEXT_LAUNCH in
-//     the launch that produced them, compiled in the next launch of the same
-//     command — a one-shot's envelope and a resident process's exit report
-//     alike. Text the constructor would refuse throws its SyntaxError there
-//     and never runs.
+//   - Code generation is refused at request time, so the async and generator
+//     Function constructors, vm.compileFunction and a file written then
+//     imported go to the runtime-code service: refused with
+//     ERR_NIMBUS_CODE_NEXT_LAUNCH in the launch that produced them, compiled
+//     in the next launch of the same command — a one-shot's envelope and a
+//     resident process's exit report alike. Text the constructor would refuse
+//     throws its SyntaxError there and never runs.
+//   - The plain Function constructor stays native: a probe of it (TypeBox's
+//     CanEvaluate, `Function("null")()`) answers "no" in every launch, so code
+//     that probes once and then compiles everything keeps its fallback.
 //   - A SyntaxError in an entry names the file.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
@@ -42,10 +45,11 @@ const FILES = {
     'const out = [];',
     'const make = {',
     '  fn: () => new Function("a", "return a * 2")(21),',
+    '  probe: () => { try { Function("null")(); return true; } catch { return false; } },',
     '  async: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("a", "return a + 1"),',
     '  gen: () => new (Object.getPrototypeOf(function* () {}).constructor)("yield 7")().next().value,',
     '  vm: () => require("vm").compileFunction("return x * 3", ["x"])(5),',
-    '  breakout: () => Function("}, globalThis.__broke = 1, function () {"),',
+    '  breakout: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("}, globalThis.__broke = 1, async function () {"),',
     '};',
     'for (const [label, run] of Object.entries(make)) {',
     '  try { out.push(label + "=" + run()); } catch (e) { out.push(label + "!" + (e.code || e.name)); }',
@@ -60,7 +64,7 @@ const FILES = {
     'require("http").createServer((q, s) => s.end("ok")).listen(7071);',
     'setTimeout(() => {',
     '  let r;',
-    '  try { r = new Function("return \\"resident-ok\\"")(); } catch (e) { r = e.code || e.name; }',
+    '  try { r = new (Object.getPrototypeOf(function* () {}).constructor)("yield \\"resident-ok\\"")().next().value; } catch (e) { r = e.code || e.name; }',
     '  require("fs").writeFileSync("/home/user/w/resident.txt", String(r));',
     '  process.exit(0);',
     '}, 300);',
@@ -84,10 +88,10 @@ try {
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
-      /FN fn!ERR_NIMBUS_CODE_NEXT_LAUNCH async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
+      /FN fn!EvalError probe=false async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
-    assert.match(second.stdout, /FN fn=42 async=function gen=7 vm=15 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
+    assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {

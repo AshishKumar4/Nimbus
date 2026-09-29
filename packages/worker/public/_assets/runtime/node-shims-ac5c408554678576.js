@@ -7160,26 +7160,33 @@ const __cryptoMod = (() => {
 // execution does not.  Documented in W3 retro for W3.5 follow-up
 // (a parser-based vm fallback, or pre-bundle vm-using scripts at
 // install time).
-// ── Runtime code: the Function constructors ──
+// ── Runtime code: the async and generator Function constructors ──
 //
 // A Worker generates code from strings only while its modules evaluate: at
 // request time — where every program runs — `new Function(...)` and its async
 // and generator siblings throw EvalError "Code generation from strings
-// disallowed for this context". Each constructor here asks the native one
-// first and, refused that way, hands the arguments to the launch's
-// runtime-code service (core/_shared/commonjs-cell.ts, RUNTIME CODE), which
-// answers from this launch's module map or records the text for the next
+// disallowed for this context". The async and generator constructors here ask
+// the native one first and, refused that way, hand the arguments to the
+// launch's runtime-code service (core/_shared/commonjs-cell.ts, RUNTIME CODE),
+// which answers from this launch's module map or records the text for the next
 // launch of the command and throws EvalError code ERR_NIMBUS_CODE_NEXT_LAUNCH.
-// A facet without the service (opencode's) keeps the native refusal. The
-// replacement is the constructor the program sees everywhere: the global
-// `Function`, and each kind's `prototype.constructor`, which is how
-// `(async function () {}).constructor` reaches it.
+// That is the constructor a module runner evaluates with (Vite's SSR runner:
+// `new AsyncFunction(...)`), reached as each kind's `prototype.constructor`,
+// which is how `(async function () {}).constructor` finds it. A facet without
+// the service (opencode's) keeps the native refusal.
+//
+// The plain `Function` constructor is left native, on evidence: code probes it
+// once and keeps the answer. TypeBox's CanEvaluate (pi 0.87.1) tries
+// `Function("null")`, remembers whether it worked, and then compiles every
+// schema check with `Function`. Routed, the next launch staged the probe's
+// text but not the checks' — the probe said yes, the first check threw, and
+// pi's TUI died where the native refusal had kept it on TypeBox's interpreter.
+// Staging is per text, so a probe can never vouch for the texts after it.
 function __nimbusIsCodegenRefusal(e) {
   return e instanceof EvalError && /Code generation from strings disallowed/.test(String(e.message));
 }
 (() => {
   const kinds = [
-    ["function", Function],
     ["async", Object.getPrototypeOf(async function () {}).constructor],
     ["generator", Object.getPrototypeOf(function* () {}).constructor],
     ["asyncGenerator", Object.getPrototypeOf(async function* () {}).constructor],
@@ -7204,7 +7211,6 @@ function __nimbusIsCodegenRefusal(e) {
     Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
     Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
-    if (kind === "function") globalThis.Function = routed;
   }
 })();
 

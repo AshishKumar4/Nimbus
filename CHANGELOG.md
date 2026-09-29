@@ -232,14 +232,17 @@ published independently in the `@nimbus-sh` npm scope.
   overhead, least recently recorded out; a relaunch after the isolate was
   evicted or hibernated still gets it), and the next launch carries it as
   `gen/<key>.js` modules compiled on first use. It is reached without any
-  opt-in: at request time the global `Function` and the
-  `AsyncFunction`/generator constructors (each kind's
-  `prototype.constructor`), `vm.compileFunction`, `Module.prototype._compile`
-  and a `require`/`import()` of a file the map lacks all go to it. A
-  constructor's arguments build the function the constructor would (same
-  source text, body on line 3, global scope), and arguments it would refuse
-  throw its SyntaxError and never run. A file is keyed by its text,
-  directory and extension, not its name, so a fresh file name each run
+  opt-in: at request time the `AsyncFunction` and generator constructors
+  (each kind's `prototype.constructor`, as a module runner reaches them),
+  `vm.compileFunction`, `Module.prototype._compile` and a
+  `require`/`import()` of a file the map lacks all go to it. The plain
+  `Function` constructor stays native: code probes it once and keeps the
+  answer (TypeBox's `CanEvaluate` in pi), and a staged probe would vouch for
+  texts that are not staged. A constructor's arguments build the function
+  the constructor would (same source text, body on line 3, global scope),
+  and arguments it would refuse throw its SyntaxError and never run. A file
+  is keyed by its text, directory and extension, not its name, so a fresh
+  file name each run
   (Vite's `.vite-temp/*.timestamp-*.mjs`) converges. Text that changes on
   every run — a module runner's transform of an edited file — needs one
   relaunch per change.

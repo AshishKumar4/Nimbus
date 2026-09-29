@@ -59,28 +59,42 @@ assert.ok(/\.reject\(/.test(rpcSrc), `${rpcName}: client rejects the pending pro
 assert.ok(/\{\s*resolve\s*:/.test(rpcSrc) || rpcSrc.includes('{resolve:'), `${rpcName}: pending map stores a reject handle`);
 console.log(`  [1] shared Rpc chunk (${rpcName}) carries the fail-loud contract in the staged bytes`);
 
-// Extract a top-level `function <name>(...) { ... }` by balanced-brace scan.
-function extractFn(src, name) {
-  const sig = `function ${name}(`;
-  const start = src.indexOf(sig);
-  assert.ok(start >= 0, `chunk contains ${sig}`);
-  const bodyOpen = src.indexOf('{', start);
-  let depth = 0;
-  for (let i = bodyOpen; i < src.length; i++) {
-    const ch = src[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return src.slice(start, i + 1);
+// Every top-level `function <name>(...) { ... }` of the chunk, extracted by
+// balanced-brace scan. The minifier renames them on every rebuild, so the two
+// functions under test are found by what they do, not by what they are called.
+function topLevelFunctions(src) {
+  const found = [];
+  const signature = /function ([A-Za-z_$][\w$]*)\(/g;
+  let match;
+  while ((match = signature.exec(src))) {
+    const bodyOpen = src.indexOf('{', match.index);
+    let depth = 0;
+    for (let i = bodyOpen; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) {
+        found.push({ name: match[1], src: src.slice(match.index, i + 1) });
+        signature.lastIndex = i + 1;
+        break;
+      }
     }
   }
-  throw new Error(`unbalanced braces extracting ${name}`);
+  return found;
 }
 
-// `v` = listen(rpc, scope), `S` = client(target). Both are import-free (they use
-// only globalThis / Map / Promise / JSON / Error), so they evaluate standalone.
-const listenSrc = extractFn(rpcSrc, 'v');
-const clientSrc = extractFn(rpcSrc, 'S');
+function onlyOne(role, candidates) {
+  assert.equal(candidates.length, 1, `exactly one ${role} function in ${rpcName} (got ${candidates.map((f) => f.name).join(', ') || 'none'})`);
+  return candidates[0];
+}
+
+// listen(rpc, scope) answers the frames it receives as "rpc.request";
+// client(target) sends those and holds the pending-call Map it settles on
+// "rpc.result". Each is told apart by the frame type it tests for. Both are
+// import-free (they use only globalThis / Map / Promise / JSON / Error), so
+// they evaluate standalone.
+const functions = topLevelFunctions(rpcSrc);
+const testsFor = (f, type) => new RegExp(`===\\s*"${type.replace('.', '\\.')}"`).test(f.src);
+const listenFn = onlyOne('listen', functions.filter((f) => testsFor(f, 'rpc.request')));
+const clientFn = onlyOne('client', functions.filter((f) => testsFor(f, 'rpc.result') && f.src.includes('new Map')));
 
 // Capture the client's private pending Map without touching the artifact: wrap
 // the global Map so the two Maps `client()` constructs are recorded in order
@@ -96,7 +110,7 @@ class TrackedMap extends RealMap {
 
 const factory = new Function(
   'Map',
-  `${listenSrc}\n${clientSrc}\nreturn { listen: v, client: S };`,
+  `${listenFn.src}\n${clientFn.src}\nreturn { listen: ${listenFn.name}, client: ${clientFn.name} };`,
 );
 const { listen, client } = factory(TrackedMap);
 
