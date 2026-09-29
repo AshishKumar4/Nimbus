@@ -1153,6 +1153,10 @@ async function transformWithEsbuild(
       const message = error instanceof Error ? error.message : String(error);
       if (!/top-level await.*not supported.*cjs/i.test(message)) throw error;
     }
+    // A hashbang is valid only at the start of a script. The TLA fallback
+    // moves the body into an async function, so keep its line as a comment
+    // before either fallback pass (Vite bin/vite.js imported by Vinext).
+    if (code.startsWith('#!')) code = '//' + code.slice(2);
 
     if (hasEsmImports(code) || hasEsmExports(code)) {
       const pass1 = await esbuildApi.transform(code, {
