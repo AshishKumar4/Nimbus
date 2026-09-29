@@ -44,7 +44,8 @@ export async function launchFrameworkDev({ terminal, sid, cwd, command, port, ac
     }
     proc.ws.close();
     if (!next) return { ok: false, attempt, pid, output, last, process: null, response: null };
-    console.log(`[framework] launch ${attempt} staged code or read state; relaunching`);
+    const diagnostic = stripAnsi(text + output).split(/\r?\n/).find(line => NEXT_FRAMEWORK_LAUNCH.test(line)) ?? last;
+    console.log(`[framework] launch ${attempt} staged code or read state; relaunching: ${diagnostic.slice(0, 500)}`);
   }
   return { ok: false, attempt: maxLaunches, pid: 0, output, last, process: null, response: null };
 }
