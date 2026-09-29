@@ -22,12 +22,13 @@ export function createHttpPlatform() {
   const listeners = new Map();
   class Server extends http.Server {
     constructor(...args) {
-      withHostTimers(() => super(...args));
+      super(...args);
       // Bun starts its 30 s TCP connection sweep from an internal listening
       // listener, not from listen() itself. Workerd has no host TCP sweep.
-      // Keep only the listeners installed by the native constructor on host
-      // scheduling; application listeners added afterward use guest timers.
+      // Only native connection housekeeping uses host timers. Option getters
+      // and application listening handlers run with ordinary guest scheduling.
       for (const listener of this.rawListeners('listening')) {
+        if (listener.name !== 'setupConnectionsTracking') continue;
         this.removeListener('listening', listener);
         this.on('listening', (...values) => withHostTimers(() => Reflect.apply(listener, this, values)));
       }

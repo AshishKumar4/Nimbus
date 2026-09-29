@@ -69,6 +69,8 @@ const FILES = {
     '  process.exit(0);',
     '}, 300);',
   ].join('\n'),
+  'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
+  'grammar-dep.js': 'module.exports = { value: 7 };',
   'bad.js': 'const x = ;\n',
 };
 
@@ -85,6 +87,10 @@ try {
 
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);
+
+    const grammar = await terminal.run(`cd ${W} && node grammar.js`);
+    assert.equal(grammar.status, 0, grammar.stdout);
+    assert.match(grammar.stdout, /^GRAMMAR true 7$/m, grammar.stdout);
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,

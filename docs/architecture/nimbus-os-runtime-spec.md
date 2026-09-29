@@ -107,7 +107,10 @@ Nimbus already has a real base:
   (`require-resolver.ts`, `__resolveFrom`), ESM→CJS lowering and
   `import.meta` metadata, because the registry resolves specifiers as URLs
   only, keeps every module under `file:///bundle/`, and takes no named
-  exports for a CommonJS module. Code the program produces at runtime (a
+  exports for a CommonJS module. Dynamic imports are collected directly from
+  Acorn's parser productions, preserving regexp/template/comment boundaries
+  without a second AST walk or separate token-context heuristics. Code the
+  program produces at runtime (a
   file written then required or imported, or text handed to the
   `AsyncFunction`/generator constructors, `vm.compileFunction` or
   `Module.prototype._compile`; the plain `Function` constructor stays

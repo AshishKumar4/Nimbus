@@ -7,6 +7,11 @@ const cases = [
   ['member-keyword metadata', 'const api={if(){return 6}}; const ratio=api.if()/2; return [ratio,import.meta.url];', true, [3, parent]],
   ['sloppy CommonJS octal', 'const mode=0644; return import("./x.mjs").then(m => [mode,m.value]);', false, [420, 7]],
   ['ASI block after import', 'return import("./x.mjs")\n{}', false, {value: 7}],
+  ["await regexp","async function f(){return await /import(\"fake\")/.test('import\"fake\"');} return import('./x.mjs').then(f);",false,true],
+  ["yield regexp","function* f(){yield /import(\"fake\")/.test('import\"fake\"');} return import('./x.mjs').then(() => f().next().value);",false,true],
+  ["template expression regexp","return import(\"./x.mjs\").then(async m => `value:${await /import(\"fake\")/.test('import\"fake\"')}:${m.value}`);",false,"value:true:7"],
+  ["comments and escaped regex","/* import('fake') */ const literal = /import\\(\"fake\"\\)/; // import('fake')\nreturn import(/* import('fake') */ './x.mjs').then(m => [literal.test('import(\"fake\")'), m.value]);",false,[true,7]],
+  ['grouped import argument', 'return import(("./x.mjs")).then(m => m.value);', false, 7],
 ];
 const failures = [];
 for (const [label, source, metadata, expected] of cases) {

@@ -2,16 +2,13 @@
  * Route a cell's import() to the process's ESM loader and bind import.meta to
  * its evaluation metadata. Worker Loader does not resolve VFS packages.
  *
- * The common path uses Acorn tokens without retaining a large bundle's AST.
- * Tokenization alone cannot disambiguate every valid JavaScript program:
- * keyword-named member calls can change slash context, and a brace after an
- * import can be an ASI-separated block rather than a method body. Those
- * cases, and tokenizer failures, use Acorn's parser with script/module goals.
- * Only failure of both grammars leaves the original code for the compiler
- * to diagnose. Plain CommonJS is never lexed under module strictness.
+ * Acorn's parser drives its lexer: a standalone token stream cannot know
+ * whether await or a keyword-named member permits a regexp or division.
+ * Collect imports as the upstream parser recognizes them, rather than walking
+ * the AST afterward, and discard completed top-level trees. This keeps large
+ * bundles cheap without maintaining a second JavaScript grammar.
  */
-import { Parser, tokenizer, tokTypes, type Token, type Node, type Program } from 'acorn';
-import { full } from 'acorn-walk';
+import { Parser, type Node, type Program } from 'acorn';
 
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
 
@@ -22,126 +19,52 @@ export function mayHaveDynamicImport(code: string): boolean {
 interface Edit { start: number; end: number; text: string }
 interface ImportCall { start: number; end: number }
 
-const CONTINUES_EXPRESSION = new Set([
-  tokTypes.parenL, tokTypes.bracketL, tokTypes.dot, tokTypes.questionDot, tokTypes.backQuote,
-  tokTypes.comma, tokTypes.question, tokTypes.eq, tokTypes.assign, tokTypes.plusMin, tokTypes.modulo,
-  tokTypes.star, tokTypes.slash, tokTypes.starstar, tokTypes.logicalOR, tokTypes.logicalAND,
-  tokTypes.bitwiseOR, tokTypes.bitwiseXOR, tokTypes.bitwiseAND, tokTypes.equality, tokTypes.relational,
-  tokTypes.bitShift, tokTypes.coalesce, tokTypes._in, tokTypes._instanceof,
-]);
-const LINE_BREAK = /[\r\n\u2028\u2029]/;
-
 export function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata = false): string {
   const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
   if (!mayHaveDynamicImport(code) && !metadata) return code;
+  const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
   const edits: Edit[] = [];
   const metas: ImportCall[] = [];
   const names = metadata ? new Set<string>() : null;
-  const parens: Array<ImportCall | 'member-keyword' | null> = [];
-  const brackets: string[] = [];
-  const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
-  const fallback = () => rewriteWithParser(code, call, metadata);
-  let previous: Token | undefined;
-  let memberKeyword = false;
-  let ambiguousSlash = false;
-  let importToken: Token | undefined;
-  let metaStart: Token | undefined;
-  let closedImport: ImportCall | null = null;
-  let directive: Token | undefined;
-  let prologue = true;
-  let insertion = -1;
-  try {
-    const tokens = tokenizer(code, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true });
-    for (;;) {
-      const token = tokens.getToken();
-      const type = token.type;
-      // A successful tokenization can still mistake division after api.if()
-      // for a regex and hide an import in the apparent regex body. Parse that
-      // context as well as cases where the mistaken regex simply throws.
-      if ((ambiguousSlash || memberKeyword) && type === tokTypes.regexp) return fallback();
-      ambiguousSlash = false;
-      if (insertion < 0) insertion = token.start;
-      if (prologue) {
-        if (directive) {
-          if (type === tokTypes.semi) {
-            insertion = token.end;
-            directive = undefined;
-          } else if (type === tokTypes.eof || (LINE_BREAK.test(code.slice(directive.end, token.start)) && !CONTINUES_EXPRESSION.has(type))) {
-            insertion = directive.end;
-            directive = type === tokTypes.string ? token : undefined;
-            prologue = type === tokTypes.string;
-          } else prologue = false;
-        } else if (type === tokTypes.string) directive = token;
-        else prologue = false;
-      }
-      if (closedImport) {
-        // Only the grammar knows whether this brace is a method body, an
-        // ASI-separated statement, or e.g. a class body after extends.
-        if (type === tokTypes.braceL) return fallback();
-        edits.push({ ...closedImport, text: call });
-        closedImport = null;
-      }
-      if (metaStart) {
-        if (type === tokTypes.name && code.slice(token.start, token.end) === 'meta') {
-          metas.push({ start: metaStart.start, end: token.end });
-        }
-        metaStart = undefined;
-      }
-      if (type === tokTypes.name) names?.add(String(Reflect.get(token, 'value')));
-      if (type === tokTypes.parenL) {
-        parens.push(importToken ? { start: importToken.start, end: token.end } : memberKeyword ? 'member-keyword' : null);
-        brackets.push('(');
-      } else if (type === tokTypes.parenR) {
-        if (brackets.pop() !== '(') return fallback();
-        const frame = parens.pop();
-        if (frame === 'member-keyword') ambiguousSlash = true;
-        else closedImport = frame ?? null;
-      } else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) brackets.push('{');
-      else if (type === tokTypes.braceR) { if (brackets.pop() !== '{') return fallback(); }
-      else if (type === tokTypes.bracketL) brackets.push('[');
-      else if (type === tokTypes.bracketR) { if (brackets.pop() !== '[') return fallback(); }
-      if (metadata && importToken && type === tokTypes.dot) metaStart = importToken;
-      const member = previous?.type === tokTypes.dot || previous?.type === tokTypes.questionDot;
-      memberKeyword = member && typeof Reflect.get(type, 'keyword') === 'string';
-      const isKeyword = type === tokTypes._import && code.slice(token.start, token.end) === 'import';
-      importToken = isKeyword && !member ? token : undefined;
-      previous = token;
-      if (type === tokTypes.eof) break;
-    }
-  } catch {
-    return fallback();
-  }
-  if (brackets.length || parens.length) return fallback();
-  return applyEdits(code, edits, metas, names, insertion);
-}
-
-/** Parser-informed fallback; discard completed top-level trees as before. */
-function rewriteWithParser(code: string, call: string, metadata: boolean): string {
-  const edits: Edit[] = [];
-  const metas: ImportCall[] = [];
-  const names = metadata ? new Set<string>() : null;
-  const visit = (node: Node): void => {
-    if (node.type === 'ImportExpression') {
-      const source = Reflect.get(node, 'source') as Node;
-      edits.push({ start: node.start, end: source.start, text: call });
-    } else if (metadata && node.type === 'MetaProperty') {
-      if (Reflect.get(node, 'meta').name === 'import' && Reflect.get(node, 'property').name === 'meta') {
-        metas.push({ start: node.start, end: node.end });
-      }
-    } else if (metadata && node.type === 'Identifier') names!.add(Reflect.get(node, 'name'));
-  };
-  const StreamingParser = Parser.extend(Base => {
+  let StreamingParser = Parser.extend(Base => {
     const parseStatement = Reflect.get(Base.prototype, 'parseStatement');
+    const parseDynamicImport = Reflect.get(Base.prototype, 'parseDynamicImport');
     return class extends Base {
+      parseDynamicImport(node: Node): Node {
+        // Acorn enters this production at the opening parenthesis. Its end,
+        // not source.start (which can exclude grouping parentheses), is the
+        // exact end of the prefix we replace. Acorn validates the arguments.
+        const end = Reflect.get(this, 'end') as number;
+        const parsed: Node = Reflect.apply(parseDynamicImport, this, [node]);
+        edits.push({ start: node.start, end, text: call });
+        return parsed;
+      }
       parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
         const node: Node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
         if (!topLevel) return node;
-        full(node, visit);
         if (node.type === 'ExpressionStatement') {
           const expression = Reflect.get(node, 'expression');
           if (expression?.type === 'Literal' && typeof expression.value === 'string') return node;
         }
         return { type: 'EmptyStatement', start: node.start, end: node.end };
+      }
+    };
+  });
+  // The capture must not shadow user bindings, including escaped identifiers.
+  // Import-only cells need no identifier collection.
+  if (metadata) StreamingParser = StreamingParser.extend(Base => {
+    const parseIdent = Reflect.get(Base.prototype, 'parseIdent');
+    const parseImportMeta = Reflect.get(Base.prototype, 'parseImportMeta');
+    return class extends Base {
+      parseImportMeta(node: Node): Node {
+        const parsed: Node = Reflect.apply(parseImportMeta, this, [node]);
+        metas.push({ start: node.start, end: node.end });
+        return parsed;
+      }
+      parseIdent(liberal: boolean): Node {
+        const node: Node = Reflect.apply(parseIdent, this, [liberal]);
+        names!.add(Reflect.get(node, 'name'));
+        return node;
       }
     };
   });
