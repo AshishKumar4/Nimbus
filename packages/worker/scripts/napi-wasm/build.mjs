@@ -5,8 +5,10 @@
  *
  *   bun packages/worker/scripts/napi-wasm/build.mjs --work <dir> --out <dir> [--spec rolldown,satteri]
  *
- * Run it inside a bounded cgroup (a release link is fat LTO, ~4 GB peak):
- *   NIMBUS_TEST_MEMORY_MAX=16G NIMBUS_TEST_TIMEOUT=3600 run-bounded bun .../build.mjs ...
+ * Keep this Bun orchestrator at <=4 GiB. If Cargo needs a separate 16 GiB
+ * cgroup, name the bounded runner explicitly; builds remain serial:
+ *   NIMBUS_CARGO_RUNNER=/mnt/scratch/nimbus/run-bounded \
+ *   NIMBUS_TEST_MEMORY_MAX=4G NIMBUS_TEST_TIMEOUT=3600 run-bounded bun .../build.mjs ...
  *
  * specs.mjs holds every pin. For each spec, failing loudly at the first
  * mismatch:
@@ -238,8 +240,13 @@ async function buildSpec(spec, npmDir) {
     SOURCE_DATE_EPOCH: '0',
   };
   delete env.RUSTFLAGS;
-  cargoArgs.push('-j', process.env.NIMBUS_CARGO_JOBS ?? '12');
-  run('cargo', cargoArgs, { cwd, env });
+  const jobs = Number(process.env.NIMBUS_CARGO_JOBS ?? '12');
+  if (!Number.isInteger(jobs) || jobs < 1 || jobs > 12) throw new Error('napi-wasm: NIMBUS_CARGO_JOBS must be an integer from 1 to 12');
+  cargoArgs.push('-j', String(jobs));
+  const runner = process.env.NIMBUS_CARGO_RUNNER;
+  if (runner) {
+    run(runner, ['cargo', ...cargoArgs], { cwd, env: { ...env, NIMBUS_TEST_MEMORY_MAX: '16G', NIMBUS_TEST_TIMEOUT: '3600' } });
+  } else run('cargo', cargoArgs, { cwd, env });
   const wasm = new Uint8Array(await fs.readFile(path.join(targetDir, TARGET, 'release', spec.output)));
 
   const imports = wasmImports(wasm);

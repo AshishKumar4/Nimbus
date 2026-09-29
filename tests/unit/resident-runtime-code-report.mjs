@@ -65,7 +65,12 @@ const second = await spawn();
 assert.notEqual(second.pid, first.pid);
 const name = runtimeCodeModuleName(runtimeCodeKey(produced));
 assert.ok(name in lastMap(), `the next launch carries ${name}: ${Object.keys(lastMap()).filter((n) => n.startsWith('gen/')).join(', ') || 'no gen/ modules'}`);
-assert.match(lastMap()[name].cjs, /async function anonymous\(a\n\) \{\nreturn a \+ 1;\n\}/);
+function compiled(name) {
+  const mod = {exports: {}};
+  new Function('module', lastMap()[name].cjs)(mod);
+  return mod.exports;
+}
+assert.equal(await compiled(name)(41), 42, 'the next launch can execute the reported constructor with its arguments');
 
 // A server catches a generated-code miss and continues serving an error page.
 // It need not exit to teach the next launch: the live report is durable before
@@ -77,6 +82,7 @@ manager.kill(second.pid, 'SIGKILL');
 await spawn();
 const caughtName = runtimeCodeModuleName(runtimeCodeKey(caught));
 assert.ok(caughtName in lastMap(), 'a caught SSR compile miss survives a kill without an exit ledger');
+assert.equal(await compiled(caughtName)(), 'rendered page', 'the caught SSR function executes after its producer was killed');
 await assert.rejects(dispatch({ op: 'reportRuntimeCode', pid: second.pid, args: [[caught]] }), /live launch/);
 
 console.log('resident-runtime-code-report: ok');
