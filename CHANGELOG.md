@@ -10,8 +10,11 @@ published independently in the `@nimbus-sh` npm scope.
   child close waits for inherited output to drain, so it precedes the
   parent's close-handler writes and does not end the parent's descriptors.
   Inherited stdin uses the parent's input/terminal pump, preserves bytes
-  and EOF, and detaches when the child exits. Previously inherited output
-  had no read loop at all; create-next-app hid npm's actual install output.
+  and EOF, and detaches when the child exits. Managed dispatch publishes
+  output as it arrives rather than buffering prompts until exit; active
+  live-stdin consumers hold the child alive without blocking resident
+  startup. Previously inherited output had no read loop at all;
+  create-next-app hid npm's actual install output.
 
 - SQLite filesystem calls through a process view reuse one checked inode
   traversal instead of re-walking every prefix, then walking again for the
