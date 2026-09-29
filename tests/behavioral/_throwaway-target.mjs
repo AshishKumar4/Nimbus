@@ -188,9 +188,11 @@ async function up() {
 
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
-  const { base, deploymentId } = await deployPreview({ account, token, preview, secret, before });
+  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before });
   writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt });
-  log(`deployment ${deploymentId} is live at ${base}`);
+  // The platform's own measure of the script's startup, limit 1 s
+  // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
+  log(`deployment ${deploymentId} is live at ${base} (startup ${startupMs ?? '?'} ms)`);
   log(reuseSecret
     ? `kept the JWT_SECRET ${name} already had — tokens minted earlier stay valid`
     : `deployed a new JWT_SECRET with ${name}`);
@@ -322,7 +324,8 @@ async function deployPreview({ account, token, preview, secret, before }) {
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  const after = (await latestDeployment({ account, token, preview }))?.id ?? null;
+  const latest = await latestDeployment({ account, token, preview });
+  const after = latest?.id ?? null;
   if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
     const detail = !deploymentId
@@ -334,7 +337,7 @@ async function deployPreview({ account, token, preview, secret, before }) {
   }
   const base = workersDevUrlOf(printed.preview?.urls);
   if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
-  return { base, deploymentId };
+  return { base, deploymentId, startupMs: latest.startup_time_ms };
 }
 
 /** The workers.dev URL among a Preview's URLs, without a trailing slash. */

@@ -32,6 +32,16 @@ published independently in the `@nimbus-sh` npm scope.
     uncompressed, and startup under 1 s as profiled by
     `wrangler check startup`. Measured: 18.42 MiB, 192.6 ms active CPU on
     local workerd.
+  - The other fixed wasm stays staged and is handed over as bytes: sql.js,
+    OpenTUI, yoga and tree-sitter (core, bash, powershell), 3.79 MB in all.
+    esbuild's handoff was free because the host already bundled it. With
+    these six bundled into the probe Worker, measured:
+    - idle workerd RSS locally +8.1 and +9.2 MB (two runs), in an isolate
+      every request and session shares, while most sessions never load them;
+    - startup +~8 ms (`wrangler check startup`, three runs each);
+    - Total Upload 18.4 → 22.0 MiB.
+  - `_throwaway-target.mjs up` logs the Preview deployment's
+    `startup_time_ms`, the platform's own startup figure.
 
 - The deploy-isolation preflight now audits Worker Previews
   (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
