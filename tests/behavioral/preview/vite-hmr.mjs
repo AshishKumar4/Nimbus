@@ -24,6 +24,7 @@ try {
   await terminal.run(`mkdir -p ${root}/src`, 10000);
   for (const [name, content] of Object.entries({
     'package.json': '{"name":"hmr-app","private":true,"type":"module"}\n',
+    'vite.config.js': `export default ${JSON.stringify({ server: { allowedHosts: [new URL(BASE).hostname] } })};\n`,
     'index.html': '<!doctype html><html><body><main id="app"></main><script type="module" src="/src/main.js"></script></body></html>\n',
     'src/main.js': source(first),
   })) await terminal.run(heredocCommand(`${root}/${name}`, content), 10000);

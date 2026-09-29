@@ -826,6 +826,12 @@ export async function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: 
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 
+/** Poll the HMR queue in the same DO that owns its browser connections. */
+export async function _rpcHmrNextEvent(self: RpcHost, timeoutMs: number = 25_000): Promise<any[]> {
+  if (!self.cirrusReal) return [];
+  return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+}
+
 
 
   /**

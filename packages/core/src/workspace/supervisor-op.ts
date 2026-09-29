@@ -225,7 +225,7 @@ export const SUPERVISOR_OPS = [
   'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-  'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay',
+  'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -307,6 +307,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
+  hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
 } as const;
 
 /** Every native op reads its filesystem the same way: the envelope's identity. */

@@ -851,6 +851,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _rpc._rpcFsAppendAck(this as any, writerId, moduleId, operationId, pid);
   }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
+  async _rpcHmrNextEvent(timeoutMs: number): Promise<any[]> { return _rpc._rpcHmrNextEvent(this as any, timeoutMs); }
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
