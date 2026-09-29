@@ -261,6 +261,10 @@ export declare class FacetProcessManager {
     }>;
     /** A broker-side text message onto the child's byte ring. */
     private _appendText;
+    /** Whether this pid's descriptors belong to a child managed by this broker. */
+    isChild(pid: number): boolean;
+    /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
+    routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     private _appendOutput;
     /**

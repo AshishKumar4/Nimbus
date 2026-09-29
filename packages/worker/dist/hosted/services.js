@@ -201,7 +201,13 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                         self.processes.exit(child.pid, exitCode);
                     }
                 },
-                __nimbusCaptureOutput: true,
+                // Reuse the broker's pid and let runtime RPC output reach its
+                // live queues. A direct inline invocation without a managed child
+                // still needs a captured result.
+                __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
+                ...(self.facetProcessManager?.isChild(payload.processPid) ? {
+                    __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
+                } : {}),
             };
             try {
                 const code = await cmd(ctx);
