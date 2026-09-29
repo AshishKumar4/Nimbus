@@ -6123,7 +6123,22 @@ const __vmMod = (() => {
     isContext: real?.isContext ?? ((o) => !!o),
     runInContext: wrapRuntimeEval('runInContext'),
     runInNewContext: wrapRuntimeEval('runInNewContext'),
-    runInThisContext: wrapRuntimeEval('runInThisContext'),
+    // jiti evaluates a parenthesized (async) CommonJS wrapper expression.
+    // Stage that expression as a zero-argument function returning its value;
+    // the wrapper itself executes only when the caller invokes it. This is
+    // not a vm context or a global-script evaluator: declarations/completion
+    // values spanning statements, execution deadlines and context mutation
+    // have no equivalent here and remain unsupported.
+    runInThisContext: (code, options = {}) => {
+      try { return wrapRuntimeEval('runInThisContext')(code, options); }
+      catch (e) {
+        const service = globalThis.__nimbusRuntimeCode;
+        if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
+          || options?.timeout !== undefined || options?.breakOnSigint
+          || options?.importModuleDynamically || options?.cachedData) throw e;
+        return service.compileFunction("function", [], "return (\\n" + String(code) + "\\n);")();
+      }
+    },
     // A function of \`params\` and \`code\` is what the Function constructor
     // builds, so a refusal goes to the same runtime-code service. Context
     // extensions and a parsing context have no such form.
