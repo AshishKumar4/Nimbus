@@ -7,7 +7,7 @@
  * stored in the object's SQLite database, so a launch after the isolate was
  * evicted or hibernated still gets what an earlier run reported:
  *
- *   runtime-code-index                  [key, bytes, chunks][], least recently recorded first
+ *   runtime-code-index                  [key, charge, chunks][], least recently recorded first
  *   runtime-code:<key>:<n>              the entry as JSON, in chunks
  *   runtime-code-profiles               bundle keys with a profile, least recently recorded first
  *   runtime-code-profile:<bundleKey>    the keys that bundle key's runs produced
@@ -15,13 +15,18 @@
  * A key and its value may not exceed 2 MB together
  * (https://developers.cloudflare.com/durable-objects/platform/limits/), so an
  * entry is written in chunks of CHUNK_CHARS UTF-16 units, at most 1 MiB each
- * however they serialize. At most RUNTIME_CODE_MAX_BYTES of code is kept,
- * the least recently recorded leaving first, and a profile's keys that left
- * are skipped rather than rewritten. The in-memory maps are a cache of the
- * rows; each operation runs after the one before it, so a launch built after
- * a report is built with it.
+ * however they serialize.
+ *
+ * Bounded by what it costs, not only by text: at most RUNTIME_CODE_MAX_ENTRIES
+ * entries and RUNTIME_CODE_MAX_BYTES of charge (runtimeCodeCharge: the text
+ * plus a fixed per-entry overhead), the least recently recorded leaving
+ * first; a report is read up to RUNTIME_CODE_MAX_ENTRIES entries and a
+ * profile holds as many keys. A key that leaves the store leaves every
+ * profile with it. The in-memory maps are a cache of the rows; each operation
+ * runs after the one before it, so a launch built after a report is built
+ * with it.
  */
-import { parseRuntimeCodeEntry, RUNTIME_CODE_MAX_BYTES, runtimeCodeKey, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { parseRuntimeCodeEntry, RUNTIME_CODE_MAX_BYTES, RUNTIME_CODE_MAX_ENTRIES, runtimeCodeCharge, runtimeCodeKey, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 const INDEX_KEY = 'runtime-code-index';
 const PROFILES_KEY = 'runtime-code-profiles';
 const ENTRY_PREFIX = 'runtime-code:';
@@ -29,19 +34,11 @@ const PROFILE_PREFIX = 'runtime-code-profile:';
 const CHUNK_CHARS = 512 * 1024;
 /** Bundle keys with a profile, as the residency profiles bound theirs. */
 const PROFILE_MAX_ENTRIES = 16;
-/** Keys one bundle key's profile holds. */
-const PROFILE_MAX_KEYS = 4096;
-/** The bytes an entry is charged: what the launch that stages it carries. */
-function entryBytes(entry) {
-    return entry.kind === 'module'
-        ? entry.path.length + entry.text.length
-        : entry.params.join(',').length + entry.body.length;
-}
 export class RuntimeCodeStore {
     storage;
-    /** Key → [bytes, chunks], in recording order; null until read. */
+    /** Key → [charge, chunks], in recording order; null until read. */
     index = null;
-    bytes = 0;
+    charged = 0;
     /** Bundle keys with a profile, in recording order; null until read. */
     profileKeys = null;
     profiles = new Map();
@@ -76,8 +73,8 @@ export class RuntimeCodeStore {
         if (this.index !== null)
             return this.index;
         const rows = (await this.storage.get(INDEX_KEY)) ?? [];
-        this.index = new Map(rows.map(([key, bytes, chunks]) => [key, [bytes, chunks]]));
-        this.bytes = rows.reduce((sum, [, bytes]) => sum + bytes, 0);
+        this.index = new Map(rows.map(([key, charge, chunks]) => [key, [charge, chunks]]));
+        this.charged = rows.reduce((sum, [, charge]) => sum + charge, 0);
         this.profileKeys = (await this.storage.get(PROFILES_KEY)) ?? [];
         return this.index;
     }
@@ -93,12 +90,12 @@ export class RuntimeCodeStore {
         const index = await this.load();
         const profile = await this.profile(bundleKey);
         let learned = false;
-        for (const raw of reported) {
+        for (const raw of reported.slice(0, RUNTIME_CODE_MAX_ENTRIES)) {
             const entry = parseRuntimeCodeEntry(raw);
             if (entry === null)
                 continue;
-            const bytes = entryBytes(entry);
-            if (bytes > RUNTIME_CODE_MAX_BYTES)
+            const charge = runtimeCodeCharge(entry);
+            if (charge > RUNTIME_CODE_MAX_BYTES)
                 continue;
             const key = runtimeCodeKey(entry);
             const held = index.get(key);
@@ -112,23 +109,30 @@ export class RuntimeCodeStore {
                 for (let n = 0; n < chunks; n++) {
                     await this.storage.put(`${ENTRY_PREFIX}${key}:${n}`, json.slice(n * CHUNK_CHARS, (n + 1) * CHUNK_CHARS));
                 }
-                index.set(key, [bytes, chunks]);
-                this.bytes += bytes;
+                index.set(key, [charge, chunks]);
+                this.charged += charge;
                 this.entries.set(key, entry);
             }
-            if (!profile.has(key) && profile.size < PROFILE_MAX_KEYS) {
+            if (!profile.has(key) && profile.size < RUNTIME_CODE_MAX_ENTRIES) {
                 profile.add(key);
                 learned = true;
             }
         }
-        for (const [oldest, [bytes, chunks]] of index) {
-            if (this.bytes <= RUNTIME_CODE_MAX_BYTES)
+        for (const [oldest, [charge, chunks]] of index) {
+            if (this.charged <= RUNTIME_CODE_MAX_BYTES && index.size <= RUNTIME_CODE_MAX_ENTRIES)
                 break;
             for (let n = 0; n < chunks; n++)
                 await this.storage.delete(`${ENTRY_PREFIX}${oldest}:${n}`);
             index.delete(oldest);
             this.entries.delete(oldest);
-            this.bytes -= bytes;
+            this.charged -= charge;
+            // Out of every profile held in memory; a profile row read later drops
+            // it when it is read (forLaunchNow).
+            for (const [other, keys] of this.profiles) {
+                if (other !== bundleKey && keys.delete(oldest))
+                    await this.storage.put(PROFILE_PREFIX + other, [...keys]);
+            }
+            profile.delete(oldest);
         }
         const profileKeys = (this.profileKeys ?? []).filter((key) => key !== bundleKey);
         profileKeys.push(bundleKey);
@@ -138,7 +142,7 @@ export class RuntimeCodeStore {
             await this.storage.delete(PROFILE_PREFIX + oldest);
         }
         this.profileKeys = profileKeys;
-        await this.storage.put(INDEX_KEY, [...index].map(([key, [bytes, chunks]]) => [key, bytes, chunks]));
+        await this.storage.put(INDEX_KEY, [...index].map(([key, [charge, chunks]]) => [key, charge, chunks]));
         await this.storage.put(PROFILES_KEY, profileKeys);
         await this.storage.put(PROFILE_PREFIX + bundleKey, [...profile]);
         return learned;
@@ -148,12 +152,12 @@ export class RuntimeCodeStore {
         const staged = new Map();
         if (!this.profileKeys?.includes(bundleKey))
             return staged;
-        for (const key of await this.profile(bundleKey)) {
+        const profile = await this.profile(bundleKey);
+        let pruned = false;
+        for (const key of [...profile]) {
             const held = index.get(key);
-            if (!held)
-                continue;
-            let entry = this.entries.get(key) ?? null;
-            if (entry === null) {
+            let entry = held ? this.entries.get(key) ?? null : null;
+            if (held && entry === null) {
                 let json = '';
                 for (let n = 0; n < held[1]; n++)
                     json += (await this.storage.get(`${ENTRY_PREFIX}${key}:${n}`)) ?? '';
@@ -163,12 +167,18 @@ export class RuntimeCodeStore {
                 catch {
                     entry = null;
                 }
-                if (entry === null)
-                    continue;
-                this.entries.set(key, entry);
+                if (entry !== null)
+                    this.entries.set(key, entry);
+            }
+            if (entry === null) {
+                profile.delete(key);
+                pruned = true;
+                continue;
             }
             staged.set(key, entry);
         }
+        if (pruned)
+            await this.storage.put(PROFILE_PREFIX + bundleKey, [...profile]);
         return staged;
     }
 }
