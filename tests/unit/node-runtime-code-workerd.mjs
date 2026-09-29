@@ -49,6 +49,7 @@ const FILES = {
     '  async: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("a", "return a + 1"),',
     '  gen: () => new (Object.getPrototypeOf(function* () {}).constructor)("yield 7")().next().value,',
     '  vm: () => require("vm").compileFunction("return x * 3", ["x"])(5),',
+    '  vmexpr: () => require("vm").runInThisContext("(function (x) { return x + 2 })", { filename: "jiti.cjs" })(3),',
     '  breakout: () => typeof new (Object.getPrototypeOf(async function () {}).constructor)("}, globalThis.__broke = 1, async function () {"),',
     '};',
     'for (const [label, run] of Object.entries(make)) {',
@@ -88,10 +89,10 @@ try {
 
     const first = await terminal.run(`cd ${W} && node fn.js`);
     assert.match(first.stdout,
-      /FN fn!EvalError probe=false async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
+      /FN fn!EvalError probe=false async!ERR_NIMBUS_CODE_NEXT_LAUNCH gen!ERR_NIMBUS_CODE_NEXT_LAUNCH vm!ERR_NIMBUS_CODE_NEXT_LAUNCH vmexpr!ERR_NIMBUS_CODE_NEXT_LAUNCH breakout!ERR_NIMBUS_CODE_NEXT_LAUNCH file!ERR_NIMBUS_CODE_NEXT_LAUNCH broke=undefined\n/,
       first.stdout);
     const second = await terminal.run(`cd ${W} && node fn.js`);
-    assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
+    assert.match(second.stdout, /FN fn!EvalError probe=false async=function gen=7 vm=15 vmexpr=5 breakout!SyntaxError file=written broke=undefined\n/, second.stdout);
 
     const residentResult = async () => {
       for (let i = 0; i < 120; i++) {
