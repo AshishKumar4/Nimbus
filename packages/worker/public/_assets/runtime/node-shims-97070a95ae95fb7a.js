@@ -8797,46 +8797,6 @@ Object.defineProperty(builtins, "http", {
           err.code = "ERR_SERVER_ALREADY_LISTEN";
           throw err;
         }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-5ab802f462401d94.js
-      }
-      const numPort = typeof portArg === "string" ? parseInt(portArg, 10) : portArg;
-      this._port = Number.isFinite(numPort) ? numPort : 0;
-      this._host = host;
-      this._listening = true;
-      globalThis.__portRegistry.set(this._port, this);
-      try { if (__supervisor && typeof __supervisor.registerPort === "function") { Promise.resolve(__supervisor.registerPort(this._port)).catch(() => {}); } } catch {}
-      if (cb) queueMicrotask(cb);
-      this.emit("listening");
-      return this;
-    }
-    close(cb) { this._listening = false; globalThis.__portRegistry.delete(this._port); try { if (__supervisor && typeof __supervisor.unregisterPort === "function") { Promise.resolve(__supervisor.unregisterPort(this._port)).catch(() => {}); } } catch {} if (cb) cb(); this.emit("close"); }
-    get listening() { return this._listening; }
-    // X.5-M (M-1): http.Server.setTimeout no-op for fastify.
-    // fastify's lib/server.js calls server.setTimeout(connectionTimeout)
-    // immediately after createServer(). Pre-X5M the Server class lacked
-    // this method → "TypeError: server.setTimeout is not a function".
-    // Mirror the net.Socket.setTimeout pattern at the bottom of this file
-    // (same builtins/net IIFE): no-op + chainable. Idle timeouts have no
-    // facet-side meaning (we don't own outbound TCP), but we honour the
-    // 1-arg callback form so listeners that emit on 'timeout' still run.
-    setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
-    setKeepAlive() { return this; }
-    address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
-    // A port remains routable after unref, but no longer keeps a one-shot's
-    // event loop alive. Nuxt's get-port-please unrefs its temporary listener.
-    ref() { this.__nimbusUnrefed = false; return this; }
-    unref() { this.__nimbusUnrefed = true; return this; }
-    _handleRequest(u, m, h, b) {
-      const req = new IncomingMessage(u, m, h, b);
-      const res = new ServerResponse();
-      // Node drains a request body the handler never reads, which is what lets
-      // an 'end'-only listener fire. Nudge the stream once the handler has had
-      // its turn, so a handler that DID attach a consumer owns the bytes and
-      // one that did not still sees the request complete.
-      const dispatch = () => {
-        this.emit("request", req, res);
-        if (req.readableFlowing !== true) req.resume();
-========
         const state = { ctx, pending: false, cancelled: false, port: null };
         this[ownerKey] = state;
         const requested = options.port === undefined ? 0 : Number(options.port);
@@ -8868,7 +8828,6 @@ Object.defineProperty(builtins, "http", {
           ctx.pending.push(task);
         } else start(options.port);
         return this;
->>>>>>>> 70f4e861:packages/worker/public/_assets/runtime/node-shims-0588a7c52c287c81.js
       };
       proto.close = function (callback) {
         const state = this[ownerKey];
