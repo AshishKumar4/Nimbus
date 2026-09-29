@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 // A Durable Object's transforms, builds and `esbuild` commands share one
 // esbuild facet stub (facets/esbuild-transform.ts): callers that overlap wait
-// on one facet load and one esbuild initialization, and a stub or an
-// initialization that failed is dropped so the next call gets a working one.
+// on one facet load, each call runs its own esbuild and stops it when it ends
+// (esbuild's memory only grows, so a shared one grew with every transform of a
+// launch until the facet was reset), and a stub or an initialization that
+// failed is dropped so the next call gets a working one.
 //
 // The facet is the module production loads (esbuildFacetWorkerCode over the
 // staged assets), evaluated here; its esbuild's initialize() is counted.
@@ -27,6 +29,8 @@ const countedJsFnBody = [
   `const api = (function () {\n${await staged(ESBUILD_JS_ASSET_PATH)}\n})();`,
   'const initialize = api.initialize;',
   'api.initialize = (options) => globalThis.__initializeHook(() => initialize(options));',
+  'const stop = api.stop;',
+  'api.stop = () => { globalThis.__stops = (globalThis.__stops || 0) + 1; return stop(); };',
   'return api;',
 ].join('\n');
 const facetSource = esbuildFacetWorkerCode(wasmBytes.buffer, countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH))
@@ -95,9 +99,10 @@ function durableObject(EsbuildFacet, { brokenStubs = 0 } = {}) {
 
 const request = { code: 'const n: number = 1; export default n;', options: { loader: 'ts', format: 'esm' } };
 
-// ── Overlapping transforms share one facet load and one initialization ──────
+// ── Overlapping transforms share one facet load; each runs its own esbuild ──
 {
   let initializations = 0;
+  globalThis.__stops = 0;
   globalThis.__initializeHook = (initialize) => { initializations++; return initialize(); };
   const { ctx, env, counts } = durableObject(await freshFacetClass());
   const [first, second] = await Promise.all([
@@ -108,10 +113,14 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
     assert.equal(outcome.error, undefined, outcome.error);
     assert.match(outcome.code, /const n = 1;/);
   }
-  assert.equal(initializations, 1, 'one esbuild initialization between them');
+  assert.equal(initializations, 2, 'each call initializes its own esbuild');
+  assert.equal(globalThis.__stops, 2, 'and stops it when the call ends, so none outlives its call');
   assert.equal(counts.loaderGets, 1, 'the facet worker is loaded once');
   assert.equal(counts.facetInstances, 1, 'one facet');
-  console.log('  ok  overlapping transforms share one facet load and one initialization');
+  const [rewriteOnly] = await esbuildTransformHost(ctx, env)([{ code: 'module.exports = 1;', options: { rewriteOnly: true, dynamicImportParent: 'file:///a.js' } }]);
+  assert.equal(rewriteOnly.code, 'module.exports = 1;');
+  assert.equal(initializations, 2, 'a call of rewrites alone starts no esbuild');
+  console.log('  ok  overlapping transforms share one facet load; each call runs and stops its own esbuild');
 }
 
 // ── A failed initialization is not kept: the next transform initializes afresh ─

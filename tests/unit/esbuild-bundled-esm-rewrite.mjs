@@ -132,4 +132,25 @@ assert.equal(
   assert.ok(out, 'the fixture is rewritable, an import-named method included');
   assert.match(out.code, /await import\("node:http"\)/, 'the dynamic import survives for the facet to route');
 }
+// A module factory's cell reads import.meta from its module's metadata, bound
+// by the facet's rewrite of every MetaProperty, so any property survives the
+// bounded rewrite for that pass — Vite's 2 MiB dev-server chunk reads
+// `import.meta.dirname` and `.env` and otherwise went to esbuild whole, where
+// one transform took esbuild's memory from 28 to 172 MiB.
+{
+  const out = rewriteBundledEsmToCjs(
+    'import { a } from "dep";\n'
+    + 'const here = import.meta.dirname ?? import.meta.url;\n'
+    + 'const mode = import.meta.env?.MODE;\n'
+    + 'const meta = import.meta;\n'
+    + 'export { a, here, mode, meta };',
+    absoluteUrl,
+    true,
+  );
+  assert.ok(out, 'any import.meta property is rewritable in a module factory');
+  assert.match(out.code, /import\.meta\.dirname \?\? import\.meta\.url/, 'left for the metadata pass');
+  assert.match(out.code, /const meta = import\.meta;/);
+  assert.equal(rewriteBundledEsmToCjs('const d = import.meta.dirname;\nexport { d };', absoluteUrl), null,
+    'outside a module factory, a property it cannot bind still takes esbuild');
+}
 console.log('esbuild-bundled-esm-rewrite: ok');
