@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "3ab6433e5c7208e61ed757e0964bfdc367f5ddafa197492aa4d09b6797f5c87e",
+  "fingerprint": "7def7e93300a7bbcb144a3c55425109c5e27c81d48378549a8564a5ea5628212",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1249,8 +1249,8 @@
     "packages/fabric/dist/inner-do-registry.d.ts.map": "9b63e25947e72c387afae919b3196792997382e3058aec7a302e75a8687ff203",
     "packages/fabric/dist/inner-do-registry.js": "6f0993b5f75e057fc9023a9a4b88d504fa4ad1df7eaf4fb45462870570f53295",
     "packages/fabric/dist/isolate-pool.d.ts": "76b7c8ef9f532da6d1ab23227804007a8354e98f82f95696dd4eb1d58106d5ae",
-    "packages/fabric/dist/isolate-pool.d.ts.map": "f3e22ad8a200e31b7fd7c6d2800d59ef486a361b0fce6a9b1766a00593595467",
-    "packages/fabric/dist/isolate-pool.js": "7950cb6fd66bc489c8bde63dae77f536f0869c7eb11e8f35670715b460e0df4b",
+    "packages/fabric/dist/isolate-pool.d.ts.map": "09db4ccf26e49fa5b54a62a6dd8429e351f29bfff5ea8a6261fb69bddbc5eb23",
+    "packages/fabric/dist/isolate-pool.js": "a2083b72f77e6a0af12e6b2da3c4359b0eb07121bc2e2267425e284f597a6064",
     "packages/fabric/dist/journal.d.ts": "06dec2e906d4d2ca18451cf75ef4995665e4da20e71c552542befd7eaf067789",
     "packages/fabric/dist/journal.d.ts.map": "240b005aeecc2d9e3dcdba652e9d1793099ceaa9ae4f418e27b9f6c2dded404f",
     "packages/fabric/dist/journal.js": "e19990ffe6a87e745887bf7d8d7c0632db6dfd6125532ebf732603a3c9407ffb",
@@ -1307,7 +1307,7 @@
     "packages/fabric/src/image-store.ts": "38709b6e615633ffd516c298cca12cbebc6ea48ac7eae70d5bc40ff4c5e3c5bd",
     "packages/fabric/src/index.ts": "0ff3d172812017140180dd0f8bfd9885fae786207579cb4ece195b6bc3934161",
     "packages/fabric/src/inner-do-registry.ts": "3c99ea45b420647bf0dfee3e70c800716112a0635e9466399d93f76a7e46565b",
-    "packages/fabric/src/isolate-pool.ts": "2b6d11c63048f7cd5c8d6dbdab3cd55653e12b7f252fa2400e006ada844c0898",
+    "packages/fabric/src/isolate-pool.ts": "2d4aa8bad580beea519dfd9736000720efaaa3d3b255f2951cf323b9b5d7966f",
     "packages/fabric/src/journal.ts": "fc58a11fb783debc6da6720ac0bb71f674a0b4209abb2394c2ef4c17c17b8123",
     "packages/fabric/src/node-async-hooks.d.ts": "87f754955f48ebe7702aca02d071cc5afc7e96eda2b429ac2a64354cb064fe5e",
     "packages/fabric/src/outbox.ts": "0e8f04c4e8f2c1cc380857a998e7ed716f76714cfe77346755cbc90f1077e2c3",
