@@ -3923,9 +3923,17 @@ async function _buildPrefetchBundle(
   const admitted = await vfs.acquire(null, 0);
   const cursor = { epoch: admitted.epoch, rev: admitted.rev };
 
-  // 1. Static reachable-set walk from entry.
+  // Learned executable roots belong to the complete required graph. Adding
+  // them later as enrichment let final pruning remove one imported sibling
+  // on every launch, so Nuxt/Vinext never reached a complete executable map.
+  const codeRoots: string[] = [];
+  const dataReads = new Set<string>();
+  for (const path of observedReads ?? []) {
+    if (isCodeCellPath(path) || bundleTypescriptLoader(path) !== null) codeRoots.push(path);
+    else dataReads.add(path);
+  }
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer)));
+    pacer?.spend.bind(pacer), undefined, codeRoots.length > 0 ? codeRoots : undefined));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -3936,10 +3944,8 @@ async function _buildPrefetchBundle(
   const closurePaths: ReadonlySet<string> = new Set(
     Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)),
   );
-  // Evidence is kept apart from the closure: an observed subpath is not the
-  // closure choosing that corner of a package, and only the closure can fail
-  // a launch. The room evidence may fill is what the closure leaves under the
-  // bound, this session's own misses first, then what other sessions learned.
+  // Non-executable read evidence and other sessions' profiles may use only
+  // the room the required executable graph leaves. Neither may displace it.
   const observedPaths = new Set<string>();
   const learnedPaths = new Set<string>();
   let room = maxBundleBytes;
@@ -3970,7 +3976,7 @@ async function _buildPrefetchBundle(
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
   const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
-  const own = await addObservedReads(vfs, observedReads, bundle, observedPaths, budgetState, Math.max(0, room), pacer);
+  const own = await addObservedReads(vfs, dataReads, bundle, observedPaths, budgetState, Math.max(0, room), pacer);
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
   await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room), pacer);
@@ -3982,7 +3988,7 @@ async function _buildPrefetchBundle(
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
-  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, closurePaths, { maxBundleBytes, pacer }));
+  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer }));
   await paceAfterPass();
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every

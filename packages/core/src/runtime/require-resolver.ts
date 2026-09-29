@@ -690,6 +690,8 @@ export interface PrefetchResult {
   bundle: Record<string, string>;
   /** Reached only via dynamic `import()`: staged after the static closure, evictable, never a refusal. */
   speculative: Set<string>;
+  /** Original entry reachability, before learned roots; preserves package-main discovery. */
+  entryPaths?: ReadonlySet<string>;
 }
 
 /**
@@ -736,12 +738,12 @@ export class ClosureBoundExceededError extends Error {
 /** Resolve the complete dependency graph starting from entry code. */
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string,
-  maxBundleBytes?: number, progress?: WalkProgress,
+  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<string>,
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
-  policy: DependencyClosurePolicy,
+  policy: DependencyClosurePolicy, requiredRoots?: Iterable<string>,
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
   vfs: RequireFs,
@@ -751,6 +753,7 @@ export async function prefetchForRequire(
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
   progress?: WalkProgress,
   policy?: DependencyClosurePolicy,
+  requiredRoots?: Iterable<string>,
 ): Promise<DependencyClosureOutcome> {
   const report = progress;
   if (report) progress = async work => {
@@ -1059,6 +1062,14 @@ export async function prefetchForRequire(
 
     // If there's an entry file, add it (and recurse).
     if (entryFile) await addFile(strip(entryFile), policy === undefined);
+    const entryPaths = requiredRoots ? new Set(Object.keys(bundle)) : undefined;
+    // Modules a previous launch actually tried to execute are required roots,
+    // not speculative dynamic-import subtrees. Walk their static imports in
+    // this same visited set and byte budget before any optional enrichment.
+    for (const path of requiredRoots ?? []) {
+      await addFile(strip(path));
+      if (closureExceeded || declined) break;
+    }
 
     // Also add cwd package.json if it exists (for npm scripts, main field etc).
     const cwdPkg = cwdStripped + '/package.json';
@@ -1069,7 +1080,7 @@ export async function prefetchForRequire(
 
     if (declined) return declined;
     if (closureExceeded) return closureExceeded;
-    if (policy) return { bundle, speculative };
+    if (policy) return { bundle, speculative, entryPaths };
 
     // Phase 2: dynamic-import subtrees in discovery order; the queue grows as they are walked.
     lazy = true;
@@ -1079,7 +1090,7 @@ export async function prefetchForRequire(
       if (resolved) await addFile(resolved);
     }
 
-    return { bundle, speculative };
+    return { bundle, speculative, entryPaths };
   }
   try { return await walk(); }
   catch (error) {

@@ -279,7 +279,7 @@ restore();
 
 assert.equal(
   first.stdout, 'bytes=8\n',
-  'the premise: the program swallowed the error and used its default',
+  'the premise: the program swallowed the error and used its default; result=' + JSON.stringify(first),
 );
 assert.notEqual(
   first.exitCode, 0,
