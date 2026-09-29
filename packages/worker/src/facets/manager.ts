@@ -95,6 +95,7 @@ import {
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { RuntimeCodeStore } from './runtime-code-store.js';
+import { ResidencyProfileStore } from './residency-profile-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
@@ -4529,13 +4530,12 @@ export class FacetManager {
   /**
    * What each entry was observed to read and not have, keyed exactly like the
    * prefetch cache above so a profile can only ever seed the bundle it was
-   * measured against.
-   *
-   * costs one more loud failure and then relearns. Persisting it would be a
-   * schema and a migration bought with nothing the in-memory form does not
-   * already deliver for the case that matters: running the command again.
+   * measured against. Kept in the session's storage: the session is evicted
+   * whenever it sits idle between two commands, and an in-memory profile died
+   * with it, so running the command again after a pause missed the same file
+   * again (Vite's node_modules/ms/index.js on every launch).
    */
-  private residencyProfiles = new Map<string, Set<string>>();
+  private residencyProfiles: ResidencyProfileStore;
   /**
    * Runtime code (commonjs-cell.ts, RUNTIME CODE) each entry's runs reported,
    * kept in the session's storage so an evicted isolate does not forget it.
@@ -4572,7 +4572,7 @@ export class FacetManager {
       entries: [...this.prefetchBundleCache].map(([key, entry]) => ({
         key, revision: entry.revision, bytes: entry.bytes,
       })),
-      residencyProfiles: [...this.residencyProfiles].map(([key, paths]) => ({ key, paths: [...paths] })),
+      residencyProfiles: this.residencyProfiles.cached(),
     };
   }
 
@@ -4613,6 +4613,9 @@ export class FacetManager {
   ) {
     this.ctx = ctx;
     this.runtimeCode = new RuntimeCodeStore(ctx.storage);
+    this.residencyProfiles = new ResidencyProfileStore(
+      ctx.storage, FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES, FacetManager.RESIDENCY_PROFILE_MAX_PATHS,
+    );
     this.env = parseFacetManagerEnv(env);
     this.processes = processes;
     this.portRegistry = portRegistry;
@@ -5122,7 +5125,7 @@ export class FacetManager {
    * in _buildProcessBundle, where a learned module brings its imports.
    */
   private async _learnedReads(vfsState: FacetVfsState, _cred: ProcessEntry['cred']): Promise<string[]> {
-    return vfsState.bundleKey ? [...(this.residencyProfiles.get(vfsState.bundleKey) ?? [])] : [];
+    return vfsState.bundleKey ? await this.residencyProfiles.paths(vfsState.bundleKey) : [];
   }
 
   /**
@@ -5267,7 +5270,7 @@ export class FacetManager {
     };
     const vfsState = await buildPrefetchBundle(
       vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild ?? undefined, profile,
-      this.residencyProfiles.get(key), pacer, undefined, learnedFor,
+      new Set(await this.residencyProfiles.paths(key)), pacer, undefined, learnedFor,
     );
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
@@ -5338,31 +5341,20 @@ export class FacetManager {
    * File what a process could not read against the bundle that failed it.
    *
    * A miss the supervisor never hears about is a miss the next run repeats,
-   * so this is the whole of the repair: record the path, then drop the cached
-   * bundle for that key so the next build is a real one and stages it. The
-   * program that hit the miss is already gone — nothing here rescues it, and
-   * nothing here needs to, because the facet failed loudly on the way out.
+   * so this is the whole of the repair: record the path (in the session's
+   * storage, so the next run learns it however long the user waits), then
+   * drop the cached bundle for that key so the next build is a real one and
+   * stages it. The record is queued ahead of any later read of the profile,
+   * so a relaunch that follows at once builds from it. The program that hit
+   * the miss is already gone — nothing here rescues it, and nothing here
+   * needs to, because the facet failed loudly on the way out.
    */
   private _recordResidencyMisses(key: string | undefined, misses: string[] | undefined): void {
     if (!key || !misses || misses.length === 0) return;
-    let profile = this.residencyProfiles.get(key);
-    if (profile) this.residencyProfiles.delete(key);
-    else profile = new Set<string>();
-    this.residencyProfiles.set(key, profile);
-
-    let learned = 0;
-    for (const path of misses) {
-      if (profile.size >= FacetManager.RESIDENCY_PROFILE_MAX_PATHS) break;
-      if (typeof path !== 'string' || path === '' || profile.has(path)) continue;
-      profile.add(path);
-      learned++;
-    }
-    for (const oldest of this.residencyProfiles.keys()) {
-      if (this.residencyProfiles.size <= FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES) break;
-      this.residencyProfiles.delete(oldest);
-    }
-    if (learned === 0) return;
     this._dropPrefetchCacheEntry(key);
+    // A failed storage write leaves the profile learned in this isolate; only
+    // its survival past an eviction is lost, and the next run reports again.
+    this.residencyProfiles.record(key, misses).catch(() => undefined);
   }
 
   private _dropPrefetchCacheEntry(key: string): void {
