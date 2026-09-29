@@ -3222,7 +3222,9 @@ export async function addObservedReads(
   // on-change alone would have cost a relaunch for each of its files.
   for (const path of observed) {
     if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined) continue;
-    const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', path.slice(0, path.lastIndexOf('/')), '/' + path,
+    const cell = bundle[path];
+    const source = typeof cell === 'string' ? cell : new TextDecoder().decode(cell);
+    const closure = await prefetchForRequire(requireFsOverBridge(vfs), source, '/' + path.slice(0, path.lastIndexOf('/')), '/' + path,
       undefined, pacer?.spend.bind(pacer));
     if ('kind' in closure) continue;
     for (const [dep, content] of Object.entries(closure.bundle)) {
