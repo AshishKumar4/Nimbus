@@ -250,6 +250,14 @@ interface ResolvedResilience {
 }
 
 /**
+ * How long one call waits, in all, for the platform to admit it after
+ * "Dynamic worker concurrency limit exceeded" (doubling from 50 ms, at most
+ * 2 s a wait). A deployed Durable Object admitted the refused batch after a
+ * 6 s pause; 15 s bounds a call that would never be admitted.
+ */
+const CAP_REFUSAL_WAIT_MS = 15_000;
+
+/**
  * esbuild runtime helpers re-declared at the top of every generated facet
  * module. esbuild emits `__name(fn, "fn")` wrappers around every named
  * function or arrow-with-binding-name; `fn.toString()` yields a body that
@@ -874,6 +882,8 @@ export class IsolatePool {
     const maxAttempts = 1 + resilience.retries;
     let lastError: Error | undefined;
     let retriedCloneRefusal = false;
+    let capRefusals = 0;
+    let capWaitedMs = 0;
     let attempt = 0;
     while (attempt < maxAttempts) {
       try {
@@ -953,6 +963,19 @@ export class IsolatePool {
           // If the supervisor DO is stale, a newer loader still cannot
           // deserialize back into it; only recycling that DO heals the
           // reverse direction. This refresh targets the stale-loader case.
+          continue;
+        }
+        if (cause === 'dynamic_worker_cap' && capWaitedMs < CAP_REFUSAL_WAIT_MS) {
+          // The platform refused to start this call: it still counts a
+          // worker this Durable Object's ledger has already given back (a
+          // fan-out's workers stay counted for a moment after their calls
+          // return). Nothing ran, so the call waits, as the platform asks,
+          // and is sent again; it does not spend an attempt.
+          const delay = Math.min(CAP_REFUSAL_WAIT_MS - capWaitedMs, 50 * 2 ** capRefusals++, 2000);
+          capWaitedMs += delay;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, delay);
+          await promise;
           continue;
         }
         if (attempt < maxAttempts - 1) {

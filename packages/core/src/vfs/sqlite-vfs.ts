@@ -230,6 +230,8 @@ export interface CredentialedVfs {
   isDirectory(path: string): boolean;
   isFile(path: string): boolean;
   isSymlink(path: string): boolean;
+  /** What `path` itself is (a link is not followed), or null when absent: one lookup for the four questions above. */
+  kind(path: string): VfsInodeKind | null;
   access(path: string, mode: number): void;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): void;
@@ -2276,6 +2278,7 @@ export class SqliteVFS {
       isDirectory: (path) => this.isDirectory(path, bound),
       isFile: (path) => this.isFile(path, bound),
       isSymlink: (path) => this.isSymlink(path, bound),
+      kind: (path) => this.probeInode(path, bound)?.kind ?? null,
       access: (path, mode) => { this.checkAccess(path, mode, bound); },
       mkdir: (path, options) => this.mkdir(path, options, bound),
       writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
@@ -5687,6 +5690,7 @@ export class SqliteVFS {
       isDirectory: (path) => probe(path)?.kind === 'directory',
       isFile: (path) => probe(path)?.kind === 'file',
       isSymlink: (path) => probe(path)?.kind === 'symlink',
+      kind: (path) => probe(path)?.kind ?? null,
       access: (path, mode) => { resolve(path, mode); },
       mkdir: readOnly,
       writeFile: readOnly,
@@ -9528,21 +9532,44 @@ export function pendingChunkError(path: string): Error & { code: string; nimbusP
 }
 
 /**
+ * Each listed entry's encoded bytes less its path's, as first measured. A
+ * listing entry is not changed once listed except for its path (a lister
+ * re-rooting it into another path space), so the same entry measured again
+ * under another path costs only that path's encoding.
+ */
+const entryBytesBesidePath = new WeakMap<VfsListEntry, number>();
+
+const ASCII = /^[\x00-\x7f]*$/;
+
+/** The UTF-8 length of `text`: its length when it is ASCII, as a listing's JSON almost always is. */
+function utf8Length(text: string): number {
+  return ASCII.test(text) ? text.length : enc.encode(text).byteLength;
+}
+
+/**
  * The byte bound of one listing page (VfsListPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
- * check admits an entry while the page still fits the RPC frame with it; an
- * entry that cannot fit a page on its own is E2BIG.
+ * check admits an entry, listed under `path` (its own by default), while the
+ * page still fits the RPC frame with it; an entry that cannot fit a page on
+ * its own is E2BIG.
  */
-export function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry) => boolean {
-  const frameBytes = enc.encode(JSON.stringify({ epoch, rev, entries: [], next: null })).byteLength;
+export function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry, path?: string) => boolean {
+  const frameBytes = utf8Length(JSON.stringify({ epoch, rev, entries: [], next: null }));
   let entriesBytes = 0;
   let count = 0;
-  return (entry) => {
-    const bytes = enc.encode(JSON.stringify(entry)).byteLength;
-    const cursorBytes = Math.max(4, enc.encode(JSON.stringify(entry.path)).byteLength) - 4;
+  return (entry, path = entry.path) => {
+    const pathBytes = utf8Length(JSON.stringify(path));
+    let beside = entryBytesBesidePath.get(entry);
+    if (beside === undefined) {
+      const ownPathBytes = path === entry.path ? pathBytes : utf8Length(JSON.stringify(entry.path));
+      beside = utf8Length(JSON.stringify(entry)) - ownPathBytes;
+      entryBytesBesidePath.set(entry, beside);
+    }
+    const bytes = beside + pathBytes;
+    const cursorBytes = Math.max(4, pathBytes) - 4;
     if (frameBytes + entriesBytes + (count ? 1 : 0) + bytes + cursorBytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
-      if (count === 0) throw vfsError('E2BIG', `${entry.path}: listing entry exceeds the RPC byte budget`);
+      if (count === 0) throw vfsError('E2BIG', `${path}: listing entry exceeds the RPC byte budget`);
       return false;
     }
     entriesBytes += bytes + (count ? 1 : 0);

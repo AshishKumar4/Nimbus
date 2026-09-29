@@ -43,6 +43,48 @@ published independently in the `@nimbus-sh` npm scope.
   - `_throwaway-target.mjs up` logs the Preview deployment's
     `startup_time_ms`, the platform's own startup figure.
 
+- `npm install` run by a node process (`create-next-app`, or any
+  `child_process.spawn('npm', ...)`) installs again. Its resolver's last
+  layer ran in-DO and its install batch followed at once, sized to the
+  Durable Object's Dynamic Worker headroom; the platform still counted the
+  resolver's workers for a moment after their calls returned and refused
+  the batch ("Dynamic worker concurrency limit exceeded"), so
+  create-next-app aborted with "npm install has failed". A pooled call the
+  platform refuses to start now waits and is sent again, as the platform
+  asks (up to 15 s), and the platform's limit message is recognised, so a
+  hit that outlasts the wait names the workers that were in flight.
+
+- `npm install` links every command of a project with more than about 120
+  of them. The installer wrote all of `node_modules/.bin` in one W7 stream,
+  which owns at most 128 paths, so the install failed at link-bins with
+  "w7-frame: batch exceeds 128 owned paths"; a bin manifest past one chunk
+  (a few hundred commands) failed with "expected 2 chunks, got 1". The shims
+  now go in waves, and each file in chunks.
+
+- A bash fork costs a fraction of what it did. Every fork instantiated
+  bash anew, grew the child's memory to the parent's (about 17 MB, mostly
+  the asyncify arena) and copied all of it, so a command-substitution loop
+  of 500 iterations ran the facet out of CPU time ("dispatch failed: Worker
+  exceeded CPU time limit") and `tests/unit/bash-pipes-jspi.mjs`' 2000-fork
+  pipeline ran local workerd out of 4 GB. A fork now takes the instance of a
+  process that exited normally when one is idle (up to four are kept per
+  session), and copies only what the child can read: the memory below and
+  above the arena, the unwind it resumes from, and each live setjmp capture
+  up to its high-water mark (about 1 MB). A 300-iteration loop instantiates
+  bash 4 times instead of 301; the 2000-fork pipeline peaks at 1.4 GB. On a
+  deployed Worker, `echo "$(printf ...)"` in a loop went from 140-175 ms a
+  fork (500 iterations exceeded the CPU limit) to 2000 iterations in 1.8 s.
+
+- A process's filesystem call on a SQLite path costs less: a stat five
+  components deep through the process bridge (`bind(...)`, `ProcessView`)
+  went from 23.5 to 11 µs. The bridge's walk looks each component up once
+  (the engine's credentialed view gains `kind(path)`, what `exists`,
+  `isFile`, `isDirectory` and `isSymlink` each looked up separately), the
+  namespace answers `composes` without normalizing a path whose first
+  component no mount shares, and `normalizeVfsPath` returns a key already in
+  canonical form as it is. The tools that now read a project through the
+  caller's view (git, npm, vite build) gain the same.
+
 - The deploy-isolation preflight now audits Worker Previews
   (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
   Every `previews` block is its own deploy target in
@@ -185,7 +227,10 @@ published independently in the `@nimbus-sh` npm scope.
   it; a mount the launch does not name, or one under a directory the process
   cannot search, is not walked. A change of the mount table is a poison at
   the process's next barrier, which relists. A namespace that is SQLite alone
-  lists and acquires exactly as before, synchronously. A synchronous call on
+  lists and acquires exactly as before, synchronously. With a mount, the
+  page's byte bound measures each SQLite name once, when SQLite lists it,
+  and then only the path the process sees (a 40,429-name listing
+  stringifies 18.1M characters instead of 32.5M). A synchronous call on
   a mounted path the launch did not list (or past the bound) answers EAGAIN,
   "<mount> is an asynchronous mount; this caller cannot wait for it", naming
   the `fs.promises` form that reads it; `require` of one reports the same,

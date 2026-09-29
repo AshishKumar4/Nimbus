@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // behavioral/parallel-installs — fire 8 concurrent npm installs across
-// 8 sessions; verify zero "Too many concurrent dynamic workers" errors
+// 8 sessions; verify zero "Dynamic worker concurrency limit exceeded" errors
 // surface to the user.
 //
 // Black-box surfaces only. NO _diag.
@@ -41,7 +41,7 @@ for (const res of installs) {
     continue;
   }
   const { i, sid, output } = res.value;
-  if (/Too many concurrent dynamic workers/i.test(output)) capError++;
+  if (/Dynamic worker concurrency limit exceeded/i.test(output)) capError++;
   if (/added \d+ packages|installed \d+ packages|Done!\s+\d+ packages/i.test(output)) success++;
   else failures.push(`#${i} ${sid}: ${JSON.stringify(output.slice(-600))}`);
 }
@@ -49,7 +49,7 @@ for (const failure of failures) console.log(`      ${failure}`);
 
 a.check(`${N}/${N} installs completed (added/installed marker)`,
   success === N, `success=${success} capError=${capError} other=${other}`);
-a.check('zero "Too many concurrent dynamic workers" errors visible to users',
+a.check('zero "Dynamic worker concurrency limit exceeded" errors visible to users',
   capError === 0, `capError=${capError}`);
 
 const s = a.summary();

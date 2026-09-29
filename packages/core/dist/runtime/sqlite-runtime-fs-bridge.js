@@ -722,8 +722,11 @@ export class SqliteRuntimeFsBridge {
                 resolved.push(segment);
                 continue;
             }
-            if (!this.vfs.isSymlink(candidate)) {
-                const legacyTarget = this.vfs.exists(candidate) ? null : this.legacySymlinks.readlink(this.legacyKey(candidate));
+            // One lookup answers whether the component is a link, and when it is
+            // absent, whether the legacy registry may hold one there.
+            const kind = this.vfs.kind(candidate);
+            if (kind !== 'symlink') {
+                const legacyTarget = kind !== null ? null : this.legacySymlinks.readlink(this.legacyKey(candidate));
                 if (legacyTarget === null) {
                     resolved.push(segment);
                     continue;

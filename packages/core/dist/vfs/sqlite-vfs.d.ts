@@ -91,6 +91,8 @@ export interface CredentialedVfs {
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
     isSymlink(path: string): boolean;
+    /** What `path` itself is (a link is not followed), or null when absent: one lookup for the four questions above. */
+    kind(path: string): VfsInodeKind | null;
     access(path: string, mode: number): void;
     mkdir(path: string, options?: {
         recursive?: boolean;
@@ -1830,10 +1832,11 @@ export declare function pendingChunkError(path: string): Error & {
  * The byte bound of one listing page (VfsListPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
- * check admits an entry while the page still fits the RPC frame with it; an
- * entry that cannot fit a page on its own is E2BIG.
+ * check admits an entry, listed under `path` (its own by default), while the
+ * page still fits the RPC frame with it; an entry that cannot fit a page on
+ * its own is E2BIG.
  */
-export declare function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry) => boolean;
+export declare function listPageBudget(epoch: string, rev: number): (entry: VfsListEntry, path?: string) => boolean;
 /** Whether `error` is a read of bytes still being imported. */
 export declare function isPendingChunkError(error: unknown): error is Error & {
     path: string;

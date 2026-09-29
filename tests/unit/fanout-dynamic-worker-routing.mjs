@@ -13,7 +13,15 @@
 //   (3) Dynamic Workers the DO already has in flight shrink the headroom,
 //       and repeated requests to one of them count once;
 //   (4) a fan-out's width stays claimed while it runs, so a concurrent one
-//       sizes against what is left, and the claim is returned after.
+//       sizes against what is left, and the claim is returned after;
+//   (5) a fan-out sized to the whole budget right after another runs, when
+//       the platform still counts the first one's workers for a moment
+//       after their calls return: a refused call waits and is sent again,
+//       as the platform asks. npm install spawned from a node process
+//       (create-next-app) ran its resolver's last layer in-DO and then its
+//       8-shard batch at once; a deployed Durable Object refused the batch
+//       with "Dynamic worker concurrency limit exceeded" (3/3, the ledger
+//       at exactly 10), and admitted it after a 6 s pause.
 
 import assert from 'node:assert/strict';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
@@ -156,6 +164,45 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
   await assert.rejects(pool.submitMany([{ key: 'k', args: 1 }, { key: 'l', args: 2 }], (x) => x), /task failed/);
   assert.equal((await run(DO_DYNAMIC_WORKER_LIMIT, { ctx })).route.topology, 'in-do',
     'a failed batch gives its width back');
+}
+
+// ── (5) back-to-back fan-outs, each the whole budget ────────────────────────
+{
+  const ctx = freshCtx();
+  const CAP = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
+  // The platform: a worker stays counted 20 ms after its call returns, and
+  // an eleventh distinct one is refused before it starts.
+  const counted = new Set();
+  let refused = 0;
+  let ran = 0;
+  const env = {
+    LOADER: {
+      get(id) {
+        return {
+          getEntrypoint: () => ({
+            async execute(arg) {
+              if (!counted.has(id) && counted.size >= DO_DYNAMIC_WORKER_LIMIT) { refused++; throw new Error(CAP); }
+              counted.add(id);
+              ran++;
+              await new Promise((resolve) => setTimeout(resolve, 1));
+              setTimeout(() => counted.delete(id), 20);
+              return arg;
+            },
+          }),
+        };
+      },
+    },
+  };
+  const batch = (tag) => new Fanout(env, ctx, { tag, omitSupervisor: true, timeoutMs: 0 }).submitMany(
+    Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => ({ key: `${tag}-${i}`, args: i })),
+    (x) => x,
+  );
+  const first = await batch('resolve-layer');
+  assert.deepEqual(first, [...Array(DO_DYNAMIC_WORKER_LIMIT).keys()]);
+  const second = await batch('install-batch');
+  assert.deepEqual(second, [...Array(DO_DYNAMIC_WORKER_LIMIT).keys()], 'the next fan-out, the whole budget, runs in-DO');
+  assert.ok(refused > 0, 'the platform did refuse the second fan-out at first');
+  assert.equal(ran, 2 * DO_DYNAMIC_WORKER_LIMIT, 'every task ran exactly once: a refused call had not started');
 }
 
 console.log('ok - fanout-dynamic-worker-routing (in-DO to the headroom, peers past it, live holds and claims respected)');

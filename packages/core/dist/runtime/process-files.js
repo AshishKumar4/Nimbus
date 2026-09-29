@@ -525,18 +525,20 @@ class AwaitingProcessBridge {
         if (after === null && listing)
             listing.table = position.table;
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
+        // SQLite measured its own entries when it listed them; each is measured
+        // here under the path the process sees, which only re-encodes that path.
         const fits = listPageBudget(root.epoch, root.cursor);
         const entries = [];
         let next = page.next === null ? null : page.next.slice(1);
         for (const entry of page.entries) {
             if (underKernelMount(entry.path))
                 continue;
-            const listed = { ...entry, path: entry.path.slice(1) };
-            if (!fits(listed)) {
+            const path = entry.path.slice(1);
+            if (!fits(entry, path)) {
                 next = entries[entries.length - 1].path;
                 break;
             }
-            entries.push(listed);
+            entries.push({ ...entry, path });
         }
         if (listing)
             listing.held = next === null ? null : { walk, next };
