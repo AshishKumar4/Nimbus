@@ -108,9 +108,11 @@ Nimbus already has a real base:
   `import.meta` metadata, because the registry resolves specifiers as URLs
   only, keeps every module under `file:///bundle/`, and takes no named
   exports for a CommonJS module. Code the program produces at runtime (a
-  file written then required or imported, or text handed to the `Function`
-  or `AsyncFunction`/generator constructors, `vm.compileFunction` or
-  `Module.prototype._compile`) cannot run in that launch (no request-time
+  file written then required or imported, or text handed to the
+  `AsyncFunction`/generator constructors, `vm.compileFunction` or
+  `Module.prototype._compile`; the plain `Function` constructor stays
+  native, because code probes it once and keeps the answer) cannot run in
+  that launch (no request-time
   code generation, and a Worker Loader map cannot grow); the next launch of
   the same command stages it by content key as `gen/<sha256>.js`, kept in the
   session's storage (`facets/runtime-code-store.ts`).
