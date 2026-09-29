@@ -140,7 +140,7 @@ assert.equal(held[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`], 'a shebang survives 
 
 // What the program runs: a module per code file, the emit for the source.
 const cells = new Map(moduleMapCodeCells(set).map((row) => [row[0], row]));
-assert.equal(cells.get(`${PROJ}/src/index.ts`)?.[4], 0, 'the emit is not adopted as the file');
+assert.equal(cells.get(`${PROJ}/src/index.ts`)?.[5], 0, 'the emit is not adopted as the file');
 assert.equal(cells.has(`${TS}/lib/lib.es5.d.ts`), false, 'a declaration file is no module');
 assert.equal(cells.has(`${PROJ}/package.json`), false, 'data is no module');
 const main = writeModuleSet(join(dir, 'one-shot'), set, 'runner.js');
@@ -153,14 +153,17 @@ const call = (key, require = () => { throw new Error('no require expected'); }) 
 assert.equal(call(`${PROJ}/src/index.ts`).greet('ok'), 'NIMBUS-TSC-EMIT:ok', 'the source runs its emit, under its own path');
 assert.deepEqual(call(`${TS}/lib/tsc.js`, (id) => `required:${id}`), 'required:./_tsc.js', 'a JavaScript cell runs its own bytes');
 
-// A required module that keeps its shebang and declares its own `require`
-// (pi 0.87.0's cli-runtime.js, loaded through createRequire from the bin)
-// runs; a non-JavaScript extensionless file is a module nothing compiles
-// until something requires it, and still reads as the file it is.
+// A required module lowered from ESM that keeps its shebang and declares its
+// own `require` (pi 0.87.0's cli-runtime.js, loaded through createRequire
+// from the bin) runs; a CommonJS module with a var and a function of one name
+// runs, as Node runs it; a non-JavaScript extensionless file is a module
+// nothing compiles until something requires it, and still reads as the file
+// it is.
 const extra = await buildFacetVfsBundleSource({
   [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
+  [`${TS}/lib/legacy.js`]: 'var helper = 1;\nfunction helper() {}\nmodule.exports = typeof helper;\n',
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
-});
+}, false, undefined, { lowered: new Set([`${TS}/lib/runtime.js`]) });
 const extraSet = { 'runner.js': `const __NIMBUS_CODE_CELLS = ${extra.codeCells};\nconst __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${extra.expression});\n` };
 for (const [name, text] of Object.entries(extra.codeModules)) extraSet[name] = { cjs: text };
 const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');
@@ -169,6 +172,9 @@ const extraRequire = globalThis.__nimbusTestCreateRequire(new URL(`file://${extr
   const m = { exports: {} };
   extraRequire('./' + commonJsCellModuleName(`${TS}/lib/runtime.js`))(m.exports, () => { throw new Error('the wrapper require'); }, m, '/x', '/');
   assert.deepEqual(m.exports, { shebang: 'stripped' }, 'the module\'s own `require` declaration wins over the parameter');
+  const legacy = { exports: {} };
+  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/legacy.js`))(legacy.exports, () => {}, legacy, '/x', '/');
+  assert.equal(legacy.exports, 'number', 'a CommonJS var and function of one name compile, as in Node');
 }
 assert.equal(moduleMapBundle(extraSet)[`${TS}/LICENSE`], 'Apache License 2.0\n', 'LICENSE reads back as the file it is');
 

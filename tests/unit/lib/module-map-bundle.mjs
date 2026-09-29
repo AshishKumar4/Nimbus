@@ -12,7 +12,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { COMMONJS_CELL_TAIL } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 
 const SIDE = /^import (\w+) from "(__nimbus_vfs_bundle_\d+\.js)";$/gm;
 
@@ -36,17 +35,17 @@ export function moduleMapBundle(modules, entry = modules['worker.js'] ? 'worker.
   const aliases = imports.map((m) => m[1]);
   const parts = imports.map((m) => sideModule(modules[m[2]]));
   const bundle = new Function(...aliases, `return (${declared[1]});`)(...parts);
-  for (const [key, name, head, hashbang, adopt] of moduleMapCodeCells(modules, entry)) {
+  for (const [key, name, head, tail, hashbang, adopt] of moduleMapCodeCells(modules, entry)) {
     if (!adopt) continue;
     const text = cjsText(modules[name]);
     if (text === undefined) throw new Error(`the map names cell ${name} and carries no such { cjs } module`);
-    const cell = text.slice(head, text.length - COMMONJS_CELL_TAIL.length);
+    const cell = text.slice(head, text.length - tail);
     bundle[key] = hashbang ? '#!' + cell.slice(2) : cell;
   }
   return bundle;
 }
 
-/** The entry's CommonJsCellRow table: `[key, moduleName, head, hashbang, adopt]`. */
+/** The entry's CommonJsCellRow table: `[key, moduleName, head, tail, hashbang, adopt]`. */
 export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'worker.js' : 'runner.js') {
   const table = modules[entry].match(/^const __NIMBUS_CODE_CELLS = (.*);$/m);
   if (!table) throw new Error(`${entry} declares no __NIMBUS_CODE_CELLS`);
@@ -97,8 +96,11 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
     if (typeof member === 'string') {
       writeFileSync(path, local(rewrite(name, member)).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
     } else if (cjsText(member) !== undefined) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, member.cjs);
+      // A module name is a URL path: the file is where the registry's URL
+      // resolution — the stand-in's fileURLToPath — finds it.
+      const file = join(dir, decodeURIComponent(name));
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, member.cjs);
     }
   }
   return join(dir, entry);

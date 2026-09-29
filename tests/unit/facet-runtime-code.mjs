@@ -106,7 +106,9 @@ kernel.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', 1000, 1000);
 kernel.chown('home/user/app', 1000, 1000);
 
-// A fresh file name every run, the same text: Vite's temp config shape.
+// A fresh file name every run, the same text: Vite's temp config shape. The
+// file stays behind, so the next launch also stages the old name by path —
+// which must not stand in for the content the fresh name needs.
 const PROGRAM = `
 const fs = require('fs');
 const out = [];
@@ -121,7 +123,6 @@ fs.writeFileSync(temp, 'module.exports = { answer: 42, file: __filename.endsWith
 try {
   out.push('file=' + JSON.stringify(require(temp)));
 } catch (e) { out.push('file-error=' + e.code); }
-fs.rmSync(temp);
 console.log(out.join(' '));
 `;
 const OPTS = { filename: '/home/user/app/entry.js', cwd: '/home/user/app', captureOutput: true };
