@@ -126,6 +126,25 @@ try {
   finally { Object.assign(globalThis, globals); }
   assert.equal(lazyResult.exitCode, 0, lazyResult.stderr);
   assert.equal((lazyResult.stdout + stdout).trim(), 'optional module not loaded');
+  // Attached launch returns a pid before its bundle builds. A transform
+  // failure must still exit that pid and reach its terminal, not leave the
+  // process table saying "running" while an empty TUI waits forever.
+  const pending = [];
+  const ctx = createFacetCtx(createFacetWorld(() => ({})), "attached-transform-failure");
+  ctx.waitUntil = (task) => pending.push(task);
+  const notices = [];
+  const attached = new FacetManager(ctx, env, host.processes, new PortRegistry(), processHostFor, { onExternalExit: (_pid, _code, reason) => notices.push(reason) });
+  attached.setVfs(rawVfs, processFiles(rawVfs));
+  attached.setEsbuildService(new EsbuildService(undefined, {
+    transformHost: async requests => requests.map(() => ({ error: "Worker exceeded CPU time limit.", transient: true })),
+  }));
+  kfs.writeFile(root + "/attached.mjs", "export const uniqueAttachedFailure = 431;");
+  const started = await attached.spawnNode('require("./attached.mjs");', {
+    ...opts, filename: "/" + root + "/attached.cjs", attachedTty: true, argv: ["node", "attached.cjs"],
+  });
+  for (let i = 0; i < pending.length; i++) await pending[i].catch(() => {});
+  assert.equal(host.processes.get(started.pid)?.exitCode, 1, "pre-build failure exits an attached pid");
+  assert.match(notices.join(""), /Worker exceeded CPU time limit/, "the terminal is told why before any guest is loaded");
   console.log('facet-transient-transform-recovery: failed launch publishes no image; next launch transforms and runs');
 } finally {
   Object.assign(globalThis, globals);

@@ -6029,6 +6029,13 @@ export class FacetManager {
             await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv);
         }
         catch (e) {
+            // Bundle construction and source staging precede the launch body's
+            // resource-cleanup try/catch. An attached caller already has its pid;
+            // rejecting our background task alone leaves that pid running forever.
+            pacer.settle();
+            if (entry.exitCode === null) {
+                this._failLaunch(entry.pid, "long-running node launch failed: " + errorMessage(e));
+            }
             await this.launchJournal.release(entry.pid);
             throw e;
         }

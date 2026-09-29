@@ -82,19 +82,16 @@ const ESBUILD_FACET_BODY = [
 export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
 
 /**
- * Source bytes per facet call. It bounds what the caller's isolate holds for
- * one round trip, and — each call being its own esbuild — the facet's memory
- * for one call: a 4 MiB slice of Vite's closure took the facet past its
- * memory limit.
+ * Bound CPU work as well as source retention per invocation. In live pi
+ * launch profiles the 1 MiB/256-file slice beginning at export-html/index.js
+ * exceeded the guest CPU budget even though its first 4 MiB rewrite-only
+ * chunk had completed. Smaller independent calls preserve every input and
+ * result, while preventing many small full transforms sharing one budget.
+ * Oversized single files still travel alone (large bundles use the bounded
+ * rewrite rather than growing esbuild's Go heap).
  */
-const TRANSFORM_BATCH_SOURCE_BYTES = 1024 * 1024;
-/**
- * Files per facet call. Bytes alone put a package of thousands of tiny
- * modules in one call — 1,184 of lucide-react's icons in one 1 MiB slice,
- * 13.5 s of transform in a local replay — and a call's CPU is what a
- * Durable Object invocation is limited by.
- */
-const TRANSFORM_BATCH_FILES = 256;
+const TRANSFORM_BATCH_SOURCE_BYTES = 256 * 1024;
+const TRANSFORM_BATCH_FILES = 32;
 
 type EsbuildFacetRpc = DurableObject & {
   transformMany(requests: EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;

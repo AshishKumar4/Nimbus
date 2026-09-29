@@ -1,152 +1,143 @@
 /**
- * Dynamic `import()` and evaluation metadata in a module cell.
+ * Route a cell's import() to the process's ESM loader, and bind import.meta
+ * to the evaluation's module metadata. Worker Loader only knows its module
+ * map, not the process filesystem or package resolver.
  *
- * A cell is compiled with `new Function`, so an `import()` that survives into
- * it is the runtime's own: workerd resolves it against its module registry,
- * which holds none of the session's files. So `import('/abs/x.mjs')` from a
- * program failed with "No such module", and `import('node:http')` handed back
- * the platform's builtin rather than the process's shim. Each ImportExpression
- * becomes a call of the process's loader with the importing module's URL,
- * `__nimbusDynamicImport(parentUrl, specifier[, options])`, which resolves the
- * way Node's ESM loader does (node-shims.ts).
- *
- * The expressions are found by parsing (acorn), never by scanning text. The
- * parse runs where the ESM→CJS transform runs, in the esbuild facet (its
- * staged runner installs `__nimbusRewriteDynamicImports`), never in the
- * session's isolate, and the session caches the result by content.
- * The same parse binds actual import.meta references to the wrapper
- * module, using an identifier absent from every parsed scope. User bindings
- * named `module` cannot capture them; directives and five-argument CommonJS
- * wrappers are preserved.
+ * Acorn tokenizes the complete cell (strings, regexps, comments and template
+ * quasis stay inert). Import calls are distinguished from members and method
+ * definitions with the surrounding tokens and balanced parentheses. No AST
+ * for the rest of the program is needed: building and walking a 4 MiB pi
+ * chunk's entire tree just to edit a few import expressions exhausted the
+ * transform guest's CPU budget. The registry still compiles/validates the
+ * resulting code on first use; tokenization or delimiter errors leave the
+ * original code intact for that compiler to diagnose.
  */
-import { Parser } from 'acorn';
-import { full } from 'acorn-walk';
-/** The loader a rewritten `import()` calls (node-shims.ts). */
+import { tokenizer, tokTypes } from 'acorn';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
-/**
- * Whether `code` can hold an ImportExpression at all: one needs the keyword
- * `import` followed, past whitespace and comments, by `(`. A keyword cannot
- * be spelled with escapes, so a cell without this can be skipped unparsed;
- * one with it is decided by the parse.
- */
+/** Cheap rejection before tokenizing; comments may separate import and (. */
 export function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
 }
-/**
- * Parse with acorn's grammar and scope/export checks, visiting each complete
- * top-level statement before dropping its tree. A bundled 4 MiB module can
- * otherwise retain hundreds of thousands of AST nodes alongside esbuild's
- * wasm heap. Nested statements remain intact until their enclosing root has
- * parsed; only acorn's Program body is reduced to positions and directives.
- */
-function parseCell(code, moduleFirst, visit, reset) {
-    const StreamingParser = Parser.extend(Base => {
-        const parseStatement = Reflect.get(Base.prototype, 'parseStatement');
-        if (typeof parseStatement !== 'function')
-            throw new Error('Acorn statement parser unavailable');
-        return class extends Base {
-            parseStatement(context, topLevel, exports) {
-                const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
-                if (!topLevel)
-                    return node;
-                full(node, visit);
-                // adaptDirectivePrologue still sees literal expression statements.
-                // Keeping these small nodes preserves insertion after "use strict".
-                if (node.type === 'ExpressionStatement') {
-                    const expression = Reflect.get(node, 'expression');
-                    if (expression?.type === 'Literal' && typeof expression.value === 'string')
-                        return node;
-                }
-                return { type: 'EmptyStatement', start: node.start, end: node.end };
-            }
-        };
-    });
-    const grammars = moduleFirst ? ['module', 'script'] : ['script', 'module'];
-    for (const sourceType of grammars) {
-        reset();
-        try {
-            return StreamingParser.parse(code, {
-                ecmaVersion: 'latest',
-                sourceType,
-                allowReturnOutsideFunction: true,
-                allowAwaitOutsideFunction: true,
-                allowHashBang: true,
-            });
-        }
-        catch {
-            // The next grammar, or none.
-        }
-    }
-    return null;
-}
-/**
- * `code` with each ImportExpression's `import(` replaced by
- * `__nimbusDynamicImport("<parentUrl>", `. The arguments stay as written, so
- * evaluation order and the options argument are the program's.
- *
- * A cell is a function body (it may `return` or `await` at its top level);
- * one acorn cannot parse is returned unchanged, for the compile to report.
- */
+// A newline after a string literal only ends a directive when the following
+// token cannot continue its expression (e.g. "use strict"\n[0] is not one).
+const CONTINUES_EXPRESSION = new Set([
+    tokTypes.parenL, tokTypes.bracketL, tokTypes.dot, tokTypes.questionDot, tokTypes.backQuote,
+    tokTypes.comma, tokTypes.question, tokTypes.eq, tokTypes.assign, tokTypes.plusMin, tokTypes.modulo,
+    tokTypes.star, tokTypes.slash, tokTypes.starstar, tokTypes.logicalOR, tokTypes.logicalAND,
+    tokTypes.bitwiseOR, tokTypes.bitwiseXOR, tokTypes.bitwiseAND, tokTypes.equality, tokTypes.relational,
+    tokTypes.bitShift, tokTypes.coalesce, tokTypes._in, tokTypes._instanceof,
+]);
 export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
-    const metadata = moduleMetadata && code.includes('import');
+    const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     if (!mayHaveDynamicImport(code) && !metadata)
         return code;
-    const spans = [];
-    const metadataSpans = metadata ? [] : null;
-    const identifiers = metadata ? new Set() : null;
+    const edits = [];
+    const metas = [];
+    const names = metadata ? new Set() : null;
+    const parens = [];
+    const brackets = [];
     const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
-    const ast = parseCell(code, metadata, (node) => {
-        // These tags identify acorn's concrete node types, including escaped
-        // identifiers and bindings in nested scopes.
-        if (identifiers && node.type === 'Identifier') {
-            const identifier = node;
-            identifiers.add(identifier.name);
-        }
-        if (node.type === 'ImportExpression') {
-            const expression = node;
-            spans.push({ start: expression.start, end: expression.source.start, text: call });
-        }
-        if (metadataSpans && node.type === 'MetaProperty') {
-            const meta = node;
-            if (meta.meta.name === 'import' && meta.property.name === 'meta')
-                metadataSpans.push({ start: meta.start, end: meta.end });
-        }
-    }, () => {
-        spans.length = 0;
-        if (metadataSpans)
-            metadataSpans.length = 0;
-        identifiers?.clear();
-    });
-    if (ast === null)
-        return code;
-    if (metadataSpans?.length) {
-        // `module` can be a user binding (or a nested function parameter).
-        // Capture the actual wrapper module by position once, using a name no
-        // parsed scope binds. No additional CommonJS argument or wrapper parse.
-        let binding = '__nimbusMetadataModule';
-        while (identifiers.has(binding))
-            binding += '_';
-        for (const meta of metadataSpans) {
-            spans.push({ start: meta.start, end: meta.end, text: `${binding}.__nimbusImportMeta` });
-        }
-        let insertion = ast.body[0]?.start ?? 0;
-        for (const statement of ast.body) {
-            if (!('directive' in statement) || typeof statement.directive !== 'string')
+    let previous;
+    let importToken;
+    let metaStart;
+    let closedImport = null;
+    let directive;
+    let prologue = true;
+    let insertion = -1;
+    try {
+        const tokens = tokenizer(code, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+        for (;;) {
+            const token = tokens.getToken();
+            const type = token.type;
+            if (insertion < 0)
+                insertion = token.start;
+            if (prologue) {
+                if (directive) {
+                    if (type === tokTypes.semi) {
+                        insertion = token.end;
+                        directive = undefined;
+                    }
+                    else if (type === tokTypes.eof || (/[\r\n\u2028\u2029]/.test(code.slice(directive.end, token.start)) && !CONTINUES_EXPRESSION.has(type))) {
+                        insertion = directive.end;
+                        directive = type === tokTypes.string ? token : undefined;
+                        prologue = type === tokTypes.string;
+                    }
+                    else
+                        prologue = false;
+                }
+                else if (type === tokTypes.string)
+                    directive = token;
+                else
+                    prologue = false;
+            }
+            // A method named import has a body immediately after its parameter
+            // list. Calls nested in its default parameters are independent imports.
+            if (closedImport) {
+                if (type !== tokTypes.braceL)
+                    edits.push({ ...closedImport, text: call });
+                closedImport = null;
+            }
+            if (metaStart) {
+                if (type === tokTypes.name && code.slice(token.start, token.end) === 'meta') {
+                    metas.push({ start: metaStart.start, end: token.end });
+                }
+                metaStart = undefined;
+            }
+            if (type === tokTypes.name)
+                names?.add(String(Reflect.get(token, "value")));
+            if (type === tokTypes.parenL) {
+                parens.push(importToken ? { start: importToken.start, end: token.end } : null);
+                brackets.push('(');
+            }
+            else if (type === tokTypes.parenR) {
+                if (brackets.pop() !== '(')
+                    return code;
+                closedImport = parens.pop() ?? null;
+            }
+            else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
+                brackets.push('{');
+            else if (type === tokTypes.braceR) {
+                if (brackets.pop() !== '{')
+                    return code;
+            }
+            else if (type === tokTypes.bracketL)
+                brackets.push('[');
+            else if (type === tokTypes.bracketR) {
+                if (brackets.pop() !== '[')
+                    return code;
+            }
+            if (metadata && importToken && type === tokTypes.dot)
+                metaStart = importToken;
+            const isKeyword = type === tokTypes._import && code.slice(token.start, token.end) === 'import';
+            importToken = isKeyword && previous?.type !== tokTypes.dot && previous?.type !== tokTypes.questionDot ? token : undefined;
+            previous = token;
+            if (type === tokTypes.eof)
                 break;
-            insertion = statement.end;
         }
-        // ESM is strict even when the intermediate ESM printer removed an
-        // explicit directive as redundant. Carry it into the CJS function body.
-        spans.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
     }
-    if (spans.length === 0)
+    catch {
         return code;
-    spans.sort((a, b) => a.start - b.start || a.end - b.end);
-    let out = '';
+    }
+    if (brackets.length || parens.length)
+        return code;
+    if (metas.length) {
+        let binding = '__nimbusMetadataModule';
+        while (names.has(binding))
+            binding += '_';
+        for (const meta of metas)
+            edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
+        // Capture the actual wrapper argument, not a user binding named module.
+        edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+    }
+    if (!edits.length)
+        return code;
+    edits.sort((a, b) => a.start - b.start || a.end - b.end);
+    const parts = [];
     let at = 0;
-    for (const { start, end, text } of spans) {
-        out += code.slice(at, start) + text;
+    for (const { start, end, text } of edits) {
+        parts.push(code.slice(at, start), text);
         at = end;
     }
-    return out + code.slice(at);
+    parts.push(code.slice(at));
+    return parts.join('');
 }
