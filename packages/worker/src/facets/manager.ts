@@ -397,7 +397,10 @@ function __nimbusPendingStartupWork() {
 // keeps a Node process alive, and it keeps a one-shot facet alive too.
 function __nimbusLiveHandles() {
   const __servers = globalThis.__portRegistry;
-  const __bound = __servers && typeof __servers.size === "number" ? __servers.size : 0;
+  let __bound = 0;
+  if (__servers && typeof __servers.values === "function") {
+    for (const __server of __servers.values()) if (!__server?.__nimbusUnrefed) __bound++;
+  }
   return __nimbusPendingStartupWork() + __bound;
 }
 

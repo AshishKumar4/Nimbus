@@ -7840,6 +7840,10 @@ builtins.http = (() => {
     setTimeout(ms, cb) { if (typeof ms === "function") { cb = ms; } if (cb) this.on("timeout", cb); return this; }
     setKeepAlive() { return this; }
     address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
+    // A port remains routable after unref, but no longer keeps a one-shot's
+    // event loop alive. Nuxt's get-port-please unrefs its temporary listener.
+    ref() { this.__nimbusUnrefed = false; return this; }
+    unref() { this.__nimbusUnrefed = true; return this; }
     _handleRequest(u, m, h, b) {
       const req = new IncomingMessage(u, m, h, b);
       const res = new ServerResponse();
