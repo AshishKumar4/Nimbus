@@ -15,8 +15,9 @@ let ctxExports = null;
  * https://developers.cloudflare.com/workers/runtime-apis/rpc/error-handling/.
  * Programs load at CF_COMPAT_DATE, past it. The host runs at its embedder's
  * date, and below it every ENOENT would reach every program as a bare message
- * it maps to EIO. So composing refuses such a host, at startup, which on
- * Cloudflare fails the deploy, and names both fixes: the flag alone keeps
+ * it maps to EIO. So composing refuses such a host, wherever it composes
+ * (module scope: the Worker fails at startup; NimbusWorkspace.create: that
+ * call throws), and names both fixes: the flag alone keeps
  * every other behavior of the embedder's date. Off workerd (bun, node) there
  * is no RPC hop and no `Cloudflare` global to read.
  */

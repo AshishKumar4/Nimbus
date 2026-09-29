@@ -58,9 +58,10 @@ export interface BuildWranglerOptions {
     /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
     name: string;
     /**
-     * Compatibility date. Default `2026-09-26`. Nimbus needs 2026-04-21 or
-     * later (`enhanced_error_serialization`); `nodejs_compat` is listed only
-     * for a date before 2026-08-04, from which the date enables it.
+     * Compatibility date. Default `2026-09-26`. A date keeps every other
+     * behavior it selects; the config names each flag Nimbus needs that the
+     * date does not enable: `enhanced_error_serialization` before 2026-04-21
+     * and `nodejs_compat` before 2026-08-04.
      */
     compatibilityDate?: string;
     /** Smart placement on/off. Default `true`. */
