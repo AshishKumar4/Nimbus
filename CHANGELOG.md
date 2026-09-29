@@ -5,6 +5,34 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- esbuild facets are handed the host Worker's compiled esbuild module
+  instead of 12 MiB of wasm bytes. The host already bundles
+  `esbuild-wasm/esbuild.wasm` and workerd compiles it at startup. Worker
+  Loader shares a compiled `WebAssembly.Module` member with the dynamic
+  worker (workerd `worker-loader.c++`, `extractWasmModuleContent`).
+  - The staged `/_assets/esbuild-0.24.2.wasm` and its fetch, digest check,
+    and per-facet compile are gone, along with the `/api/_test/cache/wasm/*`
+    endpoints that benchmarked that fetch.
+  - The session's esbuild pool no longer retains the bytes. It no longer
+    holds 11,907,565 bytes of resident supervisor allocation credit for its
+    whole life. That resident lane was the credit pool's only use, so it is
+    removed.
+  - Measured locally on workerd 1.20260926.1 with esbuild's wasm: loading a
+    dynamic worker and serving its first fetch took 14 ms when handed the
+    Module and 64–75 ms when handed the bytes. On two Previews, a fresh
+    session's first `esbuild` run took a median of 1,133 ms (n=12) against
+    1,382 ms (n=8) for the build before the change.
+  - `@nimbus-sh/fabric` adds `describeHostWasm` (`host-wasm.js`). A host
+    records a module's id and wire size there. `IsolatePool` keys warm
+    slots by that id and refuses an undescribed Module.
+    `assertModuleMapWithinCodeLimit` counts the size, since a Module's
+    bytes still count toward the 64 MiB dynamic-worker code limit.
+  - The `worker-bundle-size` probe now checks the platform's limits as
+    documented, not the 7 MB index.js budget: `Total Upload` ≤ 64 MiB
+    uncompressed, and startup under 1 s as profiled by
+    `wrangler check startup`. Measured: 18.42 MiB, 192.6 ms active CPU on
+    local workerd.
+
 - The deploy-isolation preflight now audits Worker Previews
   (`wrangler preview`, https://developers.cloudflare.com/workers/previews/).
   Every `previews` block is its own deploy target in
