@@ -821,6 +821,17 @@ export class FacetProcessManager {
     this._appendOutput(child, fd, textBytes(text));
   }
 
+  /** Whether this pid's descriptors belong to a child managed by this broker. */
+  isChild(pid: number): boolean { return this.children.has(pid); }
+
+  /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
+  routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean {
+    const child = this.children.get(pid);
+    if (!child) return false;
+    if (child.exitCode === null) this._appendOutput(child, fd, bytes);
+    return true;
+  }
+
   /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
   private _appendOutput(child: ChildEntry, fd: 1 | 2, data: Uint8Array): void {
     if (data.byteLength === 0) return;

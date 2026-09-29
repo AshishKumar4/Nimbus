@@ -13,8 +13,10 @@ published independently in the `@nimbus-sh` npm scope.
   and EOF, and detaches when the child exits. Managed dispatch publishes
   output as it arrives rather than buffering prompts until exit; active
   live-stdin consumers hold the child alive without blocking resident
-  startup. Previously inherited output had no read loop at all;
-  create-next-app hid npm's actual install output.
+  startup. Node eval, stdin and script children reuse the broker's reserved
+  pid, so their supervisor writes go straight to the child's queues, never
+  to the shell or an exit-only capture buffer. Previously inherited output
+  had no read loop at all; create-next-app hid npm's actual install output.
 
 - SQLite filesystem calls through a process view reuse one checked inode
   traversal instead of re-walking every prefix, then walking again for the
