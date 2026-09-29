@@ -3035,15 +3035,15 @@ return globalThis.Go;
     }
     return result;
   };
-  pp$5.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
-    var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
+  pp$5.parseSubscripts = function(base2, startPos, startLoc, noCalls, forInit) {
+    var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base2.type === "Identifier" && base2.name === "async" && this.lastTokEnd === base2.end && !this.canInsertSemicolon() && base2.end - base2.start === 5 && this.potentialArrowAt === base2.start;
     var optionalChained = false;
     while (true) {
-      var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+      var element = this.parseSubscript(base2, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
       if (element.optional) {
         optionalChained = true;
       }
-      if (element === base || element.type === "ArrowFunctionExpression") {
+      if (element === base2 || element.type === "ArrowFunctionExpression") {
         if (optionalChained) {
           var chainNode = this.startNodeAt(startPos, startLoc);
           chainNode.expression = element;
@@ -3051,7 +3051,7 @@ return globalThis.Go;
         }
         return element;
       }
-      base = element;
+      base2 = element;
     }
   };
   pp$5.shouldParseAsyncArrow = function() {
@@ -3060,7 +3060,7 @@ return globalThis.Go;
   pp$5.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
     return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
   };
-  pp$5.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+  pp$5.parseSubscript = function(base2, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
     var optionalSupported = this.options.ecmaVersion >= 11;
     var optional = optionalSupported && this.eat(types$1.questionDot);
     if (noCalls && optional) {
@@ -3069,11 +3069,11 @@ return globalThis.Go;
     var computed = this.eat(types$1.bracketL);
     if (computed || optional && this.type !== types$1.parenL && this.type !== types$1.backQuote || this.eat(types$1.dot)) {
       var node = this.startNodeAt(startPos, startLoc);
-      node.object = base;
+      node.object = base2;
       if (computed) {
         node.property = this.parseExpression();
         this.expect(types$1.bracketR);
-      } else if (this.type === types$1.privateId && base.type !== "Super") {
+      } else if (this.type === types$1.privateId && base2.type !== "Super") {
         node.property = this.parsePrivateIdent();
       } else {
         node.property = this.parseIdent(this.options.allowReserved !== "never");
@@ -3082,7 +3082,7 @@ return globalThis.Go;
       if (optionalSupported) {
         node.optional = optional;
       }
-      base = this.finishNode(node, "MemberExpression");
+      base2 = this.finishNode(node, "MemberExpression");
     } else if (!noCalls && this.eat(types$1.parenL)) {
       var refDestructuringErrors = new DestructuringErrors(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
       this.yieldPos = 0;
@@ -3105,22 +3105,22 @@ return globalThis.Go;
       this.awaitPos = oldAwaitPos || this.awaitPos;
       this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
       var node$1 = this.startNodeAt(startPos, startLoc);
-      node$1.callee = base;
+      node$1.callee = base2;
       node$1.arguments = exprList;
       if (optionalSupported) {
         node$1.optional = optional;
       }
-      base = this.finishNode(node$1, "CallExpression");
+      base2 = this.finishNode(node$1, "CallExpression");
     } else if (this.type === types$1.backQuote) {
       if (optional || optionalChained) {
         this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
       }
       var node$2 = this.startNodeAt(startPos, startLoc);
-      node$2.tag = base;
+      node$2.tag = base2;
       node$2.quasi = this.parseTemplate({ isTagged: true });
-      base = this.finishNode(node$2, "TaggedTemplateExpression");
+      base2 = this.finishNode(node$2, "TaggedTemplateExpression");
     }
-    return base;
+    return base2;
   };
   pp$5.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
     if (this.type === types$1.slash) {
@@ -4016,9 +4016,9 @@ return globalThis.Go;
   var i;
   var list;
   var pp$1 = Parser.prototype;
-  var BranchID = function BranchID2(parent, base) {
+  var BranchID = function BranchID2(parent, base2) {
     this.parent = parent;
-    this.base = base || this;
+    this.base = base2 || this;
   };
   BranchID.prototype.separatedFrom = function separatedFrom(alt) {
     for (var self = this; self; self = self.parent) {
@@ -6091,6 +6091,331 @@ return globalThis.Go;
     return Parser.tokenizer(input, options);
   }
 
+  function full(node, callback, baseVisitor, state, override) {
+    if (!baseVisitor) {
+      baseVisitor = base;
+    }
+    var last;
+    (function c(node2, st, override2) {
+      var type = override2 || node2.type;
+      visitNode(baseVisitor, type, node2, st, c);
+      if (last !== node2) {
+        callback(node2, st, type);
+        last = node2;
+      }
+    })(node, state, override);
+  }
+  function skipThrough(node, st, c) {
+    c(node, st);
+  }
+  function ignore(_node, _st, _c) {
+  }
+  function visitNode(baseVisitor, type, node, st, c) {
+    if (baseVisitor[type] == null) {
+      throw new Error("No walker function defined for node type " + type);
+    }
+    baseVisitor[type](node, st, c);
+  }
+  var base = {};
+  base.Program = base.BlockStatement = base.StaticBlock = function(node, st, c) {
+    for (var i = 0, list = node.body; i < list.length; i += 1) {
+      var stmt = list[i];
+      c(stmt, st, "Statement");
+    }
+  };
+  base.Statement = skipThrough;
+  base.EmptyStatement = ignore;
+  base.ExpressionStatement = base.ParenthesizedExpression = base.ChainExpression = function(node, st, c) {
+    return c(node.expression, st, "Expression");
+  };
+  base.IfStatement = function(node, st, c) {
+    c(node.test, st, "Expression");
+    c(node.consequent, st, "Statement");
+    if (node.alternate) {
+      c(node.alternate, st, "Statement");
+    }
+  };
+  base.LabeledStatement = function(node, st, c) {
+    return c(node.body, st, "Statement");
+  };
+  base.BreakStatement = base.ContinueStatement = ignore;
+  base.WithStatement = function(node, st, c) {
+    c(node.object, st, "Expression");
+    c(node.body, st, "Statement");
+  };
+  base.SwitchStatement = function(node, st, c) {
+    c(node.discriminant, st, "Expression");
+    for (var i = 0, list = node.cases; i < list.length; i += 1) {
+      var cs = list[i];
+      c(cs, st);
+    }
+  };
+  base.SwitchCase = function(node, st, c) {
+    if (node.test) {
+      c(node.test, st, "Expression");
+    }
+    for (var i = 0, list = node.consequent; i < list.length; i += 1) {
+      var cons = list[i];
+      c(cons, st, "Statement");
+    }
+  };
+  base.ReturnStatement = base.YieldExpression = base.AwaitExpression = function(node, st, c) {
+    if (node.argument) {
+      c(node.argument, st, "Expression");
+    }
+  };
+  base.ThrowStatement = base.SpreadElement = function(node, st, c) {
+    return c(node.argument, st, "Expression");
+  };
+  base.TryStatement = function(node, st, c) {
+    c(node.block, st, "Statement");
+    if (node.handler) {
+      c(node.handler, st);
+    }
+    if (node.finalizer) {
+      c(node.finalizer, st, "Statement");
+    }
+  };
+  base.CatchClause = function(node, st, c) {
+    if (node.param) {
+      c(node.param, st, "Pattern");
+    }
+    c(node.body, st, "Statement");
+  };
+  base.WhileStatement = base.DoWhileStatement = function(node, st, c) {
+    c(node.test, st, "Expression");
+    c(node.body, st, "Statement");
+  };
+  base.ForStatement = function(node, st, c) {
+    if (node.init) {
+      c(node.init, st, "ForInit");
+    }
+    if (node.test) {
+      c(node.test, st, "Expression");
+    }
+    if (node.update) {
+      c(node.update, st, "Expression");
+    }
+    c(node.body, st, "Statement");
+  };
+  base.ForInStatement = base.ForOfStatement = function(node, st, c) {
+    c(node.left, st, "ForInit");
+    c(node.right, st, "Expression");
+    c(node.body, st, "Statement");
+  };
+  base.ForInit = function(node, st, c) {
+    if (node.type === "VariableDeclaration") {
+      c(node, st);
+    } else {
+      c(node, st, "Expression");
+    }
+  };
+  base.DebuggerStatement = ignore;
+  base.FunctionDeclaration = function(node, st, c) {
+    return c(node, st, "Function");
+  };
+  base.VariableDeclaration = function(node, st, c) {
+    for (var i = 0, list = node.declarations; i < list.length; i += 1) {
+      var decl = list[i];
+      c(decl, st);
+    }
+  };
+  base.VariableDeclarator = function(node, st, c) {
+    c(node.id, st, "Pattern");
+    if (node.init) {
+      c(node.init, st, "Expression");
+    }
+  };
+  base.Function = function(node, st, c) {
+    if (node.id) {
+      c(node.id, st, "Pattern");
+    }
+    for (var i = 0, list = node.params; i < list.length; i += 1) {
+      var param = list[i];
+      c(param, st, "Pattern");
+    }
+    c(node.body, st, node.expression ? "Expression" : "Statement");
+  };
+  base.Pattern = function(node, st, c) {
+    if (node.type === "Identifier") {
+      c(node, st, "VariablePattern");
+    } else if (node.type === "MemberExpression") {
+      c(node, st, "MemberPattern");
+    } else {
+      c(node, st);
+    }
+  };
+  base.VariablePattern = ignore;
+  base.MemberPattern = skipThrough;
+  base.RestElement = function(node, st, c) {
+    return c(node.argument, st, "Pattern");
+  };
+  base.ArrayPattern = function(node, st, c) {
+    for (var i = 0, list = node.elements; i < list.length; i += 1) {
+      var elt = list[i];
+      if (elt) {
+        c(elt, st, "Pattern");
+      }
+    }
+  };
+  base.ObjectPattern = function(node, st, c) {
+    for (var i = 0, list = node.properties; i < list.length; i += 1) {
+      var prop = list[i];
+      if (prop.type === "Property") {
+        if (prop.computed) {
+          c(prop.key, st, "Expression");
+        }
+        c(prop.value, st, "Pattern");
+      } else if (prop.type === "RestElement") {
+        c(prop.argument, st, "Pattern");
+      }
+    }
+  };
+  base.Expression = skipThrough;
+  base.ThisExpression = base.Super = base.MetaProperty = ignore;
+  base.ArrayExpression = function(node, st, c) {
+    for (var i = 0, list = node.elements; i < list.length; i += 1) {
+      var elt = list[i];
+      if (elt) {
+        c(elt, st, "Expression");
+      }
+    }
+  };
+  base.ObjectExpression = function(node, st, c) {
+    for (var i = 0, list = node.properties; i < list.length; i += 1) {
+      var prop = list[i];
+      c(prop, st);
+    }
+  };
+  base.FunctionExpression = base.ArrowFunctionExpression = base.FunctionDeclaration;
+  base.SequenceExpression = function(node, st, c) {
+    for (var i = 0, list = node.expressions; i < list.length; i += 1) {
+      var expr = list[i];
+      c(expr, st, "Expression");
+    }
+  };
+  base.TemplateLiteral = function(node, st, c) {
+    for (var i = 0, list = node.quasis; i < list.length; i += 1) {
+      var quasi = list[i];
+      c(quasi, st);
+    }
+    for (var i$1 = 0, list$1 = node.expressions; i$1 < list$1.length; i$1 += 1) {
+      var expr = list$1[i$1];
+      c(expr, st, "Expression");
+    }
+  };
+  base.TemplateElement = ignore;
+  base.UnaryExpression = base.UpdateExpression = function(node, st, c) {
+    c(node.argument, st, "Expression");
+  };
+  base.BinaryExpression = base.LogicalExpression = function(node, st, c) {
+    c(node.left, st, "Expression");
+    c(node.right, st, "Expression");
+  };
+  base.AssignmentExpression = base.AssignmentPattern = function(node, st, c) {
+    c(node.left, st, "Pattern");
+    c(node.right, st, "Expression");
+  };
+  base.ConditionalExpression = function(node, st, c) {
+    c(node.test, st, "Expression");
+    c(node.consequent, st, "Expression");
+    c(node.alternate, st, "Expression");
+  };
+  base.NewExpression = base.CallExpression = function(node, st, c) {
+    c(node.callee, st, "Expression");
+    if (node.arguments) {
+      for (var i = 0, list = node.arguments; i < list.length; i += 1) {
+        var arg = list[i];
+        c(arg, st, "Expression");
+      }
+    }
+  };
+  base.MemberExpression = function(node, st, c) {
+    c(node.object, st, "Expression");
+    if (node.computed) {
+      c(node.property, st, "Expression");
+    }
+  };
+  base.ExportNamedDeclaration = base.ExportDefaultDeclaration = function(node, st, c) {
+    if (node.declaration) {
+      c(node.declaration, st, node.type === "ExportNamedDeclaration" || node.declaration.id ? "Statement" : "Expression");
+    }
+    if (node.source) {
+      c(node.source, st, "Expression");
+    }
+    if (node.attributes) {
+      for (var i = 0, list = node.attributes; i < list.length; i += 1) {
+        var attr = list[i];
+        c(attr, st);
+      }
+    }
+  };
+  base.ExportAllDeclaration = function(node, st, c) {
+    if (node.exported) {
+      c(node.exported, st);
+    }
+    c(node.source, st, "Expression");
+    if (node.attributes) {
+      for (var i = 0, list = node.attributes; i < list.length; i += 1) {
+        var attr = list[i];
+        c(attr, st);
+      }
+    }
+  };
+  base.ImportAttribute = function(node, st, c) {
+    c(node.value, st, "Expression");
+  };
+  base.ImportDeclaration = function(node, st, c) {
+    for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
+      var spec = list[i];
+      c(spec, st);
+    }
+    c(node.source, st, "Expression");
+    if (node.attributes) {
+      for (var i$1 = 0, list$1 = node.attributes; i$1 < list$1.length; i$1 += 1) {
+        var attr = list$1[i$1];
+        c(attr, st);
+      }
+    }
+  };
+  base.ImportExpression = function(node, st, c) {
+    c(node.source, st, "Expression");
+    if (node.options) {
+      c(node.options, st, "Expression");
+    }
+  };
+  base.ImportSpecifier = base.ImportDefaultSpecifier = base.ImportNamespaceSpecifier = base.Identifier = base.PrivateIdentifier = base.Literal = ignore;
+  base.TaggedTemplateExpression = function(node, st, c) {
+    c(node.tag, st, "Expression");
+    c(node.quasi, st, "Expression");
+  };
+  base.ClassDeclaration = base.ClassExpression = function(node, st, c) {
+    return c(node, st, "Class");
+  };
+  base.Class = function(node, st, c) {
+    if (node.id) {
+      c(node.id, st, "Pattern");
+    }
+    if (node.superClass) {
+      c(node.superClass, st, "Expression");
+    }
+    c(node.body, st);
+  };
+  base.ClassBody = function(node, st, c) {
+    for (var i = 0, list = node.body; i < list.length; i += 1) {
+      var elt = list[i];
+      c(elt, st);
+    }
+  };
+  base.MethodDefinition = base.PropertyDefinition = base.Property = function(node, st, c) {
+    if (node.computed) {
+      c(node.key, st, "Expression");
+    }
+    if (node.value) {
+      c(node.value, st, "Expression");
+    }
+  };
+
   var DYNAMIC_IMPORT_HELPER = "__nimbusDynamicImport";
   function mayHaveDynamicImport(code) {
     return /\bimport\s*(?:\(|\/[/*])/.test(code);
@@ -6122,6 +6447,7 @@ return globalThis.Go;
     types$1._in,
     types$1._instanceof
   ]);
+  var LINE_BREAK = /[\r\n\u2028\u2029]/;
   function rewriteDynamicImports(code, parentUrl, moduleMetadata = false) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     if (!mayHaveDynamicImport(code) && !metadata) return code;
@@ -6131,7 +6457,10 @@ return globalThis.Go;
     const parens = [];
     const brackets = [];
     const call = `${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, `;
+    const fallback = () => rewriteWithParser(code, call, metadata);
     let previous;
+    let memberKeyword = false;
+    let ambiguousSlash = false;
     let importToken;
     let metaStart;
     let closedImport = null;
@@ -6139,17 +6468,19 @@ return globalThis.Go;
     let prologue = true;
     let insertion = -1;
     try {
-      const tokens = tokenizer2(code, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+      const tokens = tokenizer2(code, { ecmaVersion: "latest", sourceType: "script", allowHashBang: true });
       for (; ; ) {
         const token = tokens.getToken();
         const type = token.type;
+        if ((ambiguousSlash || memberKeyword) && type === types$1.regexp) return fallback();
+        ambiguousSlash = false;
         if (insertion < 0) insertion = token.start;
         if (prologue) {
           if (directive) {
             if (type === types$1.semi) {
               insertion = token.end;
               directive = void 0;
-            } else if (type === types$1.eof || /[\r\n\u2028\u2029]/.test(code.slice(directive.end, token.start)) && !CONTINUES_EXPRESSION.has(type)) {
+            } else if (type === types$1.eof || LINE_BREAK.test(code.slice(directive.end, token.start)) && !CONTINUES_EXPRESSION.has(type)) {
               insertion = directive.end;
               directive = type === types$1.string ? token : void 0;
               prologue = type === types$1.string;
@@ -6158,7 +6489,8 @@ return globalThis.Go;
           else prologue = false;
         }
         if (closedImport) {
-          if (type !== types$1.braceL) edits.push({ ...closedImport, text: call });
+          if (type === types$1.braceL) return fallback();
+          edits.push({ ...closedImport, text: call });
           closedImport = null;
         }
         if (metaStart) {
@@ -6169,28 +6501,89 @@ return globalThis.Go;
         }
         if (type === types$1.name) names?.add(String(Reflect.get(token, "value")));
         if (type === types$1.parenL) {
-          parens.push(importToken ? { start: importToken.start, end: token.end } : null);
+          parens.push(importToken ? { start: importToken.start, end: token.end } : memberKeyword ? "member-keyword" : null);
           brackets.push("(");
         } else if (type === types$1.parenR) {
-          if (brackets.pop() !== "(") return code;
-          closedImport = parens.pop() ?? null;
+          if (brackets.pop() !== "(") return fallback();
+          const frame = parens.pop();
+          if (frame === "member-keyword") ambiguousSlash = true;
+          else closedImport = frame ?? null;
         } else if (type === types$1.braceL || type === types$1.dollarBraceL) brackets.push("{");
         else if (type === types$1.braceR) {
-          if (brackets.pop() !== "{") return code;
+          if (brackets.pop() !== "{") return fallback();
         } else if (type === types$1.bracketL) brackets.push("[");
         else if (type === types$1.bracketR) {
-          if (brackets.pop() !== "[") return code;
+          if (brackets.pop() !== "[") return fallback();
         }
         if (metadata && importToken && type === types$1.dot) metaStart = importToken;
+        const member = previous?.type === types$1.dot || previous?.type === types$1.questionDot;
+        memberKeyword = member && typeof Reflect.get(type, "keyword") === "string";
         const isKeyword = type === types$1._import && code.slice(token.start, token.end) === "import";
-        importToken = isKeyword && previous?.type !== types$1.dot && previous?.type !== types$1.questionDot ? token : void 0;
+        importToken = isKeyword && !member ? token : void 0;
         previous = token;
         if (type === types$1.eof) break;
       }
     } catch {
-      return code;
+      return fallback();
     }
-    if (brackets.length || parens.length) return code;
+    if (brackets.length || parens.length) return fallback();
+    return applyEdits(code, edits, metas, names, insertion);
+  }
+  function rewriteWithParser(code, call, metadata) {
+    const edits = [];
+    const metas = [];
+    const names = metadata ?   new Set() : null;
+    const visit = (node) => {
+      if (node.type === "ImportExpression") {
+        const source = Reflect.get(node, "source");
+        edits.push({ start: node.start, end: source.start, text: call });
+      } else if (metadata && node.type === "MetaProperty") {
+        if (Reflect.get(node, "meta").name === "import" && Reflect.get(node, "property").name === "meta") {
+          metas.push({ start: node.start, end: node.end });
+        }
+      } else if (metadata && node.type === "Identifier") names.add(Reflect.get(node, "name"));
+    };
+    const StreamingParser = Parser.extend((Base) => {
+      const parseStatement = Reflect.get(Base.prototype, "parseStatement");
+      return class extends Base {
+        parseStatement(context, topLevel, exports) {
+          const node = Reflect.apply(parseStatement, this, [context, topLevel, exports]);
+          if (!topLevel) return node;
+          full(node, visit);
+          if (node.type === "ExpressionStatement") {
+            const expression = Reflect.get(node, "expression");
+            if (expression?.type === "Literal" && typeof expression.value === "string") return node;
+          }
+          return { type: "EmptyStatement", start: node.start, end: node.end };
+        }
+      };
+    });
+    for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
+      edits.length = 0;
+      metas.length = 0;
+      names?.clear();
+      let program;
+      try {
+        program = StreamingParser.parse(code, {
+          ecmaVersion: "latest",
+          sourceType,
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+          allowHashBang: true
+        });
+      } catch {
+        continue;
+      }
+      let insertion = program.body[0]?.start ?? code.length;
+      for (const statement of program.body) {
+        if (typeof Reflect.get(statement, "directive") !== "string") break;
+        insertion = statement.end;
+      }
+      return applyEdits(code, edits, metas, names, insertion);
+    }
+    return code;
+  }
+  function applyEdits(code, edits, metas, names, insertion) {
     if (metas.length) {
       let binding = "__nimbusMetadataModule";
       while (names.has(binding)) binding += "_";

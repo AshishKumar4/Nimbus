@@ -8719,7 +8719,39 @@ Object.defineProperty(builtins, "http", {
     const net = typeof __real_net !== "undefined"
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
     const ports = globalThis.__portRegistry ??= new Map();
+    const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
+    // Native clients keep consuming their IncomingMessage after fetch has
+    // returned headers. Their close event is the end of the exchange (EOF,
+    // body error or cancellation), not the request-body finish event.
+    // https.get/request use this same ClientRequest class; prototype hooks
+    // cover named ESM imports and direct construction too. No response/error
+    // listeners are installed, preserving native auto-drain and error rules.
+    // workerd src/node/internal/internal_http_client.ts #handleFetchResponse
+    // and #emitClose, v1.20260926.1.
+    const clientProto = http.ClientRequest.prototype;
+    const clientPatch = Symbol.for("nimbus.native-http.client-lifetime");
+    if (!clientProto[clientPatch]) {
+      const inFlight = new WeakSet();
+      const end = clientProto.end, emit = clientProto.emit;
+      const release = request => {
+        if (inFlight.delete(request)) globalThis.__nimbusPendingOps--;
+      };
+      Object.defineProperty(clientProto, clientPatch, { value: true });
+      clientProto.end = function () {
+        const started = !this.destroyed && !inFlight.has(this);
+        if (started) {
+          inFlight.add(this);
+          globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+        }
+        try { return Reflect.apply(end, this, arguments); }
+        catch (error) { if (started) release(this); throw error; }
+      };
+      clientProto.emit = function (event) {
+        if (event === "close" && this.destroyed) release(this);
+        return Reflect.apply(emit, this, arguments);
+      };
+    }
     const patchKey = Symbol.for("nimbus.native-http.patch");
     if (!http.Server.prototype[patchKey]) {
       const proto = http.Server.prototype;
@@ -8760,10 +8792,24 @@ Object.defineProperty(builtins, "http", {
         const state = { ctx, pending: false, cancelled: false, port: null };
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
-        const start = (port) => {
+        const allocationSettled = () => {
           state.pending = false;
+          // A cancelled allocation can settle after this server relistens.
+          // Only the current owner can retire its pending-listen handle.
+          if (owners.get(this) === state) pendingListeners.delete(this);
+        };
+        const releaseAllocation = () => {
+          // An explicit relisten may have taken this same number while the
+          // cancelled allocation reply was in flight. That live binding now
+          // owns the reservation; retiring the old request must not remove it.
+          if (state.port !== null && !ctx.ports.has(state.port)) {
+            ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+          }
+        };
+        const start = (port) => {
+          allocationSettled();
           if (state.cancelled) {
-            if (state.port !== null) ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+            releaseAllocation();
             return;
           }
           try {
@@ -8774,17 +8820,21 @@ Object.defineProperty(builtins, "http", {
             ctx.ports.set(state.port, this);
             ctx.pending.push(Promise.resolve(ctx.supervisor.registerPort(state.port)));
           } catch (e) {
-            if (requested === 0 && state.port !== null) ctx.pending.push(Promise.resolve(ctx.supervisor.unregisterPort(state.port)));
+            if (requested === 0) releaseAllocation();
             if (e && e.code === "EADDRINUSE") { queueMicrotask(() => this.emit("error", e)); return; }
             throw e;
           }
         };
         if (requested === 0) {
           state.pending = true;
-          const task = Promise.resolve(ctx.supervisor.allocatePort()).then(port => {
+          pendingListeners.add(this);
+          let allocation;
+          try { allocation = ctx.supervisor.allocatePort(); }
+          catch (error) { allocationSettled(); throw error; }
+          const task = Promise.resolve(allocation).then(port => {
             state.port = port;
             start(port);
-          }, error => { state.pending = false; this.emit("error", error); });
+          }, error => { allocationSettled(); if (!state.cancelled) this.emit("error", error); });
           ctx.pending.push(task);
         } else start(options.port);
         return this;
@@ -8794,7 +8844,11 @@ Object.defineProperty(builtins, "http", {
         if (state) {
           state.cancelled = true;
           if (state.pending) {
-            if (callback) queueMicrotask(() => callback());
+            state.pending = false;
+            owners.delete(this);
+            pendingListeners.delete(this);
+            if (callback) this.once("close", callback);
+            queueMicrotask(() => this.emit("close"));
             return this;
           }
           if (state.port !== null && state.ctx.ports.get(state.port) === this) {
