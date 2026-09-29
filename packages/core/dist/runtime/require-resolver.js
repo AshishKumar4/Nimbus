@@ -809,7 +809,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 continue;
             if (closureExceeded || declined)
                 break;
-            const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
+            const r = await resolveStaticDependency(specifier, fromDir);
             if (r) {
                 (await addFile(r.resolved));
                 if (r.stub)
@@ -824,7 +824,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 continue;
             if (closureExceeded || declined)
                 break;
-            const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
+            const r = await resolveStaticDependency(specifier, fromDir);
             if (r) {
                 (await addFile(r.resolved));
                 if (r.stub)
@@ -843,7 +843,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 continue;
             if (closureExceeded || declined)
                 break;
-            const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress));
+            const r = await resolveStaticDependency(specifier, fromDir);
             if (r) {
                 (await addFile(r.resolved));
                 if (r.stub)
@@ -913,6 +913,14 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         isBuiltin: (specifier) => isFacetProvided(specifier),
         cjsResolve: () => null,
     });
+    async function resolveStaticDependency(specifier, fromDir) {
+        // Vite's generated config names dependencies by absolute file URL.
+        if (specifier.startsWith('file:')) {
+            const resolved = await resolveDynamicImport(specifier, fromDir);
+            return resolved === null ? null : { resolved };
+        }
+        return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress);
+    }
     /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
     async function resolveDynamicImport(specifier, fromDir) {
         const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7e73421e90c92a158487712d67c1e15a48c6d573fa2fb11b38051e10d2e0b445",
+  "fingerprint": "b514ea487768125f88b1d6117f4a61b0c2476246ed7ee8fb46aa328922022edb",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -266,7 +266,7 @@
     "packages/core/dist/runtime/python-server-adapter.js": "48bb1597d57c98ae8b5abd429cd5561c15fdf4907e1710264ebdf6a7085a6ce4",
     "packages/core/dist/runtime/require-resolver.d.ts": "c4847d7a7c28348d7997f02786304d4ca70bb6969c0063501e4dd5eeac5d6f18",
     "packages/core/dist/runtime/require-resolver.d.ts.map": "ad20c64fb009a8921eb4f7765c330c19678b626b0c8b33a6e74810f7ae52272a",
-    "packages/core/dist/runtime/require-resolver.js": "d9bbb84d68a07534a69eb6924e56b8c620cd44e42936eeddab6a457911e33499",
+    "packages/core/dist/runtime/require-resolver.js": "8424569b35cdfe2f5a4b7ea806027d16a42f39c563c2bba70b8662aa4c8e9403",
     "packages/core/dist/runtime/router-basename.d.ts": "2ddac310d985cb9f2aee88223d5e1cbf064870b5ea08ff2d84b2ff718ddb6883",
     "packages/core/dist/runtime/router-basename.d.ts.map": "01b2455cddd015fb5a0385c96bef3f449c7c0adc9de65fba48379846e5f621ff",
     "packages/core/dist/runtime/router-basename.js": "082fa144ed8e92a2e37e46769edb16e9a333b8fd1e966f78e36407fbeef4a6e2",
@@ -979,7 +979,7 @@
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/python-pip.ts": "95246c03853a6a6f8c8129154e7a364f206237fe95801aa454b598220ddba7f2",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
-    "packages/core/src/runtime/require-resolver.ts": "b1f44698c806752cc72828fdfcb4f239f671125596f93559bac0a496cb6ca4ff",
+    "packages/core/src/runtime/require-resolver.ts": "433f245787202e9a3efd7b76cf34bff2f1f4a7e1ef177b56e3cc9914cdb8f7c0",
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
     "packages/core/src/runtime/ruby-gems.ts": "582c097c9391f695a0659bbf06152b1de89a87f90a135419d6851d8aa121c79c",
     "packages/core/src/runtime/ruby-green-threads.ts": "7701efca15303c30d1ecd7bb9151a952c79e77ed2c5db3dc0819bbe4775f5eb6",
