@@ -1,8 +1,8 @@
 /**
- * rolldown-binding.ts — loads the threadless rolldown binding into a host
- * with one thread and an event loop (a Nimbus node process, or Node itself).
+ * napi-wasm-loader.ts — loads a threadless napi-rs binding (build.mjs) into a
+ * host with one thread and an event loop (a Nimbus node process, or Node).
  *
- * Replaces upstream's `rolldown-binding.wasi.cjs`, which needs `node:wasi`,
+ * Replaces upstream's generated `<binary>.wasi.cjs`, which needs `node:wasi`,
  * `worker_threads` and a shared memory. Here:
  *
  *   - N-API comes from @emnapi/core's non-threaded model: async work and
@@ -12,10 +12,13 @@
  *     one bash and CPython run on) over the host's own `fs` module, so the
  *     binding sees exactly the files, write cache and credentials the calling
  *     process does. Everything else WASI needs is a few lines below.
- *   - rolldown's tokio tasks run when this loader pumps them
- *     (`nimbus_rolldown_pump`): after the binding asks (`request_pump`, when
- *     a task is spawned) and after any napi callback while tasks are alive
- *     (a callback is how JavaScript wakes a task awaiting it).
+ *   - A binding with async fns (rolldown) exports an event-loop-driven tokio
+ *     runtime (scripts/napi-wasm/rolldown/binding): its tasks run when this
+ *     loader pumps them (`nimbus_napi_pump`), after the binding asks
+ *     (`nimbus_napi.request_pump`, when a task is spawned) and after any napi
+ *     callback while tasks are alive (a callback is how JavaScript wakes a
+ *     task awaiting it). A binding without one (satteri, the Astro compiler)
+ *     is plain synchronous napi plus emnapi's async work.
  *   - With JSPI, the pump runs under `WebAssembly.promising` through the wasi
  *     trampoline (wasi-trampoline.mjs): a file the host does not hold in
  *     memory is then read asynchronously and the pump resumes, instead of
@@ -42,14 +45,13 @@ import type {
   RuntimeVfsStat,
 } from '../../../../core/src/runtime/os-contracts.js';
 
-/** Build-time constants (build-binding.mjs `define`). */
-declare const __NIMBUS_ROLLDOWN_MEMORY_PAGES__: number;
-declare const __NIMBUS_ROLLDOWN_DISPATCHED__: readonly string[];
+/** Build-time constant (build.mjs `define`). */
+declare const __NIMBUS_NAPI_WASM_DISPATCHED__: readonly string[];
 
 type NodeFs = typeof NodeFsModule;
 type WasmFn = (...args: never[]) => unknown;
 
-export interface RolldownBindingHost {
+export interface NapiWasmBindingHost {
   /** The calling process's `fs`. Nimbus's node-shims provide it in a guest. */
   fs: NodeFs;
   env: Record<string, string | undefined>;
@@ -59,13 +61,18 @@ export interface RolldownBindingHost {
   binding: WebAssembly.Module;
   /** The wasi trampoline, compiled the same way. */
   trampoline: WebAssembly.Module;
+  /** Wasm pages the binding's imported memory starts at (its declared minimum). */
+  memoryPages: number;
+  /** The binding's name, for diagnostics. */
+  name: string;
 }
 
 /** What the loader calls on the binding instance besides napi. */
 interface BindingExports {
   _initialize(): void;
-  nimbus_rolldown_pump(budget: number): number;
-  nimbus_rolldown_alive_tasks(): number;
+  /** Present on a binding built with the event-loop runtime. */
+  nimbus_napi_pump?(budget: number): number;
+  nimbus_napi_alive_tasks?(): number;
 }
 
 /** Task polls one pump turn may run before it yields to the event loop. */
@@ -338,7 +345,7 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
  * files. Clocks, entropy, environment, stdio and the root preopen; no
  * sockets, no threads, no process exit.
  */
-function baseWasiImports(host: RolldownBindingHost, memory: () => WebAssembly.Memory, fds: Map<number, FilesystemFd>) {
+function baseWasiImports(host: NapiWasmBindingHost, memory: () => WebAssembly.Memory, fds: Map<number, FilesystemFd>) {
   const view = () => new DataView(memory().buffer);
   const bytes = () => new Uint8Array(memory().buffer);
   const encoder = new TextEncoder();
@@ -394,7 +401,7 @@ function baseWasiImports(host: RolldownBindingHost, memory: () => WebAssembly.Me
       return ERRNO_SUCCESS;
     },
     proc_exit(code: number): never {
-      throw new Error(`rolldown binding called proc_exit(${code})`);
+      throw new Error(`${host.name} binding called proc_exit(${code})`);
     },
     fd_prestat_get(fd: number, out: number) {
       const e = fds.get(fd);
@@ -488,15 +495,18 @@ function pollOneoff(memory: () => WebAssembly.Memory, wait: boolean) {
   };
 }
 
-export function createRolldownBinding(host: RolldownBindingHost): Record<string, unknown> {
-  const jspi = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
-  const memory = new WebAssembly.Memory({ initial: __NIMBUS_ROLLDOWN_MEMORY_PAGES__, maximum: 65536 });
+export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string, unknown> {
+  // Only a binding built with the event-loop runtime has a pump; only a pump
+  // stack may suspend, so only such a binding takes the JSPI trampoline.
+  const pumped = WebAssembly.Module.exports(host.binding).some((e) => e.name === 'nimbus_napi_pump');
+  const jspi = pumped && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+  const memory = new WebAssembly.Memory({ initial: host.memoryPages, maximum: 65536 });
   const getMemory = () => memory;
   const fds = new Map<number, FilesystemFd>([
     [0, { kind: 'stdin' }],
     [1, { kind: 'stdout' }],
     [2, { kind: 'stderr' }],
-    // rolldown hands WASI absolute paths; wasi-libc resolves them against `/`.
+    // Bindings hand WASI absolute paths; wasi-libc resolves them against `/`.
     [3, { kind: 'preopen', vfsPath: '/', wasiPath: '/' }],
   ]);
   let nextFd = 4;
@@ -532,7 +542,7 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
     const asyncImports = wasiImports(true);
     const sync: Record<string, WasmFn> = {};
     const suspending: Record<string, WebAssembly.Suspending> = {};
-    for (const name of __NIMBUS_ROLLDOWN_DISPATCHED__) {
+    for (const name of __NIMBUS_NAPI_WASM_DISPATCHED__) {
       sync[name] = syncImports[name];
       suspending[name] = new WebAssembly.Suspending(asyncImports[name]);
     }
@@ -541,7 +551,9 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
   }
 
   // ── The pump ──────────────────────────────────────────────────────────
-  let binding: BindingExports | null = null;
+  // Set at the instance boundary, and only on a pumped binding.
+  let pumpSync: ((budget: number) => number) | null = null;
+  let aliveTasks: (() => number) | null = null;
   let pumpJspi: ((budget: number) => Promise<number>) | null = null;
   let pumping = false;
   let pumpScheduled = false;
@@ -569,7 +581,7 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
   };
   function runPump(): void {
     pumpScheduled = false;
-    if (fatal !== null || binding === null) return;
+    if (fatal !== null || pumpSync === null) return;
     if (pumping) {
       pumpAgain = true;
       return;
@@ -581,7 +593,7 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
     }
     let status: number;
     try {
-      status = binding.nimbus_rolldown_pump(PUMP_BUDGET) >>> 0;
+      status = pumpSync(PUMP_BUDGET) >>> 0;
     } catch (error) {
       die(error);
       return;
@@ -613,7 +625,7 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
           return target.apply(this, args);
         } finally {
           depth--;
-          if (depth === 0 && !pumping && fatal === null && binding !== null && binding.nimbus_rolldown_alive_tasks() > 0) {
+          if (depth === 0 && !pumping && fatal === null && aliveTasks !== null && aliveTasks() > 0) {
             requestPump();
           }
         }
@@ -649,14 +661,18 @@ export function createRolldownBinding(host: RolldownBindingHost): Record<string,
     overwriteImports(importObject: Record<string, Record<string, unknown>>) {
       importObject.env = { ...importObject.env, ...importObject.napi, ...importObject.emnapi, memory };
       importObject.wasi_snapshot_preview1 = wasi;
-      importObject.nimbus_rolldown = { request_pump: requestPump };
+      importObject.nimbus_napi = { request_pump: requestPump };
       return importObject;
     },
     beforeInit({ instance }: { instance: WebAssembly.Instance }) {
       // The binding's own exports, typed once here at the instance boundary.
-      binding = instance.exports as unknown as BindingExports;
+      const exports = instance.exports as unknown as BindingExports;
+      if (pumped && exports.nimbus_napi_pump && exports.nimbus_napi_alive_tasks) {
+        pumpSync = exports.nimbus_napi_pump;
+        aliveTasks = exports.nimbus_napi_alive_tasks;
+      }
       if (trampoline) {
-        (trampoline.exports.table as WebAssembly.Table).set(0, instance.exports.nimbus_rolldown_pump);
+        (trampoline.exports.table as WebAssembly.Table).set(0, instance.exports.nimbus_napi_pump);
         pumpJspi = WebAssembly.promising(trampoline.exports.pump as (budget: number) => number);
       }
       for (const name of Object.keys(instance.exports)) {

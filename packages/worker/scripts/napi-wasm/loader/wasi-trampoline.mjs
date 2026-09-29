@@ -3,7 +3,7 @@
 //
 // JSPI's `WebAssembly.Suspending` traps whenever it is called from a stack
 // `WebAssembly.promising` did not enter — even when the wrapped function
-// returns a plain number. The rolldown binding is entered both ways: napi
+// returns a plain number. A pumped binding (rolldown) is entered both ways: napi
 // callbacks (a `transformSync`, a plugin-context call) run on the caller's
 // ordinary stack, while the runtime pump runs under `promising` and may wait
 // for a file the process does not hold. A JavaScript import cannot tell the
@@ -118,7 +118,7 @@ export function buildWasiTrampoline() {
   const pumpCode = [
     0x41, 0x01, 0x24, 0x00, // active = 1
     0x20, 0x00, // budget
-    0x41, 0x00, // table slot 0: the binding's nimbus_rolldown_pump
+    0x41, 0x00, // table slot 0: the binding's nimbus_napi_pump
     0x11, ...uleb(pumpType), 0x00, // call_indirect
     0x41, 0x00, 0x24, 0x00, // active = 0
     0x0b,

@@ -1,0 +1,59 @@
+{
+  "artifact": "astro-compiler",
+  "version": "0.5.1",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/withastro/compiler-rs/archive/refs/tags/v0.5.1.tar.gz",
+    "sha256": "c9e546b0fb1bd4e61f4559bbed8f15368e4488fb73c2d828936a1cebf0b20592"
+  },
+  "toolchain": "rustc 1.96.1 (31fca3adb 2026-06-26)\nbinary: rustc\ncommit-hash: 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd\ncommit-date: 2026-06-26\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.1\nLLVM version: 22.1.2",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1 -p astro_napi",
+    "mode": "workspace",
+    "rustflags": [
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "scripts/napi-wasm/astro-compiler/Cargo.lock (committed pin)",
+      "sha256": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
+      "packages": 306
+    }
+  },
+  "seams": [
+    {
+      "file": "Cargo.toml",
+      "from": "napi-build = \"=2.3.1\"",
+      "to": "napi-build = \"=2.5.0\"",
+      "reason": "napi-build 2.3.1 only knows wasm32-wasip1-threads: it links the threaded emnapi archive (emnapi-basic-mt, absent for wasm32-wasip1) and exports its thread-pool symbols. 2.5.0 links the non-threaded emnapi-basic-napi-rs for wasm32-wasip1 and is the version the rolldown build uses. napi-build only writes the link line; napi and napi-derive stay at upstream's pins."
+    }
+  ],
+  "npm": {
+    "owner": "@astrojs/compiler-binding",
+    "requiredAs": [
+      "@astrojs/compiler-binding-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 68,
+    "sharedMemory": false,
+    "pumped": false,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_write",
+      "poll_oneoff",
+      "proc_exit"
+    ]
+  },
+  "outputs": {
+    "astro-compiler.wasm": {
+      "bytes": 6585355,
+      "sha256": "9c68c5e8b97530c46f7b9d4998a26c3b7d68567755250a9118b0d14bcdcb680a"
+    }
+  }
+}

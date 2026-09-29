@@ -2,7 +2,7 @@
 #
 # This crate is a wrapper, not a fork: it links upstream `rolldown_binding`
 # unmodified (a path dependency into the pinned, digest-verified source
-# archive that build-binding.mjs extracts next to this directory) and adds
+# archive that ../../build.mjs extracts next to this directory) and adds
 # the one thing upstream only ships for wasm32-wasip1-threads: an async
 # runtime. `src/lib.rs` registers a napi `AsyncRuntime` backend that runs
 # rolldown's tokio tasks on a current-thread runtime driven from the host's

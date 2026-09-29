@@ -19,7 +19,7 @@
 // holds that boundary). Every rolldown call below — dependency optimization,
 // oxc transforms, the native resolver, the production bundle — runs in the
 // staged single-threaded wasm32-wasip1 build of rolldown's binding
-// (scripts/rolldown/), and CSS minification in lightningcss-wasm (the
+// (scripts/napi-wasm/), and CSS minification in lightningcss-wasm (the
 // package-ABI swap for lightningcss).
 //
 // What this probe PROVES:

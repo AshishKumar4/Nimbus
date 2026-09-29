@@ -8,13 +8,13 @@
 //!
 //! - Every `#[napi] async fn` future (and every task rolldown `tokio::spawn`s
 //!   under it) runs on one tokio current-thread runtime owned here.
-//! - The host drives that runtime: `nimbus_rolldown_pump` runs runnable tasks
+//! - The host drives that runtime: `nimbus_napi_pump` runs runnable tasks
 //!   until none is left (or a poll budget is spent) and returns. It never
 //!   parks, so it never blocks the event loop waiting for JavaScript.
 //! - A task that awaits JavaScript (a plugin hook, a promise) is woken from a
 //!   napi callback the host makes later; the host pumps again after such
 //!   callbacks while tasks are alive. New work asks for a pump through the
-//!   `nimbus_rolldown.request_pump` import.
+//!   `nimbus_napi.request_pump` import.
 //!
 //! Nothing here changes rolldown's behavior; it replaces the threads the
 //! upstream wasm build schedules on with turns of the host's event loop.
@@ -39,7 +39,7 @@ use napi::bindgen_prelude::{
   AsyncRuntime, AsyncRuntimeGuard, AsyncRuntimeRejection, AsyncRuntimeTask, register_async_runtime,
 };
 
-#[link(wasm_import_module = "nimbus_rolldown")]
+#[link(wasm_import_module = "nimbus_napi")]
 unsafe extern "C" {
   /// Ask the host for a pump on a later turn. Idempotent until it runs.
   #[link_name = "request_pump"]
@@ -118,7 +118,7 @@ fn register_event_loop_runtime() {
 /// which no task ran — a run phase, a driver poll, and a run phase for
 /// whatever that driver poll woke.
 #[unsafe(no_mangle)]
-pub extern "C" fn nimbus_rolldown_pump(budget: u32) -> u32 {
+pub extern "C" fn nimbus_napi_pump(budget: u32) -> u32 {
   let rt = runtime();
   let start = TASK_POLLS.load(Ordering::Relaxed);
   let mut last = start;
@@ -149,7 +149,7 @@ pub extern "C" fn nimbus_rolldown_pump(budget: u32) -> u32 {
 /// Tasks not yet finished. The host pumps after a napi callback only when
 /// this is nonzero: a callback can only wake a task that exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn nimbus_rolldown_alive_tasks() -> u32 {
+pub extern "C" fn nimbus_napi_alive_tasks() -> u32 {
   LazyLock::get(&RUNTIME)
     .map_or(0, |rt| u32::try_from(rt.metrics().num_alive_tasks()).unwrap_or(u32::MAX))
 }

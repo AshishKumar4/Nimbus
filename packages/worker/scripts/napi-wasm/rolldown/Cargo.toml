@@ -1,6 +1,6 @@
-# Workspace for the single-threaded rolldown binding build (build-binding.mjs).
+# Workspace for the single-threaded rolldown binding build (../build.mjs, spec `rolldown`).
 #
-# build-binding.mjs copies this directory into its work directory and
+# build.mjs copies this directory into its work directory and
 # extracts the pinned upstream source beside it as rolldown-<version>/. The
 # workspace root is the directory that holds BOTH, so cargo hashes every path
 # crate (upstream's included) by its path relative to here: the same symbol

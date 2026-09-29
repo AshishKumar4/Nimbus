@@ -1,0 +1,52 @@
+{
+  "artifact": "satteri",
+  "version": "0.10.5",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/bruits/satteri/archive/refs/tags/satteri-v0.10.5.tar.gz",
+    "sha256": "2193132300046ebacdc791d757986741e86abbb6306068dff39d2e4fada68db3"
+  },
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1 -p satteri-napi",
+    "mode": "workspace",
+    "rustflags": [
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "upstream Cargo.lock",
+      "sha256": "5b3552a37b7ab9b0e267d6c374e477e79261383f2b9e262689079eae589f606b",
+      "packages": 185
+    }
+  },
+  "seams": [],
+  "npm": {
+    "owner": "satteri",
+    "requiredAs": [
+      "@bruits/satteri-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 73,
+    "sharedMemory": false,
+    "pumped": false,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_write",
+      "proc_exit",
+      "sched_yield"
+    ]
+  },
+  "outputs": {
+    "satteri.wasm": {
+      "bytes": 3195967,
+      "sha256": "2c880e9ab1fb2a366dca6126e82cb5bdd3fba0b9308e74ce797c00f7d956f83e"
+    }
+  }
+}
