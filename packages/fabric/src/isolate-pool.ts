@@ -965,9 +965,7 @@ export class IsolatePool {
           // and is sent again; it does not spend an attempt.
           const delay = Math.min(CAP_REFUSAL_WAIT_MS - capWaitedMs, 50 * 2 ** capRefusals++, 2000);
           capWaitedMs += delay;
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setTimeout(resolve, delay);
-          await promise;
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
           continue;
         }
         if (attempt < maxAttempts - 1) {
